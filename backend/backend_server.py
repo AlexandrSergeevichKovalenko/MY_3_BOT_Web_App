@@ -773,7 +773,14 @@ _TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY = max(
 )
 _TRANSLATION_CHECK_ITEM_TIMEOUT_SEC = max(
     5,
-    int((os.getenv("TRANSLATION_CHECK_ITEM_TIMEOUT_SEC") or "45").strip() or "45"),
+    int((os.getenv("TRANSLATION_CHECK_ITEM_TIMEOUT_SEC") or "60").strip() or "60"),
+)
+# A timed-out grading call is almost always a transient slow LLM response, so retry
+# the item once (with a fresh timeout budget) before counting it as failed. This is
+# what dropped the 7th sentence for some users: one slow call → whole sentence lost.
+_TRANSLATION_CHECK_ITEM_TIMEOUT_RETRIES = max(
+    0,
+    int((os.getenv("TRANSLATION_CHECK_ITEM_TIMEOUT_RETRIES") or "1").strip() or "1"),
 )
 _TRANSLATION_CHECK_FINALIZE_BATCH_SIZE = max(
     1,
@@ -25056,33 +25063,50 @@ def _process_translation_check_session_item(
             with _TRANSLATION_CHECK_GLOBAL_ITEM_SEMAPHORE:
                 global_wait_duration_ms = _elapsed_ms_since(semaphore_wait_started_perf)
                 check_started_perf = time.perf_counter()
-                try:
-                    result_item, deferred_store_payload = asyncio.run(
-                        asyncio.wait_for(
-                            check_user_translation_webapp_item(
-                                int(session["user_id"]),
-                                session.get("username"),
-                                {
-                                    "id_for_mistake_table": item.get("sentence_id_for_mistake_table"),
-                                    "source_daily_sentence_id": item.get("source_daily_sentence_id"),
-                                    "source_session_id": session.get("source_session_id"),
-                                    "sentence_number": sentence_number,
-                                    "original_text": item.get("original_text"),
-                                    "translation": item.get("user_translation"),
-                                },
-                                source_lang=str(session.get("source_lang") or "ru"),
-                                target_lang=str(session.get("target_lang") or "de"),
-                                daily_session_id=session.get("source_session_id"),
-                                checkpoint_item_id=None,
-                                prefetched_context=prefetched_context,
-                            ),
-                            timeout=float(_TRANSLATION_CHECK_ITEM_TIMEOUT_SEC),
+                max_attempts = 1 + _TRANSLATION_CHECK_ITEM_TIMEOUT_RETRIES
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        result_item, deferred_store_payload = asyncio.run(
+                            asyncio.wait_for(
+                                check_user_translation_webapp_item(
+                                    int(session["user_id"]),
+                                    session.get("username"),
+                                    {
+                                        "id_for_mistake_table": item.get("sentence_id_for_mistake_table"),
+                                        "source_daily_sentence_id": item.get("source_daily_sentence_id"),
+                                        "source_session_id": session.get("source_session_id"),
+                                        "sentence_number": sentence_number,
+                                        "original_text": item.get("original_text"),
+                                        "translation": item.get("user_translation"),
+                                    },
+                                    source_lang=str(session.get("source_lang") or "ru"),
+                                    target_lang=str(session.get("target_lang") or "de"),
+                                    daily_session_id=session.get("source_session_id"),
+                                    checkpoint_item_id=None,
+                                    prefetched_context=prefetched_context,
+                                ),
+                                timeout=float(_TRANSLATION_CHECK_ITEM_TIMEOUT_SEC),
+                            )
                         )
-                    )
-                except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-                    result_item = _build_translation_check_item_timeout_payload(
-                        sentence_number=sentence_number,
-                    )
+                        break
+                    except (TimeoutError, asyncio.TimeoutError):
+                        # Fresh timeout budget per attempt — a transient slow LLM call
+                        # usually succeeds on the retry. Only give up after the last try.
+                        if attempt >= max_attempts:
+                            result_item = _build_translation_check_item_timeout_payload(
+                                sentence_number=sentence_number,
+                            )
+                            break
+                        logging.warning(
+                            "Translation-check item timed out after %ss; retrying (attempt %s/%s): session=%s sentence=%s",
+                            _TRANSLATION_CHECK_ITEM_TIMEOUT_SEC, attempt, max_attempts, session_id, sentence_number,
+                        )
+                    except asyncio.CancelledError:
+                        # Genuine cancellation (e.g. shutdown) — don't retry.
+                        result_item = _build_translation_check_item_timeout_payload(
+                            sentence_number=sentence_number,
+                        )
+                        break
                 check_duration_ms = _elapsed_ms_since(check_started_perf)
 
         result_item = result_item or {
