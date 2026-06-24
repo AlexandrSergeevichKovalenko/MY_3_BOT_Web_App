@@ -456,7 +456,7 @@ NUMDICT_COOLDOWN_DAYS = max(3, int((os.getenv("NUMDICT_COOLDOWN_DAYS") or "6").s
 NUMDICT_POOL_TARGET   = max(12, int((os.getenv("NUMDICT_POOL_TARGET") or "40").strip() or "40"))
 NUMDICT_SESSION_ITEMS = 3
 # Bump when the audio reading logic changes → new R2 key → no stale cached audio.
-NUMDICT_AUDIO_VERSION = "v2"  # v2 = grouped compound-cardinal reading (pairs/triples)
+NUMDICT_AUDIO_VERSION = "v3"  # v3 = audio grouping follows display_answer (pairs/triples match screen)
 CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "21").strip() or "21"))
 CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "15").strip() or "15"))
 CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))
@@ -27829,12 +27829,13 @@ async def _backfill_numdict_audio(limit: int = 10) -> dict:
         numdict_id = str(e.get("numdict_id") or "")
         scenario_text = str(e.get("scenario_text") or "").strip()
         number_type = str(e.get("number_type") or "digits")
+        display_answer = str(e.get("display_answer") or "")
         if not numdict_id or not scenario_text:
             continue
         try:
             mp3_bytes = await asyncio.to_thread(
                 synthesize_numdict_mp3, scenario_text=scenario_text,
-                number_type=number_type, speaking_rate=1.0,
+                number_type=number_type, spoken_number=display_answer, speaking_rate=1.0,
             )
             object_key = f"numdict/audio/{numdict_id}.{NUMDICT_AUDIO_VERSION}.mp3"
             await asyncio.to_thread(r2_put_bytes, object_key, mp3_bytes, content_type="audio/mpeg")

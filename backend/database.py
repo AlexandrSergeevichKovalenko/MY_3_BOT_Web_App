@@ -39675,7 +39675,7 @@ def get_numdict_entries_missing_audio(limit: int = 20) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT numdict_id, scenario_text, number_type
+                SELECT numdict_id, scenario_text, number_type, display_answer
                 FROM bt_3_numdict_bank
                 WHERE retired = FALSE
                   AND scenario_text <> ''
@@ -39686,7 +39686,8 @@ def get_numdict_entries_missing_audio(limit: int = 20) -> list[dict]:
                 (int(limit),),
             )
             rows = cursor.fetchall()
-    return [{"numdict_id": r[0], "scenario_text": r[1], "number_type": r[2]} for r in rows]
+    return [{"numdict_id": r[0], "scenario_text": r[1], "number_type": r[2],
+             "display_answer": r[3]} for r in rows]
 
 
 def record_numdict_item_answer(

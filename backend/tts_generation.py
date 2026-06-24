@@ -592,7 +592,8 @@ def _numdict_number_ssml(number_str: str, number_type: str) -> str:
     nt = str(number_type or "digits").strip().lower()
     s = str(number_str or "").strip()
     if nt == "characters":
-        return f'<say-as interpret-as="characters">{_esc(s)}</say-as>'
+        code = _re.sub(r"[^A-Za-z0-9]", "", s)   # spell the bare code, not the dashes
+        return f'<say-as interpret-as="characters">{_esc(code)}</say-as>'
     if nt == "cardinal":
         d = _re.sub(r"\D", "", s)
         return f'<say-as interpret-as="cardinal">{d}</say-as>' if d else _esc(s)
@@ -618,6 +619,7 @@ def synthesize_numdict_mp3(
     *,
     scenario_text: str,
     number_type: str = "digits",
+    spoken_number: str | None = None,
     lang_code: str = "de-DE",
     voice_name: str | None = None,
     speaking_rate: float = 1.0,
@@ -625,7 +627,11 @@ def synthesize_numdict_mp3(
     """Synthesize a Zahlen-Diktat scene to MP3, reading the embedded number the way a
     German would dictate it — in groups, as compound cardinals (see
     _numdict_number_ssml), not digit-by-digit. The number is wrapped in «NUM»…«/NUM».
-    number_type ∈ {telephone, digits, characters, cardinal}.
+
+    spoken_number (optional) overrides the grouping used for the AUDIO — pass the
+    bank's display_answer so the spoken grouping always matches what's shown on the
+    reveal screen (e.g. "754 683" → triples), regardless of how the number was woven
+    into the scene text. number_type ∈ {telephone, digits, characters, cardinal}.
     Returns MP3 bytes (Telegram iOS webview can't decode Opus)."""
     from xml.sax.saxutils import escape as _xml_escape
 
@@ -648,9 +654,12 @@ def synthesize_numdict_mp3(
         before = text[:oi]
         number = text[oi + len(open_m):ci]
         after = text[ci + len(close_m):]
+        # Audio grouping follows display_answer when given, so "754 683" is heard as
+        # triples even if the scene embeds the bare digits — never the auto-paired form.
+        num_for_reading = str(spoken_number).strip() if str(spoken_number or "").strip() else number
         inner = (
             f"{_xml_escape(before)}"
-            f"{_numdict_number_ssml(number, say_as)}"
+            f"{_numdict_number_ssml(num_for_reading, say_as)}"
             f"{_xml_escape(after)}"
         )
     else:
