@@ -279,6 +279,7 @@ from backend.database import (
     mark_numdict_audio_ready,
     get_numdict_entries_missing_audio,
     count_numdict_bank_entries,
+    reset_numdict_audio,
     update_crossword_dispatch_telegram_id,
     get_crossword_dispatch_by_id,
     record_crossword_answer,
@@ -454,6 +455,8 @@ NUMDICT_SLOT_TIMES = [(15, 10), (18, 10)]    # Zahlen-Diktat: twice a day
 NUMDICT_COOLDOWN_DAYS = max(3, int((os.getenv("NUMDICT_COOLDOWN_DAYS") or "6").strip() or "6"))
 NUMDICT_POOL_TARGET   = max(12, int((os.getenv("NUMDICT_POOL_TARGET") or "40").strip() or "40"))
 NUMDICT_SESSION_ITEMS = 3
+# Bump when the audio reading logic changes → new R2 key → no stale cached audio.
+NUMDICT_AUDIO_VERSION = "v2"  # v2 = grouped compound-cardinal reading (pairs/triples)
 CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "21").strip() or "21"))
 CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "15").strip() or "15"))
 CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))
@@ -27833,7 +27836,7 @@ async def _backfill_numdict_audio(limit: int = 10) -> dict:
                 synthesize_numdict_mp3, scenario_text=scenario_text,
                 number_type=number_type, speaking_rate=1.0,
             )
-            object_key = f"numdict/audio/{numdict_id}.mp3"
+            object_key = f"numdict/audio/{numdict_id}.{NUMDICT_AUDIO_VERSION}.mp3"
             await asyncio.to_thread(r2_put_bytes, object_key, mp3_bytes, content_type="audio/mpeg")
             await asyncio.to_thread(mark_numdict_audio_ready, numdict_id, audio_object_key=object_key)
             made += 1
@@ -27921,6 +27924,26 @@ async def admin_numdict_pool_command(update: Update, context: CallbackContext) -
         )
         audio_result = await _backfill_numdict_audio(limit=max(10, target))
         await status_msg.edit_text(f"Numdict pool done:\n{result}\naudio: {audio_result}")
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+
+
+async def admin_numdict_resynth_command(update: Update, context: CallbackContext) -> None:
+    """/admin_nd_resynth — re-synthesize ALL active numdict audio with the current
+    reading logic (e.g. after changing grouping). Content/answers stay; only audio is
+    regenerated (cheap: no GPT, just TTS) under a fresh versioned R2 key."""
+    user    = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Re-synthesizing numdict audio...")
+    try:
+        n = await asyncio.to_thread(reset_numdict_audio)
+        audio_result = await _backfill_numdict_audio(limit=max(50, n))
+        await status_msg.edit_text(f"Numdict audio re-synth: reset {n} · {audio_result}")
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
 
@@ -29297,6 +29320,7 @@ def main():
     application.add_handler(CommandHandler("admin_ls_pool", admin_listening_pool_command))
     application.add_handler(CommandHandler("admin_nd_send", admin_numdict_send_command))
     application.add_handler(CommandHandler("admin_nd_pool", admin_numdict_pool_command))
+    application.add_handler(CommandHandler("admin_nd_resynth", admin_numdict_resynth_command))
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.

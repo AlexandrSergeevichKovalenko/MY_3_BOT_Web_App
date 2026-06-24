@@ -579,6 +579,41 @@ def synthesize_page_with_timings(
     }
 
 
+def _numdict_number_ssml(number_str: str, number_type: str) -> str:
+    """Read a number the way Germans dictate it: in GROUPS, each group as a compound
+    cardinal (units-before-tens), not digit-by-digit. e.g. "85" → «fünfundachtzig»,
+    "227" → «zweihundertsiebenundzwanzig». Groups with a leading zero (phone area
+    codes) are read digit-by-digit so the zero is heard ("0341" → «null-drei-vier-eins»).
+    Alphanumeric codes are spelled out character-by-character (that's how codes ARE
+    dictated). Honors spaces in the embedded number as the author's grouping; if there
+    are none, auto-groups into pairs."""
+    import re as _re
+    from xml.sax.saxutils import escape as _esc
+    nt = str(number_type or "digits").strip().lower()
+    s = str(number_str or "").strip()
+    if nt == "characters":
+        return f'<say-as interpret-as="characters">{_esc(s)}</say-as>'
+    if nt == "cardinal":
+        d = _re.sub(r"\D", "", s)
+        return f'<say-as interpret-as="cardinal">{d}</say-as>' if d else _esc(s)
+    # telephone / digits → grouped compound reading
+    groups = s.split()
+    if len(groups) <= 1:
+        d = _re.sub(r"\D", "", s)
+        groups = [d[i:i + 2] for i in range(0, len(d), 2)]
+    parts: list[str] = []
+    for g in groups:
+        gd = _re.sub(r"\D", "", g)
+        if not gd:
+            continue
+        if gd[0] == "0" or len(gd) == 1:
+            # leading zero (prefix) or a lone trailing digit → read digit-by-digit
+            parts.append(f'<say-as interpret-as="digits">{gd}</say-as>')
+        else:
+            parts.append(f'<say-as interpret-as="cardinal">{gd}</say-as>')
+    return '<break time="280ms"/>'.join(parts) or _esc(s)
+
+
 def synthesize_numdict_mp3(
     *,
     scenario_text: str,
@@ -587,12 +622,10 @@ def synthesize_numdict_mp3(
     voice_name: str | None = None,
     speaking_rate: float = 1.0,
 ) -> bytes:
-    """Synthesize a Zahlen-Diktat scene to MP3, reading the embedded number naturally.
-
-    The scene contains the spoken number wrapped in «NUM»…«/NUM». We route the scene
-    through SSML and wrap just that number in <say-as interpret-as="{number_type}">
-    so a phone number is grouped / a code is spelled digit-by-digit instead of being
-    read as one giant cardinal. number_type ∈ {telephone, digits, characters, cardinal}.
+    """Synthesize a Zahlen-Diktat scene to MP3, reading the embedded number the way a
+    German would dictate it — in groups, as compound cardinals (see
+    _numdict_number_ssml), not digit-by-digit. The number is wrapped in «NUM»…«/NUM».
+    number_type ∈ {telephone, digits, characters, cardinal}.
     Returns MP3 bytes (Telegram iOS webview can't decode Opus)."""
     from xml.sax.saxutils import escape as _xml_escape
 
@@ -617,7 +650,7 @@ def synthesize_numdict_mp3(
         after = text[ci + len(close_m):]
         inner = (
             f"{_xml_escape(before)}"
-            f'<say-as interpret-as="{say_as}">{_xml_escape(number.strip())}</say-as>'
+            f"{_numdict_number_ssml(number, say_as)}"
             f"{_xml_escape(after)}"
         )
     else:

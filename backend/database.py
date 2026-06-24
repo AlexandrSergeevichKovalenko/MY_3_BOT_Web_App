@@ -39729,6 +39729,24 @@ def get_numdict_answers(*, dispatch_id: int, user_id: int) -> dict[int, dict]:
     return {int(r[0]): {"typed": r[1], "is_correct": bool(r[2])} for r in rows}
 
 
+def reset_numdict_audio() -> int:
+    """Force re-synthesis of all active numdict audio (e.g. after the reading logic
+    changes): flip audio_status back to 'pending' so the backfill regenerates it.
+    Returns the number of entries reset."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_numdict_bank
+                SET audio_status = 'pending', updated_at = NOW()
+                WHERE retired = FALSE
+                """
+            )
+            n = cursor.rowcount
+        conn.commit()
+    return int(n or 0)
+
+
 def numdict_dispatched_today(plan_date) -> bool:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

@@ -172,29 +172,42 @@ def _gen_alnum(length: int, group: int = 0) -> tuple[str, str]:
 
 
 def _make_number(scenario: dict) -> dict:
-    """Build the number for a scenario → spoken token + display + normalized answer."""
+    """Build the number for a scenario → spoken token + display + normalized answer.
+
+    For numeric types the spoken token carries explicit grouping (spaces): the TTS
+    reads each group as a compound cardinal ("85" → fünfundachtzig), matching how the
+    grouping is shown on the reveal screen. Alphanumeric codes are spelled out, so the
+    spoken token is the bare code and the display keeps the dashes for readability."""
     sid = scenario["id"]
     mode = scenario["input_mode"]
-    if scenario["kind"] == "telephone":
-        token, disp = _gen_phone()
-    elif sid == "pin_bank":
-        token, disp = _gen_digits(random.choice([5, 6]))
-    elif sid == "insurance_number":
-        token, disp = _gen_digits(11, group=0)
-    elif sid == "parcel_pickup":
-        token, disp = _gen_digits(random.choice([6, 9]), group=3)
-    elif sid == "meter_reading":
-        token, disp = _gen_digits(random.choice([6, 8]))
-    elif scenario["kind"] == "characters":
-        token, disp = _gen_alnum(random.choice([6, 8]), group=(0 if sid == "booking_ref" else 4))
+    if scenario["kind"] == "characters":
         if sid == "booking_ref":
-            token, disp = _gen_alnum(6, group=0)
-    else:  # digits: customer/order numbers
-        token, disp = _gen_digits(random.choice([7, 8, 9]))
+            code, disp = _gen_alnum(6, group=0)
+        else:
+            code, disp = _gen_alnum(random.choice([6, 8]), group=4)
+        spoken, display = code, disp           # spell the bare code; show the dashed one
+    elif scenario["kind"] == "telephone":
+        token, disp = _gen_phone()
+        spoken, display = token, disp          # already grouped (area + pairs)
+    elif sid == "insurance_number":
+        _, disp = _gen_digits(11, group=2)
+        spoken, display = disp, disp
+    elif sid == "parcel_pickup":
+        _, disp = _gen_digits(random.choice([6, 9]), group=3)   # triples → hundreds
+        spoken, display = disp, disp
+    elif sid == "pin_bank":
+        _, disp = _gen_digits(random.choice([5, 6]), group=2)
+        spoken, display = disp, disp
+    elif sid == "meter_reading":
+        _, disp = _gen_digits(random.choice([6, 8]), group=2)
+        spoken, display = disp, disp
+    else:  # digits: customer / order numbers
+        _, disp = _gen_digits(random.choice([7, 8, 9]), group=2)
+        spoken, display = disp, disp
     return {
-        "spoken": token,
-        "display": disp,
-        "answer_value": _normalize(token, mode),
+        "spoken": spoken,
+        "display": display,
+        "answer_value": _normalize(spoken, mode),
     }
 
 
