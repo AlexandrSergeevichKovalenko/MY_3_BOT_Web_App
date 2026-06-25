@@ -769,7 +769,7 @@ def _is_global_slot_active_today(kind: str, hour: int, minute: int,
 # DM user receives a given slot iff its rank < their budget. Group chats are never
 # filtered (they always get the full active set). Custom Pro schedules arrive in a
 # later stage; for now Pro = «Обычно». Reversible via TIER_DELIVERY_ENABLED=0.
-FREE_SEND_BUDGET = max(0, int((os.getenv("FREE_SEND_BUDGET") or "4").strip() or "4"))
+FREE_SEND_BUDGET = max(0, int((os.getenv("FREE_SEND_BUDGET") or "6").strip() or "6"))
 DEFAULT_PRO_SEND_BUDGET = max(1, int((os.getenv("DEFAULT_PRO_SEND_BUDGET") or "12").strip() or "12"))
 RARE_SEND_BUDGET = max(0, int((os.getenv("RARE_SEND_BUDGET") or "8").strip() or "8"))
 
@@ -2664,8 +2664,8 @@ async def _drip_delivery_job(context: CallbackContext) -> None:
                 delivered += 1
         except Exception:
             logging.warning("drip user failed uid=%s", u.get("user_id"), exc_info=True)
-    if delivered:
-        logging.info("drip_delivery: delivered %s task(s)", delivered)
+    if users:
+        logging.info("drip_tick windowed=%d delivered=%d", len(users), delivered)
 
 
 async def _release_windowed_inbox_job(context: CallbackContext) -> None:
