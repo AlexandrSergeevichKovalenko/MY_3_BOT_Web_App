@@ -2569,7 +2569,7 @@ async def _prepare_adjektiv_set_job(context: CallbackContext) -> None:
 # Windowed Pro users get their daily budget ONE AT A TIME, evenly spaced across
 # their active window, pulled from pre-stocked pools (decoupled from the slot clock
 # → works for any window incl. morning). Behind DRIP_DELIVERY_ENABLED (default off).
-DRIP_TICK_MINUTES = max(1, int((os.getenv("DRIP_TICK_MINUTES") or "10").strip() or "10"))
+DRIP_TICK_MINUTES = max(1, int((os.getenv("DRIP_TICK_MINUTES") or "15").strip() or "15"))
 MIN_DRIP_INTERVAL_MINUTES = max(1, int((os.getenv("MIN_DRIP_INTERVAL_MINUTES") or "30").strip() or "30"))
 # Types the drip can pull now (each needs a pool-pick + send_X_to_chat). Starts with
 # aufgabe — its many formats already give variety; more kinds added next.
