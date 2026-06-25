@@ -310,6 +310,12 @@ from backend.database import (
     get_user_prefs_bulk,
     get_windowed_user_prefs,
     get_inbox_delivery_stats_today,
+    get_active_pro_grant,
+    count_pro_grants_this_month,
+    grant_pro_days,
+    get_user_streak,
+    upsert_user_streak,
+    get_users_active_on_date,
     set_user_preset,
     set_user_schedule,
     get_pending_freeform_result_cards,
@@ -2547,6 +2553,63 @@ async def _schedule_nav_callback(update: Update, context: CallbackContext) -> No
         return
     await query.answer()
     await _sched_edit(query, _render_sched_collapsed if action == "done" else _render_sched_step1, user_id)
+
+
+# ── DAU streaks (Этап 4) ─────────────────────────────────────────────────────
+STREAK_REWARD_EVERY = max(2, int((os.getenv("STREAK_REWARD_EVERY") or "5").strip() or "5"))
+STREAK_MONTHLY_CAP = max(1, int((os.getenv("STREAK_MONTHLY_CAP") or "6").strip() or "6"))
+STREAK_FREEZE_EVERY = max(2, int((os.getenv("STREAK_FREEZE_EVERY") or "7").strip() or "7"))
+STREAK_FREEZE_MAX = max(0, int((os.getenv("STREAK_FREEZE_MAX") or "2").strip() or "2"))
+
+
+async def _update_streaks_job(context: CallbackContext) -> None:
+    """Daily (08:00): roll yesterday's activity into per-user streaks. Every
+    STREAK_REWARD_EVERY consecutive days → +1 earned Pro-day (monthly-capped); a
+    streak survives ONE missed day if the user has a freeze; a freeze is earned each
+    full week. Rewards/notifies in the morning."""
+    now = _get_quiz_schedule_now()
+    yday = (now - timedelta(days=1)).date()
+    try:
+        active = await asyncio.to_thread(get_users_active_on_date, yday)
+    except Exception:
+        active = set()
+    granted = 0
+    for uid in active:
+        try:
+            if _is_synthetic_telegram_user_id(int(uid)):
+                continue
+            st = await asyncio.to_thread(get_user_streak, int(uid))
+            last = st["last_active_date"]
+            freezes = int(st["freezes"])
+            if last == yday:
+                continue
+            if last == yday - timedelta(days=1):
+                new_streak = int(st["current_streak"]) + 1
+            elif last is not None and freezes > 0 and (yday - last).days == 2:
+                new_streak = int(st["current_streak"]) + 1
+                freezes -= 1  # a freeze covers a single missed day
+            else:
+                new_streak = 1
+            if new_streak % STREAK_FREEZE_EVERY == 0 and freezes < STREAK_FREEZE_MAX:
+                freezes += 1
+            longest = max(int(st["longest_streak"]), new_streak)
+            await asyncio.to_thread(upsert_user_streak, int(uid), current=new_streak,
+                                    longest=longest, last_active=yday, freezes=freezes)
+            if new_streak % STREAK_REWARD_EVERY == 0:
+                if await asyncio.to_thread(count_pro_grants_this_month, int(uid)) < STREAK_MONTHLY_CAP:
+                    if await asyncio.to_thread(grant_pro_days, int(uid), 1, f"streak{new_streak}"):
+                        granted += 1
+                        try:
+                            await context.bot.send_message(
+                                chat_id=int(uid), parse_mode="HTML",
+                                text=(f"🔥 <b>{new_streak} дней подряд!</b>\n"
+                                      f"Лови подарок — <b>+1 день Pro</b> 🎁\n"
+                                      f"Каждые {STREAK_REWARD_EVERY} дней подряд = ещё день Pro. Не прерывай 🔥"))
+                        except Exception:
+                            pass
+        except Exception:
+            logging.warning("streak update failed uid=%s", uid, exc_info=True)
+    logging.info("update_streaks date=%s active=%d granted=%d", yday, len(active), granted)
 
 
 async def _prepare_adjektiv_set_job(context: CallbackContext) -> None:
@@ -30019,6 +30082,14 @@ def main():
             lambda: submit_async(_prepare_adjektiv_set_job, CallbackContext(application=application)),
             "cron",
             hour=5,
+            minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- DAU streaks (Этап 4): roll yesterday's activity + reward Pro-days (08:00) --
+        scheduler.add_job(
+            lambda: submit_async(_update_streaks_job, CallbackContext(application=application)),
+            "cron",
+            hour=8,
             minute=0,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )

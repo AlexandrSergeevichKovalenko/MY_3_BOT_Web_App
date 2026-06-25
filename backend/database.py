@@ -15880,6 +15880,142 @@ def get_inbox_delivery_stats_today(user_id: int, since_ts) -> tuple:
         return (0, None)
 
 
+# ── DAU: daily streaks + earned Pro grants (Этап 4) ──────────────────────────
+_dau_schema_ready = False
+
+
+def _ensure_dau_schema() -> None:
+    global _dau_schema_ready
+    if _dau_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_streaks (
+                    user_id          BIGINT PRIMARY KEY,
+                    current_streak   INT NOT NULL DEFAULT 0,
+                    longest_streak   INT NOT NULL DEFAULT 0,
+                    last_active_date DATE,
+                    freezes          INT NOT NULL DEFAULT 0,
+                    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_pro_grants (
+                    id            BIGSERIAL PRIMARY KEY,
+                    user_id       BIGINT NOT NULL,
+                    granted_until TIMESTAMPTZ NOT NULL,
+                    reason        TEXT,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pro_grants_user "
+                        "ON bt_3_pro_grants (user_id, granted_until);")
+        conn.commit()
+    _dau_schema_ready = True
+
+
+def get_active_pro_grant(user_id: int):
+    """granted_until of the latest still-active earned Pro grant, or None."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT granted_until FROM bt_3_pro_grants "
+                            "WHERE user_id=%s AND granted_until > NOW() "
+                            "ORDER BY granted_until DESC LIMIT 1;", (int(user_id),))
+                r = cur.fetchone()
+        return r[0] if r else None
+    except Exception:
+        return None
+
+
+def count_pro_grants_this_month(user_id: int) -> int:
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM bt_3_pro_grants "
+                            "WHERE user_id=%s AND created_at >= date_trunc('month', NOW());",
+                            (int(user_id),))
+                r = cur.fetchone()
+        return int(r[0] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def grant_pro_days(user_id: int, days: int = 1, reason: str = "streak") -> bool:
+    """Add `days` of earned Pro, stacking on any active grant."""
+    try:
+        _ensure_dau_schema()
+        cur_until = get_active_pro_grant(int(user_id))
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bt_3_pro_grants (user_id, granted_until, reason)
+                    VALUES (%s, GREATEST(NOW(), COALESCE(%s, NOW())) + (%s || ' days')::interval, %s);
+                """, (int(user_id), cur_until, int(days), str(reason)))
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("grant_pro_days failed user=%s", user_id, exc_info=True)
+        return False
+
+
+def get_user_streak(user_id: int) -> dict:
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_streak, longest_streak, last_active_date, freezes "
+                            "FROM bt_3_user_streaks WHERE user_id=%s;", (int(user_id),))
+                r = cur.fetchone()
+        if not r:
+            return {"current_streak": 0, "longest_streak": 0, "last_active_date": None, "freezes": 0}
+        return {"current_streak": int(r[0]), "longest_streak": int(r[1]),
+                "last_active_date": r[2], "freezes": int(r[3])}
+    except Exception:
+        return {"current_streak": 0, "longest_streak": 0, "last_active_date": None, "freezes": 0}
+
+
+def upsert_user_streak(user_id: int, *, current: int, longest: int, last_active, freezes: int) -> None:
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bt_3_user_streaks (user_id, current_streak, longest_streak, last_active_date, freezes, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        current_streak=EXCLUDED.current_streak, longest_streak=EXCLUDED.longest_streak,
+                        last_active_date=EXCLUDED.last_active_date, freezes=EXCLUDED.freezes, updated_at=NOW();
+                """, (int(user_id), int(current), int(longest), last_active, int(freezes)))
+            conn.commit()
+    except Exception:
+        logging.warning("upsert_user_streak failed user=%s", user_id, exc_info=True)
+
+
+def get_users_active_on_date(play_date) -> set:
+    """User ids with any learning activity on play_date (translations or messages)."""
+    out: set = set()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT user_id FROM bt_3_translations
+                    WHERE timestamp::date = %s AND user_id IS NOT NULL
+                    UNION
+                    SELECT DISTINCT user_id FROM bt_3_messages
+                    WHERE timestamp::date = %s AND user_id IS NOT NULL;
+                """, (play_date, play_date))
+                for r in cur.fetchall() or []:
+                    if r and r[0]:
+                        out.add(int(r[0]))
+    except Exception:
+        logging.warning("get_users_active_on_date failed", exc_info=True)
+    return out
+
+
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
     if not entry_id:
         return None
@@ -29758,13 +29894,18 @@ def resolve_entitlement(
         if status == "trialing":
             source_of_entitlement = "expired_or_invalid_trial"
 
+    # Earned Pro grant (DAU reward, Этап 4) — honest earned access; beats the denylist.
+    try:
+        _earned_until = get_active_pro_grant(int(user_id))
+    except Exception:
+        _earned_until = None
+    if _earned_until is not None:
+        effective_mode = "pro"
+        source_of_entitlement = "earned_grant"
+
     # Admin denylist: block the SELF-SERVE subscription path (incl. Stripe TEST-mode
-    # re-subscribes) for these ids — they must EARN Pro via the reward engine instead
-    # of holding an idle freebie. Reversible via the PRO_DENYLIST env.
-    # NOTE (Этап 4): when the earned/reward Pro grant lands, check it ABOVE this block
-    # so denylisted users can still use Pro they actually EARNED — the denylist only
-    # kills the self-serve shortcut, not honestly-earned access.
-    if int(user_id) in _pro_denylist():
+    # re-subscribes) — but NOT Pro the user actually EARNED above.
+    if _earned_until is None and int(user_id) in _pro_denylist():
         effective_mode = "free"
         source_of_entitlement = "pro_denylisted"
 
