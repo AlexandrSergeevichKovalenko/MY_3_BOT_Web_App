@@ -2573,7 +2573,7 @@ DRIP_TICK_MINUTES = max(1, int((os.getenv("DRIP_TICK_MINUTES") or "10").strip() 
 MIN_DRIP_INTERVAL_MINUTES = max(1, int((os.getenv("MIN_DRIP_INTERVAL_MINUTES") or "30").strip() or "30"))
 # Types the drip can pull now (each needs a pool-pick + send_X_to_chat). Starts with
 # aufgabe — its many formats already give variety; more kinds added next.
-_DRIP_KINDS = ["aufgabe"]
+_DRIP_KINDS = ["aufgabe", "listening", "anagram", "rebus", "crossword"]
 _DRIP_AUFGABE_FORMATS = ["cloze", "satzbau", "synonym", "antonym", "transform",
                          "error", "wortbildung", "wortgruppe"]
 
@@ -2597,30 +2597,99 @@ def _window_minutes_today(schedule, tz_name) -> int:
         return 0
 
 
+async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour) -> bool:
+    """Pull one item of `kind` from its pool and send it to the windowed user.
+    cooldown first, then 0-cooldown fallback so a thin pool still delivers."""
+    if kind == "aufgabe":
+        fmt = _DRIP_AUFGABE_FORMATS[int(idx) % len(_DRIP_AUFGABE_FORMATS)]
+        entry = (await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt)
+                 or await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0, format=fmt))
+        if not entry:
+            return False
+        ok = await send_aufgabe_to_chat(context, entry=entry, slot_date=slot_date,
+                                        slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+        if ok:
+            try: await asyncio.to_thread(mark_aufgabe_sent, str(entry.get("aufgabe_id") or ""))
+            except Exception: pass
+        return ok
+    if kind == "listening":
+        entry = (await asyncio.to_thread(pick_next_listening, cooldown_days=LISTENING_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_listening, cooldown_days=0))
+        if not entry:
+            return False
+        ok = await send_listening_to_chat(context, entry=entry, slot_date=slot_date, chat_id=uid, target_user_id=uid)
+        if ok:
+            try: await asyncio.to_thread(mark_listening_sent, str(entry.get("listening_id") or ""))
+            except Exception: pass
+        return ok
+    if kind == "anagram":
+        entry = (await asyncio.to_thread(pick_next_anagram, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_anagram, cooldown_days=0))
+        if not entry:
+            return False
+        try:
+            payload = {"word": entry["word"], "hint_ru": entry["hint_ru"], "scrambled": entry["scrambled"]}
+            card_id = str(entry["card_id"])
+        except Exception:
+            return False
+        ok = await send_anagram_to_chat(context, card_id=card_id, payload=payload, slot_date=slot_date,
+                                        slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+        if ok:
+            try: await asyncio.to_thread(mark_anagram_sent, card_id)
+            except Exception: pass
+        return ok
+    if kind == "rebus":
+        entry = (await asyncio.to_thread(pick_next_rebus, cooldown_days=REBUS_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_rebus, cooldown_days=0))
+        if not entry:
+            return False
+        object_key = str(entry.get("composed_image_object_key") or "")
+        if not object_key:
+            return False
+        try:
+            image_url = r2_public_url(object_key)
+        except Exception:
+            return False
+        ok = await send_rebus_to_chat(context, compound_entry=entry, image_url=image_url, slot_date=slot_date,
+                                      slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+        if ok:
+            try: await asyncio.to_thread(mark_rebus_sent, str(entry.get("compound_id") or entry.get("id") or ""))
+            except Exception: pass
+        return ok
+    if kind == "crossword":
+        entry = (await asyncio.to_thread(pick_next_crossword, cooldown_days=CROSSWORD_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_crossword, cooldown_days=0))
+        if not entry:
+            return False
+        object_key = str(entry.get("image_object_key") or "")
+        if not object_key:
+            return False
+        try:
+            image_url = r2_public_url(object_key)
+        except Exception:
+            return False
+        ok = await send_crossword_to_chat(context, crossword_entry=entry, image_url=image_url, slot_date=slot_date,
+                                          slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+        if ok:
+            try: await asyncio.to_thread(mark_crossword_sent, str(entry.get("crossword_id") or ""))
+            except Exception: pass
+        return ok
+    return False
+
+
 async def _drip_deliver_one(context: CallbackContext, user_id: int, delivered_idx: int, now) -> bool:
-    """Deliver ONE task (rotated by delivery index) from a pool to a windowed user."""
+    """Deliver ONE task to a windowed user, rotating types by delivery index; if the
+    chosen kind has no ready pool item, fall through to the next kind."""
     uid = int(user_id)
-    kind = _DRIP_KINDS[int(delivered_idx) % len(_DRIP_KINDS)]
     slot_date = now.date()
     slot_hour = int(now.hour) * 100 + int(now.minute)
-    try:
-        if kind == "aufgabe":
-            fmt = _DRIP_AUFGABE_FORMATS[int(delivered_idx) % len(_DRIP_AUFGABE_FORMATS)]
-            entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt)
-            if not entry:
-                entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0, format=fmt)
-            if not entry:
-                return False
-            ok = await send_aufgabe_to_chat(context, entry=entry, slot_date=slot_date,
-                                            slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
-            if ok:
-                try:
-                    await asyncio.to_thread(mark_aufgabe_sent, str(entry.get("aufgabe_id") or ""))
-                except Exception:
-                    pass
-            return ok
-    except Exception:
-        logging.warning("drip_deliver_one failed kind=%s uid=%s", kind, uid, exc_info=True)
+    for off in range(len(_DRIP_KINDS)):
+        kind = _DRIP_KINDS[(int(delivered_idx) + off) % len(_DRIP_KINDS)]
+        try:
+            if await _drip_deliver_kind(context, uid, kind, delivered_idx, slot_date, slot_hour):
+                return True
+        except Exception:
+            logging.warning("drip_deliver_kind failed kind=%s uid=%s", kind, uid, exc_info=True)
     return False
 
 
