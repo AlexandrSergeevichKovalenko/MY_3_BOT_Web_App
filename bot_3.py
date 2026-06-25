@@ -1016,6 +1016,7 @@ DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый пе�
 HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
 NEXT_TASK_BUTTON_TEXT = "▶️ Следующее задание"
 SCHEDULE_BUTTON_TEXT = "🗓 Расписание"
+STREAK_BUTTON_TEXT = "🔥 Мой стрик"
 ARTIKEL_LEARN_BUTTON_TEXT = "📚 Учить артикли"
 ARTIKEL_FOCUS_BUTTON_TEXT = "🎯 Тема на завтра"
 ARTIKEL_BATTLE_CALL_BUTTON_TEXT = "⚔️ Вызвать на батл"
@@ -1077,7 +1078,7 @@ def _is_known_reply_menu_button(text: str) -> bool:
     static_labels = {
         ARTIKEL_LEARN_BUTTON_TEXT, ARTIKEL_FOCUS_BUTTON_TEXT, ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
         ADJEKTIV_SPRINT_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT, BATTLE_HISTORY_BUTTON_TEXT,
-        ADMIN_BROADCAST_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
+        ADMIN_BROADCAST_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT, SHORTCUT_AUTOSAVE_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT,
     }
@@ -2320,7 +2321,14 @@ async def _send_next_task_card(context: CallbackContext, chat_id: int, tasks: li
     head = title_override or (f"Твоё невыполненное задание за сегодня{scope}" if n == 1
                               else f"Твои {n} самых старых невыполненных за сегодня{scope}")
     more = f"\nВсего не сделано сегодня: <b>{open_count}</b>." if open_count > n else ""
-    caption = f"📋 <b>{head}</b>\nОткрой и реши прямо тут, не листая чат 👇{more}"
+    streak_line = ""
+    try:
+        _st = await asyncio.to_thread(get_user_streak, int(chat_id))
+        if int(_st.get("current_streak") or 0) > 0:
+            streak_line = f"🔥 <b>{int(_st['current_streak'])} дней подряд</b>\n"
+    except Exception:
+        pass
+    caption = f"{streak_line}📋 <b>{head}</b>\nОткрой и реши прямо тут, не листая чат 👇{more}"
     poster = await asyncio.to_thread(_next_task_card_bytes)
     if poster:
         await context.bot.send_photo(chat_id=int(chat_id), photo=io.BytesIO(poster),
@@ -2590,6 +2598,34 @@ async def _streak_command(update: Update, context: CallbackContext) -> None:
             pass
     lines.append(f"\nКаждые {STREAK_REWARD_EVERY} дней подряд = <b>+1 день Pro</b> 🔥")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def _dau_command(update: Update, context: CallbackContext) -> None:
+    """/dau — DAU/WAU/MAU + streak snapshot (admin)."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    from backend.database import count_active_users, get_dau_streak_stats
+    dau = await asyncio.to_thread(count_active_users, 1)
+    wau = await asyncio.to_thread(count_active_users, 7)
+    mau = await asyncio.to_thread(count_active_users, 30)
+    st = await asyncio.to_thread(get_dau_streak_stats)
+    stick = round(dau / mau * 100) if mau else 0
+    lines = [
+        "📊 <b>DAU / Retention</b>",
+        f"• DAU (сегодня): <b>{dau}</b>",
+        f"• WAU (7 дней): <b>{wau}</b>",
+        f"• MAU (30 дней): <b>{mau}</b>",
+        f"• Липкость DAU/MAU: <b>{stick}%</b>",
+        "",
+        "🔥 <b>Стрики</b>",
+        f"• С активным стриком: <b>{st['with_streak']}</b>",
+        f"• ≥3 дней: <b>{st['streak_3plus']}</b> · ≥7 дней: <b>{st['streak_7plus']}</b>",
+        f"• Сейчас с заработанным Pro: <b>{st['earned_pro_now']}</b>",
+    ]
+    await message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def _admin_run_streaks_command(update: Update, context: CallbackContext) -> None:
@@ -3806,9 +3842,11 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
 
     # 1) Ежедневные задания — главное действие.
     rows.append([NEXT_TASK_BUTTON_TEXT])
-    # Расписание — Pro-настройка интенсивности доставки.
+    # Стрик — всем (Free мотивирует к Pro); расписание — Pro, на той же строке.
     if is_pro:
-        rows.append([SCHEDULE_BUTTON_TEXT])
+        rows.append([SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT])
+    else:
+        rows.append([STREAK_BUTTON_TEXT])
 
     # 2) Тренажёры (учить). Pro: +персональная тема на завтра.
     rows.append([ARTIKEL_LEARN_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
@@ -6142,6 +6180,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         BATTLE_HISTORY_BUTTON_TEXT,
         NEXT_TASK_BUTTON_TEXT,
         SCHEDULE_BUTTON_TEXT,
+        STREAK_BUTTON_TEXT,
     }
     _msg_text = (update.message.text or "").strip() if update.message else ""
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
@@ -6199,6 +6238,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await _send_next_open_task(update, context)
     elif text == SCHEDULE_BUTTON_TEXT:
         await _send_schedule_picker(update, context)
+    elif text == STREAK_BUTTON_TEXT:
+        await _streak_command(update, context)
     elif text == ARTIKEL_LEARN_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "📚 Открыть тренажёр", url=get_webapp_deeplink("ans_al_0"))]])
@@ -29405,6 +29446,7 @@ def main():
     application.add_handler(CommandHandler("deny", deny_user_command))
     application.add_handler(CommandHandler("streak", _streak_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
+    application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))

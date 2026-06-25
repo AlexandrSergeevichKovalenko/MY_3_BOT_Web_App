@@ -16016,6 +16016,28 @@ def get_users_active_on_date(play_date) -> set:
     return out
 
 
+def get_dau_streak_stats() -> dict:
+    """Streak/earned-Pro snapshot for the /dau dashboard."""
+    out = {"with_streak": 0, "streak_3plus": 0, "streak_7plus": 0, "earned_pro_now": 0}
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FILTER (WHERE current_streak>0), "
+                            "COUNT(*) FILTER (WHERE current_streak>=3), "
+                            "COUNT(*) FILTER (WHERE current_streak>=7) FROM bt_3_user_streaks;")
+                r = cur.fetchone()
+                if r:
+                    out["with_streak"] = int(r[0] or 0); out["streak_3plus"] = int(r[1] or 0); out["streak_7plus"] = int(r[2] or 0)
+                cur.execute("SELECT COUNT(DISTINCT user_id) FROM bt_3_pro_grants WHERE granted_until > NOW();")
+                r2 = cur.fetchone()
+                if r2:
+                    out["earned_pro_now"] = int(r2[0] or 0)
+    except Exception:
+        logging.warning("get_dau_streak_stats failed", exc_info=True)
+    return out
+
+
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
     if not entry_id:
         return None
