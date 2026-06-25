@@ -37555,6 +37555,25 @@ def get_dispatched_slot_hours_today(table_name: str, plan_date) -> set[int]:
             return {int(r[0]) for r in (cursor.fetchall() or []) if r[0] is not None}
 
 
+def count_user_dispatches_today(table_name: str, plan_date, user_id) -> int:
+    """How many of `table_name` were dispatched to THIS user on plan_date (per-user
+    DM count; group recipients share a post → target_user_id is the group, so this is
+    0 for them and the caller falls back to the global count). Этап 3f digest fix."""
+    if table_name not in _PLAN_DISPATCH_TABLES:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM {table_name} WHERE slot_date = %s AND target_user_id = %s",
+                    (plan_date, int(user_id)),
+                )
+                r = cursor.fetchone()
+        return int(r[0] or 0) if r else 0
+    except Exception:
+        return 0
+
+
 def get_dispatched_created_hours_today(table_name: str, plan_date) -> set[int]:
     """Distinct local-hour of created_at for tables without slot_hour (visual/image)."""
     if table_name not in _PLAN_DISPATCH_TABLES:

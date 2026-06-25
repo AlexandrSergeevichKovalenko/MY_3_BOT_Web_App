@@ -23761,7 +23761,7 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     """Evening DM per participant: a clean per-category breakdown (answered/sent ·
     correct) + the day's totals — no cryptic per-task labels or seconds."""
     from backend.database import (
-        get_dispatched_slot_hours_today, listening_dispatched_today,
+        get_dispatched_slot_hours_today, listening_dispatched_today, count_user_dispatches_today,
         get_article_quiz_answers_since,
     )
     try:
@@ -23810,22 +23810,31 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     labels = {c: lbl for c, lbl, _, _ in _DIGEST_CATEGORIES}
     order = [c for c, _, _, _ in _DIGEST_CATEGORIES]
     sent_count = 0
+    cat_tables = {c: table for c, _l, table, _k in _DIGEST_CATEGORIES}
     for uid, cats in agg.items():
+        # Personal "sent" per category: DM users have per-user dispatches; group users
+        # share the post (target = group → 0), so fall back to the global count.
+        psent = {}
+        for _c, _tbl in cat_tables.items():
+            if _tbl:
+                psent[_c] = await asyncio.to_thread(count_user_dispatches_today, _tbl, today, int(uid))
+        user_sent_by_cat = psent if sum(psent.values()) > 0 else sent_by_cat
+        user_total_sent = sum(user_sent_by_cat.values())
         answered = sum(v[0] for v in cats.values())
         correct = sum(v[1] for v in cats.values())
-        denom = total_sent or answered
+        denom = user_total_sent or answered
         pct_ans = round(answered / denom * 100) if denom else 0
         acc = round(correct / answered * 100) if answered else 0
 
         lines = [f"🏁 <b>Итоги дня</b> · {today.strftime('%d.%m.%Y')}", ""]
-        if total_sent:
-            lines.append(f"📤 Отправлено: <b>{total_sent}</b> · ✅ Ты ответил: <b>{answered}</b> ({pct_ans}%)")
+        if user_total_sent:
+            lines.append(f"📤 Тебе отправлено: <b>{user_total_sent}</b> · ✅ Ты ответил: <b>{answered}</b> ({pct_ans}%)")
         else:
             lines.append(f"✅ Ты ответил: <b>{answered}</b> заданий")
         lines.append(f"🎯 Верно: <b>{correct}</b> из отвеченных ({acc}%)")
         lines += ["", "<b>По категориям</b> — верно/ответил/отправлено · ✅ %верных / %отвеченных:"]
         for cat in order:
-            s = int(sent_by_cat.get(cat, 0))
+            s = int(user_sent_by_cat.get(cat, 0))
             v = cats.get(cat)
             a, c = (v[0], v[1]) if v else (0, 0)
             if s == 0 and a == 0:
