@@ -2592,6 +2592,50 @@ async def _streak_command(update: Update, context: CallbackContext) -> None:
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
+async def _admin_run_streaks_command(update: Update, context: CallbackContext) -> None:
+    """/admin_run_streaks — run the daily streak roll NOW (don't wait for 08:00)."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    await message.reply_text("🔄 Считаю стрики за вчера…")
+    try:
+        await _update_streaks_job(context)
+        await message.reply_text("✅ Готово. Проверь /streak и лог update_streaks.")
+    except Exception as exc:
+        await message.reply_text(f"❌ Ошибка: {exc}")
+
+
+async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> None:
+    """/admin_grant_pro <user_id> [days] — grant earned Pro now + show is_user_pro
+    flip (verifies the grant AND the denylist bypass)."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    if not args:
+        await message.reply_text("Использование: /admin_grant_pro <user_id> [дней=1]"); return
+    try:
+        uid = int(args[0]); days = int(args[1]) if len(args) > 1 else 1
+    except Exception:
+        await message.reply_text("user_id и дни — числа."); return
+    before = await asyncio.to_thread(is_user_pro, uid)
+    ok = await asyncio.to_thread(grant_pro_days, uid, days, "admin_test")
+    try:
+        _PRO_STATUS_CACHE.pop(int(uid), None)  # bust 10-min cache so the flip is visible now
+    except Exception:
+        pass
+    after = await asyncio.to_thread(is_user_pro, uid)
+    until = await asyncio.to_thread(get_active_pro_grant, uid)
+    await message.reply_text(
+        f"{'✅' if ok else '❌'} Грант {days}д юзеру {uid}\n"
+        f"is_user_pro: было <b>{before}</b> → стало <b>{after}</b>\n"
+        f"Заработанный Pro активен до: {until}", parse_mode="HTML")
+
+
 async def _update_streaks_job(context: CallbackContext) -> None:
     """Daily (08:00): roll yesterday's activity into per-user streaks. Every
     STREAK_REWARD_EVERY consecutive days → +1 earned Pro-day (monthly-capped); a
@@ -29360,6 +29404,8 @@ def main():
     application.add_handler(CommandHandler("allow", allow_user_command))
     application.add_handler(CommandHandler("deny", deny_user_command))
     application.add_handler(CommandHandler("streak", _streak_command))
+    application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
+    application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
     application.add_handler(CommandHandler("pending_purges", pending_purges_command))
