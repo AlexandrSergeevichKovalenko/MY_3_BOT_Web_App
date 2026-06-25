@@ -2562,6 +2562,36 @@ STREAK_FREEZE_EVERY = max(2, int((os.getenv("STREAK_FREEZE_EVERY") or "7").strip
 STREAK_FREEZE_MAX = max(0, int((os.getenv("STREAK_FREEZE_MAX") or "2").strip() or "2"))
 
 
+async def _streak_command(update: Update, context: CallbackContext) -> None:
+    """/streak — show the user their current streak, freezes and earned-Pro status."""
+    if not update.effective_user or not update.effective_message:
+        return
+    uid = int(update.effective_user.id)
+    st = await asyncio.to_thread(get_user_streak, uid)
+    cur = int(st["current_streak"]); longest = int(st["longest_streak"]); freezes = int(st["freezes"])
+    try:
+        grant_until = await asyncio.to_thread(get_active_pro_grant, uid)
+    except Exception:
+        grant_until = None
+    if cur <= 0:
+        lines = ["🔥 <b>Стрик: 0</b>", "Позанимайся сегодня — и завтра начнётся серия!"]
+    else:
+        lines = [f"🔥 <b>Стрик: {cur} дней подряд</b>"]
+        if longest > cur:
+            lines.append(f"🏆 Рекорд: {longest}")
+        nxt = STREAK_REWARD_EVERY - (cur % STREAK_REWARD_EVERY) if (cur % STREAK_REWARD_EVERY) else STREAK_REWARD_EVERY
+        lines.append(f"🎁 До следующего дня Pro: ещё {nxt} дн.")
+    if freezes:
+        lines.append(f"❄️ Заморозки: {freezes} (спасают стрик при одном пропущенном дне)")
+    if grant_until:
+        try:
+            lines.append(f"⭐ Заработанный Pro активен до {grant_until.strftime('%d.%m %H:%M')}")
+        except Exception:
+            pass
+    lines.append(f"\nКаждые {STREAK_REWARD_EVERY} дней подряд = <b>+1 день Pro</b> 🔥")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 async def _update_streaks_job(context: CallbackContext) -> None:
     """Daily (08:00): roll yesterday's activity into per-user streaks. Every
     STREAK_REWARD_EVERY consecutive days → +1 earned Pro-day (monthly-capped); a
@@ -29329,6 +29359,7 @@ def main():
     application.add_handler(CommandHandler("request_access", request_access))
     application.add_handler(CommandHandler("allow", allow_user_command))
     application.add_handler(CommandHandler("deny", deny_user_command))
+    application.add_handler(CommandHandler("streak", _streak_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
     application.add_handler(CommandHandler("pending_purges", pending_purges_command))
