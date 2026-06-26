@@ -287,6 +287,7 @@ from backend.openai_manager import (
     run_translate_subtitles_multilang,
     run_translation_explanation,
     run_translation_explanation_multilang,
+    run_translation_explanation_structured,
     run_audio_sentence_grammar_explain_multilang,
     run_feel_word,
     run_feel_word_multilang,
@@ -54369,8 +54370,14 @@ def explain_webapp_translation():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    # Explanation language for the teacher-grade breakdown: 🇩🇪 checkbox → target_lang,
+    # otherwise the learner's source language (RU by default).
+    req_explain_lang = str(payload.get("explanation_language") or "").strip().lower()
+    if req_explain_lang not in {"ru", "de", "en", "es", "it"}:
+        req_explain_lang = source_lang
     dictionary_result_payload = None
     dictionary_direction = None
+    explanation_json = None
     try:
         if mode == "selection_context":
             dictionary_result = asyncio.run(
@@ -54392,18 +54399,18 @@ def explain_webapp_translation():
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
-        elif _is_legacy_ru_de_pair(source_lang, target_lang):
-            explanation = asyncio.run(run_translation_explanation(original_text, user_translation))
         else:
-            explanation = asyncio.run(
-                run_translation_explanation_multilang(
+            # Teacher-grade structured breakdown (JSON) rendered in the explain modal.
+            explanation_json = asyncio.run(
+                run_translation_explanation_structured(
                     original_text=original_text,
                     user_translation=user_translation,
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    explanation_lang=source_lang,
+                    explanation_language=req_explain_lang,
                 )
             )
+            explanation = str((explanation_json or {}).get("summary") or "")
         usage_explain = get_last_llm_usage(reset=True)
         _billing_log_event_safe(
             user_id=int(user_id),
@@ -54437,6 +54444,8 @@ def explain_webapp_translation():
         {
             "ok": True,
             "explanation": explanation,
+            "explanation_json": explanation_json,
+            "explanation_language": req_explain_lang,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
             "dictionary_item": dictionary_result_payload,
             "direction": dictionary_direction,

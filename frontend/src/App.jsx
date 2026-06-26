@@ -7,6 +7,7 @@ import HomeDashboardTiles from './components/HomeDashboardTiles';
 import ReaderSection from './components/ReaderSection';
 import HomeMoreTiles from './components/HomeMoreTiles';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
+import ExplainErrorsModal from './components/ExplainErrorsModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
@@ -3233,6 +3234,12 @@ const TranslationsSection = React.memo(function TranslationsSection({
   learningTtsLocale,
   renderTtsButtonContent,
   handleExplainTranslation,
+  explainModalKey,
+  closeExplainModal,
+  handleSetExplainLang,
+  explainStructured,
+  explainLangDe,
+  explainErrorMap,
   explanationLoading,
   explanations,
   collapsedResultCards,
@@ -3948,6 +3955,11 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 const followupLoading = Boolean(explanationQuestionLoading[explanationKey]);
                 const followupAnswerPayload = parseExplanationFollowupAnswerPayload(explanationQuestionAnswers[explanationKey]);
                 const followupAnswer = String(followupAnswerPayload.answer || '').trim();
+                const explainDe = Boolean(explainLangDe?.[explanationKey]);
+                const explainLang = explainDe ? 'de' : 'ru';
+                const explainData = explainStructured?.[`${explanationKey}:${explainLang}`];
+                const explainErr = explainErrorMap?.[explanationKey] || '';
+                const explainOpen = explainModalKey === explanationKey;
                 return (
                   <div
                     key={`${item.check_item_id ?? item.translation_id ?? item.sentence_id_for_mistake_table ?? item.sentence_number ?? index}-${index}`}
@@ -4031,103 +4043,91 @@ const TranslationsSection = React.memo(function TranslationsSection({
                             })()}
                           </div>
                         )}
-                        <button
-                          type="button"
-                          className="secondary-button explanation-button"
-                          onClick={() => handleExplainTranslation(item)}
-                          disabled={explanationLoading[explanationKey]}
+                        <div className="explanation-button-row">
+                          <button
+                            type="button"
+                            className="secondary-button explanation-button"
+                            onClick={() => handleExplainTranslation(item)}
+                            disabled={explanationLoading[explanationKey]}
+                          >
+                            {explanationLoading[explanationKey]
+                              ? tr('Запрашиваем объяснение...', 'Erklaerung wird angefragt...')
+                              : tr('Объяснить ошибки', 'Fehler erklaeren')}
+                          </button>
+                          <label className="explanation-lang-toggle" title={tr('Объяснение на немецком', 'Erklärung auf Deutsch')}>
+                            <input
+                              type="checkbox"
+                              checked={explainDe}
+                              onChange={(event) => handleSetExplainLang(item, event.target.checked)}
+                            />
+                            <span>🇩🇪</span>
+                          </label>
+                        </div>
+                        <ExplainErrorsModal
+                          isOpen={explainOpen}
+                          onClose={() => closeExplainModal()}
+                          tr={tr}
+                          satz={item.sentence_number}
+                          score={item.score}
+                          langDe={explainDe}
+                          onToggleLang={(checked) => handleSetExplainLang(item, checked)}
+                          data={explainData}
+                          loading={Boolean(explanationLoading[explanationKey]) && !explainData}
+                          errorMsg={explainErr}
                         >
-                          {explanationLoading[explanationKey]
-                            ? tr('Запрашиваем объяснение...', 'Erklaerung wird angefragt...')
-                            : tr('Объяснить ошибки', 'Fehler erklaeren')}
-                        </button>
-                        {explanationText && (
-                          <div className="webapp-explanation">
-                            <label className="translation-block-visibility-toggle translation-block-visibility-toggle-inner">
-                              <input
-                                type="checkbox"
-                                checked={explanationCollapsed}
-                                onChange={(event) => handleToggleExplanationCollapsed(item, event.target.checked)}
-                              />
-                              <span>
-                                {explanationCollapsed
-                                  ? tr('Разбор скрыт', 'Erklaerung ausgeblendet')
-                                  : tr('Скрыть разбор', 'Erklaerung ausblenden')}
-                              </span>
-                            </label>
-                            {!explanationCollapsed && (
-                              <>
-                                {renderExplanationContent(explanationText)}
-                                <div className="webapp-explanation-followup">
-                                  <button
-                                    type="button"
-                                    className="secondary-button explanation-followup-button"
-                                    onClick={() => handleToggleExplanationQuestion(item, !followupOpen)}
-                                    disabled={followupLoading}
-                                  >
-                                    {followupOpen
-                                      ? tr('Скрыть вопрос', 'Frage ausblenden')
-                                      : tr('Задать вопрос', 'Frage stellen')}
-                                  </button>
-                                  {followupOpen && (
-                                    <div className="webapp-explanation-followup-form">
-                                      <textarea
-                                        rows={3}
-                                        value={followupDraft}
-                                        onChange={(event) => handleExplanationQuestionDraftChange(item, event.target.value)}
-                                        placeholder={tr('Напишите уточняющий вопрос по этому разбору...', 'Schreibe eine Rueckfrage zu dieser Erklaerung...')}
-                                      />
-                                      <div className="webapp-explanation-followup-actions">
-                                        <button
-                                          type="button"
-                                          className="primary-button webapp-explanation-followup-action-button"
-                                          onClick={() => handleAskExplanationQuestion(item)}
-                                          disabled={followupLoading || !followupDraft.trim()}
-                                        >
-                                          {followupLoading ? tr('Спрашиваем...', 'Fragen...') : tr('Отправить вопрос', 'Frage senden')}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="secondary-button webapp-explanation-followup-action-button"
-                                          onClick={() => handleToggleExplanationQuestion(item, false)}
-                                          disabled={followupLoading}
-                                        >
-                                          {tr('Отмена', 'Abbrechen')}
-                                        </button>
-                                      </div>
-                                    </div>
-                                  )}
-                                {followupAnswer && (
-                                  <div className="webapp-explanation-followup-answer">
-                                    <label className="translation-block-visibility-toggle translation-block-visibility-toggle-inner">
-                                      <input
-                                        type="checkbox"
-                                        checked={followupAnswerCollapsed}
-                                        onChange={(event) => handleToggleFollowupAnswerCollapsed(item, event.target.checked)}
-                                      />
-                                      <span>
-                                        {followupAnswerCollapsed
-                                          ? tr('Ответ скрыт', 'Antwort ausgeblendet')
-                                          : tr('Скрыть ответ', 'Antwort ausblenden')}
-                                      </span>
-                                    </label>
-                                    {!followupAnswerCollapsed && (
-                                      <>
-                                        <div className="webapp-feedback-line webapp-explanation-line">
-                                          <span className="webapp-feedback-label">
-                                            {tr('Ответ на ваш вопрос:', 'Antwort auf deine Frage:')}
-                                          </span>
-                                        </div>
-                                        {renderExplanationContent(followupAnswer)}
-                                      </>
-                                    )}
+                          {explainData && (
+                            <div className="webapp-explanation-followup">
+                              <button
+                                type="button"
+                                className="secondary-button explanation-followup-button"
+                                onClick={() => handleToggleExplanationQuestion(item, !followupOpen)}
+                                disabled={followupLoading}
+                              >
+                                {followupOpen
+                                  ? tr('Скрыть вопрос', 'Frage ausblenden')
+                                  : tr('💬 Задать вопрос', '💬 Frage stellen')}
+                              </button>
+                              {followupOpen && (
+                                <div className="webapp-explanation-followup-form">
+                                  <textarea
+                                    rows={3}
+                                    value={followupDraft}
+                                    onChange={(event) => handleExplanationQuestionDraftChange(item, event.target.value)}
+                                    placeholder={tr('Напишите уточняющий вопрос по этому разбору...', 'Schreibe eine Rueckfrage zu dieser Erklaerung...')}
+                                  />
+                                  <div className="webapp-explanation-followup-actions">
+                                    <button
+                                      type="button"
+                                      className="primary-button webapp-explanation-followup-action-button"
+                                      onClick={() => handleAskExplanationQuestion(item)}
+                                      disabled={followupLoading || !followupDraft.trim()}
+                                    >
+                                      {followupLoading ? tr('Спрашиваем...', 'Fragen...') : tr('Отправить вопрос', 'Frage senden')}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-button webapp-explanation-followup-action-button"
+                                      onClick={() => handleToggleExplanationQuestion(item, false)}
+                                      disabled={followupLoading}
+                                    >
+                                      {tr('Отмена', 'Abbrechen')}
+                                    </button>
                                   </div>
-                                )}
                                 </div>
-                              </>
-                            )}
-                          </div>
-                        )}
+                              )}
+                              {followupAnswer && (
+                                <div className="webapp-explanation-followup-answer">
+                                  <div className="webapp-feedback-line webapp-explanation-line">
+                                    <span className="webapp-feedback-label">
+                                      {tr('Ответ на ваш вопрос:', 'Antwort auf deine Frage:')}
+                                    </span>
+                                  </div>
+                                  {renderExplanationContent(followupAnswer)}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </ExplainErrorsModal>
                       </>
                     )}
                   </div>
@@ -5442,6 +5442,11 @@ function AppInner() {
   const [historyVisible, setHistoryVisible] = useState(false);
   const [finishStatus, setFinishStatus] = useState('idle');
   const [explanations, setExplanations] = useState({});
+  // Teacher-grade structured explanation modal (replaces the old inline text blocks).
+  const [explainModalKey, setExplainModalKey] = useState(null);   // which sentence's modal is open
+  const [explainStructured, setExplainStructured] = useState({}); // `${key}:${lang}` -> JSON breakdown
+  const [explainLangDe, setExplainLangDe] = useState({});         // key -> bool (🇩🇪 explanation)
+  const [explainErrorMap, setExplainErrorMap] = useState({});     // key -> fetch error message
   const [explanationLoading, setExplanationLoading] = useState({});
   const [collapsedResultCards, setCollapsedResultCards] = useState({});
   const [collapsedExplanationBlocks, setCollapsedExplanationBlocks] = useState({});
@@ -25646,17 +25651,15 @@ function AppInner() {
     );
   }
 
-  const handleExplainTranslation = async (item) => {
-    if (!initData) {
-      setWebappError(initDataMissingMsg);
-      return;
-    }
+  // Fetch the teacher-grade structured breakdown for (item, lang); cached by `${key}:${lang}`.
+  const fetchExplain = async (item, lang) => {
     const key = getExplanationItemKey(item);
-    if (explanationInFlightKeysRef.current.has(key)) {
-      return;
-    }
-    explanationInFlightKeysRef.current.add(key);
+    const cacheKey = `${key}:${lang}`;
+    if (explainStructured[cacheKey]) return;                 // already have it
+    if (explanationInFlightKeysRef.current.has(cacheKey)) return;
+    explanationInFlightKeysRef.current.add(cacheKey);
     setExplanationLoading((prev) => ({ ...prev, [key]: true }));
+    setExplainErrorMap((prev) => ({ ...prev, [key]: '' }));
     try {
       const response = await fetch('/api/webapp/explain', {
         method: 'POST',
@@ -25665,33 +25668,48 @@ function AppInner() {
           initData,
           original_text: item.original_text,
           user_translation: item.user_translation,
+          explanation_language: lang,
         }),
       });
       if (!response.ok) {
         let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
+        try { message = JSON.parse(message).error || message; } catch (_e) { /* ignore */ }
         throw new Error(message);
       }
       const data = await response.json();
-      setExplanations((prev) => ({ ...prev, [key]: data.explanation }));
-      setCollapsedExplanationBlocks((prev) => ({ ...prev, [key]: false }));
-      setCollapsedFollowupAnswerBlocks((prev) => ({ ...prev, [key]: false }));
+      const json = data.explanation_json
+        || { summary: String(data.explanation || ''), errors: [], alternatives: [], synonyms: [] };
+      setExplainStructured((prev) => ({ ...prev, [cacheKey]: json }));
+      // reset the follow-up Q&A for a fresh breakdown
       setExplanationQuestionOpen((prev) => ({ ...prev, [key]: false }));
       setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: '' }));
       setExplanationQuestionAnswers((prev) => ({ ...prev, [key]: null }));
-      setExplanationQuestionSaveChecked((prev) => ({ ...prev, [key]: {} }));
-      setExplanationQuestionSaveError((prev) => ({ ...prev, [key]: '' }));
-      setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: '' }));
     } catch (error) {
-      setWebappError(`${tr('Ошибка объяснения', 'Erklaerungsfehler')}: ${error.message}`);
+      setExplainErrorMap((prev) => ({ ...prev, [key]: String(error.message || error) }));
     } finally {
-      explanationInFlightKeysRef.current.delete(key);
+      explanationInFlightKeysRef.current.delete(cacheKey);
       setExplanationLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const handleExplainTranslation = async (item) => {
+    if (!initData) {
+      setWebappError(initDataMissingMsg);
+      return;
+    }
+    const key = getExplanationItemKey(item);
+    const lang = explainLangDe[key] ? 'de' : 'ru';
+    setExplainModalKey(key);                 // open the modal immediately (shows loading)
+    await fetchExplain(item, lang);
+  };
+
+  const closeExplainModal = () => setExplainModalKey(null);
+
+  const handleSetExplainLang = (item, checkedDe) => {
+    const key = getExplanationItemKey(item);
+    setExplainLangDe((prev) => ({ ...prev, [key]: !!checkedDe }));
+    if (explainModalKey === key) {           // live-switch language while the modal is open
+      fetchExplain(item, checkedDe ? 'de' : 'ru');
     }
   };
 
@@ -28463,6 +28481,8 @@ function AppInner() {
   const renderStoryFeedbackStable = useStableCallback(renderStoryFeedback);
   const renderFeedbackStable = useStableCallback(renderFeedback);
   const handleExplainTranslationStable = useStableCallback(handleExplainTranslation);
+  const closeExplainModalStable = useStableCallback(closeExplainModal);
+  const handleSetExplainLangStable = useStableCallback(handleSetExplainLang);
   const handleToggleResultCardCollapsedStable = useStableCallback(handleToggleResultCardCollapsed);
   const handleToggleExplanationCollapsedStable = useStableCallback(handleToggleExplanationCollapsed);
   const handleToggleFollowupAnswerCollapsedStable = useStableCallback(handleToggleFollowupAnswerCollapsed);
@@ -31564,6 +31584,12 @@ function AppInner() {
                 learningTtsLocale={learningTtsLocale}
                 renderTtsButtonContent={renderTtsButtonContent}
                 handleExplainTranslation={handleExplainTranslationStable}
+                explainModalKey={explainModalKey}
+                closeExplainModal={closeExplainModalStable}
+                handleSetExplainLang={handleSetExplainLangStable}
+                explainStructured={explainStructured}
+                explainLangDe={explainLangDe}
+                explainErrorMap={explainErrorMap}
                 explanationLoading={explanationLoading}
                 explanations={explanations}
                 collapsedResultCards={collapsedResultCards}

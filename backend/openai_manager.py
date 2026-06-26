@@ -1370,6 +1370,38 @@ Synonyms:
 Original Word: …
 Possible Synonyms: … (maximum two)
 """,
+"check_translation_explanation_structured": """
+You are a professional German teacher and linguist giving feedback on a student's translation. Be precise, pedagogically clear, and kind — like a real teacher explaining to a student.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
+  "original_text": "...",
+  "user_translation": "..."
+}
+
+Analyze user_translation against original_text and produce a detailed, structured breakdown.
+
+RULES:
+- Write ALL explanatory text (summary, why, rule, note) in explanation_language.
+- Keep ALL language fragments of the translation (your, correct, example, variant, word, options) in target_language.
+- For each REAL mistake (max 5, ordered by importance), give:
+  - "your": the exact wrong fragment copied from the user's translation,
+  - "correct": the corrected fragment,
+  - "why": a clear, simple reason WHY it is wrong (one or two sentences, no jargon dumps),
+  - "rule": the underlying grammar/usage rule, named and concrete (e.g. "Wechselpräposition 'an' + Dativ bei Ortsangabe, Frage wo?"),
+  - "example": ONE short, correct example sentence in target_language that demonstrates the rule.
+  - "type": one of exactly "grammar","vocabulary","syntax","style","orthography".
+- Do NOT invent mistakes. If the translation is fully correct, return "errors": [] and a positive summary.
+- "summary": 1-2 sentences — overall impression and the main thing to work on.
+- "alternatives": up to 2 natural alternative ways to express the WHOLE sentence ("variant" in target_language; optional short "note" in explanation_language). [] if none useful.
+- "synonyms": up to 3 useful words from the sentence ("word" + up to 3 "options", all in target_language). [] if none useful.
+
+Output ONLY valid minified JSON (no markdown, no code fences, no extra text) with EXACTLY this shape:
+{"summary":"...","errors":[{"type":"grammar","your":"...","correct":"...","why":"...","rule":"...","example":"..."}],"alternatives":[{"variant":"...","note":"..."}],"synonyms":[{"word":"...","options":["..."]}]}
+""",
 "check_translation_explanation_multilang": """
 You are an expert translation reviewer.
 
@@ -6799,6 +6831,99 @@ async def run_translation_explanation_multilang(
     ).strip()
 
     return content or "❌ Ошибка: Не удалось обработать объяснение."
+
+
+_ALLOWED_EXPLAIN_ERROR_TYPES = {"grammar", "vocabulary", "syntax", "style", "orthography"}
+
+
+def _coerce_structured_explanation(raw: str) -> dict:
+    """Parse the LLM JSON for the teacher-grade explanation into a validated dict.
+    Tolerant of code fences / stray prose; falls back to a minimal shape so the UI
+    never breaks."""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
+        s = re.sub(r"\n?```$", "", s).strip()
+    a, b = s.find("{"), s.rfind("}")
+    data = None
+    if a >= 0 and b > a:
+        try:
+            data = json.loads(s[a:b + 1])
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        return {"summary": (raw or "").strip(), "errors": [], "alternatives": [], "synonyms": []}
+
+    def _str(v) -> str:
+        return str(v or "").strip()
+
+    errors = []
+    for e in (data.get("errors") or [])[:5]:
+        if not isinstance(e, dict):
+            continue
+        etype = _str(e.get("type")).lower()
+        if etype not in _ALLOWED_EXPLAIN_ERROR_TYPES:
+            etype = "grammar"
+        errors.append({
+            "type": etype,
+            "your": _str(e.get("your")),
+            "correct": _str(e.get("correct")),
+            "why": _str(e.get("why")),
+            "rule": _str(e.get("rule")),
+            "example": _str(e.get("example")),
+        })
+    alternatives = []
+    for a_ in (data.get("alternatives") or [])[:2]:
+        if isinstance(a_, dict) and _str(a_.get("variant")):
+            alternatives.append({"variant": _str(a_.get("variant")), "note": _str(a_.get("note"))})
+        elif isinstance(a_, str) and a_.strip():
+            alternatives.append({"variant": a_.strip(), "note": ""})
+    synonyms = []
+    for sy in (data.get("synonyms") or [])[:3]:
+        if not isinstance(sy, dict):
+            continue
+        word = _str(sy.get("word"))
+        options = [_str(o) for o in (sy.get("options") or []) if _str(o)][:3]
+        if word and options:
+            synonyms.append({"word": word, "options": options})
+    return {
+        "summary": _str(data.get("summary")),
+        "errors": errors,
+        "alternatives": alternatives,
+        "synonyms": synonyms,
+    }
+
+
+async def run_translation_explanation_structured(
+    original_text: str,
+    user_translation: str,
+    source_lang: str,
+    target_lang: str,
+    explanation_language: str,
+) -> dict:
+    """Teacher-grade structured error breakdown (JSON) for the translation explain modal."""
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "explanation_language": (explanation_language or source_lang or "ru").strip().lower(),
+        "original_text": original_text,
+        "user_translation": user_translation,
+    }
+    content = ""
+    for _ in range(3):
+        try:
+            content = (await llm_execute(
+                task_name="check_translation_explanation_structured",
+                system_instruction_key="check_translation_explanation_structured",
+                user_message=json.dumps(payload, ensure_ascii=False),
+                poll_interval_seconds=1.0,
+            ) or "").strip()
+        except Exception:
+            content = ""
+        if content:
+            break
+        await asyncio.sleep(3)
+    return _coerce_structured_explanation(content)
 
 
 system_message.update({
