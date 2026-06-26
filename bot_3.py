@@ -313,6 +313,10 @@ from backend.database import (
     get_active_pro_grant,
     count_pro_grants_this_month,
     grant_pro_days,
+    record_referral,
+    get_unrewarded_referral,
+    mark_referral_rewarded,
+    count_referrals,
     get_user_streak,
     upsert_user_streak,
     get_users_active_on_date,
@@ -2565,6 +2569,8 @@ async def _schedule_nav_callback(update: Update, context: CallbackContext) -> No
 
 # ── DAU streaks (Этап 4) ─────────────────────────────────────────────────────
 STREAK_REWARD_EVERY = max(2, int((os.getenv("STREAK_REWARD_EVERY") or "5").strip() or "5"))
+REFERRAL_REWARD_DAYS = max(1, int((os.getenv("REFERRAL_REWARD_DAYS") or "7").strip() or "7"))
+REFERRAL_STREAK_TRIGGER = max(1, int((os.getenv("REFERRAL_STREAK_TRIGGER") or "3").strip() or "3"))
 STREAK_MONTHLY_CAP = max(1, int((os.getenv("STREAK_MONTHLY_CAP") or "6").strip() or "6"))
 STREAK_FREEZE_EVERY = max(2, int((os.getenv("STREAK_FREEZE_EVERY") or "7").strip() or "7"))
 STREAK_FREEZE_MAX = max(0, int((os.getenv("STREAK_FREEZE_MAX") or "2").strip() or "2"))
@@ -2634,6 +2640,62 @@ async def _streak_command(update: Update, context: CallbackContext) -> None:
         except Exception:
             pass
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def _maybe_capture_referral(context: CallbackContext, update: Update, invited_uid: int) -> None:
+    """Parse a ?start=ref_<referrer_id> deeplink → first-touch attribution. Only NEW
+    users (not yet allowed) are referrable; the referrer must be a real allowed user.
+    DMs the referrer once when a new referral row is created. Reward fires later, when
+    the invited user reaches REFERRAL_STREAK_TRIGGER (in _update_streaks_job)."""
+    args = context.args or []
+    if not args:
+        return
+    payload = str(args[0] or "").strip()
+    if not payload.startswith("ref_"):
+        return
+    try:
+        referrer_uid = int(payload[4:])
+    except Exception:
+        return
+    if referrer_uid <= 0 or referrer_uid == int(invited_uid):
+        return
+    # Existing (already-allowed) users can't be "referred".
+    if await asyncio.to_thread(is_telegram_user_allowed, int(invited_uid)):
+        return
+    # Guard ref_<garbage>: the referrer must be a real allowed user.
+    if not await asyncio.to_thread(is_telegram_user_allowed, referrer_uid):
+        return
+    newly = await asyncio.to_thread(record_referral, int(invited_uid), referrer_uid)
+    if not newly:
+        return
+    inv_name = (update.effective_user.first_name if update.effective_user else "") or "Друг"
+    try:
+        await context.bot.send_message(
+            chat_id=referrer_uid, parse_mode="HTML",
+            text=(f"🎉 <b>{html.escape(inv_name)}</b> перешёл по твоей ссылке!\n"
+                  f"Как только он позанимается {REFERRAL_STREAK_TRIGGER} дня подряд — "
+                  f"вы <b>оба</b> получите <b>+{REFERRAL_REWARD_DAYS} дней Pro</b> 🔥"))
+    except Exception:
+        pass
+
+
+async def _invite_command(update: Update, context: CallbackContext) -> None:
+    """/invite — personal referral link + count of successful invites."""
+    if not update.effective_user or not update.effective_message:
+        return
+    uid = int(update.effective_user.id)
+    bot_username = context.bot.username
+    if not bot_username:
+        bot_username = (await context.bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start=ref_{uid}"
+    n = await asyncio.to_thread(count_referrals, uid, True)
+    await update.effective_message.reply_text(
+        f"👥 <b>Позови друга — оба получите +{REFERRAL_REWARD_DAYS} дней Pro</b>\n\n"
+        f"Кинь другу ссылку. Как только он позанимается {REFERRAL_STREAK_TRIGGER} дня подряд — "
+        f"вы <b>оба</b> получаете <b>+{REFERRAL_REWARD_DAYS} дней Pro</b> 🔥\n\n"
+        f"🔗 {link}\n\n"
+        f"✅ Успешных приглашений: <b>{n}</b>",
+        parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def _dau_command(update: Update, context: CallbackContext) -> None:
@@ -2790,6 +2852,27 @@ async def _update_streaks_job(context: CallbackContext) -> None:
                             await context.bot.send_message(chat_id=int(uid), parse_mode="HTML", text=_rtxt)
                         except Exception:
                             pass
+            # Referral payout: when the INVITED user reaches the streak trigger, both
+            # they and their referrer get +REFERRAL_REWARD_DAYS Pro-days (once).
+            if new_streak >= REFERRAL_STREAK_TRIGGER:
+                ref_id = await asyncio.to_thread(get_unrewarded_referral, int(uid))
+                if ref_id and await asyncio.to_thread(mark_referral_rewarded, int(uid)):
+                    await asyncio.to_thread(grant_pro_days, int(uid), REFERRAL_REWARD_DAYS, "referral")
+                    await asyncio.to_thread(grant_pro_days, int(ref_id), REFERRAL_REWARD_DAYS, "referral")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=int(uid), parse_mode="HTML",
+                            text=(f"🎁 За {new_streak}-дневную серию по приглашению — "
+                                  f"<b>+{REFERRAL_REWARD_DAYS} дней Pro</b> тебе и тому, кто тебя позвал! 🔥"))
+                    except Exception:
+                        pass
+                    try:
+                        await context.bot.send_message(
+                            chat_id=int(ref_id), parse_mode="HTML",
+                            text=(f"🎉 Твой друг втянулся ({new_streak} дня подряд)! "
+                                  f"Лови <b>+{REFERRAL_REWARD_DAYS} дней Pro</b> за приглашение 🔥"))
+                    except Exception:
+                        pass
         except Exception:
             logging.warning("streak update failed uid=%s", uid, exc_info=True)
     logging.info("update_streaks date=%s active=%d granted=%d", yday, len(active), granted)
@@ -6525,6 +6608,13 @@ async def check_translation_from_text(update: Update, context: CallbackContext):
 async def start(update: Update, context: CallbackContext):
     """Запуск бота и отправка главного меню."""
     user = update.effective_user
+    # First-touch referral capture must run BEFORE the access gate (a brand-new user
+    # gets bounced to the approval queue, but we still want to remember who invited).
+    if user:
+        try:
+            await _maybe_capture_referral(context, update, int(user.id))
+        except Exception:
+            logging.warning("referral capture failed", exc_info=True)
     if user and not is_telegram_user_allowed(int(user.id)):
         await _notify_admins_access_request(context, user)
         message = update.effective_message
@@ -23927,7 +24017,7 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
                 lines.append(f"{labels[cat]} — {c}/{a}/{s} · ✅ {c_pct} / {round(a / s * 100)}%")
             else:
                 lines.append(f"{labels[cat]} — {c}/{a} · ✅ {c_pct}")
-        lines += ["", "👥 Играть командой с друзьями — /group"]
+        lines += ["", f"👥 /group — играть командой · /invite — позови друга (+{REFERRAL_REWARD_DAYS} дней Pro обоим)"]
         try:
             await context.bot.send_message(chat_id=int(uid), text="\n".join(lines), parse_mode="HTML")
             sent_count += 1
@@ -29537,6 +29627,7 @@ def main():
     application.add_handler(CommandHandler("allow", allow_user_command))
     application.add_handler(CommandHandler("deny", deny_user_command))
     application.add_handler(CommandHandler("streak", _streak_command))
+    application.add_handler(CommandHandler("invite", _invite_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))

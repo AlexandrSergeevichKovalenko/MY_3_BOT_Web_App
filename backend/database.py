@@ -15911,8 +15911,88 @@ def _ensure_dau_schema() -> None:
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pro_grants_user "
                         "ON bt_3_pro_grants (user_id, granted_until);")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_referrals (
+                    invited_user_id  BIGINT PRIMARY KEY,
+                    referrer_user_id BIGINT NOT NULL,
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    rewarded_at      TIMESTAMPTZ
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer "
+                        "ON bt_3_referrals (referrer_user_id);")
         conn.commit()
     _dau_schema_ready = True
+
+
+def record_referral(invited_user_id: int, referrer_user_id: int) -> bool:
+    """First-touch attribution: record who invited `invited_user_id`. No self-ref,
+    one referrer per invited user (first write wins). Returns True only when a NEW
+    row is created (so the caller can DM the referrer once)."""
+    try:
+        if int(invited_user_id) == int(referrer_user_id):
+            return False
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bt_3_referrals (invited_user_id, referrer_user_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (invited_user_id) DO NOTHING;
+                """, (int(invited_user_id), int(referrer_user_id)))
+                inserted = cur.rowcount > 0
+            conn.commit()
+        return inserted
+    except Exception:
+        logging.warning("record_referral failed invited=%s ref=%s",
+                        invited_user_id, referrer_user_id, exc_info=True)
+        return False
+
+
+def get_unrewarded_referral(invited_user_id: int):
+    """Referrer id if this invited user has a referral that is NOT yet rewarded."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT referrer_user_id FROM bt_3_referrals "
+                            "WHERE invited_user_id=%s AND rewarded_at IS NULL;",
+                            (int(invited_user_id),))
+                r = cur.fetchone()
+        return int(r[0]) if r else None
+    except Exception:
+        return None
+
+
+def mark_referral_rewarded(invited_user_id: int) -> bool:
+    """Stamp the referral paid out (idempotent: only flips a NULL rewarded_at)."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE bt_3_referrals SET rewarded_at=NOW() "
+                            "WHERE invited_user_id=%s AND rewarded_at IS NULL;",
+                            (int(invited_user_id),))
+                ok = cur.rowcount > 0
+            conn.commit()
+        return ok
+    except Exception:
+        return False
+
+
+def count_referrals(referrer_user_id: int, rewarded_only: bool = False) -> int:
+    try:
+        _ensure_dau_schema()
+        q = "SELECT COUNT(*) FROM bt_3_referrals WHERE referrer_user_id=%s"
+        if rewarded_only:
+            q += " AND rewarded_at IS NOT NULL"
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(q + ";", (int(referrer_user_id),))
+                r = cur.fetchone()
+        return int(r[0] or 0) if r else 0
+    except Exception:
+        return 0
 
 
 def get_active_pro_grant(user_id: int):
