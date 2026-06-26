@@ -13,6 +13,7 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
   const [err, setErr] = useState('');
   const [saveState, setSaveState] = useState('idle'); // 'idle'|'saving'|'saved'|'error'
   const [savedRu, setSavedRu] = useState('');
+  const [savedWord, setSavedWord] = useState(''); // the text actually saved (for the ✓ label)
   const [pos, setPos] = useState(null); // {x, y} top-left; null until measured
   const panelRef = useRef(null);
   const threadRef = useRef(null);
@@ -97,8 +98,13 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
   // straight to /save (the old behaviour) left grammar-game words with no Russian
   // translation, so the entry showed German on both sides.
   const save = useCallback(async () => {
-    const word = String(saveText || '').trim();
+    // Save whatever the user typed in the field; if it's empty, fall back to the
+    // task's fixed word/sentence (the old behaviour). The lookup→save pipeline below
+    // handles word-vs-sentence, article + Grundform, grammar correction, translation
+    // and the language pair — same as the Reader / dictionary save everywhere else.
+    const word = (input.trim() || String(saveText || '').trim());
     if (saveState === 'saving' || saveState === 'saved' || !word) return;
+    setSavedWord(word);
     setSaveState('saving');
     try {
       const lookup = await api('/api/webapp/dictionary', { word });
@@ -126,7 +132,11 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
     } catch (_e) {
       setSaveState('error');
     }
-  }, [saveState, saveText, saveTranslation, api]);
+  }, [saveState, saveText, saveTranslation, api, input]);
+
+  // Truncated label for the button when saving a long sentence.
+  const saveCandidate = (input.trim() || String(saveText || '').trim());
+  const saveLabelWord = saveCandidate.length > 40 ? `${saveCandidate.slice(0, 40)}…` : saveCandidate;
 
   const style = pos ? { left: `${pos.x}px`, top: `${pos.y}px` } : { left: '50%', top: '60%', visibility: 'hidden' };
 
@@ -161,8 +171,12 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
       <div className="ask-pop-input">
         <textarea
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ваш вопрос…"
+          onChange={(e) => {
+            setInput(e.target.value);
+            // editing the field re-enables Save for a fresh entry
+            if (saveState === 'saved' || saveState === 'error') { setSaveState('idle'); setSavedWord(''); }
+          }}
+          placeholder="Вопрос — или впиши слово/фразу и нажми Сохранить"
           rows={3}
           autoCapitalize="sentences"
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ask(); }}
@@ -171,20 +185,18 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
           {busy ? '…' : 'Спросить'}
         </button>
       </div>
-      {saveText ? (
-        <button
-          type="button"
-          className={`ask-pop-save ${saveState === 'saved' ? 'is-saved' : ''} ${saveState === 'error' ? 'is-error' : ''}`}
-          onClick={save}
-          disabled={saveState === 'saving' || saveState === 'saved'}
-        >
-          {saveState === 'saving' ? '⏳ Сохраняю…'
-            : saveState === 'saved'
-              ? (savedRu ? `✓ «${saveText}» — ${savedRu}` : `✓ «${saveText}» в словаре`)
-              : saveState === 'error' ? '⚠️ Не вышло — повторить'
-                : `💾 Сохранить «${saveText}»`}
-        </button>
-      ) : null}
+      <button
+        type="button"
+        className={`ask-pop-save ${saveState === 'saved' ? 'is-saved' : ''} ${saveState === 'error' ? 'is-error' : ''}`}
+        onClick={save}
+        disabled={saveState === 'saving' || saveState === 'saved' || !saveCandidate}
+      >
+        {saveState === 'saving' ? '⏳ Сохраняю…'
+          : saveState === 'saved'
+            ? (savedRu ? `✓ «${savedWord}» — ${savedRu}` : `✓ «${savedWord}» в словаре`)
+            : saveState === 'error' ? '⚠️ Не вышло — повторить'
+              : saveCandidate ? `💾 Сохранить «${saveLabelWord}»` : '💾 Сохранить'}
+      </button>
     </div>
   );
 }
