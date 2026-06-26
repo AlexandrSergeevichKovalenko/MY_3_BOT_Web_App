@@ -15945,16 +15945,33 @@ def count_pro_grants_this_month(user_id: int) -> int:
 
 
 def grant_pro_days(user_id: int, days: int = 1, reason: str = "streak") -> bool:
-    """Add `days` of earned Pro, stacking on any active grant."""
+    """Add `days` of earned Pro, stacking on any active grant.
+
+    Banking: if the user is on a PAID subscription right now, the earned window
+    starts at the paid period end (not NOW) so the day genuinely EXTENDS the
+    subscription instead of burning concurrently with paid coverage. Free users
+    (no active paid period) get it immediately, as before."""
     try:
         _ensure_dau_schema()
         cur_until = get_active_pro_grant(int(user_id))
+        # Start no earlier than the end of an active PAID period → real extension.
+        paid_end = None
+        try:
+            sub = get_user_subscription(int(user_id))
+            if sub:
+                _st = _normalize_subscription_status(sub.get("status"))
+                _plan = str(sub.get("plan_code") or "free").strip().lower()
+                _cpe = sub.get("current_period_end")
+                if _plan != "free" and _st in ("active", "trialing") and _cpe:
+                    paid_end = _to_aware_datetime(_cpe)
+        except Exception:
+            paid_end = None
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO bt_3_pro_grants (user_id, granted_until, reason)
-                    VALUES (%s, GREATEST(NOW(), COALESCE(%s, NOW())) + (%s || ' days')::interval, %s);
-                """, (int(user_id), cur_until, int(days), str(reason)))
+                    VALUES (%s, GREATEST(NOW(), COALESCE(%s, NOW()), COALESCE(%s, NOW())) + (%s || ' days')::interval, %s);
+                """, (int(user_id), cur_until, paid_end, int(days), str(reason)))
             conn.commit()
         return True
     except Exception:

@@ -2323,9 +2323,9 @@ async def _send_next_task_card(context: CallbackContext, chat_id: int, tasks: li
     more = f"\nВсего не сделано сегодня: <b>{open_count}</b>." if open_count > n else ""
     streak_line = ""
     try:
-        _st = await asyncio.to_thread(get_user_streak, int(chat_id))
-        if int(_st.get("current_streak") or 0) > 0:
-            streak_line = f"🔥 <b>{int(_st['current_streak'])} дней подряд</b>\n"
+        _blk = await _streak_status_block(int(chat_id))
+        if _blk:
+            streak_line = f"{_blk}\n"
     except Exception:
         pass
     caption = f"{streak_line}📋 <b>{head}</b>\nОткрой и реши прямо тут, не листая чат 👇{more}"
@@ -2570,33 +2570,69 @@ STREAK_FREEZE_EVERY = max(2, int((os.getenv("STREAK_FREEZE_EVERY") or "7").strip
 STREAK_FREEZE_MAX = max(0, int((os.getenv("STREAK_FREEZE_MAX") or "2").strip() or "2"))
 
 
+def _streak_next_reward_in(cur: int) -> int:
+    """Days left in the current cycle until the next earned Pro day."""
+    r = int(cur) % STREAK_REWARD_EVERY
+    return (STREAK_REWARD_EVERY - r) if r else STREAK_REWARD_EVERY
+
+
+def _streak_next_milestone(cur: int):
+    """Nearest streak-milestone (грамота) above `cur`, or None."""
+    return min((m for m in _STREAK_MILESTONES if m > int(cur)), default=None)
+
+
+async def _streak_status_block(uid: int) -> str:
+    """One adaptive line: persistent streak status that ALSO motivates by phrasing.
+    Free → distance to the next earned Pro day (halfway / 1-left framing); Pro →
+    habit + nearest грамота-веха. HTML <b>. Empty only if the lookup fails."""
+    try:
+        st = await asyncio.to_thread(get_user_streak, int(uid))
+    except Exception:
+        return ""
+    cur = int(st.get("current_streak") or 0)
+    if cur <= 0:
+        return "🔥 Стрик: 0 — позанимайся сегодня, и серия начнётся!"
+    try:
+        is_pro = await asyncio.to_thread(is_user_pro, int(uid))
+    except Exception:
+        is_pro = False
+    if is_pro:
+        m = _streak_next_milestone(cur)
+        if m is not None and (m - cur) <= 3:
+            return f"🔥 Стрик: <b>{cur}</b> · ещё {m - cur} до грамоты за {m} дней 🏆"
+        return f"🔥 Стрик: <b>{cur}</b> дней подряд — так держать!"
+    rem = _streak_next_reward_in(cur)
+    if rem == 1:
+        return f"🔥 Стрик: <b>{cur}</b> — ещё 1 день, и получишь <b>день Pro</b>! 🔥"
+    if rem == 2:
+        return f"🔥 Стрик: <b>{cur}</b> · ты уже на полпути до <b>дня Pro</b> 🔥"
+    return f"🔥 Стрик: <b>{cur}</b> дней подряд · до дня Pro ещё {rem}"
+
+
 async def _streak_command(update: Update, context: CallbackContext) -> None:
-    """/streak — show the user their current streak, freezes and earned-Pro status."""
+    """/streak — quiet alias (no longer a menu button): the status block + freeze/
+    earned-Pro detail."""
     if not update.effective_user or not update.effective_message:
         return
     uid = int(update.effective_user.id)
+    block = await _streak_status_block(uid)
     st = await asyncio.to_thread(get_user_streak, uid)
-    cur = int(st["current_streak"]); longest = int(st["longest_streak"]); freezes = int(st["freezes"])
+    cur = int(st.get("current_streak") or 0); longest = int(st.get("longest_streak") or 0)
+    freezes = int(st.get("freezes") or 0)
     try:
         grant_until = await asyncio.to_thread(get_active_pro_grant, uid)
     except Exception:
         grant_until = None
-    if cur <= 0:
-        lines = ["🔥 <b>Стрик: 0</b>", "Позанимайся сегодня — и завтра начнётся серия!"]
-    else:
-        lines = [f"🔥 <b>Стрик: {cur} дней подряд</b>"]
-        if longest > cur:
-            lines.append(f"🏆 Рекорд: {longest}")
-        nxt = STREAK_REWARD_EVERY - (cur % STREAK_REWARD_EVERY) if (cur % STREAK_REWARD_EVERY) else STREAK_REWARD_EVERY
-        lines.append(f"🎁 До следующего дня Pro: ещё {nxt} дн.")
+    lines = [block or "🔥 Стрик: 0"]
+    if longest > cur:
+        lines.append(f"🏆 Рекорд: {longest}")
     if freezes:
-        lines.append(f"❄️ Заморозки: {freezes} (спасают стрик при одном пропущенном дне)")
+        lines.append(f"❄️ Заморозки: {freezes} (спасают стрик при одном пропуске)")
     if grant_until:
         try:
             lines.append(f"⭐ Заработанный Pro активен до {grant_until.strftime('%d.%m %H:%M')}")
         except Exception:
             pass
-    lines.append(f"\nКаждые {STREAK_REWARD_EVERY} дней подряд = <b>+1 день Pro</b> 🔥")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
@@ -2737,11 +2773,21 @@ async def _update_streaks_job(context: CallbackContext) -> None:
                     if await asyncio.to_thread(grant_pro_days, int(uid), 1, f"streak{new_streak}"):
                         granted += 1
                         try:
-                            await context.bot.send_message(
-                                chat_id=int(uid), parse_mode="HTML",
-                                text=(f"🔥 <b>{new_streak} дней подряд!</b>\n"
-                                      f"Лови подарок — <b>+1 день Pro</b> 🎁\n"
-                                      f"Каждые {STREAK_REWARD_EVERY} дней подряд = ещё день Pro. Не прерывай 🔥"))
+                            _pro = await asyncio.to_thread(is_user_pro, int(uid))
+                        except Exception:
+                            _pro = False
+                        if _pro:
+                            # Already Pro → the earned day BANKS onto the end of the paid
+                            # period (grant_pro_days), so it extends the subscription.
+                            _rtxt = (f"🔥 <b>{new_streak} дней подряд!</b>\n"
+                                     f"Заработан ещё <b>день Pro</b> — он добавится в конец твоей подписки 🎁\n"
+                                     f"Не прерывай серию 🔥")
+                        else:
+                            _rtxt = (f"🔥 <b>{new_streak} дней подряд!</b>\n"
+                                     f"Лови подарок — <b>+1 день Pro</b> 🎁\n"
+                                     f"Каждые {STREAK_REWARD_EVERY} дней подряд = ещё день Pro. Не прерывай 🔥")
+                        try:
+                            await context.bot.send_message(chat_id=int(uid), parse_mode="HTML", text=_rtxt)
                         except Exception:
                             pass
         except Exception:
@@ -3869,11 +3915,10 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
 
     # 1) Ежедневные задания — главное действие.
     rows.append([NEXT_TASK_BUTTON_TEXT])
-    # Стрик — всем (Free мотивирует к Pro); расписание — Pro, на той же строке.
+    # Стрик больше НЕ кнопка — статус едет в сообщениях (утро / итоги дня /
+    # карточка «Следующее задание»). Расписание — только Pro.
     if is_pro:
-        rows.append([SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT])
-    else:
-        rows.append([STREAK_BUTTON_TEXT])
+        rows.append([SCHEDULE_BUTTON_TEXT])
 
     # 2) Тренажёры (учить). Pro: +персональная тема на завтра.
     rows.append([ARTIKEL_LEARN_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
@@ -6587,9 +6632,14 @@ async def send_morning_reminder(context:CallbackContext):
                     reply_markup=group_reply_markup,
                 )
                 continue
+            try:
+                _streak_blk = (await _streak_status_block(int(target_chat_id))).replace("<b>", "").replace("</b>", "")
+            except Exception:
+                _streak_blk = ""
             private_text = (
-                "ℹ️ Вы сейчас не состоите в группе, поэтому отправляю напоминание в личку.\n\n"
-                f"{message}"
+                (f"{_streak_blk}\n\n" if _streak_blk else "")
+                + "ℹ️ Вы сейчас не состоите в группе, поэтому отправляю напоминание в личку.\n\n"
+                + f"{message}"
             )
             await context.bot.send_message(
                 chat_id=int(target_chat_id),
@@ -23859,6 +23909,12 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
         else:
             lines.append(f"✅ Ты ответил: <b>{answered}</b> заданий")
         lines.append(f"🎯 Верно: <b>{correct}</b> из отвеченных ({acc}%)")
+        try:
+            _sblk = await _streak_status_block(int(uid))
+        except Exception:
+            _sblk = ""
+        if _sblk:
+            lines += ["", _sblk]
         lines += ["", "<b>По категориям</b> — верно/ответил/отправлено · ✅ %верных / %отвеченных:"]
         for cat in order:
             s = int(user_sent_by_cat.get(cat, 0))
