@@ -2868,9 +2868,14 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   checkLoading,
   checkStatusText,
   onJumpToDictionary,
+  onSaveDraft,
+  saveLabel,
+  saveLoadingLabel,
+  saveSavedLabel,
 }) {
   const textareaRef = useRef(null);
   const commitTimeoutRef = useRef(null);
+  const [draftSaveState, setDraftSaveState] = useState('idle'); // idle|saving|saved|error
   const androidPersistTimeoutRef = useRef(null);
   const valueRef = useRef(String(initialValue || ''));
   useAppPerfRenderProbe('TranslationDraftField', {
@@ -3114,6 +3119,24 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     }
   }
 
+  // Save whatever the user typed in THIS field (a word or their translation) to the
+  // dictionary via the standard lookup→save pipeline (article+Grundform / grammar-
+  // corrected sentence / translation / language pair — all server-side).
+  const handleSaveDraftClick = useCallback(async () => {
+    if (!onSaveDraft || draftSaveState === 'saving') return;
+    const live = textareaRef.current ? String(textareaRef.current.value || '') : String(valueRef.current || '');
+    const text = live.trim();
+    if (!text) return;
+    setDraftSaveState('saving');
+    try {
+      const ok = await onSaveDraft(text, sentenceId);
+      setDraftSaveState(ok === false ? 'error' : 'saved');
+    } catch (_e) {
+      setDraftSaveState('error');
+    }
+    window.setTimeout(() => setDraftSaveState('idle'), 2500);
+  }, [onSaveDraft, draftSaveState, sentenceId]);
+
   return (
     <label className="webapp-translation-item">
       <span className="translation-sentence">
@@ -3136,6 +3159,20 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
             </>
           ) : checkLabel}
         </button>
+        {onSaveDraft ? (
+          <button
+            type="button"
+            className={`translation-draft-save ${draftSaveState === 'saved' ? 'is-saved' : ''} ${draftSaveState === 'error' ? 'is-error' : ''}`}
+            onClick={handleSaveDraftClick}
+            disabled={draftSaveState === 'saving'}
+            aria-label={saveLabel}
+          >
+            {draftSaveState === 'saving' ? (saveLoadingLabel || '…')
+              : draftSaveState === 'saved' ? (saveSavedLabel || '✓')
+                : draftSaveState === 'error' ? '⚠️'
+                  : `💾 ${saveLabel}`}
+          </button>
+        ) : null}
         <button
           type="button"
           className="translation-dict-jump"
@@ -3214,6 +3251,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleSingleSentenceCheck,
   singleSentenceCheckLoadingId,
   jumpToDictionaryFromSentence,
+  handleSaveSentenceDraft,
   isStorySession,
   hasActiveTranslationSentences,
   storyGuess,
@@ -3694,6 +3732,10 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       checkLoading={Number(singleSentenceCheckLoadingId || 0) === Number(item.id_for_mistake_table || 0)}
                       checkStatusText={tr('Проверяем это предложение. Результат появится ниже.', 'Dieser Satz wird geprueft. Das Ergebnis erscheint weiter unten.')}
                       onJumpToDictionary={jumpToDictionaryFromSentence}
+                      onSaveDraft={handleSaveSentenceDraft}
+                      saveLabel={tr('Сохранить', 'Speichern')}
+                      saveLoadingLabel={tr('Сохраняю…', 'Speichere…')}
+                      saveSavedLabel={tr('✓ В словаре', '✓ Gespeichert')}
                     />
                   );
                 })
@@ -20780,6 +20822,19 @@ function AppInner() {
     }
   };
 
+  // Save whatever the user typed in a translation draft field (word or sentence)
+  // to the dictionary, reusing the canonical lookup→save inline quick-add.
+  const handleSaveSentenceDraft = async (text) => {
+    const cleaned = String(text || '').trim();
+    if (!cleaned) return false;
+    try {
+      await handleQuickAddToDictionary(cleaned, { inlineMode: true, inlineOrigin: 'translations' });
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  };
+
   const handleSelectionOpenDictionary = async (text) => {
     const cleaned = normalizeSelectionText(text);
     if (!cleaned) return;
@@ -28481,6 +28536,7 @@ function AppInner() {
   const renderStoryFeedbackStable = useStableCallback(renderStoryFeedback);
   const renderFeedbackStable = useStableCallback(renderFeedback);
   const handleExplainTranslationStable = useStableCallback(handleExplainTranslation);
+  const handleSaveSentenceDraftStable = useStableCallback(handleSaveSentenceDraft);
   const closeExplainModalStable = useStableCallback(closeExplainModal);
   const handleSetExplainLangStable = useStableCallback(handleSetExplainLang);
   const handleToggleResultCardCollapsedStable = useStableCallback(handleToggleResultCardCollapsed);
@@ -31564,6 +31620,7 @@ function AppInner() {
                 handleSingleSentenceCheck={handleSingleSentenceCheck}
                 singleSentenceCheckLoadingId={singleSentenceCheckLoadingId}
                 jumpToDictionaryFromSentence={jumpToDictionaryFromSentence}
+                handleSaveSentenceDraft={handleSaveSentenceDraftStable}
                 isStorySession={isStorySession}
                 hasActiveTranslationSentences={hasActiveTranslationSentences}
                 storyGuess={storyGuess}

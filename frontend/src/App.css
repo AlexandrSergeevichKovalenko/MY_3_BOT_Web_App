@@ -11079,7 +11079,8 @@ body {
 }
 
 .translation-item-check-button,
-.translation-dict-jump {
+.translation-dict-jump,
+.translation-draft-save {
   border: 1px solid rgba(148, 163, 184, 0.3);
   background: rgba(255, 255, 255, 0.16);
   color: #f8fafc;
@@ -11099,9 +11100,24 @@ body {
 }
 
 .translation-item-check-button[disabled],
-.translation-dict-jump[disabled] {
+.translation-dict-jump[disabled],
+.translation-draft-save[disabled] {
   opacity: 0.6;
   cursor: default;
+}
+.translation-draft-save {
+  border-color: rgba(124, 140, 248, 0.45);
+  background: rgba(124, 140, 248, 0.18);
+}
+.translation-draft-save.is-saved {
+  border-color: rgba(74, 222, 128, 0.5);
+  background: rgba(74, 222, 128, 0.18);
+  color: #bbf7d0;
+}
+.translation-draft-save.is-error {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.18);
+  color: #fecaca;
 }
 
 .translation-item-check-button.is-loading {
