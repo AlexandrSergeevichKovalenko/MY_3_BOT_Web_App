@@ -31,8 +31,10 @@ _GERMAN_ARTICLE_TOKENS = {
 
 
 def _normalize_quiz_text(value: str) -> str:
-    lowered = str(value or "").lower()
-    cleaned = re.sub(r"[^a-zäöüßà-ÿ0-9\s'\-]", " ", lowered)
+    # Fold ß → ss so the 1996-reform / keyboard spelling variant (Abschluß ↔ Abschluss,
+    # daß ↔ dass) isn't graded as a wrong answer.
+    lowered = str(value or "").lower().replace("ß", "ss")
+    cleaned = re.sub(r"[^a-zäöüà-ÿ0-9\s'\-]", " ", lowered)
     cleaned = cleaned.replace("-", " ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
@@ -1346,7 +1348,9 @@ def _norm_sentence(s: str) -> str:
     """Order-preserving sentence normalizer for Satzbau: lowercase, collapse spaces,
     drop punctuation. Same words in the SAME order → equal; wrong order → different."""
     import re as _re
-    t = _re.sub(r"[^\wäöüß\s]", " ", str(s or "").lower(), flags=_re.UNICODE)
+    # Fold ß → ss so a word-order answer isn't failed over Abschluß vs Abschluss.
+    lowered = str(s or "").lower().replace("ß", "ss")
+    t = _re.sub(r"[^\wäöü\s]", " ", lowered, flags=_re.UNICODE)
     return _re.sub(r"\s+", " ", t).strip()
 
 
