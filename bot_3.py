@@ -2672,6 +2672,31 @@ async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> 
         f"Заработанный Pro активен до: {until}", parse_mode="HTML")
 
 
+_STREAK_MILESTONES = {7, 14, 30, 60, 100, 200, 365}
+
+
+async def _send_streak_milestone_cert(context: CallbackContext, uid: int, streak: int, longest: int) -> None:
+    """Branded PNG грамота on a streak milestone (reuses the certificate renderer)."""
+    try:
+        from backend.certificate_poster import render_certificate
+        name = await _cert_user_name(context, int(uid))
+        rows = [
+            {"label": "Серия", "now": f"{int(streak)} дней", "prev": "", "dir": 1},
+            {"label": "Личный рекорд", "now": f"{max(int(streak), int(longest))} дней", "prev": "", "dir": 0},
+        ]
+        png = await asyncio.to_thread(
+            render_certificate, name=name, title=f"{int(streak)} дней подряд!",
+            subtitle="🔥 Стрик-достижение", rows=rows, col_now="", col_prev="",
+            footer="Так держать! 🔥", hero_png=None)
+        if png:
+            await context.bot.send_photo(
+                chat_id=int(uid), photo=io.BytesIO(png),
+                caption=f"🏅 <b>{int(streak)} дней подряд!</b> Серия в огне 🔥 Не прерывай.",
+                parse_mode="HTML")
+    except Exception:
+        logging.warning("streak milestone cert failed uid=%s", uid, exc_info=True)
+
+
 async def _update_streaks_job(context: CallbackContext) -> None:
     """Daily (08:00): roll yesterday's activity into per-user streaks. Every
     STREAK_REWARD_EVERY consecutive days → +1 earned Pro-day (monthly-capped); a
@@ -2705,6 +2730,8 @@ async def _update_streaks_job(context: CallbackContext) -> None:
             longest = max(int(st["longest_streak"]), new_streak)
             await asyncio.to_thread(upsert_user_streak, int(uid), current=new_streak,
                                     longest=longest, last_active=yday, freezes=freezes)
+            if new_streak in _STREAK_MILESTONES:
+                await _send_streak_milestone_cert(context, int(uid), new_streak, longest)
             if new_streak % STREAK_REWARD_EVERY == 0:
                 if await asyncio.to_thread(count_pro_grants_this_month, int(uid)) < STREAK_MONTHLY_CAP:
                     if await asyncio.to_thread(grant_pro_days, int(uid), 1, f"streak{new_streak}"):
