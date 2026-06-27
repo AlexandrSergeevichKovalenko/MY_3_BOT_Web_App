@@ -6373,6 +6373,17 @@ async def _run_legacy_ru_de_check_translation(
     return result_text, categories, subcategories, score, correct_translation
 
 
+# One quick retry of the FAST primary (Responses) check before the SLOW legacy
+# Assistants fallback (~2 min/sentence): a single transient OpenAI blip ("Connection
+# error") shouldn't drop the learner onto the 2-min path. Tunable via env.
+_PRIMARY_CHECK_ATTEMPTS = max(1, int(os.getenv("TRANSLATION_CHECK_PRIMARY_ATTEMPTS", "2") or "2"))
+_PRIMARY_CHECK_RETRY_DELAY_S = max(0.0, float(os.getenv("TRANSLATION_CHECK_PRIMARY_RETRY_DELAY_S", "0.6") or "0.6"))
+
+
+class _PrimaryCheckInvalid(Exception):
+    """Primary check returned a malformed/unusable payload (retry, then legacy)."""
+
+
 async def check_translation(
     original_text: str,
     user_translation: str,
@@ -6384,7 +6395,7 @@ async def check_translation(
     is_legacy_ru_de = _is_legacy_ru_de_pair(source_lang, target_lang)
 
     if is_legacy_ru_de:
-        try:
+        async def _attempt_primary():
             feedback = await run_check_translation_multilang(
                 original_text=original_text,
                 user_translation=user_translation,
@@ -6399,32 +6410,11 @@ async def check_translation(
                 language_subcategories=language_subcategories,
             )
             if not parsed["score_str"]:
-                logging.warning("Primary multilang ru->de translation check missing score; falling back to legacy path")
-                return await _run_legacy_ru_de_check_translation(
-                    original_text=original_text,
-                    user_translation=user_translation,
-                    sentence_number=sentence_number,
-                    language_categories=language_categories,
-                    language_subcategories=language_subcategories,
-                )
+                raise _PrimaryCheckInvalid("missing score")
             if not str(parsed["score_str"]).isdigit():
-                logging.warning("Primary multilang ru->de translation check returned non-numeric score; falling back to legacy path")
-                return await _run_legacy_ru_de_check_translation(
-                    original_text=original_text,
-                    user_translation=user_translation,
-                    sentence_number=sentence_number,
-                    language_categories=language_categories,
-                    language_subcategories=language_subcategories,
-                )
+                raise _PrimaryCheckInvalid("non-numeric score")
             if not parsed["correct_translation"]:
-                logging.warning("Primary multilang ru->de translation check missing correct translation; falling back to legacy path")
-                return await _run_legacy_ru_de_check_translation(
-                    original_text=original_text,
-                    user_translation=user_translation,
-                    sentence_number=sentence_number,
-                    language_categories=language_categories,
-                    language_subcategories=language_subcategories,
-                )
+                raise _PrimaryCheckInvalid("missing correct translation")
 
             score = int(parsed["score"])
             if score == 0:
@@ -6444,15 +6434,31 @@ async def check_translation(
                 score,
                 parsed["correct_translation"],
             )
-        except Exception as exc:
-            logging.warning("Primary multilang ru->de translation check failed; falling back to legacy path: %s", exc)
-            return await _run_legacy_ru_de_check_translation(
-                original_text=original_text,
-                user_translation=user_translation,
-                sentence_number=sentence_number,
-                language_categories=language_categories,
-                language_subcategories=language_subcategories,
-            )
+
+        # Try the fast primary path with ONE quick retry; only then drop to slow legacy.
+        for attempt in range(_PRIMARY_CHECK_ATTEMPTS):
+            try:
+                return await _attempt_primary()
+            except Exception as exc:
+                if attempt + 1 < _PRIMARY_CHECK_ATTEMPTS:
+                    logging.info(
+                        "Primary multilang ru->de translation check attempt %d/%d failed (%s); retrying",
+                        attempt + 1, _PRIMARY_CHECK_ATTEMPTS, exc,
+                    )
+                    if _PRIMARY_CHECK_RETRY_DELAY_S:
+                        await asyncio.sleep(_PRIMARY_CHECK_RETRY_DELAY_S)
+                    continue
+                logging.warning(
+                    "Primary multilang ru->de translation check failed after %d attempt(s); falling back to legacy path: %s",
+                    attempt + 1, exc,
+                )
+                return await _run_legacy_ru_de_check_translation(
+                    original_text=original_text,
+                    user_translation=user_translation,
+                    sentence_number=sentence_number,
+                    language_categories=language_categories,
+                    language_subcategories=language_subcategories,
+                )
 
     feedback = await run_check_translation_multilang(
         original_text=original_text,
