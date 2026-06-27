@@ -2342,6 +2342,55 @@ async def _send_next_task_card(context: CallbackContext, chat_id: int, tasks: li
                                        parse_mode="HTML", reply_markup=kb)
 
 
+def _pull_budget_for(user_id: int) -> tuple[int, bool]:
+    """Daily budget for an ON-DEMAND «Следующее задание» pull, and whether the user is
+    Pro. Unlike push budgets this ignores the Free inactivity suppression (an explicit
+    tap IS activity) and lets «Тишина» Pro pull a normal amount (silent = no auto push,
+    but pull-on-demand still serves them)."""
+    try:
+        is_pro = bool(_is_user_pro_cached(int(user_id)))
+    except Exception:
+        is_pro = False
+    if not is_pro:
+        return FREE_SEND_BUDGET, False
+    preset = None
+    try:
+        prefs = get_user_prefs(int(user_id))
+        preset = (prefs or {}).get("preset")
+    except Exception:
+        prefs = None
+    budget = _preset_budget(preset)
+    if budget <= 0:  # «Тишина»: no automatic push, but on-demand pull still delivers
+        budget = DEFAULT_PRO_SEND_BUDGET
+    return budget, True
+
+
+async def _try_pull_next_task(context: CallbackContext, user_id: int, chat_id: int,
+                              since_ts, now) -> str:
+    """Silent pull-from-pool for «Следующее задание» when the inbox is empty. If the
+    user still has daily budget left, pull ONE task from the pre-stocked pools and
+    deliver it (the kind's sender records an inbox row + sends the real card). Returns
+    "sent" | "exhausted" (budget used up) | "none" (pool gave nothing). Serves Free
+    (cap stays a conversion lever), «Тишина» Pro, and fresh accounts the schedule
+    hasn't reached yet."""
+    budget, is_pro = await asyncio.to_thread(_pull_budget_for, int(user_id))
+    if budget <= 0:
+        return "exhausted"
+    try:
+        count, _last = await asyncio.to_thread(get_inbox_delivery_stats_today, int(user_id), since_ts)
+    except Exception:
+        count = 0
+    if count >= budget:
+        return "exhausted"
+    try:
+        if await _drip_deliver_one(context, int(user_id), int(count), now):
+            logging.info("next_task: pulled-on-demand user=%s count=%s budget=%s", user_id, count, budget)
+            return "sent"
+    except Exception:
+        logging.warning("next_task on-demand pull failed user=%s", user_id, exc_info=True)
+    return "none"
+
+
 async def _send_next_open_task(update: Update, context: CallbackContext) -> None:
     """«▶️ Следующее задание» — collect the user's oldest still-open tasks FROM TODAY
     as up to 3 buttons on one branded card, so they don't scroll the chat to find them."""
@@ -2368,10 +2417,37 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
     logging.info("next_task: lookup done user=%s open_today=%s shown=%s elapsed_ms=%d",
                  user_id, open_count, len(tasks), int((pytime.time() - t0) * 1000))
     if not tasks:
+        # Inbox empty for today — don't assume "всё решено". The schedule may not have
+        # reached this user yet (fresh/Free account), or they chose «Тишина» (no push).
+        # Pull the next task from the pre-stocked pool ON DEMAND, within their daily
+        # budget (Free cap stays a conversion lever). The pulled card is the answer.
+        status = await _try_pull_next_task(context, user_id, chat_id, since_ts, now)
+        if status == "sent":
+            return
+        if status == "exhausted":
+            try:
+                is_pro = await asyncio.to_thread(_is_user_pro_cached, user_id)
+            except Exception:
+                is_pro = True
+            if not is_pro:
+                await update.message.reply_text(
+                    "✅ <b>На сегодня всё!</b>\n\n"
+                    "Ты разобрал все задания на сегодня. Хочешь больше прямо сейчас — "
+                    "это открывается в Pro 🔒. Иначе новые придут завтра 👍",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    "✅ <b>На сегодня всё решено!</b>\n\n"
+                    "Эта кнопка собирает твои невыполненные задания за сегодня (квиз, ребус, кроссворд, "
+                    "анаграмма, Aufgabe, аудирование). Новые приходят по расписанию — загляни позже 👍",
+                    parse_mode="HTML",
+                )
+            return
+        # status == "none": budget remained but the pool gave nothing right now.
         await update.message.reply_text(
-            "✅ <b>На сегодня всё решено!</b>\n\n"
-            "Эта кнопка собирает твои невыполненные задания за сегодня (квиз, ребус, кроссворд, "
-            "анаграмма, Aufgabe, аудирование). Новые приходят по расписанию — загляни позже 👍",
+            "⏳ <b>Секунду — новые задания готовятся.</b>\n\n"
+            "Сейчас в очереди пусто. Загляни чуть позже — подвезём свежие 👍",
             parse_mode="HTML",
         )
         return
