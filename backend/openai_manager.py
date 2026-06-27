@@ -3068,7 +3068,11 @@ Regeln:
   Falle/Ausnahme. Verständlich und konkret, nicht trocken.
 - "tip": EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Bild/Faustregel), damit
   man es FÜHLT statt auswendig zu lernen. Ohne das Emoji selbst.
-- "hint_ru": sehr kurzer russischer Hinweis, WAS geprüft wird (z. B. "союз уступки", "предлог с дательным").
+- "hint_ru": sehr kurzer russischer Hinweis, WAS geprüft wird — nenne nur die
+  grammatische KATEGORIE, NIEMALS die Lösung selbst. Der Hinweis darf das deutsche
+  Lösungswort (oder einen Teil davon) NICHT enthalten. Beispiele: "союз уступки",
+  "предлог с дательным", "парный союз сравнения" (NICHT "конструкция je…desto", weil
+  das die Antwort "desto" verrät).
 - Der Satz muss ohne Bild verständlich sein und natürlich klingen.
 
 Gib NUR STRICT JSON zurück:
@@ -3153,9 +3157,11 @@ STÜTZWÖRTER "lemmas" (das EINZIGE, was der Lernende sieht):
   • Substantive im Nominativ, OHNE Artikel, im für die Lösung passenden NUMERUS
     (z. B. "Vorteile", "Nachteile").
   • Pronomen wie "man" werden mit aufgeführt.
-  • Verben im INFINITIV; Adjektive/Adverbien in der Grundform.
+  • Verben im INFINITIV; Adjektive/Adverbien/Partizipien in der GRUNDFORM OHNE Endung
+    (z. B. "steigend" — NIEMALS "steigenden"/"steigender"; "wachsend" — nicht "wachsende").
 - NIEMALS in "lemmas": Artikel, Konjunktion ("ob","dass","und"), Präposition, "zu",
-  Reflexivpronomen, gebeugte Formen, Kasusendungen. GENAU DAS ergänzt der Lernende.
+  Reflexivpronomen, gebeugte Formen, Kasus-/Deklinationsendungen. GENAU DAS ergänzt der
+  Lernende. Ein attributives Adjektiv in "lemmas" steht IMMER endungslos in der Grundform.
 
 FELDER pro Aufgabe:
 - "vollsatz", "satz", "lemmas" (Liste), "correct".
@@ -3423,9 +3429,14 @@ For EACH item, in input order, judge TWO things:
     those words, is "correct" the ONE AND ONLY grammatically correct, natural way to fill
     the gap? If the same lemmas allow a DIFFERENT valid filling (another case/rection,
     e.g. accusative object vs. "zwischen"+dative), it is NOT unique → fail.
+(c) BASE FORM: EVERY lemma must be the uninflected DICTIONARY form — verbs in the
+    infinitive, adjectives/participles/adverbs in the GRUNDFORM (e.g. "steigend", NOT
+    "steigenden"/"steigender"), nouns in the nominative singular-or-needed-plural without
+    any article. If ANY lemma already carries a case/declension ending or otherwise leaks
+    the inflection the learner must supply → fail. (Supplying every ending is the task.)
 Return STRICT JSON ONLY, one result per item, SAME order:
 {"results":[{"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"]}, ...]}
-ok = true ONLY if BOTH (a) and (b) hold; otherwise ok=false and accepted=[].
+ok = true ONLY if ALL of (a), (b) and (c) hold; otherwise ok=false and accepted=[].
 """,
 "check_synonym": """
 You judge German vocabulary. Input JSON: {"target": "...", "candidate": "...", "relation": "synonym"|"antonym"}.

@@ -24834,8 +24834,21 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         correct = str(it.get("correct") or "").strip()
         if not satz or not correct or "_____" not in satz:
             return None
+        aliases = [str(a) for a in (it.get("aliases") or []) if str(a).strip()]
+        # Anti-leak: the Russian hint must never spell out the German answer. The model
+        # sometimes names the construction with the solution word ("конструкция
+        # сравнения je…desto" gives away "desto"). The hint is Cyrillic, so any
+        # Latin-script token in it that matches an answer word is a leak — blank the
+        # hint (the exercise stays valid; we only strip the given-away answer).
+        _answer_words = {
+            w.casefold() for src in [correct, *aliases] for w in re.findall(r"[A-Za-zÄÖÜäöüß]+", src)
+        }
+        if _answer_words and common.get("hint_ru"):
+            _hint_latin = {w.casefold() for w in re.findall(r"[A-Za-zÄÖÜäöüß]+", common["hint_ru"])}
+            if _hint_latin & _answer_words:
+                common["hint_ru"] = ""
         payload = {"satz": satz, "correct": correct,
-                   "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
+                   "aliases": aliases, **common}
         if fmt == "wortbildung":
             stamm = str(it.get("stamm") or "").strip()
             if not stamm:
@@ -24898,6 +24911,21 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
             return None
         if hidden_glue and any(_wg_norm(l) == _wg_norm(hidden_glue) for l in lemmas):
             return None
+
+        # No lemma may be shown ALREADY INFLECTED for attribution — supplying the
+        # ending is the whole task. In German an attributive adjective directly
+        # before a noun ALWAYS carries a declension ending, so if a lowercase content
+        # lemma appears verbatim in `correct` immediately before a capitalised noun,
+        # its ending has leaked (e.g. lemma "steigenden" before "Nachfrage" gives away
+        # the -en). The correct base-form lemma ("steigend") would NOT match the
+        # inflected token, so this never rejects a properly-built item.
+        _corr_tokens = [t.strip(".,;:!?…\"'»«()") for t in correct.split()]
+        _lemma_norms = {_wg_norm(l) for l in lemmas}
+        for _i in range(len(_corr_tokens) - 1):
+            _tok, _nxt = _corr_tokens[_i], _corr_tokens[_i + 1]
+            if _tok and _tok[:1].islower() and _nxt[:1].isupper() \
+                    and _wg_norm(_tok) in _lemma_norms:
+                return None
 
         # accepted = correct + every equivalent spelling (from the verifier, falling
         # back to legacy aliases), de-duplicated, preserving order.
