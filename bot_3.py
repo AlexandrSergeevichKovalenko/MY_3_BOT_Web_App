@@ -1020,6 +1020,7 @@ DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый пе�
 HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
 NEXT_TASK_BUTTON_TEXT = "▶️ Следующее задание"
 SCHEDULE_BUTTON_TEXT = "🗓 Расписание"
+SCHEDULE_BUTTON_PREFIX = "🗓"  # stable routing prefix; the live button also shows the user's current preset·window
 STREAK_BUTTON_TEXT = "🔥 Мой стрик"
 ARTIKEL_LEARN_BUTTON_TEXT = "📚 Учить артикли"
 ARTIKEL_FOCUS_BUTTON_TEXT = "🎯 Тема на завтра"
@@ -1072,6 +1073,27 @@ def _battle_available_button_text(user_id: int | None) -> str:
     return f"{ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT} ✅" if on else ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT
 
 
+def _schedule_button_text(user_id: int | None) -> str:
+    """Live label so the Pro user sees their current plan right on the reply button
+    (e.g. «🗓 🔥 Интенсивно · 🌅🌆 Утро+вечер»). SCHEDULE_BUTTON_PREFIX ('🗓') is the
+    stable routing prefix; falls back to the plain «🗓 Расписание» on any error."""
+    if user_id is None:
+        return SCHEDULE_BUTTON_TEXT
+    try:
+        prefs = get_user_prefs(int(user_id))
+        _, _, preset_label, win_label = _sched_labels(prefs)
+        return f"🗓 {preset_label} · {win_label}"
+    except Exception:
+        return SCHEDULE_BUTTON_TEXT
+
+
+def _is_schedule_button(text: str) -> bool:
+    """The schedule reply button has a DYNAMIC label (preset·window), so route it by
+    its stable prefix rather than an exact match."""
+    t = str(text or "").strip()
+    return t == SCHEDULE_BUTTON_TEXT or t.startswith(SCHEDULE_BUTTON_PREFIX)
+
+
 def _is_known_reply_menu_button(text: str) -> bool:
     """True if the text is one of the DM reply-keyboard menu labels. Used so a
     pending text-capture state (e.g. admin broadcast) never swallows a menu tap —
@@ -1089,7 +1111,9 @@ def _is_known_reply_menu_button(text: str) -> bool:
     if t in static_labels:
         return True
     # Dynamic labels (state suffix): match by their stable routing prefix.
-    return t.startswith(_AUTOSAVE_BUTTON_PREFIX) or t.startswith(ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT)
+    return (t.startswith(_AUTOSAVE_BUTTON_PREFIX)
+            or t.startswith(ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT)
+            or _is_schedule_button(t))
 
 
 try:
@@ -4077,7 +4101,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     # Стрик больше НЕ кнопка — статус едет в сообщениях (утро / итоги дня /
     # карточка «Следующее задание»). Расписание — только Pro.
     if is_pro:
-        rows.append([SCHEDULE_BUTTON_TEXT])
+        rows.append([_schedule_button_text(user_id)])
 
     # 2) Тренажёры (учить). Pro: +персональная тема на завтра.
     rows.append([ARTIKEL_LEARN_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
@@ -6420,6 +6444,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
             _msg_text not in _allowed_without_legacy_keyboard
             and not _msg_text.startswith(_AUTOSAVE_BUTTON_PREFIX)
             and not _msg_text.startswith(ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT)
+            and not _is_schedule_button(_msg_text)
         )
     ):
         return
@@ -6467,7 +6492,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await _send_howto_guide_chapter(update, context)
     elif text == NEXT_TASK_BUTTON_TEXT:
         await _send_next_open_task(update, context)
-    elif text == SCHEDULE_BUTTON_TEXT:
+    elif _is_schedule_button(text):
         await _send_schedule_picker(update, context)
     elif text == STREAK_BUTTON_TEXT:
         await _streak_command(update, context)
