@@ -485,6 +485,45 @@ body {
   gap: 0;
 }
 
+/* FSRS study screen: pin the whole chain to the EXACT visible viewport
+   (--app-height = visualViewport.height) and forbid vertical scroll, so the card
+   can't drift up/down and there's no dead space below it. This overrides the
+   fragile min-height:100vh / height:calc(100dvh - 132px) heights that stacked up
+   TALLER than the real (dynamic) viewport (100vh > 100dvh on mobile) and made the
+   page scroll. Scoped to the study screen only — the setup/settings screens keep
+   their normal scrolling. A flex-column fill chain (not % heights) keeps it
+   predictable across the grid containers in the middle. */
+.webapp-page.is-fsrs-study {
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch; /* let the shell fill the full height, not just its content */
+}
+.webapp-page.is-fsrs-study .webapp-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.webapp-page.is-fsrs-study .webapp-main,
+.webapp-page.is-fsrs-study .webapp-flashcards,
+.webapp-page.is-fsrs-study .flashcards-panel.is-session,
+.webapp-page.is-fsrs-study .flashcard-mode-screen {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.webapp-page.is-fsrs-study .fsrs-study-screen {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+}
+
 .webapp-page.is-reader-immersive {
   padding: 0;
 }
