@@ -1383,6 +1383,42 @@ def _synonym_semantic_match(target: str, candidate: str, relation: str) -> bool:
     return bool(_synonym_judge_full(target, candidate, relation).get("match"))
 
 
+def _satzbau_same_words(payload: dict, answer: str) -> bool:
+    """Satzbau requires REORDERING the given word cards. True iff `answer` uses exactly
+    the same word multiset as the task tokens (case/punctuation/ß-fold normalized) — a
+    cheap guard so the LLM judge only fires for genuine re-orderings, not different words."""
+    woerter = payload.get("woerter")
+    if isinstance(woerter, list) and woerter:
+        ref = " ".join(str(w) for w in woerter)
+    else:
+        accepted = payload.get("accepted") or []
+        ref = str(payload.get("satz") or (accepted[0] if accepted else ""))
+    ans_tokens = sorted(_norm_sentence(answer).split())
+    return bool(ans_tokens) and ans_tokens == sorted(_norm_sentence(ref).split())
+
+
+def _satzbau_judge_full(reference: str, user: str) -> dict:
+    """Bounded LLM judge for a Satzbau miss: {'match': bool, 'reason_ru': str}. German
+    allows several valid word orders, so a grammatically-correct re-ordering of the same
+    cards (e.g. fronting the subordinate clause) is accepted even if it isn't the one
+    canonical `accepted` string. reason_ru explains a genuinely wrong order to the learner."""
+    ref, u = str(reference or "").strip(), str(user or "").strip()
+    if not ref or not u or len(u) > 220 or len(u.split()) > 30:
+        return {"match": False, "reason_ru": ""}
+    try:
+        import asyncio
+        from backend.openai_manager import run_check_satzbau
+        res = asyncio.run(asyncio.wait_for(
+            run_check_satzbau(reference=ref, user=u), timeout=7.0,
+        ))
+        return {
+            "match": bool((res or {}).get("match")),
+            "reason_ru": str((res or {}).get("reason_ru") or "").strip(),
+        }
+    except Exception:
+        return {"match": False, "reason_ru": ""}
+
+
 def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     answer = str(raw_input or "").strip()
     if not answer:
@@ -1487,6 +1523,19 @@ def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict 
         )
         if not is_correct and answer:
             judged = _synonym_judge_full(str(payload.get("wort") or ""), answer, fmt)
+            is_correct = bool(judged.get("match"))
+            if not is_correct:
+                wrong_reason = str(judged.get("reason_ru") or "")
+    elif fmt == "satzbau":
+        # Exact-match against the accepted orderings first (hot path). On a miss, if the
+        # learner used the SAME word cards (a genuine re-ordering, e.g. fronting the
+        # subordinate clause), one bounded LLM judge decides if it's a valid alternative
+        # order — German allows several, and the pool's `accepted` rarely lists them all.
+        is_correct = _check_aufgabe(fmt, payload, raw_input)
+        if not is_correct and answer and _satzbau_same_words(payload, answer):
+            accepted = payload.get("accepted") or []
+            reference = str(payload.get("satz") or (accepted[0] if accepted else ""))
+            judged = _satzbau_judge_full(reference, answer)
             is_correct = bool(judged.get("match"))
             if not is_correct:
                 wrong_reason = str(judged.get("reason_ru") or "")

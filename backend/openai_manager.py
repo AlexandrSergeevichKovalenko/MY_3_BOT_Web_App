@@ -98,6 +98,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "sprint_antonym",
     "check_synonym",
     "check_synonym_batch",
+    "check_satzbau",
     "check_wortgruppe_batch",
     "word_order_distractors",
     "image_quiz_sentence_fallback",
@@ -3448,6 +3449,23 @@ Return STRICT JSON ONLY:
 - if it IS a valid {synonym/antonym}: {"match": true}
 - if NOT: {"match": false, "reason_ru": "<кратко по-русски, ≤90 знаков: что candidate на самом деле значит и почему это НЕ синоним/антоним target, например: 'genehmigen = одобрить/разрешить, а не подтвердить'>"}
 """,
+"check_satzbau": """
+You grade a German word-order ("Satzbau") exercise. The learner had to arrange the SAME word
+cards into a correct sentence and typed their own version. Input JSON:
+{"reference": "<the canonical correct sentence>", "user": "<the learner's sentence>"}.
+Decide whether `user` is ALSO fully correct. It is correct ONLY if ALL hold:
+(a) it is grammatically correct, natural German;
+(b) it uses the SAME words as `reference` — only the ORDER and punctuation may differ; no added,
+    missing or swapped words (capitalization/ß↔ss differences are irrelevant);
+(c) it keeps the SAME meaning.
+German often permits several valid orders (e.g. fronting a subordinate clause or an adverbial
+with verb-second inversion: "Um …, muss man …" ≡ "Man muss …, um …"). Accept ANY genuinely
+correct alternative ordering. REJECT if the order is ungrammatical, the words differ, or the
+meaning changes.
+Return STRICT JSON ONLY:
+- if `user` is a valid correct ordering: {"match": true}
+- if NOT: {"match": false, "reason_ru": "<кратко по-русски, ≤90 знаков: что не так с порядком слов, например: 'спрягаемый глагол должен стоять на 2-м месте'>"}
+""",
 "article_noun_gen": """
 You are a German lexicographer building data for an article (der/die/das) drill.
 Input JSON: {"theme": "...", "subtopic": "...", "count": <int>, "avoid": ["...","..."]}.
@@ -6366,6 +6384,25 @@ async def run_check_synonym(*, target_word: str, candidate: str, relation: str =
         user_message=json.dumps(
             {"target": str(target_word), "candidate": str(candidate), "relation": str(relation)},
             ensure_ascii=False,
+        ),
+        poll_interval_seconds=1.0,
+        responses_timeout_seconds=6.0,
+    )
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"match": False}
+
+
+async def run_check_satzbau(*, reference: str, user: str) -> dict:
+    """Bounded yes/no LLM check for a word-order (Satzbau) task: is `user` a valid
+    alternative ordering of the SAME words as `reference` (grammatical + same meaning)?
+    Only called as a fallback when the deterministic accepted-list misses."""
+    content = await llm_execute(
+        task_name="check_satzbau",
+        system_instruction_key="check_satzbau",
+        user_message=json.dumps(
+            {"reference": str(reference), "user": str(user)}, ensure_ascii=False
         ),
         poll_interval_seconds=1.0,
         responses_timeout_seconds=6.0,
