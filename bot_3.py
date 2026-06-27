@@ -24019,22 +24019,10 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     today = _get_quiz_schedule_now().date()
     cat_keys = {c for c, _, _, _ in _DIGEST_CATEGORIES}
 
-    # How many of each category were SENT today (same for everyone).
-    sent_by_cat: dict[str, int] = {}
-    for cat, _lbl, table, kind in _DIGEST_CATEGORIES:
-        try:
-            if kind == "listening":
-                sent_by_cat[cat] = 1 if await asyncio.to_thread(listening_dispatched_today, today) else 0
-            elif table:
-                hours = await asyncio.to_thread(get_dispatched_slot_hours_today, table, today)
-                sent_by_cat[cat] = len(hours)
-            else:
-                sent_by_cat[cat] = 0
-        except Exception:
-            sent_by_cat[cat] = 0
-    total_sent = sum(sent_by_cat.values())
-
-    # Per user → per category [answered, correct].
+    # Per user → per category [answered, correct]. We DON'T report "sent": answers come
+    # from group broadcasts, on-demand pulls and a rolling window, so they legitimately
+    # exceed "personally sent today" → the old "answered/sent %" produced impossible
+    # >100% numbers. The honest, coherent metric is activity: answered + accuracy.
     agg: dict[int, dict] = {}
 
     def _add(uid: int, cat: str, correct: bool) -> None:
@@ -24050,52 +24038,55 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     for r in art_rows:
         _add(r["user_id"], "art", r["is_correct"])
 
+    from backend.daily_summary_card import render_daily_summary
     labels = {c: lbl for c, lbl, _, _ in _DIGEST_CATEGORIES}
     order = [c for c, _, _, _ in _DIGEST_CATEGORIES]
+    date_str = today.strftime("%d.%m.%Y")
     sent_count = 0
-    cat_tables = {c: table for c, _l, table, _k in _DIGEST_CATEGORIES}
     for uid, cats in agg.items():
-        # Personal "sent" per category: DM users have per-user dispatches; group users
-        # share the post (target = group → 0), so fall back to the global count.
-        psent = {}
-        for _c, _tbl in cat_tables.items():
-            if _tbl:
-                psent[_c] = await asyncio.to_thread(count_user_dispatches_today, _tbl, today, int(uid))
-        user_sent_by_cat = psent if sum(psent.values()) > 0 else sent_by_cat
-        user_total_sent = sum(user_sent_by_cat.values())
         answered = sum(v[0] for v in cats.values())
         correct = sum(v[1] for v in cats.values())
-        denom = user_total_sent or answered
-        pct_ans = round(answered / denom * 100) if denom else 0
         acc = round(correct / answered * 100) if answered else 0
-
-        lines = [f"🏁 <b>Итоги дня</b> · {today.strftime('%d.%m.%Y')}", ""]
-        if user_total_sent:
-            lines.append(f"📤 Тебе отправлено: <b>{user_total_sent}</b> · ✅ Ты ответил: <b>{answered}</b> ({pct_ans}%)")
-        else:
-            lines.append(f"✅ Ты ответил: <b>{answered}</b> заданий")
-        lines.append(f"🎯 Верно: <b>{correct}</b> из отвеченных ({acc}%)")
+        card_rows = []
+        for cat in order:
+            v = cats.get(cat)
+            if not v or v[0] == 0:
+                continue
+            a, c = v[0], v[1]
+            card_rows.append({"label": labels[cat], "correct": c, "answered": a,
+                              "acc": round(c / a * 100) if a else 0})
         try:
             _sblk = await _streak_status_block(int(uid))
         except Exception:
             _sblk = ""
-        if _sblk:
-            lines += ["", _sblk]
-        lines += ["", "<b>По категориям</b> — верно/ответил/отправлено · ✅ %верных / %отвеченных:"]
-        for cat in order:
-            s = int(user_sent_by_cat.get(cat, 0))
-            v = cats.get(cat)
-            a, c = (v[0], v[1]) if v else (0, 0)
-            if s == 0 and a == 0:
-                continue  # nothing sent and nothing answered → hide
-            c_pct = f"{round(c / a * 100)}%" if a else "—"
-            if s:
-                lines.append(f"{labels[cat]} — {c}/{a}/{s} · ✅ {c_pct} / {round(a / s * 100)}%")
-            else:
-                lines.append(f"{labels[cat]} — {c}/{a} · ✅ {c_pct}")
-        lines += ["", f"👥 /group — играть командой · /invite — позови друга (+{REFERRAL_REWARD_DAYS} дней Pro обоим)"]
+
+        png = None
         try:
-            await context.bot.send_message(chat_id=int(uid), text="\n".join(lines), parse_mode="HTML")
+            png = await asyncio.to_thread(
+                render_daily_summary, date_str=date_str, answered=answered,
+                correct=correct, accuracy_pct=acc, streak_text=_sblk, rows=card_rows)
+        except Exception:
+            logging.warning("daily digest render failed uid=%s", uid, exc_info=True)
+        caption = (f"🏁 <b>Итоги дня</b> · {date_str}\n"
+                   f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)\n\n"
+                   f"👥 /group — играть командой · /invite — позови друга "
+                   f"(+{REFERRAL_REWARD_DAYS} дней Pro обоим)")
+        try:
+            if png:
+                await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(png),
+                                              caption=caption, parse_mode="HTML")
+            else:
+                # PIL unavailable → honest plain-text fallback (no "sent" denominator).
+                lines = [f"🏁 <b>Итоги дня</b> · {date_str}", "",
+                         f"✅ Ты ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)"]
+                if _sblk:
+                    lines += ["", _sblk]
+                lines += ["", "<b>По категориям</b> — верно/ответил · точность:"]
+                for r in card_rows:
+                    lines.append(f"{r['label']} — {r['correct']}/{r['answered']} · {r['acc']}%")
+                lines += ["", f"👥 /group — играть командой · /invite — позови друга "
+                              f"(+{REFERRAL_REWARD_DAYS} дней Pro обоим)"]
+                await context.bot.send_message(chat_id=int(uid), text="\n".join(lines), parse_mode="HTML")
             sent_count += 1
         except Exception:
             logging.warning("daily digest send failed uid=%s", uid, exc_info=True)
