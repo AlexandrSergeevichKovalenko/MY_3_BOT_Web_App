@@ -2180,8 +2180,8 @@ body {
   grid-template-columns: minmax(0, 1.6fr) minmax(220px, 1fr);
   gap: 14px;
   align-items: start;
-  background: linear-gradient(135deg, rgba(20, 83, 45, 0.42), rgba(8, 47, 73, 0.42));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(16, 23, 44, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 20px;
   padding: 14px;
   box-shadow: 0 16px 34px rgba(8, 11, 26, 0.24);
@@ -8751,10 +8751,10 @@ body {
   transform: none;
 }
 
-.fsrs-rate-btn.again { background: #e13b3b; }
-.fsrs-rate-btn.hard { background: #e47a1f; }
-.fsrs-rate-btn.good { background: #1f9e4a; }
-.fsrs-rate-btn.easy { background: #2e69da; }
+.fsrs-rate-btn.again { background: var(--dmps-danger); }
+.fsrs-rate-btn.hard { background: var(--dmps-warning); }
+.fsrs-rate-btn.good { background: var(--dmps-success); }
+.fsrs-rate-btn.easy { background: var(--dmps-primary); }
 
 .fsrs-empty-note {
   width: 100%;
@@ -10498,13 +10498,13 @@ body {
   justify-content: center;
   border-radius: 999px;
   overflow: hidden;
-  border: 1px solid rgba(102, 225, 235, 0.42);
-  background: #0f5e68;
-  box-shadow: inset 0 0 0 1px rgba(168, 245, 255, 0.1), 0 10px 24px rgba(2, 8, 28, 0.54);
+  border: 1px solid var(--dmps-border);
+  background: var(--dmps-card);
+  box-shadow: 0 10px 24px rgba(8, 11, 26, 0.4);
 }
 
 .quiz-mascot-circle.is-wrong {
-  background: #0b4f58;
+  background: var(--dmps-card-alt);
 }
 
 .quiz-mascot-image {
@@ -11481,11 +11481,11 @@ body {
 }
 
 .finish-button {
-  background: #2d5a3a;
+  background: var(--dmps-success);
 }
 
 .finish-button:hover {
-  box-shadow: 0 12px 24px rgba(45, 90, 58, 0.28);
+  box-shadow: 0 12px 24px rgba(22, 163, 74, 0.28);
 }
 
 @keyframes float {
@@ -22704,18 +22704,158 @@ body {
   background: rgba(217, 174, 116, 0.2);
 }
 
-.webapp-page.is-theme-light.is-android-client .hero-guide-card {
+.webapp-page.is-theme-light .hero-guide-card {
   background: rgba(253, 247, 236, 0.95);
   border: 1px solid rgba(171, 139, 98, 0.24);
   box-shadow: 0 14px 32px rgba(105, 78, 47, 0.13);
 }
 
-.webapp-page.is-theme-light.is-android-client .hero-guide-card-title {
+.webapp-page.is-theme-light .hero-guide-card-title {
   color: #1f1a14;
 }
 
-.webapp-page.is-theme-light.is-android-client .hero-guide-card p {
+.webapp-page.is-theme-light .hero-guide-card p {
   color: rgba(46, 37, 27, 0.78);
+}
+
+/* ── Light-theme parity: surfaces that previously had only a dark default and so
+   leaked dark colours in the browser/iOS light theme. Sandy palette to match the
+   rest of .is-theme-light. ─────────────────────────────────────────────────── */
+
+/* Flashcard settings modal.
+   NOTE: the modal has an UNCONDITIONAL dark `!important` block (~line 21848) that
+   forces #1e293b/#111827 in every theme, so the light overrides below must also use
+   `!important`. They are scoped to .is-theme-light, so the dark theme is untouched. */
+.webapp-page.is-theme-light .flashcard-settings-overlay {
+  background: rgba(95, 76, 53, 0.42) !important;
+}
+.webapp-page.is-theme-light .flashcard-settings-modal,
+.webapp-page.is-theme-light .flashcard-settings-footer {
+  background: rgba(253, 247, 236, 0.98) !important;
+  border-color: rgba(171, 139, 98, 0.28) !important;
+}
+.webapp-page.is-theme-light .flashcard-settings-modal {
+  box-shadow: 0 30px 60px rgba(105, 78, 47, 0.22) !important;
+}
+.webapp-page.is-theme-light .flashcard-settings-head h4 {
+  color: #1f1a14 !important;
+}
+.webapp-page.is-theme-light .flashcard-settings-back,
+.webapp-page.is-theme-light .flashcard-settings-modal .setup-label {
+  color: rgba(88, 72, 54, 0.64) !important;
+}
+.webapp-page.is-theme-light .flashcard-settings-divider {
+  background: rgba(171, 139, 98, 0.28) !important;
+}
+.webapp-page.is-theme-light .flashcard-settings-modal .option-pill.flashcard-settings-pill {
+  border-color: rgba(171, 139, 98, 0.4) !important;
+  color: #4a3f2e !important;
+}
+/* keep the active pill on the primary token (reads fine on cream) */
+.webapp-page.is-theme-light .flashcard-settings-modal .option-pill.flashcard-settings-pill.is-active {
+  background: var(--dmps-primary) !important;
+  border-color: var(--dmps-primary) !important;
+  color: #fff !important;
+}
+.webapp-page.is-theme-light .flashcard-settings-select,
+.webapp-page.is-theme-light .flashcard-settings-badge,
+.webapp-page.is-theme-light .flashcard-settings-queue,
+.webapp-page.is-theme-light .flashcard-settings-update-btn:not(.flashcard-settings-reschedule-btn) {
+  background: #fff9f0 !important;
+  border-color: rgba(130, 101, 67, 0.28) !important;
+  color: #1f1a14 !important;
+}
+.webapp-page.is-theme-light .flashcard-settings-badge,
+.webapp-page.is-theme-light .flashcard-settings-queue,
+.webapp-page.is-theme-light .flashcard-settings-manual-note {
+  color: rgba(46, 37, 27, 0.78) !important;
+}
+
+/* SRS study surfaces */
+.webapp-page.is-theme-light .srs-panel {
+  background: rgba(253, 247, 236, 0.9);
+  border-color: rgba(171, 139, 98, 0.28);
+}
+.webapp-page.is-theme-light .srs-panel.srs-panel-setup {
+  background: rgba(246, 236, 220, 0.7);
+  border-color: rgba(171, 139, 98, 0.3);
+}
+.webapp-page.is-theme-light .srs-queue {
+  color: rgba(46, 37, 27, 0.78);
+}
+.webapp-page.is-theme-light .srs-card {
+  background: rgba(255, 249, 240, 0.92);
+  border-color: rgba(171, 139, 98, 0.28);
+}
+.webapp-page.is-theme-light .srs-card.is-revealed {
+  background: rgba(246, 236, 220, 0.95);
+  border-color: rgba(191, 137, 71, 0.45);
+}
+.webapp-page.is-theme-light .srs-card-back {
+  color: #4a3f2e;
+}
+
+/* Flashcard study card + parts */
+.webapp-page.is-theme-light .flashcard {
+  background: rgba(253, 247, 236, 0.85);
+  border-color: rgba(171, 139, 98, 0.3);
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .flashcard-context {
+  background: rgba(246, 236, 220, 0.85);
+  color: rgba(46, 37, 27, 0.78);
+}
+.webapp-page.is-theme-light .flashcard-sentence-translation {
+  background: rgba(246, 236, 220, 0.85);
+  border-color: rgba(171, 139, 98, 0.3);
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .flashcard-details {
+  background: rgba(255, 249, 240, 0.8);
+  border-color: rgba(171, 139, 98, 0.28);
+}
+.webapp-page.is-theme-light .flashcard-option {
+  background: rgba(255, 249, 240, 0.9);
+  border-color: rgba(171, 126, 72, 0.4);
+  color: #1f1a14;
+}
+
+/* Generic uppercase tag pill (the lesson-scoped variant was themed; this is the
+   generic .webapp-page one that leaked dark #1f1c17 into light theme) */
+.webapp-page.is-theme-light .pill {
+  background: rgba(95, 76, 53, 0.16);
+  color: #4a3f2e;
+}
+
+/* YouTube learning surfaces */
+.webapp-page.is-theme-light .webapp-video-actions.is-subtitle-toolbar,
+.webapp-page.is-theme-light .webapp-subtitles-manual,
+.webapp-page.is-theme-light .youtube-learning-topbar,
+.webapp-page.is-theme-light .youtube-subtitles-card {
+  background: rgba(253, 247, 236, 0.95);
+  border-color: rgba(171, 139, 98, 0.28);
+  box-shadow: 0 14px 32px rgba(105, 78, 47, 0.13);
+}
+
+/* Reader / dictionary panels */
+.webapp-page.is-theme-light .dictionary-pdf-panel {
+  background: rgba(253, 247, 236, 0.95);
+  border-color: rgba(171, 139, 98, 0.3);
+}
+.webapp-page.is-theme-light .reader-archive-panel {
+  background: rgba(253, 247, 236, 0.92);
+  border-color: rgba(171, 139, 98, 0.3);
+}
+
+/* Billing accordion + movies filter chip */
+.webapp-page.is-theme-light .billing-info-accordion__section {
+  background: rgba(246, 236, 220, 0.7);
+  border-color: rgba(171, 139, 98, 0.24);
+}
+.webapp-page.is-theme-light .movies-filter-chip {
+  background: rgba(246, 236, 220, 0.6);
+  border-color: rgba(171, 139, 98, 0.3);
+  color: #4a3f2e;
 }
 
 .webapp-page.is-theme-light .guide-step-card.is-highlight .guide-step-title,
