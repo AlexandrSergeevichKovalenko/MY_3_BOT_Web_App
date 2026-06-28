@@ -28,6 +28,18 @@
 
 .dq-card { gap: 14px; }
 
+/* Full-dict Search: quick-dict-style compose elements */
+.dict-search-langrow { margin-bottom: 12px; }
+.dictionary-input.dict-input-big {
+  min-height: 64px;
+  resize: vertical;
+  font-size: 17px;
+  line-height: 1.35;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.dict-search-recent { margin: 6px 0 4px; }
+
 /* Rich breakdown embedded inside the full-app Library word detail. Horizontal
    padding so the table/blocks don't sit flush against the left edge. */
 .vocab-rich-card {

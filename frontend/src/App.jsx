@@ -5308,6 +5308,9 @@ function AppInner() {
   });
   const [dictionarySaved, setDictionarySaved] = useState('');
   const [dictionaryDirection, setDictionaryDirection] = useState('ru-de');
+  const [dictSearchRecents, setDictSearchRecents] = useState(() => {
+    try { const r = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]'); return Array.isArray(r) ? r.filter((x) => typeof x === 'string').slice(0, 6) : []; } catch (_e) { return []; }
+  });
   const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
   const [collocationsVisible, setCollocationsVisible] = useState(false);
   const [collocationsLoading, setCollocationsLoading] = useState(false);
@@ -9072,6 +9075,21 @@ function AppInner() {
     }, 0);
     return () => window.clearTimeout(timerId);
   }, [dictionaryDirection, dictionaryResult, preloadTts, resolveDictionaryTargetTts]);
+
+  // Record successful Search lookups into the shared "Недавние" list (same
+  // localStorage key the quick dictionary uses, so recents are unified).
+  useEffect(() => {
+    if (!dictionaryResult) return;
+    const w = String(dictionaryWord || '').trim();
+    if (!w) return;
+    try {
+      const prev = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]');
+      const list = Array.isArray(prev) ? prev.filter((x) => typeof x === 'string') : [];
+      const next = [w, ...list.filter((x) => x.toLowerCase() !== w.toLowerCase())].slice(0, 6);
+      localStorage.setItem('dq_recents_v1', JSON.stringify(next));
+      setDictSearchRecents(next);
+    } catch (_e) { /* ignore */ }
+  }, [dictionaryResult]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const locale = getLearningTtsLocale();
@@ -33075,19 +33093,42 @@ function AppInner() {
 
                     {/* ─── SEARCH TAB ─── */}
                     {vocabTab === 'search' && (<>
+                    {/* Language bar (⇄) — quick-dictionary style, controls the shown direction. */}
+                    <div className="dq-langrow dict-search-langrow">
+                      <div className="dq-langbar">
+                        <span className="dq-lang">{dictionaryDirection === 'de-ru' ? 'Deutsch' : 'Русский'}</span>
+                        <button
+                          type="button"
+                          className="dq-swap"
+                          onClick={() => setDictionaryDirection((d) => (d === 'de-ru' ? 'ru-de' : 'de-ru'))}
+                          aria-label={tr('Поменять языки', 'Sprachen tauschen')}
+                        >⇄</button>
+                        <span className="dq-lang">{dictionaryDirection === 'de-ru' ? 'Русский' : 'Deutsch'}</span>
+                      </div>
+                    </div>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
                         <span>{tr('Слово или фраза', 'Wort oder Phrase')}</span>
                         <div className="dictionary-input-wrap">
-                          <input
-                            className="dictionary-input"
-                            type="text"
+                          <textarea
+                            className="dictionary-input dict-input-big"
+                            rows={2}
                             value={dictionaryWord}
                             onChange={(event) => setDictionaryWord(event.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDictionaryLookup(e); } }}
                             placeholder={tr('Например: слово, фраза или выражение', 'Zum Beispiel: Wort, Phrase oder Ausdruck')}
                           />
-                          {dictionaryWord.trim() && (
-                            <div className="dictionary-input-tools">
+                          <div className="dictionary-input-tools">
+                            <button
+                              type="button"
+                              className="dictionary-clear"
+                              title={tr('Вставить', 'Einfügen')}
+                              onClick={async () => {
+                                try { const t = (await navigator.clipboard.readText() || '').trim(); if (t) setDictionaryWord(t); } catch (_e) { /* ignore */ }
+                              }}
+                              aria-label={tr('Вставить', 'Einfügen')}
+                            >📋</button>
+                            {dictionaryWord.trim() && (
                               <button
                                 type="button"
                                 className="dictionary-clear"
@@ -33096,10 +33137,20 @@ function AppInner() {
                               >
                                 ×
                               </button>
-                            </div>
-                          )}
+                            )}
+                          </div>
                         </div>
                       </label>
+                      {dictSearchRecents.length > 0 && (
+                        <div className="dq-recent dict-search-recent">
+                          <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
+                          <div className="dq-recent-chips">
+                            {dictSearchRecents.map((w) => (
+                              <button key={w} type="button" className="dq-recent-chip" onClick={() => setDictionaryWord(w)}>{w}</button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       <div className="dictionary-actions">
                         <button
                           className="secondary-button dictionary-fast-button"
