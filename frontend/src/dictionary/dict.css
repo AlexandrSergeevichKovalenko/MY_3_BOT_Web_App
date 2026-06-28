@@ -28,9 +28,11 @@
 
 .dq-card { gap: 14px; }
 
-/* Rich breakdown embedded inside the full-app Library word detail */
+/* Rich breakdown embedded inside the full-app Library word detail. Horizontal
+   padding so the table/blocks don't sit flush against the left edge. */
 .vocab-rich-card {
   margin-top: 10px;
+  padding: 0 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -763,6 +765,13 @@
   cursor: pointer;
 }
 .dq-ex-ru {
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+/* Always-on example translation (no reveal toggle) */
+.dq-ex-ru-static {
+  margin-left: 34px;
   font-size: 13.5px;
   line-height: 1.4;
   color: var(--dmps-text-muted, #94a3b8);

@@ -130,43 +130,23 @@ export function SpeakButton({ text, tts, sm }) {
   );
 }
 
-// Example sentences: German + 🔊 always visible; the Russian hidden behind a tap.
+// Example sentences: German + 🔊, with the Russian translation always shown below
+// (no reveal toggle — simpler and nothing hidden).
 function ExamplesBlock({ examples, tts }) {
-  const [revealed, setRevealed] = useState(() => new Set());
-  const [all, setAll] = useState(false);
   if (!examples || examples.length === 0) return null;
-  const toggleOne = (i) => setRevealed((prev) => {
-    const next = new Set(prev);
-    if (next.has(i)) next.delete(i); else next.add(i);
-    return next;
-  });
-  const anyRu = examples.some((e) => e.ru);
   return (
     <div className="dq-block">
-      <div className="dq-ex-head">
-        <strong>Примеры</strong>
-        {anyRu && (
-          <button type="button" className="dq-ex-toggle" onClick={() => setAll((v) => !v)}>
-            {all ? 'Скрыть перевод' : 'Показать перевод'}
-          </button>
-        )}
-      </div>
+      <strong>Примеры</strong>
       <div className="dq-ex-list">
-        {examples.map((ex, i) => {
-          const show = all || revealed.has(i);
-          return (
-            <div key={`${ex.de}-${i}`} className="dq-ex">
-              <div className="dq-ex-de">
-                <SpeakButton text={ex.de} tts={tts} sm />
-                <span>{ex.de}</span>
-              </div>
-              {ex.ru && (show
-                ? <button type="button" className="dq-ex-ru" onClick={() => toggleOne(i)}>{ex.ru}</button>
-                : <button type="button" className="dq-ex-reveal" onClick={() => toggleOne(i)}>Показать перевод</button>
-              )}
+        {examples.map((ex, i) => (
+          <div key={`${ex.de}-${i}`} className="dq-ex">
+            <div className="dq-ex-de">
+              <SpeakButton text={ex.de} tts={tts} sm />
+              <span>{ex.de}</span>
             </div>
-          );
-        })}
+            {ex.ru && <div className="dq-ex-ru-static">{ex.ru}</div>}
+          </div>
+        ))}
       </div>
     </div>
   );
