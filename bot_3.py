@@ -2630,19 +2630,29 @@ def _render_sched_step1(prefs) -> tuple:
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-def _render_sched_step2(prefs, show_confirm: bool = False) -> tuple:
-    """Step 2/2 — pick active hours, then confirm. «Подтвердить» appears only AFTER a
-    window is chosen (show_confirm=True from the pwin handler), so it doesn't sit among
-    the hour options on first entry and confuse the choice."""
+def _render_sched_step2a(prefs) -> tuple:
+    """Step 2, hours pick — ONLY the window options + «К интенсивности». No «Подтвердить»
+    yet (it must not sit among the hour options). Picking a window advances to 2b."""
     _, cur_win, preset_label, _ = _sched_labels(prefs)
     lines = ["🗓 <b>Расписание · шаг 2 из 2</b>", "",
              f"Интенсивность: <b>{preset_label}</b>", "",
              "<b>В какие часы присылать?</b> (по твоему времени)"]
     rows = [[InlineKeyboardButton(("✅ " if key == cur_win else "") + label, callback_data=f"pwin:{key}")]
             for key, (label, _w) in _WINDOW_PRESETS.items()]
-    if show_confirm:
-        rows.append([InlineKeyboardButton("✅ Подтвердить расписание", callback_data="sch:done")])
     rows.append([InlineKeyboardButton("⬅️ К интенсивности", callback_data="sch:open")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _render_sched_step2b(prefs) -> tuple:
+    """Step 2, after a window is chosen — the hour options DISAPPEAR; only «Подтвердить»
+    + «К выбору времени» remain (one confirm, one back), so the screen stays clean."""
+    _, _, preset_label, win_label = _sched_labels(prefs)
+    lines = ["🗓 <b>Расписание · шаг 2 из 2</b>", "",
+             f"Интенсивность: <b>{preset_label}</b>",
+             f"Время: <b>{win_label}</b>", "",
+             "Всё верно?"]
+    rows = [[InlineKeyboardButton("✅ Подтвердить расписание", callback_data="sch:done")],
+            [InlineKeyboardButton("⬅️ К выбору времени", callback_data="sch:time")]]
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
@@ -2697,7 +2707,7 @@ async def _schedule_preset_callback(update: Update, context: CallbackContext) ->
     ok = await asyncio.to_thread(set_user_preset, user_id, code)
     await query.answer("Сохранено ✅" if ok else "Не удалось сохранить")
     if ok:
-        await _sched_edit(query, _render_sched_step2, user_id)
+        await _sched_edit(query, _render_sched_step2a, user_id)
 
 
 async def _schedule_window_callback(update: Update, context: CallbackContext) -> None:
@@ -2716,12 +2726,13 @@ async def _schedule_window_callback(update: Update, context: CallbackContext) ->
     ok = await asyncio.to_thread(set_user_schedule, user_id, _window_schedule_for(key))
     await query.answer("Сохранено ✅ — жми «Подтвердить»" if ok else "Не удалось сохранить")
     if ok:
-        # Window picked → now reveal «Подтвердить расписание».
-        await _sched_edit(query, lambda p: _render_sched_step2(p, show_confirm=True), user_id)
+        # Window picked → hour options disappear; show only «Подтвердить» / «К выбору времени».
+        await _sched_edit(query, _render_sched_step2b, user_id)
 
 
 async def _schedule_nav_callback(update: Update, context: CallbackContext) -> None:
-    """sch:done → collapse to one button; sch:open → reopen the wizard at step 1."""
+    """sch:done → collapse to one button; sch:time → back to the hours pick (step 2a);
+    sch:open → reopen the wizard at step 1 (intensity)."""
     query = update.callback_query
     if not query or not query.from_user:
         return
@@ -2731,7 +2742,11 @@ async def _schedule_nav_callback(update: Update, context: CallbackContext) -> No
         await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
         return
     await query.answer()
-    await _sched_edit(query, _render_sched_collapsed if action == "done" else _render_sched_step1, user_id)
+    render_fn = {
+        "done": _render_sched_collapsed,
+        "time": _render_sched_step2a,
+    }.get(action, _render_sched_step1)
+    await _sched_edit(query, render_fn, user_id)
 
 
 # ── DAU streaks (Этап 4) ─────────────────────────────────────────────────────
