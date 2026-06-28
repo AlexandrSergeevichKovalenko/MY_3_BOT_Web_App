@@ -236,6 +236,16 @@ async function bootstrapShortcutGuide() {
   );
 }
 
+async function bootstrapDictionary() {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: DictionaryOverlay } = await import('./dictionary/DictionaryOverlay.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <DictionaryOverlay />
+    </React.StrictMode>,
+  );
+}
+
 async function bootstrapApp() {
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
@@ -252,6 +262,10 @@ async function bootstrapApp() {
   }
   if (/^shortcut$/i.test(answerStartParam)) {
     await bootstrapShortcutGuide();
+    return;
+  }
+  if (/^dict$/i.test(answerStartParam)) {
+    await bootstrapDictionary();
     return;
   }
   if (/^lb/i.test(answerStartParam)) {

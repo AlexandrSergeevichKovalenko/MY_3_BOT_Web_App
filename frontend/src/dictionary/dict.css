@@ -1,0 +1,128 @@
+/* Quick-dictionary overlay (?startapp=dict). Card shell + .dd-* action/save/err
+ * classes come from answer.css; this file only adds the search row + result. */
+
+.dq-card { gap: 14px; }
+
+.dq-search {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.dq-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 17px;
+}
+
+.dq-go {
+  flex: 0 0 auto;
+  border: none;
+  border-radius: var(--dmps-radius-button, 14px);
+  padding: 0 16px;
+  font: inherit;
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+  background: linear-gradient(180deg, #2f6df6, #2563eb);
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
+  cursor: pointer;
+}
+.dq-go:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+
+.dq-hint {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+
+.dq-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--dmps-radius-card, 18px);
+  background: var(--dmps-card-alt, rgba(15, 23, 42, 0.5));
+  border: 1px solid var(--dmps-border, #334155);
+}
+
+.dq-source {
+  font-size: 13px;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+
+.dq-translation {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--dmps-text-title, #f8fafc);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dq-tts {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  font-size: 16px;
+  cursor: pointer;
+  background: rgba(37, 99, 235, 0.16);
+  color: var(--dmps-text-primary, #f8fafc);
+}
+.dq-tts.on { background: rgba(37, 99, 235, 0.4); }
+.dq-tts:disabled { opacity: 0.6; cursor: default; }
+
+.dq-pos {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--dmps-text-subtle, #94a3b8);
+}
+
+.dq-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dmps-border, #334155);
+}
+.dq-block strong {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+.dq-block span {
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--dmps-text-secondary, #cbd5e1);
+}
+
+.dq-muted {
+  font-size: 13px;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+
+.dq-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.dq-full {
+  align-self: center;
+  background: none;
+  border: none;
+  padding: 6px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #6ea0ff;
+  cursor: pointer;
+}
