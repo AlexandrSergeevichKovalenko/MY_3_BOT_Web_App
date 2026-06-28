@@ -39,8 +39,25 @@
   flex: 1 1 auto;
 }
 
-/* 2. Папка — compact */
-.dict-folder-compact { padding: 10px 12px !important; margin: 0 0 10px !important; }
+/* 2. Папка — collapsed one-line row (tap to expand) */
+.dict-folder-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dmps-text-secondary, #cbd5e1);
+  cursor: pointer;
+}
+.dict-folder-toggle-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dict-folder-toggle-arrow { opacity: 0.6; flex: 0 0 auto; }
+.dict-folder-compact { padding: 8px 12px !important; margin: 0 0 10px !important; }
 .dict-folder-compact .folder-row { gap: 6px; }
 .dict-folder-compact .folder-select span { font-size: 11px; }
 .dict-folder-compact select { padding: 8px 10px !important; font-size: 14px !important; }
@@ -62,6 +79,44 @@
   line-height: 1.35;
   padding: 14px 44px 14px 14px;
 }
+
+/* Primary «Перевести» (big) + small Быстро/Офлайн options beside it */
+.dict-translate-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 10px;
+}
+.dict-translate-primary {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 50px;
+  border: none;
+  border-radius: 16px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.3);
+  cursor: pointer;
+}
+.dict-translate-primary:disabled { opacity: 0.5; box-shadow: none; cursor: default; }
+.dict-translate-alt {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border-radius: 14px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: rgba(148, 163, 184, 0.10);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dict-translate-alt:disabled { opacity: 0.5; cursor: default; }
+.dict-back-link { margin-top: 8px; font-size: 12.5px; }
 
 /* 5. Недавние — compact */
 .dict-search-recent { margin: 8px 0 2px; }

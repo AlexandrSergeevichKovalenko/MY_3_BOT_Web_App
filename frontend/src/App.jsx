@@ -5999,6 +5999,7 @@ function AppInner() {
   const [flashcardAutoAdvance, setFlashcardAutoAdvance] = useState(true);
   const [sentenceDifficulty, setSentenceDifficulty] = useState('medium');
   const [showNewFolderForm, setShowNewFolderForm] = useState(false);
+  const [folderPanelOpen, setFolderPanelOpen] = useState(false); // Search: collapsed folder row
   const [newFolderName, setNewFolderName] = useState('');
   const [newFolderColor, setNewFolderColor] = useState('#5ddcff');
   const [newFolderIcon, setNewFolderIcon] = useState('book');
@@ -33093,51 +33094,22 @@ function AppInner() {
 
                     {/* ─── SEARCH TAB ─── */}
                     {vocabTab === 'search' && (<>
-                    {/* 1. Тип перевода — три компактные кнопки (сразу под вкладками) */}
-                    <div className="dictionary-actions dict-actions-compact">
-                      <button
-                        className="secondary-button dictionary-fast-button"
-                        type="button"
-                        onClick={handleDictionaryQuickLookup}
-                        disabled={dictionaryLoading}
-                      >
-                        {dictionaryLoading && dictionaryLookupMode === 'quick'
-                          ? tr('Перевод...', 'Übersetzen...')
-                          : tr('⚡ Перевод', '⚡ Übersetzen')}
-                      </button>
-                      <button
-                        className="secondary-button dictionary-button"
-                        type="button"
-                        onClick={(e) => handleDictionaryLookup(e)}
-                        disabled={dictionaryLoading}
-                      >
-                        {dictionaryLoading && dictionaryLookupMode === 'gpt'
-                          ? tr('Разбор AI...', 'KI-Analyse...')
-                          : tr('🤖 Разбор AI', '🤖 KI-Analyse')}
-                      </button>
-                      <button
-                        className="secondary-button dictionary-base-button"
-                        type="button"
-                        onClick={handleDictionaryBaseLookup}
-                        disabled={dictionaryLoading}
-                        title={tr('Базовый словарь — работает онлайн и офлайн', 'Basiswörterbuch — funktioniert online und offline')}
-                      >
-                        {dictionaryLoading && dictionaryLookupMode === 'base'
-                          ? tr('Офлайн...', 'Offline...')
-                          : tr('📖 Офлайн', '📖 Offline')}
-                      </button>
-                      {lastLookupScrollY !== null && (
-                        <button
-                          type="button"
-                          className="secondary-button dictionary-back-icon"
-                          onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
-                        >
-                          {tr('↙ к предложению', '↙ zum Satz')}
-                        </button>
-                      )}
-                    </div>
 
                     <div className="folder-panel dict-folder-compact">
+                      {/* Collapsed one-line folder row — tap to expand controls */}
+                      <button
+                        type="button"
+                        className="dict-folder-toggle"
+                        onClick={() => setFolderPanelOpen((v) => !v)}
+                      >
+                        <span className="dict-folder-toggle-label">
+                          📁 {dictionaryFolderId !== 'none' && selectedDictionaryFolder
+                            ? selectedDictionaryFolder.name
+                            : tr('Без папки', 'Ohne Ordner')}
+                        </span>
+                        <span className="dict-folder-toggle-arrow">{folderPanelOpen ? '▴' : '▾'}</span>
+                      </button>
+                      {folderPanelOpen && (<>
                       <div className="folder-row">
                         <label className="webapp-field folder-select">
                           <span>{tr('Папка для сохранения', 'Speicherordner')}</span>
@@ -33262,6 +33234,7 @@ function AppInner() {
                         </div>
                       )}
                       {!showNewFolderForm && foldersError && <div className="webapp-error">{foldersError}</div>}
+                      </>)}
                     </div>
 
                     {/* 3. Языковая пара (компактно) — над полем ввода */}
@@ -33307,6 +33280,46 @@ function AppInner() {
                           )}
                         </div>
                       </div>
+                      {/* Primary action = «Разбор AI» (big); Быстро/Офлайн are small options beside */}
+                      <div className="dict-translate-row">
+                        <button
+                          type="button"
+                          className="dict-translate-primary"
+                          onClick={(e) => handleDictionaryLookup(e)}
+                          disabled={dictionaryLoading || !dictionaryWord.trim()}
+                        >
+                          {dictionaryLoading && dictionaryLookupMode === 'gpt'
+                            ? tr('Разбор…', 'Analyse…')
+                            : tr('Перевести', 'Übersetzen')}
+                        </button>
+                        <button
+                          type="button"
+                          className="dict-translate-alt"
+                          onClick={handleDictionaryQuickLookup}
+                          disabled={dictionaryLoading}
+                          title={tr('Быстрый перевод', 'Schnellübersetzung')}
+                        >
+                          {dictionaryLoading && dictionaryLookupMode === 'quick' ? '…' : tr('⚡ Быстро', '⚡ Schnell')}
+                        </button>
+                        <button
+                          type="button"
+                          className="dict-translate-alt"
+                          onClick={handleDictionaryBaseLookup}
+                          disabled={dictionaryLoading}
+                          title={tr('Базовый словарь — онлайн и офлайн', 'Basiswörterbuch — online und offline')}
+                        >
+                          {dictionaryLoading && dictionaryLookupMode === 'base' ? '…' : tr('📖 Офлайн', '📖 Offline')}
+                        </button>
+                      </div>
+                      {lastLookupScrollY !== null && (
+                        <button
+                          type="button"
+                          className="secondary-button dictionary-back-icon dict-back-link"
+                          onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
+                        >
+                          {tr('↙ к предложению', '↙ zum Satz')}
+                        </button>
+                      )}
                       {dictSearchRecents.length > 0 && (
                         <div className="dq-recent dict-search-recent">
                           <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
