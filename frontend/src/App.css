@@ -573,6 +573,41 @@ body {
     grid-auto-rows: minmax(0, 1fr);
     padding-bottom: 12px;
   }
+
+  /* Compact the "Сегодня" strip a touch so the tiles get more of the height. */
+  .webapp-page.is-home-bento .hdt-today-card { margin-top: 8px; }
+  .webapp-page.is-home-bento .hdt-today-row1 { margin-bottom: 6px; }
+  .webapp-page.is-home-bento .hdt-metric { padding: 8px 5px; border-radius: 13px; }
+  .webapp-page.is-home-bento .hdt-metric-icon { width: 24px; height: 24px; }
+  .webapp-page.is-home-bento .hdt-section-head { padding: 10px 18px 2px; }
+
+  /* Adaptive tile internals: icon / padding / label / hero bars scale with the
+     screen height (the pinned Bento fills the viewport, so tile height ∝ vh) and
+     are clamped to safe min/max — so labels fit and never clip on short phones,
+     while staying full-size on tall ones. */
+  .webapp-page.is-home-bento .hdt-bt { padding: clamp(8px, 1.4vh, 13px); }
+  .webapp-page.is-home-bento .hdt-ic {
+    width: clamp(26px, 4vh, 38px);
+    height: clamp(26px, 4vh, 38px);
+    border-radius: 10px;
+  }
+  .webapp-page.is-home-bento .hdt-bt.hero .hdt-ic {
+    width: clamp(32px, 5vh, 44px);
+    height: clamp(32px, 5vh, 44px);
+    border-radius: 13px;
+  }
+  .webapp-page.is-home-bento .hdt-ic svg { width: 56%; height: 56%; }
+  .webapp-page.is-home-bento .hdt-bl {
+    font-size: clamp(9.5px, 1.5vh, 11.5px);
+    line-height: 1.1;
+  }
+  .webapp-page.is-home-bento .hdt-bt.hero .hdt-bl {
+    font-size: clamp(12px, 1.95vh, 15px);
+  }
+  .webapp-page.is-home-bento .hdt-bars {
+    height: clamp(14px, 2.2vh, 26px);
+    margin-top: clamp(4px, 0.9vh, 9px);
+  }
 }
 
 .webapp-page.is-reader-immersive {
