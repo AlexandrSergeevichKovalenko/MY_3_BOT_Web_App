@@ -124,8 +124,17 @@ function useTts() {
     }
   }, []);
 
+  // Fire-and-forget prewarm: kick off generation so the audio is already cached
+  // (status ready) by the time the user taps 🔊. No polling, no playback, never
+  // touches playback state — so it can't disrupt an in-flight play().
+  const warm = useCallback(async (text, language = 'de-DE') => {
+    const t = String(text || '').trim();
+    if (!t) return;
+    try { await api('/api/webapp/tts/generate', { text: t, language }); } catch (_e) { /* ignore */ }
+  }, []);
+
   useEffect(() => () => stop(), [stop]);
-  return { state, play, stop };
+  return { state, play, stop, warm };
 }
 
 export default function DictionaryOverlay() {
@@ -165,6 +174,14 @@ export default function DictionaryOverlay() {
     if (quick.targetLang === 'de') return quick.translation;
     return '';
   })();
+
+  // Prewarm pronunciation as soon as the German text is known (user accepted the
+  // small TTS-quota cost), so tapping 🔊 plays from cache instead of waiting on the
+  // queue+worker round-trip.
+  const { warm: warmTts } = tts;
+  useEffect(() => {
+    if (germanText) warmTts(germanText, 'de-DE');
+  }, [germanText, warmTts]);
 
   const translate = useCallback(async () => {
     const text = query.trim();
@@ -303,9 +320,13 @@ export default function DictionaryOverlay() {
 
         {quick && phase !== 'loading' && (
           <div className="dq-result">
-            <div className="dq-source">{quick.source}</div>
+            <div className="dq-source">
+              {(item?.article && quick.sourceLang === 'de') ? `${item.article} ` : ''}{quick.source}
+            </div>
             <div className="dq-translation">
-              {item?.article ? `${item.article} ` : ''}
+              {/* The German article only belongs to the German word, never to the
+                  Russian translation (was producing "die Порядок действий"). */}
+              {(item?.article && item?.word_de && quick.targetLang === 'de') ? `${item.article} ` : ''}
               {(item?.word_de && quick.targetLang === 'de') ? item.word_de : (quick.translation || '—')}
               {germanText && (
                 <button
