@@ -75,15 +75,106 @@ function pushRecent(word) {
   return next;
 }
 
-function formatExample(example) {
-  if (typeof example === 'string') return String(example || '').trim();
-  if (example && typeof example === 'object') {
-    const source = String(example.source || '').trim();
-    const target = String(example.target || '').trim();
-    if (source && target) return `${source} → ${target}`;
-    return source || target;
+const hasCyrillic = (s) => /[А-Яа-яЁё]/.test(String(s || ''));
+
+// Collect structured example pairs {de, ru} from usage_examples + meaning
+// examples. The German side is the non-Cyrillic one, the Russian side Cyrillic —
+// reliable for the RU↔DE pair. Deduplicated by the German sentence, max 4.
+function collectExamples(item) {
+  const pairs = [];
+  const add = (a, b) => {
+    const x = clean(a);
+    const y = clean(b);
+    if (!x && !y) return;
+    let de = '';
+    let ru = '';
+    if (hasCyrillic(x) && !hasCyrillic(y)) { ru = x; de = y; }
+    else if (!hasCyrillic(x) && hasCyrillic(y)) { de = x; ru = y; }
+    else { de = x; ru = y; } // fallback: keep order
+    if (de) pairs.push({ de, ru });
+  };
+  (Array.isArray(item?.usage_examples) ? item.usage_examples : []).forEach((ex) => {
+    if (ex && typeof ex === 'object') add(ex.source, ex.target);
+  });
+  const m = item?.meanings;
+  if (m && typeof m === 'object') {
+    const take = (e) => { if (e && typeof e === 'object') add(e.example_source, e.example_target); };
+    take(m.primary);
+    if (Array.isArray(m.secondary)) m.secondary.forEach(take);
   }
-  return '';
+  const seen = new Set();
+  const out = [];
+  for (const p of pairs) {
+    const key = p.de.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+// 🔊 button that reflects only its own text's play state (headword + each example
+// share one TTS hook). Compact variant for example rows.
+function SpeakButton({ text, tts, sm }) {
+  const t = clean(text);
+  if (!t) return null;
+  const isLoading = tts.state === 'loading' && tts.playingText === t;
+  const isPlaying = tts.state === 'playing' && tts.playingText === t;
+  return (
+    <button
+      type="button"
+      className={`dq-tts${sm ? ' sm' : ''}${isPlaying ? ' on' : ''}`}
+      onClick={() => (isPlaying ? tts.stop() : tts.play(t, 'de-DE'))}
+      disabled={isLoading}
+      aria-label="Прослушать"
+    >
+      {isLoading ? '⏳' : isPlaying ? '⏹' : '🔊'}
+    </button>
+  );
+}
+
+// Example sentences: German + 🔊 always visible; the Russian translation is
+// hidden behind a tap (self-test) with a block-level "show/hide all" toggle.
+function ExamplesBlock({ examples, tts }) {
+  const [revealed, setRevealed] = useState(() => new Set());
+  const [all, setAll] = useState(false);
+  if (!examples || examples.length === 0) return null;
+  const toggleOne = (i) => setRevealed((prev) => {
+    const next = new Set(prev);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    return next;
+  });
+  const anyRu = examples.some((e) => e.ru);
+  return (
+    <div className="dq-block">
+      <div className="dq-ex-head">
+        <strong>Примеры</strong>
+        {anyRu && (
+          <button type="button" className="dq-ex-toggle" onClick={() => setAll((v) => !v)}>
+            {all ? 'Скрыть перевод' : 'Показать перевод'}
+          </button>
+        )}
+      </div>
+      <div className="dq-ex-list">
+        {examples.map((ex, i) => {
+          const show = all || revealed.has(i);
+          return (
+            <div key={`${ex.de}-${i}`} className="dq-ex">
+              <div className="dq-ex-de">
+                <SpeakButton text={ex.de} tts={tts} sm />
+                <span>{ex.de}</span>
+              </div>
+              {ex.ru && (show
+                ? <button type="button" className="dq-ex-ru" onClick={() => toggleOne(i)}>{ex.ru}</button>
+                : <button type="button" className="dq-ex-reveal" onClick={() => toggleOne(i)}>Показать перевод</button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 // Russian labels for the part-of-speech badge.
@@ -348,7 +439,7 @@ function GrammarTables({ tables }) {
 // speech (article/plural for nouns, conjugation for verbs, comparison for
 // adjectives, register notes for phrases) plus meanings, collocations, government,
 // examples and etymology — only the sections that actually carry data are shown.
-function RichBreakdown({ item }) {
+function RichBreakdown({ item, tts }) {
   if (!item) return null;
   const pos = clean(item.part_of_speech).toLowerCase();
   const posLabel = Object.prototype.hasOwnProperty.call(POS_LABELS, pos)
@@ -362,9 +453,7 @@ function RichBreakdown({ item }) {
   const hasTables = !!(gt && (gt.declension || gt.conjugation || gt.comparison));
   const government = governmentList(item);
   const collocations = collocationList(item);
-  const examples = (Array.isArray(item.usage_examples) ? item.usage_examples : [])
-    .map(formatExample)
-    .filter(Boolean);
+  const examples = collectExamples(item);
   const etymology = clean(item.etymology_note);
   const memoryTip = clean(item.memory_tip);
   const level = clean(item.level).toUpperCase();
@@ -397,7 +486,6 @@ function RichBreakdown({ item }) {
                 <span className="dq-mean-head">
                   {m.value}{m.context ? <em> · {m.context}</em> : null}
                 </span>
-                {m.example && <span className="dq-mean-ex">{m.example}</span>}
               </li>
             ))}
           </ol>
@@ -452,12 +540,7 @@ function RichBreakdown({ item }) {
         </div>
       )}
 
-      {examples.length > 0 && (
-        <div className="dq-block">
-          <strong>Примеры</strong>
-          {examples.slice(0, 3).map((ex, i) => <span key={`${ex}-${i}`}>{ex}</span>)}
-        </div>
-      )}
+      <ExamplesBlock examples={examples} tts={tts} />
 
       {usage.length > 0 && (
         <div className="dq-block">
@@ -506,11 +589,15 @@ function useTts() {
   const audioRef = useRef(null);
   const seqRef = useRef(0);
   const [state, setState] = useState('idle'); // idle|loading|playing|error
+  // The exact text currently loading/playing, so several 🔊 buttons (headword +
+  // each example) can each reflect only their own state.
+  const [playingText, setPlayingText] = useState('');
 
   const stop = useCallback(() => {
     seqRef.current += 1;
     if (audioRef.current) { try { audioRef.current.pause(); } catch (_e) { /* ignore */ } audioRef.current = null; }
     setState('idle');
+    setPlayingText('');
   }, []);
 
   const play = useCallback(async (text, language = 'de-DE') => {
@@ -518,6 +605,7 @@ function useTts() {
     if (!t) return;
     const mySeq = ++seqRef.current;
     setState('loading');
+    setPlayingText(t);
     haptic('light');
     try {
       await api('/api/webapp/tts/generate', { text: t, language });
@@ -537,7 +625,7 @@ function useTts() {
       if (mySeq !== seqRef.current) return;
       const audio = new Audio(url);
       audioRef.current = audio;
-      audio.onended = () => { if (mySeq === seqRef.current) setState('idle'); };
+      audio.onended = () => { if (mySeq === seqRef.current) { setState('idle'); setPlayingText(''); } };
       audio.onerror = () => { if (mySeq === seqRef.current) setState('error'); };
       setState('playing');
       await audio.play();
@@ -556,7 +644,7 @@ function useTts() {
   }, []);
 
   useEffect(() => () => stop(), [stop]);
-  return { state, play, stop, warm };
+  return { state, playingText, play, stop, warm };
 }
 
 export default function DictionaryOverlay() {
@@ -781,19 +869,9 @@ export default function DictionaryOverlay() {
               {(item?.article && item?.word_de && quick.targetLang === 'de')
                 ? <><span className={`dq-art ${genderClass(item.article)}`}>{item.article}</span> </> : ''}
               {(item?.word_de && quick.targetLang === 'de') ? item.word_de : (quick.translation || '—')}
-              {germanText && (
-                <button
-                  type="button"
-                  className={`dq-tts${tts.state === 'playing' ? ' on' : ''}`}
-                  onClick={() => (tts.state === 'playing' ? tts.stop() : tts.play(germanText, 'de-DE'))}
-                  disabled={tts.state === 'loading'}
-                  aria-label="Прослушать"
-                >
-                  {tts.state === 'loading' ? '⏳' : tts.state === 'playing' ? '⏹' : '🔊'}
-                </button>
-              )}
+              {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
-            {item && <RichBreakdown item={item} />}
+            {item && <RichBreakdown item={item} tts={tts} />}
             {enrich === 'loading' && <div className="dq-muted">Готовлю полный разбор…</div>}
 
             <div className="dq-actions">
