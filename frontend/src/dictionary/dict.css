@@ -28,6 +28,14 @@
 
 .dq-card { gap: 14px; }
 
+/* Rich breakdown embedded inside the full-app Library word detail */
+.vocab-rich-card {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* Language bar (RU ⇄ DE) — persistent direction control like Google Translate */
 .dq-langrow {
   display: flex;

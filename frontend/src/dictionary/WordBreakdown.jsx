@@ -434,7 +434,7 @@ function GrammarTables({ tables }) {
 // The full POS-aware breakdown of an item (fresh lookup OR saved response_json).
 // `tts` enables audio; `onSaveChip`/`savedChips` enable tap-to-save chips (both
 // optional — when omitted the chips are inert text and audio buttons hide).
-export function WordBreakdown({ item, tts, onSaveChip, savedChips }) {
+export function WordBreakdown({ item, tts, onSaveChip, savedChips, hideMeanings }) {
   if (!item) return null;
   const pos = clean(item.part_of_speech).toLowerCase();
   const phraseKind = clean(item.phrase_kind).toLowerCase();
@@ -488,7 +488,7 @@ export function WordBreakdown({ item, tts, onSaveChip, savedChips }) {
         </div>
       )}
 
-      {meanings.length > 0 && (
+      {!hideMeanings && meanings.length > 0 && (
         <div className="dq-block">
           <strong>Значения</strong>
           <ol className="dq-meanings">
@@ -503,7 +503,7 @@ export function WordBreakdown({ item, tts, onSaveChip, savedChips }) {
         </div>
       )}
 
-      {variants.length > 0 && (
+      {!hideMeanings && variants.length > 0 && (
         <div className="dq-block">
           <strong>Варианты перевода</strong>
           <div className="dq-vars">

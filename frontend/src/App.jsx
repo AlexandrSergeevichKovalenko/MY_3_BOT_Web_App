@@ -8,6 +8,7 @@ import ReaderSection from './components/ReaderSection';
 import HomeMoreTiles from './components/HomeMoreTiles';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
 import ExplainErrorsModal from './components/ExplainErrorsModal';
+import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic } from './dictionary/WordBreakdown';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
@@ -41,6 +42,34 @@ import {
 
 import './styles/topbar-redesign.css';
 import './styles/home-browser-redesign.css';
+
+// Rich, POS-aware detail card for a saved Library word — the SAME breakdown the
+// quick dictionary shows, fed by the entry's saved response_json (declension/
+// conjugation, synonyms/antonyms/related, etymology, «как запомнить», examples +
+// audio, level/frequency/IPA…). Mounts only when a word is expanded, so its own
+// TTS hook is created on demand. Meanings are hidden here (the Library already
+// renders «Значения» above). Tapping a synonym/collocation chip saves it.
+function LibraryWordDetail({ item }) {
+  const tts = useDictTts();
+  const [savedChips, setSavedChips] = useState(() => new Set());
+  const data = (item && typeof item.response_json === 'object' && item.response_json) ? item.response_json : null;
+  const saveChip = useCallback((text) => {
+    const t = String(text || '').trim();
+    if (!t) return;
+    setSavedChips((prev) => { if (prev.has(t)) return prev; const n = new Set(prev); n.add(t); return n; });
+    dictHaptic('ok');
+    dictApi('/api/webapp/dictionary/save', {
+      source_text: t, source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
+      origin_process: 'webapp_library_related',
+    }).catch(() => { setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; }); });
+  }, []);
+  if (!data) return null;
+  return (
+    <div className="dq-card vocab-rich-card">
+      <WordBreakdown item={data} tts={tts} hideMeanings onSaveChip={saveChip} savedChips={savedChips} />
+    </div>
+  );
+}
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -32967,6 +32996,7 @@ function AppInner() {
                                               </div>
                                             </div>
                                           )}
+                                          <LibraryWordDetail item={item} />
                                           <div className="vocab-word-actions">
                                             <button
                                               type="button"
