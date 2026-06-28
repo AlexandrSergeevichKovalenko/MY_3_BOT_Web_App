@@ -2856,8 +2856,10 @@ async def _streak_status_block(uid: int) -> str:
     except Exception:
         return ""
     cur = int(st.get("current_streak") or 0)
+    # «Streak» + a Russian gloss — users don't read "Стрик" as "серия дней подряд".
+    L = "🔥 Streak (серия дней подряд)"
     if cur <= 0:
-        return "🔥 Стрик: 0 — позанимайся сегодня, и серия начнётся!"
+        return f"{L}: 0 — позанимайся сегодня, и серия начнётся!"
     try:
         is_pro = await asyncio.to_thread(is_user_pro, int(uid))
     except Exception:
@@ -2865,14 +2867,47 @@ async def _streak_status_block(uid: int) -> str:
     if is_pro:
         m = _streak_next_milestone(cur)
         if m is not None and (m - cur) <= 3:
-            return f"🔥 Стрик: <b>{cur}</b> · ещё {m - cur} до грамоты за {m} дней 🏆"
-        return f"🔥 Стрик: <b>{cur}</b> дней подряд — так держать!"
+            return f"{L}: <b>{cur}</b> · ещё {m - cur} до грамоты за {m} дней 🏆"
+        return f"{L}: <b>{cur}</b> дней подряд — так держать!"
     rem = _streak_next_reward_in(cur)
     if rem == 1:
-        return f"🔥 Стрик: <b>{cur}</b> — ещё 1 день, и получишь <b>день Pro</b>! 🔥"
+        return f"{L}: <b>{cur}</b> — ещё 1 день, и получишь <b>день Pro</b>! 🔥"
     if rem == 2:
-        return f"🔥 Стрик: <b>{cur}</b> · ты уже на полпути до <b>дня Pro</b> 🔥"
-    return f"🔥 Стрик: <b>{cur}</b> дней подряд · до дня Pro ещё {rem}"
+        return f"{L}: <b>{cur}</b> · ты уже на полпути до <b>дня Pro</b> 🔥"
+    return f"{L}: <b>{cur}</b> дней подряд · до дня Pro ещё {rem}"
+
+
+async def _streak_caption_block(uid: int) -> str:
+    """Multi-line, plain-language streak explainer for the digest CAPTION — the room
+    the one-line PNG band can't give. Tells the user WHAT a streak is, WHAT counts as
+    an active day, and (Free) how it earns Pro access. HTML. Empty on lookup failure."""
+    try:
+        st = await asyncio.to_thread(get_user_streak, int(uid))
+    except Exception:
+        return ""
+    cur = int(st.get("current_streak") or 0)
+    try:
+        is_pro = await asyncio.to_thread(is_user_pro, int(uid))
+    except Exception:
+        is_pro = False
+    lines = [f"🔥 <b>Streak (серия дней подряд)</b>: {cur}"]
+    if cur <= 0:
+        lines.append(
+            "Серия — это сколько дней подряд ты занимаешься без пропусков. "
+            f"Каждые <b>{STREAK_REWARD_EVERY} дней подряд</b> = <b>+1 день Pro бесплатно</b> "
+            "(полный доступ ко всему приложению на сутки). Начни сегодня 🚀")
+    elif is_pro:
+        lines.append(f"Ты занимаешься уже <b>{cur} дн.</b> подряд без пропусков — так держать! 🔥")
+    else:
+        rem = _streak_next_reward_in(cur)
+        lines.append(
+            f"Ты занимаешься уже <b>{cur} дн.</b> подряд без пропусков. "
+            f"Каждые <b>{STREAK_REWARD_EVERY} дней подряд</b> = <b>+1 день Pro бесплатно</b> "
+            f"(полный доступ ко всему приложению на сутки). "
+            f"До следующего дня Pro осталось <b>{rem} дн.</b>")
+    lines.append("<i>Активный день засчитывается, если в этот день ты ответил хотя бы на "
+                 "одно задание или перевёл фразу.</i>")
+    return "\n".join(lines)
 
 
 async def _streak_command(update: Update, context: CallbackContext) -> None:
@@ -2956,6 +2991,28 @@ async def _invite_command(update: Update, context: CallbackContext) -> None:
         f"🔗 {link}\n\n"
         f"✅ Успешных приглашений: <b>{n}</b>",
         parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def handle_digest_group_callback(update: Update, context: CallbackContext) -> None:
+    """«Играть командой» button under the daily «Итоги дня» card → group-play how-to."""
+    q = update.callback_query
+    if q:
+        try:
+            await q.answer()
+        except Exception:
+            pass
+    await group_play_help_command(update, context)
+
+
+async def handle_digest_invite_callback(update: Update, context: CallbackContext) -> None:
+    """«Позвать друга» button under the daily «Итоги дня» card → referral link."""
+    q = update.callback_query
+    if q:
+        try:
+            await q.answer()
+        except Exception:
+            pass
+    await _invite_command(update, context)
 
 
 async def _dau_command(update: Update, context: CallbackContext) -> None:
@@ -24296,30 +24353,113 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
                 correct=correct, accuracy_pct=acc, streak_text=_sblk, rows=card_rows)
         except Exception:
             logging.warning("daily digest render failed uid=%s", uid, exc_info=True)
+        # Cryptic /group, /invite commands → two tappable buttons under the card.
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👥 Играть командой", callback_data="digest:group"),
+            InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} Pro)",
+                                 callback_data="digest:invite"),
+        ]])
+        cap_streak = await _streak_caption_block(int(uid))
         caption = (f"🏁 <b>Итоги дня</b> · {date_str}\n"
-                   f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)\n\n"
-                   f"👥 /group — играть командой · /invite — позови друга "
-                   f"(+{REFERRAL_REWARD_DAYS} дней Pro обоим)")
+                   f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)")
+        if cap_streak:
+            caption += "\n\n" + cap_streak
         try:
             if png:
                 await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(png),
-                                              caption=caption, parse_mode="HTML")
+                                              caption=caption, parse_mode="HTML", reply_markup=kb)
             else:
                 # PIL unavailable → honest plain-text fallback (no "sent" denominator).
                 lines = [f"🏁 <b>Итоги дня</b> · {date_str}", "",
                          f"✅ Ты ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)"]
-                if _sblk:
-                    lines += ["", _sblk]
+                if cap_streak:
+                    lines += ["", cap_streak]
                 lines += ["", "<b>По категориям</b> — верно/ответил · точность:"]
                 for r in card_rows:
                     lines.append(f"{r['label']} — {r['correct']}/{r['answered']} · {r['acc']}%")
-                lines += ["", f"👥 /group — играть командой · /invite — позови друга "
-                              f"(+{REFERRAL_REWARD_DAYS} дней Pro обоим)"]
-                await context.bot.send_message(chat_id=int(uid), text="\n".join(lines), parse_mode="HTML")
+                await context.bot.send_message(chat_id=int(uid), text="\n".join(lines),
+                                               parse_mode="HTML", reply_markup=kb)
             sent_count += 1
         except Exception:
             logging.warning("daily digest send failed uid=%s", uid, exc_info=True)
     logging.info("daily_challenge_digest sent=%d participants", sent_count)
+
+
+async def _admin_test_digest_command(update: Update, context: CallbackContext) -> None:
+    """/admin_digest — send the «Итоги дня» card + buttons to the caller ONLY (preview).
+    Uses your real last-24h activity if any; otherwise sample data so you can still see
+    the layout, streak block and the two buttons. Does NOT touch other users."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    uid = int(user.id)
+    from backend.daily_summary_card import render_daily_summary
+    from backend.database import get_article_quiz_answers_since
+
+    cat_keys = {c for c, _, _, _ in _DIGEST_CATEGORIES}
+    labels = {c: lbl for c, lbl, _, _ in _DIGEST_CATEGORIES}
+    order = [c for c, _, _, _ in _DIGEST_CATEGORIES]
+    cats: dict[str, list] = {}
+
+    def _add(cat: str, correct: bool) -> None:
+        cell = cats.setdefault(cat, [0, 0]); cell[0] += 1; cell[1] += 1 if correct else 0
+
+    try:
+        rows = await asyncio.to_thread(get_challenge_results_since, 24)
+        art_rows = await asyncio.to_thread(get_article_quiz_answers_since, 24)
+    except Exception:
+        rows, art_rows = [], []
+    for r in rows:
+        if int(r.get("user_id") or 0) != uid:
+            continue
+        kind = str(r.get("challenge_key") or "").partition(":")[0]
+        cat = "sp" if kind.startswith("sp_") else kind
+        if cat in cat_keys:
+            _add(cat, r["is_correct"])
+    for r in art_rows:
+        if int(r.get("user_id") or 0) == uid:
+            _add("art", r["is_correct"])
+
+    sample = not cats
+    if sample:  # no activity → show a representative sample card
+        cats = {"rb": [1, 0], "ag": [4, 2], "au": [2, 1], "ls": [1, 1]}
+
+    answered = sum(v[0] for v in cats.values())
+    correct = sum(v[1] for v in cats.values())
+    acc = round(correct / answered * 100) if answered else 0
+    card_rows = [{"label": labels[cat], "correct": cats[cat][1], "answered": cats[cat][0],
+                  "acc": round(cats[cat][1] / cats[cat][0] * 100) if cats[cat][0] else 0}
+                 for cat in order if cats.get(cat) and cats[cat][0] > 0]
+
+    date_str = _get_quiz_schedule_now().date().strftime("%d.%m.%Y")
+    _sblk = await _streak_status_block(uid)
+    png = None
+    try:
+        png = await asyncio.to_thread(
+            render_daily_summary, date_str=date_str, answered=answered, correct=correct,
+            accuracy_pct=acc, streak_text=_sblk, rows=card_rows)
+    except Exception:
+        logging.warning("admin test digest render failed", exc_info=True)
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("👥 Играть командой", callback_data="digest:group"),
+        InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} Pro)",
+                             callback_data="digest:invite"),
+    ]])
+    cap_streak = await _streak_caption_block(uid)
+    prefix = "🧪 <i>Превью (пример данных)</i>\n" if sample else "🧪 <i>Превью (твои данные за 24 ч)</i>\n"
+    caption = (f"{prefix}🏁 <b>Итоги дня</b> · {date_str}\n"
+               f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)")
+    if cap_streak:
+        caption += "\n\n" + cap_streak
+    if png:
+        await message.reply_photo(photo=io.BytesIO(png), caption=caption,
+                                  parse_mode="HTML", reply_markup=kb)
+    else:
+        await message.reply_text(caption + "\n\n(PIL недоступен — карточка не отрисована)",
+                                 parse_mode="HTML", reply_markup=kb)
 
 
 from backend.quiz_leaderboard import compute_quiz_leaderboard as _compute_quiz_leaderboard
@@ -29955,6 +30095,7 @@ def main():
     application.add_handler(CommandHandler("invite", _invite_command))
     application.add_handler(CommandHandler("announce_schedule", _announce_schedule_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
+    application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
@@ -30032,6 +30173,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_folder_callback, pattern=r"^dictfolder:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
     application.add_handler(CallbackQueryHandler(handle_group_enrollment_callback, pattern=r"^groupenroll:confirm$"))
+    application.add_handler(CallbackQueryHandler(handle_digest_group_callback, pattern=r"^digest:group$"))
+    application.add_handler(CallbackQueryHandler(handle_digest_invite_callback, pattern=r"^digest:invite$"))
     application.add_handler(CallbackQueryHandler(handle_language_tutor_callback, pattern=r"^langgpt:(ask|continue)$"))
     application.add_handler(CallbackQueryHandler(handle_language_tutor_detail_callback, pattern=r"^langgpt:detail$"))
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
