@@ -31,9 +31,12 @@ _GERMAN_ARTICLE_TOKENS = {
 
 
 def _normalize_quiz_text(value: str) -> str:
-    # Fold ß → ss so the 1996-reform / keyboard spelling variant (Abschluß ↔ Abschluss,
-    # daß ↔ dass) isn't graded as a wrong answer.
+    # Fold ß → ss AND the umlaut transliterations ä→ae, ö→oe, ü→ue so a learner typing
+    # on a keyboard without German keys (schoen ↔ schön, Maedchen ↔ Mädchen) isn't
+    # graded as wrong. This is the standard German ASCII equivalence (same justification
+    # as the ß↔ss fold) — it never makes a genuinely different word match (schon ≠ schön).
     lowered = str(value or "").lower().replace("ß", "ss")
+    lowered = lowered.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
     cleaned = re.sub(r"[^a-zäöüà-ÿ0-9\s'\-]", " ", lowered)
     cleaned = cleaned.replace("-", " ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -1242,6 +1245,33 @@ def _aufgabe_correct_answer(payload: dict) -> str:
     return str(accepted[0]) if accepted else ""
 
 
+def _display_user_answer(fmt: str, raw: str, payload: dict) -> str:
+    """Human-readable form of a composite answer for the result card, so the learner
+    never sees the internal encoding (e.g. '2|das'). For the `error` format it shows
+    «tapped → correction» so a wrong TAP (not a wrong word) is visible; for `pin` the
+    typed article; for `hoerluecke` the gaps joined. Other formats pass through."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if fmt == "error":
+        idx_str, sep, correction = s.partition("|")
+        if not sep:
+            return s
+        correction = correction.strip()
+        woerter = payload.get("woerter") if isinstance(payload.get("woerter"), list) else []
+        try:
+            tapped = str(woerter[int(idx_str)])
+        except (ValueError, IndexError, TypeError):
+            return correction or s
+        return f"{tapped} → {correction}" if correction else tapped
+    if fmt == "pin":
+        _coords, sep, article = s.partition("|")
+        return article.strip() if sep else s   # show the article they typed (not the tap coords)
+    if fmt == "hoerluecke":
+        return " · ".join(p.strip() for p in s.split("|") if p.strip())
+    return s
+
+
 def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answered: bool,
                            user_answer: str = "", wrong_reason: str = "") -> dict:
     payload = dispatch.get("payload") or {}
@@ -1259,7 +1289,7 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
         "is_correct": bool(is_correct),
         "correct_word": _aufgabe_correct_answer(payload),
         "is_sentence": bool(is_sentence),
-        "user_answer": str(user_answer or "").strip(),
+        "user_answer": _display_user_answer(fmt, user_answer, payload),
         "saveable": saveable,
         "hint_ru": str(payload.get("hint_ru") or ""),
         "explanation": str(payload.get("erklaerung") or payload.get("explanation") or ""),
@@ -1428,8 +1458,10 @@ def _norm_sentence(s: str) -> str:
     """Order-preserving sentence normalizer for Satzbau: lowercase, collapse spaces,
     drop punctuation. Same words in the SAME order → equal; wrong order → different."""
     import re as _re
-    # Fold ß → ss so a word-order answer isn't failed over Abschluß vs Abschluss.
+    # Fold ß → ss and ä/ö/ü → ae/oe/ue so a word-order answer isn't failed over
+    # Abschluß vs Abschluss or schön vs schoen (matches _normalize_quiz_text).
     lowered = str(s or "").lower().replace("ß", "ss")
+    lowered = lowered.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
     t = _re.sub(r"[^\wäöü\s]", " ", lowered, flags=_re.UNICODE)
     return _re.sub(r"\s+", " ", t).strip()
 
