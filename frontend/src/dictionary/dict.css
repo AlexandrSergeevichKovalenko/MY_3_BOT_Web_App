@@ -445,6 +445,12 @@
 .dq-ant { background: rgba(244, 114, 130, 0.12); color: #ff96a6; }
 .dq-related em { font-style: normal; opacity: 0.65; }
 
+/* Idiom "дословно" panel — distinct tint so the literal sense reads as a hint */
+.dq-literal {
+  background: rgba(139, 92, 246, 0.10);
+}
+.dq-literal span { font-style: italic; }
+
 /* ── Word formation (Hand + Schuh) ───────────────────────────────────────────── */
 .dq-formation {
   display: flex;

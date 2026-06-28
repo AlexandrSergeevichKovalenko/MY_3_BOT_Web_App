@@ -463,9 +463,12 @@ function GrammarTables({ tables }) {
 function RichBreakdown({ item, tts }) {
   if (!item) return null;
   const pos = clean(item.part_of_speech).toLowerCase();
-  const posLabel = Object.prototype.hasOwnProperty.call(POS_LABELS, pos)
-    ? POS_LABELS[pos]
-    : clean(item.part_of_speech);
+  const phraseKind = clean(item.phrase_kind).toLowerCase();
+  const PHRASE_KIND_LABELS = { idiom: 'идиома', saying: 'поговорка', collocation: 'устойчивое сочетание' };
+  const isPhrase = pos === 'phrase' || pos === 'other';
+  const posLabel = (isPhrase && PHRASE_KIND_LABELS[phraseKind])
+    || (Object.prototype.hasOwnProperty.call(POS_LABELS, pos) ? POS_LABELS[pos] : clean(item.part_of_speech));
+  const literal = clean(item.literal_meaning);
   const pron = pronunciationText(item);
   const variants = translationVariants(item);
   const meanings = meaningList(item);
@@ -485,6 +488,7 @@ function RichBreakdown({ item, tts }) {
   const related = relatedList(item);
   const register = registerLabel(item);
   const usage = [
+    clean(item.when_to_use),
     clean(item.real_life_usage),
     clean(item.register_note),
     clean(item.expression_note),
@@ -500,6 +504,13 @@ function RichBreakdown({ item, tts }) {
           {freqLabel && <span className="dq-freq-chip">{freqLabel}</span>}
           {register && <span className="dq-register-chip">{register}</span>}
           {pron && <span className="dq-ipa">{pron}</span>}
+        </div>
+      )}
+
+      {literal && (
+        <div className="dq-block dq-note dq-literal">
+          <strong>Дословно</strong>
+          <span>{literal}</span>
         </div>
       )}
 
@@ -533,7 +544,7 @@ function RichBreakdown({ item, tts }) {
 
       {synonyms.length > 0 && (
         <div className="dq-block">
-          <strong>Синонимы</strong>
+          <strong>{isPhrase ? 'Похожие выражения' : 'Синонимы'}</strong>
           <div className="dq-vars">
             {synonyms.map((s, i) => <span key={`${s}-${i}`} className="dq-var dq-syn">{s}</span>)}
           </div>

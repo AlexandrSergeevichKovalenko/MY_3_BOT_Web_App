@@ -15003,6 +15003,9 @@ def _build_multilang_dictionary_result(
         "synonyms",
         "antonyms",
         "related_words",
+        "phrase_kind",
+        "literal_meaning",
+        "when_to_use",
     )
     for key in passthrough_keys:
         value = raw.get(key)

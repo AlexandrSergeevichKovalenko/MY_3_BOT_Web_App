@@ -2948,9 +2948,18 @@ Return STRICT JSON with keys:
     },
     "secondary": []
   },
+  "phrase_kind": "<idiom|saying|collocation|phrase|sentence>",
+  "literal_meaning": "string|null",
+  "when_to_use": "string|null",
   "usage_note": "string|null",
   "real_life_usage": "string|null",
   "register_note": "string|null",
+  "register": "<нейтральное|разговорное|официальное|книжное|устаревшее|сленг|null>",
+  "synonyms": ["<equivalent German expression>", "..."],
+  "etymology_note": "string|null",
+  "memory_tip": "string|null",
+  "level": "<A1|A2|B1|B2|C1|C2|null>",
+  "frequency": "<very_common|common|uncommon|rare|null>",
   "usage_examples": [
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."}
@@ -2964,14 +2973,22 @@ Return STRICT JSON with keys:
 
 Rules:
 - Output ONLY JSON.
-- Return at most 2 translation variants.
-- Return exactly the most important primary meaning/nuance; do not add broad secondary meaning lists.
-- Return at most 2 usage examples.
-- Return at most 2 natural alternative variants.
-- Keep usage_note, real_life_usage, and register_note short and practical.
-- Do not include article, forms, pronunciation, collocation lists, government patterns, etymology, memory tips, or deep lexical commentary.
-- For sentence input, translations[0].value must be the full sentence translation.
-- If information is unknown, use null.
+- All explanatory text must be in the learner language (source_language by default; never English
+  unless the phrase itself is English).
+- Return at most 3 translation variants and 2-3 usage examples.
+- meanings.primary.value = the real (idiomatic) meaning of the phrase.
+- phrase_kind: classify the item. For an IDIOM or fixed SAYING you MUST also provide:
+  * literal_meaning — the word-for-word literal sense (e.g. "jdm die Daumen drücken" → дословно
+    «давить кому-то большие пальцы»). Null only for plain non-idiomatic phrases/sentences.
+  * when_to_use — the concrete situation a native speaker says it in (one short sentence).
+  * etymology_note — where the expression comes from, when known.
+  * memory_tip — a vivid hook to remember it.
+- synonyms: up to 4 EQUIVALENT German expressions with the same meaning (not single-word synonyms).
+- register: one short stylistic label. level + frequency: best estimate, null if unsure.
+- For sentence input, translations[0].value must be the full sentence translation, and
+  literal_meaning/etymology_note/memory_tip stay null (a plain sentence is not an idiom).
+- Keep every note concise and practical.
+- If information is genuinely unknown, use null.
 """,
 "translate_subtitles_ru": """
 You translate short subtitle lines from German to Russian.
