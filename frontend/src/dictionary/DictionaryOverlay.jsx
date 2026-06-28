@@ -866,7 +866,7 @@ export default function DictionaryOverlay() {
   const onKeyDown = (e) => { if (e.key === 'Enter') { e.preventDefault(); translate(); } };
 
   return (
-    <div className="ans-root">
+    <div className="ans-root dq-scroll">
       <div className="ans-card dq-card">
         <div className="ans-head">
           <span className="ans-eyebrow">📖 Быстрый словарь</span>

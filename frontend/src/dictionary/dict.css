@@ -1,6 +1,27 @@
 /* Quick-dictionary overlay (?startapp=dict). Card shell + .dd-* action/save/err
  * classes come from answer.css; this file only adds the search row + result. */
 
+/* The shared .ans-root vertically centers its card with margin:auto. That clips
+   the TOP of any card taller than the screen (you can't scroll up to it) and lets
+   it slide under Telegram's Mini-App header. For the dictionary — which grows tall
+   with all the deep blocks — make the root a normal top-anchored scroll container
+   with header clearance instead of a centered sheet. */
+.ans-root.dq-scroll {
+  display: block;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 60px);
+  padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+}
+.ans-root.dq-scroll .ans-card {
+  margin: 0 auto;
+  animation: none; /* the rise/translate animation also nudged content under the header */
+}
+
 .dq-card { gap: 14px; }
 
 .dq-search {
