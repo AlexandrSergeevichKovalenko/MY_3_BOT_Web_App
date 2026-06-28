@@ -28,6 +28,44 @@
 
 .dq-card { gap: 14px; }
 
+/* Language bar (RU ⇄ DE) — persistent direction control like Google Translate */
+.dq-langbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(148, 163, 184, 0.10);
+  border: 1px solid var(--dmps-border, #334155);
+}
+.dq-lang {
+  flex: 1 1 0;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--dmps-text-title, #f1f5f9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dq-swap {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dq-swap:active { transform: scale(0.92); }
+
 /* COMPOSE (start screen): big input filling the card, action button at the bottom */
 .dq-compose {
   flex: 1 1 auto;

@@ -58,6 +58,18 @@ function guessPair(text) {
     : { source: 'de', target: 'ru' };
 }
 
+const LANG_NAMES = { ru: 'Русский', de: 'Deutsch' };
+
+// Effective direction: an explicit user choice (forced) wins; otherwise auto from
+// the script of the text (Cyrillic → ru→de). Returns 'ru-de' | 'de-ru'.
+function effectiveDir(text, forced) {
+  if (forced === 'ru-de' || forced === 'de-ru') return forced;
+  return /[А-Яа-яЁё]/.test(String(text || '')) ? 'ru-de' : 'de-ru';
+}
+function dirToPair(dir) {
+  return dir === 'de-ru' ? { source: 'de', target: 'ru' } : { source: 'ru', target: 'de' };
+}
+
 // Recent lookups persisted locally (most-recent first, max 6). Pure helpers so
 // the start card can offer one-tap repeat lookups.
 const RECENTS_KEY = 'dq_recents_v1';
@@ -746,6 +758,8 @@ export default function DictionaryOverlay() {
   const [cardSave, setCardSave] = useState('idle'); // idle|done — «Учить» (SRS)
   const [error, setError] = useState('');
   const [recents, setRecents] = useState(loadRecents);
+  const [forcedDir, setForcedDir] = useState(null); // null=auto, else 'ru-de'|'de-ru'
+  const lastAutoRef = useRef(''); // text already auto/manually translated (debounce dedupe)
   const seqRef = useRef(0);
   const inputRef = useRef(null);
   const tts = useTts();
@@ -808,22 +822,28 @@ export default function DictionaryOverlay() {
     if (germanText) warmTts(germanText, 'de-DE');
   }, [germanText, warmTts]);
 
-  const translate = useCallback(async (overrideText) => {
+  const translate = useCallback(async (overrideText, dirOverride) => {
     const text = (typeof overrideText === 'string' ? overrideText : query).trim();
     if (!text || phase === 'loading') return;
     if (text !== query) setQuery(text);
+    lastAutoRef.current = text; // mark as handled so the auto-translate effect won't repeat it
     const mySeq = ++seqRef.current;
     tts.stop();
     setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle'); setCardSave('idle');
     haptic('light');
     try {
-      const pair = guessPair(text);
+      // Direction: an explicit swap wins, then the panel choice, else auto by script.
+      const chosenDir = (dirOverride === 'ru-de' || dirOverride === 'de-ru')
+        ? dirOverride : effectiveDir(text, forcedDir);
+      const pair = dirToPair(chosenDir);
       const data = await api('/api/translate/quick', {
         text, source_lang: pair.source, target_lang: pair.target,
       });
       if (mySeq !== seqRef.current) return;
       const detected = String(data?.detected_source_lang || pair.source).toLowerCase();
       const targetLang = detected === pair.target ? pair.source : pair.target;
+      // Keep the language panel in sync with what was actually detected.
+      setForcedDir(`${detected}-${targetLang}`);
       setQuick({
         source: text,
         translation: String(data?.translation || '').trim(),
@@ -841,7 +861,17 @@ export default function DictionaryOverlay() {
       if (mySeq !== seqRef.current) return;
       setError(String(e.message || e)); setPhase('error'); haptic('bad');
     }
-  }, [query, phase, tts]);
+  }, [query, phase, tts, forcedDir]);
+
+  // Auto-translate (DeepL-style): translate ~800ms after the user stops typing,
+  // so common single-word lookups need no button press. Only the cheap quick
+  // translate fires; the heavy breakdown still waits for «Подробный разбор».
+  useEffect(() => {
+    const t = query.trim();
+    if (!t || t === lastAutoRef.current || phase === 'loading') return undefined;
+    const id = setTimeout(() => translate(t), 800);
+    return () => clearTimeout(id);
+  }, [query, forcedDir, phase, translate]);
 
   // The first lookup returns a FAST "core" item (article, senses, basic forms)
   // with the heavy parts (etymology, memory tip, word formation, collocations,
@@ -975,6 +1005,16 @@ export default function DictionaryOverlay() {
     } catch (_e) { try { inputRef.current?.focus(); } catch (_e2) { /* ignore */ } }
   }, [translate]);
 
+  // Swap the language direction (⇄). If there is text, re-translate it the other
+  // way immediately with the new direction.
+  const onSwap = useCallback(() => {
+    const next = effectiveDir(query, forcedDir) === 'ru-de' ? 'de-ru' : 'ru-de';
+    setForcedDir(next);
+    haptic('light');
+    const t = query.trim();
+    if (t) { lastAutoRef.current = t; translate(t, next); }
+  }, [query, forcedDir, translate]);
+
   // Enter translates (like Google Translate); Shift+Enter inserts a newline for
   // multi-line phrases.
   const onKeyDown = (e) => {
@@ -987,6 +1027,18 @@ export default function DictionaryOverlay() {
         <div className="ans-head">
           <span className="ans-eyebrow">📖 Быстрый словарь</span>
         </div>
+
+        {(() => {
+          const dir = effectiveDir(query, forcedDir);
+          const [src, tgt] = dir.split('-');
+          return (
+            <div className="dq-langbar">
+              <span className="dq-lang">{LANG_NAMES[src]}</span>
+              <button type="button" className="dq-swap" onClick={onSwap} aria-label="Поменять языки">⇄</button>
+              <span className="dq-lang">{LANG_NAMES[tgt]}</span>
+            </div>
+          );
+        })()}
 
         {!quick ? (
           /* COMPOSE — full-height input like Google Translate / DeepL: big text
