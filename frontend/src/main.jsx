@@ -183,7 +183,15 @@ async function loadAppComponent() {
 function getAnswerStartParam() {
   const fromTelegram = String(window.Telegram?.WebApp?.initDataUnsafe?.start_param || '').trim();
   if (fromTelegram) return fromTelegram;
-  return String(params.get('startapp') || params.get('start_param') || '').trim();
+  const fromQuery = String(params.get('startapp') || params.get('start_param') || '').trim();
+  if (fromQuery) return fromQuery;
+  // Path-based entry: a short URL like /dict (or /d) opens the quick-dictionary
+  // overlay directly. The BotFather "Main Mini App" URL has a length cap and the
+  // long Railway domain leaves no room for ?startapp=dict, so we expose a short
+  // path the backend already serves (catch-all → index.html, absolute assets).
+  const path = String(window.location?.pathname || '').replace(/\/+$/, '').toLowerCase();
+  if (path === '/dict' || path === '/d') return 'dict';
+  return '';
 }
 
 async function bootstrapAnswerOverlay(startParam) {
