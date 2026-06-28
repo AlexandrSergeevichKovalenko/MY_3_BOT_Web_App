@@ -6605,10 +6605,24 @@ async def handle_button_click(update: Update, context: CallbackContext):
     elif text == NUMDICT_PRACTICE_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "🎧 Открыть тренажёр", url=get_webapp_deeplink("ans_np_0"))]])
-        await update.message.reply_text(
+        caption = (
             "🔢 <b>Числа на слух</b> — слушай немецкую сценку, лови номер и впечатывай его. "
-            "Одно задание за другим, столько, сколько хочешь 👇",
-            parse_mode="HTML", reply_markup=kb)
+            "Одно задание за другим, столько, сколько хочешь 👇"
+        )
+        # Send the branded hero card (same format as the scheduled Zahlen-Diktat),
+        # falling back to a plain message if the render fails.
+        poster = None
+        try:
+            from backend.interactive_card import render_numdict_practice_card
+            poster = await asyncio.to_thread(render_numdict_practice_card)
+        except Exception:
+            logging.warning("nd_practice: card render failed", exc_info=True)
+        if poster:
+            await update.message.reply_photo(
+                photo=io.BytesIO(poster), caption=caption,
+                parse_mode="HTML", reply_markup=kb)
+        else:
+            await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     elif text == ADJEKTIV_BATTLE_BUTTON_TEXT:
         await adjektiv_battle_command(update, context)
     elif text == BATTLE_HISTORY_BUTTON_TEXT:

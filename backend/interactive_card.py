@@ -502,6 +502,15 @@ def render_numdict_card(*, level: str = "B1", n_items: int = 3) -> bytes | None:
                  cta=f"{int(n_items)} Szenen · tippe die Zahl")
 
 
+def render_numdict_practice_card(*, level: str = "B1") -> bytes | None:
+    """Self-paced «Числа на слух» — same brand card as the scheduled Zahlen-Diktat,
+    but an endless-practice CTA (no fixed item count)."""
+    return _card(badge="HÖREN & TIPPEN", title="Zahlen-Diktat",
+                 subtitle=f"Hör die Zahl & tippe sie  ·  {level}",
+                 accent=(129, 140, 248), motif=_motif_keypad,
+                 cta="Übe ohne Limit · tippe die Zahl")
+
+
 def render_cloze_card(*, level: str = "B2+") -> bytes | None:
     return _card(badge="LÜCKE", title="Lückentext", subtitle=f"Grammatik  ·  {level}",
                  accent=(56, 189, 248),
