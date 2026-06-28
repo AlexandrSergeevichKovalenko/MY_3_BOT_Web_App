@@ -884,3 +884,90 @@
   color: #6ea0ff;
   opacity: 0.85;
 }
+
+/* ============================================================
+   Словарь · вкладка «Поиск» — концепт C «Компакт-тулбар»
+   Доклеить В КОНЕЦ файла:
+   frontend/src/dictionary/dict.css
+   Ничего не удаляет. Только компактная переорганизация:
+   тонкий тулбар (папка + языки), сегмент «способ перевода»,
+   большое поле ввода, одна кнопка «Перевести», фикс иконок.
+   ============================================================ */
+
+/* Ровный плотный вертикальный ритм, не зависящий от внешних отступов */
+.dict-search-flow { display: flex; flex-direction: column; gap: 11px; }
+.dict-search-flow > * { margin: 0 !important; }
+
+/* Тулбар: папка (слева, тянется) + языковая пара (справа) в одну строку */
+.dict-folder-compact .dict-toolbar { display: flex; align-items: center; gap: 8px; }
+.dict-toolbar .dict-folder-toggle { flex: 1 1 auto; min-width: 0; padding: 6px 2px; }
+.dict-mini-lang {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 11px; border-radius: 11px;
+  background: rgba(148, 163, 184, 0.10);
+  border: 1px solid var(--dmps-border, #334155);
+  color: var(--dmps-text-title, #f1f5f9);
+  font: inherit; font-size: 12.5px; font-weight: 800; letter-spacing: 0.02em;
+  cursor: pointer; white-space: nowrap;
+}
+.dict-mini-swap {
+  width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 12px;
+  background: linear-gradient(180deg, #6366F1, #4f46e5);
+}
+
+/* Способ перевода — сегмент из 3 одинаковых кнопок (главная чуть шире) */
+.dict-method {
+  display: flex; gap: 6px; padding: 4px;
+  background: rgba(148, 163, 184, 0.10);
+  border: 1px solid var(--dmps-border, #334155);
+  border-radius: 14px;
+}
+.dict-method-seg {
+  position: relative; flex: 1 1 0; min-width: 0; height: 40px;
+  border: none; border-radius: 10px; background: none; cursor: pointer;
+  font: inherit; font-size: 12.5px; font-weight: 700;
+  color: var(--dmps-text-secondary, #cbd5e1);
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  white-space: nowrap;
+}
+.dict-method-seg:first-child { flex: 1.35 1 0; }
+.dict-method-seg.on {
+  color: #fff;
+  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  box-shadow: 0 5px 13px -4px rgba(79, 70, 229, 0.5);
+}
+.dict-method-def {
+  position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
+  font-size: 8px; font-weight: 800; letter-spacing: 0.02em;
+  background: #2bb45f; color: #fff; padding: 1px 6px; border-radius: 999px;
+  white-space: nowrap; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+}
+
+/* Большое поле ввода */
+.dictionary-input.dict-input-big {
+  min-height: 150px; font-size: 19px; line-height: 1.4;
+  padding: 14px 52px 14px 14px;
+}
+.dict-search-compose .dictionary-input-wrap { position: relative; }
+
+/* Иконки вставки/очистки — строго по центру своих кнопок (фикс смещения) */
+.dict-search-compose .dictionary-input-tools {
+  position: absolute; right: 10px; bottom: 10px; display: flex; gap: 7px;
+}
+.dict-search-compose .dictionary-clear {
+  width: 34px; height: 34px; padding: 0; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 10px; font-size: 15px;
+}
+
+/* Одна кнопка действия «Перевести» — компактная, на всю ширину */
+.dict-search-compose .dict-translate-row { display: block; margin-top: 10px; }
+.dict-search-compose .dict-translate-primary {
+  width: 100%; height: 48px; font-size: 15.5px; font-weight: 800;
+}
+
+/* Недавние — компактно, без большого отступа сверху */
+.dict-search-recent { margin-top: 2px !important; }

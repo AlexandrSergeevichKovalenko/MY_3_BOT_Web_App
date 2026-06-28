@@ -5296,6 +5296,7 @@ function AppInner() {
   const [translationDictionaryOpen, setTranslationDictionaryOpen] = useState(false);
   const [translationDictionaryAnchor, setTranslationDictionaryAnchor] = useState('');
   const [dictionaryWord, setDictionaryWord] = useState('');
+  const [dictSearchMethod, setDictSearchMethod] = useState('gpt'); // 'gpt' | 'quick' | 'base'
   const [dictionaryResult, setDictionaryResult] = useState(null);
   const [dictionaryError, setDictionaryError] = useState('');
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
@@ -33095,20 +33096,33 @@ function AppInner() {
                     {/* ─── SEARCH TAB ─── */}
                     {vocabTab === 'search' && (<>
 
+                    <div className="dict-search-flow">
                     <div className="folder-panel dict-folder-compact">
-                      {/* Collapsed one-line folder row — tap to expand controls */}
-                      <button
-                        type="button"
-                        className="dict-folder-toggle"
-                        onClick={() => setFolderPanelOpen((v) => !v)}
-                      >
-                        <span className="dict-folder-toggle-label">
-                          📁 {dictionaryFolderId !== 'none' && selectedDictionaryFolder
-                            ? selectedDictionaryFolder.name
-                            : tr('Без папки', 'Ohne Ordner')}
-                        </span>
-                        <span className="dict-folder-toggle-arrow">{folderPanelOpen ? '▴' : '▾'}</span>
-                      </button>
+                      {/* Тулбар: свёрнутая папка (тап = развернуть) + компактная языковая пара */}
+                      <div className="dict-toolbar">
+                        <button
+                          type="button"
+                          className="dict-folder-toggle"
+                          onClick={() => setFolderPanelOpen((v) => !v)}
+                        >
+                          <span className="dict-folder-toggle-label">
+                            📁 {dictionaryFolderId !== 'none' && selectedDictionaryFolder
+                              ? selectedDictionaryFolder.name
+                              : tr('Без папки', 'Ohne Ordner')}
+                          </span>
+                          <span className="dict-folder-toggle-arrow">{folderPanelOpen ? '▴' : '▾'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="dict-mini-lang"
+                          onClick={() => setDictionaryDirection((d) => (d === 'de-ru' ? 'ru-de' : 'de-ru'))}
+                          aria-label={tr('Поменять языки', 'Sprachen tauschen')}
+                        >
+                          <span>{dictionaryDirection === 'de-ru' ? 'DE' : 'RU'}</span>
+                          <span className="dict-mini-swap">⇄</span>
+                          <span>{dictionaryDirection === 'de-ru' ? 'RU' : 'DE'}</span>
+                        </button>
+                      </div>
                       {folderPanelOpen && (<>
                       <div className="folder-row">
                         <label className="webapp-field folder-select">
@@ -33237,18 +33251,30 @@ function AppInner() {
                       </>)}
                     </div>
 
-                    {/* 3. Языковая пара (компактно) — над полем ввода */}
-                    <div className="dq-langrow dict-search-langrow">
-                      <div className="dq-langbar">
-                        <span className="dq-lang">{dictionaryDirection === 'de-ru' ? 'Deutsch' : 'Русский'}</span>
-                        <button
-                          type="button"
-                          className="dq-swap"
-                          onClick={() => setDictionaryDirection((d) => (d === 'de-ru' ? 'ru-de' : 'de-ru'))}
-                          aria-label={tr('Поменять языки', 'Sprachen tauschen')}
-                        >⇄</button>
-                        <span className="dq-lang">{dictionaryDirection === 'de-ru' ? 'Русский' : 'Deutsch'}</span>
-                      </div>
+                    {/* Способ перевода — выбор метода (по умолчанию: Разбор AI) */}
+                    <div className="dict-method" role="tablist" aria-label={tr('Способ перевода', 'Übersetzungsmethode')}>
+                      <button
+                        type="button"
+                        className={`dict-method-seg ${dictSearchMethod === 'gpt' ? 'on' : ''}`}
+                        onClick={() => setDictSearchMethod('gpt')}
+                      >
+                        <span className="dict-method-def">{tr('по умолчанию', 'Standard')}</span>
+                        <span className="dict-method-lbl">✦ {tr('Разбор AI', 'KI-Analyse')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`dict-method-seg ${dictSearchMethod === 'quick' ? 'on' : ''}`}
+                        onClick={() => setDictSearchMethod('quick')}
+                      >
+                        <span className="dict-method-lbl">⚡ {tr('Быстро', 'Schnell')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`dict-method-seg ${dictSearchMethod === 'base' ? 'on' : ''}`}
+                        onClick={() => setDictSearchMethod('base')}
+                      >
+                        <span className="dict-method-lbl">📖 {tr('Офлайн', 'Offline')}</span>
+                      </button>
                     </div>
 
                     {/* 4. Большое поле ввода — как в быстром словаре */}
@@ -33280,35 +33306,22 @@ function AppInner() {
                           )}
                         </div>
                       </div>
-                      {/* Primary action = «Разбор AI» (big); Быстро/Офлайн are small options beside */}
+                      {/* Один экшен «Перевести» — запускает выбранный способ перевода.
+                          Все три метода сохранены и доступны через переключатель выше. */}
                       <div className="dict-translate-row">
                         <button
                           type="button"
                           className="dict-translate-primary"
-                          onClick={(e) => handleDictionaryLookup(e)}
+                          onClick={(e) => {
+                            if (dictSearchMethod === 'quick') return handleDictionaryQuickLookup(e);
+                            if (dictSearchMethod === 'base') return handleDictionaryBaseLookup(e);
+                            return handleDictionaryLookup(e);
+                          }}
                           disabled={dictionaryLoading || !dictionaryWord.trim()}
                         >
-                          {dictionaryLoading && dictionaryLookupMode === 'gpt'
-                            ? tr('Разбор…', 'Analyse…')
+                          {dictionaryLoading
+                            ? tr('Перевод…', 'Übersetze…')
                             : tr('Перевести', 'Übersetzen')}
-                        </button>
-                        <button
-                          type="button"
-                          className="dict-translate-alt"
-                          onClick={handleDictionaryQuickLookup}
-                          disabled={dictionaryLoading}
-                          title={tr('Быстрый перевод', 'Schnellübersetzung')}
-                        >
-                          {dictionaryLoading && dictionaryLookupMode === 'quick' ? '…' : tr('⚡ Быстро', '⚡ Schnell')}
-                        </button>
-                        <button
-                          type="button"
-                          className="dict-translate-alt"
-                          onClick={handleDictionaryBaseLookup}
-                          disabled={dictionaryLoading}
-                          title={tr('Базовый словарь — онлайн и офлайн', 'Basiswörterbuch — online und offline')}
-                        >
-                          {dictionaryLoading && dictionaryLookupMode === 'base' ? '…' : tr('📖 Офлайн', '📖 Offline')}
                         </button>
                       </div>
                       {lastLookupScrollY !== null && (
@@ -33331,6 +33344,7 @@ function AppInner() {
                         </div>
                       )}
                     </div>
+                    </div>{/* /dict-search-flow */}
 
                     {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError)
             ? <PaidFeatureSpotlight>{renderDictionarySaveLimitNotice(dictionaryError)}</PaidFeatureSpotlight>
