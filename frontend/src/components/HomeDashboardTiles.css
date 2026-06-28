@@ -87,10 +87,10 @@
 .hdt-a-vi{ grid-area:2/3/3/4; }
 .hdt-a-mv{ grid-area:2/4/3/5; }
 .hdt-a-ca{ grid-area:3/1/5/3; }
-.hdt-a-an{ grid-area:3/3/4/5; }
+.hdt-a-re{ grid-area:3/3/4/5; }
 .hdt-a-so{ grid-area:4/3/5/4; }
 .hdt-a-gu{ grid-area:4/4/5/5; }
-.hdt-a-re{ grid-area:5/1/6/2; }
+.hdt-a-an{ grid-area:5/1/6/2; }
 .hdt-a-sp{ grid-area:5/2/6/3; }
 .hdt-a-su{ grid-area:5/3/6/4; }
 .hdt-a-ec{ grid-area:5/4/6/5; }
