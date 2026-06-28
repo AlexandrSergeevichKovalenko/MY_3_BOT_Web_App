@@ -277,6 +277,23 @@
   margin-top: 4px;
 }
 
+/* Two side-by-side save actions: «В словарь» + «Учить» (SRS) */
+.dq-save-row {
+  display: flex;
+  gap: 8px;
+}
+.dq-save-half {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 11px 10px !important;
+}
+/* «Учить» (SRS) — distinct teal so it reads as a different action */
+.dq-cards-btn {
+  background: linear-gradient(180deg, #14b8a6, #0d9488) !important;
+}
+.dq-cards-btn:disabled { opacity: 1 !important; }
+.dq-save-half:disabled { opacity: 1; }
+
 .dq-full {
   align-self: center;
   background: none;
@@ -438,6 +455,25 @@
   border-radius: 999px;
   color: #d8a657;
   background: rgba(216, 166, 87, 0.14);
+}
+
+/* Frequency as a 4-segment bar + label */
+.dq-freqbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dq-freqbar-track { display: inline-flex; gap: 2px; align-items: flex-end; }
+.dq-freqbar-seg {
+  width: 4px;
+  height: 11px;
+  border-radius: 1px;
+  background: rgba(148, 163, 184, 0.28);
+}
+.dq-freqbar-seg.on { background: #6ea0ff; }
+.dq-freqbar-label {
+  font-size: 11px;
+  color: var(--dmps-text-muted, #94a3b8);
 }
 
 /* Synonyms / antonyms / related-word pills — tinted variants of .dq-var */

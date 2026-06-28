@@ -20465,6 +20465,59 @@ def replace_manual_training_selection(
             return _replace(own_cursor)
 
 
+def add_cards_to_manual_training_selection(
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    card_ids: list[int] | tuple[int, ...] | None,
+    cursor=None,
+) -> dict:
+    """Append cards to the manual training selection WITHOUT clearing the rest
+    (unlike replace_*). Idempotent via the PK ON CONFLICT; only the user's own
+    non-seed dictionary entries are accepted. Used by the «Учить» button."""
+    normalized_ids = _normalize_positive_bigint_list(card_ids)
+    safe_source_lang = str(source_lang or "").strip().lower()
+    safe_target_lang = str(target_lang or "").strip().lower()
+
+    def _add(cur):
+        inserted_ids: list[int] = []
+        if normalized_ids:
+            cur.execute(
+                """
+                INSERT INTO bt_3_manual_training_selection (user_id, source_lang, target_lang, card_id, added_at)
+                SELECT %s, %s, %s, q.id, NOW()
+                FROM bt_3_webapp_dictionary_queries q
+                WHERE q.user_id = %s
+                  AND q.id = ANY(%s::bigint[])
+                  AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                ON CONFLICT (user_id, source_lang, target_lang, card_id) DO NOTHING
+                RETURNING card_id;
+                """,
+                (int(user_id), safe_source_lang, safe_target_lang, int(user_id), normalized_ids),
+            )
+            inserted_ids = [int(row[0]) for row in (cur.fetchall() or []) if row and row[0] is not None]
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM bt_3_manual_training_selection
+            WHERE user_id = %s AND source_lang = %s AND target_lang = %s;
+            """,
+            (int(user_id), safe_source_lang, safe_target_lang),
+        )
+        total = int((cur.fetchone() or [0])[0] or 0)
+        return {
+            "requested_count": len(normalized_ids),
+            "added_count": len(inserted_ids),
+            "selected_count": total,
+            "card_ids": inserted_ids,
+        }
+
+    if cursor is not None:
+        return _add(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _add(own_cursor)
+
+
 def clear_manual_training_selection(
     user_id: int,
     source_lang: str,

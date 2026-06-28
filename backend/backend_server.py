@@ -383,6 +383,7 @@ from backend.database import (
     has_available_new_srs_cards,
     get_manual_training_selection_card_ids,
     replace_manual_training_selection,
+    add_cards_to_manual_training_selection,
     clear_manual_training_selection,
     reschedule_overdue_srs_cards,
     ensure_new_srs_state,
@@ -40770,6 +40771,43 @@ def save_flashcards_manual_selection():
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
         result = replace_manual_training_selection(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            card_ids=requested_card_ids,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "queue_source": "manual",
+            **result,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+@app.route("/api/webapp/flashcards/manual-selection/add", methods=["POST"])
+def add_flashcards_manual_selection():
+    """Append cards to the manual training selection (non-destructive). Used by the
+    «Учить» button in the quick dictionary to queue a freshly saved word for SRS."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    requested_card_ids = payload.get("card_ids")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not isinstance(requested_card_ids, list) or not requested_card_ids:
+        return jsonify({"error": "card_ids обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        result = add_cards_to_manual_training_selection(
             user_id=int(user_id),
             source_lang=source_lang,
             target_lang=target_lang,

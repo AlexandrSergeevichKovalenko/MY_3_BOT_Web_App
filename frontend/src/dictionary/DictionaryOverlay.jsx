@@ -200,6 +200,26 @@ const FREQ_LABELS = {
   uncommon: 'нечастое',
   rare: 'редкое',
 };
+const FREQ_RANK = { very_common: 4, common: 3, uncommon: 2, rare: 1 };
+
+// Frequency as a 4-segment bar + label (Google/DWDS style) — "how common" reads at
+// a glance instead of needing to parse a word.
+function FreqBar({ frequency }) {
+  const key = clean(frequency).toLowerCase();
+  const rank = FREQ_RANK[key] || 0;
+  const label = FREQ_LABELS[key];
+  if (!rank || !label) return null;
+  return (
+    <span className="dq-freqbar" title={`Частотность: ${label}`}>
+      <span className="dq-freqbar-track">
+        {[1, 2, 3, 4].map((i) => (
+          <span key={i} className={`dq-freqbar-seg${i <= rank ? ' on' : ''}`} />
+        ))}
+      </span>
+      <span className="dq-freqbar-label">{label}</span>
+    </span>
+  );
+}
 
 // Compound / affix breakdown ({is_compound, parts:[{text,gloss}], note}) → the
 // list of parts worth showing. Single non-compound words yield [].
@@ -501,9 +521,9 @@ function RichBreakdown({ item, tts }) {
         <div className="dq-meta">
           {posLabel && <span className="dq-pos-chip">{posLabel}</span>}
           {level && <span className="dq-level-chip">{level}</span>}
-          {freqLabel && <span className="dq-freq-chip">{freqLabel}</span>}
           {register && <span className="dq-register-chip">{register}</span>}
           {pron && <span className="dq-ipa">{pron}</span>}
+          <FreqBar frequency={item.frequency} />
         </div>
       )}
 
@@ -723,6 +743,7 @@ export default function DictionaryOverlay() {
   const [enrich, setEnrich] = useState('idle'); // idle|loading|done|error
   const [deepLoading, setDeepLoading] = useState(false); // background enrichment poll
   const [save, setSave] = useState('idle');   // idle|saving|done
+  const [cardSave, setCardSave] = useState('idle'); // idle|done — «Учить» (SRS)
   const [error, setError] = useState('');
   const [recents, setRecents] = useState(loadRecents);
   const seqRef = useRef(0);
@@ -793,7 +814,7 @@ export default function DictionaryOverlay() {
     if (text !== query) setQuery(text);
     const mySeq = ++seqRef.current;
     tts.stop();
-    setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle');
+    setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle'); setCardSave('idle');
     haptic('light');
     try {
       const pair = guessPair(text);
@@ -882,44 +903,64 @@ export default function DictionaryOverlay() {
     }
   }, [item, query, pollEnrichment]);
 
-  const onSave = useCallback(() => {
-    if (save === 'saving' || save === 'done') return;
-    // Optimistic: flip to ✅ instantly and release the user — the canonical
-    // lookup→save (article + Grundform) runs in the background and also enriches
-    // the visible card. Revert to idle only if it genuinely fails.
-    setSave('done'); setError('');
-    haptic('ok');
+  // Canonical save through the lookup→save pipeline; returns the save response
+  // (incl. entry_id) so callers can chain (e.g. add to the SRS deck).
+  const persistEntry = useCallback(async () => {
     const typed = query.trim();
     const quickTranslation = quick?.translation || '';
     const quickDirection = quick?.direction || '';
     const quickSourceLang = quick?.sourceLang || '';
     const quickTargetLang = quick?.targetLang || '';
+    const rich = await runLookup();
+    const direction = String(rich?.__direction || quickDirection || '').trim();
+    const [dirSource, dirTarget] = direction.includes('-') ? direction.split('-', 2) : [];
+    const sourceLang = (dirSource || quickSourceLang || '').toLowerCase();
+    const targetLang = (dirTarget || quickTargetLang || '').toLowerCase();
+    return api('/api/webapp/dictionary/save', {
+      word_de: String(rich?.word_de || '').trim(),
+      word_ru: String(rich?.word_ru || '').trim(),
+      translation_de: String(rich?.translation_de || '').trim(),
+      translation_ru: String(rich?.translation_ru || '').trim(),
+      source_text: typed,
+      target_text: quickTranslation,
+      source_lang: sourceLang || undefined,
+      target_lang: targetLang || undefined,
+      direction: direction || undefined,
+      response_json: rich || undefined,
+      origin_process: 'webapp_quick_dictionary',
+    });
+  }, [runLookup, quick, query]);
+
+  const onSave = useCallback(() => {
+    if (save !== 'idle') return;
+    // Optimistic: flip to ✅ instantly and release the user; persist in background.
+    setSave('done'); setError('');
+    haptic('ok');
+    (async () => {
+      try { await persistEntry(); }
+      catch (e) { setSave('idle'); setError(String(e.message || e)); haptic('bad'); }
+    })();
+  }, [save, persistEntry]);
+
+  // «Учить»: save the word AND queue it into the manual SRS training selection so
+  // it gets drilled in the «Карточки Space Rep» deck.
+  const onAddToCards = useCallback(() => {
+    if (cardSave !== 'idle') return;
+    setCardSave('done'); setError('');
+    haptic('ok');
     (async () => {
       try {
-        const rich = await runLookup();
-        const direction = String(rich?.__direction || quickDirection || '').trim();
-        const [dirSource, dirTarget] = direction.includes('-') ? direction.split('-', 2) : [];
-        const sourceLang = (dirSource || quickSourceLang || '').toLowerCase();
-        const targetLang = (dirTarget || quickTargetLang || '').toLowerCase();
-        await api('/api/webapp/dictionary/save', {
-          word_de: String(rich?.word_de || '').trim(),
-          word_ru: String(rich?.word_ru || '').trim(),
-          translation_de: String(rich?.translation_de || '').trim(),
-          translation_ru: String(rich?.translation_ru || '').trim(),
-          source_text: typed,
-          target_text: quickTranslation,
-          source_lang: sourceLang || undefined,
-          target_lang: targetLang || undefined,
-          direction: direction || undefined,
-          response_json: rich || undefined,
-          origin_process: 'webapp_quick_dictionary',
-        });
+        const res = await persistEntry();
+        const entryId = Number(res?.entry_id || 0);
+        if (entryId > 0) {
+          await api('/api/webapp/flashcards/manual-selection/add', { card_ids: [entryId] });
+        }
       } catch (e) {
-        setSave('idle');
+        setCardSave('idle');
         setError(String(e.message || e)); haptic('bad');
       }
     })();
-  }, [save, runLookup, quick, query]);
+  }, [cardSave, persistEntry]);
 
   const openFull = useCallback(() => {
     try { window.location.assign('/webapp?startapp=dictionary'); } catch (_e) { /* ignore */ }
@@ -1013,13 +1054,24 @@ export default function DictionaryOverlay() {
                   📖 Подробный разбор
                 </button>
               )}
-              {save === 'done' ? (
-                <div className="dd-saved">✅ Сохранено в словарь</div>
-              ) : (
-                <button type="button" className="dd-save" onClick={onSave} disabled={save === 'saving'}>
-                  {save === 'saving' ? 'Сохраняю…' : '💾 Сохранить в словарь'}
+              <div className="dq-save-row">
+                <button
+                  type="button"
+                  className="dd-save dq-save-half"
+                  onClick={onSave}
+                  disabled={save !== 'idle'}
+                >
+                  {save === 'done' ? '✅ В словаре' : '💾 В словарь'}
                 </button>
-              )}
+                <button
+                  type="button"
+                  className="dd-save dq-save-half dq-cards-btn"
+                  onClick={onAddToCards}
+                  disabled={cardSave !== 'idle'}
+                >
+                  {cardSave === 'done' ? '✅ В карточках' : '📚 Учить'}
+                </button>
+              </div>
             </div>
           </div>
         )}
