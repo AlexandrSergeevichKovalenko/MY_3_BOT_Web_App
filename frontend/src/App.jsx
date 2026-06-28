@@ -33093,104 +33093,51 @@ function AppInner() {
 
                     {/* ─── SEARCH TAB ─── */}
                     {vocabTab === 'search' && (<>
-                    {/* Language bar (⇄) — quick-dictionary style, controls the shown direction. */}
-                    <div className="dq-langrow dict-search-langrow">
-                      <div className="dq-langbar">
-                        <span className="dq-lang">{dictionaryDirection === 'de-ru' ? 'Deutsch' : 'Русский'}</span>
+                    {/* 1. Тип перевода — три компактные кнопки (сразу под вкладками) */}
+                    <div className="dictionary-actions dict-actions-compact">
+                      <button
+                        className="secondary-button dictionary-fast-button"
+                        type="button"
+                        onClick={handleDictionaryQuickLookup}
+                        disabled={dictionaryLoading}
+                      >
+                        {dictionaryLoading && dictionaryLookupMode === 'quick'
+                          ? tr('Перевод...', 'Übersetzen...')
+                          : tr('⚡ Перевод', '⚡ Übersetzen')}
+                      </button>
+                      <button
+                        className="secondary-button dictionary-button"
+                        type="button"
+                        onClick={(e) => handleDictionaryLookup(e)}
+                        disabled={dictionaryLoading}
+                      >
+                        {dictionaryLoading && dictionaryLookupMode === 'gpt'
+                          ? tr('Разбор AI...', 'KI-Analyse...')
+                          : tr('🤖 Разбор AI', '🤖 KI-Analyse')}
+                      </button>
+                      <button
+                        className="secondary-button dictionary-base-button"
+                        type="button"
+                        onClick={handleDictionaryBaseLookup}
+                        disabled={dictionaryLoading}
+                        title={tr('Базовый словарь — работает онлайн и офлайн', 'Basiswörterbuch — funktioniert online und offline')}
+                      >
+                        {dictionaryLoading && dictionaryLookupMode === 'base'
+                          ? tr('Офлайн...', 'Offline...')
+                          : tr('📖 Офлайн', '📖 Offline')}
+                      </button>
+                      {lastLookupScrollY !== null && (
                         <button
                           type="button"
-                          className="dq-swap"
-                          onClick={() => setDictionaryDirection((d) => (d === 'de-ru' ? 'ru-de' : 'de-ru'))}
-                          aria-label={tr('Поменять языки', 'Sprachen tauschen')}
-                        >⇄</button>
-                        <span className="dq-lang">{dictionaryDirection === 'de-ru' ? 'Русский' : 'Deutsch'}</span>
-                      </div>
-                    </div>
-                    <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
-                      <label className="webapp-field">
-                        <span>{tr('Слово или фраза', 'Wort oder Phrase')}</span>
-                        <div className="dictionary-input-wrap">
-                          <textarea
-                            className="dictionary-input dict-input-big"
-                            rows={2}
-                            value={dictionaryWord}
-                            onChange={(event) => setDictionaryWord(event.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDictionaryLookup(e); } }}
-                            placeholder={tr('Например: слово, фраза или выражение', 'Zum Beispiel: Wort, Phrase oder Ausdruck')}
-                          />
-                          <div className="dictionary-input-tools">
-                            <button
-                              type="button"
-                              className="dictionary-clear"
-                              title={tr('Вставить', 'Einfügen')}
-                              onClick={async () => {
-                                try { const t = (await navigator.clipboard.readText() || '').trim(); if (t) setDictionaryWord(t); } catch (_e) { /* ignore */ }
-                              }}
-                              aria-label={tr('Вставить', 'Einfügen')}
-                            >📋</button>
-                            {dictionaryWord.trim() && (
-                              <button
-                                type="button"
-                                className="dictionary-clear"
-                                onClick={() => setDictionaryWord('')}
-                                aria-label={tr('Очистить слово', 'Wort loeschen')}
-                              >
-                                ×
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </label>
-                      {dictSearchRecents.length > 0 && (
-                        <div className="dq-recent dict-search-recent">
-                          <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
-                          <div className="dq-recent-chips">
-                            {dictSearchRecents.map((w) => (
-                              <button key={w} type="button" className="dq-recent-chip" onClick={() => setDictionaryWord(w)}>{w}</button>
-                            ))}
-                          </div>
-                        </div>
+                          className="secondary-button dictionary-back-icon"
+                          onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
+                        >
+                          {tr('↙ к предложению', '↙ zum Satz')}
+                        </button>
                       )}
-                      <div className="dictionary-actions">
-                        <button
-                          className="secondary-button dictionary-fast-button"
-                          type="button"
-                          onClick={handleDictionaryQuickLookup}
-                          disabled={dictionaryLoading}
-                        >
-                          {dictionaryLoading && dictionaryLookupMode === 'quick'
-                            ? tr('Перевод...', 'Übersetzen...')
-                            : tr('⚡ Перевод', '⚡ Übersetzen')}
-                        </button>
-                        <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
-                          {dictionaryLoading && dictionaryLookupMode === 'gpt'
-                            ? tr('Разбор AI...', 'KI-Analyse...')
-                            : tr('🤖 Разбор AI', '🤖 KI-Analyse')}
-                        </button>
-                        <button
-                          className="secondary-button dictionary-base-button"
-                          type="button"
-                          onClick={handleDictionaryBaseLookup}
-                          disabled={dictionaryLoading}
-                          title={tr('Базовый словарь — работает онлайн и офлайн', 'Basiswörterbuch — funktioniert online und offline')}
-                        >
-                          {dictionaryLoading && dictionaryLookupMode === 'base'
-                            ? tr('Офлайн...', 'Offline...')
-                            : tr('📖 Офлайн', '📖 Offline')}
-                        </button>
-                        {lastLookupScrollY !== null && (
-                          <button
-                            type="button"
-                            className="secondary-button dictionary-back-icon"
-                            onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
-                          >
-                            {tr('↙ к предложению', '↙ zum Satz')}
-                          </button>
-                        )}
-                      </div>
-                    </form>
+                    </div>
 
-                    <div className="folder-panel">
+                    <div className="folder-panel dict-folder-compact">
                       <div className="folder-row">
                         <label className="webapp-field folder-select">
                           <span>{tr('Папка для сохранения', 'Speicherordner')}</span>
@@ -33315,6 +33262,61 @@ function AppInner() {
                         </div>
                       )}
                       {!showNewFolderForm && foldersError && <div className="webapp-error">{foldersError}</div>}
+                    </div>
+
+                    {/* 3. Языковая пара (компактно) — над полем ввода */}
+                    <div className="dq-langrow dict-search-langrow">
+                      <div className="dq-langbar">
+                        <span className="dq-lang">{dictionaryDirection === 'de-ru' ? 'Deutsch' : 'Русский'}</span>
+                        <button
+                          type="button"
+                          className="dq-swap"
+                          onClick={() => setDictionaryDirection((d) => (d === 'de-ru' ? 'ru-de' : 'de-ru'))}
+                          aria-label={tr('Поменять языки', 'Sprachen tauschen')}
+                        >⇄</button>
+                        <span className="dq-lang">{dictionaryDirection === 'de-ru' ? 'Русский' : 'Deutsch'}</span>
+                      </div>
+                    </div>
+
+                    {/* 4. Большое поле ввода — как в быстром словаре */}
+                    <div className="webapp-dictionary-form dict-search-compose">
+                      <div className="dictionary-input-wrap">
+                        <textarea
+                          className="dictionary-input dict-input-big"
+                          rows={4}
+                          value={dictionaryWord}
+                          onChange={(event) => setDictionaryWord(event.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDictionaryLookup(e); } }}
+                          placeholder={tr('Слово или фраза…', 'Wort oder Phrase…')}
+                        />
+                        <div className="dictionary-input-tools">
+                          <button
+                            type="button"
+                            className="dictionary-clear"
+                            title={tr('Вставить', 'Einfügen')}
+                            onClick={async () => { try { const t = (await navigator.clipboard.readText() || '').trim(); if (t) setDictionaryWord(t); } catch (_e) { /* ignore */ } }}
+                            aria-label={tr('Вставить', 'Einfügen')}
+                          >📋</button>
+                          {dictionaryWord.trim() && (
+                            <button
+                              type="button"
+                              className="dictionary-clear"
+                              onClick={() => setDictionaryWord('')}
+                              aria-label={tr('Очистить слово', 'Wort loeschen')}
+                            >×</button>
+                          )}
+                        </div>
+                      </div>
+                      {dictSearchRecents.length > 0 && (
+                        <div className="dq-recent dict-search-recent">
+                          <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
+                          <div className="dq-recent-chips">
+                            {dictSearchRecents.map((w) => (
+                              <button key={w} type="button" className="dq-recent-chip" onClick={() => setDictionaryWord(w)}>{w}</button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError)

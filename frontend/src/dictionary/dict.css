@@ -28,17 +28,48 @@
 
 .dq-card { gap: 14px; }
 
-/* Full-dict Search: quick-dict-style compose elements */
-.dict-search-langrow { margin-bottom: 12px; }
-.dictionary-input.dict-input-big {
-  min-height: 64px;
-  resize: vertical;
-  font-size: 17px;
-  line-height: 1.35;
-  padding-top: 12px;
-  padding-bottom: 12px;
+/* ── Full-dict Search: compact controls + big input (quick-dict style) ───────── */
+/* 1. Тип перевода — compact button row (smaller, not tall) */
+.dict-actions-compact { gap: 6px; margin: 4px 0 10px; flex-wrap: wrap; }
+.dict-actions-compact .secondary-button {
+  padding: 7px 12px !important;
+  font-size: 13px !important;
+  min-height: 0 !important;
+  border-radius: 12px !important;
+  flex: 1 1 auto;
 }
-.dict-search-recent { margin: 6px 0 4px; }
+
+/* 2. Папка — compact */
+.dict-folder-compact { padding: 10px 12px !important; margin: 0 0 10px !important; }
+.dict-folder-compact .folder-row { gap: 6px; }
+.dict-folder-compact .folder-select span { font-size: 11px; }
+.dict-folder-compact select { padding: 8px 10px !important; font-size: 14px !important; }
+.dict-folder-compact .secondary-button { padding: 7px 12px !important; font-size: 12.5px !important; min-height: 0 !important; }
+
+/* 3. Языковая пара — compact bar */
+.dict-search-langrow { margin: 0 0 8px; }
+.dict-search-langrow .dq-langbar { padding: 6px 10px; border-radius: 12px; }
+.dict-search-langrow .dq-lang { font-size: 13px; }
+.dict-search-langrow .dq-swap { width: 30px; height: 30px; font-size: 15px; }
+
+/* 4. Большое поле ввода — как в быстром словаре */
+.dict-search-compose { margin-bottom: 8px; }
+.dictionary-input.dict-input-big {
+  min-height: 120px;
+  resize: vertical;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.35;
+  padding: 14px 44px 14px 14px;
+}
+
+/* 5. Недавние — compact */
+.dict-search-recent { margin: 8px 0 2px; }
+.dict-search-recent .dq-recent-chip { font-size: 13px; padding: 4px 10px; }
+
+/* Share/upload icon must fit its round button */
+.dictionary-share-button { display: inline-flex; align-items: center; justify-content: center; }
+.dictionary-share-icon { width: 20px; height: 20px; display: block; }
 
 /* Rich breakdown embedded inside the full-app Library word detail. Horizontal
    padding so the table/blocks don't sit flush against the left edge. */
@@ -500,9 +531,13 @@
   padding: 5px 6px 5px 0;
   color: var(--dmps-text-title, #f1f5f9);
   border-top: 1px solid rgba(148, 163, 184, 0.12);
+  /* Don't break long German compounds letter-by-letter — hyphenate at syllables
+     (lang="de" on the table), break at spaces otherwise. */
   white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  word-break: normal;
+  overflow-wrap: break-word;
+  hyphens: auto;
+  -webkit-hyphens: auto;
   line-height: 1.3;
   vertical-align: top;
 }

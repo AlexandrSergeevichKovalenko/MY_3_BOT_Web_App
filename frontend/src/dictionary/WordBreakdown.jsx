@@ -490,7 +490,7 @@ function GrammarTables({ tables }) {
     return (
       <details className="dq-gt" open>
         <summary>Склонение{decl.plural ? ` · мн. ${decl.plural}` : ''}</summary>
-        <table className="dq-decl">
+        <table className="dq-decl" lang="de">
           <thead>
             <tr><th /><th>Singular</th>{decl.has_plural && <th>Plural</th>}</tr>
           </thead>
