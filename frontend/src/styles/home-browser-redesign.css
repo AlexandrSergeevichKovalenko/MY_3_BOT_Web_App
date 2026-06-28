@@ -167,7 +167,22 @@
   .hdt-section-hint { font-size: 12px !important; color: rgba(237,236,230,0.35) !important; opacity: 1 !important; }
   .is-theme-light .hdt-section-hint { color: #A8A498 !important; }
 
-  /* ============ СЕТКА РАЗДЕЛОВ ============ */
+  /* ============ BENTO (главный экран) — раскладка для широких экранов ============ */
+  /* Новый Bento (.hdt-bento) использует свои классы, поэтому правила старой сетки
+     ниже его не касаются — здесь центрируем и увеличиваем ряды под десктоп/планшет. */
+  .hdt-bento {
+    max-width: 680px !important;
+    margin: 18px auto 0 !important;
+    grid-auto-rows: 132px !important;
+    gap: 12px !important;
+    padding: 0 !important;
+  }
+  .webapp-page.is-telegram-tablet .hdt-bento {
+    max-width: 720px !important;
+    grid-auto-rows: 140px !important;
+  }
+
+  /* ============ СЕТКА РАЗДЕЛОВ (legacy — теперь только HomeMoreTiles) ============ */
   .hdt-grid {
     grid-template-columns: repeat(5, 1fr) !important;
     gap: 14px !important;

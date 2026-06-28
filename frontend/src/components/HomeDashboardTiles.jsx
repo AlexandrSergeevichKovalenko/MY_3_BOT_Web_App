@@ -1,21 +1,63 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback } from 'react';
 import './HomeDashboardTiles.css';
 
-const TILE_DEFS = [
-  { key: 'tr', labelRu: 'Переводы\nпредложений', labelDe: 'Satz-\nUebersetzungen', emoji: '🔤', cls: 'hdt-blue', sectionKey: 'translations', refKey: 'translationsRef' },
-  { key: 'ca', labelRu: 'Карточки\nSpace Rep', labelDe: 'Karten\nSpace Rep', emoji: '🗂', cls: 'hdt-violet', sectionKey: 'flashcards', refKey: 'flashcardsRef' },
-  { key: 're', labelRu: 'Чтение\nЧиталка', labelDe: 'Lesen\nReader', emoji: '📖', cls: 'hdt-emerald', sectionKey: 'reader', refKey: 'readerRef' },
-  { key: 'sp', labelRu: 'Разговорная\nпрактика', labelDe: 'Sprech-\nuebung', emoji: '💬', cls: 'hdt-cyan', sectionKey: 'assistant', refKey: 'assistantRef' },
-  { key: 'vi', labelRu: 'Видео\nYouTube', labelDe: 'YouTube\nVideos', emoji: '▶️', cls: 'hdt-red', sectionKey: 'youtube', refKey: 'youtubeRef', isPaired: true },
-  { key: 'di', labelRu: 'Словарь\nи поиск', labelDe: 'Wörterbuch\nund Suche', emoji: '📚', cls: 'hdt-indigo', sectionKey: 'dictionary', refKey: 'dictionaryRef' },
-  { key: 'an', labelRu: 'Аналитика\nпрогресса', labelDe: 'Analytics\nund Fortschritt', emoji: '📊', cls: 'hdt-green', sectionKey: 'analytics', refKey: 'analyticsRef' },
-  { key: 'so', labelRu: 'Техподдержка\nи связь', labelDe: 'Support\nund Kontakt', emoji: '🛟', cls: 'hdt-amber', sectionKey: 'support', refKey: 'supportRef' },
-  { key: 'gu', labelRu: 'Как\nпользоваться', labelDe: 'So\nbenutzt du es', emoji: '❓', cls: 'hdt-rose', sectionKey: 'guide', refKey: 'guideRef' },
+const ICONS = {
+  tr: '<path d="M4 6.5h8M8 4.7V6.5M11 6.5c0 4-3 7-7 8"/><path d="M5.4 9.7c1.2 1.4 2.8 2.3 4.6 2.7"/><path d="M12.4 19l3.8-8.6 3.8 8.6"/><path d="M13.8 15.9h5.2"/>',
+  ca: '<rect x="3.2" y="7.5" width="13" height="11.5" rx="2.6"/><path d="M7.4 7.5V6a2 2 0 012-2h9a2 2 0 012 2v10a2 2 0 01-2 2h-1.6"/>',
+  re: '<path d="M12 6.4C10.4 5.3 7.7 4.8 4.7 5.1v12.3c3-.3 5.7.2 7.3 1.3 1.6-1.1 4.3-1.6 7.3-1.3V5.1C16.3 4.8 13.6 5.3 12 6.4z"/><path d="M12 6.4V18.7"/>',
+  sp: '<path d="M4.6 5.4h14.8a1.6 1.6 0 011.6 1.6v7a1.6 1.6 0 01-1.6 1.6h-8L7 20v-4H4.6A1.6 1.6 0 013 14V7a1.6 1.6 0 011.6-1.6z"/><circle cx="9" cy="10.6" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="10.6" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="10.6" r="1" fill="currentColor" stroke="none"/>',
+  vi: '<rect x="3" y="6" width="18" height="12" rx="3.4"/><path d="M10.4 9.2l4.4 2.8-4.4 2.8z" fill="currentColor" stroke="none"/>',
+  mv: '<rect x="3" y="9" width="18" height="10" rx="2.2"/><path d="M3.3 9l16.4-2.2.7 2.6M7.4 8.1l.9 2.4M11.8 7.5l.9 2.4M16.2 6.9l.9 2.4"/>',
+  di: '<rect x="4.5" y="5" width="14" height="3.9" rx="1.1"/><rect x="4.5" y="10.1" width="14" height="3.9" rx="1.1"/><rect x="4.5" y="15.1" width="14" height="3.9" rx="1.1"/><path d="M7.7 5v3.9M7.7 10.1v3.9M7.7 15.1v3.9" stroke-width="1.1"/>',
+  an: '<path d="M4 4v16h16"/><rect x="7" y="12" width="2.7" height="5" rx="0.6" fill="currentColor" stroke="none"/><rect x="11.6" y="9" width="2.7" height="8" rx="0.6" fill="currentColor" stroke="none"/><rect x="16.2" y="6" width="2.7" height="11" rx="0.6" fill="currentColor" stroke="none"/>',
+  so: '<circle cx="12" cy="12" r="8.4"/><circle cx="12" cy="12" r="3.5"/><path d="M6.3 6.3l3.2 3.2M14.5 14.5l3.2 3.2M17.7 6.3l-3.2 3.2M9.5 14.5l-3.2 3.2"/>',
+  gu: '<circle cx="12" cy="12" r="8.4"/><path d="M9.6 9.4a2.5 2.5 0 114.2 2.1c-1 .8-1.8 1.3-1.8 2.5"/><circle cx="12" cy="16.6" r="0.4" fill="currentColor" stroke="none"/>',
+  su: '<rect x="3" y="6" width="18" height="12" rx="2.8"/><path d="M3 10h18"/><rect x="6" y="13.5" width="5.5" height="2.1" rx="1.05" fill="currentColor" stroke="none"/>',
+  ec: '<path d="M4 4v16h16"/><path d="M7 15l3.6-3.6 3 3L20 7"/><path d="M16.2 7H20v3.8"/>',
+};
+
+function Icon({ name, size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      dangerouslySetInnerHTML={{ __html: ICONS[name] || '' }} />
+  );
+}
+
+// Bento config: key -> sectionKey/refKey/labels/hero. sectionKey + refKey match
+// the values App.jsx passes to openSection(sectionKey, refs[refKey]).
+const BENTO = [
+  { k: 'tr', sectionKey: 'translations', refKey: 'translationsRef', ru: 'Переводы предложений', de: 'Satz-Übersetzungen', hero: true },
+  { k: 'di', sectionKey: 'dictionary',   refKey: 'dictionaryRef',   ru: 'Словарь и поиск',     de: 'Wörterbuch & Suche' },
+  { k: 'vi', sectionKey: 'youtube',      refKey: 'youtubeRef',      ru: 'Видео',               de: 'Videos' },
+  { k: 'mv', sectionKey: 'movies',       refKey: 'moviesRef',       ru: 'Фильмы',              de: 'Filme' },
+  { k: 'ca', sectionKey: 'flashcards',   refKey: 'flashcardsRef',   ru: 'Карточки Space Rep',  de: 'Karten Space Rep', hero: true },
+  { k: 'an', sectionKey: 'analytics',    refKey: 'analyticsRef',    ru: 'Аналитика прогресса', de: 'Analytics' },
+  { k: 'so', sectionKey: 'support',      refKey: 'supportRef',      ru: 'Поддержка',           de: 'Support' },
+  { k: 'gu', sectionKey: 'guide',        refKey: 'guideRef',        ru: 'Гид',                 de: 'Guide' },
+  { k: 're', sectionKey: 'reader',       refKey: 'readerRef',       ru: 'Чтение',              de: 'Lesen' },
+  { k: 'sp', sectionKey: 'assistant',    refKey: 'assistantRef',    ru: 'Разговор',            de: 'Sprechen' },
+  { k: 'su', sectionKey: 'subscription', refKey: 'billingRef',      ru: 'Подписка',            de: 'Abo' },
+  { k: 'ec', sectionKey: 'economics',    refKey: 'economicsRef',    ru: 'Экономика',           de: 'Kosten' },
 ];
 
-const MOVIES_DEF = {
-  key: 'mv', labelRu: 'Фильмы\nи сцены', labelDe: 'Filme\nund Szenen', emoji: '🎬', cls: 'hdt-red', sectionKey: 'movies', refKey: 'moviesRef',
-};
+function pctFromBadge(b) {
+  if (!b || !b.text) return 0;
+  const m = String(b.text).split('/').map(Number);
+  if (m.length === 2 && m[1] > 0) return Math.max(0, Math.min(100, Math.round((m[0] / m[1]) * 100)));
+  return 0;
+}
+
+function Ring({ pct, size = 44 }) {
+  const sw = 4.5, r = (size - sw * 2) / 2, c = 2 * Math.PI * r, f = (c * pct) / 100;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)' }}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.28)" strokeWidth={sw} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#fff" strokeWidth={sw}
+        strokeDasharray={`${f} ${c}`} strokeLinecap="round" />
+    </svg>
+  );
+}
 
 function normalizeStatus(value) {
   return String(value || '').trim().toLowerCase();
@@ -110,40 +152,6 @@ function getWeeklyPlanSummary(weeklyPlan) {
   };
 }
 
-function DashTile({ def, label, badge, onClick, showBadge = true }) {
-  const [state, setState] = useState('idle');
-
-  const handleDown = useCallback(() => setState('pressed'), []);
-  const handleUp = useCallback(() => {
-    setState('pop');
-    onClick?.();
-    window.setTimeout(() => setState('idle'), 380);
-  }, [onClick]);
-  const handleLeave = useCallback(() => {
-    setState((prev) => (prev === 'pressed' ? 'idle' : prev));
-  }, []);
-
-  return (
-    <button
-      type="button"
-      className={`hdt-tile ${def.cls} ${state === 'pressed' ? 'hdt-pressed' : ''} ${state === 'pop' ? 'hdt-pop' : ''}`}
-      onPointerDown={handleDown}
-      onPointerUp={handleUp}
-      onPointerLeave={handleLeave}
-      onPointerCancel={handleLeave}
-      aria-label={label}
-    >
-      {showBadge && badge && (
-        <span className={`hdt-badge ${badge.done ? 'hdt-badge-done' : ''}`}>
-          {badge.text}
-        </span>
-      )}
-      <span className="hdt-icon">{def.emoji}</span>
-      <span className="hdt-label">{label}</span>
-    </button>
-  );
-}
-
 function getSkillMasteryPct(skillReport) {
   const groups = Array.isArray(skillReport?.groups) ? skillReport.groups : [];
   const skills = groups.flatMap((g) => (Array.isArray(g?.skills) ? g.skills : []));
@@ -236,7 +244,6 @@ export default function HomeDashboardTiles({
   refs = {},
   showBadges = true,
   showMetrics = true,
-  showQuickAccess = true,
   canViewEconomics = false,
 }) {
   const currentUiLang = uiLang === 'de' ? 'de' : 'ru';
@@ -244,17 +251,6 @@ export default function HomeDashboardTiles({
     tr: getTranslationBadge(todayPlan),
     ca: getCardsBadge(todayPlan, srsQueueInfo),
   };
-
-  const handleTile = useCallback((def) => {
-    const ref = refs[def.refKey] || null;
-    if (def.sectionKey && openSection) {
-      openSection(def.sectionKey, ref);
-      return;
-    }
-    if (ref?.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, [openSection, refs]);
 
   return (
     <div className="hdt-root">
@@ -274,67 +270,46 @@ export default function HomeDashboardTiles({
         <span className="hdt-section-hint">{tr('Нажмите для перехода', 'Antippen zum Oeffnen')}</span>
       </div>
 
-      <div className="hdt-grid">
-        {TILE_DEFS.map((def) => {
-          const label = currentUiLang === 'de' ? def.labelDe : def.labelRu;
-          if (def.isPaired) {
-            const moviesLabel = currentUiLang === 'de' ? MOVIES_DEF.labelDe : MOVIES_DEF.labelRu;
+      <div className="hdt-bento" {...(!canViewEconomics ? { 'data-no-eco': '' } : {})}>
+        {BENTO.map((def) => {
+          if (def.k === 'ec' && !canViewEconomics) return null;
+          const label = currentUiLang === 'de' ? def.de : def.ru;
+          const ref = refs[def.refKey] || null;
+          const onClick = () => { if (def.sectionKey && openSection) openSection(def.sectionKey, ref); };
+
+          if (def.hero) {
+            const badge = badges[def.k];
+            const pct = pctFromBadge(badge);
             return (
-              <div key={def.key} className="hdt-tile-pair">
-                <DashTile
-                  def={def}
-                  label={label}
-                  badge={badges[def.key] || null}
-                  onClick={() => handleTile(def)}
-                  showBadge={showBadges}
-                />
-                <DashTile
-                  def={MOVIES_DEF}
-                  label={moviesLabel}
-                  badge={null}
-                  onClick={() => handleTile(MOVIES_DEF)}
-                  showBadge={showBadges}
-                />
-              </div>
+              <button key={def.k} type="button" onClick={onClick}
+                className={`hdt-bt hero hdt-a-${def.k} hdt-c-${def.k}`} aria-label={label}>
+                <div className="hdt-bt-top">
+                  <div className="hdt-ic"><Icon name={def.k} size={24} /></div>
+                  {badge && <div className="hdt-ring"><Ring pct={pct} /><div className="hdt-rp">{badge.text}</div></div>}
+                </div>
+                {def.k === 'ca' && (
+                  <div className="hdt-bars">
+                    {[42, 66, 52, 82, 60, 94].map((h, i) => <i key={i} style={{ height: `${h}%` }} />)}
+                  </div>
+                )}
+                <div className="hdt-bl">{label}</div>
+              </button>
             );
           }
+
+          const badge = badges[def.k];
           return (
-            <DashTile
-              key={def.key}
-              def={def}
-              label={label}
-              badge={badges[def.key] || null}
-              onClick={() => handleTile(def)}
-              showBadge={showBadges}
-            />
+            <button key={def.k} type="button" onClick={onClick}
+              className={`hdt-bt hdt-a-${def.k} hdt-c-${def.k}`} aria-label={label}>
+              {showBadges && badge && <span className="hdt-badge">{badge.text}</span>}
+              <div className="hdt-bt-top">
+                <div className="hdt-ic"><Icon name={def.k} size={20} /></div>
+              </div>
+              <div className="hdt-bl">{label}</div>
+            </button>
           );
         })}
       </div>
-
-      {showQuickAccess && (
-        <div className="hdt-quick-row">
-          <button
-            type="button"
-            className="hdt-quick-block hdt-quick-block-sub"
-            onClick={() => openSection?.('subscription', refs.billingRef || null)}
-          >
-            <span className="hdt-quick-block-icon">💳</span>
-            <span className="hdt-quick-block-title">{tr('Подписка', 'Abonnement')}</span>
-            <span className="hdt-quick-block-sub-lbl">{tr('и тариф', 'und Tarif')}</span>
-          </button>
-          {canViewEconomics && (
-            <button
-              type="button"
-              className="hdt-quick-block hdt-quick-block-eco"
-              onClick={() => openSection?.('economics', refs.economicsRef || null)}
-            >
-              <span className="hdt-quick-block-icon">💹</span>
-              <span className="hdt-quick-block-title">{tr('Экономика', 'Kosten')}</span>
-              <span className="hdt-quick-block-sub-lbl">{tr('и лимиты', 'und Limits')}</span>
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 }
