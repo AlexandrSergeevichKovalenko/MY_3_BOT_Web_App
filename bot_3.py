@@ -712,7 +712,29 @@ GLOBAL_DAILY_SEND_BUDGET = max(1, int((os.getenv("GLOBAL_DAILY_SEND_BUDGET") or 
 _ROTATION_ALWAYS_ON_KINDS = {
     "rebus", "crossword", "anagram", "sprint",
     "artikel_sprint", "adjektiv_sprint", "artikel_learn", "listening",
+    "numdict",
 }
+
+# Core-skill kinds delivered WITH PRIORITY inside each user's daily budget: they take
+# the top ranks so they're (almost) always among the slots a user receives, then the
+# rest of the budget is filled by the normal weighted rotation. This does NOT raise
+# anyone's daily count — mandatory sit INSIDE the limit, just first in line. They still
+# respect the user's chosen TIME (silence/«Тишина», active window, quiet hours).
+#
+# Pro tier: all slots of these 5 kinds are mandatory (audio, numbers, Artikel Sprint +
+# Trainer, Adjektiv Sprint). Free tier: 4 types only, capped at ONE slot per type/day
+# (so 4 mandatory + the remaining Free budget = «на выбор» rotation). Toggle via
+# MANDATORY_DELIVERY_ENABLED.
+MANDATORY_DELIVERY_KINDS = {
+    "listening", "numdict", "artikel_sprint", "artikel_learn", "adjektiv_sprint",
+}
+FREE_MANDATORY_KINDS = {
+    "listening", "numdict", "artikel_sprint", "adjektiv_sprint",
+}
+
+
+def _mandatory_delivery_enabled() -> bool:
+    return str(os.getenv("MANDATORY_DELIVERY_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 # Rotation weight for the rotating pool (higher → appears more often). Article-quiz
 # is text-only and the least engaging → weighted down. The hourly multiple-choice
 # quiz ("mc", 17 slots/day) is the floodiest + least engaging → weighted very low so
@@ -745,10 +767,11 @@ def _build_rotation_catalog() -> list:
     add("artikel_sprint", [ARTIKEL_SPRINT_SLOT], always_on=True)
     add("artikel_learn", [ARTIKEL_LEARN_SLOT], always_on=True)
     add("listening", [LISTENING_SLOT_TIME], always_on=True)
+    # Number-dictation is a mandatory core-skill drill → always fire (was thinned).
+    add("numdict", NUMDICT_SLOT_TIMES, always_on=True)
     # Rotating pool (thinned to fit the budget).
     add("article_quiz", ARTICLE_QUIZ_SLOT_TIMES, always_on=False)
     add("aufgabe", AUFGABE_FORMAT_SLOTS.keys(), always_on=False)
-    add("numdict", NUMDICT_SLOT_TIMES, always_on=False)
     # Hourly multiple-choice quiz — fold its many slots in so rotation+tiers apply
     # (low weight → ~1/day survives instead of the old ~12/day firehose).
     add("mc", [(h, m) for h in QUIZ_SCHEDULE_HOURS for m in QUIZ_SCHEDULE_MINUTES], always_on=False)
@@ -889,6 +912,41 @@ def _slot_rank_today(kind: str, hour: int, minute: int, now: datetime | None = N
         ranked = _rank_slots(_global_rotation_active_entries(now), day)
         _rotation_rank_cache = (day, {e.key: i for i, e in enumerate(ranked)})
     return _rotation_rank_cache[1].get(_slot_key(kind, hour, minute), 10_000)
+
+
+_tiered_rank_cache: dict | None = None
+
+
+def _tiered_slot_position(kind: str, hour: int, minute: int, *, free: bool,
+                          now: datetime | None = None) -> int:
+    """Position of this slot in the user's tier ordering, where mandatory core-skill
+    slots are pulled to the FRONT (top ranks) and the rest keep their global rank.
+    A user with budget N receives a slot iff its tiered position < N — so mandatory
+    land inside the limit first, then rotation fills the remainder.
+
+    Free tier uses the 4 Free-mandatory kinds and counts only ONE slot per kind
+    (a kind's 2nd+ daily slot falls back into the rotation pool); Pro uses all
+    mandatory slots. Slots not active today rank past the end."""
+    global _tiered_rank_cache
+    day = (now or _get_quiz_schedule_now()).date().toordinal()
+    cache_key = (day, bool(free))
+    if not (isinstance(_tiered_rank_cache, dict) and _tiered_rank_cache.get("day") == day):
+        _tiered_rank_cache = {"day": day}
+    if cache_key not in _tiered_rank_cache:
+        ranked = _rank_slots(_global_rotation_active_entries(now), day)  # global best-first
+        mand_kinds = FREE_MANDATORY_KINDS if free else MANDATORY_DELIVERY_KINDS
+        mandatory: list = []
+        rotation: list = []
+        seen_kinds: set = set()
+        for e in ranked:
+            if e.kind in mand_kinds and not (free and e.kind in seen_kinds):
+                mandatory.append(e)
+                seen_kinds.add(e.kind)
+            else:
+                rotation.append(e)  # incl. a Free kind's 2nd+ slot, and all non-mandatory
+        order = mandatory + rotation
+        _tiered_rank_cache[cache_key] = {e.key: i for i, e in enumerate(order)}
+    return _tiered_rank_cache[cache_key].get(_slot_key(kind, hour, minute), 10_000)
 
 
 def _user_send_budget(user_id: int, *, is_pro: bool, active_recent: set | None,
@@ -19497,11 +19555,20 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
                 if _drip_delivery_enabled() and p.get("schedule"):
                     tier_skipped += 1
                     continue  # windowed → drip job delivers; no live slot sends
-                budget = _user_send_budget(uid, is_pro=pro_map.get(uid, False),
+                is_pro_user = pro_map.get(uid, False)
+                budget = _user_send_budget(uid, is_pro=is_pro_user,
                                            active_recent=active_recent, preset=p.get("preset"))
-                if slot_rank >= budget:
+                # Mandatory core-skill kinds get the TOP positions inside the budget, so
+                # they're delivered first and the rest of the budget is rotation. This
+                # keeps the daily count == budget (mandatory are INSIDE the limit, not on
+                # top). Silence (budget 0) and the window gate below still apply.
+                if _mandatory_delivery_enabled():
+                    position = _tiered_slot_position(s_kind, s_hh, s_mm, free=not is_pro_user)
+                else:
+                    position = slot_rank
+                if position >= budget:
                     tier_skipped += 1
-                    continue  # not in this user's allocation
+                    continue  # outside this user's allocation
                 in_window = _now_in_window(p.get("schedule"), p.get("tz_name")) if p else True
                 if not in_window:
                     # Off-window but in allocation: HOLD it (release job batches it when
