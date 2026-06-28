@@ -69,13 +69,236 @@ function formatExample(example) {
   return '';
 }
 
-function primaryMeaningText(item) {
-  const primary = item?.meanings?.primary;
-  if (!primary || typeof primary !== 'object') return '';
-  const value = String(primary.value || '').trim();
-  const context = String(primary.context || '').trim();
-  if (value && context) return `${value} — ${context}`;
-  return value || context || '';
+// Russian labels for the part-of-speech badge.
+const POS_LABELS = {
+  noun: 'существительное',
+  verb: 'глагол',
+  adjective: 'прилагательное',
+  adverb: 'наречие',
+  pronoun: 'местоимение',
+  preposition: 'предлог',
+  phrase: 'выражение',
+  other: '',
+};
+
+function clean(value) {
+  return String(value || '').trim();
+}
+
+// Alternative translation variants beyond the headword (formal/informal/slang…).
+function translationVariants(item) {
+  const list = Array.isArray(item?.translations) ? item.translations : [];
+  return list
+    .map((t) => (t && typeof t === 'object'
+      ? { value: clean(t.value), context: clean(t.context) }
+      : { value: clean(t), context: '' }))
+    .filter((t) => t.value);
+}
+
+// Ordered meanings: the single primary, then secondary senses. Each carries an
+// optional context label and one example pair (source → target).
+function meaningList(item) {
+  const m = item?.meanings;
+  if (!m || typeof m !== 'object') return [];
+  const out = [];
+  const take = (entry) => {
+    if (!entry || typeof entry !== 'object') return;
+    const value = clean(entry.value);
+    const context = clean(entry.context);
+    if (!value && !context) return;
+    const exSource = clean(entry.example_source);
+    const exTarget = clean(entry.example_target);
+    out.push({
+      value,
+      context,
+      example: exSource && exTarget ? `${exSource} → ${exTarget}` : (exSource || exTarget || ''),
+    });
+  };
+  take(m.primary);
+  if (Array.isArray(m.secondary)) m.secondary.forEach(take);
+  return out;
+}
+
+// Part-of-speech-specific grammar rows (article/plural for nouns, conjugation for
+// verbs, comparison for adjectives). Returns [label, value] pairs, present only.
+function grammarRows(item) {
+  const pos = clean(item?.part_of_speech).toLowerCase();
+  const f = (item?.forms && typeof item.forms === 'object') ? item.forms : {};
+  const rows = [];
+  const push = (label, value) => { const v = clean(value); if (v) rows.push([label, v]); };
+  if (pos === 'noun') {
+    push('Артикль', item?.article);
+    push('Мн. число', f.plural);
+    push('Род. падеж', f.genitive);
+  } else if (pos === 'verb') {
+    if (item?.is_separable === true) push('Тип', 'отделяемый');
+    else if (item?.is_separable === false) push('Тип', 'неотделяемый');
+    push('Präsens (er/sie/es)', f.present_3sg);
+    push('Präteritum', f.praeteritum);
+    push('Perfekt', f.perfekt);
+    push('Konjunktiv II', f.konjunktiv2);
+  } else if (pos === 'adjective' || pos === 'adverb') {
+    push('Сравнит.', f.comparative);
+    push('Превосх.', f.superlative);
+  } else {
+    // Fall back to whatever forms exist for anything else.
+    push('Мн. число', f.plural);
+    push('Род. падеж', f.genitive);
+    push('Präteritum', f.praeteritum);
+    push('Perfekt', f.perfekt);
+  }
+  return rows;
+}
+
+// Verb/adjective government (preposition + case) with an example.
+function governmentList(item) {
+  const list = Array.isArray(item?.government_patterns) ? item.government_patterns : [];
+  return list
+    .map((g) => {
+      if (!g || typeof g !== 'object') return null;
+      const head = clean(g.pattern) || [clean(g.preposition), clean(g.case)].filter(Boolean).join(' + ');
+      const exSource = clean(g.example_source);
+      const exTarget = clean(g.example_target);
+      const example = exSource && exTarget ? `${exSource} → ${exTarget}` : (exSource || exTarget || '');
+      return head ? { head, example } : null;
+    })
+    .filter(Boolean);
+}
+
+function collocationList(item) {
+  return (Array.isArray(item?.common_collocations) ? item.common_collocations : [])
+    .map(clean)
+    .filter(Boolean);
+}
+
+function pronunciationText(item) {
+  const p = item?.pronunciation;
+  if (!p || typeof p !== 'object') return '';
+  const ipa = clean(p.ipa);
+  const stress = clean(p.stress);
+  if (ipa && stress && stress !== ipa) return `${ipa} · ${stress}`;
+  return ipa || stress || '';
+}
+
+// Full dictionary-grade breakdown of a looked-up item, adapting to its part of
+// speech (article/plural for nouns, conjugation for verbs, comparison for
+// adjectives, register notes for phrases) plus meanings, collocations, government,
+// examples and etymology — only the sections that actually carry data are shown.
+function RichBreakdown({ item }) {
+  if (!item) return null;
+  const pos = clean(item.part_of_speech).toLowerCase();
+  const posLabel = Object.prototype.hasOwnProperty.call(POS_LABELS, pos)
+    ? POS_LABELS[pos]
+    : clean(item.part_of_speech);
+  const pron = pronunciationText(item);
+  const variants = translationVariants(item);
+  const meanings = meaningList(item);
+  const grammar = grammarRows(item);
+  const government = governmentList(item);
+  const collocations = collocationList(item);
+  const examples = (Array.isArray(item.usage_examples) ? item.usage_examples : [])
+    .map(formatExample)
+    .filter(Boolean);
+  const etymology = clean(item.etymology_note);
+  const memoryTip = clean(item.memory_tip);
+  const usage = [
+    clean(item.real_life_usage),
+    clean(item.register_note),
+    clean(item.expression_note),
+    clean(item.usage_note),
+  ].filter(Boolean);
+
+  return (
+    <>
+      {(posLabel || pron) && (
+        <div className="dq-meta">
+          {posLabel && <span className="dq-pos-chip">{posLabel}</span>}
+          {pron && <span className="dq-ipa">{pron}</span>}
+        </div>
+      )}
+
+      {meanings.length > 0 && (
+        <div className="dq-block">
+          <strong>Значения</strong>
+          <ol className="dq-meanings">
+            {meanings.map((m, i) => (
+              <li key={`${m.value}-${i}`} className="dq-meaning">
+                <span className="dq-mean-head">
+                  {m.value}{m.context ? <em> · {m.context}</em> : null}
+                </span>
+                {m.example && <span className="dq-mean-ex">{m.example}</span>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {variants.length > 0 && (
+        <div className="dq-block">
+          <strong>Варианты перевода</strong>
+          <div className="dq-vars">
+            {variants.map((v, i) => (
+              <span key={`${v.value}-${i}`} className="dq-var">
+                {v.value}{v.context ? <em> · {v.context}</em> : null}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {grammar.length > 0 && (
+        <div className="dq-block">
+          <strong>Грамматика</strong>
+          <div className="dq-grammar">
+            {grammar.map(([label, value]) => (
+              <span key={label} className="dq-chip"><em>{label}</em>{value}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {government.length > 0 && (
+        <div className="dq-block">
+          <strong>Управление</strong>
+          {government.map((g, i) => (
+            <span key={`${g.head}-${i}`} className="dq-gov">
+              <b>{g.head}</b>{g.example ? ` — ${g.example}` : ''}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {collocations.length > 0 && (
+        <div className="dq-block">
+          <strong>Устойчивые сочетания</strong>
+          <div className="dq-vars">
+            {collocations.map((c, i) => <span key={`${c}-${i}`} className="dq-var">{c}</span>)}
+          </div>
+        </div>
+      )}
+
+      {examples.length > 0 && (
+        <div className="dq-block">
+          <strong>Примеры</strong>
+          {examples.slice(0, 3).map((ex, i) => <span key={`${ex}-${i}`}>{ex}</span>)}
+        </div>
+      )}
+
+      {usage.length > 0 && (
+        <div className="dq-block">
+          <strong>Где и как употреблять</strong>
+          {usage.map((u, i) => <span key={`${u}-${i}`}>{u}</span>)}
+        </div>
+      )}
+
+      {(etymology || memoryTip) && (
+        <div className="dq-block dq-note">
+          {etymology && <><strong>Этимология</strong><span>{etymology}</span></>}
+          {memoryTip && <><strong>Как запомнить</strong><span>{memoryTip}</span></>}
+        </div>
+      )}
+    </>
+  );
 }
 
 // Listen via the shared TTS pipeline: POST generate → poll url → play the MP3.
@@ -340,23 +563,7 @@ export default function DictionaryOverlay() {
                 </button>
               )}
             </div>
-            {item?.part_of_speech && <div className="dq-pos">{item.part_of_speech}</div>}
-
-            {primaryMeaningText(item) && (
-              <div className="dq-block">
-                <strong>Главный смысл</strong>
-                <span>{primaryMeaningText(item)}</span>
-              </div>
-            )}
-            {Array.isArray(item?.usage_examples) && item.usage_examples.length > 0 && (
-              <div className="dq-block">
-                <strong>Примеры</strong>
-                {item.usage_examples.slice(0, 2).map((ex, i) => {
-                  const text = formatExample(ex);
-                  return text ? <span key={`${text}-${i}`}>{text}</span> : null;
-                })}
-              </div>
-            )}
+            {item && <RichBreakdown item={item} />}
             {enrich === 'loading' && <div className="dq-muted">Готовлю полный разбор…</div>}
 
             <div className="dq-actions">
