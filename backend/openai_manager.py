@@ -3481,6 +3481,11 @@ theme + subtopic. For each noun return:
 STRICT:
 - Only nouns whose article is UNAMBIGUOUS. NEVER include nouns whose article depends
   on meaning (e.g. der/die See, der/das Band) or that have two genders.
+- NO nominalized adjectives/participles that denote a PERSON (e.g. Vorsitzende,
+  Vorstandsvorsitzende, Angestellte, Abgeordnete, Studierende, Reisende, Verwandte,
+  Beamte, Deutsche, Erwachsene, Jugendliche, Kranke, Gefangene): their article follows
+  the person's natural gender (der AND die both valid) and they decline like adjectives,
+  so they have no single fixed article. Exclude this whole class.
 - No proper names, no abstractions that aren't real nouns, no compounds invented ad hoc.
 - Do NOT repeat any word from "avoid".
 - Stay strictly within the subtopic; prefer concrete, learner-relevant vocabulary.
@@ -3497,6 +3502,11 @@ For EACH item decide whether "<article> <word>" is correct, standard, UNAMBIGUOU
   unambiguous, set ok=true and return the CORRECT article.
 - ok=false if the word is not a noun, is misspelled/not standard, or its article is
   AMBIGUOUS (different articles for different meanings, e.g. See, Band, Steuer).
+- ok=false ALSO for a nominalized adjective/participle that denotes a PERSON, where der
+  AND die are both valid by natural gender (e.g. Vorsitzende, Vorstandsvorsitzende,
+  Angestellte, Abgeordnete, Studierende, Reisende, Verwandte, Beamte, Deutsche,
+  Erwachsene, Kranke, Gefangene). These decline like adjectives and have no single
+  fixed article — reject them.
 - COMPOUND RULE (apply ALWAYS): a compound noun takes the gender of its LAST element.
   e.g. der Schädelbruch (← der Bruch), der Bandriss (← der Riss), das Röntgengerät
   (← das Gerät), die Tagesklinik (← die Klinik). Decide the article from the head word.

@@ -59,9 +59,29 @@ _AMBIGUOUS_NOUNS = {
     "schild", "moment", "teil",
 }
 
+# Nominalized adjectives / participles that denote a PERSON — their article follows
+# the person's natural gender (der/die Vorsitzende, der/die Angestellte) and they
+# decline like adjectives, not as plain nouns. There is no single decidable article,
+# so they must NOT live in a der/die/das bank. Matched on the word's TAIL so compounds
+# (Vorstandsvorsitzende, Bundestagsabgeordnete, Polizeibeamte, …) are caught too.
+_PERSON_ADJ_NOUN_TAILS = (
+    "vorsitzende", "angestellte", "vorgesetzte", "abgeordnete", "auszubildende",
+    "studierende", "reisende", "verwandte", "bekannte", "verlobte", "jugendliche",
+    "erwachsene", "angehörige", "delegierte", "gesandte", "gefangene", "verletzte",
+    "obdachlose", "freiwillige", "deutsche", "beamte",
+)
+
+
+def is_nominalized_person_adjective(word: str) -> bool:
+    """True for person-denoting nominalized adjectives/participles whose article is
+    not decidable (der/die both valid by natural gender), e.g. Vorstandsvorsitzende."""
+    w = str(word or "").strip().lower()
+    return any(w == t or w.endswith(t) for t in _PERSON_ADJ_NOUN_TAILS)
+
 
 def is_ambiguous_noun(word: str) -> bool:
-    return str(word or "").strip().lower() in _AMBIGUOUS_NOUNS
+    w = str(word or "").strip().lower()
+    return w in _AMBIGUOUS_NOUNS or is_nominalized_person_adjective(w)
 
 
 def strong_gender(word: str) -> str | None:
@@ -105,7 +125,8 @@ def recheck_theme(theme_key: str) -> dict:
             retire_article_sprint_noun(r["id"])
             retired += 1
             if len(examples) < 20:
-                examples.append(f"⊘ retired (ambiguous): {w}")
+                why = "person-adj" if is_nominalized_person_adjective(w) else "ambiguous"
+                examples.append(f"⊘ retired ({why}): {w}")
             continue
         hint = strong_gender(w)
         if hint and hint != str(r["article"]).lower():
