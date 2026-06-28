@@ -37668,12 +37668,16 @@ def active_user_ids_in_window(start, end) -> set[int]:
 def certificate_stats_for_window(start, end) -> dict:
     """Per-user achievement metrics for [start, end). Each metric is one grouped
     query (scalable), merged in Python. Returns {user_id: {...}}."""
+    # Tasks completed = the authoritative challenge ledger (EVERY dispatched task
+    # — rebus/anagram/aufgabe/quiz/crossword/image/visual/listening/numdict/polls —
+    # writes one row per task via record_challenge_result), plus the self-paced
+    # sprints which are not dispatched as challenges. Using the fragmented per-game
+    # tables before meant a user active only in the uncounted types (image quiz,
+    # visual riddle, native polls, numdict…) produced ZERO games → empty cert →
+    # silently skipped even though they were active. challenge_key is unique per
+    # (task,user), so no double counting.
     games_tables = [
-        ("bt_3_rebus_answers", "answered_at", None),
-        ("bt_3_anagram_answers", "answered_at", None),
-        ("bt_3_aufgabe_answers", "answered_at", None),
-        ("bt_3_article_quiz_answers", "answered_at", None),
-        ("bt_3_crossword_answers", "answered_at", "dispatch_id"),  # per puzzle
+        ("bt_3_challenge_results", "created_at", "challenge_key"),
         ("bt_3_article_sprint_results", "created_at", None),
         ("bt_3_adjektiv_sprint_results", "created_at", None),
     ]
@@ -37681,6 +37685,9 @@ def certificate_stats_for_window(start, end) -> dict:
     for tbl, ts, dcol in games_tables:
         for uid, n in _cert_count_by_user(tbl, ts, start, end, distinct_col=dcol).items():
             games[uid] = games.get(uid, 0) + n
+    # Overall task accuracy from the same ledger.
+    task_acc = _cert_ratio_by_user("bt_3_challenge_results", "created_at",
+                                   "COUNT(*) FILTER (WHERE is_correct)", "COUNT(*)", start, end)
     translations = _cert_count_by_user("bt_3_translations", "timestamp", start, end, distinct_col="sentence_id")
     # "words" = words LEARNED (cards reaching the mature SRS interval), NOT raw
     # dictionary saves — the old row count was dominated by auto-saves/imports and
@@ -37697,17 +37704,20 @@ def certificate_stats_for_window(start, end) -> dict:
                               "SUM(correct)", "SUM(answered)", start, end)
 
     out: dict[int, dict] = {}
-    all_ids = set(games) | set(translations) | set(words) | set(audio) | set(wins) | set(art_q) | set(art_w) | set(adj)
+    all_ids = (set(games) | set(translations) | set(words) | set(audio) | set(wins)
+               | set(art_q) | set(art_w) | set(adj) | set(task_acc))
     for uid in all_ids:
         aqc, aqt = art_q.get(uid, (0, 0))
         awc, awt = art_w.get(uid, (0, 0))
         adc, adt = adj.get(uid, (0, 0))
+        tac, tat = task_acc.get(uid, (0, 0))
         out[uid] = {
             "translations": int(translations.get(uid, 0)),
             "words": int(words.get(uid, 0)),
             "games": int(games.get(uid, 0)),
             "audio": int(audio.get(uid, 0)),
             "battle_wins": int(wins.get(uid, 0)),
+            "task_correct": tac, "task_total": tat,
             "art_correct": aqc + awc, "art_total": aqt + awt,
             "adj_correct": adc, "adj_total": adt,
         }

@@ -25734,9 +25734,9 @@ def _build_cert_rows(cur: dict, prev: dict) -> list[dict]:
         rows.append({"label": label, "now": str(a), "prev": str(b),
                      "dir": (1 if a > b else (-1 if a < b else 0))})
 
+    add_int("Заданий пройдено", "games")
     add_int("Переводы предложений", "translations")
     add_int("Выучено слов", "words")
-    add_int("Пройдено игр", "games")
     add_int("Аудио-заданий", "audio")
     add_int("Побед в батлах", "battle_wins")
 
@@ -25755,6 +25755,7 @@ def _build_cert_rows(cur: dict, prev: dict) -> list[dict]:
         rows.append({"label": label, "now": (f"{an}%" if an is not None else "—"),
                      "prev": (f"{bn}%" if bn is not None else "—"), "dir": dirv})
 
+    add_pct("Задания — точность", "task_correct", "task_total")
     add_pct("Артикли — точность", "art_correct", "art_total")
     add_pct("Окончания — точность", "adj_correct", "adj_total")
     return rows
