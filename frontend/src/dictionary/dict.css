@@ -29,7 +29,14 @@
 .dq-card { gap: 14px; }
 
 /* Language bar (RU ⇄ DE) — persistent direction control like Google Translate */
+.dq-langrow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
 .dq-langbar {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -38,6 +45,24 @@
   border-radius: 14px;
   background: rgba(148, 163, 184, 0.10);
   border: 1px solid var(--dmps-border, #334155);
+}
+.dq-auto-toggle {
+  flex: 0 0 auto;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: rgba(148, 163, 184, 0.10);
+  color: var(--dmps-text-muted, #94a3b8);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dq-auto-toggle.on {
+  color: #fff;
+  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  border-color: transparent;
 }
 .dq-lang {
   flex: 1 1 0;

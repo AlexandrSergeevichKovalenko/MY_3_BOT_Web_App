@@ -759,6 +759,9 @@ export default function DictionaryOverlay() {
   const [error, setError] = useState('');
   const [recents, setRecents] = useState(loadRecents);
   const [forcedDir, setForcedDir] = useState(null); // null=auto, else 'ru-de'|'de-ru'
+  const [autoOn, setAutoOn] = useState(() => {
+    try { return localStorage.getItem('dq_auto') !== '0'; } catch (_e) { return true; }
+  });
   const lastAutoRef = useRef(''); // text already auto/manually translated (debounce dedupe)
   const seqRef = useRef(0);
   const inputRef = useRef(null);
@@ -867,11 +870,21 @@ export default function DictionaryOverlay() {
   // so common single-word lookups need no button press. Only the cheap quick
   // translate fires; the heavy breakdown still waits for «Подробный разбор».
   useEffect(() => {
+    if (!autoOn) return undefined;
     const t = query.trim();
     if (!t || t === lastAutoRef.current || phase === 'loading') return undefined;
     const id = setTimeout(() => translate(t), 800);
     return () => clearTimeout(id);
-  }, [query, forcedDir, phase, translate]);
+  }, [query, forcedDir, phase, translate, autoOn]);
+
+  const toggleAuto = useCallback(() => {
+    setAutoOn((v) => {
+      const next = !v;
+      try { localStorage.setItem('dq_auto', next ? '1' : '0'); } catch (_e) { /* ignore */ }
+      return next;
+    });
+    haptic('light');
+  }, []);
 
   // The first lookup returns a FAST "core" item (article, senses, basic forms)
   // with the heavy parts (etymology, memory tip, word formation, collocations,
@@ -1032,10 +1045,21 @@ export default function DictionaryOverlay() {
           const dir = effectiveDir(query, forcedDir);
           const [src, tgt] = dir.split('-');
           return (
-            <div className="dq-langbar">
-              <span className="dq-lang">{LANG_NAMES[src]}</span>
-              <button type="button" className="dq-swap" onClick={onSwap} aria-label="Поменять языки">⇄</button>
-              <span className="dq-lang">{LANG_NAMES[tgt]}</span>
+            <div className="dq-langrow">
+              <div className="dq-langbar">
+                <span className="dq-lang">{LANG_NAMES[src]}</span>
+                <button type="button" className="dq-swap" onClick={onSwap} aria-label="Поменять языки">⇄</button>
+                <span className="dq-lang">{LANG_NAMES[tgt]}</span>
+              </div>
+              <button
+                type="button"
+                className={`dq-auto-toggle${autoOn ? ' on' : ''}`}
+                onClick={toggleAuto}
+                aria-pressed={autoOn}
+                title="Автоматический перевод по паузе"
+              >
+                ⚡ Авто
+              </button>
             </div>
           );
         })()}
