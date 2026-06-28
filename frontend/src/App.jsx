@@ -17434,7 +17434,13 @@ function AppInner() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const startParam = String(telegramApp?.initDataUnsafe?.start_param || '').trim().toLowerCase();
+    // start_param is only set on the initial Telegram deep-link launch; an in-webview
+    // navigation (e.g. the quick-dictionary overlay → /webapp?startapp=dictionary)
+    // carries the section in the query string instead, so fall back to it.
+    const startParam = (
+      String(telegramApp?.initDataUnsafe?.start_param || '').trim()
+      || String(params.get('startapp') || params.get('start_param') || '').trim()
+    ).toLowerCase();
     if (params.get('review') === '1') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(true);
