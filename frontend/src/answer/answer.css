@@ -373,6 +373,19 @@ html[data-scheme="light"] .ans-tip { background: #fff7e6; border-color: #f0d488;
 /* ── Interactive crossword grid + on-screen keyboard ───────────────────────── */
 /* One-screen layout: root fills the viewport, the grid takes the space left over
    by header + clue + keyboard + button and is scaled (in JS) to fit both axes. */
+/* Tapping a cell focuses a hidden input → the native keyboard opens and shrinks
+   the viewport, which used to scroll the title under Telegram's Mini-App header.
+   Same fix as the dictionary overlay: a top-anchored scroll container sized to the
+   (dynamic) viewport with safe-area + header clearance at the top. */
+.ans-root--cw {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 56px);
+}
 .ans-card--cw {
   margin: 0 auto;
   gap: 8px;
