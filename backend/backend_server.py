@@ -182,6 +182,7 @@ from backend.job_queue import (
     is_youtube_transcript_async_enabled,
 )
 from backend.translation_workflow import _extract_correct_translation
+from backend.german_grammar_tables import build_grammar_tables
 from backend.reader_audio_singleflight import (
     acquire_reader_audio_singleflight_slot,
     release_reader_audio_singleflight_slot,
@@ -30280,6 +30281,25 @@ def translate_quick():
         _release_quick_translate_inflight_slot(cache_key)
 
 
+def _with_grammar_tables(item):
+    """Attach deterministic POS-aware grammar tables (noun declension / verb
+    conjugation / adjective comparison) to a dictionary item for the deep card.
+    Pure + idempotent + cheap (no LLM), so it is safe to call on every response
+    path including cached items. Returns the same dict (or item unchanged on any
+    failure — the card just shows fewer blocks)."""
+    if not isinstance(item, dict):
+        return item
+    try:
+        tables = build_grammar_tables(item)
+        if tables and (
+            tables.get("declension") or tables.get("conjugation") or tables.get("comparison")
+        ):
+            item["grammar_tables"] = tables
+    except Exception:
+        logging.debug("grammar table build failed", exc_info=True)
+    return item
+
+
 @app.route("/api/webapp/dictionary", methods=["POST"])
 def lookup_webapp_dictionary():
     started_at = time.perf_counter()
@@ -30475,7 +30495,7 @@ def lookup_webapp_dictionary():
                 return jsonify(
                     {
                         "ok": True,
-                        "item": cached_item,
+                        "item": _with_grammar_tables(cached_item),
                         "direction": cached_direction,
                         "lookup_status": "ready",
                         "enrichment_pending": False,
@@ -30506,7 +30526,7 @@ def lookup_webapp_dictionary():
                 return jsonify(
                     {
                         "ok": True,
-                        "item": active_job.get("item"),
+                        "item": _with_grammar_tables(active_job.get("item")),
                         "direction": active_direction,
                         "lookup_id": active_lookup_id,
                         "lookup_status": "ready",
@@ -30532,7 +30552,7 @@ def lookup_webapp_dictionary():
                 return jsonify(
                     {
                         "ok": True,
-                        "item": active_job.get("core_item"),
+                        "item": _with_grammar_tables(active_job.get("core_item")),
                         "direction": active_direction,
                         "lookup_id": active_lookup_id,
                         "lookup_status": "enriching",
@@ -30621,7 +30641,7 @@ def lookup_webapp_dictionary():
             response = jsonify(
                 {
                     "ok": True,
-                    "item": result,
+                    "item": _with_grammar_tables(result),
                     "direction": direction,
                     "lookup_id": lookup_id,
                     "lookup_status": "enriching",
@@ -30719,7 +30739,7 @@ def lookup_webapp_dictionary():
     response = jsonify(
         {
             "ok": True,
-            "item": result,
+            "item": _with_grammar_tables(result),
             "direction": direction,
             "lookup_status": "ready",
             "enrichment_pending": False,
@@ -30773,7 +30793,7 @@ def get_webapp_dictionary_lookup_status():
         "ok": True,
         "lookup_id": lookup_id,
         "status": status,
-        "item": item,
+        "item": _with_grammar_tables(item),
         "direction": str(job.get("direction") or "").strip().lower(),
         "error": str(job.get("error") or "").strip() or None,
         "enrichment_pending": status == "enriching",

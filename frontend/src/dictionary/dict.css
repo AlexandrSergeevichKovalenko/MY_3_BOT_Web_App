@@ -243,3 +243,119 @@
   color: #6ea0ff;
   cursor: pointer;
 }
+
+/* ── Gender color coding (der=blue, die=red, das=green) ───────────────────────── */
+.dq-art { font-weight: 700; }
+.dq-art.g-m { color: #5b9bff; }
+.dq-art.g-f { color: #ff7a90; }
+.dq-art.g-n { color: #4ad08a; }
+
+/* ── Deep grammar tables (collapsible) ───────────────────────────────────────── */
+.dq-gt { width: 100%; }
+.dq-gt > summary {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--dmps-text-muted, #94a3b8);
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
+}
+.dq-gt > summary::-webkit-details-marker { display: none; }
+.dq-gt > summary::after { content: ' ▾'; opacity: 0.6; }
+.dq-gt[open] > summary::after { content: ' ▴'; }
+
+/* Declension table */
+.dq-decl {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 14px;
+}
+.dq-decl th {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--dmps-text-muted, #94a3b8);
+  text-align: left;
+  padding: 2px 8px 6px 0;
+}
+.dq-decl td {
+  padding: 4px 8px 4px 0;
+  color: var(--dmps-text-title, #f1f5f9);
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  white-space: nowrap;
+}
+.dq-decl-case {
+  font-size: 12px !important;
+  font-weight: 600;
+  color: var(--dmps-text-muted, #94a3b8) !important;
+}
+
+/* Conjugation blocks */
+.dq-stamm {
+  margin: 6px 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--dmps-text-title, #f1f5f9);
+}
+.dq-conj-block { margin-top: 10px; }
+.dq-conj-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #8fb4ff;
+}
+.dq-conj-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 12px;
+  margin-top: 4px;
+}
+.dq-conj-pron {
+  font-size: 13px !important;
+  color: var(--dmps-text-muted, #94a3b8) !important;
+}
+.dq-conj-form {
+  font-size: 14px !important;
+  color: var(--dmps-text-title, #f1f5f9) !important;
+}
+.dq-imp {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dq-imp span:last-child { font-size: 14px; color: var(--dmps-text-secondary, #cbd5e1); }
+
+/* Adjective degrees of comparison */
+.dq-deg {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.dq-deg-item {
+  display: flex !important;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 15px !important;
+  font-weight: 700;
+  color: var(--dmps-text-title, #f1f5f9) !important;
+  padding: 5px 11px;
+  border-radius: 12px;
+  background: rgba(148, 163, 184, 0.12);
+}
+.dq-deg-item em {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+.dq-deg-arrow { color: var(--dmps-text-muted, #94a3b8); }

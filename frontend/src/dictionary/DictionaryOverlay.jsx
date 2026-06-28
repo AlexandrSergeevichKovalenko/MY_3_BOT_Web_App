@@ -180,6 +180,132 @@ function pronunciationText(item) {
   return ipa || stress || '';
 }
 
+// Gender → color class (der=blue, die=red, das=green), the classic learner
+// mnemonic. Applied to every article we render so the gender is felt visually.
+function genderClass(article) {
+  const a = clean(article).toLowerCase();
+  if (a === 'der') return 'g-m';
+  if (a === 'die') return 'g-f';
+  if (a === 'das') return 'g-n';
+  return '';
+}
+
+// Wrap the leading article of a "der Tisch" / "den Tischen" string in a colored
+// span so the gender reads at a glance. The gender class is passed in (the table
+// knows it) so declined forms like den/dem/des still color correctly.
+function ColoredForm({ text, genderCls }) {
+  const t = clean(text);
+  const m = t.match(/^(der|die|das|den|dem|des)\s+(.*)$/i);
+  if (!m) return <>{t}</>;
+  return <><span className={`dq-art ${genderCls || ''}`}>{m[1]}</span> {m[2]}</>;
+}
+
+// 'm'|'f'|'n' (declension table gender) → the same color class as the article.
+function genderClassFromKey(g) {
+  return g === 'm' ? 'g-m' : g === 'f' ? 'g-f' : g === 'n' ? 'g-n' : '';
+}
+
+const PRON_ORDER = ['ich', 'du', 'er/sie/es', 'wir', 'ihr', 'sie/Sie'];
+
+// One labelled conjugation block (Präsens / Präteritum / …) as a pronoun→form grid.
+function ConjBlock({ title, forms }) {
+  if (!forms || typeof forms !== 'object') return null;
+  const rows = PRON_ORDER.filter((p) => clean(forms[p]));
+  if (rows.length === 0) return null;
+  return (
+    <div className="dq-conj-block">
+      <div className="dq-conj-title">{title}</div>
+      <div className="dq-conj-grid">
+        {rows.map((p) => (
+          <React.Fragment key={p}>
+            <span className="dq-conj-pron">{p}</span>
+            <span className="dq-conj-form">{forms[p]}</span>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// POS-aware deterministic grammar tables built server-side (item.grammar_tables):
+// full noun declension, verb conjugation, adjective comparison. Each section is a
+// collapsible <details> so the compact card stays light until the user expands.
+function GrammarTables({ tables }) {
+  if (!tables || typeof tables !== 'object') return null;
+  const decl = tables.declension;
+  const conj = tables.conjugation;
+  const comp = tables.comparison;
+
+  if (decl && Array.isArray(decl.rows) && decl.rows.length > 0) {
+    const gc = genderClassFromKey(decl.gender);
+    // Plurals share one article color (die/den/der) — neutral, since plural has no
+    // gender; keep the singular column gendered for the mnemonic.
+    return (
+      <details className="dq-gt" open>
+        <summary>Склонение{decl.plural ? ` · мн. ${decl.plural}` : ''}</summary>
+        <table className="dq-decl">
+          <thead>
+            <tr><th /><th>Singular</th>{decl.has_plural && <th>Plural</th>}</tr>
+          </thead>
+          <tbody>
+            {decl.rows.map((r) => (
+              <tr key={r.case}>
+                <td className="dq-decl-case">{r.label}</td>
+                <td><ColoredForm text={r.singular} genderCls={gc} /></td>
+                {decl.has_plural && <td><ColoredForm text={r.plural} /></td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
+    );
+  }
+
+  if (conj && conj.praesens) {
+    const stamm = [conj.infinitive, conj.praeteritum?.['er/sie/es'], conj.partizip2]
+      .filter(Boolean);
+    return (
+      <details className="dq-gt" open>
+        <summary>Спряжение{conj.auxiliary ? ` · ${conj.auxiliary}` : ''}</summary>
+        {stamm.length === 3 && (
+          <div className="dq-stamm">{stamm.join(' – ')}</div>
+        )}
+        <ConjBlock title="Präsens" forms={conj.praesens} />
+        <ConjBlock title="Präteritum" forms={conj.praeteritum} />
+        <ConjBlock title="Perfekt" forms={conj.perfekt} />
+        <ConjBlock title="Konjunktiv II" forms={conj.konjunktiv2} />
+        {conj.imperativ && (clean(conj.imperativ.du) || clean(conj.imperativ.ihr)) && (
+          <div className="dq-imp">
+            <span className="dq-conj-title">Imperativ</span>
+            <span>{[
+              conj.imperativ.du && `du: ${conj.imperativ.du}`,
+              conj.imperativ.ihr && `ihr: ${conj.imperativ.ihr}`,
+              conj.imperativ.Sie && conj.imperativ.Sie,
+            ].filter(Boolean).join(' · ')}</span>
+          </div>
+        )}
+      </details>
+    );
+  }
+
+  if (comp && comp.positive) {
+    return (
+      <details className="dq-gt" open>
+        <summary>Степени сравнения</summary>
+        <div className="dq-deg">
+          <span className="dq-deg-item"><em>Positiv</em>{comp.positive}</span>
+          <span className="dq-deg-arrow">→</span>
+          <span className="dq-deg-item"><em>Komparativ</em>{comp.comparative}</span>
+          <span className="dq-deg-arrow">→</span>
+          <span className="dq-deg-item"><em>Superlativ</em>{comp.superlative}</span>
+        </div>
+      </details>
+    );
+  }
+
+  return null;
+}
+
 // Full dictionary-grade breakdown of a looked-up item, adapting to its part of
 // speech (article/plural for nouns, conjugation for verbs, comparison for
 // adjectives, register notes for phrases) plus meanings, collocations, government,
@@ -194,6 +320,8 @@ function RichBreakdown({ item }) {
   const variants = translationVariants(item);
   const meanings = meaningList(item);
   const grammar = grammarRows(item);
+  const gt = item.grammar_tables;
+  const hasTables = !!(gt && (gt.declension || gt.conjugation || gt.comparison));
   const government = governmentList(item);
   const collocations = collocationList(item);
   const examples = (Array.isArray(item.usage_examples) ? item.usage_examples : [])
@@ -246,7 +374,11 @@ function RichBreakdown({ item }) {
         </div>
       )}
 
-      {grammar.length > 0 && (
+      {hasTables ? (
+        <div className="dq-block">
+          <GrammarTables tables={item.grammar_tables} />
+        </div>
+      ) : grammar.length > 0 && (
         <div className="dq-block">
           <strong>Грамматика</strong>
           <div className="dq-grammar">
@@ -544,12 +676,14 @@ export default function DictionaryOverlay() {
         {quick && phase !== 'loading' && (
           <div className="dq-result">
             <div className="dq-source">
-              {(item?.article && quick.sourceLang === 'de') ? `${item.article} ` : ''}{quick.source}
+              {(item?.article && quick.sourceLang === 'de')
+                ? <><span className={`dq-art ${genderClass(item.article)}`}>{item.article}</span> </> : ''}{quick.source}
             </div>
             <div className="dq-translation">
               {/* The German article only belongs to the German word, never to the
                   Russian translation (was producing "die Порядок действий"). */}
-              {(item?.article && item?.word_de && quick.targetLang === 'de') ? `${item.article} ` : ''}
+              {(item?.article && item?.word_de && quick.targetLang === 'de')
+                ? <><span className={`dq-art ${genderClass(item.article)}`}>{item.article}</span> </> : ''}
               {(item?.word_de && quick.targetLang === 'de') ? item.word_de : (quick.translation || '—')}
               {germanText && (
                 <button
