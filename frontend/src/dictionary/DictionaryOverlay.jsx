@@ -687,6 +687,27 @@ export default function DictionaryOverlay() {
     return '';
   })();
 
+  // The instant translate uses fast non-LLM engines that mishandle typos /
+  // compounds (e.g. "Klimzugstange" → "Тяга климатической системы"). Once the LLM
+  // breakdown arrives it carries the corrected German form and a proper
+  // translation, so prefer those for the headword and replace the raw MT result.
+  const corrDe = String(item?.word_de || '').trim();
+  const bestRu = String(
+    item?.translation_ru
+    || item?.word_ru
+    || item?.meanings?.primary?.value
+    || '',
+  ).trim();
+  // What to show big (the translation side) and small (the source side).
+  const headTranslation = quick?.targetLang === 'de'
+    ? (corrDe || quick?.translation || '—')
+    : (bestRu || quick?.translation || '—');
+  const headSource = (quick?.sourceLang === 'de' && corrDe) ? corrDe : (quick?.source || '');
+  // Show the spelling correction only when it actually changed the typed word.
+  const correctedNote = (corrDe && quick?.sourceLang === 'de'
+    && corrDe.toLowerCase() !== String(quick?.source || '').trim().toLowerCase())
+    ? corrDe : '';
+
   // Prewarm pronunciation as soon as the German text is known (user accepted the
   // small TTS-quota cost), so tapping 🔊 plays from cache instead of waiting on the
   // queue+worker round-trip.
@@ -900,14 +921,15 @@ export default function DictionaryOverlay() {
           <div className="dq-result">
             <div className="dq-source">
               {((item?.article || quick.article) && quick.sourceLang === 'de')
-                ? <><span className={`dq-art ${genderClass(item?.article || quick.article)}`}>{item?.article || quick.article}</span> </> : ''}{quick.source}
+                ? <><span className={`dq-art ${genderClass(item?.article || quick.article)}`}>{item?.article || quick.article}</span> </> : ''}{headSource}
+              {correctedNote && <span className="dq-corrected">исправлено с «{quick.source}»</span>}
             </div>
             <div className="dq-translation">
               {/* The German article only belongs to the German word, never to the
                   Russian translation (was producing "die Порядок действий"). */}
               {((item?.article || quick.article) && quick.targetLang === 'de')
                 ? <><span className={`dq-art ${genderClass(item?.article || quick.article)}`}>{item?.article || quick.article}</span> </> : ''}
-              {(item?.word_de && quick.targetLang === 'de') ? item.word_de : (quick.translation || '—')}
+              {headTranslation}
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
             {item && <RichBreakdown item={item} tts={tts} />}

@@ -53,6 +53,11 @@
   font-size: 13px;
   color: var(--dmps-text-muted, #94a3b8);
 }
+.dq-corrected {
+  margin-left: 8px;
+  font-size: 11px !important;
+  color: #d8a657 !important;
+}
 
 .dq-translation {
   font-size: 22px;

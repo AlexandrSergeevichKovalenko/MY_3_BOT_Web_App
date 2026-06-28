@@ -2460,6 +2460,10 @@ Rules:
 - Avoid dry generic paraphrases. Example: for "Франц ушел на пенсию", prefer "Franz ist jetzt in Rente" or "Franz genießt jetzt seine Rente", not "Franz geht nicht mehr zur Arbeit".
 - Prefer concise living phrases over textbook abstractions.
 - Etymology, usage_note and memory_tip must help learner FEEL structure and origin.
+- For a SINGLE-WORD content lemma (noun, verb, adjective or adverb) you MUST provide a
+  non-null etymology_note (origin / how the word is built) AND a non-null memory_tip
+  (a vivid association or hook to remember it). Only use null for these on function words,
+  numbers, proper names, or multi-word phrases where such notes would be artificial.
 - If information is unknown, use null.
 """,
 "dictionary_assistant_multilang_core_fast": """
