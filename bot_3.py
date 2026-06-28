@@ -2567,15 +2567,18 @@ def _render_sched_step1(prefs) -> tuple:
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-def _render_sched_step2(prefs) -> tuple:
-    """Step 2/2 — pick active hours, then confirm."""
+def _render_sched_step2(prefs, show_confirm: bool = False) -> tuple:
+    """Step 2/2 — pick active hours, then confirm. «Подтвердить» appears only AFTER a
+    window is chosen (show_confirm=True from the pwin handler), so it doesn't sit among
+    the hour options on first entry and confuse the choice."""
     _, cur_win, preset_label, _ = _sched_labels(prefs)
     lines = ["🗓 <b>Расписание · шаг 2 из 2</b>", "",
              f"Интенсивность: <b>{preset_label}</b>", "",
              "<b>В какие часы присылать?</b> (по твоему времени)"]
     rows = [[InlineKeyboardButton(("✅ " if key == cur_win else "") + label, callback_data=f"pwin:{key}")]
             for key, (label, _w) in _WINDOW_PRESETS.items()]
-    rows.append([InlineKeyboardButton("✅ Подтвердить", callback_data="sch:done")])
+    if show_confirm:
+        rows.append([InlineKeyboardButton("✅ Подтвердить расписание", callback_data="sch:done")])
     rows.append([InlineKeyboardButton("⬅️ К интенсивности", callback_data="sch:open")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
@@ -2650,7 +2653,8 @@ async def _schedule_window_callback(update: Update, context: CallbackContext) ->
     ok = await asyncio.to_thread(set_user_schedule, user_id, _window_schedule_for(key))
     await query.answer("Сохранено ✅ — жми «Подтвердить»" if ok else "Не удалось сохранить")
     if ok:
-        await _sched_edit(query, _render_sched_step2, user_id)
+        # Window picked → now reveal «Подтвердить расписание».
+        await _sched_edit(query, lambda p: _render_sched_step2(p, show_confirm=True), user_id)
 
 
 async def _schedule_nav_callback(update: Update, context: CallbackContext) -> None:
