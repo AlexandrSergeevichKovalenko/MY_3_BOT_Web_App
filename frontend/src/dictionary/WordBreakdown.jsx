@@ -301,6 +301,148 @@ function pronunciationText(item) {
   return ipa || stress || '';
 }
 
+// ── Client-side grammar-table engine (mirrors backend german_grammar_tables.py).
+// Used as a FALLBACK when an item has no server-built `grammar_tables` (e.g. saved
+// Library entries from before the engine existed) — builds the full declension/
+// conjugation/comparison from `forms` + `article`, so every card shows real tables
+// instead of bare "Артикль/Мн.число" chips. ────────────────────────────────────
+const _ART_SG = {
+  m: { nom: 'der', akk: 'den', dat: 'dem', gen: 'des' },
+  f: { nom: 'die', akk: 'die', dat: 'der', gen: 'der' },
+  n: { nom: 'das', akk: 'das', dat: 'dem', gen: 'des' },
+};
+const _ART_PL = { nom: 'die', akk: 'die', dat: 'den', gen: 'der' };
+const _CASES = ['nom', 'akk', 'dat', 'gen'];
+const _CASE_LABELS = { nom: 'Nominativ', akk: 'Akkusativ', dat: 'Dativ', gen: 'Genitiv' };
+const _ARTICLE_TOKENS = new Set(['der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einen', 'einem', 'einer', 'eines']);
+const _PRON = ['ich', 'du', 'er/sie/es', 'wir', 'ihr', 'sie/Sie'];
+
+function _stripArticle(s) {
+  const parts = String(s || '').trim().split(/\s+/);
+  if (parts[0] && _ARTICLE_TOKENS.has(parts[0].toLowerCase())) return parts.slice(1).join(' ');
+  return String(s || '').trim();
+}
+function _genderFromArticle(a) {
+  const x = String(a || '').trim().toLowerCase();
+  return x === 'der' ? 'm' : x === 'die' ? 'f' : x === 'das' ? 'n' : null;
+}
+function buildNounDeclension(wordDe, article, plural, genitive) {
+  const gender = _genderFromArticle(article);
+  if (!gender) return null;
+  const noun = _stripArticle(wordDe);
+  if (!noun) return null;
+  const pluralNoun = plural ? _stripArticle(plural) : '';
+  let genSg = _stripArticle(genitive || '');
+  if (!genSg) {
+    if (gender === 'f') genSg = noun;
+    else genSg = noun + (/(s|ß|x|z|sch)$/i.test(noun) ? 'es' : 's');
+  }
+  const sg = { nom: noun, akk: noun, dat: noun, gen: genSg };
+  const rows = _CASES.map((c) => {
+    const row = { case: c, label: _CASE_LABELS[c], singular: `${_ART_SG[gender][c]} ${sg[c]}`.trim() };
+    if (pluralNoun) {
+      const pl = (c === 'dat' && !/[ns]$/i.test(pluralNoun)) ? pluralNoun + 'n' : pluralNoun;
+      row.plural = `${_ART_PL[c]} ${pl}`.trim();
+    }
+    return row;
+  });
+  return { gender, article: _ART_SG[gender].nom, singular: noun, plural: pluralNoun || null, has_plural: !!pluralNoun, rows };
+}
+function _expandFromBase(base) {
+  const low = base.toLowerCase();
+  const endsE = low.endsWith('e');
+  let du = base + ((/[td]$/.test(low) && !endsE) ? 'est' : 'st');
+  if (/[sßzx]$/.test(low) && !endsE) du = base + 't';
+  const pl = base + (endsE ? 'n' : 'en');
+  const ihr = base + ((endsE || !/[td]$/.test(low)) ? 't' : 'et');
+  return { ich: base, du, 'er/sie/es': base, wir: pl, ihr, 'sie/Sie': pl };
+}
+const _AUX_FORMS = {
+  haben: ['habe', 'hast', 'hat', 'haben', 'habt', 'haben'],
+  sein: ['bin', 'bist', 'ist', 'sind', 'seid', 'sind'],
+};
+function _parsePerfekt(perfekt) {
+  const text = String(perfekt || '').trim();
+  if (!text) return ['haben', ''];
+  const tokens = text.split(/\s+/);
+  const head = tokens[0].toLowerCase();
+  if (['hat', 'habe', 'hast', 'haben', 'habt'].includes(head)) return ['haben', tokens.slice(1).join(' ')];
+  if (['ist', 'bin', 'bist', 'sind', 'seid'].includes(head)) return ['sein', tokens.slice(1).join(' ')];
+  return ['haben', text];
+}
+function buildVerbConjugation(wordDe, seed) {
+  const inf = _stripArticle(wordDe);
+  if (!inf || /\s/.test(inf)) return null;
+  seed = seed || {};
+  let stem; let plEnd;
+  if (inf.endsWith('eln') || inf.endsWith('ern')) { stem = inf.slice(0, -1); plEnd = 'n'; }
+  else if (inf.endsWith('en')) { stem = inf.slice(0, -2); plEnd = 'en'; }
+  else if (inf.endsWith('n')) { stem = inf.slice(0, -1); plEnd = 'n'; }
+  else { stem = inf; plEnd = 'en'; }
+  const low = stem.toLowerCase();
+  let regDu; let regEr;
+  if (/(t|d|ffn|chn|tm)$/.test(low)) { regDu = stem + 'est'; regEr = stem + 'et'; }
+  else if (/[sßzx]$/.test(low)) { regDu = stem + 't'; regEr = stem + 't'; }
+  else { regDu = stem + 'st'; regEr = stem + 't'; }
+  let du = clean(seed.present_2sg) || regDu;
+  const er = clean(seed.present_3sg) || regEr;
+  if (clean(seed.present_3sg) && !clean(seed.present_2sg) && er.toLowerCase().endsWith('t')) {
+    const cand = er.slice(0, -1);
+    if (!/[sßzx]$/i.test(cand)) du = cand + 'st';
+  }
+  const ihr = stem + (/[td]$/.test(low) ? 'et' : 't');
+  const tables = { praesens: { ich: stem + 'e', du, 'er/sie/es': er, wir: stem + plEnd, ihr, 'sie/Sie': stem + plEnd } };
+  const praet = _stripArticle(clean(seed.praeteritum));
+  if (praet) tables.praeteritum = _expandFromBase(praet);
+  const konj2 = _stripArticle(clean(seed.konjunktiv2));
+  if (konj2 && konj2.toLowerCase().startsWith('würde')) {
+    tables.konjunktiv2 = { ich: 'würde ' + inf, du: 'würdest ' + inf, 'er/sie/es': 'würde ' + inf, wir: 'würden ' + inf, ihr: 'würdet ' + inf, 'sie/Sie': 'würden ' + inf };
+  } else if (konj2) tables.konjunktiv2 = _expandFromBase(konj2);
+  const [aux, participle] = _parsePerfekt(clean(seed.perfekt));
+  if (participle && _AUX_FORMS[aux]) {
+    tables.perfekt = {};
+    _PRON.forEach((p, i) => { tables.perfekt[p] = `${_AUX_FORMS[aux][i]} ${participle}`; });
+    tables.auxiliary = aux;
+    tables.partizip2 = participle;
+  }
+  tables.imperativ = { du: clean(seed.imperative_sg) || stem, ihr, Sie: `${stem + plEnd} Sie` };
+  tables.infinitive = inf;
+  return tables;
+}
+function buildAdjectiveComparison(wordDe, comparative, superlative) {
+  const positive = _stripArticle(wordDe);
+  if (!positive || /\s/.test(positive)) return null;
+  let comp = clean(comparative);
+  let sup = clean(superlative);
+  if (!comp) comp = positive + 'er';
+  if (!sup) sup = `am ${positive}sten`;
+  else if (!sup.toLowerCase().startsWith('am ')) sup = 'am ' + sup;
+  return { positive, comparative: comp, superlative: sup };
+}
+// Build tables from an item's forms+article when the server didn't (idempotent).
+function buildGrammarTablesJS(item) {
+  if (!item || typeof item !== 'object') return null;
+  const pos = clean(item.part_of_speech).toLowerCase();
+  const f = (item.forms && typeof item.forms === 'object') ? item.forms : {};
+  const wordDe = clean(item.word_de);
+  if (pos === 'noun') {
+    const t = buildNounDeclension(wordDe, item.article, f.plural, f.genitive);
+    return t ? { declension: t } : null;
+  }
+  if (pos === 'verb') {
+    const t = buildVerbConjugation(wordDe, {
+      present_2sg: f.present_2sg, present_3sg: f.present_3sg, praeteritum: f.praeteritum,
+      perfekt: f.perfekt, konjunktiv2: f.konjunktiv2, imperative_sg: f.imperative_sg,
+    });
+    return t ? { conjugation: t } : null;
+  }
+  if (pos === 'adjective' || pos === 'adverb') {
+    const t = buildAdjectiveComparison(wordDe, f.comparative, f.superlative);
+    return t ? { comparison: t } : null;
+  }
+  return null;
+}
+
 // A tappable German word/phrase pill that saves to the dictionary on tap.
 function SaveChip({ text, className, label, saved, onSave }) {
   const t = clean(text);
@@ -447,7 +589,11 @@ export function WordBreakdown({ item, tts, onSaveChip, savedChips, hideMeanings 
   const variants = translationVariants(item);
   const meanings = meaningList(item);
   const grammar = grammarRows(item);
-  const gt = item.grammar_tables;
+  // Prefer server-built tables; fall back to the client engine (saved entries
+  // without grammar_tables still get a full declension/conjugation table).
+  const serverGt = item.grammar_tables;
+  const gt = (serverGt && (serverGt.declension || serverGt.conjugation || serverGt.comparison))
+    ? serverGt : buildGrammarTablesJS(item);
   const hasTables = !!(gt && (gt.declension || gt.conjugation || gt.comparison));
   const government = governmentList(item);
   const collocations = collocationList(item);
@@ -540,7 +686,7 @@ export function WordBreakdown({ item, tts, onSaveChip, savedChips, hideMeanings 
 
       {hasTables ? (
         <div className="dq-block">
-          <GrammarTables tables={item.grammar_tables} />
+          <GrammarTables tables={gt} />
         </div>
       ) : grammar.length > 0 && (
         <div className="dq-block">
