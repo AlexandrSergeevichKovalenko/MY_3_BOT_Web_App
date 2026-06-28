@@ -58,6 +58,23 @@ function guessPair(text) {
     : { source: 'de', target: 'ru' };
 }
 
+// Recent lookups persisted locally (most-recent first, max 6). Pure helpers so
+// the start card can offer one-tap repeat lookups.
+const RECENTS_KEY = 'dq_recents_v1';
+function loadRecents() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENTS_KEY) || '[]');
+    return Array.isArray(raw) ? raw.filter((x) => typeof x === 'string').slice(0, 6) : [];
+  } catch (_e) { return []; }
+}
+function pushRecent(word) {
+  const w = String(word || '').trim();
+  if (!w) return loadRecents();
+  const next = [w, ...loadRecents().filter((x) => x.toLowerCase() !== w.toLowerCase())].slice(0, 6);
+  try { localStorage.setItem(RECENTS_KEY, JSON.stringify(next)); } catch (_e) { /* ignore */ }
+  return next;
+}
+
 function formatExample(example) {
   if (typeof example === 'string') return String(example || '').trim();
   if (example && typeof example === 'object') {
@@ -83,6 +100,27 @@ const POS_LABELS = {
 
 function clean(value) {
   return String(value || '').trim();
+}
+
+// Russian labels for the frequency band.
+const FREQ_LABELS = {
+  very_common: 'очень частое',
+  common: 'частое',
+  uncommon: 'нечастое',
+  rare: 'редкое',
+};
+
+// Compound / affix breakdown ({is_compound, parts:[{text,gloss}], note}) → the
+// list of parts worth showing. Single non-compound words yield [].
+function wordFormationParts(item) {
+  const wf = item?.word_formation;
+  if (!wf || typeof wf !== 'object') return { parts: [], note: '' };
+  const parts = (Array.isArray(wf.parts) ? wf.parts : [])
+    .map((p) => (p && typeof p === 'object'
+      ? { text: clean(p.text), gloss: clean(p.gloss) }
+      : { text: clean(p), gloss: '' }))
+    .filter((p) => p.text);
+  return { parts: parts.length >= 2 ? parts : [], note: clean(wf.note) };
 }
 
 // Alternative translation variants beyond the headword (formal/informal/slang…).
@@ -329,6 +367,9 @@ function RichBreakdown({ item }) {
     .filter(Boolean);
   const etymology = clean(item.etymology_note);
   const memoryTip = clean(item.memory_tip);
+  const level = clean(item.level).toUpperCase();
+  const freqLabel = FREQ_LABELS[clean(item.frequency).toLowerCase()] || '';
+  const formation = wordFormationParts(item);
   const usage = [
     clean(item.real_life_usage),
     clean(item.register_note),
@@ -338,9 +379,11 @@ function RichBreakdown({ item }) {
 
   return (
     <>
-      {(posLabel || pron) && (
+      {(posLabel || pron || level || freqLabel) && (
         <div className="dq-meta">
           {posLabel && <span className="dq-pos-chip">{posLabel}</span>}
+          {level && <span className="dq-level-chip">{level}</span>}
+          {freqLabel && <span className="dq-freq-chip">{freqLabel}</span>}
           {pron && <span className="dq-ipa">{pron}</span>}
         </div>
       )}
@@ -423,10 +466,34 @@ function RichBreakdown({ item }) {
         </div>
       )}
 
-      {(etymology || memoryTip) && (
+      {formation.parts.length > 0 && (
+        <div className="dq-block">
+          <strong>Состав слова</strong>
+          <div className="dq-formation">
+            {formation.parts.map((p, i) => (
+              <React.Fragment key={`${p.text}-${i}`}>
+                {i > 0 && <span className="dq-formation-plus">+</span>}
+                <span className="dq-formation-part">
+                  <b>{p.text}</b>{p.gloss ? <em>{p.gloss}</em> : null}
+                </span>
+              </React.Fragment>
+            ))}
+          </div>
+          {formation.note && <span className="dq-muted">{formation.note}</span>}
+        </div>
+      )}
+
+      {etymology && (
+        <div className="dq-block">
+          <strong>Происхождение</strong>
+          <span>{etymology}</span>
+        </div>
+      )}
+
+      {memoryTip && (
         <div className="dq-block dq-note">
-          {etymology && <><strong>Этимология</strong><span>{etymology}</span></>}
-          {memoryTip && <><strong>Как запомнить</strong><span>{memoryTip}</span></>}
+          <strong>💡 Как запомнить</strong>
+          <span>{memoryTip}</span>
         </div>
       )}
     </>
@@ -500,6 +567,7 @@ export default function DictionaryOverlay() {
   const [enrich, setEnrich] = useState('idle'); // idle|loading|done|error
   const [save, setSave] = useState('idle');   // idle|saving|done
   const [error, setError] = useState('');
+  const [recents, setRecents] = useState(loadRecents);
   const seqRef = useRef(0);
   const inputRef = useRef(null);
   const tts = useTts();
@@ -538,9 +606,10 @@ export default function DictionaryOverlay() {
     if (germanText) warmTts(germanText, 'de-DE');
   }, [germanText, warmTts]);
 
-  const translate = useCallback(async () => {
-    const text = query.trim();
+  const translate = useCallback(async (overrideText) => {
+    const text = (typeof overrideText === 'string' ? overrideText : query).trim();
     if (!text || phase === 'loading') return;
+    if (text !== query) setQuery(text);
     const mySeq = ++seqRef.current;
     tts.stop();
     setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle');
@@ -562,6 +631,7 @@ export default function DictionaryOverlay() {
         provider: String(data?.provider || '').trim(),
       });
       setPhase('done'); haptic('ok');
+      setRecents(pushRecent(text));
     } catch (e) {
       if (mySeq !== seqRef.current) return;
       setError(String(e.message || e)); setPhase('error'); haptic('bad');
@@ -636,6 +706,15 @@ export default function DictionaryOverlay() {
     try { window.location.assign('/webapp?startapp=dictionary'); } catch (_e) { /* ignore */ }
   }, []);
 
+  // Paste from clipboard (fires inside the tap gesture, so the browser grants
+  // read access) and translate immediately.
+  const onPaste = useCallback(async () => {
+    try {
+      const text = (await navigator.clipboard.readText() || '').trim();
+      if (text) { setQuery(text); translate(text); }
+    } catch (_e) { try { inputRef.current?.focus(); } catch (_e2) { /* ignore */ } }
+  }, [translate]);
+
   const onKeyDown = (e) => { if (e.key === 'Enter') { e.preventDefault(); translate(); } };
 
   return (
@@ -668,7 +747,24 @@ export default function DictionaryOverlay() {
         </div>
 
         {phase === 'idle' && (
-          <div className="dq-hint">Введите слово — увидите перевод. Можно прослушать и сохранить в словарь.</div>
+          <>
+            <div className="dq-hint">
+              Введите слово — увидите перевод, грамматику и пример.{' '}
+              <button type="button" className="dq-paste" onClick={onPaste}>Вставить</button>
+            </div>
+            {recents.length > 0 && (
+              <div className="dq-recent">
+                <span className="dq-recent-label">Недавние</span>
+                <div className="dq-recent-chips">
+                  {recents.map((w) => (
+                    <button key={w} type="button" className="dq-recent-chip" onClick={() => translate(w)}>
+                      {w}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {phase === 'error' && error && <div className="dd-err">{error}</div>}

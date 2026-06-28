@@ -14993,6 +14993,9 @@ def _build_multilang_dictionary_result(
         "government_patterns",
         "pronunciation",
         "save_worthy_options",
+        "word_formation",
+        "level",
+        "frequency",
     )
     for key in passthrough_keys:
         value = raw.get(key)

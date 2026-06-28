@@ -359,3 +359,94 @@
   color: var(--dmps-text-muted, #94a3b8);
 }
 .dq-deg-arrow { color: var(--dmps-text-muted, #94a3b8); }
+
+/* ── Level (CEFR) + frequency chips on the meta line ─────────────────────────── */
+.dq-level-chip {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #4ad08a;
+  background: rgba(34, 197, 94, 0.14);
+}
+.dq-freq-chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: var(--dmps-text-muted, #94a3b8);
+  background: rgba(148, 163, 184, 0.12);
+}
+
+/* ── Word formation (Hand + Schuh) ───────────────────────────────────────────── */
+.dq-formation {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.dq-formation-part {
+  display: flex !important;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 11px;
+  border-radius: 12px;
+  background: rgba(148, 163, 184, 0.12);
+}
+.dq-formation-part b {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--dmps-text-title, #f1f5f9);
+}
+.dq-formation-part em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+.dq-formation-plus {
+  align-self: center;
+  font-size: 15px !important;
+  font-weight: 700;
+  color: var(--dmps-text-muted, #94a3b8) !important;
+}
+
+/* ── Start card: paste + recent lookups ──────────────────────────────────────── */
+.dq-paste {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  color: #6ea0ff;
+  cursor: pointer;
+}
+.dq-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dq-recent-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+.dq-recent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dq-recent-chip {
+  font: inherit;
+  font-size: 14px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  cursor: pointer;
+}
+.dq-recent-chip:hover { background: rgba(37, 99, 235, 0.16); }

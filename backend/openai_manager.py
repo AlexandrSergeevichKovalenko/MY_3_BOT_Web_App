@@ -2379,14 +2379,25 @@ Return STRICT JSON with keys:
   "forms": {
     "plural": string|null,
     "genitive": string|null,
+    "present_2sg": string|null,
     "present_3sg": string|null,
     "praeteritum": string|null,
     "perfekt": string|null,
     "comparative": string|null,
     "superlative": string|null,
     "konjunktiv1": string|null,
-    "konjunktiv2": string|null
+    "konjunktiv2": string|null,
+    "imperative_sg": string|null
   },
+  "word_formation": {
+    "is_compound": true,
+    "parts": [
+      {"text": "<sub-word or affix>", "gloss": "<short meaning in explanation language>"}
+    ],
+    "note": "string|null"
+  },
+  "level": "<A1|A2|B1|B2|C1|C2|null>",
+  "frequency": "<very_common|common|uncommon|rare|null>",
   "usage_examples": [
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."}
@@ -2425,6 +2436,15 @@ Rules:
 - For noisy grammar-construction input, the base save_worthy_options item must use the normalized clean construction, not the raw fragment.
 - If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
 - If verb: include separable/inseparable if relevant, up to 3 useful government patterns, and key forms.
+  Always fill forms.present_2sg (du-form), forms.present_3sg (er-form) and forms.imperative_sg (du-imperative)
+  for German verbs, especially irregular/strong ones (e.g. fahren → du fährst, er fährt, imperative "fahr").
+- word_formation: ONLY for German compound or clearly derived words. Break the word into its real
+  building blocks with a short gloss for each (e.g. "Handschuh" → [{"text":"Hand","gloss":"рука"},
+  {"text":"Schuh","gloss":"ботинок"}]; "unfreundlich" → [{"text":"un-","gloss":"отрицание"},
+  {"text":"freundlich","gloss":"дружелюбный"}]). For a simple non-compound word set is_compound=false and
+  parts=[]. Glosses must be in the explanation language.
+- level: the CEFR level (A1–C2) at which a learner typically meets this word. frequency: how common it is
+  in everyday German. Use null if genuinely unsure.
 - GERMAN HEADWORD NORMALIZATION:
   - Whenever the source-side or target-side main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun". Never return a bare German noun.
   - Whenever the main German word is a standalone verb, normalize it to the infinitive.
@@ -5695,6 +5715,7 @@ async def run_dictionary_lookup_multilang(
         "forms": {
             "plural": None,
             "genitive": None,
+            "present_2sg": None,
             "present_3sg": None,
             "praeteritum": None,
             "perfekt": None,
@@ -5702,7 +5723,11 @@ async def run_dictionary_lookup_multilang(
             "superlative": None,
             "konjunktiv1": None,
             "konjunktiv2": None,
+            "imperative_sg": None,
         },
+        "word_formation": None,
+        "level": None,
+        "frequency": None,
         "usage_examples": [],
         "save_worthy_options": [],
         "raw_text": content,
