@@ -9371,6 +9371,23 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_numdict_answers_user
                 ON bt_3_numdict_answers (user_id, submitted_at DESC);
             """)
+            # Per-user "seen" log for the SELF-PACED practice trainer (kind np).
+            # Drives endless least-recently-seen cycling; deliberately separate from
+            # the scheduled-dispatch cooldown (bt_3_numdict_bank.last_sent_at) so solo
+            # practice never pollutes the broadcast rotation.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_numdict_practice_seen (
+                    user_id      BIGINT NOT NULL,
+                    numdict_id   TEXT   NOT NULL,
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    seen_count   INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, numdict_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_numdict_practice_seen_user
+                ON bt_3_numdict_practice_seen (user_id, last_seen_at NULLS FIRST);
+            """)
             # ── end numdict tables ────────────────────────────────────────
 
             # ── Analytics precomputed snapshots ───────────────────────────
@@ -29056,6 +29073,11 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
         "free_limit": 5,
         "reset_policy": "daily_europe_vienna",
     },
+    "numdict_practice_daily": {
+        "title": "Числа на слух (тренажёр)",
+        "free_limit": max(1, int((os.getenv("NUMDICT_PRACTICE_FREE_LIMIT") or "20").strip() or "20")),
+        "reset_policy": "daily_europe_vienna",
+    },
 }
 
 
@@ -39864,6 +39886,77 @@ def pick_next_numdict_batch(*, count: int = 3, cooldown_days: int = 15) -> list[
             )
         conn.commit()
     return picked
+
+
+def pick_numdict_practice_item(*, user_id: int) -> dict | None:
+    """Self-paced trainer: the single READY, non-retired bank item this user has
+    seen least recently (never-seen first), random tiebreak. Cycles forever once
+    everything's been seen. Deliberately does NOT touch bt_3_numdict_bank.last_sent_at
+    (that's the scheduled-dispatch cooldown) — practice stays isolated from broadcast."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT b.numdict_id, b.scenario_text, b.number_type, b.answer_value,
+                       b.display_answer, b.prompt_de, b.prompt_ru, b.input_mode,
+                       b.audio_object_key, b.audio_status
+                FROM bt_3_numdict_bank b
+                LEFT JOIN bt_3_numdict_practice_seen s
+                       ON s.numdict_id = b.numdict_id AND s.user_id = %s
+                WHERE b.audio_status = 'ready' AND b.retired = FALSE
+                ORDER BY s.last_seen_at NULLS FIRST, random()
+                LIMIT 1
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["numdict_id", "scenario_text", "number_type", "answer_value",
+            "display_answer", "prompt_de", "prompt_ru", "input_mode",
+            "audio_object_key", "audio_status"]
+    return dict(zip(cols, row))
+
+
+def mark_numdict_practice_seen(*, user_id: int, numdict_id: str) -> None:
+    """Record (or refresh) that this user just saw this practice item, so the next
+    pick advances to a different least-recently-seen item. Per-user upsert only."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_numdict_practice_seen (user_id, numdict_id, last_seen_at, seen_count)
+                VALUES (%s, %s, NOW(), 1)
+                ON CONFLICT (user_id, numdict_id)
+                DO UPDATE SET last_seen_at = NOW(),
+                              seen_count = bt_3_numdict_practice_seen.seen_count + 1
+                """,
+                (int(user_id), str(numdict_id)),
+            )
+        conn.commit()
+
+
+def get_numdict_bank_item(numdict_id: str) -> dict | None:
+    """One active bank row by id — used to grade a self-paced practice answer."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT numdict_id, scenario_text, number_type, answer_value,
+                       display_answer, prompt_de, prompt_ru, input_mode,
+                       audio_object_key, audio_status
+                FROM bt_3_numdict_bank
+                WHERE numdict_id = %s AND retired = FALSE
+                """,
+                (str(numdict_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["numdict_id", "scenario_text", "number_type", "answer_value",
+            "display_answer", "prompt_de", "prompt_ru", "input_mode",
+            "audio_object_key", "audio_status"]
+    return dict(zip(cols, row))
 
 
 def record_numdict_dispatch(

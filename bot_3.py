@@ -464,7 +464,10 @@ LISTENING_ANSWER_TTL_SECONDS  = 60 * 45  # 45 minutes
 NUMDICT_SLOT_TIMES = [(15, 10), (18, 10)]    # Zahlen-Diktat: twice a day
 # 2 slots × 3 items = 6/day; pool must hold ≥ 3×slots×cooldown items to never stall.
 NUMDICT_COOLDOWN_DAYS = max(3, int((os.getenv("NUMDICT_COOLDOWN_DAYS") or "6").strip() or "6"))
-NUMDICT_POOL_TARGET   = max(12, int((os.getenv("NUMDICT_POOL_TARGET") or "40").strip() or "40"))
+# 120 (was 40): the self-paced "Числа на слух" trainer cycles least-recently-seen
+# items per user, so a deeper pool stretches the time-to-first-repeat for daily users.
+# One-time GPT+TTS cost, then cached in R2; serving stays free.
+NUMDICT_POOL_TARGET   = max(12, int((os.getenv("NUMDICT_POOL_TARGET") or "120").strip() or "120"))
 NUMDICT_SESSION_ITEMS = 3
 # Bump when the audio reading logic changes → new R2 key → no stale cached audio.
 NUMDICT_AUDIO_VERSION = "v3"  # v3 = audio grouping follows display_answer (pairs/triples match screen)
@@ -1027,6 +1030,8 @@ ARTIKEL_FOCUS_BUTTON_TEXT = "🎯 Тема на завтра"
 ARTIKEL_BATTLE_CALL_BUTTON_TEXT = "⚔️ Вызвать на батл"
 ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT = "🛡 Готов к батлам"
 ADJEKTIV_SPRINT_BUTTON_TEXT = "🔠 Adjektiv"
+NUMDICT_PRACTICE_BUTTON_TEXT = "🔢 Числа на слух"
+NUMDICT_PRACTICE_FEATURE_KEY = "numdict_practice_daily"
 ADJEKTIV_BATTLE_BUTTON_TEXT = "⚔️ Adjektiv-батл"
 BATTLE_HISTORY_BUTTON_TEXT = "📜 История батлов"
 ADMIN_BROADCAST_BUTTON_TEXT = "📣 Рассылка всем"
@@ -1103,7 +1108,7 @@ def _is_known_reply_menu_button(text: str) -> bool:
         return False
     static_labels = {
         ARTIKEL_LEARN_BUTTON_TEXT, ARTIKEL_FOCUS_BUTTON_TEXT, ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
-        ADJEKTIV_SPRINT_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT, BATTLE_HISTORY_BUTTON_TEXT,
+        ADJEKTIV_SPRINT_BUTTON_TEXT, NUMDICT_PRACTICE_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT, BATTLE_HISTORY_BUTTON_TEXT,
         ADMIN_BROADCAST_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT, SHORTCUT_AUTOSAVE_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT,
@@ -4109,7 +4114,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
 
     # 2) Тренажёры (учить). Pro: +персональная тема на завтра.
     rows.append([ARTIKEL_LEARN_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
-    rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT])
+    rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT, NUMDICT_PRACTICE_BUTTON_TEXT])
 
     # 3) Батлы. Создавать батл — Pro; быть в списке приглашаемых + история — всем.
     if is_pro:
@@ -6435,6 +6440,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
         ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT,
         ADJEKTIV_SPRINT_BUTTON_TEXT,
+        NUMDICT_PRACTICE_BUTTON_TEXT,
         ADJEKTIV_BATTLE_BUTTON_TEXT,
         BATTLE_HISTORY_BUTTON_TEXT,
         NEXT_TASK_BUTTON_TEXT,
@@ -6537,6 +6543,13 @@ async def handle_button_click(update: Update, context: CallbackContext):
         ])
         await update.message.reply_text(
             "🔠 <b>Adjektivendungen</b> — окончания прилагательных: спринт на скорость или тренажёр с правилами 👇",
+            parse_mode="HTML", reply_markup=kb)
+    elif text == NUMDICT_PRACTICE_BUTTON_TEXT:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "🎧 Открыть тренажёр", url=get_webapp_deeplink("ans_np_0"))]])
+        await update.message.reply_text(
+            "🔢 <b>Числа на слух</b> — слушай немецкую сценку, лови номер и впечатывай его. "
+            "Одно задание за другим, столько, сколько хочешь 👇",
             parse_mode="HTML", reply_markup=kb)
     elif text == ADJEKTIV_BATTLE_BUTTON_TEXT:
         await adjektiv_battle_command(update, context)
@@ -8101,6 +8114,7 @@ def _is_quiz_freeform_navigation_text(text: str) -> bool:
         ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
         ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT,
         ADJEKTIV_SPRINT_BUTTON_TEXT,
+        NUMDICT_PRACTICE_BUTTON_TEXT,
         ADJEKTIV_BATTLE_BUTTON_TEXT,
         BATTLE_HISTORY_BUTTON_TEXT,
         ADMIN_BROADCAST_BUTTON_TEXT,

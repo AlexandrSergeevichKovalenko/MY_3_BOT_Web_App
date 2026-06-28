@@ -1013,6 +1013,86 @@ def _safe_numdict_ranking(numdict_id: str, user_id: int) -> dict | None:
         return None
 
 
+# ── Self-paced practice trainer (kind np): endless feed + private grade ───────
+#
+# Sibling of the scheduled Zahlen-Diktat: no dispatch row, no leaderboard/mastery
+# writes — a pure practice sandbox. The daily free cap is reserved on SERVE so each
+# delivered exercise costs the user one unit (Pro is unlimited). Items are pulled
+# least-recently-seen-by-this-user from the same pre-generated, audio-ready bank,
+# so serving stays a light, indexed read (heavy GPT+TTS work stays in the nightly
+# pool job). NUMDICT_PRACTICE_FEATURE_KEY mirrors the database registry entry.
+NUMDICT_PRACTICE_FEATURE_KEY = "numdict_practice_daily"
+
+
+def load_numdict_practice_next(*, user_id: int) -> dict:
+    """Serve ONE endless practice item (least-recently-seen-by-user). Reserves the
+    daily free-feature unit first; if capped, returns a friendly 'done' payload for
+    the upsell screen instead of an error. Marks the item seen so the next call
+    advances. NEVER leaks answer_value / display_answer."""
+    import time
+    from backend.database import (
+        reserve_free_feature_usage, pick_numdict_practice_item, mark_numdict_practice_seen,
+    )
+
+    reservation = reserve_free_feature_usage(
+        user_id=int(user_id),
+        feature_key=NUMDICT_PRACTICE_FEATURE_KEY,
+        idempotency_key=f"{NUMDICT_PRACTICE_FEATURE_KEY}:{int(user_id)}:{time.time_ns()}",
+        metadata={"origin": "numdict_practice"},
+    )
+    if reservation.get("blocked"):
+        err = reservation.get("error") if isinstance(reservation.get("error"), dict) else {}
+        return {
+            "kind": "numdict_practice",
+            "done": True,
+            "capped": True,
+            "upsell": True,
+            "limit": reservation.get("limit"),
+            "used": reservation.get("used"),
+            "reset_at": err.get("reset_at"),
+            "title": err.get("feature_title") or err.get("title"),
+            "message": err.get("message")
+            or "На сегодня хватит — лимит обновится завтра. Premium снимает ограничение.",
+        }
+
+    item = pick_numdict_practice_item(user_id=int(user_id))
+    if not item:
+        return {"kind": "numdict_practice", "done": True, "empty": True}
+
+    mark_numdict_practice_seen(user_id=int(user_id), numdict_id=str(item["numdict_id"]))
+    return {
+        "kind": "numdict_practice",
+        "done": False,
+        "numdict_id": str(item["numdict_id"]),
+        "prompt_de": str(item.get("prompt_de") or ""),
+        "prompt_ru": str(item.get("prompt_ru") or ""),
+        "input_mode": str(item.get("input_mode") or "numeric"),
+        "audio_url": _numdict_audio_url(item),
+        "used": reservation.get("used"),
+        "limit": reservation.get("limit"),
+    }
+
+
+def grade_numdict_practice_item(*, user_id: int, numdict_id: str, typed: str,
+                                time_ms: int = 0) -> dict:
+    """Deterministic grade for self-paced practice. Private drill: NO
+    record_challenge_result, NO bt_3_numdict_answers write, NO mastery/leaderboard
+    side-effects, NO anti-replay (each item is pulled fresh in the endless feed)."""
+    from backend.database import get_numdict_bank_item
+
+    item = get_numdict_bank_item(str(numdict_id))
+    if not item:
+        return {"kind": "numdict_practice", "error": "not_found"}
+    mode = str(item.get("input_mode") or "numeric")
+    is_correct = _normalize_numdict(typed, mode) == _normalize_numdict(item.get("answer_value"), mode)
+    return {
+        "kind": "numdict_practice",
+        "is_correct": bool(is_correct),
+        "display_answer": str(item.get("display_answer") or ""),
+        "typed": str(typed or ""),
+    }
+
+
 # ── Freeform quiz ("keine korrekte Antworten" → type answer): load + evaluate ──
 
 def _quiz_freeform_semantic_match(user_text: str, correct_text: str) -> bool:

@@ -23175,6 +23175,52 @@ def answer_numdict_submit():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/answer/numdict/practice/next", methods=["POST"])
+def answer_numdict_practice_next():
+    """Self-paced Zahlen-Diktat: the next endless practice item (least-recently-seen
+    for this user). Reserves the daily free cap on serve; capped/empty pool return a
+    HTTP-200 'done' payload (never an error) so the Mini-App shows a friendly screen."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from backend.answer_eval import load_numdict_practice_next
+    try:
+        data = load_numdict_practice_next(user_id=int(user_id))
+    except Exception:
+        logging.exception("numdict practice next failed user=%s", user_id)
+        return jsonify({"error": "Ошибка загрузки"}), 500
+    return jsonify({"ok": True, **data})
+
+
+@app.route("/api/answer/numdict/practice/submit", methods=["POST"])
+def answer_numdict_practice_submit():
+    """Grade one self-paced practice item (deterministic). Private drill — no
+    leaderboard/mastery writes, no inbox card."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    numdict_id = str(payload.get("numdict_id") or "").strip()
+    if not numdict_id:
+        return jsonify({"error": "numdict_id обязателен"}), 400
+    answer = str(payload.get("answer") or "")
+    try:
+        time_ms = int(payload.get("time_ms") or 0)
+    except (TypeError, ValueError):
+        time_ms = 0
+    from backend.answer_eval import grade_numdict_practice_item
+    try:
+        result = grade_numdict_practice_item(
+            user_id=int(user_id), numdict_id=numdict_id, typed=answer, time_ms=time_ms,
+        )
+    except Exception:
+        logging.exception("numdict practice submit failed id=%s user=%s", numdict_id, user_id)
+        return jsonify({"error": "Ошибка проверки"}), 500
+    if result.get("error"):
+        return jsonify({"error": "Задание не найдено"}), 404
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/sprint/task", methods=["GET", "POST"])
 def sprint_task():
     user_id, user_name, err = _answer_auth_user_id()

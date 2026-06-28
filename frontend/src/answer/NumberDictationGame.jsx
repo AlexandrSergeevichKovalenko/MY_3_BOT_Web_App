@@ -25,7 +25,7 @@ function fmtTime(s) {
   return `${m}:${sec < 10 ? '0' : ''}${sec}`;
 }
 
-function Root({ children }) {
+export function Root({ children }) {
   return <div className="ans-root"><div className="ans-card">{children}</div></div>;
 }
 
@@ -34,7 +34,7 @@ function Root({ children }) {
  * persisted per item so a page reload can't farm extra listens). In `reveal` mode
  * (result screen) playback is unlimited and free.
  */
-function ScenePlayer({ src, quotaKey, reveal }) {
+export function ScenePlayer({ src, quotaKey, reveal }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [inClip, setInClip] = useState(false);   // a clip is active (consumed, may be paused mid-way)
