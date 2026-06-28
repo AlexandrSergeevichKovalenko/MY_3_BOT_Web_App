@@ -317,6 +317,8 @@ from backend.database import (
     get_unrewarded_referral,
     mark_referral_rewarded,
     count_referrals,
+    was_announcement_sent,
+    mark_announcement_sent,
     get_user_streak,
     upsert_user_streak,
     get_users_active_on_date,
@@ -2747,6 +2749,82 @@ async def _schedule_nav_callback(update: Update, context: CallbackContext) -> No
         "time": _render_sched_step2a,
     }.get(action, _render_sched_step1)
     await _sched_edit(query, render_fn, user_id)
+
+
+SCHEDULE_ANNOUNCE_KEY = "schedule_v1"
+
+
+async def _has_configured_schedule(uid: int) -> bool:
+    """True once the user completed the schedule wizard (a window is saved)."""
+    try:
+        prefs = await asyncio.to_thread(get_user_prefs, int(uid))
+    except Exception:
+        return False
+    return bool(prefs and prefs.get("schedule"))
+
+
+def _schedule_announce_text(is_pro: bool) -> str:
+    """Branded one-time «NEW» card body (HTML), tier-framed."""
+    if is_pro:
+        return ("✨ <b>НОВОЕ: Расписание заданий</b>\n\n"
+                "Заданий многовато или приходят не вовремя? Теперь можно настроить под себя:\n"
+                "• сколько заданий в день (0–20)\n"
+                "• в какие часы их присылать (утро / вечер / свой интервал)\n\n"
+                "Настройка занимает минуту 👇")
+    return ("✨ <b>НОВОЕ: Расписание заданий</b>\n\n"
+            "Хочешь задания под свой день — сколько и в какие часы? "
+            "В Pro можно настроить гибкое расписание и до 20 заданий в день. "
+            "На бесплатном — подборка 4 в день.\n\n"
+            "🔓 Это перк Pro 👇")
+
+
+def _schedule_nudge_text(is_pro: bool) -> str:
+    """Short recurring pointer (plain text — the morning send has no parse_mode)."""
+    if is_pro:
+        return ("🗓 Кстати: можно настроить, сколько заданий в день и в какие часы — "
+                "кнопка «🗓 Расписание» в меню снизу.")
+    return ("🗓 Кстати: в Pro можно настроить расписание — сколько заданий в день и "
+            "в какие часы (на бесплатном — 4 в день).")
+
+
+async def _send_schedule_announcement(context: CallbackContext, uid: int, is_pro: bool) -> bool:
+    """Send the one-time «NEW» schedule card with a «настроить за минуту» CTA."""
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "⚙️ Настроить за минуту" if is_pro else "🔓 Подробнее", callback_data="sch:open")]])
+    try:
+        await context.bot.send_message(chat_id=int(uid), parse_mode="HTML",
+                                       text=_schedule_announce_text(is_pro), reply_markup=kb)
+        return True
+    except Exception:
+        logging.warning("schedule announce send failed uid=%s", uid, exc_info=True)
+        return False
+
+
+async def _announce_schedule_command(update: Update, context: CallbackContext) -> None:
+    """/announce_schedule — one-time broadcast of the schedule feature to every allowed
+    user not told yet (re-run-safe; new users get it on the next run)."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    ids = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    await message.reply_text(f"📣 Рассылаю анонс расписания… кандидатов: {len(ids)}")
+    sent = skipped = 0
+    for uid in ids:
+        try:
+            if _is_synthetic_telegram_user_id(int(uid)):
+                continue
+            if await asyncio.to_thread(was_announcement_sent, int(uid), SCHEDULE_ANNOUNCE_KEY):
+                skipped += 1; continue
+            is_pro = await asyncio.to_thread(is_user_pro, int(uid))
+            if await _send_schedule_announcement(context, int(uid), is_pro):
+                await asyncio.to_thread(mark_announcement_sent, int(uid), SCHEDULE_ANNOUNCE_KEY)
+                sent += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            logging.warning("announce loop failed uid=%s", uid, exc_info=True)
+    await message.reply_text(f"✅ Анонс: отправлено {sent}, пропущено (уже было) {skipped}.")
 
 
 # ── DAU streaks (Этап 4) ─────────────────────────────────────────────────────
@@ -6931,10 +7009,22 @@ async def send_morning_reminder(context:CallbackContext):
                 _streak_blk = (await _streak_status_block(int(target_chat_id))).replace("<b>", "").replace("</b>", "")
             except Exception:
                 _streak_blk = ""
+            # Recurring schedule nudge: Tue/Fri morning only, and only for users who
+            # have NOT configured a schedule yet (auto-stops once they do).
+            _sched_nudge = ""
+            try:
+                _now = datetime.now()
+                if _now.weekday() in (1, 4) and _now.hour < 12 \
+                        and not await _has_configured_schedule(int(target_chat_id)):
+                    _is_pro = await asyncio.to_thread(is_user_pro, int(target_chat_id))
+                    _sched_nudge = "\n\n" + _schedule_nudge_text(_is_pro)
+            except Exception:
+                _sched_nudge = ""
             private_text = (
                 (f"{_streak_blk}\n\n" if _streak_blk else "")
                 + "ℹ️ Вы сейчас не состоите в группе, поэтому отправляю напоминание в личку.\n\n"
                 + f"{message}"
+                + _sched_nudge
             )
             await context.bot.send_message(
                 chat_id=int(target_chat_id),
@@ -29862,6 +29952,7 @@ def main():
     application.add_handler(CommandHandler("deny", deny_user_command))
     application.add_handler(CommandHandler("streak", _streak_command))
     application.add_handler(CommandHandler("invite", _invite_command))
+    application.add_handler(CommandHandler("announce_schedule", _announce_schedule_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))

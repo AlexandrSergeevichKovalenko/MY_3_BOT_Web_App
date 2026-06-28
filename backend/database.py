@@ -15938,8 +15938,50 @@ def _ensure_dau_schema() -> None:
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer "
                         "ON bt_3_referrals (referrer_user_id);")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_feature_announcements (
+                    user_id     BIGINT NOT NULL,
+                    feature_key TEXT NOT NULL,
+                    sent_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, feature_key)
+                );
+            """)
         conn.commit()
     _dau_schema_ready = True
+
+
+def was_announcement_sent(user_id: int, feature_key: str) -> bool:
+    """True if this user already got the one-time announcement for `feature_key`."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM bt_3_feature_announcements "
+                            "WHERE user_id=%s AND feature_key=%s LIMIT 1;",
+                            (int(user_id), str(feature_key)))
+                return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def mark_announcement_sent(user_id: int, feature_key: str) -> bool:
+    """Stamp the one-time announcement as sent. Returns True only on a NEW row
+    (so a re-run of the broadcast skips users already covered)."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bt_3_feature_announcements (user_id, feature_key)
+                    VALUES (%s, %s) ON CONFLICT (user_id, feature_key) DO NOTHING;
+                """, (int(user_id), str(feature_key)))
+                inserted = cur.rowcount > 0
+            conn.commit()
+        return inserted
+    except Exception:
+        logging.warning("mark_announcement_sent failed user=%s key=%s",
+                        user_id, feature_key, exc_info=True)
+        return False
 
 
 def record_referral(invited_user_id: int, referrer_user_id: int) -> bool:
