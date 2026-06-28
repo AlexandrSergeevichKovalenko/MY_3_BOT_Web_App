@@ -971,3 +971,10 @@
 
 /* Недавние — компактно, без большого отступа сверху */
 .dict-search-recent { margin-top: 2px !important; }
+
+/* ── User tweak: halve the two marked vertical gaps, give the space to the input ──
+   1) gap between the tabs and the toolbar  2) gap between the input and «Перевести».
+   The freed height goes into a taller input box. */
+.dict-search-flow { gap: 6px; margin-top: -7px; }
+.dict-search-compose .dict-translate-row { margin-top: 5px !important; }
+.dictionary-input.dict-input-big { min-height: 200px; }
