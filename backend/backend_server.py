@@ -30062,6 +30062,35 @@ def sync_economics_price_snapshots_from_env():
     return jsonify({"ok": True, "result": result})
 
 
+def _attach_quick_translate_article(result, text, source_lang, target_lang):
+    """For a single German noun, attach its definite article (der/die/das) to the
+    instant-translate result so the compact card shows "die Wortverbindung" right
+    away — without the user having to open the full breakdown. Source = the local
+    Wiktionary table (free, fast, no LLM); a miss simply leaves the result as-is.
+    """
+    if not isinstance(result, dict):
+        return result
+    try:
+        detected = str(result.get("detected_source_lang") or source_lang or "").strip().lower()
+        # Pick whichever side is German: the translation (→de) or the input (de→).
+        if str(target_lang or "").strip().lower() == "de":
+            german = str(result.get("translation") or "").strip()
+        elif detected == "de":
+            german = str(text or "").strip()
+        else:
+            return result
+        # Nouns only: a single, capitalized token (German nouns are capitalized).
+        if not german or " " in german or not german[:1].isupper():
+            return result
+        entry = lookup_wiktionary_entry(german.strip(".,!?;:"), "de")
+        if entry and str(entry.get("article") or "").strip():
+            result["article"] = str(entry["article"]).strip()
+            result["part_of_speech"] = "noun"
+    except Exception:
+        logging.debug("quick-translate article enrichment failed", exc_info=True)
+    return result
+
+
 @app.route("/api/translate/quick", methods=["POST"])
 def translate_quick():
     started_perf = time.perf_counter()
@@ -30199,6 +30228,7 @@ def translate_quick():
                 result["provider"] = provider_name
                 if not result.get("detected_source_lang") and source_lang:
                     result["detected_source_lang"] = source_lang
+                _attach_quick_translate_article(result, text, source_lang, target_lang)
                 if user_id_for_billing is not None and provider_name in {"google_translate", "deepl_free", "azure_translator"}:
                     provider_billing_map = {
                         "google_translate": ("google_translate", "google_translate_chars"),

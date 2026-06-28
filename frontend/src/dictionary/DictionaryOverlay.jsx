@@ -717,6 +717,9 @@ export default function DictionaryOverlay() {
         targetLang,
         direction: `${detected}-${targetLang}`,
         provider: String(data?.provider || '').trim(),
+        // Article for a single German noun, resolved instantly from the local
+        // Wiktionary table so "die Wortverbindung" shows without the full breakdown.
+        article: String(data?.article || '').trim(),
       });
       setPhase('done'); haptic('ok');
       setRecents(pushRecent(text));
@@ -860,14 +863,14 @@ export default function DictionaryOverlay() {
         {quick && phase !== 'loading' && (
           <div className="dq-result">
             <div className="dq-source">
-              {(item?.article && quick.sourceLang === 'de')
-                ? <><span className={`dq-art ${genderClass(item.article)}`}>{item.article}</span> </> : ''}{quick.source}
+              {((item?.article || quick.article) && quick.sourceLang === 'de')
+                ? <><span className={`dq-art ${genderClass(item?.article || quick.article)}`}>{item?.article || quick.article}</span> </> : ''}{quick.source}
             </div>
             <div className="dq-translation">
               {/* The German article only belongs to the German word, never to the
                   Russian translation (was producing "die Порядок действий"). */}
-              {(item?.article && item?.word_de && quick.targetLang === 'de')
-                ? <><span className={`dq-art ${genderClass(item.article)}`}>{item.article}</span> </> : ''}
+              {((item?.article || quick.article) && quick.targetLang === 'de')
+                ? <><span className={`dq-art ${genderClass(item?.article || quick.article)}`}>{item?.article || quick.article}</span> </> : ''}
               {(item?.word_de && quick.targetLang === 'de') ? item.word_de : (quick.translation || '—')}
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
