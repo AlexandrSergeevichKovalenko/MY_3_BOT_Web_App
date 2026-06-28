@@ -362,6 +362,24 @@ function pronunciationText(item) {
   return ipa || stress || '';
 }
 
+// A tappable German word/phrase pill (synonym / collocation / antonym / related)
+// that saves to the dictionary on tap and shows ✓ once saved.
+function SaveChip({ text, className, label, saved, onSave }) {
+  const t = clean(text);
+  if (!t) return null;
+  const isSaved = saved && saved.has(t);
+  return (
+    <button
+      type="button"
+      className={`dq-var dq-savechip ${className || ''}${isSaved ? ' is-saved' : ''}`}
+      onClick={() => onSave && onSave(t)}
+      title={isSaved ? 'Сохранено в словарь' : 'Нажмите, чтобы сохранить в словарь'}
+    >
+      {label || t}{isSaved ? ' ✓' : ''}
+    </button>
+  );
+}
+
 // Gender → color class (der=blue, die=red, das=green), the classic learner
 // mnemonic. Applied to every article we render so the gender is felt visually.
 function genderClass(article) {
@@ -492,7 +510,7 @@ function GrammarTables({ tables }) {
 // speech (article/plural for nouns, conjugation for verbs, comparison for
 // adjectives, register notes for phrases) plus meanings, collocations, government,
 // examples and etymology — only the sections that actually carry data are shown.
-function RichBreakdown({ item, tts }) {
+function RichBreakdown({ item, tts, onSaveChip, savedChips }) {
   if (!item) return null;
   const pos = clean(item.part_of_speech).toLowerCase();
   const phraseKind = clean(item.phrase_kind).toLowerCase();
@@ -578,7 +596,9 @@ function RichBreakdown({ item, tts }) {
         <div className="dq-block">
           <strong>{isPhrase ? 'Похожие выражения' : 'Синонимы'}</strong>
           <div className="dq-vars">
-            {synonyms.map((s, i) => <span key={`${s}-${i}`} className="dq-var dq-syn">{s}</span>)}
+            {synonyms.map((s, i) => (
+              <SaveChip key={`${s}-${i}`} text={s} className="dq-syn" saved={savedChips} onSave={onSaveChip} />
+            ))}
           </div>
         </div>
       )}
@@ -587,7 +607,9 @@ function RichBreakdown({ item, tts }) {
         <div className="dq-block">
           <strong>Антонимы</strong>
           <div className="dq-vars">
-            {antonyms.map((a, i) => <span key={`${a}-${i}`} className="dq-var dq-ant">{a}</span>)}
+            {antonyms.map((a, i) => (
+              <SaveChip key={`${a}-${i}`} text={a} className="dq-ant" saved={savedChips} onSave={onSaveChip} />
+            ))}
           </div>
         </div>
       )}
@@ -622,7 +644,9 @@ function RichBreakdown({ item, tts }) {
         <div className="dq-block">
           <strong>Устойчивые сочетания</strong>
           <div className="dq-vars">
-            {collocations.map((c, i) => <span key={`${c}-${i}`} className="dq-var">{c}</span>)}
+            {collocations.map((c, i) => (
+              <SaveChip key={`${c}-${i}`} text={c} saved={savedChips} onSave={onSaveChip} />
+            ))}
           </div>
         </div>
       )}
@@ -641,9 +665,14 @@ function RichBreakdown({ item, tts }) {
           <strong>Родственные слова</strong>
           <div className="dq-vars">
             {related.map((r, i) => (
-              <span key={`${r.word}-${i}`} className="dq-var dq-related">
-                {r.word}{r.gloss ? <em> · {r.gloss}</em> : null}
-              </span>
+              <SaveChip
+                key={`${r.word}-${i}`}
+                text={r.word}
+                className="dq-related"
+                label={<>{r.word}{r.gloss ? <em> · {r.gloss}</em> : null}</>}
+                saved={savedChips}
+                onSave={onSaveChip}
+              />
             ))}
           </div>
         </div>
@@ -756,6 +785,7 @@ export default function DictionaryOverlay() {
   const [deepLoading, setDeepLoading] = useState(false); // background enrichment poll
   const [save, setSave] = useState('idle');   // idle|saving|done
   const [cardSave, setCardSave] = useState('idle'); // idle|done — «Учить» (SRS)
+  const [savedChips, setSavedChips] = useState(() => new Set()); // synonyms/collocations tapped to save
   const [error, setError] = useState('');
   const [recents, setRecents] = useState(loadRecents);
   const [forcedDir, setForcedDir] = useState(null); // null=auto, else 'ru-de'|'de-ru'
@@ -832,7 +862,7 @@ export default function DictionaryOverlay() {
     lastAutoRef.current = text; // mark as handled so the auto-translate effect won't repeat it
     const mySeq = ++seqRef.current;
     tts.stop();
-    setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle'); setCardSave('idle');
+    setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
     haptic('light');
     try {
       // Direction: an explicit swap wins, then the panel choice, else auto by script.
@@ -1005,6 +1035,36 @@ export default function DictionaryOverlay() {
     })();
   }, [cardSave, persistEntry]);
 
+  // Tap a synonym / collocation / antonym / related word → save that German word
+  // or phrase to the dictionary (optimistic ✓). The canonical pipeline normalizes
+  // it (article + Grundform) and the background enrichment fills the translation —
+  // same idea as the «save wrong words» tap in the interactive games.
+  const saveChip = useCallback((text) => {
+    const t = String(text || '').trim();
+    if (!t) return;
+    setSavedChips((prev) => {
+      if (prev.has(t)) return prev;
+      const next = new Set(prev);
+      next.add(t);
+      return next;
+    });
+    haptic('ok');
+    (async () => {
+      try {
+        await api('/api/webapp/dictionary/save', {
+          source_text: t,
+          source_lang: 'de',
+          target_lang: 'ru',
+          direction: 'de-ru',
+          origin_process: 'webapp_quick_dictionary_related',
+        });
+      } catch (e) {
+        setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; });
+        setError(String(e.message || e)); haptic('bad');
+      }
+    })();
+  }, []);
+
   const openFull = useCallback(() => {
     try { window.location.assign('/webapp?startapp=dictionary'); } catch (_e) { /* ignore */ }
   }, []);
@@ -1143,7 +1203,7 @@ export default function DictionaryOverlay() {
               {headTranslation}
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
-            {item && <RichBreakdown item={item} tts={tts} />}
+            {item && <RichBreakdown item={item} tts={tts} onSaveChip={saveChip} savedChips={savedChips} />}
             {enrich === 'loading' && <div className="dq-muted">Готовлю полный разбор…</div>}
             {deepLoading && <div className="dq-muted dq-deep-loading">Дополняю: этимология, примеры, как запомнить…</div>}
 

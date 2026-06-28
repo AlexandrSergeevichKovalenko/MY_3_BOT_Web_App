@@ -608,6 +608,19 @@
 .dq-ant { background: rgba(244, 114, 130, 0.12); color: #ff96a6; }
 .dq-related em { font-style: normal; opacity: 0.65; }
 
+/* Tappable save-chips (synonyms / collocations / antonyms / related) */
+.dq-savechip {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: border-color 0.12s, opacity 0.12s;
+}
+.dq-savechip:active { transform: scale(0.96); }
+.dq-savechip.is-saved {
+  border-color: rgba(34, 197, 94, 0.6);
+  color: #4ad08a !important;
+}
+
 /* Idiom "дословно" panel — distinct tint so the literal sense reads as a hint */
 .dq-literal {
   background: rgba(139, 92, 246, 0.10);
