@@ -2398,6 +2398,12 @@ Return STRICT JSON with keys:
   },
   "level": "<A1|A2|B1|B2|C1|C2|null>",
   "frequency": "<very_common|common|uncommon|rare|null>",
+  "register": "<нейтральное|разговорное|официальное|книжное|устаревшее|сленг|null>",
+  "synonyms": ["<German synonym>", "..."],
+  "antonyms": ["<German antonym>", "..."],
+  "related_words": [
+    {"word": "<same-root German word, with article if noun>", "gloss": "<short meaning>"}
+  ],
   "usage_examples": [
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."}
@@ -2445,6 +2451,9 @@ Rules:
   parts=[]. Glosses must be in the explanation language.
 - level: the CEFR level (A1–C2) at which a learner typically meets this word. frequency: how common it is
   in everyday German. Use null if genuinely unsure.
+- synonyms (up to 4) and antonyms (up to 3): close German synonyms / opposites; omit antonyms when none exist.
+- related_words (up to 4): SAME-ROOT German words (word family) with a short gloss; nouns carry their article.
+- register: one short stylistic label for the word; null only if truly neutral-unknown.
 - GERMAN HEADWORD NORMALIZATION:
   - Whenever the source-side or target-side main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun". Never return a bare German noun.
   - Whenever the main German word is a standalone verb, normalize it to the infinitive.
@@ -2825,6 +2834,7 @@ Return STRICT JSON with keys:
   ],
   "usage_note": "string|null",
   "register_note": "string|null",
+  "register": "<нейтральное|разговорное|официальное|книжное|устаревшее|сленг|null>",
   "real_life_usage": "string|null",
   "part_of_speech_note": "string|null",
   "article": "string|null",
@@ -2842,6 +2852,11 @@ Return STRICT JSON with keys:
     "imperative_sg": "string|null"
   },
   "pronunciation": {"ipa": "string|null", "stress": "string|null"},
+  "synonyms": ["<German synonym>", "..."],
+  "antonyms": ["<German antonym>", "..."],
+  "related_words": [
+    {"word": "<same-root German word, with article if noun>", "gloss": "<short meaning>"}
+  ],
   "common_collocations": ["...", "..."],
   "government_patterns": [
     {"pattern": "...", "preposition": "...", "case": "...", "example_source": "...", "example_target": "..."}
@@ -2886,6 +2901,12 @@ Rules:
   imperative_sg and is_separable; add up to 3 government_patterns (preposition + case + example).
 - If adjective/adverb: fill forms.comparative and forms.superlative.
 - common_collocations: up to 4 frequent, natural word combinations.
+- synonyms: up to 4 close German synonyms (single words/short expressions). antonyms: up to 3
+  German opposites when they exist (omit for words that have no natural opposite).
+- related_words: up to 4 SAME-ROOT German words (word family) with a short gloss — e.g. for
+  "fahren" → [{"word":"die Fahrt","gloss":"поездка"},{"word":"der Fahrer","gloss":"водитель"}];
+  for a noun → a related verb/adjective. Nouns must carry their article.
+- register: a single short label for the word's stylistic register; null only if truly neutral-unknown.
 - pronunciation.ipa: IPA transcription when known.
 - Keep every note concise (one short sentence); be practical, not encyclopedic.
 - If information is genuinely unknown, use null.

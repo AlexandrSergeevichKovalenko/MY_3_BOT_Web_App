@@ -431,6 +431,19 @@
   color: var(--dmps-text-muted, #94a3b8);
   background: rgba(148, 163, 184, 0.12);
 }
+.dq-register-chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #d8a657;
+  background: rgba(216, 166, 87, 0.14);
+}
+
+/* Synonyms / antonyms / related-word pills — tinted variants of .dq-var */
+.dq-syn { background: rgba(34, 197, 94, 0.12); color: #4ad08a; }
+.dq-ant { background: rgba(244, 114, 130, 0.12); color: #ff96a6; }
+.dq-related em { font-style: normal; opacity: 0.65; }
 
 /* ── Word formation (Hand + Schuh) ───────────────────────────────────────────── */
 .dq-formation {

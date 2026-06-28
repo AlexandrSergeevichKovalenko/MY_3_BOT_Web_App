@@ -300,6 +300,27 @@ function collocationList(item) {
     .filter(Boolean);
 }
 
+function stringList(value) {
+  return (Array.isArray(value) ? value : []).map(clean).filter(Boolean);
+}
+
+// Same-root word family: [{word, gloss}].
+function relatedList(item) {
+  return (Array.isArray(item?.related_words) ? item.related_words : [])
+    .map((r) => (r && typeof r === 'object'
+      ? { word: clean(r.word), gloss: clean(r.gloss) }
+      : { word: clean(r), gloss: '' }))
+    .filter((r) => r.word);
+}
+
+// Short register label (нейтральное/разговорное/…) → only show non-neutral, the
+// neutral case carries no information worth a chip.
+function registerLabel(item) {
+  const r = clean(item?.register).toLowerCase();
+  if (!r || r === 'нейтральное' || r === 'neutral') return '';
+  return clean(item.register);
+}
+
 function pronunciationText(item) {
   const p = item?.pronunciation;
   if (!p || typeof p !== 'object') return '';
@@ -459,6 +480,10 @@ function RichBreakdown({ item, tts }) {
   const level = clean(item.level).toUpperCase();
   const freqLabel = FREQ_LABELS[clean(item.frequency).toLowerCase()] || '';
   const formation = wordFormationParts(item);
+  const synonyms = stringList(item.synonyms);
+  const antonyms = stringList(item.antonyms);
+  const related = relatedList(item);
+  const register = registerLabel(item);
   const usage = [
     clean(item.real_life_usage),
     clean(item.register_note),
@@ -468,11 +493,12 @@ function RichBreakdown({ item, tts }) {
 
   return (
     <>
-      {(posLabel || pron || level || freqLabel) && (
+      {(posLabel || pron || level || freqLabel || register) && (
         <div className="dq-meta">
           {posLabel && <span className="dq-pos-chip">{posLabel}</span>}
           {level && <span className="dq-level-chip">{level}</span>}
           {freqLabel && <span className="dq-freq-chip">{freqLabel}</span>}
+          {register && <span className="dq-register-chip">{register}</span>}
           {pron && <span className="dq-ipa">{pron}</span>}
         </div>
       )}
@@ -501,6 +527,24 @@ function RichBreakdown({ item, tts }) {
                 {v.value}{v.context ? <em> · {v.context}</em> : null}
               </span>
             ))}
+          </div>
+        </div>
+      )}
+
+      {synonyms.length > 0 && (
+        <div className="dq-block">
+          <strong>Синонимы</strong>
+          <div className="dq-vars">
+            {synonyms.map((s, i) => <span key={`${s}-${i}`} className="dq-var dq-syn">{s}</span>)}
+          </div>
+        </div>
+      )}
+
+      {antonyms.length > 0 && (
+        <div className="dq-block">
+          <strong>Антонимы</strong>
+          <div className="dq-vars">
+            {antonyms.map((a, i) => <span key={`${a}-${i}`} className="dq-var dq-ant">{a}</span>)}
           </div>
         </div>
       )}
@@ -546,6 +590,19 @@ function RichBreakdown({ item, tts }) {
         <div className="dq-block">
           <strong>Где и как употреблять</strong>
           {usage.map((u, i) => <span key={`${u}-${i}`}>{u}</span>)}
+        </div>
+      )}
+
+      {related.length > 0 && (
+        <div className="dq-block">
+          <strong>Родственные слова</strong>
+          <div className="dq-vars">
+            {related.map((r, i) => (
+              <span key={`${r.word}-${i}`} className="dq-var dq-related">
+                {r.word}{r.gloss ? <em> · {r.gloss}</em> : null}
+              </span>
+            ))}
+          </div>
         </div>
       )}
 

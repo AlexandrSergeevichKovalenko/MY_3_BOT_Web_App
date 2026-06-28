@@ -6025,6 +6025,9 @@ def _merge_dictionary_raw_payloads(
         "common_collocations",
         "government_patterns",
         "save_worthy_options",
+        "synonyms",
+        "antonyms",
+        "related_words",
     }
     dict_keys = {
         "forms",
@@ -14996,6 +14999,10 @@ def _build_multilang_dictionary_result(
         "word_formation",
         "level",
         "frequency",
+        "register",
+        "synonyms",
+        "antonyms",
+        "related_words",
     )
     for key in passthrough_keys:
         value = raw.get(key)
