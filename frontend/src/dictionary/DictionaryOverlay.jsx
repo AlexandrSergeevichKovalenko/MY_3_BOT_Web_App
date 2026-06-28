@@ -740,8 +740,12 @@ export default function DictionaryOverlay() {
     const mySeq = seqRef.current; // bumped by translate(); abort if a new lookup starts
     setDeepLoading(true);
     try {
-      for (let i = 0; i < 25; i += 1) {
-        await new Promise((r) => setTimeout(r, 900));
+      // Humans read for a few seconds before noticing new blocks — no need to
+      // hammer the server. First check after 1.5s (enrichment is often done by
+      // then), then every 3s. ~15 tries = a ~45s ceiling. Cuts request volume
+      // ~3× vs a tight loop, which matters at scale.
+      for (let i = 0; i < 15; i += 1) {
+        await new Promise((r) => setTimeout(r, i === 0 ? 1500 : 3000));
         if (mySeq !== seqRef.current) return;
         let data;
         try { data = await api('/api/webapp/dictionary/status', { lookup_id: lookupId }); }
