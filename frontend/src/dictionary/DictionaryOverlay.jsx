@@ -975,7 +975,11 @@ export default function DictionaryOverlay() {
     } catch (_e) { try { inputRef.current?.focus(); } catch (_e2) { /* ignore */ } }
   }, [translate]);
 
-  const onKeyDown = (e) => { if (e.key === 'Enter') { e.preventDefault(); translate(); } };
+  // Enter translates (like Google Translate); Shift+Enter inserts a newline for
+  // multi-line phrases.
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); translate(); }
+  };
 
   return (
     <div className="ans-root dq-scroll">
@@ -984,6 +988,46 @@ export default function DictionaryOverlay() {
           <span className="ans-eyebrow">📖 Быстрый словарь</span>
         </div>
 
+        {!quick ? (
+          /* COMPOSE — full-height input like Google Translate / DeepL: big text
+             area filling the card, the action button dropped to the bottom. */
+          <div className="dq-compose">
+            <textarea
+              ref={inputRef}
+              className="dq-textarea"
+              autoComplete="off"
+              placeholder="Слово или фраза…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onKeyDown}
+            />
+            {phase === 'error' && error && <div className="dd-err">{error}</div>}
+            {recents.length > 0 && (
+              <div className="dq-recent">
+                <span className="dq-recent-label">Недавние</span>
+                <div className="dq-recent-chips">
+                  {recents.map((w) => (
+                    <button key={w} type="button" className="dq-recent-chip" onClick={() => translate(w)}>
+                      {w}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="dq-compose-foot">
+              <button type="button" className="dq-paste-btn" onClick={onPaste}>📋 Вставить</button>
+              <button
+                type="button"
+                className="dq-go dq-go-full"
+                onClick={() => translate()}
+                disabled={!query.trim() || phase === 'loading'}
+              >
+                {phase === 'loading' ? 'Перевожу…' : 'Перевести'}
+              </button>
+            </div>
+          </div>
+        ) : (
+        <>
         <div className="dq-search">
           <input
             ref={inputRef}
@@ -999,33 +1043,12 @@ export default function DictionaryOverlay() {
           <button
             type="button"
             className="dq-go"
-            onClick={translate}
+            onClick={() => translate()}
             disabled={!query.trim() || phase === 'loading'}
           >
             {phase === 'loading' ? '…' : 'Перевести'}
           </button>
         </div>
-
-        {phase === 'idle' && (
-          <>
-            <div className="dq-hint">
-              Введите слово — увидите перевод, грамматику и пример.{' '}
-              <button type="button" className="dq-paste" onClick={onPaste}>Вставить</button>
-            </div>
-            {recents.length > 0 && (
-              <div className="dq-recent">
-                <span className="dq-recent-label">Недавние</span>
-                <div className="dq-recent-chips">
-                  {recents.map((w) => (
-                    <button key={w} type="button" className="dq-recent-chip" onClick={() => translate(w)}>
-                      {w}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </>
-        )}
 
         {phase === 'error' && error && <div className="dd-err">{error}</div>}
 
@@ -1074,6 +1097,8 @@ export default function DictionaryOverlay() {
               </div>
             </div>
           </div>
+        )}
+        </>
         )}
 
         <button type="button" className="dq-full" onClick={openFull}>

@@ -7,7 +7,8 @@
    with all the deep blocks — make the root a normal top-anchored scroll container
    with header clearance instead of a centered sheet. */
 .ans-root.dq-scroll {
-  display: block;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   height: 100dvh;
   min-height: 0;
@@ -15,14 +16,77 @@
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   padding-top: calc(env(safe-area-inset-top, 0px) + 60px);
-  padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
 }
 .ans-root.dq-scroll .ans-card {
+  width: 100%;
+  max-width: 440px;
   margin: 0 auto;
-  animation: none; /* the rise/translate animation also nudged content under the header */
+  flex: 1 0 auto;   /* fill the screen height; grow with content */
+  animation: none;  /* the rise/translate animation nudged content under the header */
 }
 
 .dq-card { gap: 14px; }
+
+/* COMPOSE (start screen): big input filling the card, action button at the bottom */
+.dq-compose {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dq-textarea {
+  flex: 1 1 auto;
+  min-height: 160px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--dmps-text-title, #f8fafc);
+  padding: 4px 2px;
+}
+.dq-textarea::placeholder {
+  color: var(--dmps-text-muted, #94a3b8);
+  font-weight: 600;
+  opacity: 0.7;
+}
+.dq-compose-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dq-paste-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: rgba(148, 163, 184, 0.10);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dq-go-full {
+  width: 100%;
+  height: 54px;
+  border-radius: 16px;
+  font-size: 17px;
+  font-weight: 800;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.32);
+}
 
 .dq-search {
   display: flex;
