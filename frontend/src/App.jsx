@@ -49,10 +49,13 @@ import './styles/home-browser-redesign.css';
 // audio, level/frequency/IPA…). Mounts only when a word is expanded, so its own
 // TTS hook is created on demand. Meanings are hidden here (the Library already
 // renders «Значения» above). Tapping a synonym/collocation chip saves it.
-function LibraryWordDetail({ item }) {
+// Generic embedded deep card for a breakdown `item` (a lookup result or a saved
+// response_json). Used by the Library detail and the Search result so both look
+// exactly like the quick dictionary. Mounts its own TTS on demand; tapping a
+// synonym/collocation chip saves it.
+function EmbeddedWordCard({ item, hideMeanings }) {
   const tts = useDictTts();
   const [savedChips, setSavedChips] = useState(() => new Set());
-  const data = (item && typeof item.response_json === 'object' && item.response_json) ? item.response_json : null;
   const saveChip = useCallback((text) => {
     const t = String(text || '').trim();
     if (!t) return;
@@ -60,15 +63,29 @@ function LibraryWordDetail({ item }) {
     dictHaptic('ok');
     dictApi('/api/webapp/dictionary/save', {
       source_text: t, source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
-      origin_process: 'webapp_library_related',
+      origin_process: 'webapp_related',
     }).catch(() => { setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; }); });
   }, []);
-  if (!data) return null;
+  // Don't render an empty card for a bare quick-translate (no breakdown yet).
+  const hasContent = item && typeof item === 'object' && (
+    item.part_of_speech || item.meanings || item.grammar_tables || item.forms
+    || item.etymology_note || item.memory_tip
+    || (item.synonyms || []).length || (item.antonyms || []).length
+    || (item.related_words || []).length || (item.common_collocations || []).length
+    || (item.usage_examples || []).length || (item.government_patterns || []).length
+  );
+  if (!hasContent) return null;
   return (
     <div className="dq-card vocab-rich-card">
-      <WordBreakdown item={data} tts={tts} hideMeanings onSaveChip={saveChip} savedChips={savedChips} />
+      <WordBreakdown item={item} tts={tts} hideMeanings={hideMeanings} onSaveChip={saveChip} savedChips={savedChips} />
     </div>
   );
+}
+
+function LibraryWordDetail({ item }) {
+  const data = (item && typeof item.response_json === 'object' && item.response_json) ? item.response_json : null;
+  if (!data) return null;
+  return <EmbeddedWordCard item={data} hideMeanings />;
 }
 
 // URL вашего сервера LiveKit
@@ -33305,6 +33322,10 @@ function AppInner() {
                             </span>
                           ) : null}
                         </div>
+                        {/* AI/GPT result → the SAME deep card as the quick dictionary.
+                            Offline/base-dict keeps the original compact rendering. */}
+                        {!dictionaryResult.is_base_dict && <EmbeddedWordCard item={dictionaryResult} />}
+                        {dictionaryResult.is_base_dict && (<>
                         <div className="dictionary-row">
                           <strong>{tr('Часть речи:', 'Wortart:')}</strong> {dictionaryResult.part_of_speech || '—'}
                         </div>
@@ -33443,6 +33464,7 @@ function AppInner() {
                             </ul>
                           </div>
                         )}
+                        </>)}
                         {Array.isArray(dictionaryResult.save_worthy_options) && dictionaryResult.save_worthy_options.length > 0 && (
                           <div className="dictionary-examples">
                             <strong>{tr('Что стоит сохранить:', 'Speicherwerte Varianten:')}</strong>
