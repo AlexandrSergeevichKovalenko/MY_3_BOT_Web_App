@@ -524,6 +524,57 @@ body {
   max-height: none;
 }
 
+/* Home dashboard (phone): pin the whole chain to the EXACT visible viewport
+   (--app-height) and let the Bento grid flex to fill the leftover height, so the
+   12 tiles always fit ANY phone height and the screen can't drift/jitter. With no
+   page scroll, --app-height (= visualViewport.height) stays constant, so nothing
+   shifts up/down hiding the top/bottom rows. Same approach as is-fsrs-study, but
+   phone-only (<700px) so the wide-screen browser/tablet redesign is untouched, and
+   webapp-main keeps overflow-y:auto as a safety valve for rare tall content
+   (announcements/offers) instead of clipping. Scoped to the pure dashboard via
+   is-home-bento (no section / no home-subsection open). */
+@media (max-width: 699px) {
+  .webapp-page.is-home-bento {
+    height: var(--app-height, 100dvh);
+    max-height: var(--app-height, 100dvh);
+    min-height: 0;
+    overflow: hidden;
+    align-items: stretch;
+  }
+  .webapp-page.is-home-bento .webapp-shell {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .webapp-page.is-home-bento .webapp-main {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+  .webapp-page.is-home-bento .webapp-topbar {
+    flex: 0 0 auto;
+  }
+  .webapp-page.is-home-bento .hdt-root {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  /* Bento fills the remaining height: 5 equal rows that shrink to fit instead of
+     the fixed 101px auto-rows (which overflowed and forced the small jittery scroll). */
+  .webapp-page.is-home-bento .hdt-bento {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-template-rows: repeat(5, minmax(0, 1fr));
+    grid-auto-rows: minmax(0, 1fr);
+    padding-bottom: 12px;
+  }
+}
+
 .webapp-page.is-reader-immersive {
   padding: 0;
 }
