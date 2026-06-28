@@ -653,6 +653,7 @@ export default function DictionaryOverlay() {
   const [quick, setQuick] = useState(null);   // { source, target, translation, sourceLang, targetLang, direction }
   const [item, setItem] = useState(null);     // rich GPT item (for enrich + canonical save)
   const [enrich, setEnrich] = useState('idle'); // idle|loading|done|error
+  const [deepLoading, setDeepLoading] = useState(false); // background enrichment poll
   const [save, setSave] = useState('idle');   // idle|saving|done
   const [error, setError] = useState('');
   const [recents, setRecents] = useState(loadRecents);
@@ -729,6 +730,34 @@ export default function DictionaryOverlay() {
     }
   }, [query, phase, tts]);
 
+  // The first lookup returns a FAST "core" item (article, senses, basic forms)
+  // with the heavy parts (etymology, memory tip, word formation, collocations,
+  // government, level/frequency) still enriching in the background. Poll the
+  // status endpoint and swap in the fuller item as it arrives, so the user sees
+  // every block without any extra action.
+  const pollEnrichment = useCallback(async (lookupId, base) => {
+    if (!lookupId) return;
+    const mySeq = seqRef.current; // bumped by translate(); abort if a new lookup starts
+    setDeepLoading(true);
+    try {
+      for (let i = 0; i < 25; i += 1) {
+        await new Promise((r) => setTimeout(r, 900));
+        if (mySeq !== seqRef.current) return;
+        let data;
+        try { data = await api('/api/webapp/dictionary/status', { lookup_id: lookupId }); }
+        catch (_e) { break; }
+        if (mySeq !== seqRef.current) return;
+        if (data?.item) {
+          const merged = { ...data.item, __direction: base?.__direction, __language_pair: base?.__language_pair };
+          setItem(merged);
+        }
+        if (String(data?.status || '') === 'ready' || data?.enrichment_pending === false) break;
+      }
+    } finally {
+      if (mySeq === seqRef.current) setDeepLoading(false);
+    }
+  }, []);
+
   // Full GPT breakdown (article, Grundform, senses, examples). Returns the rich
   // item so save can reuse it. Gracefully surfaces free-tier limit (429).
   const runLookup = useCallback(async () => {
@@ -746,13 +775,16 @@ export default function DictionaryOverlay() {
       }
       setItem(rich);
       setEnrich(rich ? 'done' : 'error');
+      if (rich && data?.enrichment_pending && data?.lookup_id) {
+        pollEnrichment(data.lookup_id, rich);
+      }
       return rich;
     } catch (e) {
       setEnrich('error');
       setError(String(e.message || e));
       throw e;
     }
-  }, [item, query]);
+  }, [item, query, pollEnrichment]);
 
   const onSave = useCallback(() => {
     if (save === 'saving' || save === 'done') return;
@@ -876,6 +908,7 @@ export default function DictionaryOverlay() {
             </div>
             {item && <RichBreakdown item={item} tts={tts} />}
             {enrich === 'loading' && <div className="dq-muted">Готовлю полный разбор…</div>}
+            {deepLoading && <div className="dq-muted dq-deep-loading">Дополняю: этимология, примеры, как запомнить…</div>}
 
             <div className="dq-actions">
               {!item && enrich !== 'loading' && (
