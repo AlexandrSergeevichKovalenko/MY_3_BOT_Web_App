@@ -691,7 +691,10 @@ export default function DictionaryOverlay() {
   // compounds (e.g. "Klimzugstange" → "Тяга климатической системы"). Once the LLM
   // breakdown arrives it carries the corrected German form and a proper
   // translation, so prefer those for the headword and replace the raw MT result.
-  const corrDe = String(item?.word_de || '').trim();
+  // word_de from the LLM already includes the article ("die Dunstabzugshaube");
+  // we render the article in a colored span separately, so strip it here to avoid
+  // "die die Dunstabzugshaube".
+  const corrDe = String(item?.word_de || '').trim().replace(/^(der|die|das)\s+/i, '');
   const bestRu = String(
     item?.translation_ru
     || item?.word_ru

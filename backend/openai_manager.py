@@ -2825,16 +2825,36 @@ Return STRICT JSON with keys:
   ],
   "usage_note": "string|null",
   "register_note": "string|null",
+  "real_life_usage": "string|null",
   "part_of_speech_note": "string|null",
   "article": "string|null",
+  "is_separable": true,
   "forms": {
     "plural": "string|null",
+    "genitive": "string|null",
+    "present_2sg": "string|null",
     "present_3sg": "string|null",
     "praeteritum": "string|null",
     "perfekt": "string|null",
+    "konjunktiv2": "string|null",
     "comparative": "string|null",
-    "superlative": "string|null"
+    "superlative": "string|null",
+    "imperative_sg": "string|null"
   },
+  "pronunciation": {"ipa": "string|null", "stress": "string|null"},
+  "common_collocations": ["...", "..."],
+  "government_patterns": [
+    {"pattern": "...", "preposition": "...", "case": "...", "example_source": "...", "example_target": "..."}
+  ],
+  "word_formation": {
+    "is_compound": true,
+    "parts": [{"text": "<sub-word or affix>", "gloss": "<short meaning>"}],
+    "note": "string|null"
+  },
+  "etymology_note": "string|null",
+  "memory_tip": "string|null",
+  "level": "<A1|A2|B1|B2|C1|C2|null>",
+  "frequency": "<very_common|common|uncommon|rare|null>",
   "usage_examples": [
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."}
@@ -2848,13 +2868,27 @@ Return STRICT JSON with keys:
 
 Rules:
 - Output ONLY JSON.
-- Return at most 2 translation variants.
-- Return at most 2 usage examples.
-- Return at most 2 save_worthy_options.
-- Include only the most useful form fields; leave the rest null.
-- Keep usage_note/register_note/part_of_speech_note short and practical.
-- Do not include long etymology, memory tips, pronunciation blocks, collocation lists, government patterns, or encyclopedic detail.
-- If information is unknown, use null.
+- All explanatory text (notes, glosses, contexts) must be in the learner language
+  (source_language by default; never English unless the word itself is English).
+- Return at most 3 translation variants and 2-3 usage_examples.
+- This is a LEARNING dictionary — give rich, useful depth, not just a translation:
+  * For a SINGLE-WORD content lemma (noun/verb/adjective/adverb) you MUST provide a
+    non-null etymology_note (origin / how the word is built) AND a non-null memory_tip
+    (a vivid association or hook to remember it). Only null for function words/numbers.
+  * level = the CEFR level a learner meets the word; frequency = how common in everyday
+    German. Best estimate; null only if genuinely unsure.
+  * word_formation: for a German compound or clearly derived word, break it into its real
+    building blocks with a short gloss each (e.g. "Dunstabzugshaube" →
+    [{"text":"Dunst","gloss":"пар"},{"text":"Abzug","gloss":"вытяжка/отвод"},
+    {"text":"Haube","gloss":"колпак"}]). For a simple word set is_compound=false, parts=[].
+- If noun: fill article (der/die/das), forms.plural and forms.genitive.
+- If verb: fill forms.present_2sg, present_3sg, praeteritum, perfekt, konjunktiv2,
+  imperative_sg and is_separable; add up to 3 government_patterns (preposition + case + example).
+- If adjective/adverb: fill forms.comparative and forms.superlative.
+- common_collocations: up to 4 frequent, natural word combinations.
+- pronunciation.ipa: IPA transcription when known.
+- Keep every note concise (one short sentence); be practical, not encyclopedic.
+- If information is genuinely unknown, use null.
 """,
 "dictionary_enrichment_multilang_phrase_compact": """
 You enrich an already created multilingual dictionary card for a PHRASE or SENTENCE.
