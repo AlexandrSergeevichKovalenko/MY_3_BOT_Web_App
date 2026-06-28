@@ -25821,22 +25821,39 @@ def _run_translation_check_session(
             per_item_finalize_duration_ms = max(1, int(round(finalize_duration_ms / max(1, len(batch_metrics)))))
             if isinstance(finalized_session, dict):
                 session = finalized_session
-            set_translation_check_state(
-                int(session_id),
-                _build_translation_check_state_payload(
+            # The batch results are already persisted above (persist + finalize).
+            # The progress-state mirror, read-models and liveness heartbeat are
+            # non-essential per-batch side tasks that hit Redis/Postgres on every
+            # flush. Under DB connection pressure (pool starvation / PgBouncer
+            # closing a queued connection) any of them can raise — and if that
+            # propagates it aborts the whole session runner, marking the session
+            # "failed" and hiding the sentences that WERE graded (the recurring
+            # "6 of 7" symptom). They must never abort finalize: the terminal
+            # complete_translation_check_session call reconciles state anyway.
+            try:
+                set_translation_check_state(
+                    int(session_id),
+                    _build_translation_check_state_payload(
+                        session,
+                        pending_items_override=remaining_items_count,
+                        terminal_ready=False,
+                        completion_done=False,
+                    ) or {},
+                    terminal=False,
+                )
+                _write_translation_check_read_models(
                     session,
-                    pending_items_override=remaining_items_count,
-                    terminal_ready=False,
-                    completion_done=False,
-                ) or {},
-                terminal=False,
-            )
-            _write_translation_check_read_models(
-                session,
-                pending_items_override=0,
-                running_items_override=remaining_items_count,
-            )
-            _touch_worker_heartbeat()
+                    pending_items_override=0,
+                    running_items_override=remaining_items_count,
+                )
+                _touch_worker_heartbeat()
+            except Exception:
+                logging.warning(
+                    "translation-check non-essential finalize step failed (continuing): session=%s batch_size=%s",
+                    session_id,
+                    len(batch_metrics),
+                    exc_info=True,
+                )
             for item_metrics in batch_metrics:
                 item_metrics["db_update_duration_ms"] = per_item_finalize_duration_ms
                 item_metrics.pop("deferred_store_payload", None)
