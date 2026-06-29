@@ -24354,11 +24354,11 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
         except Exception:
             logging.warning("daily digest render failed uid=%s", uid, exc_info=True)
         # Cryptic /group, /invite commands → two tappable buttons under the card.
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👥 Играть командой", callback_data="digest:group"),
-            InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} Pro)",
-                                 callback_data="digest:invite"),
-        ]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 Играть командой с друзьями", callback_data="digest:group")],
+            [InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} дней Pro обоим)",
+                                  callback_data="digest:invite")],
+        ])
         cap_streak = await _streak_caption_block(int(uid))
         caption = (f"🏁 <b>Итоги дня</b> · {date_str}\n"
                    f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)")
@@ -24443,11 +24443,11 @@ async def _admin_test_digest_command(update: Update, context: CallbackContext) -
     except Exception:
         logging.warning("admin test digest render failed", exc_info=True)
 
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👥 Играть командой", callback_data="digest:group"),
-        InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} Pro)",
-                             callback_data="digest:invite"),
-    ]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 Играть командой с друзьями", callback_data="digest:group")],
+        [InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} дней Pro обоим)",
+                              callback_data="digest:invite")],
+    ])
     cap_streak = await _streak_caption_block(uid)
     prefix = "🧪 <i>Превью (пример данных)</i>\n" if sample else "🧪 <i>Превью (твои данные за 24 ч)</i>\n"
     caption = (f"{prefix}🏁 <b>Итоги дня</b> · {date_str}\n"
