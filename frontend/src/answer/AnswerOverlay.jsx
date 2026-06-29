@@ -358,25 +358,23 @@ function wordDiff(userText, correctText) {
 
 function AufgabeResult({ result }) {
   const [saved, setSaved] = useState(() => new Set());
-  const [saving, setSaving] = useState(() => new Set());
-  const saveChip = useCallback(async (de, ru) => {
-    if (!de || saved.has(de) || saving.has(de)) return;
-    setSaving((s) => new Set(s).add(de));   // instant feedback: chip shows "⏳ …"
-    haptic('tap');
-    try {
-      await api('/api/webapp/dictionary/save', {
+  const saveChip = useCallback((de, ru) => {
+    if (!de || saved.has(de)) return;
+    // Optimistic: flip the chip to 💾 saved instantly and release the user; the
+    // network save runs in the background. Revert only if it genuinely fails.
+    setSaved((s) => new Set(s).add(de));
+    haptic('ok');
+    Promise.resolve(
+      api('/api/webapp/dictionary/save', {
         source_text: de, target_text: ru || '',
         source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
         origin_process: 'synonym_save',
-      });
-      setSaved((s) => new Set(s).add(de));
-      haptic('ok');
-    } catch (_e) {
+      }),
+    ).catch(() => {
+      setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
       haptic('bad');
-    } finally {
-      setSaving((s) => { const n = new Set(s); n.delete(de); return n; });
-    }
-  }, [saved, saving]);
+    });
+  }, [saved]);
   const good = !!result.is_correct;
   const correct = result.correct_word || '';
   const mine = result.user_answer || '';
@@ -424,16 +422,15 @@ function AufgabeResult({ result }) {
               const de = (a && a.de) || '';
               const ru = (a && a.ru) || '';
               const isSaved = saved.has(de);
-              const isSaving = saving.has(de);
               return (
                 <button
                   key={i}
                   type="button"
-                  className={`sp-chip tap ${isSaved ? 'saved' : ''} ${isSaving ? 'saving' : ''}`}
-                  disabled={isSaved || isSaving}
+                  className={`sp-chip tap ${isSaved ? 'saved' : ''}`}
+                  disabled={isSaved}
                   onClick={() => saveChip(de, ru)}
                 >
-                  {isSaved ? '💾 ' : isSaving ? '⏳ ' : ''}{de}{isSaving ? ' …' : ''}
+                  {isSaved ? '💾 ' : ''}{de}
                 </button>
               );
             })}

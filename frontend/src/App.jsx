@@ -6054,6 +6054,8 @@ function AppInner() {
   const [billingPlans, setBillingPlans] = useState([]);
   const [billingActionLoading, setBillingActionLoading] = useState(false);
   const [billingPlanDetailsOpenFor, setBillingPlanDetailsOpenFor] = useState('');
+  const [billingSponsors, setBillingSponsors] = useState([]);
+  const [billingSponsorsLoading, setBillingSponsorsLoading] = useState(false);
   const knownBillingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
   const isKnownFreePaidSurfaceMode = Boolean(billingStatus && knownBillingEffectiveMode === 'free');
   const analyticsPaidFeatureError = `${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({ feature: 'analytics', feature_title: 'Аналитика' })}`;
@@ -29415,6 +29417,22 @@ function AppInner() {
     }
   };
 
+  const loadBillingSponsors = async () => {
+    setBillingSponsorsLoading(true);
+    try {
+      const response = await fetch(`/api/billing/sponsors?ts=${Date.now()}`, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error('sponsors_fetch_failed');
+      }
+      const data = await response.json();
+      setBillingSponsors(Array.isArray(data?.sponsors) ? data.sponsors : []);
+    } catch (_error) {
+      setBillingSponsors([]);
+    } finally {
+      setBillingSponsorsLoading(false);
+    }
+  };
+
   const openBillingUrl = (url) => {
     const target = String(url || '').trim();
     if (!target) return;
@@ -29725,6 +29743,7 @@ function AppInner() {
     }
     if (subscriptionSectionVisible) {
       loadBillingPlans();
+      loadBillingSponsors();
     }
   }, [initData, isWebAppMode, selectedSections, flashcardsOnly, billingReturnContext.kind, billingReturnContext.shouldHandle]);
 
@@ -32709,11 +32728,11 @@ function AppInner() {
 
                           <div className="vocab-selection-toolbar">
                             <div className="vocab-selection-toolbar-main">
-                              <span className="vocab-selection-title">
-                                {tr('Текущая выборка', 'Aktuelle Auswahl')}
-                              </span>
                               <span className="vocab-selection-count">
                                 {manualTrainingSelectionCount}
+                              </span>
+                              <span className="vocab-selection-title">
+                                {tr('Текущая выборка', 'Aktuelle Auswahl')}
                               </span>
                               {manualTrainingSelectionLoading && (
                                 <span className="vocab-selection-loading">
@@ -32728,7 +32747,7 @@ function AppInner() {
                                 onClick={() => { void openTrainingForManualSelection(); }}
                                 disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                <span className="vocab-sel-tab-icon">▶</span>
+                                <svg className="vocab-sel-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3" fill="currentColor" stroke="none" /></svg>
                                 <span>{tr('Учить', 'Lernen')}</span>
                               </button>
                               <button
@@ -32737,7 +32756,7 @@ function AppInner() {
                                 onClick={() => { void clearManualTrainingSelectionRemote(); }}
                                 disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                <span className="vocab-sel-tab-icon">↺</span>
+                                <svg className="vocab-sel-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
                                 <span>{tr('Сбросить', 'Zurücksetzen')}</span>
                               </button>
                               <button
@@ -32746,7 +32765,7 @@ function AppInner() {
                                 onClick={() => { setVocabMoveError(''); setVocabMoveModalOpen(true); }}
                                 disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                <span className="vocab-sel-tab-icon">→</span>
+                                <svg className="vocab-sel-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H2" /><path d="M2 13h10" /><path d="m9 16 3-3-3-3" /></svg>
                                 <span>{tr('Переместить', 'Verschieben')}</span>
                               </button>
                               <button
@@ -32755,7 +32774,7 @@ function AppInner() {
                                 onClick={() => { setVocabBulkDeleteError(''); setVocabBulkDeleteModalOpen(true); }}
                                 disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                <span className="vocab-sel-tab-icon">🗑</span>
+                                <svg className="vocab-sel-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></svg>
                                 <span>{tr('Удалить', 'Löschen')}</span>
                               </button>
                             </div>
@@ -36735,9 +36754,32 @@ function AppInner() {
                               : tr('Это необязательно: полный доступ открывает подписка Pro выше. А здесь — просто способ поблагодарить проект разовым платежом (доступ не меняется).', 'Optional: vollen Zugang gibt das Pro-Abo oben. Hier kannst du dich einfach mit einer einmaligen Zahlung bedanken (der Zugang aendert sich nicht).')}
                           </p>
                         </div>
+                        {billingStatus?.is_sponsor && (
+                          <div className="billing-sponsor-plaque">
+                            <span className="billing-sponsor-plaque__badge">
+                              {billingStatus?.sponsor_tier === 'support_cheesecake' ? '☕️🍰' : '☕️'}
+                            </span>
+                            <span>{tr('Ты спонсор проекта — спасибо! ❤️', 'Du bist Projekt-Sponsor — danke! ❤️')}</span>
+                          </div>
+                        )}
                         <div className="billing-support-grid">
                           {billingSupportCards.map((offer) => renderBillingPlanCard(offer))}
                         </div>
+                        {billingSponsors.length > 0 && (
+                          <div className="billing-sponsor-wall">
+                            <h4 className="billing-sponsor-wall__title">{tr('Стена благодарностей', 'Dankeswand')}</h4>
+                            <div className="billing-sponsor-wall__list">
+                              {billingSponsors.map((sponsor, index) => (
+                                <span className="billing-sponsor-chip" key={`sponsor_${index}`}>
+                                  <span className="billing-sponsor-chip__badge">
+                                    {sponsor?.tier === 'support_cheesecake' ? '🍰' : '☕️'}
+                                  </span>
+                                  {String(sponsor?.name || tr('Аноним', 'Anonym'))}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                     {activeBillingPlanDetails && (

@@ -97,41 +97,48 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
   // examples — the full card), then persist that card. Sending the German text
   // straight to /save (the old behaviour) left grammar-game words with no Russian
   // translation, so the entry showed German on both sides.
-  const save = useCallback(async () => {
+  const save = useCallback(() => {
     // Save whatever the user typed in the field; if it's empty, fall back to the
     // task's fixed word/sentence (the old behaviour). The lookup→save pipeline below
     // handles word-vs-sentence, article + Grundform, grammar correction, translation
     // and the language pair — same as the Reader / dictionary save everywhere else.
     const word = (input.trim() || String(saveText || '').trim());
     if (saveState === 'saving' || saveState === 'saved' || !word) return;
+    // Optimistic: confirm instantly and release the user — don't make them wait on
+    // the GPT lookup + persist. The canonical lookup→save runs in the background and
+    // enriches the ✓ label with the translation when it lands. Only if it genuinely
+    // fails do we revert to a retryable error state.
     setSavedWord(word);
-    setSaveState('saving');
-    try {
-      const lookup = await api('/api/webapp/dictionary', { word });
-      const item = (lookup && lookup.item) || {};
-      const direction = String(lookup?.direction || '').toLowerCase();
-      const isDeRu = direction !== 'ru-de'; // task words are German → de-ru
-      const sourceText = String(
-        (isDeRu ? (item.word_de || item.translation_de) : (item.word_ru || item.translation_ru)) || word,
-      ).trim();
-      const targetText = String(
-        (isDeRu ? (item.translation_ru || item.word_ru) : (item.translation_de || item.word_de))
-        || saveTranslation || '',
-      ).trim();
-      await api('/api/webapp/dictionary/save', {
-        source_text: sourceText,
-        target_text: targetText,
-        translation_ru: String(item.translation_ru || (isDeRu ? targetText : '')).trim(),
-        translation_de: String(item.translation_de || (isDeRu ? '' : targetText)).trim(),
-        direction: direction || 'de-ru',
-        response_json: item,
-        origin_process: 'ask_overlay',
-      });
-      setSavedRu(isDeRu ? targetText : sourceText);
-      setSaveState('saved');
-    } catch (_e) {
-      setSaveState('error');
-    }
+    setSavedRu('');
+    setSaveState('saved');
+    try { window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* ignore */ }
+    (async () => {
+      try {
+        const lookup = await api('/api/webapp/dictionary', { word });
+        const item = (lookup && lookup.item) || {};
+        const direction = String(lookup?.direction || '').toLowerCase();
+        const isDeRu = direction !== 'ru-de'; // task words are German → de-ru
+        const sourceText = String(
+          (isDeRu ? (item.word_de || item.translation_de) : (item.word_ru || item.translation_ru)) || word,
+        ).trim();
+        const targetText = String(
+          (isDeRu ? (item.translation_ru || item.word_ru) : (item.translation_de || item.word_de))
+          || saveTranslation || '',
+        ).trim();
+        await api('/api/webapp/dictionary/save', {
+          source_text: sourceText,
+          target_text: targetText,
+          translation_ru: String(item.translation_ru || (isDeRu ? targetText : '')).trim(),
+          translation_de: String(item.translation_de || (isDeRu ? '' : targetText)).trim(),
+          direction: direction || 'de-ru',
+          response_json: item,
+          origin_process: 'ask_overlay',
+        });
+        setSavedRu(isDeRu ? targetText : sourceText);
+      } catch (_e) {
+        setSaveState('error');
+      }
+    })();
   }, [saveState, saveText, saveTranslation, api, input]);
 
   // Truncated label for the button when saving a long sentence.

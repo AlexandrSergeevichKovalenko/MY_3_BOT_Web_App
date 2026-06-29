@@ -3494,6 +3494,57 @@ body {
   margin-top: 12px;
 }
 
+.billing-sponsor-plaque {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(250, 204, 21, 0.45);
+  background: rgba(250, 204, 21, 0.12);
+  color: #fde68a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.billing-sponsor-plaque__badge {
+  font-size: 18px;
+}
+
+.billing-sponsor-wall {
+  margin-top: 18px;
+}
+
+.billing-sponsor-wall__title {
+  margin: 0 0 10px;
+  color: #f8fafc;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.billing-sponsor-wall__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.billing-sponsor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.55);
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 13px;
+}
+
+.billing-sponsor-chip__badge {
+  font-size: 14px;
+}
+
 .billing-info-accordion {
   margin-top: 14px;
   border: 1px solid rgba(93, 220, 255, 0.24);
@@ -25161,55 +25212,84 @@ html[data-scheme="light"] .explain-line,
   background:var(--vlib-acc-soft);
 }
 
-/* ── 4. Плавающая нижняя панель выборки ── */
+/* ── 4. Плавающая нижняя панель выборки — ВСЕГДА закреплена внизу экрана ──
+   position:fixed → панель не уезжает в конец списка при прокрутке.
+   Нет transform/filter у родителей словаря, поэтому fixed якорится к вьюпорту. */
 .webapp-dictionary .vocab-library > .vocab-selection-toolbar{
-  position:sticky;
-  bottom:14px;
-  z-index:30;
-  margin:8px 2px 0;
-  display:flex; align-items:center; gap:9px;
-  padding:10px 12px;
+  position:fixed;
+  left:50%;
+  transform:translateX(-50%);
+  bottom:calc(env(safe-area-inset-bottom, 0px) + 10px);
+  z-index:60;
+  width:calc(100% - 20px);
+  max-width:560px;
+  margin:0;
+  display:flex; flex-direction:column; align-items:stretch; gap:9px;
+  padding:11px 12px;
   border-radius:18px;
   background:var(--vlib-bar-bg);
   -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px);
   border:1px solid var(--vlib-bar-bd);
   box-shadow:0 16px 40px -12px rgba(0,0,0,0.5);
 }
-/* «Текущая выборка N» — компактный заголовок со счётчиком */
+/* Шапка: счётчик-пилюля + «Текущая выборка» */
 .webapp-dictionary .vocab-selection-toolbar .vocab-selection-toolbar-main{
-  display:flex; align-items:center; gap:7px; flex:0 0 auto;
-}
-.webapp-dictionary .vocab-selection-toolbar .vocab-selection-title{
-  font-size:12px; font-weight:800; color:var(--dmps-text-title,#f1f5f9);
-  white-space:nowrap;
+  display:flex; align-items:center; gap:8px; min-width:0;
 }
 .webapp-dictionary .vocab-selection-toolbar .vocab-selection-count{
-  min-width:22px; height:22px; padding:0 6px;
+  min-width:24px; height:24px; padding:0 7px;
   border-radius:99px; background:var(--vlib-acc); color:#fff;
-  font-size:11px; font-weight:800;
+  font-size:12px; font-weight:800; flex:0 0 auto;
   display:inline-flex; align-items:center; justify-content:center;
 }
-/* 4 действия — одинаковые компактные кнопки (иконка над подписью) */
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-title{
+  font-size:13px; font-weight:700; color:var(--dmps-text-title,#f1f5f9);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-loading{
+  font-size:11px; font-weight:600; margin-left:auto; flex:0 0 auto;
+  color:var(--dmps-text-secondary,#94a3b8);
+}
+/* 4 действия — равные кнопки во всю ширину (иконка над подписью) */
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tabs{
-  margin-left:auto; display:flex; gap:6px;
+  display:flex; gap:8px;
 }
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab{
-  height:42px; min-width:44px; padding:0 9px;
-  border-radius:12px;
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
-  font-size:9.5px; font-weight:700; font-family:inherit; cursor:pointer;
+  flex:1 1 0; min-width:0;
+  height:54px; padding:0 4px;
+  border-radius:13px;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+  font-size:11px; font-weight:600; font-family:inherit; cursor:pointer;
   border:1px solid var(--dmps-border,#334155);
   background:rgba(148,163,184,0.10);
   color:var(--dmps-text-secondary,#cbd5e1);
+  -webkit-tap-highlight-color:transparent;
+  transition:transform .06s ease, opacity .15s ease;
 }
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab > span{
+  max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab:active{ transform:scale(0.96); }
 .webapp-page.is-theme-light .vocab-selection-toolbar .vocab-sel-tab{ background:rgba(0,0,0,0.04); }
-.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab .vocab-sel-tab-icon{ font-size:14px; line-height:1; }
+/* единый монохромный размер иконки (наследует цвет кнопки) */
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab .vocab-sel-tab-icon{
+  width:19px; height:19px; flex:0 0 auto;
+}
+/* основное действие = «Учить» (акцент словаря, не бирюза) */
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab.is-learn{
-  background:linear-gradient(180deg,#14b8a6,#0d9488); border-color:transparent; color:#fff;
+  background:var(--vlib-acc); border-color:transparent; color:#fff;
 }
+/* деструктивное = «Удалить» */
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab.is-delete{
-  color:#e0556a; border-color:rgba(244,63,94,0.3); background:rgba(244,63,94,0.10);
+  color:#e0556a; border-color:rgba(244,63,94,0.30); background:rgba(244,63,94,0.10);
 }
-.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab:disabled{ opacity:0.45; }
-/* запас снизу, чтобы легенда не пряталась под плавающей панелью */
-.webapp-dictionary .vocab-legend{ margin-bottom:8px; }
+.webapp-page.is-theme-light .vocab-selection-toolbar .vocab-sel-tab.is-delete{
+  color:#dc2626; border-color:rgba(220,38,38,0.30); background:rgba(220,38,38,0.08);
+}
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab:disabled{ opacity:0.4; cursor:default; }
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab:disabled:active{ transform:none; }
+/* запас снизу: список и легенда не прячутся под фиксированной панелью */
+.webapp-dictionary .vocab-library{
+  padding-bottom:calc(140px + env(safe-area-inset-bottom, 0px));
+}
+.webapp-dictionary .vocab-legend{ margin-bottom:4px; }

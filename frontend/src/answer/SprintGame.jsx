@@ -48,7 +48,6 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const [input, setInput] = useState('');
   const [result, setResult] = useState(null);
   const [saved, setSaved] = useState(() => new Set());
-  const [saving, setSaving] = useState(() => new Set());
   const startRef = useRef(0);
   const wordsRef = useRef([]);
   const timerRef = useRef(null);
@@ -119,24 +118,23 @@ export default function SprintGame({ id, api, haptic, onClose }) {
     try { haptic?.(hit ? 'ok' : 'light'); } catch (_e) { /* noop */ }
   }, [input, hashes]);
 
-  const saveChip = useCallback(async (de, ru) => {
-    if (!de || saved.has(de) || saving.has(de)) return;
-    setSaving((s) => new Set(s).add(de));   // instant feedback: chip shows "⏳ …"
-    try { haptic?.('light'); } catch (_e) { /* noop */ }
-    try {
-      await api('/api/webapp/dictionary/save', {
+  const saveChip = useCallback((de, ru) => {
+    if (!de || saved.has(de)) return;
+    // Optimistic: flip the chip to 💾 saved instantly and release the user; the
+    // network save runs in the background. Revert only if it genuinely fails.
+    setSaved((s) => new Set(s).add(de));
+    try { haptic?.('ok'); } catch (_e) { /* noop */ }
+    Promise.resolve(
+      api('/api/webapp/dictionary/save', {
         source_text: de, target_text: ru || '',
         source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
         origin_process: 'synonym_save',
-      });
-      setSaved((s) => new Set(s).add(de));
-      try { haptic?.('ok'); } catch (_e) { /* noop */ }
-    } catch (_e) {
+      }),
+    ).catch(() => {
+      setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
       try { haptic?.('bad'); } catch (_e2) { /* noop */ }
-    } finally {
-      setSaving((s) => { const n = new Set(s); n.delete(de); return n; });
-    }
-  }, [api, saved, saving, haptic]);
+    });
+  }, [api, saved, haptic]);
 
   const rel = REL[meta?.relation] || REL.synonym;
   const hits = words.filter((w) => w.status === 'hit').length;
@@ -234,17 +232,16 @@ export default function SprintGame({ id, api, haptic, onClose }) {
               const de = deOf(a);
               const ru = (a && typeof a === 'object' ? a.ru : '') || '';
               const isSaved = saved.has(de);
-              const isSaving = saving.has(de);
-              const cls = isSaved ? 'saved' : isSaving ? 'saving' : (foundSet.has(normalizeCore(de)) ? 'hit' : 'missed');
+              const cls = isSaved ? 'saved' : (foundSet.has(normalizeCore(de)) ? 'hit' : 'missed');
               return (
                 <button
                   key={i}
                   type="button"
                   className={`sp-chip tap ${cls}`}
-                  disabled={isSaved || isSaving}
+                  disabled={isSaved}
                   onClick={() => saveChip(de, ru)}
                 >
-                  {isSaved ? '💾 ' : isSaving ? '⏳ ' : ''}{de}{isSaving ? ' …' : ''}
+                  {isSaved ? '💾 ' : ''}{de}
                 </button>
               );
             })}
