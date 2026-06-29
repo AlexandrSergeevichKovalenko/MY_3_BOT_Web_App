@@ -16907,18 +16907,23 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
 
 def get_quick_dictionary_entries_for_backfill(
     user_id: int | None = None,
-    origins: tuple[str, ...] = ("webapp_quick_dictionary_related", "webapp_quick_dictionary"),
-    limit: int = 1000,
+    limit: int = 2000,
 ) -> list[dict]:
-    """Rows saved via the quick-dictionary overlay (incl. tapped synonym chips), used by
-    the translation backfill. Returns enough columns to detect + rebuild a broken entry."""
-    safe_origins = [str(o).strip() for o in origins if str(o or "").strip()]
-    if not safe_origins:
-        return []
+    """Candidate rows for the translation backfill: de→ru entries whose translation_ru
+    has NO Cyrillic (empty or bare German). Detection is by CONTENT, not origin_process,
+    because the broken synonym/related saves can come from several save paths. Requiring
+    source_lang=de/target_lang=ru keeps ru→de entries (whose translation_ru is the
+    Russian source) safely out of scope."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            where = "WHERE origin_process = ANY(%s)"
-            params: list = [safe_origins]
+            where = (
+                "WHERE LOWER(COALESCE(source_lang,'')) = 'de' "
+                "AND LOWER(COALESCE(target_lang,'')) = 'ru' "
+                "AND (translation_ru IS NULL OR translation_ru = '' "
+                "     OR translation_ru !~ '[А-Яа-яЁё]') "
+                "AND COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL"
+            )
+            params: list = []
             if user_id is not None:
                 where += " AND user_id = %s"
                 params.append(int(user_id))
@@ -16947,6 +16952,57 @@ def get_quick_dictionary_entries_for_backfill(
             "response_json": row[9],
         })
     return items
+
+
+def get_dictionary_backfill_diagnostics(user_id: int | None = None) -> dict:
+    """Lightweight counts so the backfill report can explain a 0-candidate result:
+    total entries, top language pairs, and how many de→ru entries lack a Russian
+    translation_ru. Scoped to one user when user_id is given, else whole table."""
+    scope_sql = ""
+    scope_params: list = []
+    if user_id is not None:
+        scope_sql = " WHERE user_id = %s"
+        scope_params = [int(user_id)]
+    out: dict = {"total": 0, "by_pair": [], "de_ru_total": 0, "de_ru_missing_ru": 0}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries{scope_sql};",
+                scope_params,
+            )
+            out["total"] = int((cursor.fetchone() or [0])[0] or 0)
+            cursor.execute(
+                f"""
+                SELECT LOWER(COALESCE(source_lang,'?')), LOWER(COALESCE(target_lang,'?')), COUNT(*)
+                FROM bt_3_webapp_dictionary_queries{scope_sql}
+                GROUP BY 1, 2
+                ORDER BY 3 DESC
+                LIMIT 8;
+                """,
+                scope_params,
+            )
+            out["by_pair"] = [
+                {"source": r[0], "target": r[1], "count": int(r[2] or 0)}
+                for r in (cursor.fetchall() or [])
+            ]
+            de_ru_where = (
+                (scope_sql + " AND " if scope_sql else " WHERE ")
+                + "LOWER(COALESCE(source_lang,'')) = 'de' AND LOWER(COALESCE(target_lang,'')) = 'ru'"
+            )
+            cursor.execute(
+                f"SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries{de_ru_where};",
+                scope_params,
+            )
+            out["de_ru_total"] = int((cursor.fetchone() or [0])[0] or 0)
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries{de_ru_where}
+                AND (translation_ru IS NULL OR translation_ru = '' OR translation_ru !~ '[А-Яа-яЁё]');
+                """,
+                scope_params,
+            )
+            out["de_ru_missing_ru"] = int((cursor.fetchone() or [0])[0] or 0)
+    return out
 
 
 def update_dictionary_entry_full_columns(

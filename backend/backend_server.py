@@ -306,6 +306,7 @@ from backend.openai_manager import (
 )
 from backend.database import (
     get_quick_dictionary_entries_for_backfill,
+    get_dictionary_backfill_diagnostics,
     update_dictionary_entry_full_columns,
     is_telegram_user_allowed,
     ensure_webapp_tables,
@@ -7691,7 +7692,12 @@ def backfill_quick_dictionary_translations(
         "skipped_no_german": 0,
         "errors": 0,
         "samples": [],
+        "diagnostics": {},
     }
+    try:
+        report["diagnostics"] = get_dictionary_backfill_diagnostics(user_id=user_id)
+    except Exception as exc:
+        report["diagnostics"] = {"error": str(exc)}
     try:
         rows = get_quick_dictionary_entries_for_backfill(user_id=user_id, limit=max_entries)
     except Exception as exc:
@@ -7701,21 +7707,13 @@ def backfill_quick_dictionary_translations(
 
     for row in rows:
         report["scanned"] += 1
-        # Resolve language pair (columns first, then response_json), default de→ru.
-        src_lang = str(row.get("source_lang") or "").strip().lower()
-        tgt_lang = str(row.get("target_lang") or "").strip().lower()
+        # Candidacy (de→ru, translation_ru lacks Cyrillic) is already enforced in SQL.
         response_json = row.get("response_json")
         if isinstance(response_json, str):
             try:
                 response_json = json.loads(response_json)
             except Exception:
                 response_json = {}
-        if not src_lang or not tgt_lang:
-            src_lang = src_lang or str((response_json or {}).get("source_lang") or "de").strip().lower()
-            tgt_lang = tgt_lang or str((response_json or {}).get("target_lang") or "ru").strip().lower()
-        # Scope strictly to de→ru — the only pair the chip/quick-dict bug affected.
-        if not (src_lang == "de" and tgt_lang == "ru"):
-            continue
         if _dictionary_entry_already_has_russian(row):
             report["skipped_has_ru"] += 1
             continue

@@ -6482,6 +6482,20 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
     )
     if sample_lines:
         text += f"\n\n<b>Примеры:</b>\n{sample_lines}"
+    diag = report.get("diagnostics") or {}
+    if diag and not diag.get("error"):
+        pairs = ", ".join(
+            f"{p.get('source')}→{p.get('target')}:{p.get('count')}"
+            for p in (diag.get("by_pair") or [])[:6]
+        )
+        text += (
+            "\n\n<b>Диагностика:</b>\n"
+            f"Всего записей: {diag.get('total', 0)}\n"
+            f"de→ru всего: {diag.get('de_ru_total', 0)}, из них без русского: {diag.get('de_ru_missing_ru', 0)}\n"
+            f"Пары: {pairs}"
+        )
+    elif diag.get("error"):
+        text += f"\n\n<b>Диагностика недоступна:</b> {diag.get('error')}"
     if not apply and report.get("broken", 0):
         text += "\n\nЗапустите с <code>apply</code>, чтобы исправить."
     for part in _split_telegram_text(text):
