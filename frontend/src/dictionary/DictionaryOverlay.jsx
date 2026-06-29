@@ -37,6 +37,60 @@ function dirToPair(dir) {
   return dir === 'de-ru' ? { source: 'de', target: 'ru' } : { source: 'ru', target: 'de' };
 }
 
+// The GPT breakdown carries the target-language meaning in `translations`
+// (array of {value, context} or strings) / `meanings.primary` — NOT in
+// word_ru/translation_ru. Pull a concise translation string out of it so a save
+// made straight from the deep card (without a fresh quick-translate) still keeps
+// the translation instead of falling back to the German word. Top 2 meanings.
+function extractRichTranslation(item) {
+  if (!item || typeof item !== 'object') return '';
+  const out = [];
+  const push = (v) => {
+    const s = String((v && typeof v === 'object') ? v.value : v || '').trim();
+    if (s && !out.includes(s)) out.push(s);
+  };
+  if (Array.isArray(item.translations)) {
+    for (const t of item.translations) {
+      if (out.length >= 2) break;
+      push(t);
+    }
+  }
+  if (!out.length && item.meanings && typeof item.meanings === 'object') {
+    push(item.meanings.primary);
+  }
+  return out.join(', ');
+}
+
+// Build the canonical /api/webapp/dictionary/save payload from a GPT breakdown item.
+// EVERY save source (typed word OR tapped synonym/related chip) goes through this so
+// the entry always lands in the same standard card format (article+Grundform /
+// translation / grammar), never bare German text without a translation.
+function buildDictionarySavePayload({ rich, sourceText, quick, origin }) {
+  const quickTranslation = quick?.translation || '';
+  const quickDirection = quick?.direction || '';
+  const quickSourceLang = quick?.sourceLang || '';
+  const quickTargetLang = quick?.targetLang || '';
+  const direction = String(rich?.__direction || quickDirection || '').trim();
+  const [dirSource, dirTarget] = direction.includes('-') ? direction.split('-', 2) : [];
+  const sourceLang = (dirSource || quickSourceLang || '').toLowerCase();
+  const targetLang = (dirTarget || quickTargetLang || '').toLowerCase();
+  const richTranslation = extractRichTranslation(rich);
+  const targetText = (quickTranslation || richTranslation || '').trim();
+  return {
+    word_de: String(rich?.word_de || '').trim(),
+    word_ru: String(rich?.word_ru || '').trim(),
+    translation_de: String(rich?.translation_de || (targetLang === 'de' ? richTranslation : '')).trim(),
+    translation_ru: String(rich?.translation_ru || (targetLang === 'ru' ? richTranslation : '')).trim(),
+    source_text: sourceText,
+    target_text: targetText,
+    source_lang: sourceLang || undefined,
+    target_lang: targetLang || undefined,
+    direction: direction || undefined,
+    response_json: rich || undefined,
+    origin_process: origin,
+  };
+}
+
 // Recent lookups persisted locally (most-recent first, max 6).
 const RECENTS_KEY = 'dq_recents_v1';
 function loadRecents() {
@@ -241,28 +295,10 @@ export default function DictionaryOverlay() {
   // (incl. entry_id) so callers can chain (e.g. add to the SRS deck).
   const persistEntry = useCallback(async () => {
     const typed = query.trim();
-    const quickTranslation = quick?.translation || '';
-    const quickDirection = quick?.direction || '';
-    const quickSourceLang = quick?.sourceLang || '';
-    const quickTargetLang = quick?.targetLang || '';
     const rich = await runLookup();
-    const direction = String(rich?.__direction || quickDirection || '').trim();
-    const [dirSource, dirTarget] = direction.includes('-') ? direction.split('-', 2) : [];
-    const sourceLang = (dirSource || quickSourceLang || '').toLowerCase();
-    const targetLang = (dirTarget || quickTargetLang || '').toLowerCase();
-    return api('/api/webapp/dictionary/save', {
-      word_de: String(rich?.word_de || '').trim(),
-      word_ru: String(rich?.word_ru || '').trim(),
-      translation_de: String(rich?.translation_de || '').trim(),
-      translation_ru: String(rich?.translation_ru || '').trim(),
-      source_text: typed,
-      target_text: quickTranslation,
-      source_lang: sourceLang || undefined,
-      target_lang: targetLang || undefined,
-      direction: direction || undefined,
-      response_json: rich || undefined,
-      origin_process: 'webapp_quick_dictionary',
-    });
+    return api('/api/webapp/dictionary/save', buildDictionarySavePayload({
+      rich, sourceText: typed, quick, origin: 'webapp_quick_dictionary',
+    }));
   }, [runLookup, quick, query]);
 
   const onSave = useCallback(() => {
@@ -307,13 +343,20 @@ export default function DictionaryOverlay() {
     haptic('ok');
     (async () => {
       try {
-        await api('/api/webapp/dictionary/save', {
-          source_text: t,
-          source_lang: 'de',
-          target_lang: 'ru',
-          direction: 'de-ru',
-          origin_process: 'webapp_quick_dictionary_related',
-        });
+        // Run the SAME canonical breakdown→save pipeline as a typed word, so a tapped
+        // synonym/related word is stored as a proper card (article + translation +
+        // grammar) instead of bare German text without a translation. (Does not touch
+        // the on-screen breakdown state — that still shows the original word.)
+        const pair = guessPair(t);
+        const data = await api('/api/webapp/dictionary', { word: t, lookup_lang: pair.source });
+        const rich = data?.item || null;
+        if (rich) {
+          rich.__direction = String(data?.direction || rich.__direction || `${pair.source}-${pair.target}`).trim();
+          rich.__language_pair = data?.language_pair || null;
+        }
+        await api('/api/webapp/dictionary/save', buildDictionarySavePayload({
+          rich, sourceText: t, quick: null, origin: 'webapp_quick_dictionary_related',
+        }));
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; });
         setError(String(e.message || e)); haptic('bad');
