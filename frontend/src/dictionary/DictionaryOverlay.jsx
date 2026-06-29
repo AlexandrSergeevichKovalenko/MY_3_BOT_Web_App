@@ -107,6 +107,16 @@ function pushRecent(word) {
   return next;
 }
 
+// "Tap a synonym to save it" hint — shown a few times total, then it stops nagging.
+const CHIP_HINT_KEY = 'dq_chip_hint_count_v1';
+const CHIP_HINT_MAX_SHOWS = 3;
+function chipHintCount() {
+  try { return parseInt(localStorage.getItem(CHIP_HINT_KEY) || '0', 10) || 0; } catch (_e) { return 0; }
+}
+function bumpChipHintCount() {
+  try { localStorage.setItem(CHIP_HINT_KEY, String(chipHintCount() + 1)); } catch (_e) { /* ignore */ }
+}
+
 export default function DictionaryOverlay() {
   const [query, setQuery] = useState('');
   const [phase, setPhase] = useState('idle'); // idle|loading|done|error
@@ -123,10 +133,23 @@ export default function DictionaryOverlay() {
   const [autoOn, setAutoOn] = useState(() => {
     try { return localStorage.getItem('dq_auto') !== '0'; } catch (_e) { return true; }
   });
+  const [chipHint, setChipHint] = useState(false); // brief "tap a synonym to save it" toast
   const lastAutoRef = useRef(''); // text already auto/manually translated (debounce dedupe)
+  const chipHintDoneRef = useRef(false); // shown for the current breakdown already
   const seqRef = useRef(0);
   const inputRef = useRef(null);
   const tts = useTts();
+
+  // Surface the "tap a word in Synonyms/Antonyms to save it" hint the first few times
+  // the deep breakdown (where those tappable blocks live) appears. Auto-dismisses.
+  useEffect(() => {
+    if (!item || chipHintDoneRef.current || chipHintCount() >= CHIP_HINT_MAX_SHOWS) return undefined;
+    chipHintDoneRef.current = true;
+    bumpChipHintCount();
+    setChipHint(true);
+    const id = setTimeout(() => setChipHint(false), 4200);
+    return () => clearTimeout(id);
+  }, [item]);
 
   useEffect(() => {
     try {
@@ -188,6 +211,7 @@ export default function DictionaryOverlay() {
     const mySeq = ++seqRef.current;
     tts.stop();
     setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
+    chipHintDoneRef.current = false; setChipHint(false);
     haptic('light');
     try {
       // Direction: an explicit swap wins, then the panel choice, else auto by script.
@@ -534,6 +558,19 @@ export default function DictionaryOverlay() {
           Открыть полный словарь →
         </button>
       </div>
+
+      {chipHint && (
+        <div
+          className="dq-chip-hint"
+          role="status"
+          onClick={() => setChipHint(false)}
+        >
+          <span className="dq-chip-hint-ic">💡</span>
+          <span className="dq-chip-hint-text">
+            Нажми на слово в блоках <b>«Синонимы»</b>, <b>«Антонимы»</b> или в примерах — и оно сохранится в твой словарь для изучения.
+          </span>
+        </div>
+      )}
     </div>
   );
 }
