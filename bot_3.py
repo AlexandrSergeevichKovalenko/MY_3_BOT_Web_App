@@ -3657,7 +3657,11 @@ def _autosave_build_digest_keyboard(digest_id: str, items: list, selected: list)
 
 async def _handle_autosave_button_tap(update: Update, context: CallbackContext) -> None:
     """Reply-keyboard button tap = flip the toggle in one tap and re-render the keyboard
-    so its label (🌙 Автосейв: ВКЛ/ВЫКЛ) immediately reflects the new state (Option B)."""
+    so its label (🌙 Автосейв: ВКЛ/ВЫКЛ) immediately reflects the new state (Option B).
+
+    Optimistic: the current state is already encoded in the label the user tapped
+    («… ВКЛ»/«… ВЫКЛ»), so we don't touch the DB to read it. We flip the in-memory
+    cache and reply INSTANTLY; the DB write happens in the background (revert on failure)."""
     user = update.effective_user
     if not user or not update.message:
         return
@@ -3665,14 +3669,34 @@ async def _handle_autosave_button_tap(update: Update, context: CallbackContext) 
         await update.message.reply_text("Эта кнопка доступна только в личке с ботом.")
         return
     user_id = int(user.id)
-    new_val = not bool(await asyncio.to_thread(get_shortcut_autosave_enabled, user_id))
-    try:
-        await asyncio.to_thread(set_shortcut_autosave_enabled, user_id, new_val)
-    except Exception:
-        logging.exception("autosave: toggle save failed user_id=%s", user_id)
-        await update.message.reply_text("Не удалось сохранить настройку, попробуйте ещё раз.")
-        return
+    # Derive current state from the tapped label — zero DB round-trips on the hot path.
+    label = str(update.message.text or "").strip()
+    if label.endswith("ВКЛ"):
+        cur_val = True
+    elif label.endswith("ВЫКЛ"):
+        cur_val = False
+    else:
+        cur_val = _autosave_state_cached(user_id)
+    new_val = not cur_val
+    # Optimistically flip the cache so the re-rendered keyboard reflects the new state now.
     _autosave_set_cached(user_id, new_val)
+
+    async def _persist_autosave() -> None:
+        try:
+            await asyncio.to_thread(set_shortcut_autosave_enabled, user_id, new_val)
+        except Exception:
+            logging.exception("autosave: toggle save failed user_id=%s", user_id)
+            # Revert the optimistic cache so the next menu draw shows the real state.
+            _autosave_set_cached(user_id, cur_val)
+            try:
+                await update.message.reply_text(
+                    "Не удалось сохранить настройку, попробуйте ещё раз.",
+                    reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
+                )
+            except Exception:
+                pass
+
+    asyncio.create_task(_persist_autosave())
     if new_val:
         msg = (
             "🌙 <b>Ночной автосейв включён.</b>\n\n"
