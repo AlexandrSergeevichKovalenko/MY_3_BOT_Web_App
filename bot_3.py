@@ -44,6 +44,7 @@ from backend.analytics import fetch_user_summary, get_period_bounds
 _BOT_BACKEND_SERVER_IMPORT_STARTED_AT = pytime.perf_counter()
 from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
+    backfill_quick_dictionary_translations,
     _build_shortcut_onboarding_code_text,
     _build_shortcut_onboarding_instructions,
     _build_tts_prewarm_quota_control_text,
@@ -6429,6 +6430,62 @@ async def admin_dedup_report_command(update: Update, context: CallbackContext):
     except Exception as exc:
         logging.exception("admin dedup report command failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Не удалось собрать отчёт по дубликатам: {exc}")
+
+
+async def admin_fix_dict_translations_command(update: Update, context: CallbackContext):
+    """Backfill quick-dictionary entries (incl. tapped synonym chips) that were saved as
+    bare German text without a Russian translation.
+
+    Usage:
+      /admin_fix_dict_translations            → dry-run, caller's own entries
+      /admin_fix_dict_translations apply      → write fixes, caller's own entries
+      /admin_fix_dict_translations apply all  → write fixes, ALL users
+    """
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = [a.strip().lower() for a in (context.args or [])]
+    apply = "apply" in args
+    all_users = "all" in args
+    target_user_id = None if all_users else int(sender.id)
+    scope = "ВСЕ пользователи" if all_users else "только ваши записи"
+    mode = "ПРИМЕНЯЮ изменения" if apply else "пробный прогон (ничего не пишу)"
+    await message.reply_text(
+        f"🔧 Бэкфилл переводов словаря: {mode}, {scope}.\n"
+        "Это может занять время (по одному запросу на слово)…"
+    )
+    try:
+        report = await asyncio.to_thread(
+            backfill_quick_dictionary_translations,
+            dry_run=not apply,
+            max_entries=2000 if all_users else 1000,
+            user_id=target_user_id,
+        )
+    except Exception as exc:
+        logging.exception("admin fix dict translations failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Бэкфилл упал: {exc}")
+        return
+    samples = report.get("samples") or []
+    sample_lines = "\n".join(f"  • #{s.get('id')} {s.get('german')}" for s in samples[:15])
+    text = (
+        f"📒 <b>Бэкфилл переводов словаря</b> ({'apply' if apply else 'dry-run'})\n\n"
+        f"Просмотрено: <b>{report.get('scanned', 0)}</b>\n"
+        f"Битых (без русского): <b>{report.get('broken', 0)}</b>\n"
+        f"Исправлено: <b>{report.get('fixed', 0)}</b>\n"
+        f"Пропущено (уже есть русский): {report.get('skipped_has_ru', 0)}\n"
+        f"Пропущено (нет немецкого): {report.get('skipped_no_german', 0)}\n"
+        f"Ошибок: {report.get('errors', 0)}"
+    )
+    if sample_lines:
+        text += f"\n\n<b>Примеры:</b>\n{sample_lines}"
+    if not apply and report.get("broken", 0):
+        text += "\n\nЗапустите с <code>apply</code>, чтобы исправить."
+    for part in _split_telegram_text(text):
+        await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def clear_dictionary_queue_command(update: Update, context: CallbackContext):
@@ -30170,6 +30227,7 @@ def main():
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("adjsprint", admin_adjektiv_sprint_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
+    application.add_handler(CommandHandler("admin_fix_dict_translations", admin_fix_dict_translations_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
     application.add_handler(CommandHandler("test_image_quiz", test_image_quiz_command))

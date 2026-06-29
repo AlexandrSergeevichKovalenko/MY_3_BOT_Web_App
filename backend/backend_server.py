@@ -305,6 +305,8 @@ from backend.openai_manager import (
     get_last_llm_usage,
 )
 from backend.database import (
+    get_quick_dictionary_entries_for_backfill,
+    update_dictionary_entry_full_columns,
     is_telegram_user_allowed,
     ensure_webapp_tables,
     create_shortcut_pairing_code,
@@ -7620,6 +7622,149 @@ def _run_saved_dictionary_entry_enrichment(
     finally:
         with _DICTIONARY_SAVE_ENRICHMENT_LOCK:
             _DICTIONARY_SAVE_ENRICHMENT_INFLIGHT.discard(int(entry_id))
+
+
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+
+
+def _text_has_cyrillic(value) -> bool:
+    return bool(_CYRILLIC_RE.search(str(value or "")))
+
+
+def _extract_target_translation_from_breakdown(item) -> str:
+    """Pull a concise target-language translation string out of a GPT breakdown item
+    (translations[].value / meanings.primary). Mirrors the frontend extractor so the
+    backfill produces the same standard card a fresh save would."""
+    if not isinstance(item, dict):
+        return ""
+    out: list[str] = []
+
+    def push(v) -> None:
+        raw = v.get("value") if isinstance(v, dict) else v
+        s = str(raw or "").strip()
+        if s and s not in out:
+            out.append(s)
+
+    for t in (item.get("translations") or []):
+        if len(out) >= 2:
+            break
+        push(t)
+    if not out:
+        meanings = item.get("meanings")
+        if isinstance(meanings, dict):
+            push(meanings.get("primary"))
+    return ", ".join(out)
+
+
+def _dictionary_entry_already_has_russian(row: dict) -> bool:
+    """True if the de→ru entry already carries a Russian translation somewhere, so the
+    backfill can skip it (no LLM call, no overwrite of good data)."""
+    if _text_has_cyrillic(row.get("translation_ru")) or _text_has_cyrillic(row.get("word_ru")):
+        return True
+    response_json = row.get("response_json")
+    if isinstance(response_json, str):
+        try:
+            response_json = json.loads(response_json)
+        except Exception:
+            response_json = {}
+    if _text_has_cyrillic(_extract_target_translation_from_breakdown(response_json)):
+        return True
+    return False
+
+
+def backfill_quick_dictionary_translations(
+    *,
+    dry_run: bool = True,
+    max_entries: int = 400,
+    user_id: int | None = None,
+) -> dict:
+    """Repair quick-dictionary entries (incl. tapped synonym chips) that were stored as
+    bare German text without a Russian translation. For each broken de→ru entry, re-run
+    the canonical breakdown lookup and rewrite ALL columns to the standard card format.
+    dry_run=True only scans and reports; pass dry_run=False to actually write."""
+    report = {
+        "dry_run": bool(dry_run),
+        "scanned": 0,
+        "broken": 0,
+        "fixed": 0,
+        "skipped_has_ru": 0,
+        "skipped_no_german": 0,
+        "errors": 0,
+        "samples": [],
+    }
+    try:
+        rows = get_quick_dictionary_entries_for_backfill(user_id=user_id, limit=max_entries)
+    except Exception as exc:
+        report["errors"] += 1
+        report["error_detail"] = str(exc)
+        return report
+
+    for row in rows:
+        report["scanned"] += 1
+        # Resolve language pair (columns first, then response_json), default de→ru.
+        src_lang = str(row.get("source_lang") or "").strip().lower()
+        tgt_lang = str(row.get("target_lang") or "").strip().lower()
+        response_json = row.get("response_json")
+        if isinstance(response_json, str):
+            try:
+                response_json = json.loads(response_json)
+            except Exception:
+                response_json = {}
+        if not src_lang or not tgt_lang:
+            src_lang = src_lang or str((response_json or {}).get("source_lang") or "de").strip().lower()
+            tgt_lang = tgt_lang or str((response_json or {}).get("target_lang") or "ru").strip().lower()
+        # Scope strictly to de→ru — the only pair the chip/quick-dict bug affected.
+        if not (src_lang == "de" and tgt_lang == "ru"):
+            continue
+        if _dictionary_entry_already_has_russian(row):
+            report["skipped_has_ru"] += 1
+            continue
+        # The German headword the chip/word was saved under.
+        german = str(row.get("word_de") or row.get("translation_de") or "").strip()
+        if not german and isinstance(response_json, dict):
+            german = str(response_json.get("word_de") or response_json.get("source_text") or "").strip()
+        if not german:
+            report["skipped_no_german"] += 1
+            continue
+        report["broken"] += 1
+        if len(report["samples"]) < 25:
+            report["samples"].append({"id": row.get("id"), "german": german})
+        if dry_run:
+            continue
+        try:
+            rich = asyncio.run(run_dictionary_lookup_multilang(german, "de", "ru"))
+            russian = _extract_target_translation_from_breakdown(rich)
+            if not _text_has_cyrillic(russian):
+                report["errors"] += 1
+                continue
+            rich_word_de = str((rich or {}).get("word_de") or "").strip() or german
+            prepared = _prepare_dictionary_response_json_for_save(
+                response_json=rich if isinstance(rich, dict) else {},
+                source_text=german,
+                target_text=russian,
+                source_lang="de",
+                target_lang="ru",
+                word_ru=russian,
+                word_de=rich_word_de,
+                translation_de=german,
+                translation_ru=russian,
+            )
+            update_dictionary_entry_full_columns(
+                int(row.get("id")),
+                word_ru=str(prepared.get("word_ru") or russian),
+                word_de=str(prepared.get("word_de") or rich_word_de),
+                translation_de=str(prepared.get("translation_de") or german),
+                translation_ru=str(prepared.get("translation_ru") or russian),
+                response_json=prepared,
+            )
+            report["fixed"] += 1
+        except Exception as exc:
+            report["errors"] += 1
+            logging.warning(
+                "dictionary translation backfill failed entry_id=%s german=%r error=%s",
+                row.get("id"), german, exc, exc_info=True,
+            )
+    return report
 
 
 def _start_saved_dictionary_entry_enrichment(

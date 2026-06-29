@@ -16905,6 +16905,84 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
                 ))
 
 
+def get_quick_dictionary_entries_for_backfill(
+    user_id: int | None = None,
+    origins: tuple[str, ...] = ("webapp_quick_dictionary_related", "webapp_quick_dictionary"),
+    limit: int = 1000,
+) -> list[dict]:
+    """Rows saved via the quick-dictionary overlay (incl. tapped synonym chips), used by
+    the translation backfill. Returns enough columns to detect + rebuild a broken entry."""
+    safe_origins = [str(o).strip() for o in origins if str(o or "").strip()]
+    if not safe_origins:
+        return []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            where = "WHERE origin_process = ANY(%s)"
+            params: list = [safe_origins]
+            if user_id is not None:
+                where += " AND user_id = %s"
+                params.append(int(user_id))
+            params.append(int(limit))
+            cursor.execute(f"""
+                SELECT id, user_id, word_ru, translation_de, word_de, translation_ru,
+                       source_lang, target_lang, origin_process, response_json
+                FROM bt_3_webapp_dictionary_queries
+                {where}
+                ORDER BY created_at DESC
+                LIMIT %s;
+            """, params)
+            rows = cursor.fetchall() or []
+    items = []
+    for row in rows:
+        items.append({
+            "id": row[0],
+            "user_id": row[1],
+            "word_ru": row[2],
+            "translation_de": row[3],
+            "word_de": row[4],
+            "translation_ru": row[5],
+            "source_lang": row[6],
+            "target_lang": row[7],
+            "origin_process": row[8],
+            "response_json": row[9],
+        })
+    return items
+
+
+def update_dictionary_entry_full_columns(
+    entry_id: int,
+    *,
+    word_ru: str | None,
+    word_de: str | None,
+    translation_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+) -> None:
+    """Overwrite ALL legacy translation columns + response_json for a single entry.
+    Used by the quick-dictionary translation backfill (the regular update helper only
+    touches response_json + translation_de, which is not enough to fix the RU column)."""
+    if not entry_id:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE bt_3_webapp_dictionary_queries
+                SET word_ru = %s,
+                    word_de = %s,
+                    translation_de = %s,
+                    translation_ru = %s,
+                    response_json = %s
+                WHERE id = %s;
+            """, (
+                (str(word_ru).strip() or None) if word_ru else None,
+                (str(word_de).strip() or None) if word_de else None,
+                (str(translation_de).strip() or None) if translation_de else None,
+                (str(translation_ru).strip() or None) if translation_ru else None,
+                json.dumps(response_json, ensure_ascii=False),
+                int(entry_id),
+            ))
+
+
 def create_flashcard_feel_feedback_token(
     *,
     user_id: int,
