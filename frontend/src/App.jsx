@@ -33324,8 +33324,10 @@ function AppInner() {
                       </button>
                     </div>
 
-                    {/* 4. Большое поле ввода — как в быстром словаре */}
-                    <div className="webapp-dictionary-form dict-search-compose">
+                    {/* 4. Большое поле ввода — как в быстром словаре.
+                        Пока перевода нет, поле растягивается на свободную высоту экрана
+                        (заполняет пустоту внизу); после перевода — обычная высота. */}
+                    <div className={`webapp-dictionary-form dict-search-compose${dictionaryResult ? '' : ' dict-compose-tall'}`}>
                       <div className="dictionary-input-wrap">
                         <textarea
                           className="dictionary-input dict-input-big"

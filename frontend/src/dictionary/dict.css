@@ -979,6 +979,17 @@
 .dict-search-compose .dict-translate-row { margin-top: 8px !important; }
 .dictionary-input.dict-input-big { min-height: 112px; }
 
+/* ── Adaptive input height ────────────────────────────────────────────────────
+   While there is no result yet, let the text box grow to soak up the empty space
+   below the card — scaled to the real screen height (--app-height tracks
+   visualViewport.height). clamp() keeps it sane on small phones and bounded on
+   tall ones. Once a result is shown, the `dict-compose-tall` class is dropped and
+   the input returns to its normal compact height (results stay reachable).
+   Only the input box changes — no buttons, controls or flow are touched. */
+.dict-search-compose.dict-compose-tall .dictionary-input.dict-input-big {
+  min-height: clamp(132px, calc(var(--app-height, 100dvh) * 0.40), 380px);
+}
+
 /* ── "Tap a synonym to save it" hint ─────────────────────────────────────────
    A small, self-dismissing toast that floats above the bottom of the quick
    dictionary, telling users the Synonyms/Antonyms/examples words are tappable
