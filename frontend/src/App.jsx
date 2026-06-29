@@ -32726,7 +32726,7 @@ function AppInner() {
                             </button>
                           </div>
 
-                          <div className="vocab-selection-toolbar">
+                          <div className={`vocab-selection-toolbar ${manualTrainingSelectionCount > 0 ? 'is-visible' : ''}`}>
                             <div className="vocab-selection-toolbar-main">
                               <span className="vocab-selection-count">
                                 {manualTrainingSelectionCount}
@@ -33051,7 +33051,9 @@ function AppInner() {
                                           onClick={() => toggleManualTrainingSelectionCard(item.id)}
                                           aria-label={tr('Добавить слово в текущую выборку', 'Wort zur aktuellen Auswahl hinzufügen')}
                                         >
-                                          {isSelectedForManual ? '✅' : ''}
+                                          {isSelectedForManual && (
+                                            <svg className="vocab-select-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                                          )}
                                         </button>
                                         <button
                                           type="button"

@@ -25370,3 +25370,113 @@ html[data-scheme="light"] .explain-line,
 .webapp-page.is-vocab-library-fixed .vocab-library > .vocab-search-wrap{ margin:0; }
 .webapp-page.is-vocab-library-fixed .vocab-library > .vocab-stats-bar{ margin:0; }
 .webapp-page.is-vocab-library-fixed .vocab-folder-section{ margin:0; }
+
+
+/* ================================================================
+   Словарь · «Библиотека» — визуальная полировка (ревизия дизайна)
+   1) Панель действий уезжает ВНИЗ (зона пальца) и появляется
+      только когда выбрано ≥1 слово (слайд-ин).
+   2) Список слов облегчён: плоские строки с тонкими разделителями,
+      раскрытая строка превращается в аккуратную карточку.
+   3) Иерархия строки: слово — герой, перевод/папка/дата приглушены,
+      чекбокс — чистое кольцо → залитый акцент с галочкой.
+   4) Микро-анимации: раскрытие строк/аккордеона, нажатия, поп счётчика.
+   Все цвета через --dmps-* с тёмным фолбэком → обе темы корректны.
+   ================================================================ */
+
+/* ── 1. Панель действий: фиксирована внизу, видна только при выборе ── */
+.webapp-page.is-vocab-library-fixed .vocab-library > .vocab-selection-toolbar{
+  position:fixed;
+  left:50%;
+  bottom:calc(env(safe-area-inset-bottom, 0px) + 10px);
+  transform:translateX(-50%) translateY(135%);
+  width:calc(100% - 20px); max-width:560px;
+  margin:0; order:0; z-index:65;
+  opacity:0; pointer-events:none;
+  box-shadow:0 12px 34px -10px rgba(0,0,0,0.6);
+  transition:transform .28s cubic-bezier(.22,1,.36,1), opacity .2s ease;
+}
+.webapp-page.is-vocab-library-fixed .vocab-library > .vocab-selection-toolbar.is-visible{
+  transform:translateX(-50%) translateY(0);
+  opacity:1; pointer-events:auto;
+}
+/* список освобождает место под панель только пока она видна */
+.webapp-page.is-vocab-library-fixed .vocab-selection-toolbar.is-visible ~ .vocab-scroll-area{
+  padding-bottom:84px;
+}
+.webapp-page.is-vocab-library-fixed .vocab-selection-toolbar.is-visible .vocab-selection-count{
+  animation:vocabPop .26s ease;
+}
+
+/* ── 2. Облегчённый список: плоские строки + разделители ── */
+.webapp-dictionary .vocab-word-item{
+  border:0; border-radius:0; background:transparent;
+  margin-bottom:0;
+  border-bottom:1px solid var(--dmps-border, rgba(255,255,255,0.07));
+  transition:background .18s ease, border-radius .18s ease, margin .18s ease;
+}
+.webapp-dictionary .vocab-word-list .vocab-word-item:last-child{ border-bottom:0; }
+.webapp-dictionary .vocab-word-item.is-expanded{
+  border-bottom-color:transparent;
+  border-radius:14px;
+  background:var(--vlib-acc-soft, rgba(99,102,241,0.10));
+  margin:4px 0;
+}
+
+/* ── 3. Чистый чекбокс + иерархия строки ── */
+.webapp-dictionary .vocab-select-toggle{
+  width:38px; border-right:0; background:transparent;
+}
+.webapp-dictionary .vocab-select-toggle:not(.is-active)::before{
+  width:20px; height:20px;
+  border:2px solid var(--dmps-border, rgba(148,163,184,0.45));
+  transition:border-color .15s ease, transform .15s ease;
+}
+.webapp-dictionary .vocab-select-toggle:active:not(.is-active)::before{ transform:scale(.9); }
+.webapp-dictionary .vocab-select-toggle.is-active::before{
+  content:''; position:absolute; top:50%; left:50%;
+  transform:translate(-50%,-50%);
+  width:22px; height:22px; border-radius:50%;
+  background:var(--vlib-acc, #6366F1);
+}
+.webapp-dictionary .vocab-select-check{
+  position:relative; z-index:1;
+  width:13px; height:13px; color:#fff;
+  animation:vocabPop .18s ease;
+}
+
+.webapp-dictionary .vocab-word-row{ padding:11px 8px 11px 2px; gap:9px; }
+.webapp-dictionary .vocab-word-row:active{ background:var(--dmps-hover, rgba(255,255,255,0.035)); }
+.webapp-dictionary .vocab-word-main{
+  font-size:15px; font-weight:700;
+  color:var(--dmps-text-title, #f1f5f9);
+}
+.webapp-dictionary .vocab-word-sub{
+  font-size:12px;
+  color:var(--dmps-text-muted, #8b97a8);
+}
+.webapp-dictionary .vocab-word-sub em{ color:var(--dmps-text-secondary, #aab4c4); }
+.webapp-dictionary .vocab-folder-tag{
+  font-size:9.5px; border-radius:6px;
+  color:var(--dmps-text-subtle, #64748b);
+  background:var(--dmps-card-alt, rgba(255,255,255,0.05));
+}
+.webapp-dictionary .vocab-word-date{
+  font-size:9.5px; opacity:.8;
+  color:var(--dmps-text-subtle, #475569);
+}
+
+/* ── 4. Микро-анимации ── */
+@keyframes vocabPop{ from{ transform:scale(.5); opacity:0; } to{ transform:scale(1); opacity:1; } }
+@keyframes vocabReveal{ from{ opacity:0; transform:translateY(-4px); } to{ opacity:1; transform:none; } }
+.webapp-dictionary .vocab-word-details,
+.webapp-dictionary .vocab-word-actions{ animation:vocabReveal .22s ease; }
+.webapp-dictionary .vocab-folder-acc-panel{ animation:vocabReveal .2s ease; }
+.webapp-dictionary .vocab-folder-acc-head{ transition:background .15s ease, transform .08s ease; }
+.webapp-dictionary .vocab-folder-acc-head:active{ transform:scale(.99); }
+.webapp-dictionary .vocab-folder-card{ transition:transform .08s ease, border-color .15s ease, background .15s ease; }
+.webapp-dictionary .vocab-folder-card:active{ transform:scale(.97); }
+.webapp-dictionary .vocab-expand-arrow{ transition:transform .22s cubic-bezier(.22,1,.36,1), color .15s ease; }
+
+/* для select-check галочка тоже должна вписываться (стрелочка над текстом) */
+.webapp-page.is-vocab-library-fixed .vocab-selection-toolbar.is-visible .vocab-sel-tab .vocab-sel-tab-icon{ pointer-events:none; }
