@@ -810,6 +810,9 @@ def _is_global_slot_active_today(kind: str, hour: int, minute: int,
 FREE_SEND_BUDGET = max(0, int((os.getenv("FREE_SEND_BUDGET") or "6").strip() or "6"))
 DEFAULT_PRO_SEND_BUDGET = max(1, int((os.getenv("DEFAULT_PRO_SEND_BUDGET") or "12").strip() or "12"))
 RARE_SEND_BUDGET = max(0, int((os.getenv("RARE_SEND_BUDGET") or "8").strip() or "8"))
+# «Следующее задание» on an empty inbox stocks up to this many tasks at once (within the
+# remaining daily budget) and shows them on ONE plaque — never exceeds the preset total.
+NEXT_TASK_PULL_BATCH = max(1, int((os.getenv("NEXT_TASK_PULL_BATCH") or "3").strip() or "3"))
 
 # Pro preset → daily slot budget (Этап 3). Absent prefs row → «normal» («Обычно»).
 # «custom» falls back to «normal» until the per-type mask UI lands.
@@ -2456,12 +2459,14 @@ def _pull_budget_for(user_id: int) -> tuple[int, bool]:
 
 async def _try_pull_next_task(context: CallbackContext, user_id: int, chat_id: int,
                               since_ts, now) -> str:
-    """Silent pull-from-pool for «Следующее задание» when the inbox is empty. If the
-    user still has daily budget left, pull ONE task from the pre-stocked pools and
-    deliver it (the kind's sender records an inbox row + sends the real card). Returns
-    "sent" | "exhausted" (budget used up) | "none" (pool gave nothing). Serves Free
-    (cap stays a conversion lever), «Тишина» Pro, and fresh accounts the schedule
-    hasn't reached yet."""
+    """Silent pull-from-pool for «Следующее задание» when the inbox is empty. Within the
+    user's REMAINING daily budget, stock up to NEXT_TASK_PULL_BATCH tasks into the inbox
+    WITHOUT sending each card (held=True), then show them on ONE branded plaque — same UX
+    as a non-empty inbox. The daily total never exceeds the preset budget; this only changes
+    pacing (a batch of up to 3 of the remaining allowance per tap instead of one at a time).
+    Returns "sent" | "exhausted" (budget used up) | "none" (pool gave nothing). Serves Free
+    (cap stays a conversion lever), «Тишина» Pro, and fresh accounts the schedule hasn't
+    reached yet."""
     budget, is_pro = await asyncio.to_thread(_pull_budget_for, int(user_id))
     if budget <= 0:
         return "exhausted"
@@ -2471,13 +2476,40 @@ async def _try_pull_next_task(context: CallbackContext, user_id: int, chat_id: i
         count = 0
     if count >= budget:
         return "exhausted"
+    want = min(NEXT_TASK_PULL_BATCH, budget - count)
+    pulled = 0
+    for _ in range(want):
+        try:
+            if await _drip_deliver_one(context, int(user_id), int(count + pulled), now, held=True):
+                pulled += 1
+            else:
+                break  # pool is dry for every kind right now
+        except Exception:
+            logging.warning("next_task batch pull failed user=%s", user_id, exc_info=True)
+            break
+    if pulled <= 0:
+        return "none"
+    logging.info("next_task: stocked-on-demand user=%s pulled=%s count=%s budget=%s",
+                 user_id, pulled, count, budget)
     try:
-        if await _drip_deliver_one(context, int(user_id), int(count), now):
-            logging.info("next_task: pulled-on-demand user=%s count=%s budget=%s", user_id, count, budget)
-            return "sent"
+        data = await asyncio.to_thread(get_inbox_open_today, int(user_id),
+                                       since_ts=since_ts, limit=NEXT_TASK_PULL_BATCH)
+        tasks = [t for t in (data.get("tasks") or []) if t.get("deeplink")]
+        open_count = int(data.get("open_count") or 0)
     except Exception:
-        logging.warning("next_task on-demand pull failed user=%s", user_id, exc_info=True)
-    return "none"
+        logging.warning("next_task: post-pull lookup failed user=%s", user_id, exc_info=True)
+        tasks, open_count = [], 0
+    if not tasks:
+        return "none"
+    # The plaque below IS the delivery of these freshly-stocked held rows — flip them to
+    # pushed so the windowed-release job won't re-send them later as a second batch. Safe
+    # here because this path only runs on an empty inbox (no pre-existing held rows today).
+    try:
+        await asyncio.to_thread(mark_inbox_pushed, int(user_id), since_ts=since_ts)
+    except Exception:
+        logging.warning("next_task: mark_inbox_pushed failed user=%s", user_id, exc_info=True)
+    await _send_next_task_card(context, chat_id, tasks, open_count)
+    return "sent"
 
 
 async def _send_next_open_task(update: Update, context: CallbackContext) -> None:
@@ -3243,9 +3275,10 @@ def _window_minutes_today(schedule, tz_name) -> int:
         return 0
 
 
-async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour) -> bool:
+async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, held: bool = False) -> bool:
     """Pull one item of `kind` from its pool and send it to the windowed user.
-    cooldown first, then 0-cooldown fallback so a thin pool still delivers."""
+    cooldown first, then 0-cooldown fallback so a thin pool still delivers.
+    held=True records it into the inbox WITHOUT sending the card."""
     if kind == "aufgabe":
         fmt = _DRIP_AUFGABE_FORMATS[int(idx) % len(_DRIP_AUFGABE_FORMATS)]
         entry = (await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt)
@@ -3253,7 +3286,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour) -> b
         if not entry:
             return False
         ok = await send_aufgabe_to_chat(context, entry=entry, slot_date=slot_date,
-                                        slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+                                        slot_hour=slot_hour, chat_id=uid, target_user_id=uid, held=held)
         if ok:
             try: await asyncio.to_thread(mark_aufgabe_sent, str(entry.get("aufgabe_id") or ""))
             except Exception: pass
@@ -3263,7 +3296,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour) -> b
                  or await asyncio.to_thread(pick_next_listening, cooldown_days=0))
         if not entry:
             return False
-        ok = await send_listening_to_chat(context, entry=entry, slot_date=slot_date, chat_id=uid, target_user_id=uid)
+        ok = await send_listening_to_chat(context, entry=entry, slot_date=slot_date, chat_id=uid, target_user_id=uid, held=held)
         if ok:
             try: await asyncio.to_thread(mark_listening_sent, str(entry.get("listening_id") or ""))
             except Exception: pass
@@ -3279,7 +3312,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour) -> b
         except Exception:
             return False
         ok = await send_anagram_to_chat(context, card_id=card_id, payload=payload, slot_date=slot_date,
-                                        slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+                                        slot_hour=slot_hour, chat_id=uid, target_user_id=uid, held=held)
         if ok:
             try: await asyncio.to_thread(mark_anagram_sent, card_id)
             except Exception: pass
@@ -3297,7 +3330,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour) -> b
         except Exception:
             return False
         ok = await send_rebus_to_chat(context, compound_entry=entry, image_url=image_url, slot_date=slot_date,
-                                      slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+                                      slot_hour=slot_hour, chat_id=uid, target_user_id=uid, held=held)
         if ok:
             try: await asyncio.to_thread(mark_rebus_sent, str(entry.get("compound_id") or entry.get("id") or ""))
             except Exception: pass
@@ -3315,7 +3348,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour) -> b
         except Exception:
             return False
         ok = await send_crossword_to_chat(context, crossword_entry=entry, image_url=image_url, slot_date=slot_date,
-                                          slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+                                          slot_hour=slot_hour, chat_id=uid, target_user_id=uid, held=held)
         if ok:
             try: await asyncio.to_thread(mark_crossword_sent, str(entry.get("crossword_id") or ""))
             except Exception: pass
@@ -3323,16 +3356,18 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour) -> b
     return False
 
 
-async def _drip_deliver_one(context: CallbackContext, user_id: int, delivered_idx: int, now) -> bool:
+async def _drip_deliver_one(context: CallbackContext, user_id: int, delivered_idx: int, now,
+                            *, held: bool = False) -> bool:
     """Deliver ONE task to a windowed user, rotating types by delivery index; if the
-    chosen kind has no ready pool item, fall through to the next kind."""
+    chosen kind has no ready pool item, fall through to the next kind. held=True records
+    the task into the inbox WITHOUT sending its card (for the «Следующее задание» plaque)."""
     uid = int(user_id)
     slot_date = now.date()
     slot_hour = int(now.hour) * 100 + int(now.minute)
     for off in range(len(_DRIP_KINDS)):
         kind = _DRIP_KINDS[(int(delivered_idx) + off) % len(_DRIP_KINDS)]
         try:
-            if await _drip_deliver_kind(context, uid, kind, delivered_idx, slot_date, slot_hour):
+            if await _drip_deliver_kind(context, uid, kind, delivered_idx, slot_date, slot_hour, held=held):
                 return True
         except Exception:
             logging.warning("drip_deliver_kind failed kind=%s uid=%s", kind, uid, exc_info=True)
