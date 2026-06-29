@@ -25480,3 +25480,71 @@ html[data-scheme="light"] .explain-line,
 
 /* для select-check галочка тоже должна вписываться (стрелочка над текстом) */
 .webapp-page.is-vocab-library-fixed .vocab-selection-toolbar.is-visible .vocab-sel-tab .vocab-sel-tab-icon{ pointer-events:none; }
+
+
+/* ================================================================
+   Словарь · «Библиотека» — строгий ритм 8px и типошкала (отдельный проход)
+   Типошкала:  11 · 12 · 13 · 15 · 17 · 19 · 22
+   Сетка отступов: 4 · 8 · 12 · 16 · 20 · 24 (минорный шаг 4)
+   Высоты элементов по 4px-подсетке: 36 · 40 · 48
+   Нормализует все «дробные» значения (9.5/10.5/11.5/13.5/14/15.5)
+   и спейсинги (5/7/9/10/11/13/15) к единой системе. Только cosmetics.
+   ================================================================ */
+
+/* — Шапка-секция: вертикальный ритм 8 — */
+.webapp-page.is-vocab-library-fixed .webapp-dictionary{ padding:12px 16px; gap:8px; }
+.webapp-page.is-vocab-library-fixed .vocab-library{ gap:8px; }
+
+/* — Табы Поиск/Библиотека — */
+.webapp-dictionary .vocab-tabs{ margin:8px 0; gap:4px; padding:4px; }
+.webapp-dictionary .vocab-tab{ height:40px; gap:6px; }
+.webapp-dictionary .vocab-tab-count{ font-size:11px; padding:2px 6px; border-radius:8px; }
+
+/* — Поиск по словам — */
+.webapp-dictionary .vocab-library > .vocab-search-wrap .vocab-search-input{ height:48px; font-size:15px; }
+
+/* — «Всего N» + сортировка — */
+.webapp-dictionary .vocab-stats-total{ font-size:12px; }
+.webapp-dictionary .vocab-stats-total strong{ font-size:15px; }
+.webapp-dictionary .vocab-sort-btn{ font-size:12px; padding:6px 12px; border-radius:8px; }
+
+/* — Аккордеон папок — */
+.webapp-dictionary .vocab-folder-acc-head{ height:48px; gap:8px; padding:0 12px; }
+.webapp-dictionary .vocab-folder-acc-head .vfa-label{ font-size:13px; }
+.webapp-dictionary .vocab-folder-acc-head .vfa-chev{ font-size:12px; }
+.webapp-dictionary .vocab-folder-acc-panel{ padding:8px; border-radius:16px; }
+.webapp-dictionary .vocab-folder-acc-search{ margin-bottom:8px; }
+.webapp-dictionary .vocab-folder-acc-search input{ height:40px; font-size:13px; border-radius:12px; }
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-quick-row{ gap:8px; margin-bottom:8px; }
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-grid{ gap:8px; }
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card{ min-height:88px; padding:12px; border-radius:12px; gap:8px; }
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card .vfc-card-name{ font-size:13px; }
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card .vfc-card-count{ font-size:11px; }
+
+/* — Группа-заголовок (СЕГОДНЯ / ВЧЕРА) — */
+.webapp-dictionary .vocab-group-label{ font-size:11px; padding:8px 8px 4px; }
+
+/* — Строка слова: ритм 8/12, иерархия по шкале — */
+.webapp-dictionary .vocab-word-row{ padding:12px 8px 12px 2px; gap:8px; }
+.webapp-dictionary .vocab-word-item.is-expanded .vocab-word-row{ padding:12px 8px; }
+.webapp-dictionary .vocab-word-main{ font-size:15px; }
+.webapp-dictionary .vocab-word-item.is-expanded .vocab-word-main{ font-size:15px; }
+.webapp-dictionary .vocab-word-sub{ font-size:12px; }
+.webapp-dictionary .vocab-word-item.is-expanded .vocab-word-sub{ font-size:13px; }
+.webapp-dictionary .vocab-folder-tag{ font-size:11px; padding:2px 6px; }
+.webapp-dictionary .vocab-word-date{ font-size:11px; }
+.webapp-dictionary .vocab-word-meta{ gap:4px; }
+
+/* — «Загрузить ещё» + легенда SRS — */
+.webapp-dictionary .vocab-load-more{ padding:12px; font-size:13px; border-radius:12px; }
+.webapp-dictionary .vocab-legend{ gap:8px 16px; margin:16px 16px 0; }
+.webapp-dictionary .vocab-legend-item{ font-size:11px; gap:6px; }
+
+/* — Нижняя панель действий: ритм 8, типошкала, высоты по 4px — */
+.webapp-page.is-vocab-library-fixed .vocab-library > .vocab-selection-toolbar{ padding:8px 12px; gap:8px; }
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-toolbar-main{ gap:8px; }
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-count{ min-width:20px; height:20px; font-size:11px; }
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-title{ font-size:13px; }
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tabs{ gap:8px; }
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab{ height:36px; gap:2px; font-size:11px; border-radius:12px; }
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab .vocab-sel-tab-icon{ width:15px; height:15px; }
