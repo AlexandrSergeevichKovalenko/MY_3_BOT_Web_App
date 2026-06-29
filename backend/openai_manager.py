@@ -6674,6 +6674,61 @@ def run_quick_ask(*, question: str, context_text: str = "", source_lang: str = "
     return str(resp.choices[0].message.content or "").strip()
 
 
+_QUICK_ARTICLE_ALLOWED = {"der", "die", "das"}
+
+
+def run_quick_article(*, word: str, meaning_ru: str = "") -> str:
+    """Fast single chat.completions call → the definite article (der/die/das) for ONE
+    German noun. Used by the quick dictionary when the local Wiktionary table misses, so
+    the compact card still shows the article without waiting for the full GPT breakdown.
+    Returns "" on any failure / ambiguity (caller degrades to the breakdown's article).
+    Sets _LAST_LLM_USAGE so the caller can log billing."""
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    w = str(word or "").strip()
+    if not api_key or not w or " " in w:
+        return ""
+    system = (
+        "You are a German lexicon. For the given German noun return its single standard "
+        "definite article. Respond with STRICT JSON ONLY: {\"article\":\"der\"|\"die\"|\"das\"}. "
+        "If it is not a German noun, or the article is genuinely ambiguous / two-gender, "
+        "return {\"article\":\"\"}."
+    )
+    user_payload = {"word": w}
+    if str(meaning_ru or "").strip():
+        user_payload["meaning_ru"] = str(meaning_ru).strip()
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=10)
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("run_quick_article failed word=%s", w, exc_info=True)
+        return ""
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1-mini",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
+    try:
+        article = str((json.loads(resp.choices[0].message.content or "{}") or {}).get("article") or "").strip().lower()
+    except Exception:
+        article = ""
+    return article if article in _QUICK_ARTICLE_ALLOWED else ""
+
+
 def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "", mime: str = "image/png") -> dict:
     """Vision gate for a generated rebus component image (pool time, off the hot
     path). Verifies the single main object IS `expected` (the German word) in its

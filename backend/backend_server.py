@@ -300,6 +300,7 @@ from backend.openai_manager import (
     run_beginner_topic,
     run_language_learning_private_question_detailed,
     run_quick_ask,
+    run_quick_article,
     run_tts_chunk_de,
     get_last_llm_usage,
 )
@@ -29232,6 +29233,28 @@ def get_billing_status():
         return jsonify(response_payload), 200
 
 
+@app.route("/api/billing/sponsors", methods=["GET"])
+def get_billing_sponsors():
+    """Стена благодарностей: публичный список спонсоров (имя + тир), без доступа."""
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except Exception:
+        limit = 50
+    try:
+        sponsors = list_recent_sponsors(limit=limit)
+    except Exception as exc:
+        logging.warning("billing sponsors fetch failed: %s", exc)
+        sponsors = []
+    payload = [
+        {
+            "tier": str(item.get("tier") or "support_coffee"),
+            "name": str(item.get("display_name") or "").strip() or "Аноним",
+        }
+        for item in sponsors
+    ]
+    return jsonify({"sponsors": payload}), 200
+
+
 @app.route("/api/billing/create-checkout-session", methods=["POST"])
 def create_billing_checkout_session():
     started_perf = time.perf_counter()
@@ -30170,11 +30193,14 @@ def sync_economics_price_snapshots_from_env():
     return jsonify({"ok": True, "result": result})
 
 
-def _attach_quick_translate_article(result, text, source_lang, target_lang):
+def _attach_quick_translate_article(result, text, source_lang, target_lang, *, user_id_for_billing=None):
     """For a single German noun, attach its definite article (der/die/das) to the
     instant-translate result so the compact card shows "die Wortverbindung" right
-    away — without the user having to open the full breakdown. Source = the local
-    Wiktionary table (free, fast, no LLM); a miss simply leaves the result as-is.
+    away — without the user having to open the full breakdown. A noun without its
+    article is effectively an incomplete translation (you can't build a sentence),
+    so we resolve it eagerly: the local Wiktionary table first (free, instant), and
+    on a miss ONE fast LLM resolver (`run_quick_article`). Both fail → leave the
+    result as-is and let the full GPT breakdown fill the article a moment later.
     """
     if not isinstance(result, dict):
         return result
@@ -30190,10 +30216,30 @@ def _attach_quick_translate_article(result, text, source_lang, target_lang):
         # Nouns only: a single, capitalized token (German nouns are capitalized).
         if not german or " " in german or not german[:1].isupper():
             return result
-        entry = lookup_wiktionary_entry(german.strip(".,!?;:"), "de")
+        clean = german.strip(".,!?;:")
+        entry = lookup_wiktionary_entry(clean, "de")
         if entry and str(entry.get("article") or "").strip():
             result["article"] = str(entry["article"]).strip()
             result["part_of_speech"] = "noun"
+            return result
+        # Wiktionary miss → one fast LLM call so the noun still shows der/die/das now,
+        # not only after the heavy breakdown. Cached with the result (called once/word).
+        article = run_quick_article(word=clean)
+        if article:
+            result["article"] = article
+            result["part_of_speech"] = "noun"
+            result["article_source"] = "llm"
+            if user_id_for_billing is not None:
+                try:
+                    _billing_log_openai_usage(
+                        user_id=int(user_id_for_billing), action_type="quick_article",
+                        source_lang=source_lang or "", target_lang=target_lang or "",
+                        usage=get_last_llm_usage(reset=True),
+                        seed=f"quick_article:{user_id_for_billing}:{time.time_ns()}",
+                        metadata={"origin": "quick_translate_article", "word": clean[:64]},
+                    )
+                except Exception:
+                    logging.debug("quick_article billing log failed", exc_info=True)
     except Exception:
         logging.debug("quick-translate article enrichment failed", exc_info=True)
     return result
@@ -30336,7 +30382,8 @@ def translate_quick():
                 result["provider"] = provider_name
                 if not result.get("detected_source_lang") and source_lang:
                     result["detected_source_lang"] = source_lang
-                _attach_quick_translate_article(result, text, source_lang, target_lang)
+                _attach_quick_translate_article(result, text, source_lang, target_lang,
+                                                user_id_for_billing=user_id_for_billing)
                 if user_id_for_billing is not None and provider_name in {"google_translate", "deepl_free", "azure_translator"}:
                     provider_billing_map = {
                         "google_translate": ("google_translate", "google_translate_chars"),
