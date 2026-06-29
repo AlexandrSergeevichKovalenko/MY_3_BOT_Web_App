@@ -8096,6 +8096,29 @@ def ensure_webapp_tables() -> None:
                     processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            # Durable record of one-time «спасибо» (донат-тарифы support_*). Source of truth
+            # for the sponsor badge + thank-you wall — survives the fact that a one-time
+            # payment leaves no active subscription row. NOT an entitlement record.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_sponsorships (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    plan_code TEXT NOT NULL,
+                    amount_minor BIGINT,
+                    currency TEXT,
+                    display_name TEXT,
+                    stripe_checkout_session_id TEXT UNIQUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_sponsorships
+                ADD COLUMN IF NOT EXISTS display_name TEXT;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_sponsorships_user
+                ON bt_3_sponsorships (user_id, created_at DESC);
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS plan_limits (
                     plan_code TEXT NOT NULL REFERENCES plans(plan_code),
@@ -28581,6 +28604,107 @@ def get_billing_plan(plan_code: str) -> dict | None:
             for stale_key, _value in stale_keys:
                 _BILLING_PLAN_CACHE.pop(stale_key, None)
     return dict(plan) if isinstance(plan, dict) else None
+
+
+# Higher = more заметный бейдж / выше на стене благодарностей.
+SPONSOR_TIER_RANK = {"support_coffee": 1, "support_cheesecake": 2}
+
+
+def record_sponsorship(
+    user_id: int,
+    plan_code: str,
+    *,
+    amount_minor: int | None = None,
+    currency: str | None = None,
+    display_name: str | None = None,
+    stripe_checkout_session_id: str | None = None,
+) -> bool:
+    """Persist a one-time «спасибо». Idempotent on the Stripe checkout session id.
+
+    Returns True if a new row was inserted, False if it was a duplicate event.
+    This is NOT an entitlement write — it only powers the sponsor badge + wall.
+    The display_name is captured at payment time so the wall needs no Telegram calls.
+    """
+    code = str(plan_code or "").strip().lower()
+    session_id = str(stripe_checkout_session_id or "").strip() or None
+    cur = str(currency or "").strip().upper() or None
+    name = str(display_name or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_sponsorships (
+                    user_id, plan_code, amount_minor, currency, display_name, stripe_checkout_session_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (stripe_checkout_session_id) DO NOTHING
+                RETURNING id;
+                """,
+                (int(user_id), code, amount_minor, cur, name, session_id),
+            )
+            inserted = cursor.fetchone() is not None
+    return inserted
+
+
+def is_user_sponsor(user_id: int) -> tuple[bool, str | None]:
+    """Return (is_sponsor, best_tier) where best_tier is the highest plan_code ever donated."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT plan_code
+                FROM bt_3_sponsorships
+                WHERE user_id = %s;
+                """,
+                (int(user_id),),
+            )
+            rows = cursor.fetchall() or []
+    best_tier = None
+    best_rank = 0
+    for row in rows:
+        tier = str(row[0] or "").strip().lower()
+        rank = SPONSOR_TIER_RANK.get(tier, 0)
+        if rank > best_rank:
+            best_rank = rank
+            best_tier = tier
+    return (best_tier is not None, best_tier)
+
+
+def list_recent_sponsors(limit: int = 50) -> list[dict]:
+    """Distinct sponsors with their best tier, для стены благодарностей.
+
+    Cheesecake выше кофе; внутри тира — по свежести последнего «спасибо».
+    """
+    safe_limit = max(1, min(int(limit or 50), 200))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id,
+                       MAX(CASE plan_code
+                               WHEN 'support_cheesecake' THEN 2
+                               WHEN 'support_coffee' THEN 1
+                               ELSE 0 END) AS best_rank,
+                       MAX(created_at) AS last_at,
+                       (ARRAY_REMOVE(ARRAY_AGG(display_name ORDER BY created_at DESC), NULL))[1] AS display_name
+                FROM bt_3_sponsorships
+                GROUP BY user_id
+                ORDER BY best_rank DESC, last_at DESC
+                LIMIT %s;
+                """,
+                (safe_limit,),
+            )
+            rows = cursor.fetchall() or []
+    rank_to_tier = {2: "support_cheesecake", 1: "support_coffee"}
+    return [
+        {
+            "user_id": int(row[0]),
+            "tier": rank_to_tier.get(int(row[1] or 0), "support_coffee"),
+            "last_at": row[2].isoformat() if row[2] else None,
+            "display_name": str(row[3] or "").strip() or None,
+        }
+        for row in rows
+    ]
 
 
 def _subscription_row_to_dict(row) -> dict:
