@@ -30218,7 +30218,7 @@ function AppInner() {
     }
     return (
       <div
-        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
+        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
         data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
       >
         <pre id="app-perf-report" style={{ display: 'none' }} />
@@ -33005,6 +33005,8 @@ function AppInner() {
                             )}
                           </div>
 
+                          {/* Scrollable area: only the word list scrolls; everything above stays fixed */}
+                          <div className="vocab-scroll-area">
                           {/* Loading / Error */}
                           {vocabError && <div className="webapp-error" style={{ margin: '8px 16px' }}>{vocabError}</div>}
                           {vocabLoading && vocabItems.length === 0 && (
@@ -33168,6 +33170,7 @@ function AppInner() {
                                 {label}
                               </span>
                             ))}
+                          </div>
                           </div>
                         </div>
                       );

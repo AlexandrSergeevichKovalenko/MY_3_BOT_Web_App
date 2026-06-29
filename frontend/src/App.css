@@ -25293,3 +25293,80 @@ html[data-scheme="light"] .explain-line,
   padding-bottom:calc(92px + env(safe-area-inset-bottom, 0px));
 }
 .webapp-dictionary .vocab-legend{ margin-bottom:4px; }
+
+
+/* ================================================================
+   Словарь · «Библиотека» — фиксированная верхняя панель управления;
+   листается ТОЛЬКО список слов (.vocab-scroll-area).
+   Паттерн как у is-fsrs-study: высота прибита к --app-height и flex-fill
+   вниз по цепочке shell → main → video-dictionary → dictionary → library.
+   Активно только во вкладке «Библиотека» (класс is-vocab-library-fixed),
+   поэтому вкладка «Поиск» и другие экраны НЕ затрагиваются.
+   ================================================================ */
+.webapp-page.is-vocab-library-fixed{
+  height:var(--app-height, 100dvh);
+  max-height:var(--app-height, 100dvh);
+  min-height:0;
+  overflow:hidden;
+  align-items:stretch;            /* растянуть shell на всю высоту */
+}
+.webapp-page.is-vocab-library-fixed .webapp-shell{
+  display:flex; flex-direction:column;
+  height:auto; min-height:0; max-height:100%;
+  position:relative;             /* снять sticky/fit-content базы */
+  overflow:hidden;
+}
+.webapp-page.is-vocab-library-fixed .webapp-main{
+  display:flex; flex-direction:column;
+  flex:1 1 auto; min-height:0; overflow:hidden;
+}
+/* в main растёт только видео-словарь; прочие дети (топбар и т.п.) — по контенту */
+.webapp-page.is-vocab-library-fixed .webapp-main > *{ flex:0 0 auto; }
+.webapp-page.is-vocab-library-fixed .webapp-main > .webapp-video-dictionary{
+  display:flex; flex-direction:column;
+  flex:1 1 auto; min-height:0; overflow:hidden;
+}
+.webapp-page.is-vocab-library-fixed .webapp-video-dictionary > *{ flex:0 0 auto; }
+.webapp-page.is-vocab-library-fixed .webapp-video-dictionary .webapp-dictionary{
+  display:flex; flex-direction:column;
+  flex:1 1 auto; min-height:0; overflow:hidden;
+}
+/* в секции фиксированы заголовок + табы; растёт .vocab-library */
+.webapp-page.is-vocab-library-fixed .webapp-dictionary > *{ flex:0 0 auto; }
+.webapp-page.is-vocab-library-fixed .webapp-dictionary > .vocab-library{
+  flex:1 1 auto; min-height:0; overflow:hidden;
+}
+/* в library фиксированы все контролы; скроллится только .vocab-scroll-area */
+.webapp-page.is-vocab-library-fixed .vocab-library{
+  display:flex; flex-direction:column;
+  min-height:0; overflow:hidden;
+  padding-bottom:0;              /* запас под бывшую плавающую панель больше не нужен */
+}
+.webapp-page.is-vocab-library-fixed .vocab-library > *{ flex:0 0 auto; }
+.webapp-page.is-vocab-library-fixed .vocab-scroll-area{
+  order:0;
+  flex:1 1 auto; min-height:0;
+  overflow-y:auto; overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;
+  padding-bottom:10px;
+}
+
+/* Панель выбора поднимается в верхнюю фиксированную группу
+   (раньше была position:fixed внизу экрана) */
+.webapp-page.is-vocab-library-fixed .vocab-library > .vocab-selection-toolbar{
+  position:static; left:auto; transform:none; bottom:auto;
+  width:auto; max-width:none; margin:0;
+  order:-2;                      /* после папок, перед списком слов */
+  box-shadow:none;
+}
+.webapp-page.is-vocab-library-fixed .vocab-library > .vocab-selection-error{ order:-1; }
+
+/* Причёсанный, компактный верхний блок — меньше воздуха между элементами */
+.webapp-page.is-vocab-library-fixed .webapp-dictionary{ padding:12px 14px; gap:8px; }
+.webapp-page.is-vocab-library-fixed .webapp-local-section-head{ margin-bottom:0; }
+.webapp-page.is-vocab-library-fixed .webapp-local-section-head h3{ font-size:19px; }
+.webapp-page.is-vocab-library-fixed .vocab-tabs{ margin:0; }
+.webapp-page.is-vocab-library-fixed .vocab-library{ gap:7px; }
+.webapp-page.is-vocab-library-fixed .vocab-library > .vocab-search-wrap{ margin:0; }
+.webapp-page.is-vocab-library-fixed .vocab-library > .vocab-stats-bar{ margin:0; }
+.webapp-page.is-vocab-library-fixed .vocab-folder-section{ margin:0; }
