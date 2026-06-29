@@ -3457,6 +3457,43 @@ body {
   gap: 12px;
 }
 
+.billing-zone {
+  margin-top: 18px;
+}
+
+.billing-zone--support {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.billing-zone--support.is-secondary {
+  opacity: 0.82;
+}
+
+.billing-zone__head {
+  display: grid;
+  gap: 4px;
+}
+
+.billing-zone__title {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.billing-zone__hint {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.74);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.billing-zone--support .billing-support-grid {
+  margin-top: 12px;
+}
+
 .billing-info-accordion {
   margin-top: 14px;
   border: 1px solid rgba(93, 220, 255, 0.24);
@@ -21405,23 +21442,30 @@ body {
 }
 
 .webapp-dictionary .dictionary-result-actions .dictionary-share-button {
-  flex: 0 0 56px;
-  width: 56px;
+  flex: 0 0 auto;
   min-width: 56px;
   min-height: 56px;
-  padding: 0;
+  padding: 0 16px;
   border-radius: 16px;
   border: 1px solid var(--dict-border);
   background: transparent;
   color: var(--dict-text-title);
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 3px;
   box-shadow: none;
 }
 
 .webapp-dictionary .dictionary-result-actions .dictionary-share-button:hover {
   background: #1f2937;
+}
+
+.webapp-dictionary .dictionary-share-label {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .webapp-dictionary .dictionary-share-icon {

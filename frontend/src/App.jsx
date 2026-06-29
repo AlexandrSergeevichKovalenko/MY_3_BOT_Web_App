@@ -5319,10 +5319,7 @@ function AppInner() {
   const [collocationOptions, setCollocationOptions] = useState([]);
   const [selectedCollocations, setSelectedCollocations] = useState([]);
   const [flashcardExitSummary, setFlashcardExitSummary] = useState(false);
-  const [exportLoading, setExportLoading] = useState(false);
   const [dictionaryShareLoading, setDictionaryShareLoading] = useState(false);
-  const [dictionaryPdfUrl, setDictionaryPdfUrl] = useState('');
-  const [dictionaryPdfName, setDictionaryPdfName] = useState('dictionary.pdf');
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
   const [youtubeError, setYoutubeError] = useState('');
@@ -7422,18 +7419,21 @@ function AppInner() {
       priceLabelDe: '',
     },
     support_coffee: {
-      eyebrow: tr('Лёгкая поддержка', 'Leichte Unterstuetzung'),
-      title: tr('Поддержать разработчика: кофе ☕️', 'Entwickler unterstuetzen: Kaffee ☕️'),
-      blurb: '',
+      eyebrow: tr('Спасибо ☕️', 'Danke ☕️'),
+      title: tr('Купить разработчику кофе ☕️', 'Dem Entwickler einen Kaffee ☕️ spendieren'),
+      blurb: tr(
+        'Разовое спасибо. Доступ не меняется — это просто помогает оплачивать серверы. Ты получаешь бейдж спонсора и место на стене благодарностей.',
+        'Einmaliges Dankeschoen. Der Zugang aendert sich nicht — es hilft nur, die Server zu bezahlen. Du erhaeltst ein Sponsor-Abzeichen und einen Platz an der Dankeswand.'
+      ),
       priceLabel: '',
       priceLabelDe: '',
     },
     support_cheesecake: {
-      eyebrow: tr('Расширенная поддержка', 'Erweiterte Unterstuetzung'),
-      title: tr('Поддержать разработчика: кофе ☕️ и чизкейк 🍰', 'Entwickler unterstuetzen: Kaffee ☕️ und Cheesecake 🍰'),
+      eyebrow: tr('Спасибо ☕️🍰', 'Danke ☕️🍰'),
+      title: tr('Кофе ☕️ и чизкейк 🍰', 'Kaffee ☕️ und Cheesecake 🍰'),
       blurb: tr(
-        'Если хочешь поддержать проект сильнее, этот тариф помогает оплачивать развитие и инфраструктуру.',
-        'Wenn du das Projekt staerker unterstuetzen willst, hilft dieser Tarif bei Weiterentwicklung und Infrastruktur.'
+        'Разовое спасибо покрупнее. Тоже не меняет доступ — отличается только размером поддержки и более заметным бейджем спонсора на стене благодарностей.',
+        'Ein groesseres einmaliges Dankeschoen. Aendert ebenfalls nichts am Zugang — nur die Hoehe der Unterstuetzung und ein auffaelligeres Sponsor-Abzeichen an der Dankeswand.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -7503,12 +7503,24 @@ function AppInner() {
         items: paidCommon,
       },
       support_coffee: {
-        title: tr('Лимиты тарифа Coffee', 'Limits des Coffee-Tarifs'),
-        items: paidCommon,
+        title: tr('Кофе ☕️ — поддержка', 'Kaffee ☕️ — Unterstuetzung'),
+        items: [
+          tr('Это разовое спасибо, а не тариф доступа.', 'Das ist ein einmaliges Dankeschoen, kein Zugangstarif.'),
+          tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang aendert sich nicht (vollen Zugang gibt das Pro-Abo).'),
+          tr('Бейдж спонсора ☕️ рядом с твоим именем.', 'Sponsor-Abzeichen ☕️ neben deinem Namen.'),
+          tr('Место на стене благодарностей.', 'Ein Platz an der Dankeswand.'),
+          tr('Помогает оплачивать серверы и развитие.', 'Hilft, Server und Weiterentwicklung zu bezahlen.'),
+        ],
       },
       support_cheesecake: {
-        title: tr('Лимиты тарифа Cheesecake', 'Limits des Cheesecake-Tarifs'),
-        items: paidCommon,
+        title: tr('Кофе ☕️ и чизкейк 🍰 — поддержка', 'Kaffee ☕️ und Cheesecake 🍰 — Unterstuetzung'),
+        items: [
+          tr('Это разовое спасибо покрупнее, а не тариф доступа.', 'Das ist ein groesseres einmaliges Dankeschoen, kein Zugangstarif.'),
+          tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang aendert sich nicht (vollen Zugang gibt das Pro-Abo).'),
+          tr('Более заметный бейдж спонсора 🍰 рядом с твоим именем.', 'Auffaelligeres Sponsor-Abzeichen 🍰 neben deinem Namen.'),
+          tr('Выше место на стене благодарностей.', 'Hoeherer Platz an der Dankeswand.'),
+          tr('Сильнее помогает оплачивать серверы и развитие.', 'Hilft staerker, Server und Weiterentwicklung zu bezahlen.'),
+        ],
       },
     };
   }, [tr]);
@@ -7519,6 +7531,81 @@ function AppInner() {
       items: [tr('Лимиты для этого тарифа обновляются. Попробуйте позже.', 'Die Limits fuer diesen Tarif werden aktualisiert. Bitte spaeter erneut pruefen.')],
     };
   }, [billingPlanDetailsOpenFor, billingPlanLimitDetails, tr]);
+  // Витрина разнесена на две оси: «Доступ» (Free/Pro) и «Поддержать проект»
+  // (разовые донат-тарифы support_*). Сплит чисто по plan_code, бэкенд не нужен.
+  const billingAccessCards = useMemo(
+    () => billingPlanCards.filter((offer) => !String(offer.planCode || '').startsWith('support_')),
+    [billingPlanCards],
+  );
+  const billingSupportCards = useMemo(
+    () => billingPlanCards.filter((offer) => String(offer.planCode || '').startsWith('support_')),
+    [billingPlanCards],
+  );
+  // Общий рендер карточки тарифа для обеих зон (Доступ / Поддержать).
+  const renderBillingPlanCard = (offer) => {
+    const isSupportPlan = String(offer.planCode || '').startsWith('support_');
+    const hasBillingPlansCatalog = !billingPlansLoading
+      && !billingPlansError
+      && Array.isArray(billingPlans)
+      && billingPlans.length > 0;
+    const planMeta = Array.isArray(billingPlans)
+      ? billingPlans.find((plan) => String(plan?.plan_code || '').trim().toLowerCase() === offer.planCode)
+      : null;
+    const selectedPlanCode = String(billingStatus?.plan_code || '').trim().toLowerCase();
+    const selectedEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+    const selectedStatus = String(billingStatus?.status || '').trim().toLowerCase();
+    const hasActivePaidSubscription = selectedStatus === 'active' || selectedStatus === 'trialing';
+    // Донат-тарифы — разовые: «текущим планом» они быть не могут.
+    const isCurrentPlan = !isSupportPlan && hasActivePaidSubscription && (
+      selectedPlanCode === offer.planCode
+      || (selectedEffectiveMode === 'pro' && offer.planCode === 'pro')
+    );
+    const isPaidPlan = Boolean(planMeta?.is_paid);
+    const isInactivePlan = Boolean(planMeta && planMeta.is_active === false);
+    const canSelect = !isCurrentPlan && isPaidPlan && !isInactivePlan;
+    let buttonText = isSupportPlan
+      ? tr('Поддержать', 'Unterstuetzen')
+      : tr('Выбрать тариф', 'Tarif waehlen');
+    if (isCurrentPlan) {
+      buttonText = tr('Текущий тариф', 'Aktueller Tarif');
+    } else if (!isPaidPlan) {
+      buttonText = tr('Бесплатный план', 'Kostenloser Tarif');
+    } else if (billingActionLoading) {
+      buttonText = tr('Открываем...', 'Oeffnen...');
+    }
+    return (
+      <article className="billing-support-card" key={offer.planCode}>
+        <div className="billing-support-card__eyebrow">{offer.eyebrow}</div>
+        <div className="billing-support-card__title-row">
+          <h3>{offer.title}</h3>
+          <button
+            type="button"
+            className="billing-plan-info-button"
+            onClick={() => setBillingPlanDetailsOpenFor(offer.planCode)}
+            aria-label={isSupportPlan ? tr('Показать детали поддержки', 'Details zur Unterstuetzung anzeigen') : tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
+            title={isSupportPlan ? tr('Показать детали поддержки', 'Details zur Unterstuetzung anzeigen') : tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
+          >
+            i
+          </button>
+        </div>
+        {offer.blurb && <p className="billing-support-card__blurb">{offer.blurb}</p>}
+        {offer.priceLabel && <div className="billing-support-card__price">{offer.priceLabel}</div>}
+        <button
+          type="button"
+          className="secondary-button billing-support-card__button"
+          onClick={() => canSelect && handleBillingUpgrade(offer.planCode)}
+          disabled={billingActionLoading || !canSelect}
+        >
+          {buttonText}
+        </button>
+        {hasBillingPlansCatalog && isInactivePlan && (
+          <div className="webapp-muted">
+            {tr('Тариф временно неактивен.', 'Der Tarif ist voruebergehend inaktiv.')}
+          </div>
+        )}
+      </article>
+    );
+  };
   const normalizeNetworkErrorMessage = useCallback((error, fallbackRu, fallbackDe) => {
     const fallback = tr(fallbackRu, fallbackDe);
     const name = String(error?.name || '').trim().toLowerCase();
@@ -27702,47 +27789,6 @@ function AppInner() {
     );
   };
 
-  const handleExportDictionaryPdf = async () => {
-    if (!initData) {
-      setDictionaryError(initDataMissingMsg);
-      return;
-    }
-    setExportLoading(true);
-    setDictionaryError('');
-    try {
-      const response = await fetch('/api/webapp/dictionary/export/pdf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          folder_mode: dictionaryFolderId !== 'none' ? 'folder' : 'all',
-          folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      setDictionaryPdfUrl((prev) => {
-        if (prev) {
-          try {
-            window.URL.revokeObjectURL(prev);
-          } catch (_error) {
-            // ignore revoke errors
-          }
-        }
-        return url;
-      });
-      setDictionaryPdfName('dictionary.pdf');
-      setDictionarySaved(tr('PDF готов. Выберите: скачать или открыть.', 'PDF ist bereit. Waehle: herunterladen oder oeffnen.'));
-    } catch (error) {
-      setDictionaryError(`${tr('Ошибка выгрузки PDF', 'PDF-Exportfehler')}: ${error.message}`);
-    } finally {
-      setExportLoading(false);
-    }
-  };
-
   const handleShareDictionaryCard = async () => {
     if (!initData) {
       setDictionaryError(initDataMissingMsg);
@@ -27840,41 +27886,6 @@ function AppInner() {
     }
   };
 
-  const handleCloseDictionaryPdf = useCallback(() => {
-    setDictionaryPdfUrl((prev) => {
-      if (prev) {
-        try {
-          window.URL.revokeObjectURL(prev);
-        } catch (_error) {
-          // ignore revoke errors
-        }
-      }
-      return '';
-    });
-    setDictionaryPdfName('dictionary.pdf');
-  }, []);
-
-  const handleOpenDictionaryPdf = useCallback(() => {
-    if (!dictionaryPdfUrl) return;
-    const opened = window.open(dictionaryPdfUrl, '_blank', 'noopener,noreferrer');
-    if (opened) return;
-    const link = document.createElement('a');
-    link.href = dictionaryPdfUrl;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  }, [dictionaryPdfUrl]);
-
-  useEffect(() => () => {
-    if (!dictionaryPdfUrl) return;
-    try {
-      window.URL.revokeObjectURL(dictionaryPdfUrl);
-    } catch (_error) {
-      // ignore revoke errors
-    }
-  }, [dictionaryPdfUrl]);
 
   const selectedDictionaryFolder = folders.find(
     (folder) => String(folder.id) === dictionaryFolderId
@@ -33170,45 +33181,7 @@ function AppInner() {
                         >
                           {tr('Новая папка', 'Neuer Ordner')}
                         </button>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={handleExportDictionaryPdf}
-                          disabled={exportLoading}
-                        >
-                          {exportLoading ? tr('Готовим PDF...', 'PDF wird erstellt...') : tr('Выгрузить PDF', 'PDF exportieren')}
-                        </button>
                       </div>
-                      {dictionaryPdfUrl && (
-                        <div className="dictionary-pdf-panel">
-                          <div className="dictionary-pdf-title">
-                            {tr('PDF готов', 'PDF ist bereit')}
-                          </div>
-                          <div className="dictionary-pdf-actions">
-                            <a
-                              href={dictionaryPdfUrl}
-                              download={dictionaryPdfName || 'dictionary.pdf'}
-                              className="secondary-button"
-                            >
-                              {tr('Скачать PDF', 'PDF herunterladen')}
-                            </a>
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={handleOpenDictionaryPdf}
-                            >
-                              {tr('Открыть PDF', 'PDF oeffnen')}
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={handleCloseDictionaryPdf}
-                            >
-                              {tr('← Назад', '← Zurueck')}
-                            </button>
-                          </div>
-                        </div>
-                      )}
                       {showNewFolderForm && (
                         <div className="folder-create">
                           <label className="webapp-field">
@@ -33598,8 +33571,8 @@ function AppInner() {
                             type="button"
                             onClick={handleShareDictionaryCard}
                             disabled={dictionaryLoading || dictionaryShareLoading || !dictionaryResult}
-                            aria-label={tr('Поделиться карточкой', 'Karte teilen')}
-                            title={tr('Поделиться карточкой', 'Karte teilen')}
+                            aria-label={tr('Экспорт PDF — поделиться карточкой', 'PDF-Export — Karte teilen')}
+                            title={tr('Экспорт PDF — поделиться карточкой', 'PDF-Export — Karte teilen')}
                           >
                             {dictionaryShareLoading ? (
                               <span className="tts-mini-spinner" aria-hidden="true" />
@@ -33615,6 +33588,7 @@ function AppInner() {
                                 />
                               </svg>
                             )}
+                            <span className="dictionary-share-label">{tr('PDF', 'PDF')}</span>
                           </button>
                         </div>
                       </div>
@@ -36694,78 +36668,43 @@ function AppInner() {
                         </ul>
                       </article>
                       <article className="billing-policy-card">
-                        <h4>{tr('Pro / Coffee / Cheesecake', 'Pro / Coffee / Cheesecake')}</h4>
+                        <h4>{tr('Pro — полный доступ', 'Pro — voller Zugang')}</h4>
                         <ul>
                           <li>{tr('Переводы, читалка, карточки, «почувствуй слово»: безлимитно.', 'Uebersetzungen, Reader, Karteikarten, „Wort fuehlen“: unbegrenzt.')}</li>
                           <li>{tr('Аудио из читалки: до 10 страниц за 7 дней.', 'Audio aus Reader: bis zu 10 Seiten in 7 Tagen.')}</li>
                           <li>{tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.')}</li>
                           <li>{tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.')}</li>
-                          <li>{tr('Только для тарифа Pro: можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Nur im Tarif Pro: Individuelle Anpassung/Training kann besprochen werden (sofern technisch moeglich).')}</li>
+                          <li>{tr('Можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Individuelle Anpassung/Training kann besprochen werden (sofern technisch moeglich).')}</li>
                         </ul>
                       </article>
                     </div>
-                    <div className="billing-support-grid">
-                      {billingPlanCards.map((offer) => {
-                        const hasBillingPlansCatalog = !billingPlansLoading
-                          && !billingPlansError
-                          && Array.isArray(billingPlans)
-                          && billingPlans.length > 0;
-                        const planMeta = Array.isArray(billingPlans)
-                          ? billingPlans.find((plan) => String(plan?.plan_code || '').trim().toLowerCase() === offer.planCode)
-                          : null;
-                        const selectedPlanCode = String(billingStatus?.plan_code || '').trim().toLowerCase();
-                        const selectedEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
-                        const selectedStatus = String(billingStatus?.status || '').trim().toLowerCase();
-                        const hasActivePaidSubscription = selectedStatus === 'active' || selectedStatus === 'trialing';
-                        const isCurrentPlan = hasActivePaidSubscription && (
-                          selectedPlanCode === offer.planCode
-                          || (selectedEffectiveMode === 'pro' && offer.planCode === 'pro')
-                        );
-                        const isPaidPlan = Boolean(planMeta?.is_paid);
-                        const isInactivePlan = Boolean(planMeta && planMeta.is_active === false);
-                        const canSelect = !isCurrentPlan && isPaidPlan && !isInactivePlan;
-                        let buttonText = tr('Выбрать тариф', 'Tarif waehlen');
-                        if (isCurrentPlan) {
-                          buttonText = tr('Текущий тариф', 'Aktueller Tarif');
-                        } else if (!isPaidPlan) {
-                          buttonText = tr('Бесплатный план', 'Kostenloser Tarif');
-                        } else if (billingActionLoading) {
-                          buttonText = tr('Открываем...', 'Oeffnen...');
-                        }
-                        return (
-                          <article className="billing-support-card" key={offer.planCode}>
-                            <div className="billing-support-card__eyebrow">{offer.eyebrow}</div>
-                            <div className="billing-support-card__title-row">
-                              <h3>{offer.title}</h3>
-                              <button
-                                type="button"
-                                className="billing-plan-info-button"
-                                onClick={() => setBillingPlanDetailsOpenFor(offer.planCode)}
-                                aria-label={tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
-                                title={tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
-                              >
-                                i
-                              </button>
-                            </div>
-                            {offer.blurb && <p className="billing-support-card__blurb">{offer.blurb}</p>}
-                            {offer.priceLabel && <div className="billing-support-card__price">{offer.priceLabel}</div>}
-                            <button
-                              type="button"
-                              className="secondary-button billing-support-card__button"
-                              onClick={() => canSelect && handleBillingUpgrade(offer.planCode)}
-                              disabled={billingActionLoading || !canSelect}
-                            >
-                              {buttonText}
-                            </button>
-                            {hasBillingPlansCatalog && isInactivePlan && (
-                              <div className="webapp-muted">
-                                {tr('Тариф временно неактивен.', 'Der Tarif ist voruebergehend inaktiv.')}
-                              </div>
-                            )}
-                          </article>
-                        );
-                      })}
-                    </div>
+                    {billingAccessCards.length > 0 && (
+                      <div className="billing-zone billing-zone--access">
+                        <div className="billing-zone__head">
+                          <h3 className="billing-zone__title">{tr('Доступ', 'Zugang')}</h3>
+                          <p className="billing-zone__hint">{tr('Выбери уровень доступа к функциям.', 'Waehle dein Zugangslevel zu den Funktionen.')}</p>
+                        </div>
+                        <div className="billing-support-grid">
+                          {billingAccessCards.map((offer) => renderBillingPlanCard(offer))}
+                        </div>
+                      </div>
+                    )}
+
+                    {billingSupportCards.length > 0 && (
+                      <div className={`billing-zone billing-zone--support${readerAudioPremiumEnabled ? '' : ' is-secondary'}`}>
+                        <div className="billing-zone__head">
+                          <h3 className="billing-zone__title">{tr('Поддержать проект ❤️', 'Projekt unterstuetzen ❤️')}</h3>
+                          <p className="billing-zone__hint">
+                            {readerAudioPremiumEnabled
+                              ? tr('У тебя уже есть полный доступ. Это — способ сказать спасибо и помочь оплачивать серверы и развитие. Разовый платёж, доступ не меняется.', 'Du hast bereits vollen Zugang. Das ist eine Moeglichkeit, Danke zu sagen und Server und Weiterentwicklung mitzufinanzieren. Einmalige Zahlung, der Zugang aendert sich nicht.')
+                              : tr('Это необязательно: полный доступ открывает подписка Pro выше. А здесь — просто способ поблагодарить проект разовым платежом (доступ не меняется).', 'Optional: vollen Zugang gibt das Pro-Abo oben. Hier kannst du dich einfach mit einer einmaligen Zahlung bedanken (der Zugang aendert sich nicht).')}
+                          </p>
+                        </div>
+                        <div className="billing-support-grid">
+                          {billingSupportCards.map((offer) => renderBillingPlanCard(offer))}
+                        </div>
+                      </div>
+                    )}
                     {activeBillingPlanDetails && (
                       <div
                         role="presentation"

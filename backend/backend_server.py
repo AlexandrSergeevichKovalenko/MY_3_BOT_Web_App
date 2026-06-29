@@ -446,6 +446,9 @@ from backend.database import (
     get_global_billing_summary,
     list_billing_plans,
     get_billing_plan,
+    record_sponsorship,
+    is_user_sponsor,
+    list_recent_sponsors,
     get_or_create_user_subscription,
     get_user_subscription,
     list_pro_subscriber_user_ids,
@@ -847,6 +850,9 @@ WEBAPP_INSTANCE_LEASE_TTL_SECONDS = max(15, int(os.getenv("WEBAPP_INSTANCE_LEASE
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 SRS_DUE_PER_DAY = int(os.getenv("SRS_DUE_PER_DAY", "30"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+# Mirror the bot-side referral knobs so the shared PDF card promises match reality.
+REFERRAL_REWARD_DAYS = max(1, int((os.getenv("REFERRAL_REWARD_DAYS") or "7").strip() or "7"))
+REFERRAL_STREAK_TRIGGER = max(1, int((os.getenv("REFERRAL_STREAK_TRIGGER") or "3").strip() or "3"))
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
 SUPPORT_MESSAGE_MAX_LEN = int((os.getenv("SUPPORT_MESSAGE_MAX_LEN") or "2000").strip() or "2000")
@@ -27754,11 +27760,17 @@ def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]
         or str(subscription.get("stripe_subscription_id") or "").strip()
         or is_paid_active
     )
+    try:
+        sponsor_flag, sponsor_tier = is_user_sponsor(int(user_id))
+    except Exception:
+        sponsor_flag, sponsor_tier = (False, None)
     response_payload = {
         "plan_code": plan_code,
         "plan_name": plan_name,
         "status": status_value,
         "effective_mode": effective_mode,
+        "is_sponsor": bool(sponsor_flag),
+        "sponsor_tier": sponsor_tier,
         "trial_ends_at": entitlement.get("trial_ends_at"),
         "current_period_end": subscription.get("current_period_end"),
         "spent_today_eur": float(round(spent_today, 6)),
@@ -29077,6 +29089,7 @@ def get_billing_plans():
                             "plan_code": str(item.get("plan_code") or ""),
                             "name": str(item.get("name") or ""),
                             "is_paid": is_paid,
+                            "billing_type": str(item.get("billing_type") or "recurring"),
                             "daily_cost_cap_eur": item.get("daily_cost_cap_eur"),
                             "stripe_price_id": stripe_price_id,
                             "is_active": bool(item.get("is_active")),
@@ -29266,6 +29279,54 @@ def create_billing_checkout_session():
             plan_started_at = time.perf_counter()
             resolved_plan_code, stripe_price_id = _resolve_billing_plan_checkout_config(requested_plan)
             resolve_plan_duration_ms = int((time.perf_counter() - plan_started_at) * 1000)
+
+            # Донат-тарифы (billing_type=one_time) — разовое «спасибо»: mode=payment,
+            # доступ не выдаём и subscription-логику (switch/already-active) пропускаем.
+            plan_cfg = get_billing_plan(resolved_plan_code) or {}
+            if str(plan_cfg.get("billing_type") or "recurring").strip().lower() == "one_time":
+                stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
+                metadata = {"user_id": str(int(user_id)), "plan_code": resolved_plan_code, "support": "1"}
+                support_display_name = str(username or "").strip()
+                if support_display_name:
+                    # Имя для стены благодарностей фиксируем в момент оплаты.
+                    metadata["display_name"] = support_display_name[:128]
+                stripe_session_started_at = time.perf_counter()
+                session = stripe.checkout.Session.create(
+                    mode="payment",
+                    customer=stripe_customer_id,
+                    client_reference_id=str(int(user_id)),
+                    metadata=metadata,
+                    payment_intent_data={"metadata": dict(metadata)},
+                    line_items=[{"price": stripe_price_id, "quantity": 1}],
+                    success_url=_build_billing_telegram_return_url("success", include_session_id=True),
+                    cancel_url=_build_billing_telegram_return_url("cancel"),
+                )
+                stripe_session_duration_ms = int((time.perf_counter() - stripe_session_started_at) * 1000)
+                checkout_url = str(getattr(session, "url", "") or "")
+                if not checkout_url:
+                    _log_flow_observation("billing_checkout", "checkout_completed", request_id=request_id, correlation_id=correlation_id, user_id=int(user_id), requested_plan=requested_plan, resolved_plan_code=resolved_plan_code, final_status="error", error_code="missing_checkout_url", duration_ms=_elapsed_ms_since(started_perf), http_status=500, **summarize_db_acquire_events(db_acquire_events))
+                    return jsonify({"error": "Stripe checkout session URL отсутствует"}), 500
+                response_payload = {"url": checkout_url, "state": "one_time_support", "plan_code": resolved_plan_code}
+                _log_flow_observation(
+                    "billing_checkout",
+                    "checkout_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=int(user_id),
+                    requested_plan=requested_plan,
+                    resolved_plan_code=resolved_plan_code,
+                    checkout_state="one_time_support",
+                    auth_duration_ms=auth_duration_ms,
+                    resolve_plan_duration_ms=resolve_plan_duration_ms,
+                    stripe_session_duration_ms=stripe_session_duration_ms,
+                    response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    final_status="success",
+                    http_status=200,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify(response_payload), 200
+
             subscription_row = get_user_subscription(int(user_id)) or {}
             current_plan_code = str(subscription_row.get("plan_code") or "").strip().lower()
             current_status = str(subscription_row.get("status") or "").strip().lower()
@@ -29651,6 +29712,25 @@ def stripe_billing_webhook():
                 if user_id is None:
                     logging.warning("checkout.session.completed user_id unresolved event_id=%s", event_id)
                     return jsonify({"ok": True, "ignored": "user_not_resolved"}), 200
+
+                # Разовый донат (mode=payment) не создаёт подписку: фиксируем «спасибо»
+                # в bt_3_sponsorships и НЕ трогаем user_subscriptions (доступ не меняется).
+                session_mode = str(_stripe_object_value(data_object, "mode", "") or "").strip().lower()
+                if session_mode == "payment":
+                    try:
+                        amount_total_minor = int(_stripe_object_value(data_object, "amount_total") or 0) or None
+                    except Exception:
+                        amount_total_minor = None
+                    record_sponsorship(
+                        int(user_id),
+                        plan_code,
+                        amount_minor=amount_total_minor,
+                        currency=str(_stripe_object_value(data_object, "currency", "") or "") or None,
+                        display_name=str(_stripe_object_value(metadata, "display_name", "") or "") or None,
+                        stripe_checkout_session_id=str(_stripe_object_value(data_object, "id", "") or "") or None,
+                    )
+                    _invalidate_billing_front_caches_for_user(int(user_id))
+                    return jsonify({"ok": True, "support": True}), 200
 
                 subscription_obj = {}
                 if stripe_subscription_id:
@@ -36831,12 +36911,16 @@ def _build_dictionary_card_pdf(
     item: dict[str, Any],
     source_lang: str,
     target_lang: str,
+    referral_link: str = "",
 ) -> tuple[BytesIO, str]:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.pdfgen import canvas
+    from reportlab.graphics import renderPDF
+    from reportlab.graphics.barcode import qr
+    from reportlab.graphics.shapes import Drawing
 
     payload = item if isinstance(item, dict) else {}
     response_json = payload.get("response_json")
@@ -37070,241 +37154,59 @@ def _build_dictionary_card_pdf(
                 cursor_y -= 13
             cursor_y -= 4
 
+    # Gentle "powered by the bot" + referral footer, below the word card.
+    referral_link = str(referral_link or "").strip()
+    if referral_link:
+        link_display = re.sub(r"^https?://", "", referral_link)
+        qr_size = 66
+        qr_x = width - margin_x - qr_size
+        qr_y = 18
+        try:
+            widget = qr.QrCodeWidget(referral_link)
+            bounds = widget.getBounds()
+            qr_w = (bounds[2] - bounds[0]) or 1
+            qr_h = (bounds[3] - bounds[1]) or 1
+            drawing = Drawing(qr_size, qr_size, transform=[qr_size / qr_w, 0, 0, qr_size / qr_h, 0, 0])
+            drawing.add(widget)
+            renderPDF.draw(drawing, pdf, qr_x, qr_y)
+            text_right = qr_x - 14
+        except Exception:
+            logging.warning("Dictionary card QR render failed", exc_info=True)
+            text_right = width - margin_x
+
+        text_width_chars = max(24, int((text_right - margin_x) / 5.1))
+        footer_x = margin_x
+        footer_y = 78
+        pdf.setFillColorRGB(0.18, 0.20, 0.26)
+        pdf.setFont(font_bold, 10.5)
+        for line in _wrap_text("Нравится разбор? Его собрал бот-репетитор по немецкому.", text_width_chars)[:2]:
+            pdf.drawString(footer_x, footer_y, line)
+            footer_y -= 13
+
+        pdf.setFillColorRGB(0.34, 0.37, 0.44)
+        pdf.setFont(font_name, 9)
+        body_text = (
+            "Детальные разборы каждого слова, тренировки и интерактивные задания каждый день. "
+            f"Перейди по ссылке и позанимайся {REFERRAL_STREAK_TRIGGER} дня — "
+            f"тебе и другу по +{REFERRAL_REWARD_DAYS} дней Pro."
+        )
+        for line in _wrap_text(body_text, text_width_chars)[:3]:
+            pdf.drawString(footer_x, footer_y, line)
+            footer_y -= 11
+
+        footer_y -= 2
+        pdf.setFillColorRGB(0.12, 0.25, 0.65)
+        pdf.setFont(font_bold, 9.5)
+        for line in _wrap_text(link_display, text_width_chars)[:2]:
+            pdf.drawString(footer_x, footer_y, line)
+            footer_y -= 12
+
     pdf.setFillColor(colors.black)
     pdf.save()
     buffer.seek(0)
 
     filename_stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(target_headline or source_value or "dictionary_card")).strip("_") or "dictionary_card"
     return buffer, f"{filename_stem[:48]}.pdf"
-
-
-@app.route("/api/webapp/dictionary/export/pdf", methods=["POST"])
-def export_webapp_dictionary_pdf():
-    payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
-    folder_mode = payload.get("folder_mode", "all")
-    folder_id = payload.get("folder_id")
-
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
-
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-
-    try:
-        items = get_webapp_dictionary_entries(
-            user_id=user_id,
-            limit=500,
-            folder_mode=folder_mode,
-            folder_id=int(folder_id) if folder_id is not None else None,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка получения словаря: {exc}"}), 500
-
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.lib import colors
-
-        buffer = BytesIO()
-        pdf = canvas.Canvas(buffer, pagesize=A4)
-        # Keep Unicode-safe fallback for both regular and emphasized text.
-        font_name = "Helvetica"
-        font_bold = "Helvetica-Bold"
-        font_paths = [
-            os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans.ttf"),
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ]
-        font_bold_paths = [
-            os.path.join(os.path.dirname(__file__), "assets", "fonts", "DejaVuSans-Bold.ttf"),
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        ]
-        for fp in font_paths:
-            if not os.path.exists(fp):
-                continue
-            try:
-                pdfmetrics.registerFont(TTFont("DejaVuSans", fp))
-                font_name = "DejaVuSans"
-                break
-            except Exception:
-                continue
-        for fp in font_bold_paths:
-            if not os.path.exists(fp):
-                continue
-            try:
-                pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", fp))
-                font_bold = "DejaVuSans-Bold"
-                break
-            except Exception:
-                continue
-        if font_bold == "Helvetica-Bold" and font_name != "Helvetica":
-            font_bold = font_name
-
-        width, height = A4
-        x = 40
-        card_width = width - (2 * x)
-        y = height - 40
-        line_height = 14
-        title_size = 16
-        target_word_size = 18
-        source_word_size = max(target_word_size - 2, 10)
-        normal_size = 10.5
-        meta_size = 9.5
-        card_padding_x = 14
-        card_padding_y = 12
-
-        def _lang_label(code: str) -> str:
-            normalized = _normalize_short_lang_code(code, fallback="")
-            return normalized.upper() or "?"
-
-        pdf.setFont(font_name, title_size)
-        title = "Словарь"
-        pdf.drawString(x, y, title)
-        y -= 2 * line_height
-
-        pdf.setFont(font_name, normal_size)
-        if not items:
-            pdf.setFillColorRGB(0.38, 0.41, 0.47)
-            pdf.drawString(x, y, "Словарь пуст.")
-            pdf.setFillColor(colors.black)
-        for item in items:
-            response_json = item.get("response_json")
-            if isinstance(response_json, str):
-                try:
-                    response_json = json.loads(response_json)
-                except Exception:
-                    response_json = {}
-            if not isinstance(response_json, dict):
-                response_json = {}
-            item_source_lang = _normalize_short_lang_code(
-                item.get("source_lang") or response_json.get("source_lang"),
-                fallback=source_lang,
-            )
-            item_target_lang = _normalize_short_lang_code(
-                item.get("target_lang") or response_json.get("target_lang"),
-                fallback=target_lang,
-            )
-            source_text, target_text, word_ru, word_de, translation_de, translation_ru = _align_dictionary_legacy_ru_de_columns(
-                source_lang=item_source_lang,
-                target_lang=item_target_lang,
-                source_text=str(response_json.get("source_text") or ""),
-                target_text=str(response_json.get("target_text") or ""),
-                word_ru=str(item.get("word_ru") or response_json.get("word_ru") or ""),
-                word_de=str(item.get("word_de") or response_json.get("word_de") or ""),
-                translation_de=str(item.get("translation_de") or response_json.get("translation_de") or ""),
-                translation_ru=str(item.get("translation_ru") or response_json.get("translation_ru") or ""),
-            )
-            headline_word = target_text or word_de or translation_de or word_ru or translation_ru or "—"
-            source_word = source_text or word_ru or translation_ru or word_de or translation_de or "—"
-            created_at = str(item.get("created_at") or "").strip()
-            created_at_date = ""
-            if created_at:
-                created_at_date = created_at.replace("T", " ").split(" ", 1)[0].strip()
-            source_is_ru = item_source_lang == "ru"
-            source_line_height = 18 if source_is_ru else 12
-            examples = response_json.get("usage_examples") or []
-            if isinstance(examples, str):
-                examples = [examples]
-            meaning_lines = _build_dictionary_meaning_lines(response_json, limit=3)
-            headline_lines = _wrap_text(str(headline_word), 38) or ["—"]
-            source_lines = _wrap_text(f"{_lang_label(item_source_lang)}: {source_word}", 62) or ["—"]
-            example_lines = []
-            for example in examples[:3]:
-                wrapped_example = _wrap_text(str(example), 78)
-                if not wrapped_example:
-                    continue
-                example_lines.append(f"- {wrapped_example[0]}")
-                example_lines.extend([f"  {line}" for line in wrapped_example[1:]])
-            body_lines = [f"Дата: {created_at_date}"] if created_at_date else []
-            if meaning_lines:
-                body_lines.append("Значения:")
-                for meaning in meaning_lines:
-                    wrapped_meaning = _wrap_text(str(meaning), 78)
-                    if not wrapped_meaning:
-                        continue
-                    body_lines.append(wrapped_meaning[0])
-                    body_lines.extend([f"  {line}" for line in wrapped_meaning[1:]])
-            if example_lines:
-                body_lines.append("Примеры:")
-                body_lines.extend(example_lines)
-
-            estimated_height = (
-                (card_padding_y * 2)
-                + 16
-                + (len(headline_lines) * 21)
-                + 8
-                + (len(source_lines) * source_line_height)
-                + 8
-                + (len(body_lines) * 12)
-            )
-
-            if y - estimated_height < 45:
-                pdf.showPage()
-                pdf.setFont(font_name, normal_size)
-                pdf.setFillColor(colors.black)
-                y = height - 40
-
-            card_top = y
-            card_bottom = y - estimated_height
-            pdf.setFillColorRGB(0.985, 0.979, 0.955)
-            pdf.setStrokeColorRGB(0.84, 0.81, 0.74)
-            pdf.roundRect(x, card_bottom, card_width, estimated_height, 12, stroke=1, fill=1)
-
-            text_x = x + card_padding_x
-            text_y = card_top - card_padding_y
-
-            pdf.setFillColorRGB(0.42, 0.35, 0.21)
-            pdf.setFont(font_bold, meta_size)
-            pdf.drawString(text_x, text_y, _lang_label(item_target_lang))
-            text_y -= 16
-
-            pdf.setFillColorRGB(0.12, 0.25, 0.65)
-            pdf.setFont(font_bold, target_word_size)
-            for line in headline_lines:
-                pdf.drawString(text_x, text_y, str(line))
-                text_y -= 21
-
-            text_y -= 2
-            pdf.setFillColorRGB(0.30, 0.32, 0.37)
-            source_font_name = font_bold if source_is_ru else font_name
-            pdf.setFont(source_font_name, source_word_size)
-            for line in source_lines:
-                pdf.drawString(text_x, text_y, str(line))
-                text_y -= source_line_height
-
-            text_y -= 4
-            pdf.setFillColor(colors.black)
-            pdf.setFont(font_name, normal_size)
-            for line in body_lines:
-                pdf.drawString(text_x, text_y, str(line))
-                text_y -= 12
-
-            y = card_bottom - 12
-
-        pdf.save()
-        buffer.seek(0)
-        return send_file(
-            buffer,
-            as_attachment=True,
-            download_name="dictionary.pdf",
-            mimetype="application/pdf",
-        )
-    except Exception as exc:
-        logging.exception("Dictionary PDF export failed: user_id=%s folder_mode=%s folder_id=%s", user_id, folder_mode, folder_id)
-        return jsonify({"error": f"Ошибка генерации PDF: {exc}"}), 500
 
 
 @app.route("/api/webapp/dictionary/export/card-pdf", methods=["POST"])
@@ -37328,11 +37230,16 @@ def export_webapp_dictionary_card_pdf():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
+    referral_link = ""
+    if TELEGRAM_BOT_USERNAME:
+        referral_link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start=ref_{int(user_id)}"
+
     try:
         buffer, download_name = _build_dictionary_card_pdf(
             item=item,
             source_lang=source_lang,
             target_lang=target_lang,
+            referral_link=referral_link,
         )
         return send_file(
             buffer,

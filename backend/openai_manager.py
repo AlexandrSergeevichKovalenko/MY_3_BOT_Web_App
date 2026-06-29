@@ -99,6 +99,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "check_synonym",
     "check_synonym_batch",
     "check_satzbau",
+    "check_cloze",
     "check_wortgruppe_batch",
     "word_order_distractors",
     "image_quiz_sentence_fallback",
@@ -3157,9 +3158,14 @@ festem Kasus, Verben mit Präposition (sich verlassen ___ ), Konjunktiv II, Rela
 Partikeln, oder feste Kollokationen/Wendungen. KEINE trivialen A1-A2-Wörter.
 
 Regeln:
-- Es muss GENAU EINE eindeutig richtige Lösung geben (open cloze: keine Auswahloptionen).
+- Bevorzuge eine Lücke mit GENAU EINER besten Lösung (open cloze: keine Auswahloptionen).
 - "correct" ist das eine fehlende Wort (oder die kurze feste Wortgruppe), exakt so, wie es in die Lücke gehört.
-- "aliases": zulässige gleichwertige Schreibweisen/Varianten (z. B. Groß-/Kleinschreibung-neutral wird separat behandelt; hier nur echte Synonyme/Varianten, sonst leere Liste).
+- "aliases": Liste hier JEDES andere Wort, das in GENAU DIESEM Satz EBENFALLS voll
+  korrekt und natürlich ist (echte gleichwertige Lösung mit gleicher Bedeutung/gleichem
+  Kasus, z. B. kausal "weil" → ["da"]), PLUS zulässige Schreibvarianten. Groß-/Kleinschreibung
+  und ß↔ss werden separat behandelt, dafür keine Einträge nötig. Wenn es wirklich nur eine
+  einzige korrekte Lösung gibt, leere Liste. Lieber eine eindeutige Lücke bauen, als mehrere
+  gleichwertige Lösungen zuzulassen — aber wenn doch mehrere passen, MÜSSEN alle in "aliases".
 - "erklaerung": klare, „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze), WARUM diese
   Lösung korrekt ist — benenne die Regel, zeig den Mechanismus, nenne ggf. die typische
   Falle/Ausnahme. Verständlich und konkret, nicht trocken.
@@ -3561,6 +3567,22 @@ meaning changes.
 Return STRICT JSON ONLY:
 - if `user` is a valid correct ordering: {"match": true}
 - if NOT: {"match": false, "reason_ru": "<кратко по-русски, ≤90 знаков: что не так с порядком слов, например: 'спрягаемый глагол должен стоять на 2-м месте'>"}
+""",
+"check_cloze": """
+You grade a German open-cloze ("Lückentext") exercise at B2+. A sentence has EXACTLY ONE gap
+marked "_____". One canonical answer is given; the learner typed their own word/short phrase.
+Input JSON: {"satz": "<sentence with _____>", "correct": "<canonical answer>", "user": "<learner answer>"}.
+Decide whether `user` is ALSO a fully correct fill for THIS gap. It is correct ONLY if ALL hold:
+(a) put into the gap, the sentence is grammatically correct and natural German;
+(b) it keeps the SAME intended meaning/relation as `correct` (e.g. both express cause, concession, etc.);
+(c) it fits the required case/form and any fixed government of the surrounding words.
+Be fair about genuine equivalents that German allows in this exact slot — e.g. causal "weil" ≡ "da",
+or two prepositions that both take the correct case and meaning. Ignore capitalization and ß↔ss
+differences. REJECT if it is ungrammatical here, changes the meaning, has the wrong case/form, or is
+merely topically related. Judge ONLY this sentence, not general usage.
+Return STRICT JSON ONLY:
+- if `user` is also correct here: {"match": true}
+- if NOT: {"match": false, "reason_ru": "<кратко по-русски, ≤90 знаков: почему не подходит именно здесь, например: 'denn — сочинительный союз, после него прямой порядок слов'>"}
 """,
 "article_noun_gen": """
 You are a German lexicographer building data for an article (der/die/das) drill.
@@ -6514,6 +6536,26 @@ async def run_check_satzbau(*, reference: str, user: str) -> dict:
         system_instruction_key="check_satzbau",
         user_message=json.dumps(
             {"reference": str(reference), "user": str(user)}, ensure_ascii=False
+        ),
+        poll_interval_seconds=1.0,
+        responses_timeout_seconds=6.0,
+    )
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"match": False}
+
+
+async def run_check_cloze(*, satz: str, correct: str, user: str) -> dict:
+    """Bounded yes/no LLM check for an open-cloze (Lückentext) miss: is `user` ALSO a
+    fully correct fill for the gap in `satz` (grammatical + same meaning/case as `correct`)?
+    Only called as a fallback when the deterministic accepted-list misses, so a genuine
+    equivalent (e.g. causal weil ≡ da) isn't failed just because it wasn't the canonical key."""
+    content = await llm_execute(
+        task_name="check_cloze",
+        system_instruction_key="check_cloze",
+        user_message=json.dumps(
+            {"satz": str(satz), "correct": str(correct), "user": str(user)}, ensure_ascii=False
         ),
         poll_interval_seconds=1.0,
         responses_timeout_seconds=6.0,

@@ -1531,6 +1531,28 @@ def _satzbau_judge_full(reference: str, user: str) -> dict:
         return {"match": False, "reason_ru": ""}
 
 
+def _cloze_judge_full(satz: str, correct: str, user: str) -> dict:
+    """Bounded LLM judge for an open-cloze (Lückentext) miss: {'match': bool, 'reason_ru': str}.
+    A gap often admits more than the one canonical key (e.g. causal weil ≡ da), and the pool's
+    `aliases` rarely lists them all — so on an exact-match miss we ask ONE judge whether the
+    typed word is ALSO correct in THIS sentence. reason_ru explains a genuine miss to the learner."""
+    s, c, u = str(satz or "").strip(), str(correct or "").strip(), str(user or "").strip()
+    if not s or not c or not u or len(u) > 60 or len(u.split()) > 4:
+        return {"match": False, "reason_ru": ""}
+    try:
+        import asyncio
+        from backend.openai_manager import run_check_cloze
+        res = asyncio.run(asyncio.wait_for(
+            run_check_cloze(satz=s, correct=c, user=u), timeout=7.0,
+        ))
+        return {
+            "match": bool((res or {}).get("match")),
+            "reason_ru": str((res or {}).get("reason_ru") or "").strip(),
+        }
+    except Exception:
+        return {"match": False, "reason_ru": ""}
+
+
 def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     answer = str(raw_input or "").strip()
     if not answer:
@@ -1648,6 +1670,20 @@ def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict 
             accepted = payload.get("accepted") or []
             reference = str(payload.get("satz") or (accepted[0] if accepted else ""))
             judged = _satzbau_judge_full(reference, answer)
+            is_correct = bool(judged.get("match"))
+            if not is_correct:
+                wrong_reason = str(judged.get("reason_ru") or "")
+    elif fmt == "cloze":
+        # Exact-match against correct + aliases first (hot path). On a miss, one bounded
+        # LLM judge decides if the typed word is ALSO valid in THIS gap — an open cloze
+        # often admits genuine equivalents (causal weil ≡ da) the pool's key doesn't list.
+        is_correct = _check_aufgabe(fmt, payload, raw_input)
+        if not is_correct and answer:
+            judged = _cloze_judge_full(
+                str(payload.get("satz") or ""),
+                str(payload.get("correct") or ""),
+                answer,
+            )
             is_correct = bool(judged.get("match"))
             if not is_correct:
                 wrong_reason = str(judged.get("reason_ru") or "")
