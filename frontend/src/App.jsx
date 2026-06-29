@@ -6136,6 +6136,8 @@ function AppInner() {
   const srsGoodLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_GOOD_LOCK_AFTER_SEC;
 
   const dictionaryRef = useRef(null);
+  const dictionaryResultRef = useRef(null);
+  const prevDictLoadingRef = useRef(false);
   const theoryRef = useRef(null);
   const skillTrainingRef = useRef(null);
   const homeWeeklyPlanRef = useRef(null);
@@ -6144,6 +6146,19 @@ function AppInner() {
   const homeMoreRef = useRef(null);
   const readerRef = useRef(null);
   const translationConfiguratorWasVisibleRef = useRef(false);
+
+  // After a Search lookup finishes, the result renders below the «Недавние» chips —
+  // off-screen, so users miss it. Auto-scroll to the result card on the loading
+  // true→false edge (NOT on every dictionaryResult change, so background enrichment
+  // polls don't keep yanking the view).
+  useEffect(() => {
+    if (prevDictLoadingRef.current && !dictionaryLoading && dictionaryResult) {
+      try {
+        dictionaryResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (_e) { /* ignore */ }
+    }
+    prevDictLoadingRef.current = dictionaryLoading;
+  }, [dictionaryLoading, dictionaryResult]);
 
   useEffect(() => {
     const wasVisible = Boolean(translationConfiguratorWasVisibleRef.current);
@@ -33352,7 +33367,7 @@ function AppInner() {
                     {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
 
                     {dictionaryResult && (
-                      <div className="webapp-dictionary-result">
+                      <div className="webapp-dictionary-result" ref={dictionaryResultRef}>
                         {lastLookupScrollY !== null && (
                           <button
                             type="button"
