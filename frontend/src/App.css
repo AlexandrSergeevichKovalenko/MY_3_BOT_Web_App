@@ -25006,3 +25006,109 @@ html[data-scheme="light"] .explain-summary p,
 .webapp-page.theme-light .explain-summary p,
 html[data-scheme="light"] .explain-line,
 .webapp-page.theme-light .explain-line { color: #243246; }
+
+
+/* ============================================================
+   Словарь · вкладка «Библиотека» — концепт A
+   «Поиск сверху + папки одной лентой»
+   Доклеить В КОНЕЦ файла:
+   frontend/src/App.css
+   --------------------------------------------------------
+   Реорганизация ТОЛЬКО через CSS: ничего не удаляем,
+   JSX не двигаем. Порядок блоков задаётся flex `order`,
+   сетка папок превращается в одну горизонтальную ленту-чипы.
+   Цвета берутся из существующих классов vocab-* (у них уже
+   есть свет/тёмная), поэтому обе темы работают автоматически.
+   ============================================================ */
+
+/* 1. Контейнер делаем флекс-колонкой, чтобы управлять порядком */
+.webapp-dictionary .vocab-library {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 2. Новый порядок: офлайн → поиск → всего/сортировка → папки → выборка → (слова, ещё, легенда) */
+.webapp-dictionary .vocab-library > .vocab-offline-banner     { order: -6; }
+.webapp-dictionary .vocab-library > .vocab-search-wrap        { order: -5; margin: 0 0 2px; }
+.webapp-dictionary .vocab-library > .vocab-stats-bar          { order: -4; }
+.webapp-dictionary .vocab-library > .vocab-folder-section     { order: -3; }
+.webapp-dictionary .vocab-library > .vocab-selection-toolbar  { order: -2; }
+.webapp-dictionary .vocab-library > .vocab-selection-error    { order: -1; }
+/* слова, «Загрузить ещё», легенда остаются на месте (order:0 по умолчанию) */
+/* модалки перемещения/удаления — overlay с position:fixed, порядок неважен */
+
+/* Поиск крупнее и заметнее (он теперь первый) */
+.webapp-dictionary .vocab-library > .vocab-search-wrap .vocab-search-input {
+  height: 46px;
+  font-size: 15px;
+}
+
+/* 3. Папки — одна горизонтальная лента вместо большой сетки */
+
+/* Быстрые фильтры (Все / Без папки) — горизонтально, не растягиваются */
+.webapp-dictionary .vocab-folder-section .vocab-folder-quick-row {
+  display: flex;
+  gap: 7px;
+  margin-bottom: 7px;
+}
+
+/* Сетку карточек превращаем в горизонтальный скролл-ряд */
+.webapp-dictionary .vocab-folder-section .vocab-folder-grid {
+  display: flex !important;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 7px;
+  padding-bottom: 3px;
+  grid-template-columns: none;            /* сброс старой grid-раскладки */
+  scrollbar-width: none;
+}
+.webapp-dictionary .vocab-folder-section .vocab-folder-grid::-webkit-scrollbar {
+  display: none;
+}
+
+/* Карточка папки -> компактный чип-пилюля (иконка · имя · счётчик в строку) */
+.webapp-dictionary .vocab-folder-grid .vocab-folder-card {
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  min-height: 0;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 11px;
+  white-space: nowrap;
+}
+.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-icon-wrap {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex: 0 0 auto;
+}
+.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-icon-wrap svg,
+.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-icon-wrap img {
+  width: 16px;
+  height: 16px;
+}
+.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-count {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: rgba(128, 128, 128, 0.16);
+}
+
+/* Чуть плотнее вертикальный ритм между секциями */
+.webapp-dictionary .vocab-library > .vocab-stats-bar { margin-bottom: 2px; }
+.webapp-dictionary .vocab-folder-section { margin: 2px 0; }
