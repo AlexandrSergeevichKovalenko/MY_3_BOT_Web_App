@@ -25008,107 +25008,208 @@ html[data-scheme="light"] .explain-line,
 .webapp-page.theme-light .explain-line { color: #243246; }
 
 
-/* ============================================================
-   Словарь · вкладка «Библиотека» — концепт A
-   «Поиск сверху + папки одной лентой»
-   Доклеить В КОНЕЦ файла:
-   frontend/src/App.css
-   --------------------------------------------------------
-   Реорганизация ТОЛЬКО через CSS: ничего не удаляем,
-   JSX не двигаем. Порядок блоков задаётся flex `order`,
-   сетка папок превращается в одну горизонтальную ленту-чипы.
-   Цвета берутся из существующих классов vocab-* (у них уже
-   есть свет/тёмная), поэтому обе темы работают автоматически.
-   ============================================================ */
+/* ================================================================
+   Словарь · вкладка «Библиотека» — финальный дизайн «B»
+   «Поиск сверху · Папки-аккордеон · Плавающая нижняя панель»
+   Эталон внешнего вида: «Библиотека B — Эталон (обе темы).html»
 
-/* 1. Контейнер делаем флекс-колонкой, чтобы управлять порядком */
-.webapp-dictionary .vocab-library {
-  display: flex;
-  flex-direction: column;
+   Дописать В КОНЕЦ файла:  frontend/src/App.css
+
+   Работает в ОБЕИХ темах: тёмная (по умолчанию) и светлая
+   (.webapp-page.is-theme-light). Все цвета берутся из токенов
+   --dmps-* + аккуратный акцент (фиолетовый), который сам
+   меняется по теме переменными ниже.
+
+   ВАЖНО: иконки папок НЕ трогаем — их рисует renderFolderIcon()
+   (цветной скруглённый значок). В макете цветные квадратики —
+   это и есть то, что выдаёт renderFolderIcon. Шрифт системный,
+   как во всём приложении (никаких новых шрифтов).
+   ================================================================ */
+
+/* Акцент по темам (фиолетовый, как в словаре) */
+.webapp-dictionary .vocab-library{
+  --vlib-acc:#6366F1;
+  --vlib-acc-soft:rgba(99,102,241,0.14);
+  --vlib-bar-bg:rgba(20,25,37,0.92);
+  --vlib-bar-bd:rgba(255,255,255,0.10);
 }
-
-/* 2. Новый порядок: офлайн → поиск → всего/сортировка → папки → выборка → (слова, ещё, легенда) */
-.webapp-dictionary .vocab-library > .vocab-offline-banner     { order: -6; }
-.webapp-dictionary .vocab-library > .vocab-search-wrap        { order: -5; margin: 0 0 2px; }
-.webapp-dictionary .vocab-library > .vocab-stats-bar          { order: -4; }
-.webapp-dictionary .vocab-library > .vocab-folder-section     { order: -3; }
-.webapp-dictionary .vocab-library > .vocab-selection-toolbar  { order: -2; }
-.webapp-dictionary .vocab-library > .vocab-selection-error    { order: -1; }
-/* слова, «Загрузить ещё», легенда остаются на месте (order:0 по умолчанию) */
-/* модалки перемещения/удаления — overlay с position:fixed, порядок неважен */
-
-/* Поиск крупнее и заметнее (он теперь первый) */
-.webapp-dictionary .vocab-library > .vocab-search-wrap .vocab-search-input {
-  height: 46px;
-  font-size: 15px;
+.webapp-page.is-theme-light .vocab-library{
+  --vlib-acc:#6d5ce7;
+  --vlib-acc-soft:rgba(109,92,231,0.10);
+  --vlib-bar-bg:rgba(255,250,243,0.94);
+  --vlib-bar-bd:#e2d5bf;
 }
 
-/* 3. Папки — одна горизонтальная лента вместо большой сетки */
-
-/* Быстрые фильтры (Все / Без папки) — горизонтально, не растягиваются */
-.webapp-dictionary .vocab-folder-section .vocab-folder-quick-row {
-  display: flex;
-  gap: 7px;
-  margin-bottom: 7px;
+/* ── 1. Контейнер — флекс-колонка для управления порядком ── */
+.webapp-dictionary .vocab-library{
+  display:flex;
+  flex-direction:column;
+  padding-bottom:8px;
 }
 
-/* Сетку карточек превращаем в горизонтальный скролл-ряд */
-.webapp-dictionary .vocab-folder-section .vocab-folder-grid {
-  display: flex !important;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  gap: 7px;
-  padding-bottom: 3px;
-  grid-template-columns: none;            /* сброс старой grid-раскладки */
-  scrollbar-width: none;
-}
-.webapp-dictionary .vocab-folder-section .vocab-folder-grid::-webkit-scrollbar {
-  display: none;
+/* ── 2. Новый порядок блоков ──
+   поиск → всего/сортировка → папки(аккордеон) → слова/ещё/легенда
+   панель выборки уезжает вниз (плавающая, см. п.5) */
+.webapp-dictionary .vocab-library > .vocab-offline-banner    { order:-6; }
+.webapp-dictionary .vocab-library > .vocab-search-wrap       { order:-5; margin:0 0 2px; }
+.webapp-dictionary .vocab-library > .vocab-stats-bar         { order:-4; }
+.webapp-dictionary .vocab-library > .vocab-folder-section    { order:-3; }
+.webapp-dictionary .vocab-library > .vocab-selection-error   { order:18; }
+.webapp-dictionary .vocab-library > .vocab-selection-toolbar { order:20; }
+/* слова, «Загрузить ещё», легенда, общий .webapp-error — order:0 (на месте) */
+/* модалки move/delete — overlay position:fixed, порядок не важен */
+
+/* поиск крупнее (он теперь первый) */
+.webapp-dictionary .vocab-library > .vocab-search-wrap .vocab-search-input{
+  height:46px; font-size:15px;
 }
 
-/* Карточка папки -> компактный чип-пилюля (иконка · имя · счётчик в строку) */
-.webapp-dictionary .vocab-folder-grid .vocab-folder-card {
-  flex: 0 0 auto;
-  flex-direction: row;
-  align-items: center;
-  gap: 7px;
-  width: auto;
-  min-height: 0;
-  height: 34px;
-  padding: 0 12px;
-  border-radius: 11px;
-  white-space: nowrap;
+/* ── 3. Папки-аккордеон ── */
+
+/* Шапка-строка «📂 Папки · активная ▾» */
+.webapp-dictionary .vocab-folder-acc-head{
+  width:100%;
+  display:flex; align-items:center; gap:10px;
+  height:46px; padding:0 13px;
+  border-radius:14px;
+  background:rgba(148,163,184,0.10);
+  border:1px solid var(--dmps-border,#334155);
+  cursor:pointer; font-family:inherit;
 }
-.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-icon-wrap {
-  width: 18px;
-  height: 18px;
-  margin: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  flex: 0 0 auto;
+.webapp-page.is-theme-light .vocab-folder-acc-head{ background:rgba(0,0,0,0.04); }
+.webapp-dictionary .vocab-folder-acc-head .vfa-ic{
+  width:26px; height:26px; border-radius:8px; flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center;
+  font-size:13px; color:#fff; background:var(--vlib-acc);
 }
-.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-icon-wrap svg,
-.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-icon-wrap img {
-  width: 16px;
-  height: 16px;
+.webapp-dictionary .vocab-folder-acc-head .vfa-label{
+  flex:1; text-align:left; font-size:14px; font-weight:700;
+  color:var(--dmps-text-secondary,#cbd5e1);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
-.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-name {
-  font-size: 13px;
-  font-weight: 600;
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.webapp-dictionary .vocab-folder-grid .vocab-folder-card .vfc-card-count {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 99px;
-  background: rgba(128, 128, 128, 0.16);
+.webapp-dictionary .vocab-folder-acc-head .vfa-label b{ color:var(--vlib-acc); }
+.webapp-dictionary .vocab-folder-acc-head .vfa-chev{
+  flex:0 0 auto; font-size:12px; font-weight:700;
+  color:var(--dmps-text-secondary,#94a3b8); opacity:0.75;
 }
 
-/* Чуть плотнее вертикальный ритм между секциями */
-.webapp-dictionary .vocab-library > .vocab-stats-bar { margin-bottom: 2px; }
-.webapp-dictionary .vocab-folder-section { margin: 2px 0; }
+/* Разворачиваемая панель */
+.webapp-dictionary .vocab-folder-acc-panel{
+  margin-top:8px; padding:9px;
+  border:1px solid var(--dmps-border,#334155);
+  border-radius:16px;
+  background:rgba(148,163,184,0.06);
+}
+.webapp-page.is-theme-light .vocab-folder-acc-panel{ background:#fff; }
+
+/* Поиск по папкам внутри панели */
+.webapp-dictionary .vocab-folder-acc-search{ position:relative; display:flex; align-items:center; margin-bottom:9px; }
+.webapp-dictionary .vocab-folder-acc-search .vfas-icon{
+  position:absolute; left:11px; font-size:13px; color:var(--dmps-text-secondary,#94a3b8); opacity:0.7;
+}
+.webapp-dictionary .vocab-folder-acc-search input{
+  width:100%; height:38px; border-radius:11px;
+  background:rgba(148,163,184,0.10);
+  border:1px solid var(--dmps-border,#334155);
+  padding:0 12px 0 32px; font-size:13.5px; font-family:inherit;
+  color:var(--dmps-text-title,#f1f5f9);
+}
+.webapp-page.is-theme-light .vocab-folder-acc-search input{ background:rgba(0,0,0,0.04); }
+.webapp-dictionary .vocab-folder-acc-search input::placeholder{ color:var(--dmps-text-secondary,#94a3b8); opacity:0.8; }
+
+/* Быстрые фильтры (Все / Без папки) — две кнопки в строку */
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-quick-row{
+  display:flex; gap:8px; margin-bottom:8px;
+}
+
+/* Сетка папок: 2 колонки, полные имена, вертикальный скролл */
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-grid{
+  display:grid !important;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  max-height:300px;
+  overflow-y:auto;
+  padding-right:2px;
+}
+
+/* Карточка папки → крупная плитка: [иконка · счётчик] / имя в 2 строки */
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card{
+  flex-direction:column;
+  align-items:stretch;
+  gap:9px;
+  width:auto;
+  min-height:86px;
+  padding:11px;
+  border-radius:14px;
+  white-space:normal;
+  text-align:left;
+}
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card .vfc-card-icon-wrap{
+  display:flex; align-items:center; justify-content:space-between;
+}
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card .vfc-card-name{
+  font-size:13px; font-weight:700; line-height:1.25;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+}
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card .vfc-card-count{
+  font-size:12px; font-weight:700;
+  padding:2px 8px; border-radius:99px;
+  background:rgba(128,128,128,0.16);
+}
+.webapp-dictionary .vocab-folder-acc-panel .vocab-folder-card.is-active{
+  border-color:var(--vlib-acc);
+  background:var(--vlib-acc-soft);
+}
+
+/* ── 4. Плавающая нижняя панель выборки ── */
+.webapp-dictionary .vocab-library > .vocab-selection-toolbar{
+  position:sticky;
+  bottom:14px;
+  z-index:30;
+  margin:8px 2px 0;
+  display:flex; align-items:center; gap:9px;
+  padding:10px 12px;
+  border-radius:18px;
+  background:var(--vlib-bar-bg);
+  -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px);
+  border:1px solid var(--vlib-bar-bd);
+  box-shadow:0 16px 40px -12px rgba(0,0,0,0.5);
+}
+/* «Текущая выборка N» — компактный заголовок со счётчиком */
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-toolbar-main{
+  display:flex; align-items:center; gap:7px; flex:0 0 auto;
+}
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-title{
+  font-size:12px; font-weight:800; color:var(--dmps-text-title,#f1f5f9);
+  white-space:nowrap;
+}
+.webapp-dictionary .vocab-selection-toolbar .vocab-selection-count{
+  min-width:22px; height:22px; padding:0 6px;
+  border-radius:99px; background:var(--vlib-acc); color:#fff;
+  font-size:11px; font-weight:800;
+  display:inline-flex; align-items:center; justify-content:center;
+}
+/* 4 действия — одинаковые компактные кнопки (иконка над подписью) */
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tabs{
+  margin-left:auto; display:flex; gap:6px;
+}
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab{
+  height:42px; min-width:44px; padding:0 9px;
+  border-radius:12px;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+  font-size:9.5px; font-weight:700; font-family:inherit; cursor:pointer;
+  border:1px solid var(--dmps-border,#334155);
+  background:rgba(148,163,184,0.10);
+  color:var(--dmps-text-secondary,#cbd5e1);
+}
+.webapp-page.is-theme-light .vocab-selection-toolbar .vocab-sel-tab{ background:rgba(0,0,0,0.04); }
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab .vocab-sel-tab-icon{ font-size:14px; line-height:1; }
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab.is-learn{
+  background:linear-gradient(180deg,#14b8a6,#0d9488); border-color:transparent; color:#fff;
+}
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab.is-delete{
+  color:#e0556a; border-color:rgba(244,63,94,0.3); background:rgba(244,63,94,0.10);
+}
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab:disabled{ opacity:0.45; }
+/* запас снизу, чтобы легенда не пряталась под плавающей панелью */
+.webapp-dictionary .vocab-legend{ margin-bottom:8px; }

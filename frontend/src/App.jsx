@@ -5941,6 +5941,8 @@ function AppInner() {
 
   // Vocabulary Library tab state
   const [vocabTab, setVocabTab] = useState('search');
+  const [vocabFolderListOpen, setVocabFolderListOpen] = useState(false);
+  const [vocabFolderQuery, setVocabFolderQuery] = useState('');
   const [vocabItems, setVocabItems] = useState([]);
   const [vocabTotal, setVocabTotal] = useState(0);
   const [vocabLoading, setVocabLoading] = useState(false);
@@ -32854,8 +32856,39 @@ function AppInner() {
                             </div>
                           )}
 
-                          {/* Folder grid */}
+                          {/* Folder accordion */}
                           <div className="vocab-folder-section">
+                            {(() => {
+                              const activeFolderName =
+                                vocabFolderFilter === 'all'
+                                  ? tr('Все', 'Alle')
+                                  : vocabFolderFilter === 'none'
+                                  ? tr('Без папки', 'Ohne Ordner')
+                                  : ((vocabFoldersMeta?.folders || []).find((f) => String(f.id) === String(vocabFolderFilter))?.name || tr('Все', 'Alle'));
+                              return (
+                                <button
+                                  type="button"
+                                  className="vocab-folder-acc-head"
+                                  onClick={() => setVocabFolderListOpen((v) => !v)}
+                                  aria-expanded={vocabFolderListOpen}
+                                >
+                                  <span className="vfa-ic">📂</span>
+                                  <span className="vfa-label">{tr('Папки', 'Ordner')} · <b>{activeFolderName}</b></span>
+                                  <span className="vfa-chev">{vocabFolderListOpen ? `▴ ${tr('свернуть', 'einklappen')}` : `▾ ${tr('показать все', 'alle zeigen')}`}</span>
+                                </button>
+                              );
+                            })()}
+                            {vocabFolderListOpen && (
+                            <div className="vocab-folder-acc-panel">
+                            <div className="vocab-folder-acc-search">
+                              <span className="vfas-icon">🔍</span>
+                              <input
+                                type="text"
+                                value={vocabFolderQuery}
+                                placeholder={tr('Найти папку…', 'Ordner suchen…')}
+                                onChange={(e) => setVocabFolderQuery(e.target.value)}
+                              />
+                            </div>
                             {/* Quick filters: All + No Folder */}
                             <div className="vocab-folder-quick-row">
                               <button
@@ -32877,9 +32910,9 @@ function AppInner() {
                             </div>
 
                             {/* Folder grid — long-press for context menu */}
-                            {(vocabFoldersMeta?.folders || []).length > 0 && (
+                            {(vocabFoldersMeta?.folders || []).filter((f) => !vocabFolderQuery.trim() || (f.name || '').toLowerCase().includes(vocabFolderQuery.trim().toLowerCase())).length > 0 && (
                               <div className="vocab-folder-grid">
-                                {(vocabFoldersMeta?.folders || []).map((f) => {
+                                {(vocabFoldersMeta?.folders || []).filter((f) => !vocabFolderQuery.trim() || (f.name || '').toLowerCase().includes(vocabFolderQuery.trim().toLowerCase())).map((f) => {
                                   const fKey = String(f.id);
                                   const isActive = vocabFolderFilter === fKey;
                                   let longPressTimer = null;
@@ -32912,6 +32945,8 @@ function AppInner() {
                                   );
                                 })}
                               </div>
+                            )}
+                            </div>
                             )}
                             {folderTtsJob && (
                               <div className="folder-tts-job-banner">
