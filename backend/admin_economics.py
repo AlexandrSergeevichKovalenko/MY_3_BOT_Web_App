@@ -1171,3 +1171,102 @@ def send_dict_dedup_weekly_report(*, days: int = 7, force: bool = False) -> dict
             )
         logging.exception("dict dedup weekly report failed")
         raise
+
+
+DICT_DEDUP_DAILY_REPORT_JOB_KEY = "dict_dedup_daily_report"
+
+
+def format_dict_dedup_daily_report(report: dict[str, Any]) -> str:
+    """Render the DAILY duplicate-removal summary (across ALL users) as a Telegram
+    message (Russian). Same global aggregate as the weekly report, 24h window."""
+    window_deleted = int(report.get("window_entries_deleted") or 0)
+    window_groups = int(report.get("window_groups_found") or 0)
+    window_runs = int(report.get("window_runs") or 0)
+    window_active = int(report.get("window_active_runs") or 0)
+    total_deleted = int(report.get("total_entries_deleted") or 0)
+    last_run_raw = report.get("last_run_at")
+
+    last_run_text = "—"
+    if last_run_raw:
+        try:
+            dt = datetime.fromisoformat(str(last_run_raw))
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(ZoneInfo(DICT_DEDUP_REPORT_TZ))
+            last_run_text = dt.strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            last_run_text = str(last_run_raw)
+
+    lines = [
+        "🧹 Чистка словарей от дубликатов — отчёт за сутки",
+        "(по всем пользователям, не только твоим словам)",
+        "",
+        "📅 За последние 24 ч:",
+        f"   • удалено дубликатов: {window_deleted}",
+        f"   • затронуто слов (групп): {window_groups}",
+        f"   • прогонов джобы: {window_runs} (с удалениями: {window_active})",
+        "",
+        f"♾️ Всего удалено за всё время: {total_deleted}",
+        f"🕒 Последний прогон: {last_run_text}",
+    ]
+
+    if window_runs == 0:
+        lines += ["", "⚠️ За сутки не было ни одного прогона — проверь, что ночная джоба работает."]
+    elif window_deleted == 0:
+        lines += ["", "ℹ️ Джоба отработала, дубликатов не нашла — это норма, если их просто нет."]
+
+    return "\n".join(lines)
+
+
+def send_dict_dedup_daily_report(*, days: int = 1, force: bool = False) -> dict[str, Any]:
+    """Build and DM the DAILY duplicate-removal summary (all users) to all admins.
+
+    Mirrors send_dict_dedup_weekly_report but with a per-DAY run-guard so the morning
+    report goes out once a day. force=True bypasses the guard."""
+    now_local = datetime.now(ZoneInfo(DICT_DEDUP_REPORT_TZ))
+    run_period = now_local.date().isoformat()
+    if not force and not claim_scheduler_run_guard(
+        job_key=DICT_DEDUP_DAILY_REPORT_JOB_KEY,
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": DICT_DEDUP_REPORT_TZ},
+    ):
+        return {"ok": True, "skipped": True, "reason": "already_claimed", "day": run_period}
+    try:
+        admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+        if not admin_ids:
+            if not force:
+                finish_scheduler_run_guard(
+                    job_key=DICT_DEDUP_DAILY_REPORT_JOB_KEY,
+                    run_period=run_period,
+                    target_scope="global",
+                    status="failed",
+                    metadata={"error": "no_admin_ids"},
+                )
+            return {"ok": False, "sent": 0, "error": "no_admin_ids", "day": run_period}
+        report = get_dict_dedup_report(days=days)
+        text = format_dict_dedup_daily_report(report)
+        sent = 0
+        for admin_id in admin_ids:
+            for part in _split_telegram_text(text):
+                _send_telegram_message(user_id=int(admin_id), text=part)
+            sent += 1
+        if not force:
+            finish_scheduler_run_guard(
+                job_key=DICT_DEDUP_DAILY_REPORT_JOB_KEY,
+                run_period=run_period,
+                target_scope="global",
+                status="completed",
+                metadata={"sent": sent},
+            )
+        return {"ok": True, "sent": sent, "day": run_period, "report": report}
+    except Exception as exc:
+        if not force:
+            finish_scheduler_run_guard(
+                job_key=DICT_DEDUP_DAILY_REPORT_JOB_KEY,
+                run_period=run_period,
+                target_scope="global",
+                status="failed",
+                metadata={"error": str(exc)},
+            )
+        logging.exception("dict dedup daily report failed")
+        raise

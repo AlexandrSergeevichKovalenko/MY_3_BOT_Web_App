@@ -113,6 +113,7 @@ from backend.admin_economics import (
     format_dict_dedup_weekly_report,
     send_admin_economics_report,
     send_cost_breakdown_report,
+    send_dict_dedup_daily_report,
     send_dict_dedup_weekly_report,
 )
 from backend.database import (
@@ -6296,6 +6297,17 @@ def _run_dict_dedup_weekly_report_safe() -> None:
         logging.info("dict dedup weekly report (bot scheduler) result=%s", result)
     except Exception:
         logging.exception("dict dedup weekly report (bot scheduler) failed")
+
+
+def _run_dict_dedup_daily_report_safe() -> None:
+    """Bot-side DAILY (every morning) duplicate-removal report across ALL users. Runs in
+    a BackgroundScheduler thread (must stay synchronous). force=True bypasses the daily
+    run-guard so a stale claim can't block delivery — mirrors the weekly report."""
+    try:
+        result = send_dict_dedup_daily_report(force=True)
+        logging.info("dict dedup daily report (bot scheduler) result=%s", result)
+    except Exception:
+        logging.exception("dict dedup daily report (bot scheduler) failed")
 
 
 def _run_dict_dedup_nightly_safe() -> None:
@@ -30642,6 +30654,21 @@ def main():
                 coalesce=True,
                 max_instances=1,
                 misfire_grace_time=3600,
+            )
+        # -- DAILY duplicate-removal report (08:00 Europe/Vienna, every morning) --
+        # Same global all-users summary as the weekly report, but a 24h window sent each
+        # morning (after the 03:40 nightly run). Set DICT_DEDUP_DAILY_REPORT_ENABLED=0 to
+        # keep only the Monday weekly report.
+        if (os.getenv("DICT_DEDUP_DAILY_REPORT_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on"):
+            scheduler.add_job(
+                _run_dict_dedup_daily_report_safe,
+                "cron",
+                hour=int((os.getenv("DICT_DEDUP_DAILY_REPORT_HOUR") or "8").strip() or "8"),
+                minute=int((os.getenv("DICT_DEDUP_DAILY_REPORT_MINUTE") or "0").strip() or "0"),
+                timezone=ZoneInfo(os.getenv("DICT_DEDUP_DAILY_REPORT_TZ") or "Europe/Vienna"),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=1800,
             )
         for hour, minute in FLASHCARD_REMINDER_TIMES:
             scheduler.add_job(
