@@ -6298,6 +6298,29 @@ def _run_dict_dedup_weekly_report_safe() -> None:
         logging.exception("dict dedup weekly report (bot scheduler) failed")
 
 
+def _run_dict_dedup_nightly_safe() -> None:
+    """Bot-side NIGHTLY dictionary dedup trigger. The dedicated SCHEDULER_SERVICE cron
+    has never actually dispatched this job — the DB shows only manual runs since the
+    feature launched 15.06 — so we drive it from the bot's own reliable scheduler, the
+    same pattern as the economics/weekly-report jobs above. Runs in a BackgroundScheduler
+    thread, so it must stay synchronous. Primary path enqueues the real actor onto the
+    healthy scheduler_jobs queue (the exact /dedupenqueue path, which works); if the
+    broker can't be reached, fall back to running the dedup inline in the bot process."""
+    try:
+        from backend.background_jobs import run_dictionary_dedup_actor
+        run_dictionary_dedup_actor.send()
+        logging.info("dict dedup nightly (bot scheduler): enqueued run_dictionary_dedup_actor")
+        return
+    except Exception:
+        logging.exception("dict dedup nightly (bot scheduler): enqueue failed, running inline")
+    try:
+        from backend.database import run_dictionary_dedup_now
+        result = run_dictionary_dedup_now(max_users=500, since_days=7)
+        logging.info("dict dedup nightly (bot scheduler) inline result=%s", result)
+    except Exception:
+        logging.exception("dict dedup nightly (bot scheduler) inline failed")
+
+
 async def admin_economics_command(update: Update, context: CallbackContext):
     sender = update.effective_user
     message = update.effective_message
@@ -30603,6 +30626,23 @@ def main():
             max_instances=1,
             misfire_grace_time=1800,
         )
+        # -- Nightly dictionary dedup RUN (03:40 Europe/Vienna) --
+        # The dedicated SCHEDULER_SERVICE cron has never actually dispatched this job
+        # (DB shows only manual runs since launch), so drive it from the bot's own
+        # reliable scheduler — same proven path as the weekly report above. Set
+        # DICT_DEDUP_NIGHTLY_ENABLED=0 to retire this once the scheduler-service cron
+        # is confirmed working, to avoid a duplicate (harmless — dedup is idempotent).
+        if (os.getenv("DICT_DEDUP_NIGHTLY_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on"):
+            scheduler.add_job(
+                _run_dict_dedup_nightly_safe,
+                "cron",
+                hour=int((os.getenv("DICT_DEDUP_NIGHTLY_HOUR") or "3").strip() or "3"),
+                minute=int((os.getenv("DICT_DEDUP_NIGHTLY_MINUTE") or "40").strip() or "40"),
+                timezone=ZoneInfo(os.getenv("DICT_DEDUP_NIGHTLY_TZ") or "Europe/Vienna"),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=3600,
+            )
         for hour, minute in FLASHCARD_REMINDER_TIMES:
             scheduler.add_job(
                 lambda: submit_async(send_flashcard_reminder, CallbackContext(application=application)),

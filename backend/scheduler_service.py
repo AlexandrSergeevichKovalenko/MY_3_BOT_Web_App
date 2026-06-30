@@ -1013,6 +1013,11 @@ def main() -> int:
     )
     logging.info("scheduler_service: starting")
 
+    # Same default timezone _build_scheduler() uses; needed again below for the
+    # startup_check. It used to reference a name local to _build_scheduler(),
+    # raising NameError (caught, but it broke the startup diagnostic log).
+    default_tz_name = str(os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip() or "UTC"
+
     scheduler = _build_scheduler()
 
     should_stop = {"value": False}
