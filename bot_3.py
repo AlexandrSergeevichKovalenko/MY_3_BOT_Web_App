@@ -5311,6 +5311,13 @@ async def enforce_user_access(update: Update, context: CallbackContext):
     if not user:
         return
 
+    # Never access-gate a bot. The bot's own service-message updates (e.g. it
+    # pinning a battle play-message in a DM) arrive here with effective_user = the
+    # bot itself — which is neither admin nor allow-listed, so the gate would post
+    # "⛔️ Доступ к боту закрыт" into the chat right after every pin. Skip bots.
+    if getattr(user, "is_bot", False):
+        return
+
     # Poll answers must be processed to deliver private quiz feedback.
     if getattr(update, "poll_answer", None):
         return
@@ -7113,7 +7120,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         else:
             await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     elif text == ADJEKTIV_BATTLE_BUTTON_TEXT:
-        await adjektiv_battle_command(update, context)
+        await _start_battle_wizard(update, context, kind="adjektiv")
     elif text == BATTLE_HISTORY_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "📜 Открыть историю", url=get_webapp_deeplink("ans_bh_0"))]])
@@ -22509,6 +22516,21 @@ def _battle_wizard_render(draft: dict) -> tuple[str, InlineKeyboardMarkup]:
     # main view
     mode = draft.get("mode") or "all"
     who = "всех" if mode == "all" else f"выбрано {len(draft['users'])}"
+    # Adjektiv battles have no themes (set is built deterministically by the rule
+    # engine), so the wizard only offers who-to-invite — no «Темы» step.
+    if (draft.get("kind") or "artikel") == "adjektiv":
+        text = (
+            "⚔️ <b>Создать Adjektiv-батл</b>\n\n"
+            f"👥 Кого зовём: <b>{who}</b>\n\n"
+            "15 ситуаций на окончания прилагательных. Настрой и жми «Отправить»."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(("● " if mode == "all" else "○ ") + "Всех", callback_data="bw:all"),
+             InlineKeyboardButton(("● " if mode == "ind" else "○ ") + "Выбрать кого", callback_data="bw:ind")],
+            [InlineKeyboardButton("🚀 Отправить приглашение", callback_data="bw:send")],
+            [InlineKeyboardButton("✖️ Отмена", callback_data="bw:cancel")],
+        ])
+        return text, kb
     themes = draft.get("themes") or set()
     themes_label = "микс по всем" if not themes else f"выбрано {len(themes)}"
     text = (
@@ -22527,7 +22549,7 @@ def _battle_wizard_render(draft: dict) -> tuple[str, InlineKeyboardMarkup]:
     return text, kb
 
 
-async def _start_battle_wizard(update: Update, context: CallbackContext) -> None:
+async def _start_battle_wizard(update: Update, context: CallbackContext, kind: str = "artikel") -> None:
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -22535,7 +22557,7 @@ async def _start_battle_wizard(update: Update, context: CallbackContext) -> None
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
         await message.reply_text("⚔️ Создавать батл может только Premium. Принять чужой вызов могут все.")
         return
-    draft = {"mode": "all", "users": set(), "themes": set(), "view": "main"}
+    draft = {"mode": "all", "users": set(), "themes": set(), "view": "main", "kind": kind}
     pending_battle_invites[int(user.id)] = draft
     text, kb = _battle_wizard_render(draft)
     await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
@@ -22593,18 +22615,29 @@ async def handle_battle_wizard_callback(update: Update, context: CallbackContext
 
 async def _battle_wizard_send(q, context: CallbackContext, draft: dict) -> None:
     user = q.from_user
-    themes = sorted(draft.get("themes") or [])
+    kind = draft.get("kind") or "artikel"
     mode = draft.get("mode")
     ind_targets = sorted(draft.get("users") or []) if mode == "ind" else None
     if mode == "ind" and not ind_targets:
         await q.answer("Выбери хотя бы одного игрока.", show_alert=True)
         return
     creator_name = _display_user_name(user)
-    themes_txt = "микс по всем темам" if not themes else ", ".join(themes)
     pending_battle_invites.pop(int(user.id), None)
-    # Ack INSTANTLY — building the word set (random sampling + top-ups) and the
-    # invite broadcast both run off the critical path so the button never waits.
+    # Ack INSTANTLY — building the word set and the invite broadcast both run off
+    # the critical path so the button never waits.
     await q.answer("Собираю батл… ⚔️")
+    if kind == "adjektiv":
+        try:
+            await q.edit_message_text("⚔️ Собираю Adjektiv-батл и рассылаю приглашения… 📨")
+        except Exception:
+            pass
+        asyncio.create_task(_create_and_broadcast_adjektiv_wizard(
+            context, creator_id=int(user.id), creator_name=creator_name,
+            ind_targets=ind_targets,
+            status_chat_id=int(q.message.chat.id), status_msg_id=int(q.message.message_id)))
+        return
+    themes = sorted(draft.get("themes") or [])
+    themes_txt = "микс по всем темам" if not themes else ", ".join(themes)
     try:
         await q.edit_message_text(
             f"⚔️ Собираю батл ({html.escape(themes_txt)}) и рассылаю приглашения… 📨",
@@ -26829,9 +26862,11 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
 
 async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle_id: int,
                                              creator_id: int, creator_name: str,
-                                             status_chat_id: int, status_msg_id: int) -> None:
-    """Off-critical-path: render the invite card once and DM every allowed user,
-    then update the creator's status message with the count."""
+                                             status_chat_id: int, status_msg_id: int,
+                                             target_ids: list[int] | None = None) -> None:
+    """Off-critical-path: render the invite card once and DM every allowed user
+    (or just ``target_ids`` when the wizard picked specific players), then update
+    the creator's status message with the count."""
     invite_text = (
         f"⚔️ <b>{html.escape(creator_name)}</b> зовёт на <b>Adjektiv Sprint</b> батл!\n"
         f"15 ситуаций на окончания прилагательных, по 5 сек. Играй когда удобно <b>до 23:59</b>. Прими вызов:"
@@ -26844,10 +26879,13 @@ async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle
         poster = await asyncio.to_thread(render_adjektiv_card)
     except Exception:
         poster = None
-    try:
-        targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
-    except Exception:
-        targets = []
+    if target_ids is not None:
+        targets = list(target_ids)
+    else:
+        try:
+            targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+        except Exception:
+            targets = []
     sent = 0
     for uid in targets or []:
         if int(uid) == int(creator_id):
@@ -26873,6 +26911,43 @@ async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle
             reply_markup=play_kb)
     except Exception:
         pass
+
+
+async def _create_and_broadcast_adjektiv_wizard(context: CallbackContext, *, creator_id: int,
+                                                creator_name: str, ind_targets,
+                                                status_chat_id: int, status_msg_id: int) -> None:
+    """Wizard path for Adjektiv battles: create the battle + set, add the creator,
+    then broadcast invites to the picked players (or everyone), editing the wizard
+    status message when done. Mirrors _create_and_broadcast_artikel_wizard."""
+    from backend.database import (
+        create_adjektiv_battle_with_set, add_adjektiv_sprint_battle_member,
+    )
+    deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
+    try:
+        bid, set_id = await asyncio.to_thread(
+            create_adjektiv_battle_with_set, creator_user_id=int(creator_id),
+            creator_name=creator_name, deadline=deadline)
+    except Exception:
+        logging.warning("adjektiv wizard create failed creator=%s", creator_id, exc_info=True)
+        bid, set_id = None, None
+    if not bid:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=status_chat_id, message_id=status_msg_id,
+                text="⚠️ Не удалось собрать набор батла — пул прилагательных пуст. Попробуй позже.")
+        except Exception:
+            pass
+        return
+    await asyncio.to_thread(add_adjektiv_sprint_battle_member,
+                            battle_id=bid, user_id=int(creator_id), user_name=creator_name)
+    await _broadcast_adjektiv_battle_invites(
+        context, battle_id=bid, creator_id=int(creator_id), creator_name=creator_name,
+        status_chat_id=int(status_chat_id), status_msg_id=int(status_msg_id),
+        target_ids=ind_targets)
+    if set_id:
+        await _pin_battle_play_message(context, user_id=int(creator_id), set_id=str(set_id),
+                                       chat_id=int(status_chat_id), message_id=int(status_msg_id),
+                                       kind="adjektiv")
 
 
 async def adjektiv_battle_join_callback(update: Update, context: CallbackContext) -> None:
