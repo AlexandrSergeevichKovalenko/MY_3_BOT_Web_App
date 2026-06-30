@@ -7972,11 +7972,19 @@ def ensure_webapp_tables() -> None:
                     daily_cost_cap_eur NUMERIC(20, 10),
                     trial_days INT NOT NULL DEFAULT 0,
                     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    billing_type TEXT NOT NULL DEFAULT 'recurring',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     CHECK (trial_days >= 0),
-                    CHECK (daily_cost_cap_eur IS NULL OR daily_cost_cap_eur >= 0)
+                    CHECK (daily_cost_cap_eur IS NULL OR daily_cost_cap_eur >= 0),
+                    CHECK (billing_type IN ('recurring', 'one_time'))
                 );
+            """)
+            # Add billing_type to pre-existing plans tables (recurring = Stripe subscription,
+            # one_time = разовый донат, не выдаёт доступ).
+            cursor.execute("""
+                ALTER TABLE plans
+                ADD COLUMN IF NOT EXISTS billing_type TEXT NOT NULL DEFAULT 'recurring';
             """)
             cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_plans_stripe_price_id
@@ -8013,10 +8021,11 @@ def ensure_webapp_tables() -> None:
                     stripe_price_id,
                     daily_cost_cap_eur,
                     trial_days,
+                    billing_type,
                     is_active,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
                 ON CONFLICT (plan_code) DO UPDATE
                 SET
                     name = EXCLUDED.name,
@@ -8024,6 +8033,7 @@ def ensure_webapp_tables() -> None:
                     stripe_price_id = EXCLUDED.stripe_price_id,
                     daily_cost_cap_eur = EXCLUDED.daily_cost_cap_eur,
                     trial_days = EXCLUDED.trial_days,
+                    billing_type = EXCLUDED.billing_type,
                     is_active = TRUE,
                     updated_at = NOW();
                 """,
@@ -8035,6 +8045,7 @@ def ensure_webapp_tables() -> None:
                         None,
                         seed_free_daily_cap,
                         0,
+                        "recurring",
                     ),
                     (
                         "pro",
@@ -8043,22 +8054,29 @@ def ensure_webapp_tables() -> None:
                         seed_pro_price_id,
                         seed_pro_daily_cap,
                         0,
+                        "recurring",
                     ),
+                    # Донат-тарифы — разовые (mode=payment): доступ не выдают, т.к. one-time
+                    # checkout не создаёт active-подписку, поэтому cap здесь почти никогда не
+                    # консультируется. Держим pro-cap, чтобы НЕ задушить grandfathered
+                    # supporter'ов (старые recurring support-подписки резолвятся в pro).
                     (
                         "support_coffee",
-                        "Поддержать разработчика: кофе ☕️",
+                        "Купить разработчику кофе ☕️",
                         True,
                         seed_support_coffee_price_id,
                         seed_pro_daily_cap,
                         0,
+                        "one_time",
                     ),
                     (
                         "support_cheesecake",
-                        "Поддержать разработчика: кофе ☕️ и чизкейк 🍰",
+                        "Кофе ☕️ и чизкейк 🍰",
                         True,
                         seed_support_cheesecake_price_id,
                         seed_pro_daily_cap,
                         0,
+                        "one_time",
                     ),
                 ],
             )
@@ -22123,6 +22141,53 @@ def get_latest_scheduler_run_guard(
     }
 
 
+def get_all_latest_scheduler_run_guards(*, target_scope: str = "global") -> list[dict]:
+    """Latest run-guard row per job_key (any status), newest first by last activity.
+    Used by the /scheduler_health admin command to see which scheduled jobs actually
+    ran and when — the forensic source of truth for 'what silently stopped'."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (job_key)
+                    job_key,
+                    run_period,
+                    target_scope,
+                    status,
+                    metadata,
+                    claimed_at,
+                    finished_at,
+                    updated_at
+                FROM bt_3_scheduler_run_guards
+                WHERE target_scope = %s
+                ORDER BY job_key, COALESCE(finished_at, updated_at, claimed_at) DESC;
+                """,
+                (str(target_scope or "global").strip()[:80] or "global",),
+            )
+            rows = cursor.fetchall()
+    result: list[dict] = []
+    for row in rows:
+        metadata = row[4] if isinstance(row[4], dict) else {}
+        result.append(
+            {
+                "job_key": str(row[0] or "").strip(),
+                "run_period": str(row[1] or "").strip(),
+                "target_scope": str(row[2] or "").strip(),
+                "status": str(row[3] or "").strip(),
+                "metadata": metadata,
+                "claimed_at": row[5],
+                "finished_at": row[6],
+                "updated_at": row[7],
+            }
+        )
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    result.sort(
+        key=lambda item: (item.get("finished_at") or item.get("updated_at") or item.get("claimed_at") or _epoch),
+        reverse=True,
+    )
+    return result
+
+
 def _map_semantic_benchmark_library_row(row: tuple | None) -> dict | None:
     if not row:
         return None
@@ -28665,7 +28730,8 @@ def list_billing_plans(*, include_inactive: bool = False) -> list[dict]:
                     trial_days,
                     is_active,
                     created_at,
-                    updated_at
+                    updated_at,
+                    billing_type
                 FROM plans
                 {where_sql}
                 ORDER BY is_paid ASC, plan_code ASC;
@@ -28683,6 +28749,7 @@ def list_billing_plans(*, include_inactive: bool = False) -> list[dict]:
             "is_active": bool(row[6]),
             "created_at": row[7].isoformat() if row[7] else None,
             "updated_at": row[8].isoformat() if row[8] else None,
+            "billing_type": str(row[9] or "recurring"),
         }
         for row in rows
     ]
@@ -28712,7 +28779,8 @@ def get_billing_plan(plan_code: str) -> dict | None:
                     trial_days,
                     is_active,
                     created_at,
-                    updated_at
+                    updated_at,
+                    billing_type
                 FROM plans
                 WHERE plan_code = %s
                 LIMIT 1;
@@ -28730,6 +28798,7 @@ def get_billing_plan(plan_code: str) -> dict | None:
         "is_active": bool(row[6]),
         "created_at": row[7].isoformat() if row[7] else None,
         "updated_at": row[8].isoformat() if row[8] else None,
+        "billing_type": str(row[9] or "recurring"),
     } if row else None
     with _BILLING_PLAN_CACHE_LOCK:
         _BILLING_PLAN_CACHE[code] = (now_ts, dict(plan) if isinstance(plan, dict) else None)

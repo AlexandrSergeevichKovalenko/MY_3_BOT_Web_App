@@ -6333,6 +6333,180 @@ def _run_dict_dedup_nightly_safe() -> None:
         logging.exception("dict dedup nightly (bot scheduler) inline failed")
 
 
+def _run_daily_audio_safe() -> None:
+    """Bot-side DAILY "mistakes audio" trigger. The dedicated SCHEDULER_SERVICE cron
+    is the same unreliable path that never dispatched the nightly dict dedup, and the
+    old bot-side trigger for this job was long commented out — so users stopped getting
+    their daily mistakes-audio in private. Drive it from the bot's own reliable
+    scheduler, same proven pattern as the dict-dedup/economics jobs. Runs in a
+    BackgroundScheduler thread, so it must stay synchronous. Primary path enqueues the
+    real actor onto the healthy scheduler_jobs queue; if the broker can't be reached,
+    fall back to rendering+sending inline in the bot process. The underlying job carries
+    its own per-day DB run guard (claim_scheduler_run_guard 'daily_audio_auto'), so this
+    is idempotent even if the scheduler-service cron also fires."""
+    try:
+        from backend.background_jobs import run_daily_audio_scheduler_actor
+        run_daily_audio_scheduler_actor.send()
+        logging.info("daily audio (bot scheduler): enqueued run_daily_audio_scheduler_actor")
+        return
+    except Exception:
+        logging.exception("daily audio (bot scheduler): enqueue failed, running inline")
+    try:
+        from backend.backend_server import _run_audio_scheduler_job
+        _run_audio_scheduler_job()
+        logging.info("daily audio (bot scheduler) inline finished")
+    except Exception:
+        logging.exception("daily audio (bot scheduler) inline failed")
+
+
+async def admin_send_audio_command(update: Update, context: CallbackContext):
+    """Manually dispatch the daily "mistakes audio" to users' private chats.
+    /admin_send_audio            → for yesterday (default)
+    /admin_send_audio 2026-06-29 → for a specific date (YYYY-MM-DD)
+    Bypasses the per-day run guard (calls _dispatch_daily_audio directly), so it can
+    re-send a date that the scheduler already covered — useful to recover missed days."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+
+    tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip() or "UTC"
+    try:
+        now = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        now = datetime.utcnow()
+    arg = ((context.args or [None])[0] or "").strip()
+    if arg:
+        try:
+            target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+        except ValueError:
+            await message.reply_text("❌ Неверный формат даты. Нужен YYYY-MM-DD, например 2026-06-29.")
+            return
+    else:
+        target_date = now.date() - timedelta(days=1)
+
+    status = await message.reply_text(f"🎧 Отправляю аудио с ошибками за {target_date.isoformat()}…")
+    try:
+        from backend.backend_server import _dispatch_daily_audio
+        result = await asyncio.to_thread(_dispatch_daily_audio, target_date)
+        errors = result.get("errors") if isinstance(result, dict) else None
+        text = (
+            "🎧 <b>Аудио с ошибками отправлено</b>\n"
+            f"• дата: <b>{target_date.isoformat()}</b>\n"
+            f"• ежедневные: <b>{result.get('sent_daily', 0)}</b>\n"
+            f"• истории: <b>{result.get('sent_story', 0)}</b>\n"
+            f"• групповых целей: <b>{result.get('group_targets', 0)}</b>"
+        )
+        if errors:
+            text += f"\n⚠️ ошибок доставки: <b>{len(errors)}</b>\n" + "\n".join(f"• {e}" for e in errors[:10])
+        await status.edit_text(text, parse_mode="HTML")
+    except Exception as exc:
+        logging.exception("admin send audio command failed user_id=%s", int(sender.id))
+        await status.edit_text(f"❌ Не удалось отправить аудио: {exc}")
+
+
+# Catalog of scheduled jobs that write a run-guard row, with a human label, expected
+# cadence (max age in hours before we flag it stale), and whether it's ON by default.
+# Source of truth = bt_3_scheduler_run_guards (job_key). Lets /scheduler_health show
+# which scheduled jobs actually ran and when — the real answer to "what stopped coming".
+_SCHEDULER_HEALTH_CATALOG = [
+    # job_key, label, max_age_hours, default_on
+    ("today_plan_auto", "План на день в личку (07:00)", 30, True),
+    ("today_evening_reminders_auto", "Вечерние напоминания (18:00)", 30, True),
+    ("translation_focus_pool_refill", "Пополнение пула переводов (23:00)", 30, True),
+    ("daily_audio_auto", "Аудио с ошибками в личку (13:00)", 30, True),
+    ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True),
+    ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True),
+    ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True),
+    ("weekly_goals_auto", "Недельные цели (06:45)", 192, True),
+    ("weekly_user_removal_digest", "Дайджест удаления неактивных", 192, True),
+    ("monthly_budget_report", "Месячный бюджет-отчёт", 768, True),
+    ("group_enrollment_prompt", "Приглашение в группу", 192, True),
+    # Off by default — silence here is expected, shown for completeness only.
+    ("sentence_prewarm_daily", "Прогрев предложений", 30, False),
+    ("translation_focus_pool_admin_report", "Отчёт по пулу переводов (admin)", 30, False),
+    ("tts_prewarm_quota_control", "TTS prewarm quota control", 30, False),
+    ("semantic_benchmark_prep", "Semantic benchmark prep", 30, False),
+    ("semantic_weekly_audit_digest", "Semantic weekly audit", 192, False),
+]
+
+
+async def admin_scheduler_health_command(update: Update, context: CallbackContext):
+    """Show, per scheduled job, when it last actually ran (from bt_3_scheduler_run_guards),
+    flagging stale daily/weekly jobs. The forensic answer to "what stopped coming".
+    /scheduler_health"""
+    from datetime import timezone as _tz_utc
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    status = await message.reply_text("🩺 Проверяю, что и когда реально отрабатывало…")
+    try:
+        from backend.database import get_all_latest_scheduler_run_guards
+        rows = await asyncio.to_thread(get_all_latest_scheduler_run_guards)
+        by_key = {str(r.get("job_key") or ""): r for r in (rows or [])}
+        now = datetime.now(_tz_utc.utc)
+
+        def _fmt_age(ts) -> tuple[str, float | None]:
+            if not hasattr(ts, "astimezone"):
+                return ("никогда", None)
+            delta = now - ts.astimezone(_tz_utc.utc)
+            hours = delta.total_seconds() / 3600.0
+            if hours < 1:
+                return (f"{int(delta.total_seconds() // 60)} мин назад", hours)
+            if hours < 48:
+                return (f"{hours:.1f} ч назад", hours)
+            return (f"{hours / 24:.1f} дн назад", hours)
+
+        alarms: list[str] = []
+        oks: list[str] = []
+        off: list[str] = []
+        for job_key, label, max_age_h, default_on in _SCHEDULER_HEALTH_CATALOG:
+            r = by_key.get(job_key)
+            last_ts = (r or {}).get("finished_at") or (r or {}).get("updated_at") or (r or {}).get("claimed_at")
+            job_status = str((r or {}).get("status") or "").strip()
+            age_text, hours = _fmt_age(last_ts)
+            run_period = str((r or {}).get("run_period") or "").strip()
+            stale = (hours is None) or (hours > max_age_h) or (job_status == "failed")
+            line = f"• <b>{label}</b>\n   {age_text}" + (f" · {run_period}" if run_period else "")
+            if job_status and job_status != "completed":
+                line += f" · <i>{job_status}</i>"
+            if not default_on:
+                off.append(f"💤 {line}  <i>(выкл по умолчанию)</i>")
+            elif stale:
+                mark = "❌ НИКОГДА" if hours is None else "⚠️ ПРОТУХЛО"
+                alarms.append(f"{mark} {line}")
+            else:
+                oks.append(f"✅ {line}")
+
+        # Unknown job_keys present in DB but not in the catalog (so nothing is hidden).
+        known = {k for k, *_ in _SCHEDULER_HEALTH_CATALOG}
+        extras = [k for k in by_key if k not in known]
+
+        parts = ["🩺 <b>Здоровье планировщика</b> (последний реальный запуск)\n"]
+        if alarms:
+            parts.append("<b>Проблемы:</b>\n" + "\n".join(alarms))
+        if oks:
+            parts.append("\n<b>В порядке:</b>\n" + "\n".join(oks))
+        if off:
+            parts.append("\n<b>Отключённые:</b>\n" + "\n".join(off))
+        if extras:
+            parts.append("\n<b>Прочие job_key в БД:</b>\n" + ", ".join(sorted(extras)))
+        text = "\n".join(parts)
+        await status.delete()
+        for chunk in _split_telegram_text(text):
+            await message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as exc:
+        logging.exception("admin scheduler health command failed user_id=%s", int(sender.id))
+        await status.edit_text(f"❌ Не удалось собрать health: {exc}")
+
+
 async def admin_economics_command(update: Update, context: CallbackContext):
     sender = update.effective_user
     message = update.effective_message
@@ -30273,6 +30447,8 @@ def main():
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
+    application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
+    application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("adjsprint", admin_adjektiv_sprint_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
@@ -30669,6 +30845,26 @@ def main():
                 coalesce=True,
                 max_instances=1,
                 misfire_grace_time=1800,
+            )
+        # -- DAILY "mistakes audio" to private chat (mirrors AUDIO_SCHEDULER_*) --
+        # The dedicated SCHEDULER_SERVICE cron is the same path that never reliably
+        # dispatched the nightly dict dedup, and the old bot-side trigger for this audio
+        # was long commented out — so users stopped receiving their daily mistakes-audio.
+        # Drive it from the bot's own reliable scheduler. Reuses the same env knobs as the
+        # scheduler-service job (AUDIO_SCHEDULER_HOUR/MINUTE/TZ) so timing + the inline
+        # job's date math stay consistent; the underlying run guard makes a double-fire
+        # harmless. Set DAILY_AUDIO_BOT_SCHEDULER_ENABLED=0 to retire once the
+        # scheduler-service cron is confirmed working.
+        if (os.getenv("DAILY_AUDIO_BOT_SCHEDULER_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on"):
+            scheduler.add_job(
+                _run_daily_audio_safe,
+                "cron",
+                hour=int((os.getenv("AUDIO_SCHEDULER_HOUR") or "13").strip() or "13"),
+                minute=int((os.getenv("AUDIO_SCHEDULER_MINUTE") or "0").strip() or "0"),
+                timezone=ZoneInfo(os.getenv("AUDIO_SCHEDULER_TZ") or "UTC"),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=3600,
             )
         for hour, minute in FLASHCARD_REMINDER_TIMES:
             scheduler.add_job(
