@@ -147,7 +147,7 @@ export default function DictionaryOverlay() {
     chipHintDoneRef.current = true;
     bumpChipHintCount();
     setChipHint(true);
-    const id = setTimeout(() => setChipHint(false), 4200);
+    const id = setTimeout(() => setChipHint(false), 3000);
     return () => clearTimeout(id);
   }, [item]);
 

@@ -975,8 +975,10 @@
 /* ── User tweak: halve the two marked vertical gaps, give the space to the input ──
    1) gap between the tabs and the toolbar  2) gap between the input and «Перевести».
    The freed height goes into a taller input box. */
-.dict-search-flow { gap: 8px; margin-top: 0; }
-.dict-search-compose .dict-translate-row { margin-top: 8px !important; }
+/* Halved vertical gaps so the whole compose view fits on one screen:
+   toolbar↔method↔input gap and input↔«Перевести» gap both cut to ~4px. */
+.dict-search-flow { gap: 4px; margin-top: 0; }
+.dict-search-compose .dict-translate-row { margin-top: 4px !important; }
 .dictionary-input.dict-input-big { min-height: 112px; }
 
 /* ── Adaptive input height ────────────────────────────────────────────────────
@@ -987,7 +989,7 @@
    the input returns to its normal compact height (results stay reachable).
    Only the input box changes — no buttons, controls or flow are touched. */
 .dict-search-compose.dict-compose-tall .dictionary-input.dict-input-big {
-  min-height: clamp(132px, calc(var(--app-height, 100dvh) * 0.40), 380px);
+  min-height: clamp(120px, calc(var(--app-height, 100dvh) * 0.26), 280px);
 }
 
 /* ── "Tap a synonym to save it" hint ─────────────────────────────────────────
@@ -997,7 +999,7 @@
 .dq-chip-hint {
   position: fixed;
   left: 50%;
-  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  top: calc(10px + env(safe-area-inset-top, 0px));
   transform: translateX(-50%);
   z-index: 50;
   max-width: min(420px, calc(100vw - 28px));
@@ -1013,7 +1015,8 @@
   backdrop-filter: blur(8px);
   color: #eef2ff;
   cursor: pointer;
-  animation: dq-chip-hint-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  /* Self-contained fade IN then OUT over ~3s (JS removes it at 3000ms). */
+  animation: dq-chip-hint-toast 3000ms ease forwards;
 }
 .dq-chip-hint-ic {
   font-size: 16px;
@@ -1029,7 +1032,9 @@
   color: #fff;
   font-weight: 600;
 }
-@keyframes dq-chip-hint-in {
-  from { opacity: 0; transform: translate(-50%, 12px) scale(0.97); }
-  to   { opacity: 1; transform: translate(-50%, 0) scale(1); }
+@keyframes dq-chip-hint-toast {
+  0%   { opacity: 0; transform: translate(-50%, -10px) scale(0.97); }
+  12%  { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  80%  { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -8px) scale(0.98); }
 }

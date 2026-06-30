@@ -5313,6 +5313,14 @@ function AppInner() {
     try { const r = JSON.parse(localStorage.getItem('dq_recents_v1') || '[]'); return Array.isArray(r) ? r.filter((x) => typeof x === 'string').slice(0, 6) : []; } catch (_e) { return []; }
   });
   const [dictionaryLanguagePair, setDictionaryLanguagePair] = useState(null);
+  // When the user clears the input, the result card should disappear and the screen
+  // returns to its initial compose state. (Don't wipe while a lookup is in flight.)
+  useEffect(() => {
+    if (dictionaryWord.trim() || dictionaryLoading) return;
+    setDictionaryResult(null);
+    setDictionaryError('');
+    setDictionarySaved('');
+  }, [dictionaryWord, dictionaryLoading]);
   const [collocationsVisible, setCollocationsVisible] = useState(false);
   const [collocationsLoading, setCollocationsLoading] = useState(false);
   const [collocationsError, setCollocationsError] = useState('');
