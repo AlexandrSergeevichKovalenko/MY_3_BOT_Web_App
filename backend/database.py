@@ -4934,20 +4934,32 @@ def ensure_webapp_tables() -> None:
                 DECLARE c RECORD;
                 BEGIN
                     -- Keep language profile columns as plain TEXT for flexible app-level validation.
-                    BEGIN
+                    -- Guard each TYPE change so it runs ONLY when the column is not already TEXT.
+                    -- An unconditional "ALTER COLUMN ... TYPE TEXT" rewrites the entire table on
+                    -- EVERY bootstrap run (the columns are already TEXT), which can exhaust a tight
+                    -- DB volume and crash startup — this makes re-bootstraps a cheap no-op.
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'bt_3_user_language_profile'
+                          AND column_name = 'learning_language'
+                          AND data_type <> 'text'
+                    ) THEN
                         ALTER TABLE bt_3_user_language_profile
                         ALTER COLUMN learning_language TYPE TEXT
                         USING learning_language::text;
-                    EXCEPTION WHEN undefined_column THEN
-                        NULL;
-                    END;
-                    BEGIN
+                    END IF;
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'bt_3_user_language_profile'
+                          AND column_name = 'native_language'
+                          AND data_type <> 'text'
+                    ) THEN
                         ALTER TABLE bt_3_user_language_profile
                         ALTER COLUMN native_language TYPE TEXT
                         USING native_language::text;
-                    EXCEPTION WHEN undefined_column THEN
-                        NULL;
-                    END;
+                    END IF;
 
                     -- Drop legacy CHECK constraints that may enforce old regex patterns.
                     FOR c IN
