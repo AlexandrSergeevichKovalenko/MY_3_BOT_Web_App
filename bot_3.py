@@ -3253,7 +3253,15 @@ DRIP_TICK_MINUTES = max(1, int((os.getenv("DRIP_TICK_MINUTES") or "15").strip() 
 MIN_DRIP_INTERVAL_MINUTES = max(1, int((os.getenv("MIN_DRIP_INTERVAL_MINUTES") or "30").strip() or "30"))
 # Types the drip can pull now (each needs a pool-pick + send_X_to_chat). Starts with
 # aufgabe — its many formats already give variety; more kinds added next.
-_DRIP_KINDS = ["aufgabe", "listening", "anagram", "rebus", "crossword", "numdict"]
+_DRIP_KINDS = ["aufgabe", "listening", "anagram", "rebus", "crossword", "numdict",
+               "artikel_sprint", "adjektiv_sprint", "artikel_learn"]
+# Drip-only dedup discriminators for the daily-singleton reminder kinds (one shared
+# set/day). Distinct from the live slot hours so they never collide, and distinct
+# from each other so artikel_sprint vs artikel_learn (same dispatch table) dedup
+# independently. create_*_dispatch returns None on a same-day repeat → once/day.
+_DRIP_AS_HOUR = 1   # artikel_sprint
+_DRIP_AL_HOUR = 2   # artikel_learn (reuses the article-sprint dispatch table)
+_DRIP_AD_HOUR = 1   # adjektiv_sprint (separate table)
 _DRIP_AUFGABE_FORMATS = ["cloze", "satzbau", "synonym", "antonym", "transform",
                          "error", "wortbildung", "wortgruppe"]
 
@@ -3275,6 +3283,40 @@ def _window_minutes_today(schedule, tz_name) -> int:
         return sum(max(0, int(e) - int(s)) for s, e in wins)
     except Exception:
         return 0
+
+
+async def _drip_emit_reminder(context, uid, did, *, kb, caption, poster_fn, inbox_kind,
+                              deeplink, title, held, msgid_setter=None) -> bool:
+    """Send (or hold→inbox) a daily-singleton reminder card to a windowed user. The
+    dispatch dedup is done by the caller (did is None → skip), so this just emits."""
+    if held:
+        await asyncio.to_thread(record_interactive_inbox, user_id=int(uid), kind=inbox_kind,
+            dispatch_id=int(did), chat_id=int(uid), deeplink=deeplink, title=title,
+            keyboard_json=_inbox_kb_json(kb), pushed=False)
+        return True
+    poster = None
+    try:
+        poster = await asyncio.to_thread(poster_fn) if poster_fn else None
+    except Exception:
+        poster = None
+    try:
+        if poster:
+            msg = await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(poster),
+                caption=caption, parse_mode="Markdown", reply_markup=kb)
+        else:
+            msg = await context.bot.send_message(chat_id=int(uid), text=caption,
+                parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        return False
+    try:
+        if msgid_setter:
+            await asyncio.to_thread(msgid_setter, int(did), telegram_message_id=int(msg.message_id))
+        await asyncio.to_thread(record_interactive_inbox, user_id=int(uid), kind=inbox_kind,
+            dispatch_id=int(did), chat_id=int(uid), telegram_message_id=int(msg.message_id),
+            deeplink=deeplink, title=title, keyboard_json=_inbox_kb_json(kb))
+    except Exception:
+        pass
+    return True
 
 
 async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, held: bool = False) -> bool:
@@ -3366,6 +3408,70 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             return False
         return await send_numdict_to_chat(context, items=batch, slot_date=slot_date,
                                           slot_hour=slot_hour, chat_id=uid, target_user_id=uid, held=held)
+    if kind == "artikel_sprint":
+        if not _artikel_sprint_enabled():
+            return False
+        set_id = await asyncio.to_thread(get_daily_article_sprint_set_id, slot_date)
+        if not set_id:
+            return False
+        did = await asyncio.to_thread(create_article_sprint_dispatch, set_id=set_id,
+                                      slot_date=slot_date, slot_hour=_DRIP_AS_HOUR, chat_id=uid)
+        if did is None:
+            return False  # already delivered to this user today
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Играть (2 минуты)", url=get_webapp_deeplink("ans_as_0"))],
+            [InlineKeyboardButton("🎯 Своя тема (Premium)", url=get_webapp_deeplink("ans_asp_0"))],
+        ])
+        caption = ("⚡ *Artikel Sprint*\n\n2 минуты — успей указать *der/die/das* для как можно "
+                   "большего числа слов!\n🏆 Победитель — у кого больше верных.")
+        from backend.interactive_card import render_sprint_card
+        return await _drip_emit_reminder(context, uid, did, kb=kb, caption=caption,
+            poster_fn=render_sprint_card, inbox_kind="as", deeplink="ans_as_0",
+            title="⚡ Artikel Sprint", held=held, msgid_setter=update_article_sprint_dispatch_message_id)
+    if kind == "adjektiv_sprint":
+        if not _adjektiv_sprint_enabled():
+            return False
+        from backend.database import (
+            get_or_create_daily_adjektiv_set, create_adjektiv_sprint_dispatch,
+            update_adjektiv_sprint_dispatch_message_id,
+        )
+        set_id = await asyncio.to_thread(get_or_create_daily_adjektiv_set, slot_date, _DRIP_AD_HOUR)
+        if not set_id:
+            return False
+        did = await asyncio.to_thread(create_adjektiv_sprint_dispatch, set_id=set_id,
+                                      slot_date=slot_date, slot_hour=_DRIP_AD_HOUR, chat_id=uid)
+        if did is None:
+            return False
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔠 Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
+            [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
+        ])
+        caption = ("🔠 *Adjektiv Sprint*\n\n15 ситуаций · по 5 секунд на каждую — выбери правильное "
+                   "окончание прилагательного!\n🏆 В конце — разбор по каждому случаю с правилом.")
+        from backend.interactive_card import render_adjektiv_card
+        return await _drip_emit_reminder(context, uid, did, kb=kb, caption=caption,
+            poster_fn=render_adjektiv_card, inbox_kind="ad", deeplink="ans_ad_0",
+            title="🔠 Adjektiv Sprint", held=held, msgid_setter=update_adjektiv_sprint_dispatch_message_id)
+    if kind == "artikel_learn":
+        if not _artikel_sprint_enabled():
+            return False
+        set_id = await asyncio.to_thread(get_daily_article_sprint_set_id, slot_date)
+        if not set_id:
+            return False
+        did = await asyncio.to_thread(create_article_sprint_dispatch, set_id=set_id,
+                                      slot_date=slot_date, slot_hour=_DRIP_AL_HOUR, chat_id=uid)
+        if did is None:
+            return False
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📚 Учить артикли", url=get_webapp_deeplink("ans_al_0"))],
+            [InlineKeyboardButton("🎯 Своя тема на завтра (Premium)", url=get_webapp_deeplink("ans_alf_0"))],
+        ])
+        caption = ("📚 *Artikel Trainer*\n\nВыучи der/die/das на сегодня — в своём темпе, с подсказками. "
+                   "Заходи сколько угодно раз, а вечером проверь себя в игре! 👇")
+        from backend.interactive_card import render_artikel_learn_card
+        return await _drip_emit_reminder(context, uid, did, kb=kb, caption=caption,
+            poster_fn=render_artikel_learn_card, inbox_kind="al", deeplink="ans_al_0",
+            title="📚 Artikel Trainer", held=held)
     return False
 
 
