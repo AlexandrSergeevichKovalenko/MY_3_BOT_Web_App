@@ -61,6 +61,20 @@ function extractRichTranslation(item) {
   return out.join(', ');
 }
 
+// Pick the translation that actually belongs to `targetLang` from a list of candidates.
+// For a Russian target we REQUIRE Cyrillic, so a German value leaking into the GPT
+// breakdown's translation column can never be saved as the "Russian" translation — the
+// recurring bug where a tapped synonym/antonym chip saved a German-only card. Falls back
+// to the first non-empty candidate only if none match the expected script.
+function pickTargetTranslation(targetLang, candidates) {
+  const list = candidates.map((c) => String(c || '').trim()).filter(Boolean);
+  if (!list.length) return '';
+  const hasCyrillic = (s) => /[А-Яа-яЁё]/.test(s);
+  if (targetLang === 'ru') return list.find(hasCyrillic) || list[0];
+  if (targetLang === 'de') return list.find((s) => !hasCyrillic(s)) || list[0];
+  return list[0];
+}
+
 // Build the canonical /api/webapp/dictionary/save payload from a GPT breakdown item.
 // EVERY save source (typed word OR tapped synonym/related chip) goes through this so
 // the entry always lands in the same standard card format (article+Grundform /
@@ -75,12 +89,17 @@ function buildDictionarySavePayload({ rich, sourceText, quick, origin }) {
   const sourceLang = (dirSource || quickSourceLang || '').toLowerCase();
   const targetLang = (dirTarget || quickTargetLang || '').toLowerCase();
   const richTranslation = extractRichTranslation(rich);
-  const targetText = (quickTranslation || richTranslation || '').trim();
+  // The deterministic quick translate is the most reliable target-language gloss; the
+  // GPT breakdown's extracted meaning and stored columns are fallbacks. Validate the
+  // script (see pickTargetTranslation) so de↔ru pollution never lands in the wrong slot.
+  const targetText = pickTargetTranslation(targetLang, [
+    quickTranslation, richTranslation, rich?.translation_ru, rich?.translation_de,
+  ]);
   return {
     word_de: String(rich?.word_de || '').trim(),
     word_ru: String(rich?.word_ru || '').trim(),
-    translation_de: String(rich?.translation_de || (targetLang === 'de' ? richTranslation : '')).trim(),
-    translation_ru: String(rich?.translation_ru || (targetLang === 'ru' ? richTranslation : '')).trim(),
+    translation_de: (targetLang === 'de' ? targetText : String(rich?.translation_de || '')).trim(),
+    translation_ru: (targetLang === 'ru' ? targetText : String(rich?.translation_ru || '')).trim(),
     source_text: sourceText,
     target_text: targetText,
     source_lang: sourceLang || undefined,
@@ -367,19 +386,34 @@ export default function DictionaryOverlay() {
     haptic('ok');
     (async () => {
       try {
-        // Run the SAME canonical breakdown→save pipeline as a typed word, so a tapped
-        // synonym/related word is stored as a proper card (article + translation +
-        // grammar) instead of bare German text without a translation. (Does not touch
-        // the on-screen breakdown state — that still shows the original word.)
+        // Run the SAME canonical pipeline as a typed word: a deterministic quick
+        // translate (reliable target-language gloss) IN PARALLEL with the GPT
+        // breakdown, so a tapped synonym/related word is stored as a proper card
+        // (article + translation + grammar) WITH its translation — never bare German
+        // text. Passing the quick result as `quick` is exactly what makes the typed
+        // path keep its translation; omitting it was why chips saved German-only cards.
         const pair = guessPair(t);
-        const data = await api('/api/webapp/dictionary', { word: t, lookup_lang: pair.source });
-        const rich = data?.item || null;
+        const [quickData, richData] = await Promise.all([
+          api('/api/translate/quick', { text: t, source_lang: pair.source, target_lang: pair.target }).catch(() => null),
+          api('/api/webapp/dictionary', { word: t, lookup_lang: pair.source }).catch(() => null),
+        ]);
+        const rich = richData?.item || null;
         if (rich) {
-          rich.__direction = String(data?.direction || rich.__direction || `${pair.source}-${pair.target}`).trim();
-          rich.__language_pair = data?.language_pair || null;
+          rich.__direction = String(richData?.direction || rich.__direction || `${pair.source}-${pair.target}`).trim();
+          rich.__language_pair = richData?.language_pair || null;
         }
+        const detected = String(quickData?.detected_source_lang || pair.source).toLowerCase();
+        const chipTargetLang = detected === pair.target ? pair.source : pair.target;
+        const quick = quickData ? {
+          source: t,
+          translation: String(quickData?.translation || '').trim(),
+          sourceLang: detected,
+          targetLang: chipTargetLang,
+          direction: `${detected}-${chipTargetLang}`,
+        } : null;
+        if (!rich && !(quick && quick.translation)) throw new Error('Не удалось перевести слово');
         await api('/api/webapp/dictionary/save', buildDictionarySavePayload({
-          rich, sourceText: t, quick: null, origin: 'webapp_quick_dictionary_related',
+          rich, sourceText: t, quick, origin: 'webapp_quick_dictionary_related',
         }));
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; });

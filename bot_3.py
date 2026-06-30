@@ -474,7 +474,7 @@ NUMDICT_COOLDOWN_DAYS = max(3, int((os.getenv("NUMDICT_COOLDOWN_DAYS") or "6").s
 NUMDICT_POOL_TARGET   = max(12, int((os.getenv("NUMDICT_POOL_TARGET") or "120").strip() or "120"))
 NUMDICT_SESSION_ITEMS = 3
 # Bump when the audio reading logic changes → new R2 key → no stale cached audio.
-NUMDICT_AUDIO_VERSION = "v3"  # v3 = audio grouping follows display_answer (pairs/triples match screen)
+NUMDICT_AUDIO_VERSION = "v4"  # v4 = alnum codes read digit runs in pairs (two-digit numbers), letters spelled
 CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "21").strip() or "21"))
 CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "15").strip() or "15"))
 CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))

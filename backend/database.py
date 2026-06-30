@@ -8160,6 +8160,7 @@ def ensure_webapp_tables() -> None:
             free_feel_word_daily = _env_decimal("FREE_FEEL_WORD_DAILY_LIMIT", "3")
             free_skill_training_daily = _env_decimal("FREE_SKILL_TRAINING_DAILY_LIMIT", "1")
             free_translation_daily_sets = _env_decimal("FREE_TRANSLATION_DAILY_SETS_LIMIT", "1")
+            free_numdict_practice_daily = _env_decimal("NUMDICT_PRACTICE_FREE_LIMIT", "3")
             plan_limit_seed_rows: list[tuple] = []
             if free_translation_daily_sets is not None and free_translation_daily_sets >= 0:
                 plan_limit_seed_rows.append(
@@ -8187,6 +8188,20 @@ def ensure_webapp_tables() -> None:
                         "free",
                         "skill_training_daily",
                         free_skill_training_daily,
+                        "count",
+                        "day",
+                    )
+                )
+            # numdict_practice_daily ("Числа на слух") is force-synced from env/default on
+            # every deploy (DO UPDATE below), like the other core free limits — the
+            # admin-economics seed only does DO NOTHING, so a stale first seed (20) would
+            # otherwise never drop to the intended 3.
+            if free_numdict_practice_daily is not None and free_numdict_practice_daily >= 0:
+                plan_limit_seed_rows.append(
+                    (
+                        "free",
+                        "numdict_practice_daily",
+                        free_numdict_practice_daily,
                         "count",
                         "day",
                     )
@@ -29497,7 +29512,7 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
     },
     "numdict_practice_daily": {
         "title": "Числа на слух (тренажёр)",
-        "free_limit": max(1, int((os.getenv("NUMDICT_PRACTICE_FREE_LIMIT") or "20").strip() or "20")),
+        "free_limit": max(1, int((os.getenv("NUMDICT_PRACTICE_FREE_LIMIT") or "3").strip() or "3")),
         "reset_policy": "daily_europe_vienna",
     },
 }

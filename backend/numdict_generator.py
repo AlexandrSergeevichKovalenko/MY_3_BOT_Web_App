@@ -165,16 +165,25 @@ def _gen_digits(length: int, group: int = 0) -> tuple[str, str]:
 
 def _gen_alnum(length: int, group: int = 0) -> tuple[str, str]:
     """Digit-heavy alphanumeric code: ALWAYS mixed — never letters-only and never
-    digits-only. ~1/3 letters sprinkled among digits (harder to catch by ear), at
-    least one letter and at least two digits."""
-    n_letters = max(1, min(length - 2, round(length * 0.34)))
-    letter_pos = set(random.sample(range(length), n_letters))
-    code = "".join(
-        random.choice(_ALNUM_LETTERS) if i in letter_pos else random.choice(_ALNUM_DIGITS)
-        for i in range(length)
+    digits-only. Digits come in CONTIGUOUS PAIRS so the TTS reads each as a two-digit
+    number (the whole point of the trainer — single-digit reading has no value, learners
+    confuse 2-/3-digit numbers); ~1/3 single letters are sprinkled BETWEEN the pairs.
+    Always ≥1 letter and ≥1 digit-pair (≥2 digits)."""
+    # ~1/3 single letters; keep the digit count EVEN so every digit lands in a pair.
+    # On odd parity prefer DROPPING a letter (stay digit-heavy), unless that leaves none.
+    n_letters = max(1, round(length * 0.34))
+    if (length - n_letters) % 2 == 1:
+        n_letters = n_letters - 1 if n_letters > 1 else n_letters + 1
+    n_letters = min(n_letters, length - 2)   # always leave ≥2 digits (one pair)
+    n_pairs = (length - n_letters) // 2
+    blocks = (
+        ["".join(random.choice(_ALNUM_DIGITS) for _ in range(2)) for _ in range(n_pairs)]
+        + [random.choice(_ALNUM_LETTERS) for _ in range(n_letters)]
     )
+    random.shuffle(blocks)
+    code = "".join(blocks)
     if group and group > 0:
-        disp = "-".join(code[i:i + group] for i in range(0, length, group))
+        disp = "-".join(code[i:i + group] for i in range(0, len(code), group))
     else:
         disp = code
     return code, disp

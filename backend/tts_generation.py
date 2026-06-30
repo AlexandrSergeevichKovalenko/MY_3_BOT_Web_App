@@ -579,21 +579,48 @@ def synthesize_page_with_timings(
     }
 
 
+def _numdict_digit_run_ssml(digits: str) -> list[str]:
+    """Read a pure-digit run the German way: grouped in PAIRS, each pair a compound
+    cardinal ("85" → «fünfundachtzig»). A pair with a leading zero or a lone trailing
+    digit falls back to digit-by-digit so the zero/odd digit is still heard. Returns the
+    list of SSML <say-as> fragments (caller joins them with breaks)."""
+    import re as _re
+    parts: list[str] = []
+    for i in range(0, len(digits), 2):
+        g = digits[i:i + 2]
+        gd = _re.sub(r"\D", "", g)
+        if not gd:
+            continue
+        if gd[0] == "0" or len(gd) == 1:
+            parts.append(f'<say-as interpret-as="digits">{gd}</say-as>')
+        else:
+            parts.append(f'<say-as interpret-as="cardinal">{gd}</say-as>')
+    return parts
+
+
 def _numdict_number_ssml(number_str: str, number_type: str) -> str:
     """Read a number the way Germans dictate it: in GROUPS, each group as a compound
     cardinal (units-before-tens), not digit-by-digit. e.g. "85" → «fünfundachtzig»,
     "227" → «zweihundertsiebenundzwanzig». Groups with a leading zero (phone area
     codes) are read digit-by-digit so the zero is heard ("0341" → «null-drei-vier-eins»).
-    Alphanumeric codes are spelled out character-by-character (that's how codes ARE
-    dictated). Honors spaces in the embedded number as the author's grouping; if there
-    are none, auto-groups into pairs."""
+    Alphanumeric codes: LETTERS are spelled, but digit runs are read in PAIRS as
+    two-digit numbers ("94NC72" → «vierundneunzig, N, C, zweiundsiebzig») — reading the
+    digits one-by-one has no training value (learners confuse 2-/3-digit numbers, not
+    single digits). Honors spaces in the embedded number as the author's grouping; if
+    there are none, auto-groups into pairs."""
     import re as _re
     from xml.sax.saxutils import escape as _esc
     nt = str(number_type or "digits").strip().lower()
     s = str(number_str or "").strip()
     if nt == "characters":
-        code = _re.sub(r"[^A-Za-z0-9]", "", s)   # spell the bare code, not the dashes
-        return f'<say-as interpret-as="characters">{_esc(code)}</say-as>'
+        code = _re.sub(r"[^A-Za-z0-9]", "", s)   # drop the dashes, keep letters+digits
+        parts: list[str] = []
+        for run in _re.findall(r"\d+|[A-Za-z]+", code):
+            if run[0].isdigit():
+                parts.extend(_numdict_digit_run_ssml(run))   # pairs → two-digit numbers
+            else:
+                parts.append(f'<say-as interpret-as="characters">{_esc(run)}</say-as>')
+        return '<break time="280ms"/>'.join(parts) or _esc(code)
     if nt == "cardinal":
         d = _re.sub(r"\D", "", s)
         return f'<say-as interpret-as="cardinal">{d}</say-as>' if d else _esc(s)
