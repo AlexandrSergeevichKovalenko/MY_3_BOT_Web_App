@@ -6340,6 +6340,20 @@ def _run_dict_dedup_nightly_safe() -> None:
         logging.exception("dict dedup nightly (bot scheduler) inline failed")
 
 
+def _run_telemetry_retention_safe() -> None:
+    """Bot-side NIGHTLY telemetry retention: prune unbounded log/telemetry tables to a
+    rolling window so they can never fill the small DB volume again (the disk-full that
+    crashed startup on 30.06). Touches ONLY pure-telemetry tables — never content or
+    analytics. Runs in a BackgroundScheduler thread, so it stays synchronous."""
+    try:
+        from backend.database import prune_telemetry_retention
+        days = int((os.getenv("TELEMETRY_RETENTION_DAYS") or "30").strip() or "30")
+        result = prune_telemetry_retention(retention_days=days)
+        logging.info("telemetry retention (bot scheduler): result=%s", result)
+    except Exception:
+        logging.exception("telemetry retention (bot scheduler) failed")
+
+
 def _run_daily_audio_safe() -> None:
     """Bot-side DAILY "mistakes audio" trigger. The dedicated SCHEDULER_SERVICE cron
     is the same unreliable path that never dispatched the nightly dict dedup, and the
@@ -30902,6 +30916,21 @@ def main():
                 hour=int((os.getenv("DICT_DEDUP_NIGHTLY_HOUR") or "3").strip() or "3"),
                 minute=int((os.getenv("DICT_DEDUP_NIGHTLY_MINUTE") or "40").strip() or "40"),
                 timezone=ZoneInfo(os.getenv("DICT_DEDUP_NIGHTLY_TZ") or "Europe/Vienna"),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=3600,
+            )
+        # -- NIGHTLY telemetry retention (03:25 Europe/Vienna) -----------------------
+        # Prune unbounded log/telemetry tables to a rolling window so they can never fill
+        # the small DB volume again (the 30.06 disk-full outage). Pure-telemetry only —
+        # never content/analytics. Set TELEMETRY_RETENTION_ENABLED=0 to disable.
+        if (os.getenv("TELEMETRY_RETENTION_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on"):
+            scheduler.add_job(
+                _run_telemetry_retention_safe,
+                "cron",
+                hour=int((os.getenv("TELEMETRY_RETENTION_HOUR") or "3").strip() or "3"),
+                minute=int((os.getenv("TELEMETRY_RETENTION_MINUTE") or "25").strip() or "25"),
+                timezone=ZoneInfo(os.getenv("TELEMETRY_RETENTION_TZ") or "Europe/Vienna"),
                 coalesce=True,
                 max_instances=1,
                 misfire_grace_time=3600,

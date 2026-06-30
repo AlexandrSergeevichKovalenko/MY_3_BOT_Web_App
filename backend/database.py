@@ -29707,6 +29707,47 @@ def ensure_admin_economics_schema() -> None:
                 )
 
 
+# Unbounded telemetry/log tables: one row per event, never read by the long-term
+# analytics (analytics.py reads CONTENT tables; cost history lives in the daily_cost_rollup
+# aggregate). Old rows here are safe to drop so they can't fill a small DB volume.
+# (table, timestamp_column). NEVER add a content/analytics/aggregate table here
+# (daily_sentences, translations, user_progress, card_review_log, detailed_mistakes,
+# webapp_dictionary_queries, daily_cost_rollup, *_daily_snapshots).
+TELEMETRY_RETENTION_TABLES: tuple[tuple[str, str], ...] = (
+    ("bt_3_billing_events", "created_at"),
+    ("bt_3_user_api_snapshots", "refreshed_at"),
+    ("bt_3_limit_runtime_events", "created_at"),
+    ("bt_3_telegram_system_messages", "created_at"),
+)
+
+
+def prune_telemetry_retention(retention_days: int = 30) -> dict[str, int]:
+    """Delete rows older than `retention_days` from the unbounded telemetry/log tables
+    (TELEMETRY_RETENTION_TABLES) so they can never fill the DB volume. Each table is
+    pruned independently — one failure never blocks the rest. Returns {table:
+    deleted_rows} (-1 marks a per-table failure). autovacuum reclaims the freed space
+    for reuse; no manual VACUUM (would need scarce disk on a tight volume)."""
+    days = max(1, int(retention_days or 30))
+    deleted: dict[str, int] = {}
+    for table, ts_col in TELEMETRY_RETENTION_TABLES:
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"DELETE FROM {table} WHERE {ts_col} < NOW() - make_interval(days => %s);",
+                        (days,),
+                    )
+                    deleted[table] = cursor.rowcount or 0
+            logging.info(
+                "telemetry retention: pruned %s rows from %s (older than %sd)",
+                deleted[table], table, days,
+            )
+        except Exception:
+            logging.warning("telemetry retention: failed to prune %s", table, exc_info=True)
+            deleted[table] = -1
+    return deleted
+
+
 def log_limit_runtime_event(
     *,
     feature_code: str,
