@@ -32709,6 +32709,18 @@ function AppInner() {
 
                       return (
                         <div className="vocab-library">
+                          {(srsQueueInfo?.due_count ?? 0) > 0 && (
+                            <button
+                              type="button"
+                              className="vocab-due-cta"
+                              onClick={() => openFlashcardsSetup(flashcardsRef)}
+                            >
+                              <span className="vocab-due-cta-ic">🔁</span>
+                              <span className="vocab-due-cta-label">{tr('Пора повторить', 'Zeit zu wiederholen')}</span>
+                              <span className="vocab-due-cta-count">{srsQueueInfo.due_count}</span>
+                              <span className="vocab-due-cta-arrow">→</span>
+                            </button>
+                          )}
                           {(!isOnline || vocabOfflinePendingCount > 0) && (
                             <div className={`vocab-offline-banner ${!isOnline ? '' : 'is-syncing'}`}>
                               <span className="vocab-offline-icon">
