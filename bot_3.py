@@ -3253,7 +3253,7 @@ DRIP_TICK_MINUTES = max(1, int((os.getenv("DRIP_TICK_MINUTES") or "15").strip() 
 MIN_DRIP_INTERVAL_MINUTES = max(1, int((os.getenv("MIN_DRIP_INTERVAL_MINUTES") or "30").strip() or "30"))
 # Types the drip can pull now (each needs a pool-pick + send_X_to_chat). Starts with
 # aufgabe — its many formats already give variety; more kinds added next.
-_DRIP_KINDS = ["aufgabe", "listening", "anagram", "rebus", "crossword"]
+_DRIP_KINDS = ["aufgabe", "listening", "anagram", "rebus", "crossword", "numdict"]
 _DRIP_AUFGABE_FORMATS = ["cloze", "satzbau", "synonym", "antonym", "transform",
                          "error", "wortbildung", "wortgruppe"]
 
@@ -3355,6 +3355,17 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
             try: await asyncio.to_thread(mark_crossword_sent, str(entry.get("crossword_id") or ""))
             except Exception: pass
         return ok
+    if kind == "numdict":
+        if not _numdict_enabled():
+            return False
+        batch = (await asyncio.to_thread(pick_next_numdict_batch, count=NUMDICT_SESSION_ITEMS,
+                                         cooldown_days=NUMDICT_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_numdict_batch, count=NUMDICT_SESSION_ITEMS,
+                                            cooldown_days=0))
+        if not batch or len(batch) < NUMDICT_SESSION_ITEMS:
+            return False
+        return await send_numdict_to_chat(context, items=batch, slot_date=slot_date,
+                                          slot_hour=slot_hour, chat_id=uid, target_user_id=uid, held=held)
     return False
 
 
