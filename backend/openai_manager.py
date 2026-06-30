@@ -2419,18 +2419,27 @@ Return STRICT JSON with keys:
 Rules:
 - Output ONLY JSON.
 - semantic_category: pick the single best-matching category from the fixed list above.
-- All explanatory note fields must be written in the learner-facing explanation language.
-- NEVER use English for explanations/meanings unless the looked-up item itself is English.
-  The explanation language is source_language or target_language — never a third language.
-- Use source_language as the explanation language by default, except when target_language is clearly the learner language from the input context.
-- All explanatory fields must be written consistently in that explanation language:
-  translations[].value, translations[].context, meanings.primary.value, meanings.primary.context,
-  meanings.secondary[].value, meanings.secondary[].context, etymology_note,
-  memory_tip, expression_note, part_of_speech_note, raw_text.
-- Examples must help the learner read target language:
+- LANGUAGE SPLIT — THIS IS CRITICAL. There are TWO distinct kinds of fields:
+  (A) WORD/TRANSLATION values = the foreign words the learner is studying. These are ALWAYS in
+      target_language: word_target, translations[].value, meanings.primary.value,
+      meanings.secondary[].value, synonyms, antonyms, related_words[].word, common_collocations.
+  (B) EXPLANATIONS the learner reads to understand = ALWAYS in source_language (the user's own
+      base language). NEVER write these in target_language, NEVER in a third language:
+      translations[].context, meanings.primary.context, meanings.secondary[].context,
+      etymology_note, memory_tip, expression_note, part_of_speech_note, register_note,
+      real_life_usage, related_words[].gloss, word_formation parts[].gloss, word_formation note,
+      raw_text.
+  Do NOT infer the explanation language from the value fields — the values are foreign on purpose.
+  The explanation language is source_language, full stop. Example: source_language=ru, target_language=de —
+  translations[].value="das Gerede", translations[].context MUST be Russian (e.g. "разговорное,
+  неодобрительное"), NOT German.
+  (Only exception: if the looked-up item itself is English, the item word may stay English, but every
+  EXPLANATION still stays in source_language.)
+- Examples are BILINGUAL and help the learner read the target language:
   meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
   meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
   usage_examples[].target must be in target_language and usage_examples[].source must be in source_language.
+  Always provide BOTH sides — never leave the source side in target_language.
 - For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
 - Provide 3 most frequent real-life translation variants in "translations" whenever possible.
   - First must be most common (is_primary=true).
@@ -2523,6 +2532,11 @@ Return STRICT JSON with keys:
 Rules:
 - Output ONLY JSON.
 - Keep everything compact.
+- LANGUAGE SPLIT: word_target, translations[].value and usage_examples[].target are in
+  target_language (the foreign words being learned). But translations[].context,
+  usage_examples[].source and raw_text are EXPLANATIONS and MUST be in source_language (the user's
+  own base language) — never in target_language. Do not infer the explanation language from the
+  foreign value fields. E.g. source_language=ru, target_language=de → context in Russian, not German.
 - Return at most 2 translation variants.
 - Return at most 1 usage example.
 - Return exactly 2 save_worthy_options whenever possible:
@@ -2594,6 +2608,10 @@ Rules:
 - Output ONLY JSON.
 - Return exactly one result object for every input item whenever possible.
 - Keep every item compact.
+- LANGUAGE SPLIT: word_target, translations[].value and usage_examples[].target are in
+  target_language; translations[].context, usage_examples[].source and raw_text are EXPLANATIONS
+  and MUST be in source_language (the user's base language), never in target_language. Do not infer
+  the explanation language from the foreign value fields.
 - Return at most 2 translation variants per item.
 - Return at most 1 usage example per item.
 - save_worthy_options:
@@ -2690,10 +2708,14 @@ Return STRICT JSON with keys:
 Reader-focused rules:
 - Output ONLY JSON.
 - Keep all text compact and learner-friendly; avoid encyclopedic wording.
-- The learner-facing explanation language must ALWAYS be source_language.
-- All explanatory fields must be written in source_language:
-  translations[].value, translations[].context, meanings.primary.value, meanings.primary.context,
-  meanings.secondary[].value, meanings.secondary[].context, etymology_note, usage_note, memory_tip, raw_text.
+- LANGUAGE SPLIT — CRITICAL:
+  - WORD/TRANSLATION values are the foreign words being learned and stay in target_language:
+    word_target, translations[].value, meanings.primary.value, meanings.secondary[].value.
+  - EXPLANATIONS the learner reads must ALWAYS be in source_language (the user's base language),
+    NEVER in target_language: translations[].context, meanings.primary.context,
+    meanings.secondary[].context, etymology_note, usage_note, memory_tip, raw_text.
+  - Do not infer the explanation language from the foreign value fields. E.g. source_language=ru,
+    target_language=de → values in German, all context/notes in Russian.
 - Meanings:
   - primary meaning must be short, simple, practical.
   - include no more than 2 secondary meanings.
