@@ -7346,6 +7346,36 @@ def _strip_german_leading_article(text: str) -> tuple[str, str]:
     return "", compact
 
 
+# Words that cannot be the head noun right after a definite article — if a leading
+# "der/die/das" is followed by one of these (or by a lowercase word), the article was
+# prepended to a clause by mistake, not attached to a noun. German nouns are
+# capitalised, so a real noun head is a capitalised word NOT in this set.
+_GERMAN_NON_NOUN_LEADERS = frozenset({
+    "im", "am", "beim", "zum", "zur", "vom", "ins", "aufs", "ans", "durchs", "fürs", "ums",
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "eines",
+    "mein", "dein", "sein", "ihr", "unser", "euer", "kein", "keine", "keinen", "keinem",
+    "dieser", "diese", "dieses", "diesen", "diesem", "jener", "jene", "jeder", "jede", "alle", "man",
+    "ich", "du", "er", "sie", "es", "wir", "jemanden", "jemand", "niemand", "etwas", "nichts",
+    "lass", "lasst", "sei", "seid", "hab", "habe", "geh", "komm", "mach", "nimm", "gib", "schau", "bitte",
+})
+
+
+def _strip_spurious_leading_article(text: str) -> str | None:
+    """If `text` is a definite article wrongly prepended to a clause (the next word is
+    lowercase or a known non-noun leader), return the text without it. Else None — so a
+    real noun phrase ("der Bösewicht im Film", "Die Fälschung von Daten …") is preserved."""
+    article, bare = _strip_german_leading_article(text)
+    if not article or not bare:
+        return None
+    toks = bare.split()
+    if len(toks) < 2:  # "der Flur" → a single noun, the article belongs
+        return None
+    head = toks[0]
+    if head[:1].islower() or head.casefold() in _GERMAN_NON_NOUN_LEADERS:
+        return bare
+    return None
+
+
 def _normalize_saved_german_single_word(
     value: str | None,
     *,
@@ -7377,6 +7407,26 @@ def _apply_german_headword_normalization(
     target_lang: str,
 ) -> dict[str, Any]:
     normalized = dict(payload)
+    # Guard against the LLM labelling a whole SENTENCE as a noun and prepending a spurious
+    # definite article to it (e.g. RU "В коридоре свет горит" → entry_kind=sentence yet
+    # pos=noun, word_de="der Im Flur brennt das Licht"). That entry_kind=sentence + pos=noun
+    # pairing is self-contradictory and only happens on this misclassification — a real noun
+    # phrase ("der Bösewicht im Film") is entry_kind=word, so it is left untouched. Strip the
+    # bogus leading article and drop the noun label.
+    if (str(normalized.get("entry_kind") or "").strip().lower() == "sentence"
+            and str(normalized.get("part_of_speech") or "").strip().lower() == "noun"):
+        _gk = "source_text" if _normalize_short_lang_code(source_lang, fallback="") == "de" else (
+            "target_text" if _normalize_short_lang_code(target_lang, fallback="") == "de" else "")
+        _gtext = str((normalized.get(_gk) if _gk else "") or normalized.get("word_de") or "").strip()
+        _fixed = _strip_spurious_leading_article(_gtext)
+        if _fixed:
+            if _gk:
+                normalized[_gk] = _fixed
+            if normalized.get("word_de"):
+                normalized["word_de"] = _fixed
+            normalized["article"] = ""
+            normalized["part_of_speech"] = ""
+            return normalized
     if str(normalized.get("entry_kind") or "").strip().lower() != "word":
         return normalized
     part_of_speech = str(normalized.get("part_of_speech") or "").strip().lower()
