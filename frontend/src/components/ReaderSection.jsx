@@ -171,7 +171,7 @@ export default function ReaderSection(props) {
   const readerAudioPremiumLocked = readerAudioPremiumKnown && !readerAudioPremiumEnabled;
   const readerAudioPremiumHint = tr(
     'Аудио в книге доступно только по премиум подписке.',
-    'Audio im Reader ist nur mit Premium verfuegbar.'
+    'Audio im Reader ist nur mit Premium verfügbar.'
   );
 
   return (
@@ -256,13 +256,13 @@ export default function ReaderSection(props) {
                       />
                       {readerSelectedFile && (
                         <small className="webapp-muted">
-                          {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
+                          {tr('Выбран файл', 'Datei gewählt')}: {readerSelectedFile.name}
                         </small>
                       )}
                     </label>
                     <div className="webapp-actions">
                       <button type="submit" className="primary-button" disabled={readerLoading}>
-                        {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
+                        {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser öffnen')}
                       </button>
                     </div>
                   </form>
@@ -439,7 +439,7 @@ export default function ReaderSection(props) {
                               className="reader-lib-action reader-lib-action-open"
                               onClick={(e) => { e.stopPropagation(); openReaderDocument(item.id); }}
                               disabled={isOpening}
-                              title={tr('Открыть книгу', 'Buch oeffnen')}
+                              title={tr('Открыть книгу', 'Buch öffnen')}
                             >
                               {isOpening ? (
                                 <svg className="reader-lib-spinner reader-lib-action-icon" viewBox="0 0 24 24" fill="none">
@@ -505,14 +505,14 @@ export default function ReaderSection(props) {
                                 )}
                               </span>
                               <span className="reader-lib-action-label">
-                                {Boolean(item?.is_archived) ? tr('Вернуть', 'Zurueck') : tr('Скрыть', 'Ausblenden')}
+                                {Boolean(item?.is_archived) ? tr('Вернуть', 'Zurück') : tr('Скрыть', 'Ausblenden')}
                               </span>
                             </button>
                             <button
                               type="button"
                               className="reader-lib-action is-danger"
                               onClick={(e) => { e.stopPropagation(); deleteReaderDocument(item.id); }}
-                              title={tr('Удалить', 'Loeschen')}
+                              title={tr('Удалить', 'Löschen')}
                             >
                               <span className="reader-lib-action-icon" aria-hidden="true">
                                 <svg viewBox="0 0 18 18" fill="none">
@@ -521,7 +521,7 @@ export default function ReaderSection(props) {
                                 </svg>
                               </span>
                               <span className="reader-lib-action-label">
-                                {tr('Удалить', 'Loeschen')}
+                                {tr('Удалить', 'Löschen')}
                               </span>
                             </button>
                           </div>
@@ -566,7 +566,7 @@ export default function ReaderSection(props) {
                           {tr('Скачать файл', 'Datei herunterladen')}
                         </a>
                         <button type="button" className="secondary-button" onClick={closeReaderAudioPreview}>
-                          {tr('Назад', 'Zurueck')}
+                          {tr('Назад', 'Zurück')}
                         </button>
                       </div>
                     </div>
@@ -880,7 +880,7 @@ export default function ReaderSection(props) {
                           className="reader-epub-original-cover-image"
                         />
                         <span className="reader-epub-original-cover-caption">
-                          {tr('Это оригинальная обложка EPUB. Нажми, чтобы открыть текст книги.', 'Das ist das originale EPUB-Cover. Tippe, um den Buchtext zu oeffnen.')}
+                          {tr('Это оригинальная обложка EPUB. Нажми, чтобы открыть текст книги.', 'Das ist das originale EPUB-Cover. Tippe, um den Buchtext zu öffnen.')}
                         </span>
                       </button>
                     )}
@@ -945,7 +945,7 @@ export default function ReaderSection(props) {
                     setReaderShowPageJump(true);
                   }}
                   title={readerUsesOriginalEpubLayout
-                    ? tr('В оригинальном EPUB число страниц не фиксировано и зависит от движка рендера.', 'Im originalen EPUB ist die Seitenzahl nicht fest und haengt vom Rendering ab.')
+                    ? tr('В оригинальном EPUB число страниц не фиксировано и зависит от движка рендера.', 'Im originalen EPUB ist die Seitenzahl nicht fest und hängt vom Rendering ab.')
                     : tr('Перейти к странице', 'Zur Seite springen')}
                 >
                   {readerUsesOriginalEpubLayout
@@ -1219,11 +1219,11 @@ export default function ReaderSection(props) {
                       {readerLayoutMode === 'original'
                         ? tr(
                           'Сейчас открыт оригинальный режим: читалка показывает исходную EPUB/PDF-вёрстку книги. Любое изменение шрифта переключит книгу в адаптивный текстовый режим.',
-                          'Aktuell ist der Originalmodus aktiv: Der Reader zeigt das urspruengliche EPUB/PDF-Layout des Buches. Jede Schriftanpassung schaltet in den adaptiven Textmodus um.'
+                          'Aktuell ist der Originalmodus aktiv: Der Reader zeigt das ursprüngliche EPUB/PDF-Layout des Buches. Jede Schriftanpassung schaltet in den adaptiven Textmodus um.'
                         )
                         : tr(
                           'Сейчас открыт адаптивный режим: текст пересчитан под ваш шрифт и экран. Кнопка "Оригинал" вернёт исходную вёрстку книги.',
-                          'Aktuell ist der adaptive Modus aktiv: Der Text wurde fuer deine Schrift und deinen Bildschirm neu berechnet. Mit "Original" kehrst du zum urspruenglichen Buchlayout zurueck.'
+                          'Aktuell ist der adaptive Modus aktiv: Der Text wurde für deine Schrift und deinen Bildschirm neu berechnet. Mit "Original" kehrst du zum ursprünglichen Buchlayout zurück.'
                         )}
                     </div>
                   )}
@@ -1235,12 +1235,12 @@ export default function ReaderSection(props) {
                           {
                             key: 'original',
                             label: tr('Original', 'Original'),
-                            hint: tr('Исходная EPUB/PDF-вёрстка', 'Urspruengliches EPUB/PDF-Layout'),
+                            hint: tr('Исходная EPUB/PDF-вёрстка', 'Ursprüngliches EPUB/PDF-Layout'),
                           },
                           {
                             key: 'custom',
                             label: tr('Textmodus', 'Textmodus'),
-                            hint: tr('Нужен для word-tap и аудио', 'Fuer Wort-Tap und Audio'),
+                            hint: tr('Нужен для word-tap и аудио', 'Für Wort-Tap und Audio'),
                           },
                         ].map((option) => (
                           <button
@@ -1302,14 +1302,14 @@ export default function ReaderSection(props) {
                       <span className="webapp-muted" style={{ fontSize: 11, marginTop: 4 }}>
                         {readerAudioEngineSupported
                           ? tr('Gapless убирает паузу при перелистывании. Применяется со следующего запуска аудио.',
-                               'Gapless entfernt die Pause beim Seitenwechsel. Wirkt ab dem naechsten Audiostart.')
-                          : tr('Web Audio не поддерживается в этом браузере.', 'Web Audio wird in diesem Browser nicht unterstuetzt.')}
+                               'Gapless entfernt die Pause beim Seitenwechsel. Wirkt ab dem nächsten Audiostart.')
+                          : tr('Web Audio не поддерживается в этом браузере.', 'Web Audio wird in diesem Browser nicht unterstützt.')}
                       </span>
                     </label>
                   )}
 
                   <label className="webapp-field">
-                    <span>{tr('Размер шрифта', 'Schriftgroesse')}</span>
+                    <span>{tr('Размер шрифта', 'Schriftgröße')}</span>
                     <input
                       type="range"
                       min="14"
@@ -1324,7 +1324,7 @@ export default function ReaderSection(props) {
                     <small className="webapp-muted">{readerFontSize}px</small>
                   </label>
                   <label className="webapp-field">
-                    <span>{tr('Жирность текста', 'Schriftstaerke')}</span>
+                    <span>{tr('Жирность текста', 'Schriftstärke')}</span>
                     <input
                       type="range"
                       min="400"

@@ -60,7 +60,7 @@ export default function HomeMoreTiles({
       { key: 'sk', labelRu: 'Карта\nнавыков', labelDe: 'Skill-\nMap', emoji: '🧠', cls: 'hdt-green', sectionKey: 'home_skills', refKey: 'skillsRef' },
       { key: 'su', labelRu: 'Подписка\nи тариф', labelDe: 'Abo\nund Tarif', emoji: '💳', cls: 'hdt-indigo', sectionKey: 'subscription', refKey: 'billingRef' },
       { key: 'mo', labelRu: 'Фильмы\nи сцены', labelDe: 'Filme\nund Szenen', emoji: '🎬', cls: 'hdt-red', sectionKey: 'movies', refKey: 'moviesRef' },
-      { key: 'str', labelRu: 'Тренировка\nнавыка', labelDe: 'Skill-\nTraining', emoji: '🧩', cls: 'hdt-violet', sectionKey: 'skill_training', refKey: 'skillTrainingRef', disabled: !isSkillTrainingReady, badge: !isSkillTrainingReady ? tr('Позже', 'Spaeter') : '' },
+      { key: 'str', labelRu: 'Тренировка\nнавыка', labelDe: 'Skill-\nTraining', emoji: '🧩', cls: 'hdt-violet', sectionKey: 'skill_training', refKey: 'skillTrainingRef', disabled: !isSkillTrainingReady, badge: !isSkillTrainingReady ? tr('Позже', 'Später') : '' },
     ];
     if (canViewEconomics) {
       defs.splice(6, 0, { key: 'ec', labelRu: 'Экономика\nи лимиты', labelDe: 'Kosten\nund Limits', emoji: '💹', cls: 'hdt-green', sectionKey: 'economics', refKey: 'economicsRef' });

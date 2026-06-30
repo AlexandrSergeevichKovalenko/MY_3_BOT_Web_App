@@ -1741,7 +1741,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
-            title: 'Welche regelmaessigen Nachrichten dazu kommen',
+            title: 'Welche regelmäßigen Nachrichten dazu kommen',
             items: [
               'Private Wochenanalytik kommt nach den aktuellen Standardzeiten meist abends gegen 19:30 mit Charts.',
               'Gruppen-Tageszusammenfassungen kommen typischerweise spät am Abend, Gruppen-Wochensummaries sonntags spät am Abend.',
@@ -1808,7 +1808,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'Nach den aktuellen Standardzeiten: Tagesplan morgens, Erinnerungen im Tagesverlauf und Abend-Erinnerung.',
               'Audio-Fehlererklärungen kommen typischerweise tagsüber und beziehen sich meist auf den letzten Lerntag.',
-              'Private Analytik und Charts kommen regelmaessig, während die Mini-App die volle Detailansicht liefert.',
+              'Private Analytik und Charts kommen regelmäßig, während die Mini-App die volle Detailansicht liefert.',
             ],
           },
         ],
@@ -5665,7 +5665,7 @@ function AppInner() {
     '⏳ Perfekt и Präteritum',
     '💭 Konjunktiv II',
     '🧮 Passiv',
-    '🔍 Relativsaetze',
+    '🔍 Relativsätze',
     '⚙️ zu + Infinitiv / um ... zu',
     '✍️ Свой грамматический фокус',
   ]);
@@ -14222,7 +14222,7 @@ function AppInner() {
       },
       {
         key: 'rhythm',
-        title: tr('Регулярность', 'Regelmaessigkeit'),
+        title: tr('Регулярность', 'Regelmäßigkeit'),
         items: [
           {
             key: 'avg-time',

@@ -7634,6 +7634,115 @@ body {
   flex-shrink: 0;
 }
 
+/* Fullscreen word card (tap a word → opens over everything, × to close) */
+.vocab-word-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 350;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(2px);
+  animation: vocabFsFade 0.18s ease;
+}
+@keyframes vocabFsFade { from { opacity: 0; } to { opacity: 1; } }
+.vocab-word-fullscreen-card {
+  width: 100%;
+  max-width: 560px;
+  height: var(--app-height, 100dvh);
+  display: flex;
+  flex-direction: column;
+  background: #0f1623;
+  animation: vocabFsSlide 0.26s cubic-bezier(.22,1,.36,1) both;
+}
+@keyframes vocabFsSlide {
+  from { transform: translateY(16px); opacity: 0.4; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+.vocab-word-fullscreen-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(env(safe-area-inset-top, 0px) + 16px) 18px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: #0f1623;
+}
+.vocab-word-fullscreen-heading {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+.vocab-word-fullscreen-word {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #F1F5F9;
+  line-height: 1.2;
+}
+.vocab-word-fullscreen-trans {
+  font-size: 15px;
+  color: #94A3B8;
+  line-height: 1.35;
+}
+.vocab-word-fullscreen-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #64748B;
+}
+.vocab-word-fullscreen-meta em { font-style: italic; }
+.vocab-word-fullscreen-close {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.08);
+  color: #E2E8F0;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, transform 0.1s;
+}
+.vocab-word-fullscreen-close:active { transform: scale(0.92); background: rgba(255,255,255,0.14); }
+.vocab-word-fullscreen-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 6px 20px;
+}
+.vocab-word-fullscreen-actions {
+  flex-shrink: 0;
+  padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 14px);
+  border-top: 1px solid rgba(255,255,255,0.08);
+  background: #0f1623;
+}
+.webapp-page.is-theme-light .vocab-word-fullscreen-card,
+.webapp-page.is-theme-light .vocab-word-fullscreen-header,
+.webapp-page.is-theme-light .vocab-word-fullscreen-actions { background: #fff8ee; }
+.webapp-page.is-theme-light .vocab-word-fullscreen-header,
+.webapp-page.is-theme-light .vocab-word-fullscreen-actions { border-color: rgba(0,0,0,0.1); }
+.webapp-page.is-theme-light .vocab-word-fullscreen-word { color: #1f1a14; }
+.webapp-page.is-theme-light .vocab-word-fullscreen-trans { color: #7a6552; }
+.webapp-page.is-theme-light .vocab-word-fullscreen-meta { color: #a08870; }
+.webapp-page.is-theme-light .vocab-word-fullscreen-close {
+  background: rgba(0,0,0,0.06);
+  color: #1f1a14;
+}
+
 /* Edit bottom sheet */
 .vocab-modal-overlay {
   position: fixed;
@@ -24600,6 +24709,31 @@ body {
 }
 
 .webapp-page.is-theme-light .billing-plan-details-modal li {
+  color: #3a3127;
+}
+
+.webapp-page.is-theme-light .billing-zone__title,
+.webapp-page.is-theme-light .billing-sponsor-wall__title {
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .billing-zone__hint {
+  color: #5b4c3a;
+}
+
+.webapp-page.is-theme-light .billing-zone--support {
+  border-top-color: rgba(171, 126, 72, 0.3);
+}
+
+.webapp-page.is-theme-light .billing-sponsor-plaque {
+  border-color: rgba(191, 137, 71, 0.5);
+  background: rgba(245, 158, 11, 0.16);
+  color: #7a4e19;
+}
+
+.webapp-page.is-theme-light .billing-sponsor-chip {
+  border-color: rgba(171, 126, 72, 0.32);
+  background: rgba(255, 248, 238, 0.92);
   color: #3a3127;
 }
 
