@@ -7721,9 +7721,16 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 14px 6px 20px;
+  padding: 14px 14px 24px;
 }
+/* Keep deep-card tables/blocks within the card width (no horizontal shift). */
+.vocab-word-fullscreen-body > * { max-width: 100%; }
+.vocab-word-fullscreen-body .dq-card,
+.vocab-word-fullscreen-body .dq-gt,
+.vocab-word-fullscreen-body table { max-width: 100%; }
+.vocab-word-fullscreen-body .dq-gt { overflow-x: auto; }
 .vocab-word-fullscreen-actions {
   flex-shrink: 0;
   padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 14px);

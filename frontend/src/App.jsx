@@ -6135,6 +6135,10 @@ function AppInner() {
 
   const dictionaryRef = useRef(null);
   const dictionaryResultRef = useRef(null);
+  // The whole app root. The fullscreen word card portals here so it escapes the
+  // dictionary's inner overflow:hidden scroll containers, while still inheriting
+  // the --dmps-* theme vars (defined on .webapp-page.is-theme-light).
+  const webappPageRef = useRef(null);
   const prevDictLoadingRef = useRef(false);
   const theoryRef = useRef(null);
   const skillTrainingRef = useRef(null);
@@ -30229,6 +30233,7 @@ function AppInner() {
     }
     return (
       <div
+        ref={webappPageRef}
         className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
         data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
       >
@@ -33110,7 +33115,7 @@ function AppInner() {
                                           <span className={`vocab-expand-arrow ${isExpanded ? 'is-open' : ''}`}>›</span>
                                         </button>
                                       </div>
-                                      {isExpanded && (
+                                      {isExpanded && webappPageRef.current && createPortal((
                                         <div
                                           className="vocab-word-fullscreen-overlay"
                                           onClick={(e) => { if (e.target.classList.contains('vocab-word-fullscreen-overlay')) setVocabExpandedId(null); }}
@@ -33217,7 +33222,7 @@ function AppInner() {
                                             </div>
                                           </div>
                                         </div>
-                                      )}
+                                      ), webappPageRef.current)}
                                     </div>
                                   );
                                 })}
