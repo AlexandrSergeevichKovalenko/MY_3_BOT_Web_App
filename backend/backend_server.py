@@ -48452,7 +48452,14 @@ def _dispatch_daily_audio(target_date: date) -> dict:
     group_targets = _collect_group_summary_targets()
     group_chat_ids = [int(item.get("chat_id") or 0) for item in group_targets if int(item.get("chat_id") or 0) < 0]
 
-    if group_chat_ids:
+    # Delivery routing: by default every user gets their OWN mistakes-audio in their
+    # PRIVATE chat (via _resolve_user_delivery_chat_id). The legacy group-broadcast path
+    # (send each member's audio into the group chats) silently swallowed private delivery
+    # whenever ANY group target existed — that's why users stopped getting audio "в личку".
+    # It's kept behind DAILY_AUDIO_GROUP_BROADCAST (default OFF) for reversibility only.
+    group_broadcast = (os.getenv("DAILY_AUDIO_GROUP_BROADCAST") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+    if group_chat_ids and group_broadcast:
         for chat_id in group_chat_ids:
             member_user_ids = set(list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False))
 
