@@ -16220,7 +16220,13 @@ def upsert_user_streak(user_id: int, *, current: int, longest: int, last_active,
 
 
 def get_users_active_on_date(play_date) -> set:
-    """User ids with any learning activity on play_date (translations or messages)."""
+    """User ids with any learning activity on play_date — drives the daily streak.
+
+    "Active" must match the promise shown to users: *answered at least one task OR
+    translated a phrase*. Interactive answers live in bt_3_challenge_results (anagram,
+    aufgabe, rebus, crossword, sprint, …) and bt_3_article_quiz_answers — NOT in
+    bt_3_translations/bt_3_messages, so leaving them out silently broke streaks for
+    anyone who plays the games but doesn't translate every day."""
     out: set = set()
     try:
         with get_db_connection_context() as conn:
@@ -16230,8 +16236,14 @@ def get_users_active_on_date(play_date) -> set:
                     WHERE timestamp::date = %s AND user_id IS NOT NULL
                     UNION
                     SELECT DISTINCT user_id FROM bt_3_messages
-                    WHERE timestamp::date = %s AND user_id IS NOT NULL;
-                """, (play_date, play_date))
+                    WHERE timestamp::date = %s AND user_id IS NOT NULL
+                    UNION
+                    SELECT DISTINCT user_id FROM bt_3_challenge_results
+                    WHERE created_at::date = %s AND user_id IS NOT NULL
+                    UNION
+                    SELECT DISTINCT user_id FROM bt_3_article_quiz_answers
+                    WHERE answered_at::date = %s AND user_id IS NOT NULL;
+                """, (play_date, play_date, play_date, play_date))
                 for r in cur.fetchall() or []:
                     if r and r[0]:
                         out.add(int(r[0]))
