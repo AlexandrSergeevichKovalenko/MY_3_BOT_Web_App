@@ -375,7 +375,7 @@ function readerPageTextFits(measureNode, text) {
 const READER_HEADING_MINOR_WORDS = new Set([
   'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'to', 'und', 'oder',
   'der', 'die', 'das', 'dem', 'den', 'des', 'ein', 'eine', 'einer', 'einem', 'einen', 'im', 'am', 'vom', 'zum',
-  'zur', 'von', 'mit', 'ohne', 'ueber', 'unter', 'vor', 'nach', 'bei', 'aus', 'als', 'ist', 'war', 'wie', 'zu',
+  'zur', 'von', 'mit', 'ohne', 'über', 'unter', 'vor', 'nach', 'bei', 'aus', 'als', 'ist', 'war', 'wie', 'zu',
   'и', 'в', 'во', 'на', 'с', 'со', 'к', 'ко', 'о', 'об', 'от', 'по', 'под', 'над', 'для', 'без', 'при', 'или',
   'а', 'но', 'что', 'как', 'из', 'у', 'за',
 ]);
@@ -752,7 +752,7 @@ function formatEconomicsCompactNumber(value) {
   return numeric.toFixed(3);
 }
 
-function formatBillingPriceLabel(plan, uiLang, fallbackLabel = '') {
+function formatBillingPriceLabel(plan, uiLang, fallbackLabel = '', forceOneTime = false) {
   const amountValue = Number(plan?.amount_value);
   const currency = String(plan?.currency || '').trim().toUpperCase();
   const interval = String(plan?.recurring_interval || '').trim().toLowerCase();
@@ -761,6 +761,12 @@ function formatBillingPriceLabel(plan, uiLang, fallbackLabel = '') {
     return String(fallbackLabel || '').trim();
   }
   const amountText = `${amountValue.toFixed(2)} ${currency}`;
+  // Донат-тарифы — разовое «спасибо»: никогда не показываем «/мес», даже если в
+  // Stripe цена пока заведена как recurring.
+  if (forceOneTime) {
+    const onceLabel = uiLang === 'de' ? 'einmalig' : 'разово';
+    return `${amountText} · ${onceLabel}`;
+  }
   if (!interval) {
     return amountText;
   }
@@ -904,10 +910,10 @@ function formatLimitResetDateTime(value, locale = 'ru-RU') {
 const SKILL_CATEGORY_LOCALIZATION = {
   'Verbs': { ru: 'Глаголы', de: 'Verben' },
   'Tenses': { ru: 'Времена', de: 'Zeiten' },
-  'Prepositions': { ru: 'Предлоги', de: 'Praepositionen' },
+  'Prepositions': { ru: 'Предлоги', de: 'Präpositionen' },
   'Conjunctions': { ru: 'Союзы', de: 'Konnektoren' },
   'Word Order': { ru: 'Порядок слов', de: 'Wortstellung' },
-  'Cases': { ru: 'Падежи', de: 'Faelle' },
+  'Cases': { ru: 'Падежи', de: 'Fälle' },
   'Articles & Determiners': { ru: 'Артикли и определители', de: 'Artikel und Begleiter' },
   'Pronouns': { ru: 'Местоимения', de: 'Pronomen' },
   'Nouns': { ru: 'Существительные', de: 'Nomen' },
@@ -932,9 +938,9 @@ const SKILL_SEGMENT_LOCALIZATION = {
   'Accusative': { ru: 'Akkusativ', de: 'Akkusativ' },
   'Dative': { ru: 'Dativ', de: 'Dativ' },
   'Genitive': { ru: 'Genitiv', de: 'Genitiv' },
-  'Akkusativ + Preposition': { ru: 'Akkusativ с предлогом', de: 'Akkusativ mit Praeposition' },
-  'Dative + Preposition': { ru: 'Dativ с предлогом', de: 'Dativ mit Praeposition' },
-  'Genitive + Preposition': { ru: 'Genitiv с предлогом', de: 'Genitiv mit Praeposition' },
+  'Akkusativ + Preposition': { ru: 'Akkusativ с предлогом', de: 'Akkusativ mit Präposition' },
+  'Dative + Preposition': { ru: 'Dativ с предлогом', de: 'Dativ mit Präposition' },
+  'Genitive + Preposition': { ru: 'Genitiv с предлогом', de: 'Genitiv mit Präposition' },
   'Placement': { ru: 'порядок глагола', de: 'Verbstellung' },
   'Conjugation': { ru: 'спряжение', de: 'Konjugation' },
   'Weak Verbs': { ru: 'слабые глаголы', de: 'schwache Verben' },
@@ -942,8 +948,8 @@ const SKILL_SEGMENT_LOCALIZATION = {
   'Mixed Verbs': { ru: 'смешанные глаголы', de: 'gemischte Verben' },
   'Separable Verbs': { ru: 'отделяемые глаголы', de: 'trennbare Verben' },
   'Reflexive Verbs': { ru: 'возвратные глаголы', de: 'reflexive Verben' },
-  'Incorrect Preposition Usage': { ru: 'выбор предлога', de: 'passende Praeposition' },
-  'Preposition Choice': { ru: 'выбор предлога', de: 'passende Praeposition' },
+  'Incorrect Preposition Usage': { ru: 'выбор предлога', de: 'passende Präposition' },
+  'Preposition Choice': { ru: 'выбор предлога', de: 'passende Präposition' },
   'Verb Placement in Main Clause': { ru: 'глагол в главном предложении', de: 'Verb im Hauptsatz' },
   'Verb Placement in Subordinate Clause': { ru: 'глагол в придаточном', de: 'Verb im Nebensatz' },
   'Verb-Second Rule (V2)': { ru: 'правило V2', de: 'V2-Regel' },
@@ -957,11 +963,11 @@ const SKILL_SEGMENT_LOCALIZATION = {
   'Future 1 (Futur I)': { ru: 'Futur I', de: 'Futur I' },
   'Future 2': { ru: 'Futur II', de: 'Futur II' },
   'Future 2 (Futur II)': { ru: 'Futur II', de: 'Futur II' },
-  'Present': { ru: 'Präsens', de: 'Praesens' },
-  'Present (Präsens)': { ru: 'Präsens', de: 'Praesens' },
+  'Present': { ru: 'Präsens', de: 'Präsens' },
+  'Present (Präsens)': { ru: 'Präsens', de: 'Präsens' },
   'Past': { ru: 'прошедшее время', de: 'Vergangenheit' },
-  'Simple Past (Präteritum)': { ru: 'Präteritum', de: 'Praeteritum' },
-  'Simple Past': { ru: 'Präteritum', de: 'Praeteritum' },
+  'Simple Past (Präteritum)': { ru: 'Präteritum', de: 'Präteritum' },
+  'Simple Past': { ru: 'Präteritum', de: 'Präteritum' },
   'Present Perfect (Perfekt)': { ru: 'Perfekt', de: 'Perfekt' },
   'Present Perfect': { ru: 'Perfekt', de: 'Perfekt' },
   'Past Perfect (Plusquamperfekt)': { ru: 'Plusquamperfekt', de: 'Plusquamperfekt' },
@@ -992,21 +998,21 @@ const SKILL_SEGMENT_LOCALIZATION = {
   'Auxiliary Verbs': { ru: 'вспомогательные глаголы', de: 'Hilfsverben' },
   'Auxiliary Verbs (sein/haben/werden)': { ru: 'вспомогательные глаголы', de: 'Hilfsverben' },
   'Inseparable Prefix Verbs': { ru: 'глаголы с неотделяемой приставкой', de: 'untrennbare Verben' },
-  'Verb Valency & Complements': { ru: 'управление глагола', de: 'Verbvalenz und Ergaenzungen' },
+  'Verb Valency & Complements': { ru: 'управление глагола', de: 'Verbvalenz und Ergänzungen' },
   'Verb Conjugation & Agreement': { ru: 'спряжение и согласование', de: 'Konjugation und Kongruenz' },
   'nicht vs kein': { ru: 'nicht и kein', de: 'nicht und kein' },
   'Negation Placement': { ru: 'место отрицания', de: 'Stellung der Negation' },
-  'Two-way': { ru: 'двусторонние предлоги', de: 'Wechselpraepositionen' },
-  'Accusative Prepositions': { ru: 'предлоги с Akkusativ', de: 'Praepositionen mit Akkusativ' },
-  'Dative Prepositions': { ru: 'предлоги с Dativ', de: 'Praepositionen mit Dativ' },
-  'Genitive Prepositions': { ru: 'предлоги с Genitiv', de: 'Praepositionen mit Genitiv' },
-  'Two-way Prepositions': { ru: 'двусторонние предлоги', de: 'Wechselpraepositionen' },
+  'Two-way': { ru: 'двусторонние предлоги', de: 'Wechselpräpositionen' },
+  'Accusative Prepositions': { ru: 'предлоги с Akkusativ', de: 'Präpositionen mit Akkusativ' },
+  'Dative Prepositions': { ru: 'предлоги с Dativ', de: 'Präpositionen mit Dativ' },
+  'Genitive Prepositions': { ru: 'предлоги с Genitiv', de: 'Präpositionen mit Genitiv' },
+  'Two-way Prepositions': { ru: 'двусторонние предлоги', de: 'Wechselpräpositionen' },
   'Indicative': { ru: 'изъявительное наклонение', de: 'Indikativ' },
   'Declarative': { ru: 'повествовательная форма', de: 'Aussagesatz' },
   'Interrogative': { ru: 'вопросительная форма', de: 'Fragesatz' },
   'Infinitive Clauses vs dass-clause': { ru: 'инфинитивный оборот или dass-придаточное', de: 'Infinitivkonstruktion oder dass-Satz' },
   'Reported Speech (Indirekte Rede)': { ru: 'косвенная речь', de: 'indirekte Rede' },
-  'Concessive Clauses (obwohl)': { ru: 'уступительные придаточные с obwohl', de: 'Konzessivsaetze mit obwohl' },
+  'Concessive Clauses (obwohl)': { ru: 'уступительные придаточные с obwohl', de: 'Konzessivsätze mit obwohl' },
   'Imperative': { ru: 'повелительное наклонение', de: 'Imperativ' },
   'Subjunctive 1': { ru: 'Konjunktiv I', de: 'Konjunktiv I' },
   'Subjunctive 1 (Konjunktiv I)': { ru: 'Konjunktiv I', de: 'Konjunktiv I' },
@@ -1018,7 +1024,7 @@ const SKILL_SEGMENT_LOCALIZATION = {
 };
 
 const SKILL_ID_LOCALIZATION = {
-  'prepositions_usage': { ru: 'Предлоги: выбор предлога', de: 'Praepositionen: passende Praeposition' },
+  'prepositions_usage': { ru: 'Предлоги: выбор предлога', de: 'Präpositionen: passende Präposition' },
   'verbs_placement_main': { ru: 'Глаголы: глагол в главном предложении', de: 'Verben: Verb im Hauptsatz' },
   'verbs_placement_subordinate': { ru: 'Глаголы: глагол в придаточном', de: 'Verben: Verb im Nebensatz' },
   'tenses_futur2': { ru: 'Времена: Futur II', de: 'Zeiten: Futur II' },
@@ -1031,14 +1037,14 @@ const SKILL_ID_LOCALIZATION = {
   'verbs_modals': { ru: 'Глаголы: модальные', de: 'Verben: Modalverben' },
   'verbs_auxiliaries': { ru: 'Глаголы: вспомогательные', de: 'Verben: Hilfsverben' },
   'verbs_separable': { ru: 'Глаголы: отделяемые', de: 'Verben: trennbare Verben' },
-  'de_verbs_inseparable_prefix_verbs': { ru: 'Глаголы: неотделяемые приставки', de: 'Verben: untrennbare Praefixe' },
+  'de_verbs_inseparable_prefix_verbs': { ru: 'Глаголы: неотделяемые приставки', de: 'Verben: untrennbare Präfixe' },
   'verbs_conjugation': { ru: 'Глаголы: спряжение', de: 'Verben: Konjugation' },
   'de_verbs_verb_valency_missing_object_complement': { ru: 'Глаголы: управление', de: 'Verben: Verbvalenz' },
   'de_negation_nicht_vs_kein': { ru: 'Отрицание: nicht и kein', de: 'Negation: nicht und kein' },
   'de_negation_negation_placement': { ru: 'Отрицание: место отрицания', de: 'Negation: Stellung' },
   'de_clauses_sentence_types_infinitive_clauses_vs_dass_clause': { ru: 'Типы предложений: инфинитивный оборот или dass-придаточное', de: 'Satztypen: Infinitivkonstruktion oder dass-Satz' },
   'de_moods_reported_speech_indirekte_rede': { ru: 'Наклонение: косвенная речь', de: 'Modus: indirekte Rede' },
-  'de_clauses_sentence_types_concessive_clauses_obwohl': { ru: 'Типы предложений: уступительные придаточные с obwohl', de: 'Satztypen: Konzessivsaetze mit obwohl' },
+  'de_clauses_sentence_types_concessive_clauses_obwohl': { ru: 'Типы предложений: уступительные придаточные с obwohl', de: 'Satztypen: Konzessivsätze mit obwohl' },
 };
 
 function getLocalizedSkillDisplayName(skillLike, uiLang = 'ru') {
@@ -1111,32 +1117,32 @@ function buildOnboardingSlides(uiLang = 'ru') {
     return [
       {
         eyebrow: 'Schritt 1 von 8',
-        title: 'Wofuer die App da ist',
-        body: 'Schlümpfchen fuehrt dich vom ersten Einstieg bis zur taeglichen Routine: Uebersetzungen, Woerter, Videos, Lesen, Sprechpraxis und Analytik an einem Ort.',
+        title: 'Wofür die App da ist',
+        body: 'Schlümpfchen führt dich vom ersten Einstieg bis zur täglichen Routine: Übersetzungen, Wörter, Videos, Lesen, Sprechpraxis und Analytik an einem Ort.',
         bullets: [
-          'Oben stellst du Sprache der Oberflaeche, Theme und dein Sprachpaar ein.',
+          'Oben stellst du Sprache der Oberfläche, Theme und dein Sprachpaar ein.',
           'Die stabilste und am tiefsten ausgebaute Lernlogik ist aktuell RU ↔ DE.',
           'Das ? oben oeffnet jederzeit diesen Guide erneut.',
         ],
       },
       {
         eyebrow: 'Schritt 2 von 8',
-        title: 'Beginne mit Heute oder Uebersetzungen',
-        body: 'Nach dem Einstieg gehst du meist zuerst in den Tagesplan oder direkt in den Bereich Uebersetzungen. Dort startet dein Haupttraining.',
+        title: 'Beginne mit Heute oder Übersetzungen',
+        body: 'Nach dem Einstieg gehst du meist zuerst in den Tagesplan oder direkt in den Bereich Übersetzungen. Dort startet dein Haupttraining.',
         bullets: [
-          'Heute zeigt dir die naechsten sinnvollen Aufgaben in der richtigen Reihenfolge.',
-          'Uebersetzungen trainieren Grammatik, Satzbau und typische Fehler am schnellsten.',
-          'Das Hamburger-Menue links oben oeffnet alle Bereiche der App.',
+          'Heute zeigt dir die nächsten sinnvollen Aufgaben in der richtigen Reihenfolge.',
+          'Übersetzungen trainieren Grammatik, Satzbau und typische Fehler am schnellsten.',
+          'Das Hamburger-Menü links oben oeffnet alle Bereiche der App.',
         ],
       },
       {
         eyebrow: 'Schritt 3 von 8',
-        title: 'Nutze das Woerterbuch aktiv',
-        body: 'Unbekannte Woerter solltest du nicht nur nachschlagen, sondern sofort speichern, anhoeren und spaeter wiederholen.',
+        title: 'Nutze das Wörterbuch aktiv',
+        body: 'Unbekannte Wörter solltest du nicht nur nachschlagen, sondern sofort speichern, anhören und später wiederholen.',
         bullets: [
-          'Es gibt einen schnellen Lookup und eine tiefere GPT-Erklaerung.',
-          'Gespeicherte Woerter und Phrasen gehen spaeter in Karten und Space Repetition ein.',
-          'Du kannst fuer dein Material Ordner anlegen und ein PDF exportieren.',
+          'Es gibt einen schnellen Lookup und eine tiefere GPT-Erklärung.',
+          'Gespeicherte Wörter und Phrasen gehen später in Karten und Space Repetition ein.',
+          'Du kannst für dein Material Ordner anlegen und ein PDF exportieren.',
         ],
       },
       {
@@ -1145,18 +1151,18 @@ function buildOnboardingSlides(uiLang = 'ru') {
         body: 'Karten, Quiz, Blocks und Space Repetition machen aus passivem Verstehen aktive Erinnerung.',
         bullets: [
           'Space Repetition plant Wiederholungen automatisch nach deinem echten Erinnern.',
-          'Quiz und Blocks sind kuerzer und spielerischer fuer Zwischendurch.',
-          'Neue und alte Karten werden sinnvoll gemischt statt chaotisch zufaellig gezeigt.',
+          'Quiz und Blocks sind kürzer und spielerischer für Zwischendurch.',
+          'Neue und alte Karten werden sinnvoll gemischt statt chaotisch zufällig gezeigt.',
         ],
       },
       {
         eyebrow: 'Schritt 5 von 8',
         title: 'Gehe in echtes Deutsch',
-        body: 'Mit YouTube, Filmen und Reader wechselst du von Uebungssaetzen in echten Sprachkontext.',
+        body: 'Mit YouTube, Filmen und Reader wechselst du von Übungssätzen in echten Sprachkontext.',
         bullets: [
           'YouTube verbindet Video, Untertitel, Wort-Lookup und Speichern.',
           'Filme sind dein schneller Katalog mit bereits vorbereiteten Untertiteln.',
-          'Im Reader liest du ruhig, hoerst Audio und sammelst Zeit fuer deine Ziele.',
+          'Im Reader liest du ruhig, hörst Audio und sammelst Zeit für deine Ziele.',
         ],
       },
       {
@@ -1165,24 +1171,24 @@ function buildOnboardingSlides(uiLang = 'ru') {
         body: 'Im Bereich Sprachpraxis sprichst du live mit dem Assistenten und trainierst freies Formulieren, Reaktion und Aussprache.',
         bullets: [
           'Mikrofon aktivieren, Assistent verbinden und direkt sprechen.',
-          'Die Minuten tauchen spaeter in Plan und Analytik auf.',
-          'Dieser Bereich ist fuer echte muendliche Routine gedacht, nicht nur fuer Theorie.',
+          'Die Minuten tauchen später in Plan und Analytik auf.',
+          'Dieser Bereich ist für echte mündliche Routine gedacht, nicht nur für Theorie.',
         ],
       },
       {
         eyebrow: 'Schritt 7 von 8',
         title: 'Bot privat und in der Gruppe',
-        body: 'Ein Teil des Systems lebt direkt in Telegram: Privat-Chat fuer schnelle Hilfe, Gruppe fuer Quiz, Zusammenfassungen und gemeinsame Dynamik.',
+        body: 'Ein Teil des Systems lebt direkt in Telegram: Privat-Chat für schnelle Hilfe, Gruppe für Quiz, Zusammenfassungen und gemeinsame Dynamik.',
         bullets: [
           'Nach /start erscheint im Privat-Chat die Taste „💬 Спросить у GPT“.',
-          'Privat kommen je nach Route Plan, Erklaerungen, Audio und Analytik.',
-          'In Gruppen kommen bestaetigte Teilnehmer in Ranking und Gruppenstatistik.',
+          'Privat kommen je nach Route Plan, Erklärungen, Audio und Analytik.',
+          'In Gruppen kommen bestätigte Teilnehmer in Ranking und Gruppenstatistik.',
         ],
       },
       {
         eyebrow: 'Schritt 8 von 8',
         title: 'Analytik, Skill-Training und Abo',
-        body: 'Wenn du verstehst, wo du stehst, und gezielt an Schwachstellen arbeitest, wird die App am staerksten.',
+        body: 'Wenn du verstehst, wo du stehst, und gezielt an Schwachstellen arbeitest, wird die App am stärksten.',
         bullets: [
           'Analytik zeigt dir Zeitraum, Vergleich, Ziele und Gruppenmodus.',
           'Skill-Training baut aus einem schwachen Thema Theorie, Video und Praxis.',
@@ -1283,20 +1289,20 @@ function buildGuideStepItems(uiLang = 'ru') {
         key: 'start_overview',
         accent: true,
         title: 'Start und obere Leiste',
-        summary: 'Womit du beginnst, was die oberen Schalter bedeuten und worauf die App im Moment am staerksten optimiert ist.',
+        summary: 'Womit du beginnst, was die oberen Schalter bedeuten und worauf die App im Moment am stärksten optimiert ist.',
         sections: [
           {
-            title: 'Wofuer die App gedacht ist',
+            title: 'Wofür die App gedacht ist',
             items: [
-              'Schlümpfchen verbindet Uebersetzungen, Woerterbuch, Karten, Video, Lesen, Sprechpraxis und Analytik in einem Lernfluss.',
+              'Schlümpfchen verbindet Übersetzungen, Wörterbuch, Karten, Video, Lesen, Sprechpraxis und Analytik in einem Lernfluss.',
               'Du kannst zwischen Telegram Mini App und Web wechseln, ohne deine Lernlogik zu verlieren.',
-              'Die tiefste und am vollstaendigsten ausgebaute Lernstrecke ist aktuell RU ↔ DE.',
+              'Die tiefste und am vollständigsten ausgebaute Lernstrecke ist aktuell RU ↔ DE.',
             ],
           },
           {
             title: 'Was du oben in der App siehst',
             items: [
-              'RU / DE schaltet nur die Sprache der Oberflaeche um.',
+              'RU / DE schaltet nur die Sprache der Oberfläche um.',
               'DARK / LIGHT schaltet das Farbschema der App um.',
               'Die Taste mit dem Sprachpaar oeffnet dein Lernprofil: Lernsprache und Muttersprache.',
               'Das ? oeffnet diesen Guide jederzeit erneut.',
@@ -1307,14 +1313,14 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'Aufgaben zeigt den Tagesplan-Fortschritt (erledigt / gesamt).',
               'Skill-Map zeigt deine durchschnittliche Beherrschung aller Grammatik- und Vokabelbereiche als Prozentzahl.',
-              'Wochenplan zeigt, wie weit du bei deinen Wochenzielen (Uebersetzungen, Woerter, Sprechminuten, Lesezeit) bist.',
+              'Wochenplan zeigt, wie weit du bei deinen Wochenzielen (Übersetzungen, Wörter, Sprechminuten, Lesezeit) bist.',
             ],
           },
           {
             title: 'Wie du sinnvoll startest',
             items: [
               'Lege zuerst Lernsprache und Muttersprache fest.',
-              'Gehe danach entweder in Heute fuer den gefuehrten Tagesplan oder direkt in Uebersetzungen.',
+              'Gehe danach entweder in Heute für den geführten Tagesplan oder direkt in Übersetzungen.',
               'Wenn du den Bot auch privat nutzt, sende dort einmal /start, damit die privaten Telegram-Funktionen sichtbar werden.',
             ],
           },
@@ -1328,25 +1334,25 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Was dieser Bereich zeigt',
             items: [
-              'Dein aktueller Tarif, Status, heutiger Verbrauch und die verfuegbaren Plaene.',
-              'Du musst fuer einen Tarifwechsel nicht erst ausserhalb der App suchen.',
-              'Der Bereich ist dein zentraler Ort fuer Zugang und Limits.',
+              'Dein aktueller Tarif, Status, heutiger Verbrauch und die verfügbaren Pläne.',
+              'Du musst für einen Tarifwechsel nicht erst ausserhalb der App suchen.',
+              'Der Bereich ist dein zentraler Ort für Zugang und Limits.',
             ],
           },
           {
-            title: 'Wie Tarifwechsel und Kuendigung funktionieren',
+            title: 'Wie Tarifwechsel und Kündigung funktionieren',
             items: [
-              'Wenn du ein bezahltes Abo kuendigst, bleibt es bis zum Ende des bereits bezahlten Zeitraums aktiv.',
-              'Ein neuer bezahlter Tarif startet nicht mitten im laufenden Zyklus doppelt, sondern sauber zum naechsten Abrechnungszeitpunkt.',
+              'Wenn du ein bezahltes Abo kündigst, bleibt es bis zum Ende des bereits bezahlten Zeitraums aktiv.',
+              'Ein neuer bezahlter Tarif startet nicht mitten im laufenden Zyklus doppelt, sondern sauber zum nächsten Abrechnungszeitpunkt.',
               'So verlierst du keinen bereits bezahlten Zeitraum und vermeidest Doppelbelastung.',
             ],
           },
           {
             title: 'Was du dort tippen kannst',
             items: [
-              'Tarif waehlen, Limits lesen und das Stripe-Portal oeffnen.',
-              'Im Stripe-Portal verwaltest du Karte, Rechnungen, Kuendigung und Wiederaufnahme.',
-              'Nach Rueckkehr kurz aktualisieren, damit der Status sichtbar nachzieht.',
+              'Tarif wählen, Limits lesen und das Stripe-Portal öffnen.',
+              'Im Stripe-Portal verwaltest du Karte, Rechnungen, Kündigung und Wiederaufnahme.',
+              'Nach Rückkehr kurz aktualisieren, damit der Status sichtbar nachzieht.',
             ],
           },
         ],
@@ -1354,29 +1360,29 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'today',
         title: 'Heute',
-        summary: 'Der Tagesplan zeigt dir die naechsten sinnvollen Aufgaben in einer klaren Reihenfolge.',
+        summary: 'Der Tagesplan zeigt dir die nächsten sinnvollen Aufgaben in einer klaren Reihenfolge.',
         sections: [
           {
             title: 'Was du dort siehst',
             items: [
-              'Eine kompakte Tagesroute mit Aufgaben wie Uebersetzung, Karten, Theorie, Video oder Sprechpraxis.',
+              'Eine kompakte Tagesroute mit Aufgaben wie Übersetzung, Karten, Theorie, Video oder Sprechpraxis.',
               'Den Status jeder Aufgabe: offen, in Arbeit oder erledigt.',
-              'Schnellen Zugang zu den wichtigsten Bereichen ohne im Menue zu suchen.',
+              'Schnellen Zugang zu den wichtigsten Bereichen ohne im Menü zu suchen.',
             ],
           },
           {
             title: 'Skill-Map: Ringe und Beherrschungsgrad',
             items: [
-              'Unterhalb des Tagesplans siehst du die Skill-Map-Karte mit Ringen fuer jeden Grammatik- und Vokabelbereich.',
+              'Unterhalb des Tagesplans siehst du die Skill-Map-Karte mit Ringen für jeden Grammatik- und Vokabelbereich.',
               'Je voller der Ring, desto besser beherrschst du dieses Thema laut deinen Uebungen und Tests.',
-              'Schwache Ringe sind deine aktuellen Luecken — tippe auf einen Ring, um gezielt daran zu arbeiten.',
+              'Schwache Ringe sind deine aktuellen Lücken — tippe auf einen Ring, um gezielt daran zu arbeiten.',
             ],
           },
           {
             title: 'Wochenplan und Nachrichten',
             items: [
-              'Die Wochenplan-Karte zeigt Fortschritt bei deinen Wochenzielen: Uebersetzungen, gelernte Woerter, Sprechminuten und Lesezeit.',
-              'Nach den aktuellen Standardzeiten kommt der Tagesplan morgens etwa um 07:00, abends gegen 18:00 ein Erinnerungs- oder Glueckwunsch-Push.',
+              'Die Wochenplan-Karte zeigt Fortschritt bei deinen Wochenzielen: Übersetzungen, gelernte Wörter, Sprechminuten und Lesezeit.',
+              'Nach den aktuellen Standardzeiten kommt der Tagesplan morgens etwa um 07:00, abends gegen 18:00 ein Erinnerungs- oder Glückwunsch-Push.',
               'Diese Statusmeldungen sind mit dem Heute-Bildschirm synchron.',
             ],
           },
@@ -1384,31 +1390,31 @@ function buildGuideStepItems(uiLang = 'ru') {
       },
       {
         key: 'translations',
-        title: 'Uebersetzungen',
-        summary: 'Das ist dein Haupttraining fuer Grammatik, Satzbau und systematische Fehlerarbeit.',
+        title: 'Übersetzungen',
+        summary: 'Das ist dein Haupttraining für Grammatik, Satzbau und systematische Fehlerarbeit.',
         sections: [
           {
             title: 'Wie du startest',
             items: [
-              'Waehle zuerst Grammatikfokus und Niveau. Im Story-Modus waehltst du statt normaler Saetze eine Geschichte.',
-              'Im normalen Modus besteht ein Standardsatz meist aus 7 Saetzen.',
-              'Wenn eine Empfehlung sichtbar ist, basiert sie auf deinen letzten Schwaechen.',
+              'Wähle zuerst Grammatikfokus und Niveau. Im Story-Modus wähltst du statt normaler Sätze eine Geschichte.',
+              'Im normalen Modus besteht ein Standardsatz meist aus 7 Sätzen.',
+              'Wenn eine Empfehlung sichtbar ist, basiert sie auf deinen letzten Schwächen.',
             ],
           },
           {
-            title: 'Was du waehrend des Uebersetzens tun kannst',
+            title: 'Was du während des Uebersetzens tun kannst',
             items: [
-              'Ueber den kleinen Woerterbuch-Sprung neben einem Satz oeffnest du direkt den passenden Lookup.',
-              'Du kannst parallel im Woerterbuch arbeiten, ohne den eigentlichen Lernfluss zu verlieren.',
-              'Vor dem Pruefen kannst du aktivieren, dass textuelle Grammatikerklaerungen spaeter auch im Privat-Chat ankommen.',
+              'Ueber den kleinen Wörterbuch-Sprung neben einem Satz oeffnest du direkt den passenden Lookup.',
+              'Du kannst parallel im Wörterbuch arbeiten, ohne den eigentlichen Lernfluss zu verlieren.',
+              'Vor dem Prüfen kannst du aktivieren, dass textuelle Grammatikerklärungen später auch im Privat-Chat ankommen.',
             ],
           },
           {
-            title: 'Was nach dem Pruefen passiert',
+            title: 'Was nach dem Prüfen passiert',
             items: [
-              'Du siehst Score, Referenz, textuelle Erklaerung und kannst den korrekten Satz direkt anhoeren.',
-              'Fuer einzelne Ergebnisse kannst du zusaetzliche Erklaerungen nachladen.',
-              'Dein Satzsatz mischt persoenliche Fehlersaetze und neue Saetze: schwaechere Stellen kommen wieder, aber es bleibt nicht beim Endlos-Wiederholen derselben Sachen.',
+              'Du siehst Score, Referenz, textuelle Erklärung und kannst den korrekten Satz direkt anhören.',
+              'Für einzelne Ergebnisse kannst du zusätzliche Erklärungen nachladen.',
+              'Dein Satzsatz mischt persönliche Fehlersätze und neue Sätze: schwächere Stellen kommen wieder, aber es bleibt nicht beim Endlos-Wiederholen derselben Sachen.',
             ],
           },
         ],
@@ -1421,25 +1427,25 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'So startest du',
             items: [
-              'Du kannst einen YouTube-Link einfuegen oder direkt in der App suchen.',
-              'Nach dem Oeffnen startest du das Video und laedst die Untertitel.',
+              'Du kannst einen YouTube-Link einfügen oder direkt in der App suchen.',
+              'Nach dem Oeffnen startest du das Video und lädst die Untertitel.',
               'Bei Bedarf schaltest du Overlay, Muttersprache und Vollbild ein.',
             ],
           },
           {
-            title: 'Was beim Schauen moeglich ist',
+            title: 'Was beim Schauen möglich ist',
             items: [
-              'Ein Wort antippen: Video pausiert, die Erklaerung erscheint und du kannst das Wort speichern.',
-              'Wenn passende Daten da sind, siehst du Original und Uebersetzung parallel.',
-              'Der Bereich eignet sich fuer echte Sprachaufnahme statt isolierter Uebungssaetze.',
+              'Ein Wort antippen: Video pausiert, die Erklärung erscheint und du kannst das Wort speichern.',
+              'Wenn passende Daten da sind, siehst du Original und Übersetzung parallel.',
+              'Der Bereich eignet sich für echte Sprachaufnahme statt isolierter Übungssätze.',
             ],
           },
           {
             title: 'Wenn Untertitel fehlen',
             items: [
-              'Du kannst ein Transcript manuell einfuegen.',
-              'Mit Zeitmarken laeuft die Synchronisation deutlich besser.',
-              'So bleibst du nicht an einem einzelnen YouTube-Fehler haengen.',
+              'Du kannst ein Transcript manuell einfügen.',
+              'Mit Zeitmarken läuft die Synchronisation deutlich besser.',
+              'So bleibst du nicht an einem einzelnen YouTube-Fehler hängen.',
             ],
           },
         ],
@@ -1447,10 +1453,10 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'movies',
         title: 'Filme',
-        summary: 'Das ist dein schneller Katalog mit bereits gespeicherten Videos und verfuegbaren Untertiteln.',
+        summary: 'Das ist dein schneller Katalog mit bereits gespeicherten Videos und verfügbaren Untertiteln.',
         sections: [
           {
-            title: 'Wofuer dieser Bereich gut ist',
+            title: 'Wofür dieser Bereich gut ist',
             items: [
               'Du musst nicht jedes Mal neu auf YouTube suchen.',
               'Die App zeigt dir einen vorbereiteten Katalog mit Materialien, die schon in das Lernsystem passen.',
@@ -1468,7 +1474,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Wann dieser Bereich besonders sinnvoll ist',
             items: [
-              'Wenn du keine Zeit fuer Suche verschwenden willst.',
+              'Wenn du keine Zeit für Suche verschwenden willst.',
               'Wenn du lieber mit kuratiertem Material lernst.',
               'Wenn du nach dem Tagesplan einfach schnell ins passende Video springen willst.',
             ],
@@ -1477,43 +1483,43 @@ function buildGuideStepItems(uiLang = 'ru') {
       },
       {
         key: 'dictionary',
-        title: 'Woerterbuch',
-        summary: 'Hier uebersetzt, erklaerst, speicherst und organisierst du Woerter und Phrasen — auch ohne Internet.',
+        title: 'Wörterbuch',
+        summary: 'Hier uebersetzt, erklärst, speicherst und organisierst du Wörter und Phrasen — auch ohne Internet.',
         sections: [
           {
             title: 'Welche zwei Lookup-Wege es gibt',
             items: [
-              'Schnell: fuer den direkten Ueberblick.',
-              'Mit GPT: fuer tiefere Erklaerung, Formen, Beispiele und Nuancen.',
-              'Beides ist alltagstauglich, aber fuer verschiedene Tiefen gedacht.',
+              'Schnell: für den direkten Ueberblick.',
+              'Mit GPT: für tiefere Erklärung, Formen, Beispiele und Nuancen.',
+              'Beides ist alltagstauglich, aber für verschiedene Tiefen gedacht.',
             ],
           },
           {
             title: 'Was du als Ergebnis bekommst',
             items: [
-              'Uebersetzung, Wortart, Artikel, Formen, Beispiele und oft auch Varianten oder Praefixe.',
-              'Wo es sinnvoll ist, kannst du die Zielsprache direkt anhoeren.',
-              'So lernst du nicht nur die nackte Uebersetzung, sondern auch das Verhalten des Wortes.',
+              'Übersetzung, Wortart, Artikel, Formen, Beispiele und oft auch Varianten oder Präfixe.',
+              'Wo es sinnvoll ist, kannst du die Zielsprache direkt anhören.',
+              'So lernst du nicht nur die nackte Übersetzung, sondern auch das Verhalten des Wortes.',
             ],
           },
           {
             title: 'Wie du speicherst und weiterarbeitest',
             items: [
-              'Speichere Woerter und Phrasen direkt in einen Ordner.',
+              'Speichere Wörter und Phrasen direkt in einen Ordner.',
               'Lege neue Ordner an, wenn du Themen sauber trennen willst.',
-              'Spaeter tauchen diese Inhalte in Karten, Space Repetition und weiteren Uebungen wieder auf.',
+              'Später tauchen diese Inhalte in Karten, Space Repetition und weiteren Uebungen wieder auf.',
             ],
           },
           {
-            title: 'Woerterbuch offline vorbereiten',
+            title: 'Wörterbuch offline vorbereiten',
             items: [
-              'Jede Seite deines Vokabular-Bibliothek, die du online durchgeblattert hast, wird automatisch im Geraete-Cache gespeichert.',
-              'Je mehr Seiten du online geoeffnet hast, desto mehr Woerter sind spaeter offline sichtbar — kein gesonderter Download noetig.',
+              'Jede Seite deines Vokabular-Bibliothek, die du online durchgeblattert hast, wird automatisch im Geräte-Cache gespeichert.',
+              'Je mehr Seiten du online geöffnet hast, desto mehr Wörter sind später offline sichtbar — kein gesonderter Download nötig.',
               'Im Offline-Modus erscheint oben ein 📵-Banner mit dem Datum der letzten Synchronisierung.',
             ],
           },
           {
-            title: 'Einen ganzen Ordner fuer Offline laden',
+            title: 'Einen ganzen Ordner für Offline laden',
             items: [
               'Halte einen Ordner lange gedrückt — das Kontextmenü erscheint.',
               'Tippe auf „Für Offline laden": die App lädt seitenweise alle Wörter des Ordners und speichert sie im lokalen Cache des Geräts.',
@@ -1526,30 +1532,30 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'flashcards',
         title: 'Karten',
-        summary: 'Hier automatisierst du gespeicherte Woerter und Phrasen ueber mehrere Trainingsarten — inkl. Offline-Modus.',
+        summary: 'Hier automatisierst du gespeicherte Wörter und Phrasen über mehrere Trainingsarten — inkl. Offline-Modus.',
         sections: [
           {
             title: 'Die Trainingsmodi',
             items: [
-              'Space Repetition fuer intelligentes spaced repetition.',
-              'Quiz fuer schnelle Entscheidungen mit Antwortoptionen.',
-              'Blocks fuer aktives Zusammenbauen.',
-              'Sentence fuer Kontext-Ergaenzung.',
+              'Space Repetition für intelligentes spaced repetition.',
+              'Quiz für schnelle Entscheidungen mit Antwortoptionen.',
+              'Blocks für aktives Zusammenbauen.',
+              'Sentence für Kontext-Ergänzung.',
             ],
           },
           {
             title: 'Wie die Inhalte gebildet werden',
             items: [
-              'Die Kernwarteschlange kommt aus deinem persoenlichen Material: gespeicherte Woerter und Phrasen.',
-              'In Space Repetition kommen zuerst faellige Wiederholungen und danach neue Karten.',
+              'Die Kernwarteschlange kommt aus deinem persönlichen Material: gespeicherte Wörter und Phrasen.',
+              'In Space Repetition kommen zuerst fällige Wiederholungen und danach neue Karten.',
               'Die Telegram-Quizze mischen nicht blind, sondern wechseln neue Inhalte mit Wiederholungen schwacher Karten ab.',
             ],
           },
           {
-            title: 'Offline-Modus fuer Karten',
+            title: 'Offline-Modus für Karten',
             items: [
-              'Space-Repetition-Karten werden beim Online-Start automatisch auf das Geraet geladen.',
-              'Verlierst du die Verbindung waehrend einer Sitzung, kannst du weitermachen — alle Antworten werden lokal gespeichert.',
+              'Space-Repetition-Karten werden beim Online-Start automatisch auf das Gerät geladen.',
+              'Verlierst du die Verbindung während einer Sitzung, kannst du weitermachen — alle Antworten werden lokal gespeichert.',
               'Sobald die Verbindung wiederhergestellt ist, synchronisiert die App die Ergebnisse automatisch mit dem Server.',
               'Ein Badge zeigt dir, wie viele Antworten noch auf Synchronisierung warten.',
             ],
@@ -1557,9 +1563,9 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Was du einstellen kannst',
             items: [
-              'Set-Groesse, Ordner, Geschwindigkeit und automatischen oder manuellen Uebergang.',
+              'Set-Größe, Ordner, Geschwindigkeit und automatischen oder manuellen Uebergang.',
               'Je nach Modus kommen Timer oder Schwierigkeitsstufe dazu.',
-              'So kannst du denselben Wortschatz sehr kurz oder sehr gruendlich trainieren.',
+              'So kannst du denselben Wortschatz sehr kurz oder sehr gründlich trainieren.',
             ],
           },
         ],
@@ -1567,46 +1573,46 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'offline_mode',
         title: 'Offline-Modus',
-        summary: 'Woerterbuch und Karten funktionieren ohne Internet. Hier erfaehrst du, wie du dich vorbereitetest.',
+        summary: 'Wörterbuch und Karten funktionieren ohne Internet. Hier erfährst du, wie du dich vorbereitetest.',
         sections: [
           {
-            title: 'Was offline verfuegbar ist',
+            title: 'Was offline verfügbar ist',
             items: [
-              'Dein gesamtes Vokabular (alle Seiten, die du online geoeffnet hast) — fuer Anzeige und Bearbeitung.',
-              'Space-Repetition-Karten — fuer Wiederholungen und neue Karten.',
-              'Alle offline vorgenommenen Aenderungen (hinzufuegen, loeschen, Kartenantworten) warten in der lokalen Warteschlange.',
+              'Dein gesamtes Vokabular (alle Seiten, die du online geöffnet hast) — für Anzeige und Bearbeitung.',
+              'Space-Repetition-Karten — für Wiederholungen und neue Karten.',
+              'Alle offline vorgenommenen Aenderungen (hinzufügen, löschen, Kartenantworten) warten in der lokalen Warteschlange.',
             ],
           },
           {
-            title: 'So bereitest du dich vor (Woerterbuch)',
+            title: 'So bereitest du dich vor (Wörterbuch)',
             items: [
-              'Blade einfach durch deine Vokabular-Seiten, waehrend du online bist — jede angezeigte Seite wird automatisch gecacht.',
-              'Es gibt keine separate Schaltflaecheoffline speichern — der Cache baut sich beim normalen Scrollen auf.',
-              'Je mehr du vorab durchblattert hast, desto vollstaendiger ist der Offline-Bestand.',
+              'Blade einfach durch deine Vokabular-Seiten, während du online bist — jede angezeigte Seite wird automatisch gecacht.',
+              'Es gibt keine separate Schaltflächeoffline speichern — der Cache baut sich beim normalen Scrollen auf.',
+              'Je mehr du vorab durchblattert hast, desto vollständiger ist der Offline-Bestand.',
             ],
           },
           {
             title: 'So bereitest du dich vor (Karten)',
             items: [
-              'Starte mindestens einmal eine Space-Repetition-Sitzung online — dabei werden die naechsten Karten in den Geraete-Cache geladen.',
-              'Beim naechsten Mal ohne Internet erscheint automatisch der Offline-Modus mit den vorgeladenen Karten.',
-              'Nach Rueckkehr ins Netz werden alle gespeicherten Antworten automatisch hochgeladen.',
+              'Starte mindestens einmal eine Space-Repetition-Sitzung online — dabei werden die nächsten Karten in den Geräte-Cache geladen.',
+              'Beim nächsten Mal ohne Internet erscheint automatisch der Offline-Modus mit den vorgeladenen Karten.',
+              'Nach Rückkehr ins Netz werden alle gespeicherten Antworten automatisch hochgeladen.',
             ],
           },
           {
             title: 'Offline-Indikatoren verstehen',
             items: [
-              'Im Woerterbuch erscheint oben ein 📵-Banner mit dem Datum des letzten Caches.',
+              'Im Wörterbuch erscheint oben ein 📵-Banner mit dem Datum des letzten Caches.',
               'Bei Karten erscheint ein Badge mit der Anzahl der nicht synchronisierten Antworten.',
               'Wenn du wieder online bist, startet die Synchronisierung automatisch im Hintergrund.',
             ],
           },
           {
-            title: 'Schnell einen ganzen Ordner fuer Offline vorbereiten',
+            title: 'Schnell einen ganzen Ordner für Offline vorbereiten',
             items: [
-              'Ordner im Woerterbuch lange drücken und „Für Offline laden" waehlen.',
-              'Die App laedt alle Woerter des Ordners seitenweise und speichert sie automatisch im Geraete-Cache — kein manuelles Scrollen noetig.',
-              'Fortschritt ist direkt in der Oberflaeche sichtbar. Abbrechen jederzeit per X-Schaltflaeche moeglich.',
+              'Ordner im Wörterbuch lange drücken und „Für Offline laden" wählen.',
+              'Die App lädt alle Wörter des Ordners seitenweise und speichert sie automatisch im Geräte-Cache — kein manuelles Scrollen nötig.',
+              'Fortschritt ist direkt in der Oberfläche sichtbar. Abbrechen jederzeit per X-Schaltfläche möglich.',
             ],
           },
         ],
@@ -1614,30 +1620,30 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'reader',
         title: 'Reader',
-        summary: 'Lesen, Audio, Zeittracking und ruhiger Fokus fuer laengere Texte.',
+        summary: 'Lesen, Audio, Zeittracking und ruhiger Fokus für längere Texte.',
         sections: [
           {
-            title: 'Wie du Material hinzufuegst',
+            title: 'Wie du Material hinzufügst',
             items: [
-              'Text einfuegen, Link einfuegen oder eine Datei hochladen.',
-              'Danach liegt das Dokument in deiner Bibliothek und kann spaeter erneut geoeffnet werden.',
-              'Fuer laengeres Material ist das oft angenehmer als ein Chat-Fenster.',
+              'Text einfügen, Link einfügen oder eine Datei hochladen.',
+              'Danach liegt das Dokument in deiner Bibliothek und kann später erneut geöffnet werden.',
+              'Für längeres Material ist das oft angenehmer als ein Chat-Fenster.',
             ],
           },
           {
-            title: 'Was waehrend des Lesens moeglich ist',
+            title: 'Was während des Lesens möglich ist',
             items: [
-              'Woerter und Passagen antippen, um schneller zu verstehen.',
+              'Wörter und Passagen antippen, um schneller zu verstehen.',
               'Font, Scroll-Richtung, Fokusmodus und Leseansicht anpassen.',
-              'Der Timer laeuft mit und die Lesezeit geht in deinen Fortschritt ein.',
+              'Der Timer läuft mit und die Lesezeit geht in deinen Fortschritt ein.',
             ],
           },
           {
             title: 'Welche Zusatzfunktionen es gibt',
             items: [
               'Lesezeichen setzen, Fortschritt speichern und Dokumente archivieren.',
-              'Offline-Audio fuer ganze Dokumente oder grosse Abschnitte erstellen.',
-              'Der Reader ist fuer ruhiges Verstehen und tiefes Lesen gedacht, nicht nur fuer schnelle Suche.',
+              'Offline-Audio für ganze Dokumente oder grosse Abschnitte erstellen.',
+              'Der Reader ist für ruhiges Verstehen und tiefes Lesen gedacht, nicht nur für schnelle Suche.',
             ],
           },
         ],
@@ -1645,7 +1651,7 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'assistant',
         title: 'Sprachpraxis',
-        summary: 'Der Live-Assistent ist fuer echte muendliche Routine gedacht — mit KI-Analyse nach jeder Sitzung.',
+        summary: 'Der Live-Assistent ist für echte mündliche Routine gedacht — mit KI-Analyse nach jeder Sitzung.',
         sections: [
           {
             title: 'Wie du startest',
@@ -1656,26 +1662,26 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
-            title: 'Wofuer dieser Bereich gut ist',
+            title: 'Wofür dieser Bereich gut ist',
             items: [
-              'Aussprache, Spontanitaet, Reaktionsgeschwindigkeit und muendliche Sicherheit.',
-              'Kurze taegliche Sprachpraxis statt nur stiller Lektuere.',
-              'Der Bereich ergaenzt Uebersetzungen, ersetzt sie aber nicht.',
+              'Aussprache, Spontanität, Reaktionsgeschwindigkeit und mündliche Sicherheit.',
+              'Kurze tägliche Sprachpraxis statt nur stiller Lektüre.',
+              'Der Bereich ergänzt Übersetzungen, ersetzt sie aber nicht.',
             ],
           },
           {
             title: 'Post-Session-Analyse',
             items: [
               'Nach jeder abgeschlossenen Sitzung erstellt die KI automatisch eine Session-Analyse.',
-              'Du siehst: strenges Feedback, naechster empfohlener Fokus sowie Detailnoten fuer Wortschatz, Grammatik, Sprachfluss, Kohaerenz und Selbstkorrektur.',
+              'Du siehst: strenges Feedback, nächster empfohlener Fokus sowie Detailnoten für Wortschatz, Grammatik, Sprachfluss, Kohärenz und Selbstkorrektur.',
               'Verwendetes und verfehltes Ziel-Vokabular wird separat aufgelistet.',
-              'War die Sitzung zu kurz, erscheint stattdessen ein kurzer Hinweis — sprich einfach laenger beim naechsten Mal.',
+              'War die Sitzung zu kurz, erscheint stattdessen ein kurzer Hinweis — sprich einfach länger beim nächsten Mal.',
             ],
           },
           {
             title: 'Wie er in den Rest der App passt',
             items: [
-              'Sprechminuten koennen in Ziele und Analytik einfliessen.',
+              'Sprechminuten können in Ziele und Analytik einfliessen.',
               'Du kannst diesen Block als eigene Aufgabe im Tagesplan wiedersehen.',
               'So bleibt aktive Sprache ein fester Teil der Routine.',
             ],
@@ -1699,16 +1705,16 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'Wie du schneller Hilfe bekommst',
             items: [
               'Kurz beschreiben, wo genau du warst und was du getippt hast.',
-              'Wenn moeglich einen Screenshot mitsenden.',
-              'Dann laesst sich das Problem deutlich schneller verstehen und beheben.',
+              'Wenn möglich einen Screenshot mitsenden.',
+              'Dann lässt sich das Problem deutlich schneller verstehen und beheben.',
             ],
           },
           {
-            title: 'Wichtig fuer normale Nutzung',
+            title: 'Wichtig für normale Nutzung',
             items: [
               'Du musst keine technischen Begriffe kennen.',
               'Schreibe einfach, was du gesehen hast und was du erwartet hast.',
-              'Der Bereich ist bewusst fuer normale Nutzer formuliert, nicht fuer Entwickler.',
+              'Der Bereich ist bewusst für normale Nutzer formuliert, nicht für Entwickler.',
             ],
           },
         ],
@@ -1723,23 +1729,23 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'Einen Zeitraum oder einen eigenen Kalenderbereich.',
               'Den Teilnahme-Modus: nur du selbst oder eine konkrete Gruppe.',
-              'Damit wechselst du zwischen persoenlicher und gemeinsamer Sicht.',
+              'Damit wechselst du zwischen persönlicher und gemeinsamer Sicht.',
             ],
           },
           {
             title: 'Was du dort siehst',
             items: [
-              'Wie viele Uebersetzungen du gemacht hast, wie viel geplant war und was offen geblieben ist.',
-              'Vergleiche, Charts und Rankings fuer den gewaehlten Zeitraum.',
-              'Ob du auf Kurs bist oder in einem Bereich abfaellst.',
+              'Wie viele Übersetzungen du gemacht hast, wie viel geplant war und was offen geblieben ist.',
+              'Vergleiche, Charts und Rankings für den gewählten Zeitraum.',
+              'Ob du auf Kurs bist oder in einem Bereich abfällst.',
             ],
           },
           {
             title: 'Welche regelmaessigen Nachrichten dazu kommen',
             items: [
               'Private Wochenanalytik kommt nach den aktuellen Standardzeiten meist abends gegen 19:30 mit Charts.',
-              'Gruppen-Tageszusammenfassungen kommen typischerweise spaet am Abend, Gruppen-Wochensummaries sonntags spaet am Abend.',
-              'Die Mini-App bleibt der Ort fuer die volle Detailsicht, Telegram fuer die kurze Zusammenfassung.',
+              'Gruppen-Tageszusammenfassungen kommen typischerweise spät am Abend, Gruppen-Wochensummaries sonntags spät am Abend.',
+              'Die Mini-App bleibt der Ort für die volle Detailsicht, Telegram für die kurze Zusammenfassung.',
             ],
           },
         ],
@@ -1747,26 +1753,26 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'skill_training',
         title: 'Skill-Training',
-        summary: 'Ein fokussierter Block fuer genau ein schwaches Thema.',
+        summary: 'Ein fokussierter Block für genau ein schwaches Thema.',
         sections: [
           {
             title: 'Was dieser Bereich macht',
             items: [
-              'Er nimmt eine konkrete Schwaeche und baut daraus ein kompaktes Paket.',
-              'Du bekommst Theorie, oft ein passendes Video und danach Uebungssaetze.',
-              'Der Block ist fuer gezielte Reparatur, nicht fuer allgemeines Surfen.',
+              'Er nimmt eine konkrete Schwäche und baut daraus ein kompaktes Paket.',
+              'Du bekommst Theorie, oft ein passendes Video und danach Übungssätze.',
+              'Der Block ist für gezielte Reparatur, nicht für allgemeines Surfen.',
             ],
           },
           {
             title: 'Was du im Training siehst',
             items: [
               'Einen klar benannten Fokus in nutzerfreundlicher Sprache.',
-              'Die Kernerklaerung zum Thema.',
+              'Die Kernerklärung zum Thema.',
               'Praxisaufgaben mit direktem Feedback.',
             ],
           },
           {
-            title: 'Wann du ihn oeffnen solltest',
+            title: 'Wann du ihn öffnen solltest',
             items: [
               'Wenn ein schwacher Ring in der Skill-Map oder eine Empfehlung sichtbar ist.',
               'Wenn du nicht breit, sondern punktgenau trainieren willst.',
@@ -1783,26 +1789,26 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'So aktivierst du ihn',
             items: [
-              'Bot privat oeffnen und einmal /start senden.',
+              'Bot privat öffnen und einmal /start senden.',
               'Danach erscheint unten die Taste „💬 Спросить у GPT”.',
-              'Damit ist der schnelle Privatmodus fuer Sprache, Fragen und Speichern bereit.',
+              'Damit ist der schnelle Privatmodus für Sprache, Fragen und Speichern bereit.',
             ],
           },
           {
             title: 'Was du dort tun kannst',
             items: [
               'Ein Wort, eine Phrase oder einen ganzen Satz schicken und uebersetzen lassen.',
-              'Nach Grammatik, Bedeutung, Nuance, Herkunft oder natuerlicher Formulierung fragen.',
-              'Nach der Antwort eine Phrase speichern und direkt eine Rueckfrage stellen.',
-              'Dort, wo Audio sinnvoll ist, kann der Bot auch Vorlesen oder Audio-Erklaerungen liefern.',
+              'Nach Grammatik, Bedeutung, Nuance, Herkunft oder natürlicher Formulierung fragen.',
+              'Nach der Antwort eine Phrase speichern und direkt eine Rückfrage stellen.',
+              'Dort, wo Audio sinnvoll ist, kann der Bot auch Vorlesen oder Audio-Erklärungen liefern.',
             ],
           },
           {
-            title: 'Welche Nachrichten privat ankommen koennen',
+            title: 'Welche Nachrichten privat ankommen können',
             items: [
               'Nach den aktuellen Standardzeiten: Tagesplan morgens, Erinnerungen im Tagesverlauf und Abend-Erinnerung.',
-              'Audio-Fehlererklaerungen kommen typischerweise tagsueber und beziehen sich meist auf den letzten Lerntag.',
-              'Private Analytik und Charts kommen regelmaessig, waehrend die Mini-App die volle Detailansicht liefert.',
+              'Audio-Fehlererklärungen kommen typischerweise tagsüber und beziehen sich meist auf den letzten Lerntag.',
+              'Private Analytik und Charts kommen regelmaessig, während die Mini-App die volle Detailansicht liefert.',
             ],
           },
         ],
@@ -1815,25 +1821,25 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Wie du den Gruppenmodus richtig startest',
             items: [
-              'Bot in eine Telegram-Gruppe einfuegen.',
-              'Die Teilnehmer bestaetigen ihre Teilnahme ueber die Gruppen-Nachricht.',
-              'Jeder Teilnehmer sollte den Bot zusaetzlich einmal privat starten.',
+              'Bot in eine Telegram-Gruppe einfügen.',
+              'Die Teilnehmer bestätigen ihre Teilnahme über die Gruppen-Nachricht.',
+              'Jeder Teilnehmer sollte den Bot zusätzlich einmal privat starten.',
             ],
           },
           {
             title: 'Was in der Gruppe erscheinen kann',
             items: [
-              'Quiz-Polls ueber den Tag verteilt. Nach den aktuellen Legacy-Standardslots meist zwischen 06:00 und 22:30 im 30-Minuten-Rhythmus.',
-              'Tageszusammenfassungen am Abend und Wochenzusammenfassungen am Sonntag spaet am Abend.',
-              'Je nach Routing auch Gruppenplan-Hinweise, Abschlussmeldungen und Audio fuer Fehler oder Story-Sessions.',
+              'Quiz-Polls über den Tag verteilt. Nach den aktuellen Legacy-Standardslots meist zwischen 06:00 und 22:30 im 30-Minuten-Rhythmus.',
+              'Tageszusammenfassungen am Abend und Wochenzusammenfassungen am Sonntag spät am Abend.',
+              'Je nach Routing auch Gruppenplan-Hinweise, Abschlussmeldungen und Audio für Fehler oder Story-Sessions.',
             ],
           },
           {
             title: 'Welches Prinzip dahintersteht',
             items: [
-              'Ins Ranking gehen nur bestaetigte Teilnehmer ein.',
+              'Ins Ranking gehen nur bestätigte Teilnehmer ein.',
               'Quizze wechseln zwischen neuen und schwachen Wiederholungsinhalten, statt immer nur neue Dinge zu schicken.',
-              'Die Gruppe ist fuer Motivation, Vergleich und Rhythmus gedacht; die tiefere Arbeit passiert weiter in der Mini-App und im Privat-Chat.',
+              'Die Gruppe ist für Motivation, Vergleich und Rhythmus gedacht; die tiefere Arbeit passiert weiter in der Mini-App und im Privat-Chat.',
             ],
           },
         ],
@@ -2916,7 +2922,6 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   onJumpToDictionary,
   onSaveDraft,
   saveLabel,
-  saveLoadingLabel,
   saveSavedLabel,
 }) {
   const textareaRef = useRef(null);
@@ -3168,19 +3173,19 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   // Save whatever the user typed in THIS field (a word or their translation) to the
   // dictionary via the standard lookup→save pipeline (article+Grundform / grammar-
   // corrected sentence / translation / language pair — all server-side).
-  const handleSaveDraftClick = useCallback(async () => {
-    if (!onSaveDraft || draftSaveState === 'saving') return;
+  const handleSaveDraftClick = useCallback(() => {
+    if (!onSaveDraft || draftSaveState === 'saved') return;
     const live = textareaRef.current ? String(textareaRef.current.value || '') : String(valueRef.current || '');
     const text = live.trim();
     if (!text) return;
-    setDraftSaveState('saving');
-    try {
-      const ok = await onSaveDraft(text, sentenceId);
-      setDraftSaveState(ok === false ? 'error' : 'saved');
-    } catch (_e) {
-      setDraftSaveState('error');
-    }
-    window.setTimeout(() => setDraftSaveState('idle'), 2500);
+    // Optimistic: confirm ✓ instantly and release the user — the canonical
+    // lookup→save (article+Grundform / grammar / translation) runs in the
+    // background. Revert to a retryable error state only on real failure.
+    setDraftSaveState('saved');
+    window.setTimeout(() => setDraftSaveState((s) => (s === 'saved' ? 'idle' : s)), 2500);
+    Promise.resolve(onSaveDraft(text, sentenceId))
+      .then((ok) => { if (ok === false) setDraftSaveState('error'); })
+      .catch(() => { setDraftSaveState('error'); });
   }, [onSaveDraft, draftSaveState, sentenceId]);
 
   return (
@@ -3205,20 +3210,6 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
             </>
           ) : checkLabel}
         </button>
-        {onSaveDraft ? (
-          <button
-            type="button"
-            className={`translation-draft-save ${draftSaveState === 'saved' ? 'is-saved' : ''} ${draftSaveState === 'error' ? 'is-error' : ''}`}
-            onClick={handleSaveDraftClick}
-            disabled={draftSaveState === 'saving'}
-            aria-label={saveLabel}
-          >
-            {draftSaveState === 'saving' ? (saveLoadingLabel || '…')
-              : draftSaveState === 'saved' ? (saveSavedLabel || '✓')
-                : draftSaveState === 'error' ? '⚠️'
-                  : `💾 ${saveLabel}`}
-          </button>
-        ) : null}
         <button
           type="button"
           className="translation-dict-jump"
@@ -3431,14 +3422,14 @@ const TranslationsSection = React.memo(function TranslationsSection({
       <section className="webapp-section webapp-section-translations" ref={translationsRef}>
         <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
           <div className="translations-title-main">
-            <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
+            <h2>{tr('Ваши переводы', 'Ihre Übersetzungen')}</h2>
           </div>
           <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
         </div>
         {showTranslationStartConfigurator && todayTranslationRecommendation && (
           <div className="today-translation-recommendation-card">
             <div className="today-translation-recommendation-card__eyebrow">
-              {tr('Рекомендация на сегодня', 'Empfehlung fuer heute')}
+              {tr('Рекомендация на сегодня', 'Empfehlung für heute')}
             </div>
             <div className="today-translation-recommendation-card__title">
               {todayTranslationRecommendation.title}
@@ -3491,7 +3482,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 </div>
                 {!hasSelectedTranslationLevel && (
                   <div className="webapp-muted">
-                    {tr('Сначала выберите уровень.', 'Bitte zuerst ein Niveau waehlen.')}
+                    {tr('Сначала выберите уровень.', 'Bitte zuerst ein Niveau wählen.')}
                   </div>
                 )}
               </div>
@@ -3725,7 +3716,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 <p className="webapp-muted translation-empty-state">
                   {tr(
                     `Подгружаем ещё предложения... ${progressiveReadyCount}/${progressiveExpectedTotal}`,
-                    `Weitere Saetze werden geladen... ${progressiveReadyCount}/${progressiveExpectedTotal}`
+                    `Weitere Sätze werden geladen... ${progressiveReadyCount}/${progressiveExpectedTotal}`
                   )}
                 </p>
               )}
@@ -3755,10 +3746,10 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       sentenceNumber={item.unique_id ?? index + 1}
                       sentenceText={item.sentence}
                       initialValue={draft}
-                      placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
-                      checkLabel={tr('Проверить', 'Pruefen')}
-                      checkLoadingLabel={tr('Проверяем...', 'Pruefen...')}
-                      dictionaryLabel={tr('Открыть словарь', 'Woerterbuch')}
+                      placeholder={tr('Введите перевод...', 'Übersetzung eingeben...')}
+                      checkLabel={tr('Проверить', 'Prüfen')}
+                      checkLoadingLabel={tr('Проверяем...', 'Prüfen...')}
+                      dictionaryLabel={tr('Открыть словарь', 'Wörterbuch')}
                       isAndroidClient={isAndroidTelegramClient}
                       androidDebugEnabled={androidTranslationDraftDebugConfig.enabled}
                       androidExperimentVariant={androidTranslationDraftDebugConfig.variant}
@@ -3776,11 +3767,10 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       // (getActiveTranslationDraftMap) and shows a hint if truly empty.
                       checkDisabled={webappLoading}
                       checkLoading={Number(singleSentenceCheckLoadingId || 0) === Number(item.id_for_mistake_table || 0)}
-                      checkStatusText={tr('Проверяем это предложение. Результат появится ниже.', 'Dieser Satz wird geprueft. Das Ergebnis erscheint weiter unten.')}
+                      checkStatusText={tr('Проверяем это предложение. Результат появится ниже.', 'Dieser Satz wird geprüft. Das Ergebnis erscheint weiter unten.')}
                       onJumpToDictionary={jumpToDictionaryFromSentence}
                       onSaveDraft={handleSaveSentenceDraft}
                       saveLabel={tr('Сохранить', 'Speichern')}
-                      saveLoadingLabel={tr('Сохраняю…', 'Speichere…')}
                       saveSavedLabel={tr('✓ В словаре', '✓ Gespeichert')}
                     />
                   );
@@ -3799,33 +3789,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 />
               </label>
             )}
-            {!isStorySession && hasActiveTranslationSentences && (
-              <label className="translation-private-grammar-optin">
-                <div className="translation-private-grammar-optin-copy">
-                  <span>
-                    {tr(
-                      'Отправлять текстовое объяснение грамматики в личку сразу после проверки',
-                      'Textuelle Grammatikerklaerung sofort nach der Pruefung in den privaten Chat senden'
-                    )}
-                  </span>
-                  <small>
-                    {tr(
-                      'Разбор приходит отдельным сообщением по каждому проверенному предложению.',
-                      'Die Analyse kommt als separate Nachricht fuer jeden geprueften Satz.'
-                    )}
-                  </small>
-                </div>
-                <span className="translation-private-grammar-optin-check">
-                  <input
-                    type="checkbox"
-                    checked={translationPrivateGrammarTextOptIn}
-                    onChange={(event) => setTranslationPrivateGrammarTextOptIn(event.target.checked)}
-                    disabled={webappLoading}
-                  />
-                </span>
-              </label>
-            )}
-
             {hasActiveTranslationSentences && (
               <>
                 {webappError && !webappLoading && (
@@ -3846,12 +3809,12 @@ const TranslationsSection = React.memo(function TranslationsSection({
                     ? (translationCheckProgress.total > 0
                         ? tr(
                             `Проверяем... ${translationCheckProgress.done}/${translationCheckProgress.total}`,
-                            `Pruefen... ${translationCheckProgress.done}/${translationCheckProgress.total}`
+                            `Prüfen... ${translationCheckProgress.done}/${translationCheckProgress.total}`
                           )
-                        : tr('Проверяем...', 'Pruefen...'))
+                        : tr('Проверяем...', 'Prüfen...'))
                     : isStorySession
-                      ? tr('Проверить историю', 'Story pruefen')
-                      : tr('Проверить перевод', 'Uebersetzung pruefen')}
+                      ? tr('Проверить историю', 'Story prüfen')
+                      : tr('Проверить перевод', 'Übersetzung prüfen')}
                 </button>
                 {webappLoading && translationCheckProgress.total > 0 && (
                   <div className="webapp-muted">
@@ -4001,13 +3964,13 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 <div><strong>{tr('🎯 Ответ пользователя:', '🎯 Antwort des Nutzers:')}</strong> {storyResult.guess_correct ? tr('верно по смыслу', 'inhaltlich richtig') : tr('неверно по смыслу', 'inhaltlich falsch')}</div>
                 <div><strong>{tr('✅ Эталон:', '✅ Referenz:')}</strong> {storyResult.answer || '—'}</div>
                 {storyResult.guess_reason && (
-                  <div><strong>{tr('📝 Пояснение:', '📝 Erklaerung:')}</strong> {storyResult.guess_reason}</div>
+                  <div><strong>{tr('📝 Пояснение:', '📝 Erklärung:')}</strong> {storyResult.guess_reason}</div>
                 )}
               </div>
 
               {storyResult.extra_de && (
                 <div className="webapp-result-text story-result-extra">
-                  <strong>{tr('📌 Дополнительно (DE):', '📌 Zusaetzlich (DE):')}</strong> {storyResult.extra_de}
+                  <strong>{tr('📌 Дополнительно (DE):', '📌 Zusätzlich (DE):')}</strong> {storyResult.extra_de}
                 </div>
               )}
               {Array.isArray(storyResult.source_links) && storyResult.source_links.length > 0 && (
@@ -4028,7 +3991,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
         {results.length > 0 && (
           <section className="webapp-result">
-            <h3>{tr('Результат проверки', 'Pruefungsergebnis')}</h3>
+            <h3>{tr('Результат проверки', 'Prüfungsergebnis')}</h3>
             <div className="webapp-result-list">
               {results.map((item, index) => {
                 const correctTextForTts = extractCorrectTranslationText(item);
@@ -4083,7 +4046,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           <>
                             {/*
                             <label className="result-audio-optin">
-                              <span>{tr('Аудио-объяснение для этого предложения', 'Audio-Erklaerung fuer diesen Satz')}</span>
+                              <span>{tr('Аудио-объяснение для этого предложения', 'Audio-Erklärung für diesen Satz')}</span>
                               <input
                                 type="checkbox"
                                 checked={Boolean(
@@ -4139,8 +4102,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
                             disabled={explanationLoading[explanationKey]}
                           >
                             {explanationLoading[explanationKey]
-                              ? tr('Запрашиваем объяснение...', 'Erklaerung wird angefragt...')
-                              : tr('Объяснить ошибки', 'Fehler erklaeren')}
+                              ? tr('Запрашиваем объяснение...', 'Erklärung wird angefragt...')
+                              : tr('Объяснить ошибки', 'Fehler erklären')}
                           </button>
                           <label className="explanation-lang-toggle" title={tr('Объяснение на немецком', 'Erklärung auf Deutsch')}>
                             <input
@@ -4176,12 +4139,12 @@ const TranslationsSection = React.memo(function TranslationsSection({
                                   : tr('💬 Задать вопрос', '💬 Frage stellen')}
                               </button>
                               {followupOpen && (
-                                <div className="webapp-explanation-followup-form">
+                                <div className="webapp-explanation-followup-form" id={`explanation-followup-form-${explanationKey}`}>
                                   <textarea
                                     rows={3}
                                     value={followupDraft}
                                     onChange={(event) => handleExplanationQuestionDraftChange(item, event.target.value)}
-                                    placeholder={tr('Напишите уточняющий вопрос по этому разбору...', 'Schreibe eine Rueckfrage zu dieser Erklaerung...')}
+                                    placeholder={tr('Напишите уточняющий вопрос по этому разбору...', 'Schreibe eine Rückfrage zu dieser Erklärung...')}
                                   />
                                   <div className="webapp-explanation-followup-actions">
                                     <button
@@ -4236,6 +4199,32 @@ const TranslationsSection = React.memo(function TranslationsSection({
               {tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst prüfen, dann beenden.')}
             </div>
           )}
+          {!isStorySession && hasActiveTranslationSentences && (
+            <label className="translation-private-grammar-optin">
+              <div className="translation-private-grammar-optin-copy">
+                <span>
+                  {tr(
+                    'Отправлять текстовое объяснение грамматики в личку сразу после проверки',
+                    'Textuelle Grammatikerklärung sofort nach der Prüfung in den privaten Chat senden'
+                  )}
+                </span>
+                <small>
+                  {tr(
+                    'Разбор приходит отдельным сообщением по каждому проверенному предложению.',
+                    'Die Analyse kommt als separate Nachricht für jeden geprüften Satz.'
+                  )}
+                </small>
+              </div>
+              <span className="translation-private-grammar-optin-check">
+                <input
+                  type="checkbox"
+                  checked={translationPrivateGrammarTextOptIn}
+                  onChange={(event) => setTranslationPrivateGrammarTextOptIn(event.target.checked)}
+                  disabled={webappLoading}
+                />
+              </span>
+            </label>
+          )}
           <button
             type="button"
             onClick={handleFinishTranslation}
@@ -4264,10 +4253,10 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
         {historyVisible && (
           <section className="webapp-result">
-            <h3>{tr('История переводов за сегодня', 'Uebersetzungsverlauf fuer heute')}</h3>
+            <h3>{tr('История переводов за сегодня', 'Uebersetzungsverlauf für heute')}</h3>
             <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {activeLanguagePairLabel}</p>
             {historyItems.length === 0 ? (
-              <p className="webapp-muted">{tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Uebersetzungen.')}</p>
+              <p className="webapp-muted">{tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Übersetzungen.')}</p>
             ) : (
               <div className="webapp-result-list">
                 {historyItems.map((item, index) => (
@@ -4366,8 +4355,8 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                 ? `Раздел «${title}» входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.`
                 : 'Этот раздел входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.',
               title
-                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschraenkungen zu nutzen.`
-                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschraenkungen zu nutzen.'
+                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschränkungen zu nutzen.`
+                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschränkungen zu nutzen.'
             )}
           </span>
         </div>
@@ -4627,7 +4616,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           {!weeklyPlanCollapsed && (
             <div className="weekly-plan-form">
               <label className="webapp-field">
-                <span>{tr('Количество переводов', 'Anzahl Uebersetzungen')}</span>
+                <span>{tr('Количество переводов', 'Anzahl Übersetzungen')}</span>
                 <input
                   type="number"
                   min="0"
@@ -4639,7 +4628,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                 />
               </label>
               <label className="webapp-field">
-                <span>{tr('Количество выученных слов', 'Anzahl gelernter Woerter')}</span>
+                <span>{tr('Количество выученных слов', 'Anzahl gelernter Wörter')}</span>
                 <input
                   type="number"
                   min="0"
@@ -4839,7 +4828,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
             <div className="home-panel-head-main">
               <div className="today-plan-title-wrap">
                 <div className="home-panel-title-row">
-                  <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
+                  <h2>{tr('Задачи на сегодня', 'Aufgaben für heute')}</h2>
                   <div className="home-panel-head-actions today-plan-head-actions">
                     <button
                       type="button"
@@ -4869,7 +4858,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                     </button>
                   </div>
                 </div>
-                <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
+                <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persönlicher Plan für heute')}</p>
                 <small className={`home-panel-snapshot-meta is-${todayPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{todayPlanSnapshotLabel}</small>
               </div>
             </div>
@@ -4898,7 +4887,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
             <div className="webapp-muted">{tr('Синхронизируем выполнение в фоне...', 'Fortschritt wird im Hintergrund synchronisiert...')}</div>
           )}
           {todayPlanError && (
-            renderPaidFeatureNotice(todayPlanError, tr('Задачи на сегодня', 'Aufgaben fuer heute'))
+            renderPaidFeatureNotice(todayPlanError, tr('Задачи на сегодня', 'Aufgaben für heute'))
             || <div className="webapp-error">{todayPlanError}</div>
           )}
           {!showTodayPlanSkeleton && !todayPlanLoading && !todayPlanError && !hasTodayPlanItems && (
@@ -4990,7 +4979,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                     {isVideoTask && (
                       <div className="today-video-hint">
                         <div className="today-video-topic-line">
-                          <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
+                          <span>{tr('Тема для тренировки:', 'Thema für Training:')}</span>{' '}
                           <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
                         </div>
                         {tr(
@@ -5667,13 +5656,13 @@ function AppInner() {
     '🔗 Порядок слов в придаточном',
     '🪢 weil / dass / wenn / obwohl',
     '🧭 Akkusativ и Dativ',
-    '📍 Wechselpraepositionen',
+    '📍 Wechselpräpositionen',
     '👑 Артикли: der / die / das / ein / eine / kein',
     '🎨 Склонение прилагательных',
     '🔁 Отделяемые глаголы',
     '🛠️ Модальные глаголы',
     '🪞 Возвратные глаголы',
-    '⏳ Perfekt и Praeteritum',
+    '⏳ Perfekt и Präteritum',
     '💭 Konjunktiv II',
     '🧮 Passiv',
     '🔍 Relativsaetze',
@@ -5699,7 +5688,7 @@ function AppInner() {
       <div className="paid-feature-card youtube-library-notice">
         <div className="paid-feature-card-icon youtube-library-notice-icon" aria-hidden="true">CC</div>
         <div className="paid-feature-card-copy youtube-library-notice-copy">
-          <strong>{tr('Субтитры недоступны', 'Untertitel nicht verfuegbar')}</strong>
+          <strong>{tr('Субтитры недоступны', 'Untertitel nicht verfügbar')}</strong>
           <span>{message}</span>
         </div>
       </div>
@@ -5859,7 +5848,7 @@ function AppInner() {
       : '';
     return {
       itemId: Number(item?.id || 0),
-      title: localizedTopicLabel || tr('Персональный фокус дня', 'Persoenlicher Fokus des Tages'),
+      title: localizedTopicLabel || tr('Персональный фокус дня', 'Persönlicher Fokus des Tages'),
       reason: localizedTopicLabel,
       presetTopicLabel: recommendedTopicLabel,
       topicLabel: localizedRecommendedTopicLabel || localizedTopicLabel,
@@ -6087,8 +6076,8 @@ function AppInner() {
                 ? `Раздел «${title}» входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.`
                 : 'Этот раздел входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.',
               title
-                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschraenkungen zu nutzen.`
-                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschraenkungen zu nutzen.'
+                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschränkungen zu nutzen.`
+                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschränkungen zu nutzen.'
             )}
           </span>
         </div>
@@ -6306,7 +6295,7 @@ function AppInner() {
   );
   const analyticsCalendarLabel = useMemo(() => {
     if (!analyticsCalendarRangeValid) {
-      return tr('Период не выбран', 'Zeitraum nicht gewaehlt');
+      return tr('Период не выбран', 'Zeitraum nicht gewählt');
     }
     const locale = uiLang === 'de' ? 'de-AT' : 'ru-RU';
     return `${formatAnalyticsCalendarDisplayDate(analyticsCustomStartDate, locale)} - ${formatAnalyticsCalendarDisplayDate(analyticsCustomEndDate, locale)}`;
@@ -6483,7 +6472,7 @@ function AppInner() {
   }, [webappUser?.id, initData, translationDraftScopeKey]);
   const activeTranslationSessionWarning = tr(
     'У вас уже есть незавершённая сессия. Сначала завершите её кнопкой «Завершить» или переведите оставшиеся предложения. Все показанные, но не переведённые предложения ухудшат вашу статистику и итоговый балл.',
-    'Du hast bereits eine unvollstaendige Session. Beende sie zuerst mit „Abschliessen“ oder uebersetze die restlichen Saetze. Alle gezeigten, aber nicht uebersetzten Saetze verschlechtern deine Statistik und deinen Gesamtscore.'
+    'Du hast bereits eine unvollständige Session. Beende sie zuerst mit „Abschliessen“ oder uebersetze die restlichen Sätze. Alle gezeigten, aber nicht uebersetzten Sätze verschlechtern deine Statistik und deinen Gesamtscore.'
   );
   const flushTranslationDraftAndroidDebugSummary = useCallback((reason = 'timer') => {
     if (!androidTranslationDraftDebugConfig.enabled) {
@@ -6650,7 +6639,7 @@ function AppInner() {
       });
       setYoutubeTranscript([
         { start: 0, text: 'Guten Morgen zusammen.' },
-        { start: 2, text: 'Heute sprechen wir ueber Frontend-Performance.' },
+        { start: 2, text: 'Heute sprechen wir über Frontend-Performance.' },
       ]);
       setYoutubeTranslations({
         0: 'Доброе утро всем.',
@@ -7103,8 +7092,8 @@ function AppInner() {
   };
 
   const weeklySummaryMetricTitles = useMemo(() => ({
-    translations: tr('переводы', 'Uebersetzungen'),
-    learned_words: tr('слова и Space Repetition', 'Woerter und Space Repetition'),
+    translations: tr('переводы', 'Übersetzungen'),
+    learned_words: tr('слова и Space Repetition', 'Wörter und Space Repetition'),
     reading_minutes: tr('чтение', 'Lesen'),
     youtube_minutes: tr('видео и YouTube', 'Video und YouTube'),
     agent_minutes: tr('разговорная практика', 'Sprechpraxis'),
@@ -7112,14 +7101,14 @@ function AppInner() {
   const weeklySummaryKpiMeta = useMemo(() => ([
     {
       key: 'translations',
-      title: tr('Переводы предложений', 'Satz-Uebersetzungen'),
+      title: tr('Переводы предложений', 'Satz-Übersetzungen'),
       unit: tr('шт', 'Stk'),
       digits: 0,
     },
     {
       key: 'learned_words',
-      title: tr('Слова / Space Repetition', 'Woerter / Space Repetition'),
-      unit: tr('слов', 'Woerter'),
+      title: tr('Слова / Space Repetition', 'Wörter / Space Repetition'),
+      unit: tr('слов', 'Wörter'),
       digits: 0,
     },
     {
@@ -7187,7 +7176,7 @@ function AppInner() {
       } else {
         trendLine = tr(
           'Ты идёшь примерно на уровне прошлого сравнимого периода.',
-          'Du liegst ungefaehr auf dem Niveau des letzten Vergleichszeitraums.'
+          'Du liegst ungefähr auf dem Niveau des letzten Vergleichszeitraums.'
         );
       }
     }
@@ -7196,7 +7185,7 @@ function AppInner() {
       return [
         tr(
           'Пока нет данных для weekly summary. Открой приложение позже, когда появится активность.',
-          'Es gibt noch keine Daten fuer diese Weekly Summary. Oeffne die App spaeter erneut.'
+          'Es gibt noch keine Daten für diese Weekly Summary. Oeffne die App später erneut.'
         ),
       ];
     }
@@ -7209,25 +7198,25 @@ function AppInner() {
         )
         : tr(
           'Недельный план ещё не задан, поэтому процент выполнения пока недоступен.',
-          'Dein Wochenplan ist noch nicht gesetzt, deshalb gibt es noch keinen Erfuellungswert.'
+          'Dein Wochenplan ist noch nicht gesetzt, deshalb gibt es noch keinen Erfüllungswert.'
         ),
       strongest.length
         ? tr(
           `Лучше всего шли: ${strongest.join(' и ')}.`,
-          `Am staerksten liefen: ${strongest.join(' und ')}.`
+          `Am stärksten liefen: ${strongest.join(' und ')}.`
         )
         : tr(
           'Сильные стороны появятся после первых действий за период.',
-          'Staerken erscheinen nach den ersten Aktivitaeten in diesem Zeitraum.'
+          'Stärken erscheinen nach den ersten Aktivitäten in diesem Zeitraum.'
         ),
       weakest.length
         ? tr(
           `Просадка: ${weakest.join(' и ')}.`,
-          `Rueckstand: ${weakest.join(' und ')}.`
+          `Rückstand: ${weakest.join(' und ')}.`
         )
         : tr(
           'Слабые зоны определятся после появления прогресса.',
-          'Schwaechere Bereiche erscheinen, sobald Fortschritt sichtbar ist.'
+          'Schwächere Bereiche erscheinen, sobald Fortschritt sichtbar ist.'
         ),
       trendLine,
     ];
@@ -7283,14 +7272,14 @@ function AppInner() {
     const improvedTitles = improved.map((item) => item.title);
     let nextAction = tr(
       'Продолжай в том же темпе и открой аналитику для деталей.',
-      'Halte das Tempo und oeffne die Analytik fuer die Details.'
+      'Halte das Tempo und oeffne die Analytik für die Details.'
     );
     if (lagging) {
       if (lagging.key === 'translations') {
         const amount = Math.max(3, Math.min(10, Math.ceil(lagging.remaining || 3)));
         nextAction = tr(
           `Чтобы сократить отставание, сегодня лучше сделать ещё ${amount} переводов.`,
-          `Um den Rueckstand zu verringern, mach heute am besten noch ${amount} Uebersetzungen.`
+          `Um den Rückstand zu verringern, mach heute am besten noch ${amount} Übersetzungen.`
         );
       } else if (lagging.key === 'learned_words') {
         const amount = Math.max(5, Math.min(15, Math.ceil(lagging.remaining || 5)));
@@ -7302,7 +7291,7 @@ function AppInner() {
         const amount = Math.max(10, Math.min(25, Math.ceil(lagging.remaining || 10)));
         nextAction = tr(
           `Чтобы подтянуть чтение, сегодня лучше добавить ещё ${amount} минут.`,
-          `Um Lesen aufzuholen, fuege heute am besten noch ${amount} Minuten hinzu.`
+          `Um Lesen aufzuholen, füge heute am besten noch ${amount} Minuten hinzu.`
         );
       } else if (lagging.key === 'youtube_minutes') {
         const amount = Math.max(5, Math.min(15, Math.ceil(lagging.remaining || 5)));
@@ -7326,11 +7315,11 @@ function AppInner() {
       lagLine: lagging
         ? tr(
           `${lagging.title} сейчас отстаёт сильнее всего.`,
-          `${lagging.title} liegt aktuell am meisten zurueck.`
+          `${lagging.title} liegt aktuell am meisten zurück.`
         )
         : tr(
           'Явной просадки пока нет.',
-          'Es gibt aktuell keinen klaren Rueckstand.'
+          'Es gibt aktuell keinen klaren Rückstand.'
         ),
       nextLine: nextAction,
     };
@@ -7405,13 +7394,13 @@ function AppInner() {
   }, [weeklySummaryCurrentMetrics, weeklySummaryKpiMeta, weeklySummaryPreviousMetrics]);
   const billingReturnMessage = useMemo(() => {
     if (billingReturnContext.kind === 'success') {
-      return tr('Оплата прошла успешно. Проверяю подписку и обновляю статус.', 'Zahlung erfolgreich. Ich pruefe jetzt dein Abo und aktualisiere den Status.');
+      return tr('Оплата прошла успешно. Проверяю подписку и обновляю статус.', 'Zahlung erfolgreich. Ich prüfe jetzt dein Abo und aktualisiere den Status.');
     }
     if (billingReturnContext.kind === 'cancel') {
       return tr('Оплата была отменена. Ты можешь попробовать еще раз в этом разделе.', 'Die Zahlung wurde abgebrochen. Du kannst es in diesem Bereich erneut versuchen.');
     }
     if (billingReturnContext.kind === 'portal') {
-      return tr('Возврат из Stripe Portal. Обновляю текущий статус подписки.', 'Rueckkehr aus dem Stripe-Portal. Ich aktualisiere den aktuellen Abo-Status.');
+      return tr('Возврат из Stripe Portal. Обновляю текущий статус подписки.', 'Rückkehr aus dem Stripe-Portal. Ich aktualisiere den aktuellen Abo-Status.');
     }
     return '';
   }, [billingReturnContext.kind, tr]);
@@ -7435,7 +7424,7 @@ function AppInner() {
       title: tr('Купить разработчику кофе ☕️', 'Dem Entwickler einen Kaffee ☕️ spendieren'),
       blurb: tr(
         'Разовое спасибо. Доступ не меняется — это просто помогает оплачивать серверы. Ты получаешь бейдж спонсора и место на стене благодарностей.',
-        'Einmaliges Dankeschoen. Der Zugang aendert sich nicht — es hilft nur, die Server zu bezahlen. Du erhaeltst ein Sponsor-Abzeichen und einen Platz an der Dankeswand.'
+        'Einmaliges Dankeschön. Der Zugang aendert sich nicht — es hilft nur, die Server zu bezahlen. Du erhältst ein Sponsor-Abzeichen und einen Platz an der Dankeswand.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -7445,7 +7434,7 @@ function AppInner() {
       title: tr('Кофе ☕️ и чизкейк 🍰', 'Kaffee ☕️ und Cheesecake 🍰'),
       blurb: tr(
         'Разовое спасибо покрупнее. Тоже не меняет доступ — отличается только размером поддержки и более заметным бейджем спонсора на стене благодарностей.',
-        'Ein groesseres einmaliges Dankeschoen. Aendert ebenfalls nichts am Zugang — nur die Hoehe der Unterstuetzung und ein auffaelligeres Sponsor-Abzeichen an der Dankeswand.'
+        'Ein größeres einmaliges Dankeschön. Aendert ebenfalls nichts am Zugang — nur die Höhe der Unterstützung und ein auffälligeres Sponsor-Abzeichen an der Dankeswand.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -7477,6 +7466,7 @@ function AppInner() {
             uiLang === 'de'
               ? String(meta.priceLabelDe || meta.priceLabel || '').trim()
               : String(meta.priceLabel || '').trim(),
+            planCode.startsWith('support_'),
           ),
           sortOrder: Number.isFinite(order[planCode]) ? order[planCode] : 500,
         };
@@ -7488,11 +7478,11 @@ function AppInner() {
   }, [billingPlans, billingPlanMeta, uiLang, tr]);
   const billingPlanLimitDetails = useMemo(() => {
     const paidCommon = [
-      tr('Переводы: безлимитно.', 'Uebersetzungen: unbegrenzt.'),
+      tr('Переводы: безлимитно.', 'Übersetzungen: unbegrenzt.'),
       tr('Читалка: безлимитно.', 'Reader: unbegrenzt.'),
       tr('Скачивание аудио из читалки: до 10 страниц за 7 дней.', 'Audio-Export aus dem Reader: bis zu 10 Seiten in 7 Tagen.'),
       tr('Карточки: безлимитно.', 'Karteikarten: unbegrenzt.'),
-      tr('«Почувствуй слово»: безлимитно.', '„Wort fuehlen“: unbegrenzt.'),
+      tr('«Почувствуй слово»: безлимитно.', '„Wort fühlen“: unbegrenzt.'),
       tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.'),
       tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.'),
     ];
@@ -7500,12 +7490,12 @@ function AppInner() {
       free: {
         title: tr('Лимиты тарифа Free', 'Limits des Free-Tarifs'),
         items: [
-          tr('Переводы: 1 набор в день (7 предложений).', 'Uebersetzungen: 1 Set pro Tag (7 Saetze).'),
+          tr('Переводы: 1 набор в день (7 предложений).', 'Übersetzungen: 1 Set pro Tag (7 Sätze).'),
           tr('Читалка: 1 книга/документ в архиве (период хранения до 30 дней).', 'Reader: 1 Buch/Dokument im Archiv (Speicherzeit bis 30 Tage).'),
-          tr('Чтобы добавить новую книгу, нужно удалить предыдущую.', 'Um ein neues Buch hinzuzufuegen, muss das vorherige geloescht werden.'),
-          tr('Скачивание аудио из читалки: недоступно.', 'Audio-Export aus dem Reader: nicht verfuegbar.'),
-          tr('Карточки: в каждом виде тренировки по 5 слов в день.', 'Karteikarten: in jedem Trainingsmodus 5 Woerter pro Tag.'),
-          tr('«Почувствуй слово»: до 3 раз в день (общий лимит).', '„Wort fuehlen“: bis zu 3-mal pro Tag (globales Limit).'),
+          tr('Чтобы добавить новую книгу, нужно удалить предыдущую.', 'Um ein neues Buch hinzuzufügen, muss das vorherige gelöscht werden.'),
+          tr('Скачивание аудио из читалки: недоступно.', 'Audio-Export aus dem Reader: nicht verfügbar.'),
+          tr('Карточки: в каждом виде тренировки по 5 слов в день.', 'Karteikarten: in jedem Trainingsmodus 5 Wörter pro Tag.'),
+          tr('«Почувствуй слово»: до 3 раз в день (общий лимит).', '„Wort fühlen“: bis zu 3-mal pro Tag (globales Limit).'),
           tr('Разговорная практика: 3 минуты в день.', 'Sprechpraxis: 3 Minuten pro Tag.'),
           tr('Прокачка навыков: 1 навык.', 'Skill-Training: 1 Skill.'),
         ],
@@ -7515,9 +7505,9 @@ function AppInner() {
         items: paidCommon,
       },
       support_coffee: {
-        title: tr('Кофе ☕️ — поддержка', 'Kaffee ☕️ — Unterstuetzung'),
+        title: tr('Кофе ☕️ — поддержка', 'Kaffee ☕️ — Unterstützung'),
         items: [
-          tr('Это разовое спасибо, а не тариф доступа.', 'Das ist ein einmaliges Dankeschoen, kein Zugangstarif.'),
+          tr('Это разовое спасибо, а не тариф доступа.', 'Das ist ein einmaliges Dankeschön, kein Zugangstarif.'),
           tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang aendert sich nicht (vollen Zugang gibt das Pro-Abo).'),
           tr('Бейдж спонсора ☕️ рядом с твоим именем.', 'Sponsor-Abzeichen ☕️ neben deinem Namen.'),
           tr('Место на стене благодарностей.', 'Ein Platz an der Dankeswand.'),
@@ -7525,13 +7515,13 @@ function AppInner() {
         ],
       },
       support_cheesecake: {
-        title: tr('Кофе ☕️ и чизкейк 🍰 — поддержка', 'Kaffee ☕️ und Cheesecake 🍰 — Unterstuetzung'),
+        title: tr('Кофе ☕️ и чизкейк 🍰 — поддержка', 'Kaffee ☕️ und Cheesecake 🍰 — Unterstützung'),
         items: [
-          tr('Это разовое спасибо покрупнее, а не тариф доступа.', 'Das ist ein groesseres einmaliges Dankeschoen, kein Zugangstarif.'),
+          tr('Это разовое спасибо покрупнее, а не тариф доступа.', 'Das ist ein größeres einmaliges Dankeschön, kein Zugangstarif.'),
           tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang aendert sich nicht (vollen Zugang gibt das Pro-Abo).'),
-          tr('Более заметный бейдж спонсора 🍰 рядом с твоим именем.', 'Auffaelligeres Sponsor-Abzeichen 🍰 neben deinem Namen.'),
-          tr('Выше место на стене благодарностей.', 'Hoeherer Platz an der Dankeswand.'),
-          tr('Сильнее помогает оплачивать серверы и развитие.', 'Hilft staerker, Server und Weiterentwicklung zu bezahlen.'),
+          tr('Более заметный бейдж спонсора 🍰 рядом с твоим именем.', 'Auffälligeres Sponsor-Abzeichen 🍰 neben deinem Namen.'),
+          tr('Выше место на стене благодарностей.', 'Höherer Platz an der Dankeswand.'),
+          tr('Сильнее помогает оплачивать серверы и развитие.', 'Hilft stärker, Server und Weiterentwicklung zu bezahlen.'),
         ],
       },
     };
@@ -7540,7 +7530,7 @@ function AppInner() {
     if (!billingPlanDetailsOpenFor) return null;
     return billingPlanLimitDetails[billingPlanDetailsOpenFor] || {
       title: tr('Лимиты тарифа', 'Tariflimits'),
-      items: [tr('Лимиты для этого тарифа обновляются. Попробуйте позже.', 'Die Limits fuer diesen Tarif werden aktualisiert. Bitte spaeter erneut pruefen.')],
+      items: [tr('Лимиты для этого тарифа обновляются. Попробуйте позже.', 'Die Limits für diesen Tarif werden aktualisiert. Bitte später erneut prüfen.')],
     };
   }, [billingPlanDetailsOpenFor, billingPlanLimitDetails, tr]);
   // Витрина разнесена на две оси: «Доступ» (Free/Pro) и «Поддержать проект»
@@ -7576,8 +7566,8 @@ function AppInner() {
     const isInactivePlan = Boolean(planMeta && planMeta.is_active === false);
     const canSelect = !isCurrentPlan && isPaidPlan && !isInactivePlan;
     let buttonText = isSupportPlan
-      ? tr('Поддержать', 'Unterstuetzen')
-      : tr('Выбрать тариф', 'Tarif waehlen');
+      ? tr('Поддержать', 'Unterstützen')
+      : tr('Выбрать тариф', 'Tarif wählen');
     if (isCurrentPlan) {
       buttonText = tr('Текущий тариф', 'Aktueller Tarif');
     } else if (!isPaidPlan) {
@@ -7594,8 +7584,8 @@ function AppInner() {
             type="button"
             className="billing-plan-info-button"
             onClick={() => setBillingPlanDetailsOpenFor(offer.planCode)}
-            aria-label={isSupportPlan ? tr('Показать детали поддержки', 'Details zur Unterstuetzung anzeigen') : tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
-            title={isSupportPlan ? tr('Показать детали поддержки', 'Details zur Unterstuetzung anzeigen') : tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
+            aria-label={isSupportPlan ? tr('Показать детали поддержки', 'Details zur Unterstützung anzeigen') : tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
+            title={isSupportPlan ? tr('Показать детали поддержки', 'Details zur Unterstützung anzeigen') : tr('Показать лимиты тарифа', 'Tariflimits anzeigen')}
           >
             i
           </button>
@@ -7612,7 +7602,7 @@ function AppInner() {
         </button>
         {hasBillingPlansCatalog && isInactivePlan && (
           <div className="webapp-muted">
-            {tr('Тариф временно неактивен.', 'Der Tarif ist voruebergehend inaktiv.')}
+            {tr('Тариф временно неактивен.', 'Der Tarif ist vorübergehend inaktiv.')}
           </div>
         )}
       </article>
@@ -7643,7 +7633,7 @@ function AppInner() {
     ) {
       return tr(
         'Сервер перегружен или временно недоступен. Повторите через несколько секунд.',
-        'Der Server ist ueberlastet oder voruebergehend nicht verfuegbar. Bitte in ein paar Sekunden erneut versuchen.'
+        'Der Server ist ueberlastet oder vorübergehend nicht verfügbar. Bitte in ein paar Sekunden erneut versuchen.'
       );
     }
     if (
@@ -7654,7 +7644,7 @@ function AppInner() {
     ) {
       return tr(
         'Сетевой сбой. Проверьте интернет и повторите.',
-        'Netzwerkfehler. Bitte Internet pruefen und erneut versuchen.'
+        'Netzwerkfehler. Bitte Internet prüfen und erneut versuchen.'
       );
     }
     return String(error?.message || fallback);
@@ -7680,7 +7670,7 @@ function AppInner() {
   );
   const initDataExpiredMiniAppMsg = tr(
     'Сессия Telegram устарела. Закройте и заново откройте Mini App.',
-    'Die Telegram-Sitzung ist abgelaufen. Bitte die Mini App erneut oeffnen.'
+    'Die Telegram-Sitzung ist abgelaufen. Bitte die Mini App erneut öffnen.'
   );
   const isInitDataAuthFailureMessage = useCallback((message) => {
     const raw = String(message || '').trim().toLowerCase();
@@ -7849,7 +7839,7 @@ function AppInner() {
         const resetAt = String(payload.reset_at || '');
         return tr(
           `Дневной лимит расходов исчерпан: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Сброс: ${resetAt}`,
-          `Taegliches Kostenlimit erreicht: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Reset: ${resetAt}`
+          `Tägliches Kostenlimit erreicht: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Reset: ${resetAt}`
         );
       }
       if (errorCode === 'feature_limit_exceeded') {
@@ -7861,7 +7851,7 @@ function AppInner() {
             : '';
           return tr(
             `Лимит повторения слов на сегодня достигнут\n\nНа бесплатном тарифе можно повторять до 10 слов в день.\n\nЗавтра лимит автоматически обновится.${resetLine}`,
-            `Das Tageslimit fuer Wortwiederholungen ist erreicht\n\nIm kostenlosen Tarif kannst du bis zu 10 Woerter pro Tag wiederholen.\n\nMorgen wird das Limit automatisch erneuert.${resetLine}`
+            `Das Tageslimit für Wortwiederholungen ist erreicht\n\nIm kostenlosen Tarif kannst du bis zu 10 Wörter pro Tag wiederholen.\n\nMorgen wird das Limit automatisch erneuert.${resetLine}`
           );
         }
         const feature = String(payload.feature || '').trim();
@@ -7890,7 +7880,7 @@ function AppInner() {
         if (feature === 'ask_gpt_daily') {
           return tr(
             `На бесплатном тарифе достигнут дневной лимит вопросов к AI-помощнику.\n\nВы можете задать до ${limit || 5} вопросов в день.\n\nЛимит обновится завтра в 00:00 по Вене.`,
-            `Das Tageslimit fuer Fragen an den AI-Assistenten ist erreicht.\n\nIm kostenlosen Tarif kannst du bis zu ${limit || 5} Fragen pro Tag stellen.\n\nDas Limit wird morgen um 00:00 Uhr Wiener Zeit erneuert.`
+            `Das Tageslimit für Fragen an den AI-Assistenten ist erreicht.\n\nIm kostenlosen Tarif kannst du bis zu ${limit || 5} Fragen pro Tag stellen.\n\nDas Limit wird morgen um 00:00 Uhr Wiener Zeit erneuert.`
           );
         }
         const message = String(payload.message || '').trim();
@@ -7958,8 +7948,8 @@ function AppInner() {
                 ? `На Free доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен после сброса: ${resetLabel}.`
                 : 'На Free доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен завтра после сброса.',
               resetLabel
-                ? `Im Free-Tarif ist 1 Uebersetzungsset pro Tag verfuegbar: 7 Saetze. Das naechste Set ist nach dem Reset verfuegbar: ${resetLabel}.`
-                : 'Im Free-Tarif ist 1 Uebersetzungsset pro Tag verfuegbar: 7 Saetze. Das naechste Set ist morgen nach dem Reset verfuegbar.'
+                ? `Im Free-Tarif ist 1 Uebersetzungsset pro Tag verfügbar: 7 Sätze. Das nächste Set ist nach dem Reset verfügbar: ${resetLabel}.`
+                : 'Im Free-Tarif ist 1 Uebersetzungsset pro Tag verfügbar: 7 Sätze. Das nächste Set ist morgen nach dem Reset verfügbar.'
             )}
           </span>
         </div>
@@ -8472,7 +8462,7 @@ function AppInner() {
         return;
       }
       if (!data?.initData) {
-        throw new Error(tr('Сервер не вернул initData', 'Server hat initData nicht zurueckgegeben'));
+        throw new Error(tr('Сервер не вернул initData', 'Server hat initData nicht zurückgegeben'));
       }
       setInitData(data.initData);
       safeStorageSet('browser_init_data', data.initData);
@@ -9056,7 +9046,7 @@ function AppInner() {
       ...prev,
       [entryId]: tr(
         'Принято. Отправим объяснение в личку после завершения тренировки.',
-        'Verstanden. Wir senden die Erklaerung nach dem Training per Privatnachricht.'
+        'Verstanden. Wir senden die Erklärung nach dem Training per Privatnachricht.'
       ),
     }));
   }, [resolveFlashcardFeelEntryId, tr]);
@@ -10252,7 +10242,7 @@ function AppInner() {
       const friendly = normalizeNetworkErrorMessage(
         error,
         syncFacts ? 'Не удалось синхронизировать выполнение на сегодня.' : 'Не удалось загрузить задачи на сегодня.',
-        syncFacts ? 'Fortschritt fuer heute konnte nicht synchronisiert werden.' : 'Tagesaufgaben konnten nicht geladen werden.'
+        syncFacts ? 'Fortschritt für heute konnte nicht synchronisiert werden.' : 'Tagesaufgaben konnten nicht geladen werden.'
       );
       if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
         return;
@@ -10709,11 +10699,11 @@ function AppInner() {
       ? skillTrainingData.package.practice_sentences
       : [];
     if (!sentences.length) {
-      setSkillTrainingError(tr('Нет предложений для проверки.', 'Keine Saetze zur Pruefung.'));
+      setSkillTrainingError(tr('Нет предложений для проверки.', 'Keine Sätze zur Prüfung.'));
       return;
     }
     if (skillTrainingAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
-      setSkillTrainingError(tr('Заполните переводы для всех предложений.', 'Bitte alle Uebersetzungen ausfuellen.'));
+      setSkillTrainingError(tr('Заполните переводы для всех предложений.', 'Bitte alle Übersetzungen ausfüllen.'));
       return;
     }
     try {
@@ -10730,7 +10720,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка проверки тренировки', 'Fehler beim Pruefen des Trainings'));
+        throw new Error(await readApiError(response, 'Ошибка проверки тренировки', 'Fehler beim Prüfen des Trainings'));
       }
       const data = await response.json();
       setSkillTrainingFeedback(data?.feedback || null);
@@ -10739,7 +10729,7 @@ function AppInner() {
       setSkillTrainingError(normalizeNetworkErrorMessage(
         error,
         'Не удалось проверить тренировку.',
-        'Training konnte nicht geprueft werden.'
+        'Training konnte nicht geprüft werden.'
       ));
     } finally {
       setSkillTrainingChecking(false);
@@ -11519,11 +11509,11 @@ function AppInner() {
     // (not the inline red error, which is gated by !theoryError and would hide the
     // whole theory card — i.e. the sentences the user still needs to fill in).
     if (!sentences.length) {
-      showInlineToast(tr('Нет предложений для проверки.', 'Keine Saetze zur Pruefung.'));
+      showInlineToast(tr('Нет предложений для проверки.', 'Keine Sätze zur Prüfung.'));
       return;
     }
     if (theoryPracticeAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
-      showInlineToast(tr('Переведите все предложения, чтобы проверить.', 'Bitte alle Saetze uebersetzen.'));
+      showInlineToast(tr('Переведите все предложения, чтобы проверить.', 'Bitte alle Sätze uebersetzen.'));
       return;
     }
     try {
@@ -11541,7 +11531,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка проверки теории', 'Fehler beim Pruefen der Theorie'));
+        throw new Error(await readApiError(response, 'Ошибка проверки теории', 'Fehler beim Prüfen der Theorie'));
       }
       const data = await response.json();
       setTheoryFeedback(data?.feedback || null);
@@ -11559,7 +11549,7 @@ function AppInner() {
       const friendly = normalizeNetworkErrorMessage(
         error,
         'Не удалось проверить теорию.',
-        'Theorie konnte nicht geprueft werden.'
+        'Theorie konnte nicht geprüft werden.'
       );
       setTheoryError(friendly);
     } finally {
@@ -11589,7 +11579,7 @@ function AppInner() {
           showInlineToast(
             tr(
               'Сначала закончите или допереведите текущую сессию. Текущие предложения уже показаны в разделе переводов.',
-              'Bitte zuerst die aktuelle Session beenden oder fertig uebersetzen. Die aktuellen Saetze sind bereits im Uebersetzungsbereich sichtbar.'
+              'Bitte zuerst die aktuelle Session beenden oder fertig uebersetzen. Die aktuellen Sätze sind bereits im Uebersetzungsbereich sichtbar.'
             ),
             5000,
           );
@@ -11698,7 +11688,7 @@ function AppInner() {
             setYoutubeError('');
             setYoutubeEmptyState(nextYoutubeEmptyState);
           } else {
-            setYoutubeError(tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video fuer den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'));
+            setYoutubeError(tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video für den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'));
           }
         } catch (error) {
           console.warn('today video recommendation failed', error);
@@ -11753,7 +11743,7 @@ function AppInner() {
     if (!recommendationId) {
       setTodayPlanError(tr(
         'Сначала нажмите "Начать", чтобы подобрать видео для оценки.',
-        'Bitte zuerst "Starten" druecken, damit ein Video zur Bewertung gewaehlt wird.'
+        'Bitte zuerst "Starten" drücken, damit ein Video zur Bewertung gewählt wird.'
       ));
       return;
     }
@@ -11828,12 +11818,12 @@ function AppInner() {
     }, uiLang);
 
     if (taskType === 'cards') {
-      if (mode === 'cards_new') return tr('Карточки: новые слова', 'Karten: neue Woerter');
+      if (mode === 'cards_new') return tr('Карточки: новые слова', 'Karten: neue Wörter');
       return tr('Карточки: повторение', 'Karten: Wiederholung');
     }
     if (taskType === 'translation') {
       const sentences = Number(payload?.sentences || 5);
-      return tr(`Перевод: ${sentences} предложений`, `Uebersetzung: ${sentences} Saetze`);
+      return tr(`Перевод: ${sentences} предложений`, `Übersetzung: ${sentences} Sätze`);
     }
     if (taskType === 'theory') {
       return localizedTopic ? tr(`Теория: ${localizedTopic}`, `Theorie: ${localizedTopic}`) : tr('Теория', 'Theorie');
@@ -11974,7 +11964,7 @@ function AppInner() {
 
   const submitSrsReview = async (ratingValue) => {
     if (!initData) {
-      setSrsError(tr('Сессия Telegram не найдена. Откройте mini app через Telegram.', 'Telegram-Sitzung nicht gefunden. Bitte ueber Telegram oeffnen.'));
+      setSrsError(tr('Сессия Telegram не найдена. Откройте mini app через Telegram.', 'Telegram-Sitzung nicht gefunden. Bitte über Telegram öffnen.'));
       return;
     }
     const cardId = srsCard?.id || srsCard?.entry_id;
@@ -12245,7 +12235,7 @@ function AppInner() {
             body: JSON.stringify({ initData }),
           });
           if (!response.ok) {
-            throw new Error(await readApiError(response, 'Ошибка статуса базового словаря', 'Fehler beim Basiswoerterbuch-Status'));
+            throw new Error(await readApiError(response, 'Ошибка статуса базового словаря', 'Fehler beim Basiswörterbuch-Status'));
           }
           const data = await response.json();
           if (starterDictionaryPollTokenRef.current !== pollToken) return;
@@ -12256,7 +12246,7 @@ function AppInner() {
           if (importStatus === 'running') {
             setStarterDictionaryActionMessage(tr(
               'Базовый словарь подключается в фоне. Можно продолжать пользоваться приложением.',
-              'Das Basiswoerterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
+              'Das Basiswörterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
             ));
             continue;
           }
@@ -12264,15 +12254,15 @@ function AppInner() {
             const inserted = Math.max(0, Number(offer?.state?.last_imported_count || 0) || 0);
             const folderName = String(offer?.folder_name || '').trim();
             const message = inserted > 0
-              ? tr(`Базовый словарь подключён: +${inserted} записей${folderName ? ` (${folderName})` : ''}.`, `Basiswoerterbuch verbunden: +${inserted} Eintraege${folderName ? ` (${folderName})` : ''}.`)
-              : tr('Базовый словарь уже подключён. Новых записей не найдено.', 'Basiswoerterbuch ist bereits verbunden. Keine neuen Eintraege gefunden.');
+              ? tr(`Базовый словарь подключён: +${inserted} записей${folderName ? ` (${folderName})` : ''}.`, `Basiswörterbuch verbunden: +${inserted} Einträge${folderName ? ` (${folderName})` : ''}.`)
+              : tr('Базовый словарь уже подключён. Новых записей не найдено.', 'Basiswörterbuch ist bereits verbunden. Keine neuen Einträge gefunden.');
             setStarterDictionaryActionError('');
             setStarterDictionaryActionMessage(message);
             return;
           }
           if (importStatus === 'failed') {
             const failureMessage = String(offer?.state?.last_error || '').trim()
-              || tr('Не удалось подключить базовый словарь.', 'Basiswoerterbuch konnte nicht verbunden werden.');
+              || tr('Не удалось подключить базовый словарь.', 'Basiswörterbuch konnte nicht verbunden werden.');
             setStarterDictionaryActionMessage('');
             setStarterDictionaryActionError(failureMessage);
             return;
@@ -12281,7 +12271,7 @@ function AppInner() {
         } catch (error) {
           if (starterDictionaryPollTokenRef.current !== pollToken) return;
           setStarterDictionaryActionMessage('');
-          setStarterDictionaryActionError(String(error?.message || tr('Ошибка статуса базового словаря', 'Fehler beim Basiswoerterbuch-Status')));
+          setStarterDictionaryActionError(String(error?.message || tr('Ошибка статуса базового словаря', 'Fehler beim Basiswörterbuch-Status')));
           return;
         }
       }
@@ -12299,7 +12289,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки базового словаря', 'Fehler beim Laden des Basiswoerterbuchs'));
+        throw new Error(await readApiError(response, 'Ошибка загрузки базового словаря', 'Fehler beim Laden des Basiswörterbuchs'));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(starterDictionaryStatusRequestIdRef, requestId)) {
@@ -12312,7 +12302,7 @@ function AppInner() {
         setStarterDictionaryActionError('');
         setStarterDictionaryActionMessage(tr(
           'Базовый словарь подключается в фоне. Можно продолжать пользоваться приложением.',
-          'Das Basiswoerterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
+          'Das Basiswörterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
         ));
         pollStarterDictionaryStatus(1200);
       }
@@ -12343,7 +12333,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка базового словаря', 'Fehler beim Basiswoerterbuch'));
+        throw new Error(await readApiError(response, 'Ошибка базового словаря', 'Fehler beim Basiswörterbuch'));
       }
       const data = await response.json();
       const offer = normalizeStarterDictionaryOffer(data?.offer);
@@ -12356,11 +12346,11 @@ function AppInner() {
         const message = startedInBackground
           ? tr(
             'Базовый словарь подключается в фоне. Можно продолжать пользоваться приложением.',
-            'Das Basiswoerterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
+            'Das Basiswörterbuch wird im Hintergrund verbunden. Du kannst die App weiter benutzen.'
           )
           : inserted > 0
-            ? tr(`Базовый словарь подключён: +${inserted} записей${folderName ? ` (${folderName})` : ''}.`, `Basiswoerterbuch verbunden: +${inserted} Eintraege${folderName ? ` (${folderName})` : ''}.`)
-            : tr('Базовый словарь уже подключён. Новых записей не найдено.', 'Basiswoerterbuch ist bereits verbunden. Keine neuen Eintraege gefunden.');
+            ? tr(`Базовый словарь подключён: +${inserted} записей${folderName ? ` (${folderName})` : ''}.`, `Basiswörterbuch verbunden: +${inserted} Einträge${folderName ? ` (${folderName})` : ''}.`)
+            : tr('Базовый словарь уже подключён. Новых записей не найдено.', 'Basiswörterbuch ist bereits verbunden. Keine neuen Einträge gefunden.');
         setStarterDictionaryActionMessage(message);
         if (startedInBackground) {
           pollStarterDictionaryStatus(1200);
@@ -12369,17 +12359,17 @@ function AppInner() {
         const deleted = Math.max(0, Number(data?.disconnect_result?.deleted_count || 0) || 0);
         setStarterDictionaryActionMessage(
           deleted > 0
-            ? tr(`Базовый словарь отключён: удалено ${deleted} стартовых записей.`, `Basiswoerterbuch getrennt: ${deleted} Starter-Eintraege entfernt.`)
-            : tr('Базовый словарь отключён. Стартовых записей для удаления не найдено.', 'Basiswoerterbuch getrennt. Keine Starter-Eintraege zum Entfernen gefunden.')
+            ? tr(`Базовый словарь отключён: удалено ${deleted} стартовых записей.`, `Basiswörterbuch getrennt: ${deleted} Starter-Einträge entfernt.`)
+            : tr('Базовый словарь отключён. Стартовых записей для удаления не найдено.', 'Basiswörterbuch getrennt. Keine Starter-Einträge zum Entfernen gefunden.')
         );
       } else {
-        setStarterDictionaryActionMessage(tr('Ок, начинаем с пустого словаря.', 'Alles klar, wir starten mit einem leeren Woerterbuch.'));
+        setStarterDictionaryActionMessage(tr('Ок, начинаем с пустого словаря.', 'Alles klar, wir starten mit einem leeren Wörterbuch.'));
       }
       if (closePromptOnSuccess) {
         setStarterDictionaryPromptOpen(false);
       }
     } catch (error) {
-      setStarterDictionaryActionError(String(error?.message || tr('Не удалось применить действие по базовому словарю.', 'Aktion fuer Basiswoerterbuch fehlgeschlagen.')));
+      setStarterDictionaryActionError(String(error?.message || tr('Не удалось применить действие по базовому словарю.', 'Aktion für Basiswörterbuch fehlgeschlagen.')));
     } finally {
       setStarterDictionaryActionLoading(false);
     }
@@ -12578,28 +12568,28 @@ function AppInner() {
   const _legacyOnboardingSlides = useMemo(() => ([
     {
       eyebrow: tr('Шаг 1 из 6', 'Schritt 1 von 6'),
-      title: tr('Начните с переводов', 'Starte mit Uebersetzungen'),
+      title: tr('Начните с переводов', 'Starte mit Übersetzungen'),
       body: tr(
         'Выберите тему и уровень, переведите предложения и сразу читайте разбор ошибок. Это главный вход в грамматику и структуру языка.',
-        'Waehle Thema und Niveau, uebersetze Saetze und lies sofort die Fehleranalyse. Das ist dein Haupteinstieg in Grammatik und Satzstruktur.'
+        'Wähle Thema und Niveau, uebersetze Sätze und lies sofort die Fehleranalyse. Das ist dein Haupteinstieg in Grammatik und Satzstruktur.'
       ),
       bullets: [
         tr('Тема задаёт контекст упражнений.', 'Das Thema gibt den Kontext der Uebungen vor.'),
-        tr('Уровень влияет на сложность предложений.', 'Das Niveau steuert die Schwierigkeit der Saetze.'),
-        tr('После проверки разбирайте ошибки, а не только балл.', 'Nach dem Pruefen zaehlt nicht nur der Score, sondern die Fehleranalyse.'),
+        tr('Уровень влияет на сложность предложений.', 'Das Niveau steuert die Schwierigkeit der Sätze.'),
+        tr('После проверки разбирайте ошибки, а не только балл.', 'Nach dem Prüfen zählt nicht nur der Score, sondern die Fehleranalyse.'),
       ],
     },
     {
       eyebrow: tr('Шаг 2 из 6', 'Schritt 2 von 6'),
-      title: tr('Сохраняйте слова и повторяйте их', 'Speichere Woerter und wiederhole sie'),
+      title: tr('Сохраняйте слова и повторяйте их', 'Speichere Wörter und wiederhole sie'),
       body: tr(
         'Полезные слова и выражения отправляйте в словарь, а затем закрепляйте их через карточки и Space Repetition.',
-        'Speichere nuetzliche Woerter und Ausdruecke im Woerterbuch und festige sie dann mit Karten und Space Repetition.'
+        'Speichere nützliche Wörter und Ausdrücke im Wörterbuch und festige sie dann mit Karten und Space Repetition.'
       ),
       bullets: [
-        tr('Словарь хранит лексику и формы слова.', 'Das Woerterbuch speichert Wortschatz und Wortformen.'),
-        tr('Карточки закрепляют слова в памяти.', 'Karten verankern Woerter im Gedaechtnis.'),
-        tr('Space Repetition сам рассчитывает интервалы повторения.', 'Space Repetition berechnet die Wiederholungsabstaende automatisch.'),
+        tr('Словарь хранит лексику и формы слова.', 'Das Wörterbuch speichert Wortschatz und Wortformen.'),
+        tr('Карточки закрепляют слова в памяти.', 'Karten verankern Wörter im Gedächtnis.'),
+        tr('Space Repetition сам рассчитывает интервалы повторения.', 'Space Repetition berechnet die Wiederholungsabstände automatisch.'),
       ],
     },
     {
@@ -12611,8 +12601,8 @@ function AppInner() {
       ),
       bullets: [
         tr('В YouTube можно искать видео и включать субтитры.', 'In YouTube kannst du Videos suchen und Untertitel aktivieren.'),
-        tr('По словам из субтитров и текста можно делать быстрый lookup.', 'Woerter aus Untertiteln und Texten kannst du direkt nachschlagen.'),
-        tr('Reader подходит для спокойного чтения и аудио.', 'Der Reader eignet sich fuer ruhiges Lesen und Audio.'),
+        tr('По словам из субтитров и текста можно делать быстрый lookup.', 'Wörter aus Untertiteln und Texten kannst du direkt nachschlagen.'),
+        tr('Reader подходит для спокойного чтения и аудио.', 'Der Reader eignet sich für ruhiges Lesen und Audio.'),
       ],
     },
     {
@@ -12623,9 +12613,9 @@ function AppInner() {
         'Sprachassistent, Theorie und Skill-Training helfen dir genau bei den Themen, in denen du die meisten Fehler machst.'
       ),
       bullets: [
-        tr('Голосовой ассистент нужен для разговорной практики.', 'Der Sprachassistent ist fuer muendliche Praxis da.'),
+        tr('Голосовой ассистент нужен для разговорной практики.', 'Der Sprachassistent ist für mündliche Praxis da.'),
         tr('Skill-Training собирает теорию, видео и упражнения в одном месте.', 'Skill-Training kombiniert Theorie, Video und Uebungen an einem Ort.'),
-        tr('В личке с ботом после `/start` появляется кнопка «💬 Спросить у GPT» для быстрых вопросов по грамматике, переводу и словам.', 'Im Privat-Chat erscheint nach `/start` die Taste „💬 Спросить у GPT“ fuer schnelle Fragen zu Grammatik, Uebersetzung und Woertern.'),
+        tr('В личке с ботом после `/start` появляется кнопка «💬 Спросить у GPT» для быстрых вопросов по грамматике, переводу и словам.', 'Im Privat-Chat erscheint nach `/start` die Taste „💬 Спросить у GPT“ für schnelle Fragen zu Grammatik, Übersetzung und Wörtern.'),
       ],
     },
     {
@@ -12633,12 +12623,12 @@ function AppInner() {
       title: tr('Подписка и управление тарифом', 'Abo und Tarifverwaltung'),
       body: tr(
         'В разделе «Подписка» видны текущий тариф, лимиты и все доступные планы. Там же открывается Stripe Portal для управления оплатой.',
-        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfuegbaren Plaene. Dort oeffnest du auch das Stripe-Portal zur Zahlungsverwaltung.'
+        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfügbaren Pläne. Dort oeffnest du auch das Stripe-Portal zur Zahlungsverwaltung.'
       ),
       bullets: [
-        tr('Free — базовый бесплатный режим с лимитами. Только в тарифе Pro можно отправить персональный запрос на доработку под себя.', 'Free ist der kostenlose Modus mit Limits. Nur im Tarif Pro kannst du zusaetzlich einen persoenlichen Anpassungswunsch einreichen.'),
-        tr('«Кофе» и «Кофе + чизкейк» сейчас работают как альтернативные платные планы (не параллельные add-on).', '„Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Plaene (keine parallelen Add-ons).'),
-        tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ oeffnet das Stripe-Portal: Karte wechseln, kuendigen/reaktivieren und Rechnungen; danach zur Mini App zurueckkehren.'),
+        tr('Free — базовый бесплатный режим с лимитами. Только в тарифе Pro можно отправить персональный запрос на доработку под себя.', 'Free ist der kostenlose Modus mit Limits. Nur im Tarif Pro kannst du zusätzlich einen persönlichen Anpassungswunsch einreichen.'),
+        tr('«Кофе» и «Кофе + чизкейк» сейчас работают как альтернативные платные планы (не параллельные add-on).', '„Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Pläne (keine parallelen Add-ons).'),
+        tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ oeffnet das Stripe-Portal: Karte wechseln, kündigen/reaktivieren und Rechnungen; danach zur Mini App zurückkehren.'),
       ],
     },
     {
@@ -12646,12 +12636,12 @@ function AppInner() {
       title: tr('Поддержка и связь с разработчиком', 'Support und direkter Kontakt'),
       body: tr(
         'Если что-то непонятно или возникают технические сложности, пишите в раздел «Поддержка» в меню. Разработчик отвечает максимально быстро.',
-        'Wenn etwas unklar ist oder technische Probleme auftreten, schreibe im Menue in den Bereich „Support“. Der Entwickler antwortet so schnell wie moeglich.'
+        'Wenn etwas unklar ist oder technische Probleme auftreten, schreibe im Menü in den Bereich „Support“. Der Entwickler antwortet so schnell wie möglich.'
       ),
       bullets: [
         tr('В «Поддержке» можно описать баг, вопрос по функционалу или идею улучшения.', 'Im Bereich „Support“ kannst du Bugs, Funktionsfragen oder Verbesserungsideen schicken.'),
-        tr('Чем точнее описание (скриншот, шаги, где именно), тем быстрее решение.', 'Je genauer die Beschreibung (Screenshot, Schritte, konkreter Bereich), desto schneller die Loesung.'),
-        tr('Поддержка доступна прямо внутри Mini App, без перехода во внешние сервисы.', 'Support ist direkt in der Mini App verfuegbar, ohne externe Dienste.'),
+        tr('Чем точнее описание (скриншот, шаги, где именно), тем быстрее решение.', 'Je genauer die Beschreibung (Screenshot, Schritte, konkreter Bereich), desto schneller die Lösung.'),
+        tr('Поддержка доступна прямо внутри Mini App, без перехода во внешние сервисы.', 'Support ist direkt in der Mini App verfügbar, ohne externe Dienste.'),
       ],
     },
   ]), [tr]);
@@ -12708,18 +12698,18 @@ function AppInner() {
             {
               title: 'So bereitest du den Gruppenmodus vor',
               items: [
-                'Erstelle eine Telegram-Gruppe fuer euer Lernen (oder nutze eine bestehende Gruppe).',
-                'Fuege den Bot in diese Gruppe hinzu.',
-                'Empfohlen: Gib dem Bot Admin-Rechte mit der Berechtigung „Nachrichten anheften“, damit die Bestaetigungsnachricht oben fixiert bleibt.',
-                'Nach dem Hinzufuegen sendet der Bot eine Nachricht „Teilnahme bestaetigen“ mit der Taste „✅ Teilnahme bestaetigen“ und versucht, diese Nachricht in der Gruppe anzupinnen.',
+                'Erstelle eine Telegram-Gruppe für euer Lernen (oder nutze eine bestehende Gruppe).',
+                'Füge den Bot in diese Gruppe hinzu.',
+                'Empfohlen: Gib dem Bot Admin-Rechte mit der Berechtigung „Nachrichten anheften“, damit die Bestätigungsnachricht oben fixiert bleibt.',
+                'Nach dem Hinzufügen sendet der Bot eine Nachricht „Teilnahme bestätigen“ mit der Taste „✅ Teilnahme bestätigen“ und versucht, diese Nachricht in der Gruppe anzupinnen.',
               ],
             },
             {
               title: 'Was jeder Teilnehmer machen muss',
               items: [
-                'Jeder Teilnehmer tippt in der Gruppe einmal auf „✅ Teilnahme bestaetigen“.',
-                'Wer nicht bestaetigt, bleibt zwar in der Gruppe, wird aber nicht im Wettbewerb und Gruppen-Ranking beruecksichtigt.',
-                'Zusatz: Jeder Teilnehmer sollte den Bot auch privat einmal starten, damit alle Funktionen im Mini App korrekt verfuegbar sind.',
+                'Jeder Teilnehmer tippt in der Gruppe einmal auf „✅ Teilnahme bestätigen“.',
+                'Wer nicht bestätigt, bleibt zwar in der Gruppe, wird aber nicht im Wettbewerb und Gruppen-Ranking berücksichtigt.',
+                'Zusatz: Jeder Teilnehmer sollte den Bot auch privat einmal starten, damit alle Funktionen im Mini App korrekt verfügbar sind.',
                 'Danach erscheint im Mini App bei Analytics der Gruppenmodus zur Auswahl.',
               ],
             },
@@ -12742,10 +12732,10 @@ function AppInner() {
             {
               title: 'Teilnahme-Modus: allein oder Gruppe',
               items: [
-                'Waehle unbedingt deinen Teilnahme-Modus: „Nur ich“ oder eine konkrete Gruppe.',
-                'Wenn die Mini App direkt aus einer Telegram-Gruppe geoeffnet wird, kann die App diese Gruppe automatisch als Kontext nehmen.',
-                'Wenn du aus Privat-Chat, Home-Screen-Shortcut oder Browser startest, waehle den Modus bitte bewusst im Analytics-Selector.',
-                'Fuer Wettbewerbe mit Freunden: Erstelle eine Lerngruppe (oder nutze eine bestehende) und fuege den Bot in diese Gruppe ein.',
+                'Wähle unbedingt deinen Teilnahme-Modus: „Nur ich“ oder eine konkrete Gruppe.',
+                'Wenn die Mini App direkt aus einer Telegram-Gruppe geöffnet wird, kann die App diese Gruppe automatisch als Kontext nehmen.',
+                'Wenn du aus Privat-Chat, Home-Screen-Shortcut oder Browser startest, wähle den Modus bitte bewusst im Analytics-Selector.',
+                'Für Wettbewerbe mit Freunden: Erstelle eine Lerngruppe (oder nutze eine bestehende) und füge den Bot in diese Gruppe ein.',
                 'Wichtig: Jeder Teilnehmer sollte den Bot auch individuell privat starten, sonst nutzt am Ende nur ein Teil der Gruppe die Funktionen korrekt.',
               ],
             },
@@ -12920,14 +12910,14 @@ function AppInner() {
               title: 'Welche Tarife es gibt',
               items: [
                 'Free: kostenloser Basis-Modus mit Limits.',
-                'Pro: voller Modus ohne Tageslimit; zusaetzlich kannst du einen persoenlichen Wunsch fuer eine individuelle Funktionsanpassung anfragen.',
+                'Pro: voller Modus ohne Tageslimit; zusätzlich kannst du einen persönlichen Wunsch für eine individuelle Funktionsanpassung anfragen.',
                 'Support „Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Tarife und ersetzen den aktiven bezahlten Tarif, statt parallel als Add-on zu laufen.',
               ],
             },
             {
               title: 'Was passiert bei Tarifwechsel',
               items: [
-                'Wenn bereits bezahlte Abos aktiv sind, werden alle auf „läuft bis Periodenende“ gestellt und der neue Tarif startet zum naechsten Abrechnungszeitpunkt.',
+                'Wenn bereits bezahlte Abos aktiv sind, werden alle auf „läuft bis Periodenende“ gestellt und der neue Tarif startet zum nächsten Abrechnungszeitpunkt.',
                 'Dadurch gibt es keine doppelte Sofortbelastung mitten im laufenden Zyklus.',
                 'Wenn du denselben aktiven Tarif noch einmal auswählst, bekommst du eine Meldung und verwaltest ihn stattdessen im Portal.',
               ],
@@ -12975,7 +12965,7 @@ function AppInner() {
             {
               title: 'Audio und schnelle Hilfe im Privat-Chat',
               items: [
-                'Im Privat-Chat bekommst du dort, wo es passt, auch anhoerbare Inhalte oder Audio-Erklaerungen und nicht nur Text.',
+                'Im Privat-Chat bekommst du dort, wo es passt, auch anhörbare Inhalte oder Audio-Erklärungen und nicht nur Text.',
                 'So kannst du unterwegs schnell etwas klären, anhören, speichern und direkt weiterlernen.',
               ],
             },
@@ -13049,23 +13039,23 @@ function AppInner() {
           key: 'support_help',
           number: '9',
           title: 'Support und Hilfe vom Entwickler',
-          summary: 'Wenn etwas technisch unklar ist: nutze den Support-Bereich direkt im Menue.',
+          summary: 'Wenn etwas technisch unklar ist: nutze den Support-Bereich direkt im Menü.',
           sections: [
             {
               title: 'Wann du Support nutzen solltest',
               items: [
-                'Wenn ein Block unklar beschrieben ist oder sich anders verhaelt als erwartet.',
+                'Wenn ein Block unklar beschrieben ist oder sich anders verhält als erwartet.',
                 'Wenn bei dir ein technisches Problem auftritt (Button reagiert nicht, Anzeige ist falsch, Funktion startet nicht).',
-                'Wenn du zu einem konkreten Workflow eine zusaetzliche Erklaerung brauchst.',
+                'Wenn du zu einem konkreten Workflow eine zusätzliche Erklärung brauchst.',
               ],
             },
             {
-              title: 'So bekommst du schneller eine praezise Antwort',
+              title: 'So bekommst du schneller eine präzise Antwort',
               items: [
-                'Gehe im Menue in den Bereich „Support“ und sende dort deine Nachricht direkt an den Entwickler.',
-                'Beschreibe kurz: welches Geraet, welcher Bereich, was genau du geklickt hast und was stattdessen passiert ist.',
-                'Falls moeglich, haenge Screenshot/Video an: damit kann die Ursache deutlich schneller lokalisiert werden.',
-                'Der Entwickler antwortet so schnell wie moeglich und gibt dir entweder sofort eine Loesung oder den naechsten klaren Schritt.',
+                'Gehe im Menü in den Bereich „Support“ und sende dort deine Nachricht direkt an den Entwickler.',
+                'Beschreibe kurz: welches Gerät, welcher Bereich, was genau du geklickt hast und was stattdessen passiert ist.',
+                'Falls möglich, hänge Screenshot/Video an: damit kann die Ursache deutlich schneller lokalisiert werden.',
+                'Der Entwickler antwortet so schnell wie möglich und gibt dir entweder sofort eine Lösung oder den nächsten klaren Schritt.',
               ],
             },
           ],
@@ -13646,16 +13636,16 @@ function AppInner() {
       return selectedLabel
         ? tr(
           `Верхняя динамика показывает только ваши попытки. Нижнее сравнение сейчас по группе: ${selectedLabel}`,
-          `Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell fuer die Gruppe: ${selectedLabel}`
+          `Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell für die Gruppe: ${selectedLabel}`
         )
         : tr(
           'Верхняя динамика показывает только ваши попытки. Нижнее сравнение сейчас по группе.',
-          'Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell fuer die Gruppe.'
+          'Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell für die Gruppe.'
         );
     }
     return tr(
       'Верхняя динамика показывает только ваши попытки. Нижнее сравнение сейчас тоже персональное.',
-      'Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell ebenfalls persoenlich.'
+      'Die obere Dynamik zeigt nur deine Versuche. Der untere Vergleich ist aktuell ebenfalls persönlich.'
     );
   }, [analyticsScopeKey, analyticsScopeOptions, tr]);
   const analyticsScopeSelectorRequired = Boolean(analyticsScopeData?.selector?.required);
@@ -13667,13 +13657,13 @@ function AppInner() {
     if (scopeKey === 'personal') {
       return tr(
         'Нижняя диаграмма сравнивает участников выбранного режима. Сейчас выбран персональный режим, поэтому здесь только ваши данные.',
-        'Das untere Diagramm vergleicht die Teilnehmenden des gewaehlten Modus. Aktuell ist der persoenliche Modus aktiv, deshalb siehst du hier nur deine Daten.'
+        'Das untere Diagramm vergleicht die Teilnehmenden des gewählten Modus. Aktuell ist der persönliche Modus aktiv, deshalb siehst du hier nur deine Daten.'
       );
     }
     if (items.length <= 1) {
       return tr(
         'Для выбранной группы пока недостаточно участников или данных для сравнения.',
-        'Fuer die gewaehlte Gruppe gibt es aktuell noch zu wenige Teilnehmende oder Daten fuer einen Vergleich.'
+        'Für die gewählte Gruppe gibt es aktuell noch zu wenige Teilnehmende oder Daten für einen Vergleich.'
       );
     }
     if (!hasNonZeroFinalScore) {
@@ -13690,7 +13680,7 @@ function AppInner() {
     }
     return tr(
       'Нижняя диаграмма показывает сравнение участников по итоговому баллу за выбранный период. Под именем участника мелким шрифтом указано, с какой даты его данные реально учитываются в сравнении.',
-      'Das untere Diagramm zeigt den Vergleich der Teilnehmenden nach Gesamtscore fuer den gewaehlten Zeitraum. Unter dem Namen steht in kleiner Schrift, ab welchem Datum die Daten dieser Person im Vergleich tatsaechlich beruecksichtigt werden.'
+      'Das untere Diagramm zeigt den Vergleich der Teilnehmenden nach Gesamtscore für den gewählten Zeitraum. Unter dem Namen steht in kleiner Schrift, ab welchem Datum die Daten dieser Person im Vergleich tatsächlich berücksichtigt werden.'
     );
   }, [analyticsCompare, analyticsScopeKey, tr]);
   const analyticsFinalScoreFormulaText = useMemo(() => {
@@ -13698,12 +13688,12 @@ function AppInner() {
     if (formula?.expression) {
       return tr(
         'Формула итогового результата: средний балл - среднее время на перевод × 0.5 - дни без практики × 0.5. Значение не ограничивается ни снизу, ни сверху: итог может быть отрицательным или выше 100.',
-        'Formel fuer den Gesamtscore: Durchschnittsbewertung - durchschnittliche Zeit pro Uebersetzung × 0.5 - Tage ohne Praxis × 0.5. Der Wert ist weder nach unten noch nach oben begrenzt: Er kann negativ sein oder ueber 100 liegen.'
+        'Formel für den Gesamtscore: Durchschnittsbewertung - durchschnittliche Zeit pro Übersetzung × 0.5 - Tage ohne Praxis × 0.5. Der Wert ist weder nach unten noch nach oben begrenzt: Er kann negativ sein oder über 100 liegen.'
       );
     }
     return tr(
       'Формула итогового результата: средний балл - среднее время на перевод × 0.5 - дни без практики × 0.5. Значение не ограничивается ни снизу, ни сверху: итог может быть отрицательным или выше 100.',
-      'Formel fuer den Gesamtscore: Durchschnittsbewertung - durchschnittliche Zeit pro Uebersetzung × 0.5 - Tage ohne Praxis × 0.5. Der Wert ist weder nach unten noch nach oben begrenzt: Er kann negativ sein oder ueber 100 liegen.'
+      'Formel für den Gesamtscore: Durchschnittsbewertung - durchschnittliche Zeit pro Übersetzung × 0.5 - Tage ohne Praxis × 0.5. Der Wert ist weder nach unten noch nach oben begrenzt: Er kann negativ sein oder über 100 liegen.'
     );
   }, [analyticsSummary, tr]);
   const showReaderTopbarPeekInAppTopbar = readerSectionVisible
@@ -13916,7 +13906,7 @@ function AppInner() {
       ? tr('Субтитры: готово', 'Untertitel: Bereit')
       : tr('Субтитры: не загружены', 'Untertitel: Nicht geladen');
   const youtubeRecommendationStatusLabel = youtubeRecommendationLoading
-    ? tr('Подбираем видео по вашей теме...', 'Wir suchen ein passendes Video fuer dein Thema...')
+    ? tr('Подбираем видео по вашей теме...', 'Wir suchen ein passendes Video für dein Thema...')
     : '';
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
@@ -14165,17 +14155,17 @@ function AppInner() {
         items: [
           {
             key: 'translations',
-            label: tr('Переведено предложений', 'Uebersetzte Saetze'),
+            label: tr('Переведено предложений', 'Uebersetzte Sätze'),
             value: `${coveredSentences}`,
-            hint: tr('Сколько предложений вы реально закрыли за период.', 'Wie viele Saetze du im Zeitraum wirklich abgeschlossen hast.'),
+            hint: tr('Сколько предложений вы реально закрыли за период.', 'Wie viele Sätze du im Zeitraum wirklich abgeschlossen hast.'),
           },
           {
             key: 'assigned',
-            label: tr('Назначено предложений', 'Zugewiesene Saetze'),
+            label: tr('Назначено предложений', 'Zugewiesene Sätze'),
             value: `${assignedSentences}`,
             hint: tr(
               'Сколько предложений было запланировано на выбранный период аналитики.',
-              'Wie viele Saetze fuer den gewaehlten Analysezeitraum geplant waren.'
+              'Wie viele Sätze für den gewählten Analysezeitraum geplant waren.'
             ),
           },
           {
@@ -14185,27 +14175,27 @@ function AppInner() {
             hint: assignedSentences > 0
               ? tr(
                 `${coveredSentences} из ${assignedSentences} запланированных предложений.`,
-                `${coveredSentences} von ${assignedSentences} geplanten Saetzen.`
+                `${coveredSentences} von ${assignedSentences} geplanten Sätzen.`
               )
-              : tr('Запланированных предложений в этом периоде не было.', 'In diesem Zeitraum gab es keine geplanten Saetze.'),
+              : tr('Запланированных предложений в этом периоде не было.', 'In diesem Zeitraum gab es keine geplanten Sätze.'),
           },
           {
             key: 'missed',
             label: tr('Пропущено заданий', 'Verpasste Aufgaben'),
             value: `${missedSentences}`,
-            hint: tr('Сколько запланированных предложений осталось незакрытыми.', 'Wie viele geplante Saetze offen geblieben sind.'),
+            hint: tr('Сколько запланированных предложений осталось незакрытыми.', 'Wie viele geplante Sätze offen geblieben sind.'),
           },
         ],
       },
       {
         key: 'quality',
-        title: tr('Качество ответов', 'Qualitaet der Antworten'),
+        title: tr('Качество ответов', 'Qualität der Antworten'),
         items: [
           {
             key: 'success',
-            label: tr('Удачных переводов', 'Gute Uebersetzungen'),
+            label: tr('Удачных переводов', 'Gute Übersetzungen'),
             value: `${successRate}%`,
-            hint: tr('Доля переводов, которые прошли успешно.', 'Anteil der Uebersetzungen, die erfolgreich waren.'),
+            hint: tr('Доля переводов, которые прошли успешно.', 'Anteil der Übersetzungen, die erfolgreich waren.'),
           },
           {
             key: 'avg-score',
@@ -14215,11 +14205,11 @@ function AppInner() {
           },
           {
             key: 'total-time',
-            label: tr('Общее время на переводы', 'Gesamtzeit fuer Uebersetzungen'),
+            label: tr('Общее время на переводы', 'Gesamtzeit für Übersetzungen'),
             value: `${totalTimeMin} ${tr('мин', 'Min')}`,
             hint: tr(
               'Сколько минут суммарно ушло на переводы за выбранный период.',
-              'Wie viele Minuten insgesamt fuer Uebersetzungen im gewaehlten Zeitraum draufgegangen sind.'
+              'Wie viele Minuten insgesamt für Übersetzungen im gewählten Zeitraum draufgegangen sind.'
             ),
           },
           {
@@ -14236,7 +14226,7 @@ function AppInner() {
         items: [
           {
             key: 'avg-time',
-            label: tr('Среднее время на перевод', 'Durchschnittszeit pro Uebersetzung'),
+            label: tr('Среднее время на перевод', 'Durchschnittszeit pro Übersetzung'),
             value: `${avgTimeMin} ${tr('мин', 'Min')}`,
             hint: tr('Сколько в среднем уходило времени на одно выполненное предложение.', 'Wie viel Zeit du im Schnitt pro erledigtem Satz gebraucht hast.'),
           },
@@ -14244,7 +14234,7 @@ function AppInner() {
             key: 'missed-days',
             label: tr('Дней без практики', 'Tage ohne Praxis'),
             value: `${missedDays}`,
-            hint: tr('Сколько активных дней прошло без переводов.', 'Wie viele aktive Tage ohne Uebersetzungen vergangen sind.'),
+            hint: tr('Сколько активных дней прошло без переводов.', 'Wie viele aktive Tage ohne Übersetzungen vergangen sind.'),
           },
         ],
       },
@@ -14263,14 +14253,14 @@ function AppInner() {
   const weeklyMetricRows = [
     {
       key: 'translations',
-      title: tr('Переводы предложений', 'Satz-Uebersetzungen'),
+      title: tr('Переводы предложений', 'Satz-Übersetzungen'),
       unit: tr('шт', 'Stk'),
       data: weeklyMetrics.translations || {},
     },
     {
       key: 'learned_words',
-      title: tr('Выученные слова (Space Repetition)', 'Gelernte Woerter (Space Repetition)'),
-      unit: tr('слов', 'Woerter'),
+      title: tr('Выученные слова (Space Repetition)', 'Gelernte Wörter (Space Repetition)'),
+      unit: tr('слов', 'Wörter'),
       data: weeklyMetrics.learned_words || {},
     },
     {
@@ -14407,7 +14397,7 @@ function AppInner() {
   const openSingleSectionAndScroll = (key, ref) => {
     if (isKnownFreePaidSurfaceMode && ['home_today', 'home_weekly_plan', 'home_skills'].includes(key)) {
       showInlineToast(
-        tr('Доступно по подписке', 'Nur im Abo verfuegbar.'),
+        tr('Доступно по подписке', 'Nur im Abo verfügbar.'),
         3000,
         'paywall'
       );
@@ -14438,7 +14428,7 @@ function AppInner() {
   function openReaderAudioPremiumPaywall() {
     const message = tr(
       'Аудио в книге доступно только по премиум подписке.',
-      'Audio im Reader ist nur mit Premium verfuegbar.'
+      'Audio im Reader ist nur mit Premium verfügbar.'
     );
     setReaderAudioError(message);
     setReaderAudioPlayError(message);
@@ -14783,7 +14773,7 @@ function AppInner() {
     }
     const mimeType = String(file.type || '').toLowerCase();
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
-      setSupportError(tr('Можно прикрепить только JPG, PNG или WEBP.', 'Es koennen nur JPG, PNG oder WEBP angehaengt werden.'));
+      setSupportError(tr('Можно прикрепить только JPG, PNG или WEBP.', 'Es können nur JPG, PNG oder WEBP angehängt werden.'));
       clearSupportAttachment();
       return;
     }
@@ -15392,7 +15382,7 @@ function AppInner() {
       setReaderAccumulatedSeconds((prev) => prev + segmentSeconds);
     }
     setReaderTimerPaused(true);
-    setGlobalPauseReason(tr('Поставлено на паузу: нет активности в читалке', 'Pausiert: keine Aktivitaet im Leser'));
+    setGlobalPauseReason(tr('Поставлено на паузу: нет активности в читалке', 'Pausiert: keine Aktivität im Leser'));
     readerAutoPausedByIdleRef.current = true;
     if (readerSessionId) {
       void stopReaderSessionTracking(readerSessionId, {
@@ -18066,7 +18056,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки предложений', 'Fehler beim Laden der Saetze'));
+        throw new Error(await readApiError(response, 'Ошибка загрузки предложений', 'Fehler beim Laden der Sätze'));
       }
       const data = await response.json();
       if (data?.language_pair) {
@@ -18100,13 +18090,13 @@ function AppInner() {
       }
       if (generationStatus === 'failed' && generationError && !options?.suppressError) {
         setWebappError(
-          `${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${generationError}`
+          `${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Sätze')}: ${generationError}`
         );
       }
       return data;
     } catch (error) {
       if (!options?.suppressError) {
-        setWebappError(`${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${error.message}`);
+        setWebappError(`${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Sätze')}: ${error.message}`);
       }
       return null;
     }
@@ -18164,8 +18154,8 @@ function AppInner() {
       if (generationStatus === 'failed') {
         setWebappError(
           generationError
-            ? `${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Saetze')}: ${generationError}`
-            : tr('Не удалось подготовить предложения для перевода.', 'Die Uebersetzungssaetze konnten nicht vorbereitet werden.')
+            ? `${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Sätze')}: ${generationError}`
+            : tr('Не удалось подготовить предложения для перевода.', 'Die Übersetzungssätze konnten nicht vorbereitet werden.')
         );
         return;
       }
@@ -18872,7 +18862,7 @@ function AppInner() {
         const apiMessage = await readApiError(
           response,
           'Не удалось загрузить результаты проверки.',
-          'Pruefungsergebnisse konnten nicht geladen werden.'
+          'Prüfungsergebnisse konnten nicht geladen werden.'
         );
         throw new Error(apiMessage);
       }
@@ -18910,7 +18900,7 @@ function AppInner() {
         const apiMessage = await readApiError(
           response,
           'Не удалось получить статус проверки.',
-          'Pruefungsstatus konnte nicht geladen werden.'
+          'Prüfungsstatus konnte nicht geladen werden.'
         );
         throw new Error(apiMessage);
       }
@@ -18919,7 +18909,7 @@ function AppInner() {
       suggestedDelayMs = Number(data?.polling?.suggested_delay_ms || 0);
       const nextState = applyTranslationCheckStatusPayload(data);
       if (!nextState.sessionId) {
-        throw new Error(tr('Сессия проверки не найдена.', 'Pruefungssession wurde nicht gefunden.'));
+        throw new Error(tr('Сессия проверки не найдена.', 'Prüfungssession wurde nicht gefunden.'));
       }
       if (nextState.status === 'done' || nextState.status === 'failed' || nextState.status === 'canceled') {
         if (data?.items_included === false) {
@@ -18958,7 +18948,7 @@ function AppInner() {
         const apiMessage = await readApiError(
           response,
           'Не удалось восстановить проверку переводов.',
-          'Uebersetzungspruefung konnte nicht wiederhergestellt werden.'
+          'Übersetzungsprüfung konnte nicht wiederhergestellt werden.'
         );
         throw new Error(apiMessage);
       }
@@ -19019,7 +19009,7 @@ function AppInner() {
 
     try {
       if (!submittedEntries.length) {
-        throw new Error(tr('Нет переводов для проверки.', 'Keine Uebersetzungen zur Pruefung.'));
+        throw new Error(tr('Нет переводов для проверки.', 'Keine Übersetzungen zur Prüfung.'));
       }
       const pollToken = translationCheckPollTokenRef.current + 1;
       translationCheckPollTokenRef.current = pollToken;
@@ -19043,20 +19033,20 @@ function AppInner() {
         const apiMessage = await readApiError(
           startResponse,
           'Не удалось запустить проверку переводов.',
-          'Uebersetzungspruefung konnte nicht gestartet werden.'
+          'Übersetzungsprüfung konnte nicht gestartet werden.'
         );
         throw new Error(apiMessage);
       }
       const startData = await startResponse.json();
       const startState = applyTranslationCheckStatusPayload(startData);
       if (!startState.sessionId) {
-        throw new Error(tr('Не удалось создать сессию проверки.', 'Pruefungssession konnte nicht erstellt werden.'));
+        throw new Error(tr('Не удалось создать сессию проверки.', 'Prüfungssession konnte nicht erstellt werden.'));
       }
       if (showBackgroundHint) {
         showInlineToast(
           tr(
             'Можно подождать здесь или вернуться позже. Проверка продолжится в фоновом режиме.',
-            'Du kannst hier warten oder spaeter zurueckkommen. Die Pruefung laeuft im Hintergrund weiter.'
+            'Du kannst hier warten oder später zurückkommen. Die Prüfung läuft im Hintergrund weiter.'
           ),
           3000,
         );
@@ -19070,9 +19060,9 @@ function AppInner() {
       const friendly = normalizeNetworkErrorMessage(
         error,
         'Не удалось проверить переводы.',
-        'Uebersetzungen konnten nicht geprueft werden.'
+        'Übersetzungen konnten nicht geprüft werden.'
       );
-      setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${friendly}`);
+      setWebappError(`${tr('Ошибка проверки', 'Prüfungsfehler')}: ${friendly}`);
       return false;
     } finally {
       translationSubmitInFlightRef.current = false;
@@ -19091,11 +19081,11 @@ function AppInner() {
       return;
     }
     if (sentences.length === 0) {
-      setWebappError(tr('Нет предложений для перевода.', 'Keine Saetze zur Uebersetzung vorhanden.'));
+      setWebappError(tr('Нет предложений для перевода.', 'Keine Sätze zur Übersetzung vorhanden.'));
       return;
     }
     if (Object.values(liveDrafts).every((text) => !String(text || '').trim())) {
-      setWebappError(tr('Заполните хотя бы один перевод.', 'Bitte fuelle mindestens eine Uebersetzung aus.'));
+      setWebappError(tr('Заполните хотя бы один перевод.', 'Bitte fülle mindestens eine Übersetzung aus.'));
       return;
     }
 
@@ -19128,7 +19118,7 @@ function AppInner() {
     const liveDrafts = getActiveTranslationDraftMap();
     const translationText = String(liveDrafts[String(normalizedSentenceId)] || '').trim();
     if (!translationText) {
-      setWebappError(tr('Сначала введите перевод этого предложения.', 'Bitte gib zuerst die Uebersetzung dieses Satzes ein.'));
+      setWebappError(tr('Сначала введите перевод этого предложения.', 'Bitte gib zuerst die Übersetzung dieses Satzes ein.'));
       return;
     }
     setSingleSentenceCheckLoadingId(normalizedSentenceId);
@@ -19172,7 +19162,7 @@ function AppInner() {
       return;
     }
     if (!hasSelectedTranslationLevel) {
-      setWebappError(tr('Выберите уровень перед началом перевода.', 'Waehle vor dem Start der Uebersetzung ein Niveau.'));
+      setWebappError(tr('Выберите уровень перед началом перевода.', 'Wähle vor dem Start der Übersetzung ein Niveau.'));
       return;
     }
     if (isCustomTopic(selectedTopic) && !customTopicInput.trim()) {
@@ -19470,7 +19460,7 @@ function AppInner() {
       return !value;
     });
     if (missing.length > 0) {
-      setWebappError(tr('Для истории нужно перевести все 7 предложений.', 'Fuer die Story muessen alle 7 Saetze uebersetzt werden.'));
+      setWebappError(tr('Для истории нужно перевести все 7 предложений.', 'Für die Story müssen alle 7 Sätze uebersetzt werden.'));
       return;
     }
     if (!storyGuess.trim()) {
@@ -19508,7 +19498,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка проверки истории', 'Fehler beim Pruefen der Story'));
+        throw new Error(await readApiError(response, 'Ошибка проверки истории', 'Fehler beim Prüfen der Story'));
       }
       const data = await response.json();
       setStoryResult(data);
@@ -19895,12 +19885,12 @@ function AppInner() {
 
   const getDictionarySaveLimitText = useCallback(() => tr(
     'На Free можно сохранить до 20 новых слов или фраз в день. Подключите подписку, чтобы сохранять без ограничений.',
-    'Im Free-Tarif kannst du bis zu 20 neue Woerter oder Phrasen pro Tag speichern. Mit Abo speicherst du ohne Limit.'
+    'Im Free-Tarif kannst du bis zu 20 neue Wörter oder Phrasen pro Tag speichern. Mit Abo speicherst du ohne Limit.'
   ), [tr]);
 
   const getDictionarySaveLimitToastText = useCallback(() => tr(
     'Слово не сохранено: лимит Free на сегодня достигнут. В подписке сохранение без ограничений.',
-    'Wort nicht gespeichert: Free-Limit fuer heute erreicht. Im Abo speicherst du ohne Limit.'
+    'Wort nicht gespeichert: Free-Limit für heute erreicht. Im Abo speicherst du ohne Limit.'
   ), [tr]);
 
   const readDictionarySaveApiError = useCallback(async (response) => {
@@ -20497,7 +20487,7 @@ function AppInner() {
   const buildDictionaryShareText = (item) => {
     const { sourceText, targetText } = getDictionarySourceTarget(item, dictionaryDirection);
     const lines = [
-      `${tr('Перевод', 'Uebersetzung')}: ${targetText || '—'}`,
+      `${tr('Перевод', 'Übersetzung')}: ${targetText || '—'}`,
       `${tr('Исходное', 'Ausgangstext')}: ${sourceText || '—'}`,
       `${tr('Направление', 'Richtung')}: ${getLookupDirectionLabel()}`,
     ];
@@ -20803,7 +20793,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung'));
+        throw new Error(await readApiError(response, 'Ошибка быстрого перевода', 'Fehler bei Schnellübersetzung'));
       }
       const data = await response.json();
       const rawTranslation = String(data?.translation || '').trim();
@@ -20935,7 +20925,7 @@ function AppInner() {
           showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
         }
       } else {
-        setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
+        setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Wörterbuch hinzugefügt ✅'));
       }
       clearSelection();
       setDictionaryLoading(false);
@@ -21065,7 +21055,7 @@ function AppInner() {
       }, 90);
       clearSelection();
     } catch (error) {
-      setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
+      setDictionaryError(`${tr('Ошибка словаря', 'Wörterbuchfehler')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
     }
@@ -21349,7 +21339,7 @@ function AppInner() {
       }),
     });
     if (!lookupResponse.ok) {
-      throw new Error(await readApiError(lookupResponse, 'Ошибка словаря', 'Woerterbuchfehler'));
+      throw new Error(await readApiError(lookupResponse, 'Ошибка словаря', 'Wörterbuchfehler'));
     }
     const data = await lookupResponse.json();
     const item = data?.item || {};
@@ -21368,7 +21358,7 @@ function AppInner() {
       targetText = String(quick.translation || '').trim();
     }
     if (!targetText) {
-      throw new Error(tr('Не удалось получить перевод для сохранения', 'Uebersetzung fuer das Speichern konnte nicht ermittelt werden'));
+      throw new Error(tr('Не удалось получить перевод для сохранения', 'Übersetzung für das Speichern konnte nicht ermittelt werden'));
     }
     const normalizedPair = applyArticleForDirection(sourceText, targetText, direction, item);
     sourceText = String(normalizedPair.sourceText || sourceText).trim();
@@ -21430,7 +21420,7 @@ function AppInner() {
       targetText = String(quick.translation || '').trim();
     }
     if (!targetText) {
-      throw new Error(tr('Перевод примера не получен', 'Beispieluebersetzung fehlt'));
+      throw new Error(tr('Перевод примера не получен', 'Beispielübersetzung fehlt'));
     }
     await saveSelectionGptDictionaryEntry({
       sourceText,
@@ -21462,7 +21452,7 @@ function AppInner() {
       .filter((item) => Boolean(selectionGptSaveExamplesChecked[item.index]) && Boolean(item.text));
     const shouldSaveOriginal = Boolean(selectionGptSaveOriginalChecked && normalizeSelectionText(selectionText));
     if (!shouldSaveOriginal && selectedExamples.length === 0) {
-      setSelectionGptSaveError(tr('Выберите слово или минимум один пример.', 'Waehle ein Wort oder mindestens ein Beispiel.'));
+      setSelectionGptSaveError(tr('Выберите слово или минимум один пример.', 'Wähle ein Wort oder mindestens ein Beispiel.'));
       setSelectionGptSaveMessage('');
       return;
     }
@@ -21541,7 +21531,7 @@ function AppInner() {
         }),
       });
       if (!explainResponse.ok) {
-        throw new Error(await readApiError(explainResponse, 'Ошибка GPT-объяснения', 'Fehler bei GPT-Erklaerung'));
+        throw new Error(await readApiError(explainResponse, 'Ошибка GPT-объяснения', 'Fehler bei GPT-Erklärung'));
       }
       const explainData = await explainResponse.json();
       setSelectionGptData(parseSelectionGptPayload(explainData?.explanation, quick.translation, explainData));
@@ -21553,7 +21543,7 @@ function AppInner() {
         provider: quick.provider || '',
       });
     } catch (error) {
-      setSelectionGptError(String(error?.message || tr('Ошибка GPT-объяснения', 'GPT-Erklaerungsfehler')));
+      setSelectionGptError(String(error?.message || tr('Ошибка GPT-объяснения', 'GPT-Erklärungsfehler')));
     } finally {
       setSelectionGptLoading(false);
     }
@@ -22569,7 +22559,7 @@ function AppInner() {
       }, 100);
       loadReaderLibrary(readerIncludeArchived, { showError: false });
     } catch (error) {
-      setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось открыть книгу.', 'Dokument konnte nicht geoeffnet werden.'));
+      setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось открыть книгу.', 'Dokument konnte nicht geöffnet werden.'));
     } finally {
       readerOpenInFlightRef.current = 0;
       setReaderOpeningDocumentId(0);
@@ -22636,7 +22626,7 @@ function AppInner() {
 
   const deleteReaderDocument = async (documentId) => {
     if (!initData || !documentId) return;
-    const confirmed = window.confirm(tr('Удалить книгу из библиотеки?', 'Dokument aus Bibliothek loeschen?'));
+    const confirmed = window.confirm(tr('Удалить книгу из библиотеки?', 'Dokument aus Bibliothek löschen?'));
     if (!confirmed) return;
     try {
       const response = await fetch('/api/webapp/reader/library/delete', {
@@ -22645,7 +22635,7 @@ function AppInner() {
         body: JSON.stringify({ initData, document_id: documentId }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка удаления', 'Fehler beim Loeschen'));
+        throw new Error(await readApiError(response, 'Ошибка удаления', 'Fehler beim Löschen'));
       }
       setReaderDocuments((prev) => prev.filter((item) => Number(item?.id) !== Number(documentId)));
       if (Number(readerDocumentId) === Number(documentId)) {
@@ -22656,7 +22646,7 @@ function AppInner() {
         setReaderLayoutMode('custom');
       }
     } catch (error) {
-      setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось удалить книгу.', 'Dokument konnte nicht geloescht werden.'));
+      setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось удалить книгу.', 'Dokument konnte nicht gelöscht werden.'));
     }
   };
 
@@ -23243,7 +23233,7 @@ function AppInner() {
     if (readerUsesOriginalEpubLayout) {
       setReaderAudioPlayError(tr(
         'Аудио с выбором слова доступно в адаптивном текстовом режиме. Переключись из Original в Settings.',
-        'Audio mit Wortauswahl ist im adaptiven Textmodus verfuegbar. Wechsle in den Einstellungen aus Original heraus.'
+        'Audio mit Wortauswahl ist im adaptiven Textmodus verfügbar. Wechsle in den Einstellungen aus Original heraus.'
       ));
       return;
     }
@@ -23732,13 +23722,13 @@ function AppInner() {
     const selectedFile = liveSelectedFile || null;
     const looksLikeLocalReaderFileName = /^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(rawInput);
     if (!rawInput && !selectedFile) {
-      setReaderError(tr('Вставьте ссылку или текст.', 'Fuege einen Link oder Text ein.'));
+      setReaderError(tr('Вставьте ссылку или текст.', 'Füge einen Link oder Text ein.'));
       return;
     }
     if (!selectedFile && looksLikeLocalReaderFileName) {
       setReaderError(tr(
         'Файл не выбран. Выберите EPUB/PDF через поле загрузки файла.',
-        'Keine Datei ausgewaehlt. Bitte waehle die EPUB/PDF-Datei ueber das Datei-Feld aus.'
+        'Keine Datei ausgewählt. Bitte wähle die EPUB/PDF-Datei über das Datei-Feld aus.'
       ));
       return;
     }
@@ -23746,7 +23736,7 @@ function AppInner() {
       clearReaderSelectedFile();
       setReaderError(tr(
         'Файл сбросился в браузере. Выберите EPUB/PDF заново и повторите.',
-        'Die Datei wurde im Browser zurueckgesetzt. Bitte waehle die EPUB/PDF erneut aus.'
+        'Die Datei wurde im Browser zurückgesetzt. Bitte wähle die EPUB/PDF erneut aus.'
       ));
       return;
     }
@@ -23943,7 +23933,7 @@ function AppInner() {
       if (code === 'LIMIT_FREE_PLAN_1_BOOK') {
         setReaderError(tr(
           'На бесплатном плане можно хранить только 1 книгу/документ. Удалите текущий документ или перейдите на Pro.',
-          'Im Free-Plan kannst du nur 1 Buch/Dokument speichern. Loesche das aktuelle Dokument oder wechsle zu Pro.'
+          'Im Free-Plan kannst du nur 1 Buch/Dokument speichern. Lösche das aktuelle Dokument oder wechsle zu Pro.'
         ));
       } else {
         setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить текст в читалку.', 'Text konnte nicht in den Leser geladen werden.'));
@@ -23973,10 +23963,10 @@ function AppInner() {
       return {
         kind: normalizedReason,
         badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
-        title: tr('У вас пока нет слов в словаре', 'Du hast noch keine Woerter im Woerterbuch'),
+        title: tr('У вас пока нет слов в словаре', 'Du hast noch keine Wörter im Wörterbuch'),
         body: tr(
           'Добавьте слова из переводов, словаря, YouTube, Reader или из чата с ботом, а затем возвращайтесь сюда, чтобы тренировать их.',
-          'Fuege Woerter aus Uebersetzungen, Woerterbuch, YouTube, Reader oder dem Bot-Chat hinzu und komm dann hierher zurueck, um sie zu trainieren.'
+          'Füge Wörter aus Übersetzungen, Wörterbuch, YouTube, Reader oder dem Bot-Chat hinzu und komm dann hierher zurück, um sie zu trainieren.'
         ),
       };
     }
@@ -23988,14 +23978,14 @@ function AppInner() {
           : (normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training'),
         title: queueSource === 'manual'
           ? tr('В текущей выборке сейчас нет доступных карточек', 'In deiner aktuellen Auswahl gibt es aktuell keine verfügbaren Karten')
-          : tr('На сегодня слова для тренировки уже закончились', 'Fuer heute sind die Trainingswoerter schon erledigt'),
+          : tr('На сегодня слова для тренировки уже закончились', 'Für heute sind die Trainingswörter schon erledigt'),
         body: tr(
           queueSource === 'manual'
             ? 'Выбранные слова уже повторены или ещё не дошли по интервалу до следующего показа. Можно вернуться позже или собрать другую текущую выборку.'
             : 'Вы уже прошли доступные карточки из общей очереди через Space Repetition или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
           queueSource === 'manual'
             ? 'Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig. Komm später wieder oder stelle eine andere aktuelle Auswahl zusammen.'
-            : 'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
+            : 'Du hast die verfügbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm später wieder oder füge neue Wörter zum Wörterbuch hinzu.'
         ),
       };
     }
@@ -24003,10 +23993,10 @@ function AppInner() {
       return {
         kind: normalizedReason,
         badge: 'Blocks',
-        title: tr('Для Blocks сейчас нет подходящих коротких карточек', 'Fuer Blocks gibt es aktuell keine passenden kurzen Karten'),
+        title: tr('Для Blocks сейчас нет подходящих коротких карточек', 'Für Blocks gibt es aktuell keine passenden kurzen Karten'),
         body: tr(
           'Этот режим работает только с короткими словами и компактными ответами. Добавьте больше отдельных слов в словарь или выберите другой режим тренировки.',
-          'Dieser Modus arbeitet nur mit kurzen Woertern und kompakten Antworten. Fuege mehr einzelne Woerter zum Woerterbuch hinzu oder waehle einen anderen Trainingsmodus.'
+          'Dieser Modus arbeitet nur mit kurzen Wörtern und kompakten Antworten. Füge mehr einzelne Wörter zum Wörterbuch hinzu oder wähle einen anderen Trainingsmodus.'
         ),
       };
     }
@@ -24022,25 +24012,25 @@ function AppInner() {
         return {
           kind: normalizedReason,
           badge: 'Training',
-          title: tr('Лимит повторения слов на сегодня достигнут', 'Das Tageslimit fuer Wortwiederholungen ist erreicht'),
+          title: tr('Лимит повторения слов на сегодня достигнут', 'Das Tageslimit für Wortwiederholungen ist erreicht'),
           body: tr(
             `На бесплатном тарифе можно повторять до ${effectiveLimit} слов в день.\n\nЗавтра лимит автоматически обновится.${resetLine}`,
-            `Im kostenlosen Tarif kannst du bis zu ${effectiveLimit} Woerter pro Tag wiederholen.\n\nMorgen wird das Limit automatisch erneuert.${resetLine}`
+            `Im kostenlosen Tarif kannst du bis zu ${effectiveLimit} Wörter pro Tag wiederholen.\n\nMorgen wird das Limit automatisch erneuert.${resetLine}`
           ),
         };
       }
       return {
         kind: normalizedReason,
         badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
-        title: tr('На сегодня лимит этого режима уже исчерпан', 'Das Tageslimit fuer diesen Modus ist bereits erreicht'),
+        title: tr('На сегодня лимит этого режима уже исчерпан', 'Das Tageslimit für diesen Modus ist bereits erreicht'),
         body: limit > 0
           ? tr(
             `Сегодня для этого режима уже использованы все доступные ${limit} слов. Попробуйте другой режим или возвращайтесь завтра.`,
-            `Heute wurden fuer diesen Modus bereits alle verfuegbaren ${limit} Woerter genutzt. Probiere einen anderen Modus oder komm morgen wieder.`
+            `Heute wurden für diesen Modus bereits alle verfügbaren ${limit} Wörter genutzt. Probiere einen anderen Modus oder komm morgen wieder.`
           )
           : tr(
             'Сегодня для этого режима уже использованы все доступные слова. Попробуйте другой режим или возвращайтесь завтра.',
-            'Heute wurden fuer diesen Modus bereits alle verfuegbaren Woerter genutzt. Probiere einen anderen Modus oder komm morgen wieder.'
+            'Heute wurden für diesen Modus bereits alle verfügbaren Wörter genutzt. Probiere einen anderen Modus oder komm morgen wieder.'
           ),
       };
     }
@@ -24055,15 +24045,15 @@ function AppInner() {
       badge: 'YouTube',
       title: tr(
         'Пока ещё нет данных, чтобы подобрать видео автоматически',
-        'Es gibt noch nicht genug Daten fuer eine automatische Videoauswahl'
+        'Es gibt noch nicht genug Daten für eine automatische Videoauswahl'
       ),
       body: tr(
         'У вас ещё нет истории переводов и сформированных слабых навыков, поэтому система пока не знает, какую тему тренировать через YouTube.',
-        'Du hast noch keine Uebersetzungshistorie und noch keine schwachen Skills, daher weiss das System noch nicht, welches Thema ueber YouTube trainiert werden soll.'
+        'Du hast noch keine Uebersetzungshistorie und noch keine schwachen Skills, daher weiss das System noch nicht, welches Thema über YouTube trainiert werden soll.'
       ),
       note: tr(
         'Выберите интересующую тему самостоятельно, найдите видео на YouTube и вставьте сюда ссылку. Позже, когда появится история переводов, видео будут подбираться автоматически.',
-        'Waehle vorerst selbst ein interessantes Thema, suche ein Video auf YouTube und fuege hier den Link ein. Spaeter, sobald Uebersetzungshistorie vorhanden ist, werden Videos automatisch empfohlen.'
+        'Wähle vorerst selbst ein interessantes Thema, suche ein Video auf YouTube und füge hier den Link ein. Später, sobald Uebersetzungshistorie vorhanden ist, werden Videos automatisch empfohlen.'
       ),
     };
   }, [tr]);
@@ -24672,10 +24662,10 @@ function AppInner() {
         setFlashcardsEmptyState({
           kind: 'sentence_completed_today',
           badge: 'Sentence',
-          title: tr('На сегодня в этом режиме всё выполнено', 'Fuer heute ist dieser Modus erledigt'),
+          title: tr('На сегодня в этом режиме всё выполнено', 'Für heute ist dieser Modus erledigt'),
           body: tr(
             'Карточки с уже правильным ответом сегодня больше не показываются. Можно вернуться позже или выбрать другой режим.',
-            'Karten mit bereits korrekter Antwort werden heute nicht erneut gezeigt. Komm spaeter wieder oder waehle einen anderen Modus.'
+            'Karten mit bereits korrekter Antwort werden heute nicht erneut gezeigt. Komm später wieder oder wähle einen anderen Modus.'
           ),
         });
       } else if (sessionItems.length === 0) {
@@ -25367,7 +25357,7 @@ function AppInner() {
     const title = tr('Подсказка', 'Hinweis');
     const message = tr(
       'Слова в этом блоке кликабельные: нажмите на любое непонятное слово, чтобы быстро посмотреть его перевод.',
-      'Die Woerter in diesem Block sind anklickbar: Tippe auf ein unbekanntes Wort, um schnell die Uebersetzung zu sehen.'
+      'Die Wörter in diesem Block sind anklickbar: Tippe auf ein unbekanntes Wort, um schnell die Übersetzung zu sehen.'
     );
     const tg = window.Telegram?.WebApp;
     if (tg?.showPopup) {
@@ -25586,7 +25576,7 @@ function AppInner() {
     return (
       <div
         className={`youtube-sentence-jump-bar ${inline ? 'is-inline' : 'is-floating'}`}
-        aria-label={tr('Навигация по предложениям', 'Navigation zwischen Saetzen')}
+        aria-label={tr('Навигация по предложениям', 'Navigation zwischen Sätzen')}
       >
         <button
           type="button"
@@ -25622,7 +25612,7 @@ function AppInner() {
           className="youtube-sentence-jump-btn is-next"
           onClick={() => jumpYoutubeBySubtitle(1)}
           disabled={!canJumpNext}
-          aria-label={tr('Следующее предложение', 'Naechster Satz')}
+          aria-label={tr('Следующее предложение', 'Nächster Satz')}
         >
           <span className="youtube-sentence-jump-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -25831,7 +25821,7 @@ function AppInner() {
         throw new Error(message);
       }
       const data = await response.json();
-      setFinishMessage(data.message || tr('Перевод завершён.', 'Uebersetzung abgeschlossen.'));
+      setFinishMessage(data.message || tr('Перевод завершён.', 'Übersetzung abgeschlossen.'));
       setFinishStatus('done');
       if (translationDraftStorageTimeoutRef.current) {
         clearTimeout(translationDraftStorageTimeoutRef.current);
@@ -25959,6 +25949,17 @@ function AppInner() {
     setExplanationQuestionOpen((prev) => ({ ...prev, [key]: Boolean(nextOpen) }));
     if (!nextOpen) {
       setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: '' }));
+    } else {
+      // The input block renders below the fold of the modal, so bring it into
+      // view (and focus it) once it has mounted — otherwise the user doesn't
+      // notice it appeared further down.
+      window.setTimeout(() => {
+        const form = document.getElementById(`explanation-followup-form-${key}`);
+        if (!form) return;
+        form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const textarea = form.querySelector('textarea');
+        if (textarea) textarea.focus({ preventScroll: true });
+      }, 80);
     }
   };
 
@@ -25983,7 +25984,7 @@ function AppInner() {
       return;
     }
     if (!explanation) {
-      setWebappError(tr('Сначала получите объяснение ошибок.', 'Bitte hole zuerst die Fehlererklaerung.'));
+      setWebappError(tr('Сначала получите объяснение ошибок.', 'Bitte hole zuerst die Fehlererklärung.'));
       return;
     }
     setExplanationQuestionLoading((prev) => ({ ...prev, [key]: true }));
@@ -26067,7 +26068,7 @@ function AppInner() {
     if (!selectedVariants.length) {
       setExplanationQuestionSaveError((prev) => ({
         ...prev,
-        [key]: tr('Выберите минимум один пример для сохранения.', 'Waehle mindestens ein Beispiel zum Speichern.'),
+        [key]: tr('Выберите минимум один пример для сохранения.', 'Wähle mindestens ein Beispiel zum Speichern.'),
       }));
       setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: '' }));
       return;
@@ -26144,7 +26145,7 @@ function AppInner() {
       const friendly = normalizeNetworkErrorMessage(
         error,
         'Не удалось сохранить настройку аудио-объяснения.',
-        'Audio-Erklaerungsoption konnte nicht gespeichert werden.'
+        'Audio-Erklärungsoption konnte nicht gespeichert werden.'
       );
       setWebappError(friendly);
     } finally {
@@ -26831,7 +26832,7 @@ function AppInner() {
         {parsed.extra.length > 0 && (
           <section className="story-feedback-section">
             <div className="story-feedback-section-title">
-              {tr('Дополнительно', 'Zusaetzlich')}
+              {tr('Дополнительно', 'Zusätzlich')}
             </div>
             {renderStoryFeedbackList(parsed.extra, 'story-extra')}
           </section>
@@ -26943,7 +26944,7 @@ function AppInner() {
         <button
           type="button"
           className="translation-inline-info-button"
-          aria-label={tr('Показать подсказку о кликабельных словах', 'Hinweis zu anklickbaren Woertern anzeigen')}
+          aria-label={tr('Показать подсказку о кликабельных словах', 'Hinweis zu anklickbaren Wörtern anzeigen')}
           title={tr('Показать подсказку', 'Hinweis anzeigen')}
           onClick={(event) => {
             event.preventDefault();
@@ -27042,7 +27043,7 @@ function AppInner() {
       return;
     }
     if (!dictionaryWord.trim()) {
-      setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fuers Woerterbuch ein.'));
+      setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fürs Wörterbuch ein.'));
       return;
     }
     setDictionaryLoading(true);
@@ -27108,7 +27109,7 @@ function AppInner() {
             if (Date.now() > pollDeadlineMs) {
               setDictionaryLookupProgress((prev) => ({
                 ...prev,
-                error: tr('GPT-разбор всё ещё уточняется. Попробуйте открыть слово позже.', 'GPT-Analyse wird noch geladen. Versuche es spaeter erneut.'),
+                error: tr('GPT-разбор всё ещё уточняется. Попробуйте открыть слово позже.', 'GPT-Analyse wird noch geladen. Versuche es später erneut.'),
               }));
               return;
             }
@@ -27126,7 +27127,7 @@ function AppInner() {
                 }),
               });
               if (!statusResponse.ok) {
-                throw new Error(await readApiError(statusResponse, 'Ошибка статуса словаря', 'Woerterbuch-Statusfehler'));
+                throw new Error(await readApiError(statusResponse, 'Ошибка статуса словаря', 'Wörterbuch-Statusfehler'));
               }
               const statusData = await statusResponse.json();
               if (dictionaryLookupPollTokenRef.current !== pollToken) {
@@ -27155,7 +27156,7 @@ function AppInner() {
                 return;
               }
               if (statusValue === 'failed') {
-                const failureMessage = String(statusData.error || tr('Не удалось догрузить полный GPT-разбор.', 'Vollstaendige GPT-Analyse konnte nicht nachgeladen werden.')).trim();
+                const failureMessage = String(statusData.error || tr('Не удалось догрузить полный GPT-разбор.', 'Vollständige GPT-Analyse konnte nicht nachgeladen werden.')).trim();
                 setDictionaryError(failureMessage);
                 return;
               }
@@ -27166,7 +27167,7 @@ function AppInner() {
               transientErrorCount += 1;
               setDictionaryLookupProgress((prev) => ({
                 ...prev,
-                error: String(statusError?.message || tr('Ошибка статуса словаря', 'Woerterbuch-Statusfehler')),
+                error: String(statusError?.message || tr('Ошибка статуса словаря', 'Wörterbuch-Statusfehler')),
               }));
               if (transientErrorCount >= 5) {
                 return;
@@ -27177,7 +27178,7 @@ function AppInner() {
         void pollStatus();
       }
     } catch (error) {
-      setDictionaryError(`${tr('Ошибка словаря', 'Woerterbuchfehler')}: ${error.message}`);
+      setDictionaryError(`${tr('Ошибка словаря', 'Wörterbuchfehler')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
       setDictionaryLookupMode('');
@@ -27191,7 +27192,7 @@ function AppInner() {
     }
     const sourceWord = String(dictionaryWord || '').trim();
     if (!sourceWord) {
-      setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fuers Woerterbuch ein.'));
+      setDictionaryError(tr('Введите слово или фразу для словаря.', 'Bitte gib ein Wort oder eine Phrase fürs Wörterbuch ein.'));
       return;
     }
     setDictionaryLoading(true);
@@ -27222,7 +27223,7 @@ function AppInner() {
       const sourceText = String(quick.cleaned || sourceWord).trim();
       const targetText = String(quick.translation || '').trim();
       if (!targetText) {
-        throw new Error(tr('Быстрый перевод не вернул результат', 'Schnelluebersetzung hat kein Ergebnis geliefert'));
+        throw new Error(tr('Быстрый перевод не вернул результат', 'Schnellübersetzung hat kein Ergebnis geliefert'));
       }
       setDictionaryResult({
         word_ru: sourceText,
@@ -27243,7 +27244,7 @@ function AppInner() {
       setDictionaryDirection(`${sourceLang}-${targetLang}`);
       setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: sourceLang, target_lang: targetLang }));
     } catch (error) {
-      setDictionaryError(`${tr('Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung')}: ${error.message}`);
+      setDictionaryError(`${tr('Ошибка быстрого перевода', 'Fehler bei Schnellübersetzung')}: ${error.message}`);
     } finally {
       setDictionaryLoading(false);
       setDictionaryLookupMode('');
@@ -27372,11 +27373,11 @@ function AppInner() {
       return;
     }
     if (!dictionaryResult) {
-      setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Fuehre zuerst eine Uebersetzung im Woerterbuch aus.'));
+      setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Führe zuerst eine Übersetzung im Wörterbuch aus.'));
       return;
     }
     if (dictionaryLookupProgress.saveLocked) {
-      setDictionaryError(tr('Сначала дождитесь полного GPT-разбора, потом можно сохранять.', 'Warte zuerst auf die vollstaendige GPT-Analyse, dann kannst du speichern.'));
+      setDictionaryError(tr('Сначала дождитесь полного GPT-разбора, потом можно сохранять.', 'Warte zuerst auf die vollständige GPT-Analyse, dann kannst du speichern.'));
       return;
     }
     setCollocationsVisible(true);
@@ -27454,10 +27455,10 @@ function AppInner() {
       selectedCollocations.includes(`${String(option.source)}|||${String(option.target)}`)
     ));
     if (selectedOptions.length === 0) {
-      setCollocationsError(tr('Выберите минимум один вариант для сохранения.', 'Waehle mindestens eine Option zum Speichern.'));
+      setCollocationsError(tr('Выберите минимум один вариант для сохранения.', 'Wähle mindestens eine Option zum Speichern.'));
       return;
     }
-    const label = tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅');
+    const label = tr('Добавлено в словарь ✅', 'Zum Wörterbuch hinzugefügt ✅');
     setDictionarySaved(label);
     setDictionaryError('');
     setCollocationsVisible(false);
@@ -27694,7 +27695,9 @@ function AppInner() {
                 {dictionaryResult.part_of_speech && <span>{dictionaryResult.part_of_speech}</span>}
               </div>
               <div className="translation-dict-result-translation">
-                {dictionaryResult.article ? `${dictionaryResult.article} ` : ''}{displayTarget || '—'}
+                {/* displayTarget already carries the article (applyArticleForDirection),
+                    so do NOT prepend it again — that produced "der der Architekt". */}
+                {displayTarget || '—'}
                 {targetTts.text && (
                   <button
                     type="button"
@@ -27807,7 +27810,7 @@ function AppInner() {
       return;
     }
     if (!dictionaryResult) {
-      setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Fuehre zuerst eine Uebersetzung im Woerterbuch aus.'));
+      setDictionaryError(tr('Сначала выполните перевод в словаре.', 'Führe zuerst eine Übersetzung im Wörterbuch aus.'));
       return;
     }
     setDictionaryShareLoading(true);
@@ -27839,7 +27842,7 @@ function AppInner() {
       if (nav?.share && file) {
         try {
           const sharePayload = {
-            title: tr('Карточка словаря', 'Woerterbuchkarte'),
+            title: tr('Карточка словаря', 'Wörterbuchkarte'),
             text: shareText,
             files: [file],
           };
@@ -28011,7 +28014,7 @@ function AppInner() {
       const items = Array.isArray(data.items) ? data.items : [];
       setYoutubeSearchResults(items);
       if (!items.length) {
-        setYoutubeSearchError(tr('По вашему запросу ничего не найдено.', 'Keine Ergebnisse fuer diese Suche.'));
+        setYoutubeSearchError(tr('По вашему запросу ничего не найдено.', 'Keine Ergebnisse für diese Suche.'));
       }
     } catch (error) {
       setYoutubeSearchResults([]);
@@ -28053,7 +28056,7 @@ function AppInner() {
           if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
             message = `${YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX}${tr(
               'Субтитры для этого видео недоступны.\n\nВключите субтитры YouTube кнопкой CC или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
-              'Untertitel fuer dieses Video sind nicht verfuegbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder waehlen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Woerter zu speichern.'
+              'Untertitel für dieses Video sind nicht verfügbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder wählen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Wörter zu speichern.'
             )}`;
           } else {
             message = data.error || message;
@@ -28100,7 +28103,7 @@ function AppInner() {
           if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
             message = `${YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX}${tr(
               'Субтитры для этого видео недоступны.\n\nВключите субтитры YouTube кнопкой CC или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
-              'Untertitel fuer dieses Video sind nicht verfuegbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder waehlen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Woerter zu speichern.'
+              'Untertitel für dieses Video sind nicht verfügbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder wählen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Wörter zu speichern.'
             )}`;
           } else {
             message = data.error || message;
@@ -28118,7 +28121,7 @@ function AppInner() {
       if (message.startsWith(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX)) {
         setYoutubeTranscriptError(message);
       } else {
-        setYoutubeTranscriptError(`${tr('Авто-субтитры недоступны', 'Auto-Untertitel nicht verfuegbar')}: ${message}`);
+        setYoutubeTranscriptError(`${tr('Авто-субтитры недоступны', 'Auto-Untertitel nicht verfügbar')}: ${message}`);
       }
     } finally {
       setYoutubeTranscriptLoading(false);
@@ -28878,7 +28881,7 @@ function AppInner() {
     }
     const resetDate = String(progressResetDraftDate || '').trim();
     if (!resetDate) {
-      setProgressResetError(tr('Выберите дату для новой точки отсчета.', 'Waehle ein Datum fuer den Neustart.'));
+      setProgressResetError(tr('Выберите дату для новой точки отсчета.', 'Wähle ein Datum für den Neustart.'));
       return;
     }
     setProgressResetSaving(true);
@@ -29115,7 +29118,7 @@ function AppInner() {
       };
     const useCalendarRange = period === 'calendar';
     if (useCalendarRange && (!effectiveRange.startDate || !effectiveRange.endDate || effectiveRange.startDate > effectiveRange.endDate)) {
-      throw new Error(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
+      throw new Error(tr('Выберите корректный диапазон дат для аналитики.', 'Wähle einen gültigen Datumsbereich für die Analytik.'));
     }
     const granularity = resolveAnalyticsGranularity(period, effectiveRange);
     const scope = parseAnalyticsScopeKey(overrideScopeKey || analyticsScopeKey);
@@ -29309,7 +29312,7 @@ function AppInner() {
 
   const applyAnalyticsCalendarRange = useCallback(() => {
     if (!analyticsCalendarDraftValid) {
-      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
+      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Wähle einen gültigen Datumsbereich für die Analytik.'));
       return;
     }
     const nextRange = {
@@ -29938,7 +29941,7 @@ function AppInner() {
           const timeValue = avgTime[index] ?? 0;
           return `
             <strong>${labels[index] || ''}</strong><br/>
-            ${tr('Удачных переводов', 'Gute Uebersetzungen')}: ${map[tr('Успешно', 'Erfolgreich')] ?? 0}<br/>
+            ${tr('Удачных переводов', 'Gute Übersetzungen')}: ${map[tr('Успешно', 'Erfolgreich')] ?? 0}<br/>
             ${tr('Нужно исправить', 'Zu verbessern')}: ${map[tr('Нужно доработать', 'Verbessern')] ?? 0}<br/>
             ${tr('Средняя оценка', 'Durchschnittliche Bewertung')}: ${map[tr('Средний балл', 'Durchschnitt')] ?? 0}<br/>
             ${tr('Среднее время', 'Durchschnittszeit')}: ${timeValue} ${tr('мин', 'Min')}
@@ -29959,7 +29962,7 @@ function AppInner() {
       yAxis: [
         {
           type: 'value',
-          name: tr('Переводы', 'Uebersetzungen'),
+          name: tr('Переводы', 'Übersetzungen'),
           nameTextStyle: { color: chartTextColor },
           axisLabel: { color: chartTextColor },
           splitLine: { lineStyle: { color: chartSplitLineColor } },
@@ -30066,7 +30069,7 @@ function AppInner() {
         ${tr('Данные в сравнении с', 'Vergleichsdaten seit')}: ${formatCompareStartDateLabel(item.effective_compare_start_date) || '—'}<br/>
         ${label}: ${formatMetricValue(metricKey, item?.[metricKey])}<br/>
         ${tr('Общий результат', 'Gesamtergebnis')}: ${formatMetricValue('final_score', item?.final_score)}<br/>
-        ${tr('Слова', 'Woerter')}: ${formatMetricValue('learned_words', item?.learned_words)}<br/>
+        ${tr('Слова', 'Wörter')}: ${formatMetricValue('learned_words', item?.learned_words)}<br/>
         ${tr('Ошибок на 1 предложение', 'Fehler pro Satz')}: ${formatMetricValue('errors_per_sentence', item?.errors_per_sentence)}<br/>
         ${tr('Переведено', 'Uebersetzt')}: ${item.total_translations}<br/>
         ${tr('Попытки', 'Versuche')}: ${item.translation_attempts ?? item.total_translations ?? 0}
@@ -30155,7 +30158,7 @@ function AppInner() {
           ref: analyticsCompareWordsRef,
           option: buildCompareOption({
             metricKey: 'learned_words',
-            label: tr('Слова', 'Woerter'),
+            label: tr('Слова', 'Wörter'),
             selfColor: '#ff9f1c',
             peerColor: '#2ec4b6',
           }),
@@ -30203,7 +30206,7 @@ function AppInner() {
               <p>
                 {tr(
                   'Приложение продолжило работу в другом окне. Это окно можно просто закрыть.',
-                  'Die App laeuft jetzt in einem anderen Fenster weiter. Dieses Fenster kann einfach geschlossen werden.'
+                  'Die App läuft jetzt in einem anderen Fenster weiter. Dieses Fenster kann einfach geschlossen werden.'
                 )}
               </p>
               <p className="webapp-muted">
@@ -30566,7 +30569,7 @@ function AppInner() {
                       onClick={() => setOnboardingStep((prev) => Math.max(0, prev - 1))}
                       disabled={onboardingStep === 0}
                     >
-                      {tr('Назад', 'Zurueck')}
+                      {tr('Назад', 'Zurück')}
                     </button>
                     {onboardingStep < onboardingSlides.length - 1 ? (
                       <button
@@ -30583,14 +30586,14 @@ function AppInner() {
                           className="secondary-button"
                           onClick={() => finishOnboarding('guide')}
                         >
-                          {tr('Открыть гид', 'Guide oeffnen')}
+                          {tr('Открыть гид', 'Guide öffnen')}
                         </button>
                         <button
                           type="button"
                           className="primary-button"
                           onClick={() => finishOnboarding('translations')}
                         >
-                          {tr('Начать с переводов', 'Mit Uebersetzungen starten')}
+                          {tr('Начать с переводов', 'Mit Übersetzungen starten')}
                         </button>
                       </>
                     )}
@@ -30606,7 +30609,7 @@ function AppInner() {
                   title={weeklySummaryVisitConfig.title}
                   subtitle={weeklySummaryVisitConfig.subtitle}
                   closeLabel={tr('Закрыть weekly summary', 'Weekly Summary schliessen')}
-                  openAnalyticsLabel={tr('Открыть аналитику', 'Analytik oeffnen')}
+                  openAnalyticsLabel={tr('Открыть аналитику', 'Analytik öffnen')}
                   onClose={dismissWeeklySummaryModal}
                   onOpenAnalytics={openAnalyticsFromWeeklySummary}
                 >
@@ -30622,7 +30625,7 @@ function AppInner() {
                     <div className="weekly-summary-hero-error">{weeklySummaryHeroError}</div>
                   ) : weeklySummaryHeroLines.length === 0 ? (
                     <div className="weekly-summary-hero-loading">
-                      {tr('Пока нет данных для краткого weekly summary.', 'Es gibt noch keine Daten fuer diese kurze Weekly Summary.')}
+                      {tr('Пока нет данных для краткого weekly summary.', 'Es gibt noch keine Daten für diese kurze Weekly Summary.')}
                     </div>
                   ) : (
                     <div className="weekly-summary-hero-lines">
@@ -30638,7 +30641,7 @@ function AppInner() {
                   </div>
                   {weeklySummaryHeroLoading && !weeklySummaryCurrentMetrics ? (
                     <div className="weekly-summary-kpi-empty">
-                      {tr('Загружаю KPI для weekly summary...', 'Ich lade die KPI fuer die Weekly Summary...')}
+                      {tr('Загружаю KPI для weekly summary...', 'Ich lade die KPI für die Weekly Summary...')}
                     </div>
                   ) : weeklySummaryHeroError ? (
                     <div className="weekly-summary-kpi-empty">{weeklySummaryHeroError}</div>
@@ -30731,9 +30734,9 @@ function AppInner() {
                     </div>
                   </section>
                 )}
-                <section className="weekly-summary-recommendation" aria-label={tr('Следующий шаг', 'Naechster Schritt')}>
+                <section className="weekly-summary-recommendation" aria-label={tr('Следующий шаг', 'Nächster Schritt')}>
                   <div className="weekly-summary-hero-label">
-                    {tr('Следующий шаг', 'Naechster Schritt')}
+                    {tr('Следующий шаг', 'Nächster Schritt')}
                   </div>
                   {weeklySummaryHeroLoading && !weeklySummaryRecommendation ? (
                     <div className="weekly-summary-kpi-empty">
@@ -30749,7 +30752,7 @@ function AppInner() {
                     </div>
                   ) : (
                     <div className="weekly-summary-kpi-empty">
-                      {tr('Пока нет данных для рекомендации.', 'Es gibt noch keine Daten fuer eine Empfehlung.')}
+                      {tr('Пока нет данных для рекомендации.', 'Es gibt noch keine Daten für eine Empfehlung.')}
                     </div>
                   )}
                 </section>
@@ -30862,11 +30865,11 @@ function AppInner() {
             {languageProfileGateOpen && (
               <div className="language-profile-gate" role="dialog" aria-modal="true">
                 <div className="language-profile-card">
-                  <h3>{tr('Выберите языки для обучения', 'Waehle deine Lernsprachen')}</h3>
+                  <h3>{tr('Выберите языки для обучения', 'Wähle deine Lernsprachen')}</h3>
                   <p className="webapp-muted">
                     {tr(
                       'Укажите язык, который изучаете, и родной язык. Это нужно для переводов, словаря, карточек и аналитики.',
-                      'Waehle Lernsprache und Muttersprache. Das wird fuer Uebersetzung, Woerterbuch, Karten und Analytik genutzt.'
+                      'Wähle Lernsprache und Muttersprache. Das wird für Übersetzung, Wörterbuch, Karten und Analytik genutzt.'
                     )}
                   </p>
                   <div className="language-profile-fields">
@@ -30921,10 +30924,10 @@ function AppInner() {
                           {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
                             ? tr('Подключаем...', 'Wird verbunden...')
                             : !starterDictionaryOffer?.can_reconnect
-                              ? tr('Базовый словарь пока пуст', 'Basiswoerterbuch ist noch leer')
+                              ? tr('Базовый словарь пока пуст', 'Basiswörterbuch ist noch leer')
                               : starterDictionaryOffer?.state?.decision_status === 'accepted'
-                                ? tr('Переподключить базовый словарь', 'Basiswoerterbuch neu verbinden')
-                                : tr('Подключить базовый словарь', 'Basiswoerterbuch verbinden')}
+                                ? tr('Переподключить базовый словарь', 'Basiswörterbuch neu verbinden')
+                                : tr('Подключить базовый словарь', 'Basiswörterbuch verbinden')}
                         </button>
                         <button
                           type="button"
@@ -30937,7 +30940,7 @@ function AppInner() {
                             || !starterDictionaryOffer?.can_disconnect
                           }
                         >
-                          {tr('Отключить базовый словарь', 'Basiswoerterbuch trennen')}
+                          {tr('Отключить базовый словарь', 'Basiswörterbuch trennen')}
                         </button>
                       </div>
                     )}
@@ -30961,17 +30964,17 @@ function AppInner() {
             {starterDictionaryPromptOpen && !languageProfileGateOpen && starterDictionaryOffer?.enabled && (
               <div className="language-profile-gate starter-dictionary-gate" role="dialog" aria-modal="true">
                 <div className="language-profile-card starter-dictionary-card">
-                  <h3>{tr('Быстрый старт словаря', 'Schnellstart Woerterbuch')}</h3>
+                  <h3>{tr('Быстрый старт словаря', 'Schnellstart Wörterbuch')}</h3>
                   <p className="webapp-muted">
                     {tr(
                       `Подключить базовый словарь (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} слов/фраз) для быстрого старта карточек, quiz и выражений?`,
-                      `Basiswoerterbuch (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} Woerter/Phrasen) fuer schnellen Start mit Karten, Quiz und Ausdruecken verbinden?`
+                      `Basiswörterbuch (${Math.max(0, Number(starterDictionaryOffer?.suggested_count || starterDictionaryOffer?.import_limit || 0))} Wörter/Phrasen) für schnellen Start mit Karten, Quiz und Ausdrücken verbinden?`
                     )}
                   </p>
                   <p className="webapp-muted">
                     {tr(
                       'Это одноразовый импорт копии стартового набора. Он полезен как база на старте, а дальше словарь можно расширять уже своими словами из YouTube, Reader, переводов, словаря и лички с ботом.',
-                      'Das ist ein einmaliger Import einer Starter-Kopie. Sie hilft beim Einstieg, danach kannst du dein Woerterbuch mit eigenen Woertern aus YouTube, Reader, Uebersetzungen, Woerterbuch und Bot-Chat erweitern.'
+                      'Das ist ein einmaliger Import einer Starter-Kopie. Sie hilft beim Einstieg, danach kannst du dein Wörterbuch mit eigenen Wörtern aus YouTube, Reader, Übersetzungen, Wörterbuch und Bot-Chat erweitern.'
                     )}
                   </p>
                   {starterDictionaryActionError && <div className="webapp-error">{starterDictionaryActionError}</div>}
@@ -31124,7 +31127,7 @@ function AppInner() {
                     <p className="guide-hero-subtitle">
                       {tr(
                         'Полная карта приложения по порядку меню: что делает каждый раздел, что приходит в личку и что приходит в группу.',
-                        'Die vollstaendige Karte der App in Menue-Reihenfolge: was jeder Bereich macht, was privat ankommt und was in Gruppen erscheint.'
+                        'Die vollständige Karte der App in Menü-Reihenfolge: was jeder Bereich macht, was privat ankommt und was in Gruppen erscheint.'
                       )}
                     </p>
                     <button type="button" className="secondary-button guide-tour-button" onClick={startOnboardingTour}>
@@ -31193,11 +31196,11 @@ function AppInner() {
 
                 <div className="guide-actions">
                   <button type="button" className="primary-button guide-primary-cta" onClick={() => openSingleSectionAndScroll('translations', translationsRef)}>
-                    {tr('Начать с переводов', 'Mit Uebersetzungen starten')}
+                    {tr('Начать с переводов', 'Mit Übersetzungen starten')}
                   </button>
                   <div className="guide-quick-actions-grid">
                     <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('dictionary', dictionaryRef)}>
-                      {tr('Открыть словарь', 'Woerterbuch oeffnen')}
+                      {tr('Открыть словарь', 'Wörterbuch öffnen')}
                     </button>
                     <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('flashcards', flashcardsRef)}>
                       {tr('Перейти к карточкам', 'Zu Karten gehen')}
@@ -31206,13 +31209,13 @@ function AppInner() {
                       {tr('Смотреть YouTube', 'YouTube ansehen')}
                     </button>
                     <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('reader', readerRef)}>
-                      {tr('Открыть Reader', 'Reader oeffnen')}
+                      {tr('Открыть Reader', 'Reader öffnen')}
                     </button>
                     <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('assistant', assistantRef)}>
                       {tr('Поговорить с ассистентом', 'Mit dem Assistenten sprechen')}
                     </button>
                     <button type="button" className="secondary-button" onClick={() => openSingleSectionAndScroll('subscription', billingRef)}>
-                      {tr('Открыть подписку', 'Abo oeffnen')}
+                      {tr('Открыть подписку', 'Abo öffnen')}
                     </button>
                   </div>
                 </div>
@@ -31351,7 +31354,7 @@ function AppInner() {
                         && skillTrainingData.package.theory.construction_recipe.length > 0 && (
                           <div className="skill-training-theory-section">
                             <div className="skill-training-theory-section-title">
-                              {tr('Пошаговая сборка предложения', 'Schritt-fuer-Schritt Aufbau')}
+                              {tr('Пошаговая сборка предложения', 'Schritt-für-Schritt Aufbau')}
                             </div>
                             <ol className="skill-training-theory-list is-ordered">
                               {skillTrainingData.package.theory.construction_recipe.map((item, index) => (
@@ -31461,7 +31464,7 @@ function AppInner() {
                           <div className="webapp-muted">
                             {tr(
                               'Источники по теме пока не подобраны. Обновите тренировку позже.',
-                              'Quellen zum Thema wurden noch nicht gefunden. Bitte spaeter aktualisieren.'
+                              'Quellen zum Thema wurden noch nicht gefunden. Bitte später aktualisieren.'
                             )}
                           </div>
                         )}
@@ -31479,7 +31482,7 @@ function AppInner() {
                             {String(skillTrainingData?.video?.title || tr('Видео по теме найдено', 'Video zum Thema gefunden'))}
                           </div>
                           <button type="button" className="primary-button" onClick={openSkillTrainingVideo}>
-                            {tr('Открыть видео', 'Video oeffnen')}
+                            {tr('Открыть видео', 'Video öffnen')}
                           </button>
                         </>
                       ) : (
@@ -31490,7 +31493,7 @@ function AppInner() {
                     </div>
 
                     <div className="theory-practice-block">
-                      <h4>{tr('4) Практика: 5 предложений', '4) Uebung: 5 Saetze')}</h4>
+                      <h4>{tr('4) Практика: 5 предложений', '4) Uebung: 5 Sätze')}</h4>
                       {(skillTrainingData?.package?.practice_sentences || []).map((sentence, index) => (
                         <label key={`skill-training-practice-${index}`} className="webapp-field">
                           <span>{index + 1}. {String(sentence || '')}</span>
@@ -31501,12 +31504,12 @@ function AppInner() {
                               const value = event.target.value;
                               setSkillTrainingAnswers((prev) => prev.map((item, idx) => (idx === index ? value : item)));
                             }}
-                            placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
+                            placeholder={tr('Введите перевод...', 'Übersetzung eingeben...')}
                           />
                         </label>
                       ))}
                       <button type="button" className="primary-button" onClick={checkSkillTraining} disabled={skillTrainingChecking}>
-                        {skillTrainingChecking ? tr('Проверяем...', 'Pruefen...') : tr('Проверить', 'Pruefen')}
+                        {skillTrainingChecking ? tr('Проверяем...', 'Prüfen...') : tr('Проверить', 'Prüfen')}
                       </button>
                     </div>
 
@@ -31516,7 +31519,7 @@ function AppInner() {
                         {(skillTrainingFeedback?.items || []).map((row, index) => (
                           <div className="theory-feedback-item" key={`skill-training-feedback-${index}`}>
                             <div><strong>{index + 1}. {String(row?.native_sentence || '')}</strong></div>
-                            <div>{tr('Ваш перевод', 'Deine Uebersetzung')}: {String(row?.learner_translation || '')}</div>
+                            <div>{tr('Ваш перевод', 'Deine Übersetzung')}: {String(row?.learner_translation || '')}</div>
                             <div>{tr('Статус', 'Status')}: {row?.is_correct ? tr('Верно', 'Korrekt') : tr('Нужно исправить', 'Korrigieren')}</div>
                             {row?.corrected_translation && <div>{tr('Исправленный вариант', 'Korrigierte Version')}: {String(row.corrected_translation)}</div>}
                             {row?.what_is_good && <div>{tr('Что хорошо', 'Was gut ist')}: {String(row.what_is_good)}</div>}
@@ -31608,7 +31611,7 @@ function AppInner() {
                     )}
                     {Array.isArray(theoryPackage?.theory?.resources) && theoryPackage.theory.resources.length > 0 && (
                       <div className="theory-resources">
-                        <h4>{tr('Полезные источники', 'Nuetzliche Quellen')}</h4>
+                        <h4>{tr('Полезные источники', 'Nützliche Quellen')}</h4>
                         {theoryPackage.theory.resources.map((item, index) => {
                           const title = String(item?.title || '').trim();
                           const url = String(item?.url || '').trim();
@@ -31658,12 +31661,12 @@ function AppInner() {
                                 const value = event.target.value;
                                 setTheoryPracticeAnswers((prev) => prev.map((item, idx) => (idx === index ? value : item)));
                               }}
-                              placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
+                              placeholder={tr('Введите перевод...', 'Übersetzung eingeben...')}
                             />
                           </label>
                         ))}
                         <button type="button" className="primary-button" onClick={checkTodayTheory} disabled={theoryChecking}>
-                          {theoryChecking ? tr('Проверяем...', 'Pruefen...') : tr('Проверить', 'Pruefen')}
+                          {theoryChecking ? tr('Проверяем...', 'Prüfen...') : tr('Проверить', 'Prüfen')}
                         </button>
                       </div>
                     )}
@@ -31674,7 +31677,7 @@ function AppInner() {
                         {(theoryFeedback?.items || []).map((row, index) => (
                           <div className="theory-feedback-item" key={`theory-feedback-${index}`}>
                             <div><strong>{index + 1}. {String(row?.native_sentence || '')}</strong></div>
-                            <div>{tr('Ваш перевод', 'Deine Uebersetzung')}: {String(row?.learner_translation || '')}</div>
+                            <div>{tr('Ваш перевод', 'Deine Übersetzung')}: {String(row?.learner_translation || '')}</div>
                             <div>{tr('Статус', 'Status')}: {row?.is_correct ? tr('Верно', 'Korrekt') : tr('Нужно исправить', 'Korrigieren')}</div>
                             {row?.corrected_translation && <div>{tr('Исправленный вариант', 'Korrigierte Version')}: {String(row.corrected_translation)}</div>}
                             {row?.what_is_good && <div>{tr('Что хорошо', 'Was gut ist')}: {String(row.what_is_good)}</div>}
@@ -32113,8 +32116,8 @@ function AppInner() {
                               <strong>{youtubeRecommendationLoading ? tr('Подбираем видео', 'Video wird vorbereitet') : tr('Плеер YouTube', 'YouTube Player')}</strong>
                               <span>
                                 {youtubeRecommendationLoading
-                                  ? tr('Секция уже открыта. Подождите пару секунд, пока подтянется рекомендация.', 'Der Bereich ist bereits offen. Bitte kurz warten, waehrend die Empfehlung geladen wird.')
-                                  : tr('Выберите видео, чтобы начать обучение.', 'Waehle ein Video, um zu starten.')}
+                                  ? tr('Секция уже открыта. Подождите пару секунд, пока подтянется рекомендация.', 'Der Bereich ist bereits offen. Bitte kurz warten, während die Empfehlung geladen wird.')
+                                  : tr('Выберите видео, чтобы начать обучение.', 'Wähle ein Video, um zu starten.')}
                               </span>
                             </div>
                           )}
@@ -32193,7 +32196,7 @@ function AppInner() {
                           value={youtubeInput}
                           label={tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}
                           placeholder={tr('https://youtu.be/VIDEO_ID или Deutsch Grammatik B1', 'https://youtu.be/VIDEO_ID oder Deutsch Grammatik B1')}
-                          clearLabel={tr('Очистить', 'Loeschen')}
+                          clearLabel={tr('Очистить', 'Löschen')}
                           onDraftChange={(nextValue) => {
                             youtubeInputDraftRef.current = String(nextValue ?? '');
                           }}
@@ -32217,7 +32220,7 @@ function AppInner() {
                             onClick={() => setVideoExpanded((prev) => !prev)}
                             style={{ display: 'none' }}
                           >
-                            {videoExpanded ? tr('Обычный режим', 'Normalmodus') : tr('Словарь рядом', 'Woerterbuch daneben')}
+                            {videoExpanded ? tr('Обычный режим', 'Normalmodus') : tr('Словарь рядом', 'Wörterbuch daneben')}
                           </button>
                         </div>
                         {youtubeSearchError && <div className="webapp-error">{youtubeSearchError}</div>}
@@ -32553,8 +32556,14 @@ function AppInner() {
                           <div className="yt-dict-result">
                             <div className="yt-dict-word-row">
                               <span className="yt-dict-word-main">
-                                {youtubeDictResult.article ? `${youtubeDictResult.article} ` : ''}
-                                {youtubeDictResult.word_de || youtubeDictResult.word_ru || youtubeDictQuery}
+                                {/* word_de already includes the article, so strip a leading
+                                    one before re-adding it — avoids "der der Architekt". */}
+                                {(() => {
+                                  const w = String(youtubeDictResult.word_de || youtubeDictResult.word_ru || youtubeDictQuery || '');
+                                  const art = String(youtubeDictResult.article || '').trim();
+                                  if (!art) return w;
+                                  return `${art} ${w.replace(/^(der|die|das)\s+/i, '')}`.trim();
+                                })()}
                               </span>
                               {youtubeDictResult.part_of_speech && (
                                 <span className="yt-dict-pos-badge">{youtubeDictResult.part_of_speech}</span>
@@ -32598,7 +32607,7 @@ function AppInner() {
                   <PerfProfiler id="section.dictionary">
                     <section className="webapp-dictionary" ref={dictionaryRef}>
                     <div className="webapp-local-section-head">
-                      <h3>{tr('Словарь', 'Woerterbuch')}</h3>
+                      <h3>{tr('Словарь', 'Wörterbuch')}</h3>
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
 
@@ -33051,7 +33060,7 @@ function AppInner() {
                                     : null;
 
                                   return (
-                                    <div key={item.id} className={`vocab-word-item ${isExpanded ? 'is-expanded' : ''}`}>
+                                    <div key={item.id} className="vocab-word-item">
                                       <div className="vocab-word-row-shell">
                                         <button
                                           type="button"
@@ -33070,7 +33079,19 @@ function AppInner() {
                                         >
                                           <span className="vocab-srs-dot" style={{ background: dotColor }} />
                                           <span className="vocab-word-body">
-                                            <span className="vocab-word-main">{displayWord}</span>
+                                            <span className="vocab-word-main">
+                                              {(() => {
+                                                const m = /^(der|die|das)\s+/i.exec(String(displayWord || ''));
+                                                if (!m) return displayWord;
+                                                const g = m[1].toLowerCase() === 'der' ? 'm' : m[1].toLowerCase() === 'die' ? 'f' : 'n';
+                                                return (
+                                                  <>
+                                                    <span className={`vocab-artikel is-${g}`}>{displayWord.slice(0, m[1].length)}</span>
+                                                    {displayWord.slice(m[1].length)}
+                                                  </>
+                                                );
+                                              })()}
+                                            </span>
                                             <span className="vocab-word-sub">
                                               {displayTrans}
                                               {partOfSpeech && <> · <em>{partOfSpeech}</em></>}
@@ -33090,68 +33111,112 @@ function AppInner() {
                                         </button>
                                       </div>
                                       {isExpanded && (
-                                        <>
-                                          {savedMeanings.length > 0 && (
-                                            <div className="vocab-word-details">
-                                              <div className="vocab-word-detail-title">
-                                                {tr('Значения', 'Bedeutungen')}
+                                        <div
+                                          className="vocab-word-fullscreen-overlay"
+                                          onClick={(e) => { if (e.target.classList.contains('vocab-word-fullscreen-overlay')) setVocabExpandedId(null); }}
+                                        >
+                                          <div className="vocab-word-fullscreen-card">
+                                            <div className="vocab-word-fullscreen-header">
+                                              <div className="vocab-word-fullscreen-heading">
+                                                <span className="vocab-word-fullscreen-word">
+                                                  <span className="vocab-srs-dot" style={{ background: dotColor }} />
+                                                  {(() => {
+                                                    const m = /^(der|die|das)\s+/i.exec(String(displayWord || ''));
+                                                    if (!m) return displayWord;
+                                                    const g = m[1].toLowerCase() === 'der' ? 'm' : m[1].toLowerCase() === 'die' ? 'f' : 'n';
+                                                    return (
+                                                      <>
+                                                        <span className={`vocab-artikel is-${g}`}>{displayWord.slice(0, m[1].length)}</span>
+                                                        {displayWord.slice(m[1].length)}
+                                                      </>
+                                                    );
+                                                  })()}
+                                                </span>
+                                                {displayTrans && <span className="vocab-word-fullscreen-trans">{displayTrans}</span>}
+                                                {(folder || partOfSpeech) && (
+                                                  <span className="vocab-word-fullscreen-meta">
+                                                    {folder && (
+                                                      <span className="vocab-folder-tag">
+                                                        {resolveFolderIconLabel(folder.icon)} {folder.name}
+                                                      </span>
+                                                    )}
+                                                    {partOfSpeech && <em>{partOfSpeech}</em>}
+                                                  </span>
+                                                )}
                                               </div>
-                                              <div className="vocab-word-sense-list">
-                                                {savedMeanings.map((sense, index) => {
-                                                  const example = formatDictionaryBilingualExample(sense?.example_source, sense?.example_target);
-                                                  const rank = Number(sense?.rank) > 0 ? Number(sense.rank) : index + 1;
-                                                  const isPrimary = index === 0 || String(sense?.label || '').trim().toLowerCase() === 'main';
-                                                  return (
-                                                    <div key={`${item.id}-sense-${rank}-${String(sense?.value || '')}`} className="vocab-word-sense-item">
-                                                      <span className="vocab-word-sense-rank">{rank}.</span>
-                                                      <div className="vocab-word-sense-body">
-                                                        <div className="vocab-word-sense-line">
-                                                          <span className="vocab-word-sense-text">{formatDictionaryMeaningText(sense)}</span>
-                                                          {isPrimary && (
-                                                            <span className="vocab-word-sense-badge">
-                                                              {tr('основное', 'Haupt')}
-                                                            </span>
-                                                          )}
-                                                        </div>
-                                                        {example && (
-                                                          <div className="vocab-word-sense-example">
-                                                            <em>{example}</em>
-                                                          </div>
-                                                        )}
-                                                      </div>
-                                                    </div>
-                                                  );
-                                                })}
-                                              </div>
+                                              <button
+                                                type="button"
+                                                className="vocab-word-fullscreen-close"
+                                                onClick={() => setVocabExpandedId(null)}
+                                                aria-label={tr('Закрыть', 'Schließen')}
+                                              >
+                                                ×
+                                              </button>
                                             </div>
-                                          )}
-                                          <LibraryWordDetail item={item} />
-                                          <div className="vocab-word-actions">
-                                            <button
-                                              type="button"
-                                              className="vocab-action-btn vocab-action-edit"
-                                              onClick={() => {
-                                                const [primaryMeaning, secondaryMeaning, tertiaryMeaning] = getSavedEntrySenseValues(item);
-                                                setVocabEditItem(item);
-                                                setVocabEditWord(item.word_de || item.word_ru || '');
-                                                setVocabEditTrans(primaryMeaning || item.translation_ru || item.translation_de || '');
-                                                setVocabEditTransSecondary(secondaryMeaning);
-                                                setVocabEditTransTertiary(tertiaryMeaning);
-                                                setVocabEditFolder(item.folder_id ? String(item.folder_id) : 'none');
-                                                setVocabEditError('');
-                                              }}
-                                            >
-                                              ✏️ {tr('Редактировать', 'Bearbeiten')}
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="vocab-action-btn vocab-action-delete"
-                                              onClick={() => setVocabDeleteItem(item)}
-                                            >
-                                              🗑 {tr('Удалить', 'Löschen')}
-                                            </button>
+                                            <div className="vocab-word-fullscreen-body">
+                                              {savedMeanings.length > 0 && (
+                                                <div className="vocab-word-details">
+                                                  <div className="vocab-word-detail-title">
+                                                    {tr('Значения', 'Bedeutungen')}
+                                                  </div>
+                                                  <div className="vocab-word-sense-list">
+                                                    {savedMeanings.map((sense, index) => {
+                                                      const example = formatDictionaryBilingualExample(sense?.example_source, sense?.example_target);
+                                                      const rank = Number(sense?.rank) > 0 ? Number(sense.rank) : index + 1;
+                                                      const isPrimary = index === 0 || String(sense?.label || '').trim().toLowerCase() === 'main';
+                                                      return (
+                                                        <div key={`${item.id}-sense-${rank}-${String(sense?.value || '')}`} className="vocab-word-sense-item">
+                                                          <span className="vocab-word-sense-rank">{rank}.</span>
+                                                          <div className="vocab-word-sense-body">
+                                                            <div className="vocab-word-sense-line">
+                                                              <span className="vocab-word-sense-text">{formatDictionaryMeaningText(sense)}</span>
+                                                              {isPrimary && (
+                                                                <span className="vocab-word-sense-badge">
+                                                                  {tr('основное', 'Haupt')}
+                                                                </span>
+                                                              )}
+                                                            </div>
+                                                            {example && (
+                                                              <div className="vocab-word-sense-example">
+                                                                <em>{example}</em>
+                                                              </div>
+                                                            )}
+                                                          </div>
+                                                        </div>
+                                                      );
+                                                    })}
+                                                  </div>
+                                                </div>
+                                              )}
+                                              <LibraryWordDetail item={item} />
+                                            </div>
+                                            <div className="vocab-word-actions vocab-word-fullscreen-actions">
+                                              <button
+                                                type="button"
+                                                className="vocab-action-btn vocab-action-edit"
+                                                onClick={() => {
+                                                  const [primaryMeaning, secondaryMeaning, tertiaryMeaning] = getSavedEntrySenseValues(item);
+                                                  setVocabEditItem(item);
+                                                  setVocabEditWord(item.word_de || item.word_ru || '');
+                                                  setVocabEditTrans(primaryMeaning || item.translation_ru || item.translation_de || '');
+                                                  setVocabEditTransSecondary(secondaryMeaning);
+                                                  setVocabEditTransTertiary(tertiaryMeaning);
+                                                  setVocabEditFolder(item.folder_id ? String(item.folder_id) : 'none');
+                                                  setVocabEditError('');
+                                                }}
+                                              >
+                                                ✏️ {tr('Редактировать', 'Bearbeiten')}
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="vocab-action-btn vocab-action-delete"
+                                                onClick={() => setVocabDeleteItem(item)}
+                                              >
+                                                🗑 {tr('Удалить', 'Löschen')}
+                                              </button>
+                                            </div>
                                           </div>
-                                        </>
+                                        </div>
                                       )}
                                     </div>
                                   );
@@ -33358,7 +33423,7 @@ function AppInner() {
                               type="button"
                               className="dictionary-clear"
                               onClick={() => setDictionaryWord('')}
-                              aria-label={tr('Очистить слово', 'Wort loeschen')}
+                              aria-label={tr('Очистить слово', 'Wort löschen')}
                             >×</button>
                           )}
                         </div>
@@ -33416,11 +33481,11 @@ function AppInner() {
                             className="dictionary-back-button"
                             onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
                           >
-                            {tr('← вернуться назад', '← zurueck')}
+                            {tr('← вернуться назад', '← zurück')}
                           </button>
                         )}
                         <div className="dictionary-row">
-                          <span className="dictionary-label">{tr('Перевод:', 'Uebersetzung:')}</span>
+                          <span className="dictionary-label">{tr('Перевод:', 'Übersetzung:')}</span>
                           <span className="dictionary-translation">
                             {getDictionaryDisplayedTranslation(dictionaryResult) || '—'}
                           </span>
@@ -33550,7 +33615,7 @@ function AppInner() {
 
                         {Array.isArray(dictionaryResult.prefixes) && dictionaryResult.prefixes.length > 0 && (
                           <div className="dictionary-prefixes">
-                            <strong>{tr('Префиксы/варианты:', 'Praefixe/Varianten:')}</strong>
+                            <strong>{tr('Префиксы/варианты:', 'Präfixe/Varianten:')}</strong>
                             <ul>
                               {dictionaryResult.prefixes.map((item, index) => (
                                 <li key={`${item.variant}-${index}`}>
@@ -33579,7 +33644,7 @@ function AppInner() {
                         )}
                         {Array.isArray(dictionaryResult.common_collocations) && dictionaryResult.common_collocations.length > 0 && (
                           <div className="dictionary-examples">
-                            <strong>{tr('Частые сочетания:', 'Haeufige Kollokationen:')}</strong>
+                            <strong>{tr('Частые сочетания:', 'Häufige Kollokationen:')}</strong>
                             <ul>
                               {dictionaryResult.common_collocations.map((item, index) => {
                                 const text = String(item || '').trim();
@@ -33616,7 +33681,7 @@ function AppInner() {
                         )}
                         {dictionaryLookupProgress.status === 'enriching' && (
                           <div className="webapp-muted">
-                            {tr('Уточняем полный GPT-разбор... Сохранение станет доступно сразу после догрузки.', 'Die vollstaendige GPT-Analyse wird noch geladen... Speichern wird direkt danach verfuegbar.')}
+                            {tr('Уточняем полный GPT-разбор... Сохранение станет доступно сразу после догрузки.', 'Die vollständige GPT-Analyse wird noch geladen... Speichern wird direkt danach verfügbar.')}
                           </div>
                         )}
                         {dictionaryLookupProgress.error && dictionaryLookupProgress.status !== 'failed' && (
@@ -33633,7 +33698,7 @@ function AppInner() {
                           >
                             {dictionaryLookupProgress.saveLocked
                               ? tr('Ждём полный GPT-разбор...', 'Warte auf die volle GPT-Analyse...')
-                              : tr('Добавить слово в словарь', 'Wort zum Woerterbuch hinzufuegen')}
+                              : tr('Добавить слово в словарь', 'Wort zum Wörterbuch hinzufügen')}
                           </button>
                           <button
                             className="secondary-button dictionary-share-button"
@@ -33664,7 +33729,7 @@ function AppInner() {
                     )}
                     {collocationsVisible && (
                       <div className="dictionary-collocations">
-                        <h4>{tr('Выберите связку для словаря', 'Waehle eine Kollokation')}</h4>
+                        <h4>{tr('Выберите связку для словаря', 'Wähle eine Kollokation')}</h4>
                         {collocationsLoading && <div className="webapp-muted">{tr('Генерируем варианты...', 'Varianten werden generiert...')}</div>}
                         {collocationsError && <div className="webapp-error">{collocationsError}</div>}
                         {!collocationsLoading && collocationOptions.length > 0 && (
@@ -33699,7 +33764,7 @@ function AppInner() {
                             onClick={handleConfirmSaveCollocation}
                             disabled={dictionaryLoading}
                           >
-                            {dictionaryLoading ? tr('Сохраняем...', 'Speichern...') : tr('Добавить выбранное', 'Ausgewaehltes hinzufuegen')}
+                            {dictionaryLoading ? tr('Сохраняем...', 'Speichern...') : tr('Добавить выбранное', 'Ausgewähltes hinzufügen')}
                           </button>
                           <button
                             type="button"
@@ -34133,7 +34198,7 @@ function AppInner() {
               <section className="webapp-movies" ref={moviesRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Фильмы', 'Filme')}</h2>
-                  <p>{tr('Видео с доступными субтитрами, сохранённые в каталоге.', 'Videos mit verfuegbaren Untertiteln im Katalog.')}</p>
+                  <p>{tr('Видео с доступными субтитрами, сохранённые в каталоге.', 'Videos mit verfügbaren Untertiteln im Katalog.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 {moviesLoading && <div className="webapp-muted">{tr('Загружаем каталог...', 'Katalog wird geladen...')}</div>}
@@ -34192,7 +34257,7 @@ function AppInner() {
                   </div>
                 )}
                 {!moviesLoading && movies.length > 0 && moviesFiltered.length === 0 && (
-                  <div className="webapp-muted">{tr('Для выбранного языка пока нет фильмов.', 'Fuer die gewaehlt Sprache gibt es noch keine Videos.')}</div>
+                  <div className="webapp-muted">{tr('Для выбранного языка пока нет фильмов.', 'Für die gewählt Sprache gibt es noch keine Videos.')}</div>
                 )}
               </section>
             )}
@@ -34369,8 +34434,8 @@ function AppInner() {
                                 </div>
                                 <div className="fsrs-error-title">
                                   {isFreeLimitError
-                                    ? tr('Лимит в этой тренировке достигнут', 'Das Limit fuer dieses Training ist erreicht')
-                                    : tr('Не удалось загрузить следующую карточку', 'Die naechste Karte konnte nicht geladen werden')}
+                                    ? tr('Лимит в этой тренировке достигнут', 'Das Limit für dieses Training ist erreicht')
+                                    : tr('Не удалось загрузить следующую карточку', 'Die nächste Karte konnte nicht geladen werden')}
                                 </div>
                                 <div className="fsrs-divider" />
                                 <div className="fsrs-error-copy">
@@ -34379,11 +34444,11 @@ function AppInner() {
                                     {isFreeLimitError
                                       ? tr(
                                         'Вы использовали дневной лимит бесплатной тренировки слов в этом тренажёре. Перейдите к выбору тренировок и выберите другой режим.',
-                                        'Du hast das Tageslimit fuer das kostenlose Worttraining in diesem Modus genutzt. Wechsle zur Trainingsauswahl und waehle einen anderen Modus.'
+                                        'Du hast das Tageslimit für das kostenlose Worttraining in diesem Modus genutzt. Wechsle zur Trainingsauswahl und wähle einen anderen Modus.'
                                       )
                                       : tr(
                                         'Карточка не потеряна. Проверьте соединение и нажмите «Повторить».',
-                                        'Die Karte ist nicht verloren. Bitte Verbindung pruefen und dann auf „Erneut versuchen“ tippen.'
+                                        'Die Karte ist nicht verloren. Bitte Verbindung prüfen und dann auf „Erneut versuchen“ tippen.'
                                       )}
                                   </p>
                                 </div>
@@ -34581,7 +34646,7 @@ function AppInner() {
                               const previewModeLabel = flashcardActiveMode === 'blocks'
                                 ? 'Blocks Mode'
                                 : flashcardActiveMode === 'sentence'
-                                  ? 'Satz Ergaenzen Mode'
+                                  ? 'Satz Ergänzen Mode'
                                   : 'Quiz 4 Options Mode';
                               const feelEntryId = resolveFlashcardFeelEntryId(entry);
                               const feelQueued = feelEntryId ? !!flashcardFeelQueuedMap[feelEntryId] : false;
@@ -34676,7 +34741,7 @@ function AppInner() {
                                       }}
                                       disabled={flashcardPreviewIndex === 0 || previewAudioPlaying}
                                     >
-                                      {tr('Назад', 'Zurueck')}
+                                      {tr('Назад', 'Zurück')}
                                     </button>
                                     {flashcardPreviewIndex < flashcards.length - 1 ? (
                                       <button
@@ -34691,7 +34756,7 @@ function AppInner() {
                                         }}
                                         disabled={previewNavLocked}
                                       >
-                                        {previewAudioPlaying ? tr('Слушаем...', 'Hoeren...') : tr('Далее', 'Weiter')}
+                                        {previewAudioPlaying ? tr('Слушаем...', 'Hören...') : tr('Далее', 'Weiter')}
                                       </button>
                                     ) : (
                                       <button
@@ -34707,7 +34772,7 @@ function AppInner() {
                                         }}
                                         disabled={previewNavLocked}
                                       >
-                                        {previewAudioPlaying ? tr('Слушаем...', 'Hoeren...') : tr('Начать тренировку', 'Training starten')}
+                                        {previewAudioPlaying ? tr('Слушаем...', 'Hören...') : tr('Начать тренировку', 'Training starten')}
                                       </button>
                                     )}
                                   </div>
@@ -34855,7 +34920,7 @@ function AppInner() {
                                 const quizMascotSrc = !isAnswered
                                   ? heroThinkSrc
                                   : (isCorrectAnswer ? heroMascotSrc : heroCrySrc);
-                                const screenModeLabel = isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergaenzen Mode' : 'Quiz Mode';
+                                const screenModeLabel = isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergänzen Mode' : 'Quiz Mode';
                                 const longestOptionLen = Array.isArray(flashcardOptions)
                                   ? flashcardOptions.reduce((maxLen, optionText) => {
                                     const normalized = String(optionText || '').replace(/\s+/g, ' ').trim();
@@ -34882,7 +34947,7 @@ function AppInner() {
                                     </div>
 
                                     <div className={quizStudyCardClassName}>
-                                      <div className="quiz-study-mode-title">{isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergaenzen' : 'Quiz Mode'}</div>
+                                      <div className="quiz-study-mode-title">{isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergänzen' : 'Quiz Mode'}</div>
                                       <div className={`quiz-study-question ${(isSentenceTrainingMode || isSentenceGapQuiz) ? 'is-sentence-gap' : ''}`}>
                                         {(isSentenceTrainingMode || isSentenceGapQuiz) && isAnswered
                                           ? renderSentenceWithGapAnswer(
@@ -35377,7 +35442,7 @@ function AppInner() {
                               </button>
                             </div>
                             <p className="voice-assistant-hint">
-                              {tr('Нажмите на микрофон в панели управления и начинайте диалог.', 'Druecke auf das Mikrofon im Steuerfeld und starte den Dialog.')}
+                              {tr('Нажмите на микрофон в панели управления и начинайте диалог.', 'Drücke auf das Mikrofon im Steuerfeld und starte den Dialog.')}
                             </p>
                             <div className="voice-assistant-controls">
                               <ControlBar />
@@ -35676,7 +35741,7 @@ function AppInner() {
                       onClick={() => supportAttachmentInputRef.current?.click()}
                       disabled={supportSending}
                     >
-                      {supportAttachment?.preview_url ? tr('Фото выбрано', 'Bild gewaehlt') : tr('Фото', 'Bild')}
+                      {supportAttachment?.preview_url ? tr('Фото выбрано', 'Bild gewählt') : tr('Фото', 'Bild')}
                     </button>
                     <button
                       type="submit"
@@ -35759,7 +35824,7 @@ function AppInner() {
                                 <span>{tr('С даты', 'Von')}</span>
                                 <div className="analytics-calendar-date-shell">
                                   <span className={`analytics-calendar-date-value ${analyticsCalendarDraftStartDate ? '' : 'is-placeholder'}`}>
-                                    {formatAnalyticsCalendarDisplayDate(analyticsCalendarDraftStartDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum waehlen')}
+                                    {formatAnalyticsCalendarDisplayDate(analyticsCalendarDraftStartDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum wählen')}
                                   </span>
                                   <input
                                     className="analytics-calendar-native-input"
@@ -35774,7 +35839,7 @@ function AppInner() {
                                 <span>{tr('По дату', 'Bis')}</span>
                                 <div className="analytics-calendar-date-shell">
                                   <span className={`analytics-calendar-date-value ${analyticsCalendarDraftEndDate ? '' : 'is-placeholder'}`}>
-                                    {formatAnalyticsCalendarDisplayDate(analyticsCalendarDraftEndDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum waehlen')}
+                                    {formatAnalyticsCalendarDisplayDate(analyticsCalendarDraftEndDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum wählen')}
                                   </span>
                                   <input
                                     className="analytics-calendar-native-input"
@@ -35787,7 +35852,7 @@ function AppInner() {
                               </label>
                               {!analyticsCalendarDraftValid && (
                                 <div className="webapp-muted analytics-calendar-error">
-                                  {tr('Выберите корректный диапазон дат.', 'Waehle einen gueltigen Datumsbereich.')}
+                                  {tr('Выберите корректный диапазон дат.', 'Wähle einen gültigen Datumsbereich.')}
                                 </div>
                               )}
                               <div className="analytics-calendar-actions">
@@ -35851,7 +35916,7 @@ function AppInner() {
                 </div>
                 <div className={`webapp-muted analytics-scope-hint ${analyticsScopeSelectorRequired ? 'is-warning' : ''}`}>
                   {analyticsScopeStatusText}
-                  {analyticsScopeSelectorRequired ? ` ${tr('У вас несколько групп: выберите нужный режим участия.', 'Du hast mehrere Gruppen: waehle den passenden Teilnahme-Modus.')}` : ''}
+                  {analyticsScopeSelectorRequired ? ` ${tr('У вас несколько групп: выберите нужный режим участия.', 'Du hast mehrere Gruppen: wähle den passenden Teilnahme-Modus.')}` : ''}
                   {analyticsScopeLoading ? ` ${tr('Определяем контекст...', 'Kontext wird ermittelt...')}` : ''}
                   {analyticsScopeSaving ? ` ${tr('Сохраняем режим...', 'Modus wird gespeichert...')}` : ''}
                 </div>
@@ -35859,10 +35924,10 @@ function AppInner() {
                   <div className="analytics-reset-copy">
                     <strong>{tr('Начать все сначала', 'Neu anfangen')}</strong>
                     <span>
-                      {tr('Новая точка отсчета для KPI и skills', 'Neuer Startpunkt fuer KPI und Skills')}: {progressResetDateLabel}
+                      {tr('Новая точка отсчета для KPI и skills', 'Neuer Startpunkt für KPI und Skills')}: {progressResetDateLabel}
                     </span>
                     <small>
-                      {tr('Словарь, карточки, квизы, книги и остальной контент не удаляются.', 'Woerterbuch, Karteikarten, Quizze, Buecher und Inhalte bleiben erhalten.')}
+                      {tr('Словарь, карточки, квизы, книги и остальной контент не удаляются.', 'Wörterbuch, Karteikarten, Quizze, Bücher und Inhalte bleiben erhalten.')}
                     </small>
                   </div>
                   <button
@@ -35916,7 +35981,7 @@ function AppInner() {
                         <small>
                           {tr('Прогноз', 'Prognose')}: {formatWeeklyValue(item.data?.forecast, 1)} {item.unit}
                           {' • '}
-                          {tr('% выполнения', '% Erfuellung')}: {formatWeeklyValue(item.data?.completion_percent, 1)}%
+                          {tr('% выполнения', '% Erfüllung')}: {formatWeeklyValue(item.data?.completion_percent, 1)}%
                         </small>
                       </div>
                     ))}
@@ -35931,7 +35996,7 @@ function AppInner() {
                     <div className="analytics-chart analytics-compare" ref={analyticsCompareRef} />
                   </div>
                   <div className="analytics-compare-section">
-                    <div className="analytics-card-group-title">{tr('Слова', 'Woerter')}</div>
+                    <div className="analytics-card-group-title">{tr('Слова', 'Wörter')}</div>
                     <div className="analytics-chart analytics-compare" ref={analyticsCompareWordsRef} />
                   </div>
                   <div className="analytics-compare-section">
@@ -35953,13 +36018,13 @@ function AppInner() {
                     <div className="language-profile-card analytics-reset-modal" onClick={(event) => event.stopPropagation()}>
                       <h3>{tr('Начать все сначала', 'Neu anfangen')}</h3>
                       <p className="webapp-muted">
-                        {tr('Выберите дату, которая станет новой точкой отсчета для KPI и skills. Словарь, карточки, квизы, книги и остальной контент останутся как есть.', 'Waehle das Datum, das als neuer Startpunkt fuer KPI und Skills gilt. Woerterbuch, Karteikarten, Quizze, Buecher und Inhalte bleiben unveraendert.')}
+                        {tr('Выберите дату, которая станет новой точкой отсчета для KPI и skills. Словарь, карточки, квизы, книги и остальной контент останутся как есть.', 'Wähle das Datum, das als neuer Startpunkt für KPI und Skills gilt. Wörterbuch, Karteikarten, Quizze, Bücher und Inhalte bleiben unverändert.')}
                       </p>
                       <label className="webapp-field analytics-reset-field">
                         <span>{tr('Новая дата отсчета', 'Neues Startdatum')}</span>
                         <div className="analytics-calendar-date-shell analytics-reset-date-shell">
                           <span className={`analytics-calendar-date-value ${progressResetDraftDate ? '' : 'is-placeholder'}`}>
-                            {formatAnalyticsCalendarDisplayDate(progressResetDraftDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum waehlen')}
+                            {formatAnalyticsCalendarDisplayDate(progressResetDraftDate, uiLang === 'de' ? 'de-AT' : 'ru-RU') || tr('Выберите дату', 'Datum wählen')}
                           </span>
                           <input
                             className="analytics-calendar-native-input"
@@ -35971,7 +36036,7 @@ function AppInner() {
                         </div>
                       </label>
                       <div className="webapp-muted analytics-reset-caption">
-                        {tr('С этой даты начнут считаться personal KPI и skill analytics.', 'Ab diesem Datum werden persoenliche KPI und Skill-Analytik neu berechnet.')}
+                        {tr('С этой даты начнут считаться personal KPI и skill analytics.', 'Ab diesem Datum werden persönliche KPI und Skill-Analytik neu berechnet.')}
                       </div>
                       {progressResetError && <div className="webapp-error">{progressResetError}</div>}
                       <div className="language-profile-actions analytics-reset-actions">
@@ -36008,7 +36073,7 @@ function AppInner() {
               <section className="webapp-section webapp-economics" ref={economicsRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Экономика', 'Kosten')}</h2>
-                  <p className="webapp-muted">{tr('Глобальная экономика приложения: расходы, провайдеры, usage и модели по всему продукту.', 'Globale App-Oekonomie: Kosten, Provider, Usage und Modelle fuer das gesamte Produkt.')}</p>
+                  <p className="webapp-muted">{tr('Глобальная экономика приложения: расходы, провайдеры, usage и модели по всему продукту.', 'Globale App-Oekonomie: Kosten, Provider, Usage und Modelle für das gesamte Produkt.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 <div className="analytics-controls economics-controls">
@@ -36107,7 +36172,7 @@ function AppInner() {
                     <div className="webapp-muted analytics-scope-hint">
                       {tr(
                         'Billing ledger = внутренний журнал учтённых cost-записей. Один реальный сценарий может создать несколько billing-events: например модель, TTS, R2 и voice считаются отдельно.',
-                        'Billing-Ledger = internes Journal aller erfassten Kosten-Eintraege. Ein echter Nutzungsvorgang kann mehrere Billing-Events erzeugen: z. B. Modell, TTS, R2 und Voice getrennt.'
+                        'Billing-Ledger = internes Journal aller erfassten Kosten-Einträge. Ein echter Nutzungsvorgang kann mehrere Billing-Events erzeugen: z. B. Modell, TTS, R2 und Voice getrennt.'
                       )}
                     </div>
                     <div className="webapp-muted analytics-scope-hint">
@@ -36169,7 +36234,7 @@ function AppInner() {
 
                     <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-forecast-block">
                       <div className="economics-forecast-head">
-                        <h4>{tr('Прогноз затрат при выбранном количестве пользователей', 'Kostenprognose fuer eine gewaehlte Nutzerzahl')}</h4>
+                        <h4>{tr('Прогноз затрат при выбранном количестве пользователей', 'Kostenprognose für eine gewählte Nutzerzahl')}</h4>
                         <label className="webapp-field economics-forecast-field">
                           <span>{tr('Сколько пользователей', 'Wie viele Nutzer')}</span>
                           <input
@@ -36186,7 +36251,7 @@ function AppInner() {
                       <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
                         {tr(
                           'Это линейный прогноз по текущему среднему usage на 1 активного пользователя. Railway сюда сознательно пока не включён, потому что для него нужна отдельная ступенчатая infra-модель.',
-                          'Das ist eine lineare Prognose auf Basis des aktuellen durchschnittlichen Usage pro aktivem Nutzer. Railway ist hier bewusst noch nicht enthalten, weil dafuer ein separates stufenweises Infra-Modell noetig ist.',
+                          'Das ist eine lineare Prognose auf Basis des aktuellen durchschnittlichen Usage pro aktivem Nutzer. Railway ist hier bewusst noch nicht enthalten, weil dafür ein separates stufenweises Infra-Modell nötig ist.',
                         )}
                       </div>
                       {economicsForecastUsers > 0 ? (
@@ -36225,7 +36290,7 @@ function AppInner() {
                                   <div className="economics-breakdown-row economics-breakdown-row-rich">
                                     <div className="economics-breakdown-copy">
                                       <span>{tr('Прогноз стоимости', 'Kostenprognose')}</span>
-                                      <small>{tr('для', 'fuer')} {economicsForecastUsers} {tr('польз.', 'Nutzer')}</small>
+                                      <small>{tr('для', 'für')} {economicsForecastUsers} {tr('польз.', 'Nutzer')}</small>
                                     </div>
                                     <div className="economics-breakdown-value">
                                       <strong>{Number(item.forecastTotalCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
@@ -36254,7 +36319,7 @@ function AppInner() {
                                       </strong>
                                       <small>
                                         {item.freeTierTotalUsersCapacity > 0
-                                          ? tr('сверх free tier', 'ueber Free Tier')
+                                          ? tr('сверх free tier', 'über Free Tier')
                                           : tr('нет free-tier data', 'keine Free-Tier-Daten')}
                                       </small>
                                     </div>
@@ -36265,7 +36330,7 @@ function AppInner() {
                           </div>
                         </>
                       ) : (
-                        <div className="webapp-muted">{tr('Введите количество пользователей больше нуля.', 'Bitte gib eine Nutzerzahl groesser als null ein.')}</div>
+                        <div className="webapp-muted">{tr('Введите количество пользователей больше нуля.', 'Bitte gib eine Nutzerzahl größer als null ein.')}</div>
                       )}
                     </div>
 
@@ -36286,7 +36351,7 @@ function AppInner() {
                             <strong>{economicsRailwayTrackedBaselineUsd.toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
                           </div>
                           <div className="analytics-card">
-                            <span>{tr('Postgres size now', 'Postgres-Groesse jetzt')}</span>
+                            <span>{tr('Postgres size now', 'Postgres-Größe jetzt')}</span>
                             <strong>
                               {economicsRailwayLivePostgres?.available
                                 ? `${Number(economicsRailwayLivePostgres?.db_size_mb || 0).toFixed(1)} MB`
@@ -36430,7 +36495,7 @@ function AppInner() {
                         <div className="webapp-muted" style={{ marginTop: 10, marginBottom: 10, fontSize: 12 }}>
                           {tr(
                             'Ставки Railway сейчас считаются так: RAM $10 / GB-month, CPU $20 / vCPU-month, volume $0.15 / GB-month, egress $0.05 / GB. Postgres volume и Redis RAM могут подхватываться из live audit, а app RAM / app vCPU / Postgres RAM вы задаёте вручную.',
-                            'Railway wird aktuell so gerechnet: RAM $10 / GB-Monat, CPU $20 / vCPU-Monat, Volume $0.15 / GB-Monat, Egress $0.05 / GB. Postgres-Volume und Redis-RAM koennen aus dem Live-Audit kommen, waehrend App-RAM / App-vCPU / Postgres-RAM manuell gesetzt werden.',
+                            'Railway wird aktuell so gerechnet: RAM $10 / GB-Monat, CPU $20 / vCPU-Monat, Volume $0.15 / GB-Monat, Egress $0.05 / GB. Postgres-Volume und Redis-RAM können aus dem Live-Audit kommen, während App-RAM / App-vCPU / Postgres-RAM manuell gesetzt werden.',
                           )}
                         </div>
                         <div className="analytics-cards economics-cards">
@@ -36688,7 +36753,7 @@ function AppInner() {
               <section className="webapp-section webapp-billing" ref={billingRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Подписка', 'Abo')}</h2>
-                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и Stripe Portal: отмена подписки, смена карты и счета.', 'Aktueller Tarif, Limits und Stripe-Portal: Kuendigung, Kartenwechsel und Rechnungen.')}</p>
+                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и Stripe Portal: отмена подписки, смена карты и счета.', 'Aktueller Tarif, Limits und Stripe-Portal: Kündigung, Kartenwechsel und Rechnungen.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 
@@ -36721,17 +36786,17 @@ function AppInner() {
                     )}
 
                     <div className="billing-trial-banner">
-                      <strong>{tr('Новые пользователи начинают с Free. Платные функции доступны по подписке Pro.', 'Neue Nutzer starten mit Free. Bezahlte Funktionen sind mit Pro-Abo verfuegbar.')}</strong>
+                      <strong>{tr('Новые пользователи начинают с Free. Платные функции доступны по подписке Pro.', 'Neue Nutzer starten mit Free. Bezahlte Funktionen sind mit Pro-Abo verfügbar.')}</strong>
                     </div>
                     <div className="billing-policy-grid">
                       <article className="billing-policy-card">
-                        <h4>{tr('Free по умолчанию', 'Free standardmaessig')}</h4>
+                        <h4>{tr('Free по умолчанию', 'Free standardmäßig')}</h4>
                         <ul>
-                          <li>{tr('Переводы: 1 набор в день (7 предложений).', 'Uebersetzungen: 1 Set pro Tag (7 Saetze).')}</li>
-                          <li>{tr('Читалка: 1 книга (до 30 дней), новая только после удаления старой.', 'Reader: 1 Buch (bis 30 Tage), neues nur nach Loeschen des alten.')}</li>
-                          <li>{tr('Аудио из читалки: недоступно.', 'Audio aus Reader: nicht verfuegbar.')}</li>
-                          <li>{tr('Карточки: по 5 слов в день на каждый вид тренировки.', 'Karteikarten: 5 Woerter pro Tag je Trainingsmodus.')}</li>
-                          <li>{tr('«Почувствуй слово»: 3 раза в день.', '„Wort fuehlen“: 3-mal pro Tag.')}</li>
+                          <li>{tr('Переводы: 1 набор в день (7 предложений).', 'Übersetzungen: 1 Set pro Tag (7 Sätze).')}</li>
+                          <li>{tr('Читалка: 1 книга (до 30 дней), новая только после удаления старой.', 'Reader: 1 Buch (bis 30 Tage), neues nur nach Löschen des alten.')}</li>
+                          <li>{tr('Аудио из читалки: недоступно.', 'Audio aus Reader: nicht verfügbar.')}</li>
+                          <li>{tr('Карточки: по 5 слов в день на каждый вид тренировки.', 'Karteikarten: 5 Wörter pro Tag je Trainingsmodus.')}</li>
+                          <li>{tr('«Почувствуй слово»: 3 раза в день.', '„Wort fühlen“: 3-mal pro Tag.')}</li>
                           <li>{tr('Разговорная практика: 3 минуты в день.', 'Sprechpraxis: 3 Minuten pro Tag.')}</li>
                           <li>{tr('Прокачка навыков: 1 навык.', 'Skill-Training: 1 Skill.')}</li>
                         </ul>
@@ -36739,11 +36804,11 @@ function AppInner() {
                       <article className="billing-policy-card">
                         <h4>{tr('Pro — полный доступ', 'Pro — voller Zugang')}</h4>
                         <ul>
-                          <li>{tr('Переводы, читалка, карточки, «почувствуй слово»: безлимитно.', 'Uebersetzungen, Reader, Karteikarten, „Wort fuehlen“: unbegrenzt.')}</li>
+                          <li>{tr('Переводы, читалка, карточки, «почувствуй слово»: безлимитно.', 'Übersetzungen, Reader, Karteikarten, „Wort fühlen“: unbegrenzt.')}</li>
                           <li>{tr('Аудио из читалки: до 10 страниц за 7 дней.', 'Audio aus Reader: bis zu 10 Seiten in 7 Tagen.')}</li>
                           <li>{tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.')}</li>
                           <li>{tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.')}</li>
-                          <li>{tr('Можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Individuelle Anpassung/Training kann besprochen werden (sofern technisch moeglich).')}</li>
+                          <li>{tr('Можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Individuelle Anpassung/Training kann besprochen werden (sofern technisch möglich).')}</li>
                         </ul>
                       </article>
                     </div>
@@ -36751,7 +36816,7 @@ function AppInner() {
                       <div className="billing-zone billing-zone--access">
                         <div className="billing-zone__head">
                           <h3 className="billing-zone__title">{tr('Доступ', 'Zugang')}</h3>
-                          <p className="billing-zone__hint">{tr('Выбери уровень доступа к функциям.', 'Waehle dein Zugangslevel zu den Funktionen.')}</p>
+                          <p className="billing-zone__hint">{tr('Выбери уровень доступа к функциям.', 'Wähle dein Zugangslevel zu den Funktionen.')}</p>
                         </div>
                         <div className="billing-support-grid">
                           {billingAccessCards.map((offer) => renderBillingPlanCard(offer))}
@@ -36762,10 +36827,10 @@ function AppInner() {
                     {billingSupportCards.length > 0 && (
                       <div className={`billing-zone billing-zone--support${readerAudioPremiumEnabled ? '' : ' is-secondary'}`}>
                         <div className="billing-zone__head">
-                          <h3 className="billing-zone__title">{tr('Поддержать проект ❤️', 'Projekt unterstuetzen ❤️')}</h3>
+                          <h3 className="billing-zone__title">{tr('Поддержать проект ❤️', 'Projekt unterstützen ❤️')}</h3>
                           <p className="billing-zone__hint">
                             {readerAudioPremiumEnabled
-                              ? tr('У тебя уже есть полный доступ. Это — способ сказать спасибо и помочь оплачивать серверы и развитие. Разовый платёж, доступ не меняется.', 'Du hast bereits vollen Zugang. Das ist eine Moeglichkeit, Danke zu sagen und Server und Weiterentwicklung mitzufinanzieren. Einmalige Zahlung, der Zugang aendert sich nicht.')
+                              ? tr('У тебя уже есть полный доступ. Это — способ сказать спасибо и помочь оплачивать серверы и развитие. Разовый платёж, доступ не меняется.', 'Du hast bereits vollen Zugang. Das ist eine Möglichkeit, Danke zu sagen und Server und Weiterentwicklung mitzufinanzieren. Einmalige Zahlung, der Zugang aendert sich nicht.')
                               : tr('Это необязательно: полный доступ открывает подписка Pro выше. А здесь — просто способ поблагодарить проект разовым платежом (доступ не меняется).', 'Optional: vollen Zugang gibt das Pro-Abo oben. Hier kannst du dich einfach mit einer einmaligen Zahlung bedanken (der Zugang aendert sich nicht).')}
                           </p>
                         </div>
@@ -36845,14 +36910,14 @@ function AppInner() {
                       <h4>{tr('Установить приложение', 'App installieren')}</h4>
                       {appMode === 'browser' ? (
                         <ol className="webapp-muted" style={{ margin: 0, paddingLeft: '18px' }}>
-                          <li>{tr('Откройте сайт в Safari', 'Seite in Safari oeffnen')}</li>
+                          <li>{tr('Откройте сайт в Safari', 'Seite in Safari öffnen')}</li>
                           <li>{tr('Нажмите Share (квадрат со стрелкой)', 'Auf Share tippen (Quadrat mit Pfeil)')}</li>
-                          <li>{tr('Выберите Add to Home Screen', 'Add to Home Screen waehlen')}</li>
+                          <li>{tr('Выберите Add to Home Screen', 'Add to Home Screen wählen')}</li>
                           <li>{tr('Запустите приложение с иконки', 'App vom Homescreen starten')}</li>
                         </ol>
                       ) : (
                         <div className="webapp-muted">
-                          {tr('Уже установлено. Вы открыли приложение в standalone режиме.', 'Bereits installiert. Die App laeuft im Standalone-Modus.')}
+                          {tr('Уже установлено. Вы открыли приложение в standalone режиме.', 'Bereits installiert. Die App läuft im Standalone-Modus.')}
                         </div>
                       )}
                     </div>
@@ -36922,7 +36987,7 @@ function AppInner() {
                     disabled={dictionaryLoading}
                     style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
                   >
-                    {dictionaryLoading ? tr('Словарь...', 'Woerterbuch...') : tr('Сохранить', 'Speichern')}
+                    {dictionaryLoading ? tr('Словарь...', 'Wörterbuch...') : tr('Сохранить', 'Speichern')}
                   </button>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 6 }}>
@@ -36988,7 +37053,7 @@ function AppInner() {
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                    <strong style={{ fontSize: 17 }}>{tr('GPT Объяснение', 'GPT-Erklaerung')}</strong>
+                    <strong style={{ fontSize: 17 }}>{tr('GPT Объяснение', 'GPT-Erklärung')}</strong>
                     <button type="button" className="secondary-button" onClick={closeSelectionGptSheet}>
                       {tr('Закрыть', 'Schliessen')}
                     </button>
@@ -36996,7 +37061,7 @@ function AppInner() {
                   <div className="webapp-muted" style={{ fontSize: 13, fontStyle: 'italic' }}>
                     {selectionText}
                   </div>
-                  {selectionGptLoading && <div className="webapp-muted" style={{ fontSize: 14 }}>{tr('Готовим объяснение...', 'Erklaerung wird vorbereitet...')}</div>}
+                  {selectionGptLoading && <div className="webapp-muted" style={{ fontSize: 14 }}>{tr('Готовим объяснение...', 'Erklärung wird vorbereitet...')}</div>}
                   {selectionGptError && <div className="webapp-error">{selectionGptError}</div>}
                   {!selectionGptLoading && !selectionGptError && (
                     <>
@@ -37063,10 +37128,10 @@ function AppInner() {
                           >
                             {selectionGptSaveLoading
                               ? tr('Сохраняем...', 'Speichern...')
-                              : tr('Сохранить в словарь', 'Ins Woerterbuch speichern')}
+                              : tr('Сохранить в словарь', 'Ins Wörterbuch speichern')}
                           </button>
                           <span className="webapp-muted" style={{ fontSize: 11 }}>
-                            {tr('Можно выбрать одно или несколько значений', 'Du kannst einen oder mehrere Eintraege waehlen')}
+                            {tr('Можно выбрать одно или несколько значений', 'Du kannst einen oder mehrere Einträge wählen')}
                           </span>
                         </div>
                         {selectionGptSaveMessage && (
@@ -37133,7 +37198,7 @@ if (!token) {
           <div className="login-header">
             <span className="pill">Deutsch Tutor</span>
             <h2>{tr('Вход в урок', 'Unterricht betreten')}</h2>
-            <p>{tr('Подключитесь к разговорной практике и начните диалог с учителем.', 'Verbinde dich fuer Sprachpraxis und starte den Dialog mit dem Tutor.')}</p>
+            <p>{tr('Подключитесь к разговорной практике и начните диалог с учителем.', 'Verbinde dich für Sprachpraxis und starte den Dialog mit dem Tutor.')}</p>
           </div>
           {isKnownFreePaidSurfaceMode ? (
             renderAppPaidFeatureNotice(assistantPaidFeatureTitle)
@@ -37197,7 +37262,7 @@ if (!token) {
                 <div>
                   <span className="pill">{tr('Учитель онлайн', 'Lehrer online')}</span>
                   <h1>{tr('Живая практика немецкого', 'Live-Deutschpraxis')}</h1>
-                  <p>{tr('Говорите свободно, а помощник ведет диалог, исправляет и поддерживает.', 'Sprich frei, der Assistent fuehrt den Dialog, korrigiert und unterstuetzt dich.')}</p>
+                  <p>{tr('Говорите свободно, а помощник ведет диалог, исправляет и поддерживает.', 'Sprich frei, der Assistent führt den Dialog, korrigiert und unterstützt dich.')}</p>
                 </div>
                 <div className="lesson-meta">
                   <span>{tr('Пользователь', 'Nutzer')}: {username}</span>
@@ -37212,9 +37277,9 @@ if (!token) {
                   </div>
                   <div className="lesson-copy">
                     <h2>{tr('Сфокусируйтесь на голосе', 'Fokussiere dich auf die Stimme')}</h2>
-                    <p>{tr('Нажмите на микрофон, чтобы включить речь, и нажмите выход, когда урок завершен.', 'Druecke auf das Mikrofon, um zu sprechen, und beende danach die Sitzung.')}</p>
+                    <p>{tr('Нажмите на микрофон, чтобы включить речь, и нажмите выход, когда урок завершен.', 'Drücke auf das Mikrofon, um zu sprechen, und beende danach die Sitzung.')}</p>
                     <div className="lesson-tips">
-                      <div className="tip">{tr('Четко формулируйте ответы, чтобы учитель слышал интонацию.', 'Formuliere klar, damit der Tutor die Intonation hoert.')}</div>
+                      <div className="tip">{tr('Четко формулируйте ответы, чтобы учитель слышал интонацию.', 'Formuliere klar, damit der Tutor die Intonation hört.')}</div>
                       <div className="tip">{tr('Если нужно подумать, просто сделайте паузу — связь сохранится.', 'Wenn du nachdenken willst, pausier kurz - die Verbindung bleibt bestehen.')}</div>
                     </div>
                   </div>
