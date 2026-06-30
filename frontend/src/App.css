@@ -25689,3 +25689,30 @@ html[data-scheme="light"] .explain-line,
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tabs{ gap:8px; }
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab{ height:36px; gap:2px; font-size:11px; border-radius:12px; }
 .webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab .vocab-sel-tab-icon{ width:15px; height:15px; }
+
+
+/* ================================================================
+   Словарь · WOW-проход 1: смысловой цвет артикля + фирменный акцент
+   der → синий (муж.), die → розовый (жен.), das → зелёный (ср.).
+   Цвета подобраны контрастно и для тёмной, и для светлой темы.
+   ================================================================ */
+.webapp-dictionary .vocab-artikel{ font-weight:800; }
+.webapp-dictionary .vocab-artikel.is-m{ color:#5b9bff; }   /* der */
+.webapp-dictionary .vocab-artikel.is-f{ color:#ff7aa8; }   /* die */
+.webapp-dictionary .vocab-artikel.is-n{ color:#3ecf8e; }   /* das */
+.webapp-page.is-theme-light .vocab-artikel.is-m{ color:#2563eb; }
+.webapp-page.is-theme-light .vocab-artikel.is-f{ color:#db2777; }
+.webapp-page.is-theme-light .vocab-artikel.is-n{ color:#0f9d6b; }
+
+/* — Фирменный акцент: главное действие и активная вкладка «дышат» брендом — */
+.webapp-dictionary .vocab-selection-toolbar .vocab-sel-tab.is-learn{
+  background:linear-gradient(180deg, #7c83ff, var(--vlib-acc, #6366F1));
+  border-color:transparent; color:#fff;
+  box-shadow:0 6px 16px -6px rgba(99,102,241,0.6);
+}
+.webapp-dictionary .vocab-tab.is-active{
+  box-shadow:0 0 0 1px rgba(99,102,241,0.40), 0 6px 16px -8px rgba(99,102,241,0.55);
+}
+.webapp-dictionary .vocab-tab-count{
+  background:linear-gradient(180deg, rgba(124,131,255,0.30), rgba(99,102,241,0.30));
+}
