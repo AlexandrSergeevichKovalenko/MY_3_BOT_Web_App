@@ -20032,6 +20032,12 @@ def _build_translation_focus_pool_report_themes(
             key=lambda item: _translation_focus_pool_report_level_rank(str(item.get("level") or "").strip().lower()),
         )
         theme["deficit_total"] = max(0, int(theme.get("target_total") or 0) - int(theme.get("today_total") or 0))
+        # "shortfall" = below the refill FLOOR (low_watermark) — the real "we can't cover the
+        # forecast" line the nightly refill actually acts on. deficit_total (below the forecast
+        # CEILING target_ready) is just buffer headroom the refill intentionally leaves unfilled
+        # to save tokens, so it must NOT drive the red "🔴 Дефицит" alarm (that was the daily
+        # false alarm — buckets above floor but below ceiling screamed deficit forever at Δ+0).
+        theme["shortfall_total"] = max(0, int(theme.get("low_total") or 0) - int(theme.get("today_total") or 0))
         ordered_themes.append(theme)
     ordered_themes.sort(
         key=lambda item: (
@@ -20547,21 +20553,23 @@ def _build_translation_focus_pool_admin_report_caption(
     if bool(summary.get("missing_previous_snapshot")):
         lines.append("⚠️ Снэпшот вчерашнего дня отсутствует — дельта от нулевой базы")
 
-    # Top deficit themes (most urgent first)
+    # Top deficit themes — ALARM only on real shortfall (below the refill floor / forecast),
+    # not on buffer headroom below the ceiling. This is the actionable "нужен долив" set.
     all_themes = _build_translation_focus_pool_report_themes(rows, top_limit=max(1, len(rows or [])))
-    deficit_themes = [t for t in all_themes if int(t.get("deficit_total") or 0) > 0]
+    deficit_themes = [t for t in all_themes if int(t.get("shortfall_total") or 0) > 0]
+    deficit_themes.sort(key=lambda t: -int(t.get("shortfall_total") or 0))
     if deficit_themes:
         lines.append("")
-        lines.append("🔴 Дефицит (топ тем):")
+        lines.append("🔴 Ниже прогноза (нужен долив):")
         budget = 1024 - sum(len(ln) + 1 for ln in lines) - 40
         for theme in deficit_themes[:8]:
             label = str(theme.get("focus_label") or theme.get("focus_key") or "?").strip()[:28]
-            deficit = int(theme.get("deficit_total") or 0)
+            deficit = int(theme.get("shortfall_total") or 0)
             today_t = int(theme.get("today_total") or 0)
-            target_t = int(theme.get("target_total") or 0)
+            target_t = int(theme.get("low_total") or 0)
             delta_t = int(theme.get("delta_total") or 0)
             d_sign = "+" if delta_t >= 0 else ""
-            entry = f"  {label}: {today_t}/{target_t}  Δ {d_sign}{delta_t}  gap −{deficit}"
+            entry = f"  {label}: {today_t}/{target_t}  Δ {d_sign}{delta_t}  нехв −{deficit}"
             if budget - len(entry) < 0:
                 lines.append("  ...")
                 break
