@@ -23275,6 +23275,52 @@ def _battle_is_open(battle: dict | None) -> bool:
                and not (battle.get("deadline") and battle["deadline"] <= datetime.now(ZoneInfo("UTC"))))
 
 
+# How long between "не забыл про батл?" nudges for members who accepted but haven't
+# played yet. The nudge re-schedules itself, so this is a self-perpetuating loop that
+# stops the moment the member plays (a result is recorded) or the battle closes.
+_BATTLE_NUDGE_HOURS = max(1, int((os.getenv("BATTLE_NUDGE_HOURS") or "3").strip() or "3"))
+
+
+async def _battle_play_state(kind: str, battle_id: int, user_id: int) -> dict | None:
+    """Resolve {open, played, deadline, deeplink} for a battle member, or None if the
+    battle is gone. Shared by the nudge job across battle families."""
+    if str(kind) == "adjektiv":
+        from backend.database import get_adjektiv_sprint_battle, get_adjektiv_sprint_result
+        b = await asyncio.to_thread(get_adjektiv_sprint_battle, battle_id)
+        if not b:
+            return None
+        set_id = str(b.get("set_id") or "")
+        played = bool(set_id and await asyncio.to_thread(get_adjektiv_sprint_result, set_id, user_id))
+        open_ = (str(b.get("status")) == "open"
+                 and not (b.get("deadline") and b["deadline"] <= datetime.now(ZoneInfo("UTC"))))
+        return {"open": open_, "played": played, "deadline": b.get("deadline"),
+                "deeplink": f"ans_adb_{battle_id}"}
+    from backend.database import get_article_sprint_result
+    b = await asyncio.to_thread(get_article_sprint_battle, battle_id)
+    if not b:
+        return None
+    played = bool(await asyncio.to_thread(get_article_sprint_result, f"asb_{battle_id}", user_id))
+    return {"open": _battle_is_open(b), "played": played, "deadline": b.get("deadline"),
+            "deeplink": f"ans_asb_{battle_id}"}
+
+
+async def _schedule_battle_auto_nudge(*, kind: str, battle_id: int, user_id: int,
+                                      deadline, base: datetime | None = None) -> None:
+    """Queue the next ~3h "не забыл про батл?" nudge, but only if it still lands before
+    the battle's deadline (23:59). Replaces any pending nudge for this (user, battle)."""
+    base = base or datetime.now(ZoneInfo("Europe/Vienna"))
+    nxt = base + timedelta(hours=_BATTLE_NUDGE_HOURS)
+    if deadline and nxt >= deadline:
+        return
+    try:
+        await asyncio.to_thread(schedule_article_battle_reminder,
+                                user_id=int(user_id), battle_id=int(battle_id),
+                                remind_at=nxt, kind=str(kind))
+    except Exception:
+        logging.warning("battle auto-nudge schedule failed kind=%s bid=%s uid=%s",
+                        kind, battle_id, user_id, exc_info=True)
+
+
 async def artikel_battle_accept_callback(update: Update, context: CallbackContext) -> None:
     """Accept (asb_acc:<id>) → join + offer play-now / remind-later."""
     q = update.callback_query
@@ -23303,6 +23349,10 @@ async def artikel_battle_accept_callback(update: Update, context: CallbackContex
         asyncio.create_task(_pin_battle_play_message(
             context, user_id=int(q.from_user.id), set_id=f"asb_{battle_id}",
             chat_id=int(q.message.chat.id), message_id=int(q.message.message_id), kind="artikel"))
+    # Start the "не забыл про батл?" nudge loop (~3h) for this member until they play.
+    asyncio.create_task(_schedule_battle_auto_nudge(
+        kind="artikel", battle_id=battle_id, user_id=int(q.from_user.id),
+        deadline=battle.get("deadline")))
     creator_id = int(battle.get("creator_user_id") or 0)
     if creator_id and creator_id != int(q.from_user.id):
         asyncio.create_task(_notify_creator_accepted_capped(
@@ -28853,6 +28903,37 @@ async def admin_verify_errors_command(update: Update, context: CallbackContext) 
         await status.edit_text(f"❌ Не удалось выполнить верификацию: {exc}")
 
 
+async def admin_remove_sponsor_command(update: Update, context: CallbackContext) -> None:
+    """Remove a user from the Dankeswand (thank-you wall) + clear their sponsor badge.
+    /admin_remove_sponsor [user_id] — default: yourself. Does NOT change access/subscription."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    arg = (context.args or [None])[0]
+    try:
+        target_id = int(arg) if arg else int(sender.id)
+    except (TypeError, ValueError):
+        await message.reply_text("❌ user_id должен быть числом. Пример: /admin_remove_sponsor 117649764")
+        return
+    try:
+        from backend.database import delete_sponsorship
+        removed = await asyncio.to_thread(delete_sponsorship, target_id)
+        if removed > 0:
+            await message.reply_text(
+                f"🧹 Убрал со «Стены благодарности» user_id={target_id} (удалено записей: {removed}). "
+                f"Доступ/подписку не трогал.")
+        else:
+            await message.reply_text(
+                f"ℹ️ Записей спонсора для user_id={target_id} не найдено — на стене его нет.")
+    except Exception as exc:
+        logging.exception("admin remove sponsor command failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось убрать со стены: {exc}")
+
+
 async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -> None:
     """Run the Aufgabe pool top-up immediately. /admin_aufgabe_pool"""
     user = update.effective_user
@@ -31211,6 +31292,7 @@ def main():
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("admin_clean_bad_reviews", admin_clean_bad_reviews_command))
     application.add_handler(CommandHandler("admin_verify_errors", admin_verify_errors_command))
+    application.add_handler(CommandHandler("admin_remove_sponsor", admin_remove_sponsor_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_cw_resend", admin_crossword_resend_command))

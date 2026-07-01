@@ -29011,6 +29011,25 @@ def is_user_sponsor(user_id: int) -> tuple[bool, str | None]:
     return (best_tier is not None, best_tier)
 
 
+def delete_sponsorship(user_id: int) -> int:
+    """Remove ALL sponsorship rows for a user → drops them from the Dankeswand (thank-you
+    wall) and clears their sponsor badge. Does NOT touch access/subscription. Returns the
+    number of rows deleted."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM bt_3_sponsorships WHERE user_id = %s;",
+                    (int(user_id),),
+                )
+                removed = int(cursor.rowcount or 0)
+            conn.commit()
+        return removed
+    except Exception:
+        logging.warning("delete_sponsorship failed user_id=%s", user_id, exc_info=True)
+        return 0
+
+
 def list_recent_sponsors(limit: int = 50) -> list[dict]:
     """Distinct sponsors with their best tier, для стены благодарностей.
 
@@ -38911,23 +38930,30 @@ def ensure_article_battle_reminder_schema() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_battle_reminders_due "
                 "ON bt_3_article_battle_reminders (sent, remind_at);"
             )
+            # 'kind' distinguishes battle families (artikel/adjektiv) that share this
+            # table but keep independent battle_id sequences. Metadata-only change.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_battle_reminders "
+                "ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'artikel';"
+            )
         conn.commit()
 
 
-def schedule_article_battle_reminder(*, user_id: int, battle_id: int, remind_at) -> None:
+def schedule_article_battle_reminder(*, user_id: int, battle_id: int, remind_at,
+                                     kind: str = "artikel") -> None:
     ensure_article_battle_reminder_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            # one pending reminder per (user, battle): replace any existing unsent one
+            # one pending reminder per (user, battle, kind): replace any unsent one
             cursor.execute(
                 "DELETE FROM bt_3_article_battle_reminders "
-                "WHERE user_id=%s AND battle_id=%s AND sent=FALSE;",
-                (int(user_id), int(battle_id)),
+                "WHERE user_id=%s AND battle_id=%s AND kind=%s AND sent=FALSE;",
+                (int(user_id), int(battle_id), str(kind or "artikel")),
             )
             cursor.execute(
-                "INSERT INTO bt_3_article_battle_reminders (user_id, battle_id, remind_at) "
-                "VALUES (%s, %s, %s);",
-                (int(user_id), int(battle_id), remind_at),
+                "INSERT INTO bt_3_article_battle_reminders (user_id, battle_id, remind_at, kind) "
+                "VALUES (%s, %s, %s, %s);",
+                (int(user_id), int(battle_id), remind_at, str(kind or "artikel")),
             )
         conn.commit()
 
@@ -38937,12 +38963,13 @@ def get_due_article_battle_reminders(limit: int = 50) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT id, user_id, battle_id FROM bt_3_article_battle_reminders "
+                "SELECT id, user_id, battle_id, kind FROM bt_3_article_battle_reminders "
                 "WHERE sent=FALSE AND remind_at <= NOW() ORDER BY remind_at LIMIT %s;",
                 (int(limit),),
             )
             rows = cursor.fetchall() or []
-    return [{"id": int(r[0]), "user_id": int(r[1]), "battle_id": int(r[2])} for r in rows]
+    return [{"id": int(r[0]), "user_id": int(r[1]), "battle_id": int(r[2]),
+             "kind": str(r[3] or "artikel")} for r in rows]
 
 
 def mark_article_battle_reminder_sent(reminder_id: int) -> None:
