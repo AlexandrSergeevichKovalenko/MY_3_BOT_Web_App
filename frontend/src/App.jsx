@@ -36830,7 +36830,17 @@ function AppInner() {
                       </div>
                       <div className="analytics-card">
                         <span>{tr('Статус', 'Status')}</span>
-                        <strong>{String(billingStatus?.status || 'inactive')}</strong>
+                        <strong>{(() => {
+                          const s = String(billingStatus?.status || 'inactive');
+                          const map = {
+                            active: tr('Pro активна', 'Pro aktiv'),
+                            trialing: tr('Pro · пробный период', 'Pro · Testphase'),
+                            past_due: tr('Pro · оплата просрочена', 'Pro · Zahlung überfällig'),
+                            canceled: tr('Pro отменена', 'Pro gekündigt'),
+                            inactive: tr('Нет подписки Pro', 'Kein Pro-Abo'),
+                          };
+                          return map[s] || s;
+                        })()}</strong>
                       </div>
                     </div>
 
