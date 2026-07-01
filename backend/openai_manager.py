@@ -105,6 +105,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "check_satzbau",
     "check_cloze",
     "check_error",
+    "verify_aufgabe_error",
     "check_wortgruppe_batch",
     "word_order_distractors",
     "image_quiz_sentence_fallback",
