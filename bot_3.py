@@ -6572,9 +6572,9 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("weekly_user_removal_digest", "Дайджест удаления неактивных", 192, True, "admin"),
     ("monthly_budget_report", "Месячный бюджет-отчёт", 768, True, "admin"),
     ("group_enrollment_prompt", "Приглашение в группу", 192, True, "admin"),
-    # No run-marker anywhere — the refill runs inline in scheduler_service and doesn't
-    # write a guard, so a guard read ALWAYS says "never". Check pool health via /poolreport.
-    ("translation_focus_pool_refill", "Пополнение пула переводов (23:00)", 30, True, "none"),
+    # Now instrumented: the scheduler entry records a guard with the result
+    # (generated/upserted) — shown inline below. Pool CONTENT health is still /poolreport.
+    ("translation_focus_pool_refill", "Пополнение пула переводов (23:00)", 30, True, "guard"),
 ]
 
 
@@ -6631,6 +6631,11 @@ async def admin_scheduler_health_command(update: Update, context: CallbackContex
             line = f"• <b>{label}</b>\n   {age_text}" + (f" · {run_period}" if run_period else "")
             if job_status and job_status != "completed":
                 line += f" · <i>{job_status}</i>"
+            meta = (r or {}).get("metadata") if isinstance((r or {}).get("metadata"), dict) else {}
+            if "generated" in meta or "upserted" in meta:
+                line += f"\n   ген {int(meta.get('generated') or 0)} → добавлено {int(meta.get('upserted') or 0)}"
+                if meta.get("skipped"):
+                    line += f" · пропуск: {str(meta.get('reason') or '')}"
 
             if source == "none":
                 conditional.append(f"❔ {line}\n   <i>не отмечается — проверяй /poolreport</i>")
