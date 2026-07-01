@@ -15799,6 +15799,36 @@ def _unpin_battle_invite_async(user_id: int, set_id: str) -> None:
         _run()
 
 
+def _flip_battle_ctas_done_async(user_id: int, set_id: str) -> None:
+    """Event-driven: when a participant records a battle result, flip every live
+    'play this battle' button (pins + recurring nudges) in their DM to a spent
+    «✅ Сыграно» button, so it's obvious the battle is already done. Fire-and-forget
+    (own thread) so it never slows the submit response."""
+    def _run():
+        try:
+            from backend.database import (list_pending_battle_cta_messages,
+                                          mark_battle_cta_messages_done)
+            msgs = list_pending_battle_cta_messages(int(user_id), str(set_id))
+            if not msgs or not TELEGRAM_Deutsch_BOT_TOKEN:
+                return
+            url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/editMessageReplyMarkup"
+            markup = {"inline_keyboard": [[{"text": "✅ Сыграно", "callback_data": "battle_played"}]]}
+            for m in msgs:
+                try:
+                    requests.post(url, json={"chat_id": int(m["chat_id"]),
+                                             "message_id": int(m["message_id"]),
+                                             "reply_markup": markup}, timeout=8)
+                except Exception:
+                    pass
+            mark_battle_cta_messages_done(int(user_id), str(set_id))
+        except Exception:
+            logging.warning("flip battle ctas failed user=%s set=%s", user_id, set_id, exc_info=True)
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        _run()
+
+
 def _fetch_telegram_chat_display_name(user_id: int) -> str | None:
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/getChat"
     try:
@@ -23692,6 +23722,7 @@ def adjektiv_submit():
         correct=correct, answered=answered, total=total, time_ms=time_ms,
     )
     _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
+    _flip_battle_ctas_done_async(int(user_id), set_id)  # flip play buttons → «✅ Сыграно»
     if not recorded:
         prev = get_adjektiv_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))
@@ -24058,6 +24089,7 @@ def artikel_submit():
         correct=correct, answered=answered, total=total, time_ms=time_ms,
     )
     _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
+    _flip_battle_ctas_done_async(int(user_id), set_id)  # flip play buttons → «✅ Сыграно»
     if recorded:
         # Log per-word der/die/das correctness (first attempt) → feeds crowd-mastery
         # rotation of the noun bank. Off the critical path (own thread).

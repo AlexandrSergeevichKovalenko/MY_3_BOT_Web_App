@@ -23390,9 +23390,12 @@ async def _pin_battle_play_message(context: CallbackContext, *, user_id: int, se
         logging.info("battle pin: pin failed chat=%s msg=%s", chat_id, message_id)
         return
     try:
-        from backend.database import record_battle_invite_pin
+        from backend.database import record_battle_invite_pin, record_battle_cta_message
         await asyncio.to_thread(record_battle_invite_pin, user_id=int(user_id), set_id=str(set_id),
                                 chat_id=int(chat_id), message_id=int(message_id), kind=str(kind))
+        # Also track its play button so it flips to «✅ Сыграно» once the battle is played.
+        await asyncio.to_thread(record_battle_cta_message, user_id=int(user_id), set_id=str(set_id),
+                                chat_id=int(chat_id), message_id=int(message_id))
     except Exception:
         logging.warning("battle pin: record failed user=%s set=%s", user_id, set_id, exc_info=True)
 
@@ -23509,14 +23512,14 @@ async def _battle_play_state(kind: str, battle_id: int, user_id: int) -> dict | 
         open_ = (str(b.get("status")) == "open"
                  and not (b.get("deadline") and b["deadline"] <= datetime.now(ZoneInfo("UTC"))))
         return {"open": open_, "played": played, "deadline": b.get("deadline"),
-                "deeplink": f"ans_adb_{battle_id}"}
+                "deeplink": f"ans_adb_{battle_id}", "set_id": set_id}
     from backend.database import get_article_sprint_result
     b = await asyncio.to_thread(get_article_sprint_battle, battle_id)
     if not b:
         return None
     played = bool(await asyncio.to_thread(get_article_sprint_result, f"asb_{battle_id}", user_id))
     return {"open": _battle_is_open(b), "played": played, "deadline": b.get("deadline"),
-            "deeplink": f"ans_asb_{battle_id}"}
+            "deeplink": f"ans_asb_{battle_id}", "set_id": f"asb_{battle_id}"}
 
 
 async def _schedule_battle_auto_nudge(*, kind: str, battle_id: int, user_id: int,
@@ -23641,6 +23644,14 @@ async def artikel_battle_remind_callback(update: Update, context: CallbackContex
     await _edit_battle_invite(q, f"⏰ Напомню в <b>{hhmm}</b>. До встречи на батле! ⚔️", kb)
 
 
+async def battle_played_callback(update: Update, context: CallbackContext) -> None:
+    """Tap on a flipped «✅ Сыграно» button (battle_played) — just confirm it's done."""
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer("Этот батл ты уже сыграл ✅", show_alert=False)
+
+
 async def _send_due_battle_reminders_job(context: CallbackContext) -> None:
     """Every few minutes: DM due battle nudges (Smurf-Lancelot image + play button)
     to members who accepted but haven't played. Covers both battle families and
@@ -23669,10 +23680,18 @@ async def _send_due_battle_reminders_job(context: CallbackContext) -> None:
             cap = ("⚔️ <b>Не забудь про батл!</b> Тебя ещё ждёт бой — "
                    "сыграй, пока не закрылся (до 23:59)! 🛡")
             if img:
-                await context.bot.send_photo(chat_id=uid, photo=img, caption=cap,
-                                             parse_mode="HTML", reply_markup=kb)
+                sent = await context.bot.send_photo(chat_id=uid, photo=img, caption=cap,
+                                                    parse_mode="HTML", reply_markup=kb)
             else:
-                await context.bot.send_message(chat_id=uid, text=cap, parse_mode="HTML", reply_markup=kb)
+                sent = await context.bot.send_message(chat_id=uid, text=cap, parse_mode="HTML", reply_markup=kb)
+            # Remember this nudge's play button so it flips to «✅ Сыграно» once played.
+            try:
+                from backend.database import record_battle_cta_message
+                await asyncio.to_thread(record_battle_cta_message, user_id=uid,
+                                        set_id=state["set_id"], chat_id=uid,
+                                        message_id=int(sent.message_id))
+            except Exception:
+                logging.info("battle cta record failed uid=%s bid=%s", uid, bid)
             # Re-arm the next nudge ~3h out (stops itself once past the deadline).
             await _schedule_battle_auto_nudge(kind=kind, battle_id=bid, user_id=uid,
                                               deadline=state["deadline"])
@@ -31571,6 +31590,7 @@ def main():
     application.add_handler(CallbackQueryHandler(artikel_battle_decline_callback, pattern=r"^asb_dec:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_later_callback, pattern=r"^asb_later:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_remind_callback, pattern=r"^asb_rem:\d+:[a-z0-9]+$"))
+    application.add_handler(CallbackQueryHandler(battle_played_callback, pattern=r"^battle_played$"))
     application.add_handler(CallbackQueryHandler(handle_battle_wizard_callback, pattern=r"^bw:"))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))

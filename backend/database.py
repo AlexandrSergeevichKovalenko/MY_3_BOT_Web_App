@@ -2360,6 +2360,84 @@ def list_battle_invite_pins_for_set(set_id: str) -> list[dict]:
         return []
 
 
+_BATTLE_CTA_SCHEMA_DONE = False
+
+
+def ensure_battle_cta_schema() -> None:
+    """Track every 'play this battle' CTA message (pins + recurring nudges) in a
+    member's DM, so when they finally play we can flip each button to '✅ Сыграно'
+    (there can be many per user+set, unlike the single pin)."""
+    global _BATTLE_CTA_SCHEMA_DONE
+    if _BATTLE_CTA_SCHEMA_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_battle_cta_messages (
+                    user_id BIGINT NOT NULL,
+                    set_id TEXT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    done BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, set_id, message_id)
+                );"""
+            )
+        conn.commit()
+    _BATTLE_CTA_SCHEMA_DONE = True
+
+
+def record_battle_cta_message(*, user_id: int, set_id: str, chat_id: int,
+                              message_id: int) -> None:
+    """Remember a play-CTA message so its button can be marked done when played."""
+    try:
+        ensure_battle_cta_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO bt_3_battle_cta_messages
+                           (user_id, set_id, chat_id, message_id)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (user_id, set_id, message_id) DO NOTHING;""",
+                    (int(user_id), str(set_id), int(chat_id), int(message_id)),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("record_battle_cta_message failed user=%s set=%s", user_id, set_id, exc_info=True)
+
+
+def list_pending_battle_cta_messages(user_id: int, set_id: str) -> list[dict]:
+    """Still-live play-CTA messages for (user, set) — to flip to '✅ Сыграно' on play."""
+    try:
+        ensure_battle_cta_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT chat_id, message_id FROM bt_3_battle_cta_messages "
+                    "WHERE user_id=%s AND set_id=%s AND NOT done;",
+                    (int(user_id), str(set_id)),
+                )
+                return [{"chat_id": int(r[0]), "message_id": int(r[1])}
+                        for r in (cur.fetchall() or [])]
+    except Exception:
+        return []
+
+
+def mark_battle_cta_messages_done(user_id: int, set_id: str) -> None:
+    try:
+        ensure_battle_cta_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_battle_cta_messages SET done=TRUE "
+                    "WHERE user_id=%s AND set_id=%s AND NOT done;",
+                    (int(user_id), str(set_id)),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("mark_battle_cta_messages_done failed user=%s set=%s", user_id, set_id, exc_info=True)
+
+
 def list_last_crossword_messages() -> list[dict]:
     """The most recent crossword message (chat_id, message_id) per chat — for an
     admin 'delete last crossword everywhere' action."""
