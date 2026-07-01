@@ -315,8 +315,12 @@ def _dispatch_translation_focus_pool_refill() -> None:
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE"),
     )
     try:
-        from backend.backend_server import _dispatch_translation_focus_pool_refill as _run_refill_inline
-        result = _run_refill_inline(force=True, tz_name=tz_name)
+        # Route through the instrumented scheduler entry (not the raw _dispatch_) so the
+        # run is recorded in the translation_focus_pool_refill run-guard with its result —
+        # otherwise the nightly refill leaves no trace and the morning report / health
+        # check can't tell it ran. force=True + offpeak re-check skip still apply inside.
+        from backend.backend_server import _run_translation_focus_pool_refill_scheduler_job
+        result = _run_translation_focus_pool_refill_scheduler_job(tz_name=tz_name)
         logging.info(
             "scheduler_service: translation_focus_pool_refill inline_finish request_id=%s tz_name=%s result=%s",
             request_id,

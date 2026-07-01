@@ -28401,6 +28401,44 @@ async def admin_pool_report_command(update: Update, context: CallbackContext) ->
         await message.reply_text(f"❌ pool report failed: {exc}")
 
 
+async def admin_pool_refill_command(update: Update, context: CallbackContext) -> None:
+    """Force a translation-pool refill NOW and report generated-vs-upserted, so we can see
+    live whether the refill produces sentences and how many survive dedup. Records a
+    run-guard (so /scheduler_health + the morning report become truthful). /poolrefill
+    ⚠️ generates sentences → small OpenAI cost (gpt-4.1-mini, bounded to current deficits)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status = await message.reply_text("♻️ Форс-пополнение пула переводов… (генерация по дефицитам)")
+    try:
+        from backend.backend_server import _run_translation_focus_pool_refill_scheduler_job
+        result = await asyncio.to_thread(_run_translation_focus_pool_refill_scheduler_job)
+        r = result if isinstance(result, dict) else {}
+        generated = int(r.get("generated") or 0)
+        upserted = int(r.get("upserted") or 0)
+        wasted = max(0, generated - upserted)
+        lines = [
+            "♻️ <b>Пополнение пула — результат</b>",
+            f"• сгенерировано (запросов к OpenAI): <b>{generated}</b>",
+            f"• реально добавлено в базу: <b>{upserted}</b>",
+            f"• впустую (сгенерено и отсеяно дублями): <b>{wasted}</b>",
+            f"• тем обработано: <b>{int(r.get('focuses') or 0)}</b>",
+        ]
+        if r.get("skipped"):
+            lines.append(f"• ⚠️ пропущено: <i>{str(r.get('reason') or 'unknown')}</i>")
+        if r.get("error"):
+            lines.append(f"• ❌ ошибка: <i>{str(r.get('error'))[:200]}</i>")
+        lines.append("\nПроверь /poolreport — Δ должно вырасти на «реально добавлено».")
+        await status.edit_text("\n".join(lines), parse_mode="HTML")
+    except Exception as exc:
+        logging.exception("admin pool refill command failed user_id=%s", getattr(user, "id", None))
+        await status.edit_text(f"❌ Не удалось выполнить пополнение: {exc}")
+
+
 async def admin_pool_remind_command(update: Update, context: CallbackContext) -> None:
     """DM all admins an early pool reminder. /admin_pool_remind"""
     user = update.effective_user
@@ -30819,6 +30857,7 @@ def main():
     application.add_handler(CommandHandler("group", group_play_help_command))
     application.add_handler(CommandHandler("admin_clearquizpool", admin_clear_quiz_pool_command))
     application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
+    application.add_handler(CommandHandler("poolrefill", admin_pool_refill_command))
     application.add_handler(CommandHandler("admin_pool_remind", admin_pool_remind_command))
     application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))

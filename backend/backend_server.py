@@ -20970,24 +20970,60 @@ def _run_sentence_prewarm_scheduler_job() -> None:
         logging.exception("❌ Sentence prewarm scheduler failed")
 
 
-def _run_translation_focus_pool_refill_scheduler_job() -> None:
+def _run_translation_focus_pool_refill_scheduler_job(*, tz_name: str | None = None) -> dict:
     # Always run inline from the cron scheduler — the queue path requires a separate
     # Dramatiq worker process that may not be running; the cron already controls timing
     # so force=True skips the redundant offpeak-window re-check inside the dispatcher.
+    #
+    # Observability: the raw _dispatch_ never records a run-marker, so the morning pool
+    # report ("Refill: today no") and /scheduler_health can't tell whether the refill
+    # actually ran or what it did. Record a run-guard here with the result metadata
+    # (generated / upserted / skipped / reason) so both become truthful. This is pure
+    # bookkeeping — it does NOT change generation behaviour or cost.
+    effective_tz = str(tz_name or TRANSLATION_FOCUS_POOL_REFILL_TZ).strip() or TRANSLATION_FOCUS_POOL_REFILL_TZ
     try:
-        result = _dispatch_translation_focus_pool_refill(
-            force=True,
-            tz_name=TRANSLATION_FOCUS_POOL_REFILL_TZ,
+        run_period = _today_local_date(effective_tz).isoformat()
+    except Exception:
+        run_period = date.today().isoformat()
+    claim_scheduler_run_guard(
+        job_key="translation_focus_pool_refill",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": effective_tz},
+    )
+    try:
+        result = _dispatch_translation_focus_pool_refill(force=True, tz_name=effective_tz)
+        result_dict = result if isinstance(result, dict) else {}
+        finish_scheduler_run_guard(
+            job_key="translation_focus_pool_refill",
+            run_period=run_period,
+            target_scope="global",
+            status="completed",
+            metadata={
+                key: result_dict.get(key)
+                for key in ("ok", "skipped", "reason", "generated", "upserted", "focuses")
+                if key in result_dict
+            },
         )
         logging.info(
-            "✅ Translation focus pool refill executed: %02d:%02d %s result=%s",
+            "✅ Translation focus pool refill executed: %02d:%02d %s run_period=%s result=%s",
             int(TRANSLATION_FOCUS_POOL_REFILL_HOUR),
             int(TRANSLATION_FOCUS_POOL_REFILL_MINUTE),
-            TRANSLATION_FOCUS_POOL_REFILL_TZ,
+            effective_tz,
+            run_period,
             result,
         )
-    except Exception:
+        return result_dict
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="translation_focus_pool_refill",
+            run_period=run_period,
+            target_scope="global",
+            status="failed",
+            metadata={"error": str(exc)[:500]},
+        )
         logging.exception("❌ Translation focus pool refill scheduler failed")
+        return {"ok": False, "error": str(exc)[:500]}
 
 
 def _chain_cache_key(chunks: list[str], lang: str, speed: float) -> str:
