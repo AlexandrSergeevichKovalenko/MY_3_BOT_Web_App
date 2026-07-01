@@ -6719,6 +6719,50 @@ async def admin_costs_command(update: Update, context: CallbackContext):
         await message.reply_text(f"❌ Не удалось собрать разбивку затрат: {exc}")
 
 
+async def admin_review_card_command(update: Update, context: CallbackContext):
+    """Preview the new SRS review-reminder card (real Smurf bg from R2). Optional
+    args: /reviewcard [due] [streak] — defaults to your real due count + streak."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    try:
+        from backend.database import count_due_srs_cards
+        from backend.review_reminder_card import render_review_reminder_card, plural_words_ru
+        args = (context.args or [])
+        if args:
+            due = int(args[0])
+        else:
+            due = int(await asyncio.to_thread(count_due_srs_cards, int(sender.id)) or 0) or 12
+        if len(args) > 1:
+            streak_days = int(args[1])
+        else:
+            try:
+                st = await asyncio.to_thread(get_user_streak, int(sender.id))
+                streak_days = int((st or {}).get("current_streak") or 0)
+            except Exception:
+                streak_days = 0
+        png = await asyncio.to_thread(render_review_reminder_card, due_count=due, streak_days=streak_days)
+        bot_username = context.bot.username or (await context.bot.get_me()).username
+        review_url = get_webapp_deeplink("review", bot_username=bot_username)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔁 Открыть карточки", url=review_url)]])
+        caption = (
+            f"🔁 <b>Пора повторить!</b> Тебя ждут <b>{due}</b> {plural_words_ru(due)}.\n"
+            "5 минут сейчас — и они закрепятся 💪\n\n"
+            f"<i>превью карточки · due={due} streak={streak_days}</i>"
+        )
+        await context.bot.send_photo(
+            chat_id=int(message.chat_id), photo=io.BytesIO(png), caption=caption,
+            parse_mode="HTML", reply_markup=kb,
+        )
+    except Exception as exc:
+        logging.exception("admin review card preview failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось отрисовать карточку: {exc}")
+
+
 async def admin_dedup_now_command(update: Update, context: CallbackContext):
     """Run the dictionary dedup job right now and report the result. /dedupnow"""
     sender = update.effective_user
@@ -7601,7 +7645,11 @@ async def send_flashcard_reminder(context: CallbackContext):
         bot_info = await context.bot.get_me()
         bot_username = bot_info.username
     review_url = get_webapp_deeplink("review", bot_username=bot_username)
-    message = (
+    # Prominent tappable CTA (replaces the thin inline text link that got lost).
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔁 Открыть карточки", url=review_url)]])
+    # Fallback text nudge — used for GROUPS (can't be personalized) and if the card
+    # render ever fails.
+    fallback_text = (
         "📌 Пора повторить слова!\n"
         f'Перейти к тренировке: <a href="{review_url}">Открыть карточки</a>'
     )
@@ -7615,16 +7663,56 @@ async def send_flashcard_reminder(context: CallbackContext):
         logging.info("ℹ️ flashcard reminder: нет targets для рассылки")
         return
 
+    from backend.database import count_due_srs_cards
+    from backend.review_reminder_card import render_review_reminder_card, plural_words_ru
+
+    sent = skipped = 0
     for target_chat_id in targets:
         try:
-            await context.bot.send_message(
-                chat_id=int(target_chat_id),
-                text=message,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
+            cid = int(target_chat_id)
+            # Groups can't carry a single user's due count — keep the simple text nudge.
+            if cid < 0:
+                await context.bot.send_message(
+                    chat_id=cid, text=fallback_text, parse_mode="HTML",
+                    disable_web_page_preview=True, reply_markup=kb,
+                )
+                continue
+            # Personal DM: only nudge users who actually have cards due, and show how
+            # many. Nothing due → send NOTHING (no nagging with "0 words").
+            due = int(await asyncio.to_thread(count_due_srs_cards, cid) or 0)
+            if due <= 0:
+                skipped += 1
+                continue
+            try:
+                st = await asyncio.to_thread(get_user_streak, cid)
+                streak_days = int((st or {}).get("current_streak") or 0)
+            except Exception:
+                streak_days = 0
+            png = None
+            try:
+                png = await asyncio.to_thread(
+                    render_review_reminder_card, due_count=due, streak_days=streak_days,
+                )
+            except Exception:
+                logging.warning("flashcard reminder: card render failed chat_id=%s", cid, exc_info=True)
+            if png:
+                caption = (
+                    f"🔁 <b>Пора повторить!</b> Тебя ждут <b>{due}</b> {plural_words_ru(due)}.\n"
+                    "5 минут сейчас — и они закрепятся 💪"
+                )
+                await context.bot.send_photo(
+                    chat_id=cid, photo=io.BytesIO(png), caption=caption,
+                    parse_mode="HTML", reply_markup=kb,
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=cid, text=fallback_text, parse_mode="HTML",
+                    disable_web_page_preview=True, reply_markup=kb,
+                )
+            sent += 1
         except Exception as exc:
             logging.warning("⚠️ Не удалось отправить flashcard reminder в chat_id=%s: %s", target_chat_id, exc)
+    logging.info("flashcard reminder: sent=%s skipped_no_due=%s targets=%s", sent, skipped, len(targets))
 
 
 
@@ -21851,6 +21939,56 @@ async def admin_lazy_image_command(update: Update, context: CallbackContext) -> 
             logging.warning("admin_lazy_image: could not deliver result")
 
 
+async def admin_review_image_command(update: Update, context: CallbackContext) -> None:
+    """Generate the dedicated review-reminder Smurf background (mascot reviewing
+    flashcards) via gpt-image-1 and store it in R2. Run once; the SRS review card then
+    uses it. /admin_review_image"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Генерирую смурф-картинку «пора повторить»…")
+
+    def _gen() -> dict:
+        from backend.image_generation_provider import generate_image_bytes
+        from backend.r2_storage import r2_put_bytes
+        from backend.review_reminder_card import REVIEW_IMAGE_PROMPT, review_bg_key, _bg_cache
+        key = review_bg_key()
+        try:
+            res = generate_image_bytes(prompt=REVIEW_IMAGE_PROMPT, template_id=0, user_id=0,
+                                       action_type="review_reminder_image")
+            data = bytes(res.get("data") or b"")
+            if not data:
+                raise RuntimeError("empty image payload")
+            r2_put_bytes(key, data, content_type="image/png", cache_control="public, max-age=86400")
+            _bg_cache["t"] = 0.0  # bust the in-process cache so the next render pulls it
+            return {"made": key, "errs": None}
+        except Exception as exc:
+            return {"made": None, "errs": f"{key}: {str(exc)[:160]}"}
+
+    try:
+        result = await asyncio.to_thread(_gen)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    if result.get("made"):
+        text = (f"✅ Готово (R2: {result['made']}).\n"
+                "Проверь карточку: /reviewcard\n"
+                "Кэш фона обновится в течение ~10 мин (или после рестарта).")
+    else:
+        text = f"🔴 {result.get('errs')}"
+    try:
+        await status_msg.edit_text(text[:4000])
+    except Exception:
+        try:
+            await message.reply_text(text[:4000])
+        except Exception:
+            logging.warning("admin_review_image: could not deliver result")
+
+
 async def admin_artikel_themes_command(update: Update, context: CallbackContext) -> None:
     """List Artikel Sprint themes with verified/target counts + tomorrow's theme.
     /artikel_themes"""
@@ -30858,6 +30996,7 @@ def main():
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
+    application.add_handler(CommandHandler("reviewcard", admin_review_card_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
@@ -30948,6 +31087,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
     application.add_handler(CommandHandler("admin_lazy_image", admin_lazy_image_command))
+    application.add_handler(CommandHandler("admin_review_image", admin_review_image_command))
     application.add_handler(CommandHandler("admin_battle_images", admin_battle_images_command))
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
