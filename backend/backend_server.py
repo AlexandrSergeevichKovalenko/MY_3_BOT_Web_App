@@ -50947,7 +50947,14 @@ def _run_weekly_goals_scheduler_job() -> None:
             )
             metadata["weekly_badges"] = badges_result
             logging.info("✅ Weekly badges scheduler finished: %s", badges_result)
-        if target_date.day == 1:
+        # Calendar-period goal-charts ("Личные цели" month/quarter/half-year/year, sent
+        # on the 1st of qualifying months) were disabled by the user as unwanted. Keep
+        # them OFF by default; re-enable via WEEKLY_GOALS_CALENDAR_PERIOD_REPORTS_ENABLED=1.
+        # The weekly goals report above is unaffected.
+        calendar_period_reports_enabled = (
+            os.getenv("WEEKLY_GOALS_CALENDAR_PERIOD_REPORTS_ENABLED") or "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if calendar_period_reports_enabled and target_date.day == 1:
             prev_day = target_date - timedelta(days=1)
             result_month = _dispatch_plan_period_progress(target_date=prev_day, period="month")
             metadata["month"] = result_month
