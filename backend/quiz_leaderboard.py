@@ -1,6 +1,12 @@
-"""Global quiz leaderboard over bt_3_challenge_results (content-keyed, so it
-aggregates ALL bot users who answered the same task). Shared by the bot (champion
-poster/card) and the web tier (Mini-App leaderboard endpoint).
+"""Global quiz leaderboard over interactive answers (content-keyed, so it aggregates ALL
+bot users who answered the same task). Shared by the bot (champion poster/card) and the
+web tier (Mini-App leaderboard endpoint).
+
+Rows come from two sources (see get_leaderboard_rows_since): TIMED answers from
+bt_3_challenge_results (the Mini-App in-place path, with time_ms), and UNTIMED answers
+from each type's own table (answered in a Telegram GROUP via inline buttons — time_ms is
+None). Untimed rows still earn base points and count toward activity/accuracy, but never a
+speed bonus, a gold, or the "fastest" nomination — we don't know how fast they were.
 
 Scoring: +10 per correct answer + place bonus on each task (🥇+5/🥈+3/🥉+1)."""
 
@@ -19,19 +25,25 @@ def compute_quiz_leaderboard(rows: list) -> dict:
         return s
 
     for _key, rs in by_key.items():
-        correct = sorted([r for r in rs if r["is_correct"]], key=lambda x: x["time_ms"])
-        place = {c["user_id"]: i + 1 for i, c in enumerate(correct)}
+        # Speed placement (bonus + gold) ranks only TIMED correct answers. Untimed group
+        # answers (time_ms is None) get the base +10 but no placement → pl = 99.
+        timed_correct = sorted(
+            [r for r in rs if r["is_correct"] and r.get("time_ms") is not None],
+            key=lambda x: int(x["time_ms"]))
+        place = {int(c["user_id"]): i + 1 for i, c in enumerate(timed_correct)}
         for r in rs:
             s = st(int(r["user_id"]), str(r["name"] or ""))
             s["answered"] += 1
             if r["is_correct"]:
                 s["correct"] += 1
-                pl = place.get(int(r["user_id"]), 99)
+                timed = r.get("time_ms") is not None
+                pl = place.get(int(r["user_id"]), 99) if timed else 99
                 s["points"] += 10 + (5 if pl == 1 else 3 if pl == 2 else 1 if pl == 3 else 0)
                 if pl == 1:
                     s["golds"] += 1
-                s["ctime_sum"] += int(r["time_ms"] or 0)
-                s["ctime_n"] += 1
+                if timed:  # only real timings feed the "fastest" nomination
+                    s["ctime_sum"] += int(r["time_ms"] or 0)
+                    s["ctime_n"] += 1
 
     total_tasks = len(by_key)
     # Prize / nomination eligibility: a player must have answered at least HALF of
@@ -63,7 +75,20 @@ def compute_quiz_leaderboard(rows: list) -> dict:
     }
 
 
+def get_leaderboard_rows_since(since_hours: int) -> list:
+    """All leaderboard-eligible interactive answers in the window: TIMED Mini-App answers
+    (bt_3_challenge_results) + UNTIMED Telegram-group answers (per-type tables), deduped so
+    a Mini-App answer is never double-counted. This is the single source for both the bot
+    champion posters and the Mini-App leaderboard, so group play finally counts."""
+    from backend.database import get_challenge_results_since, get_group_untimed_answers_since
+    rows = list(get_challenge_results_since(int(since_hours)) or [])
+    try:
+        rows += get_group_untimed_answers_since(int(since_hours)) or []
+    except Exception:
+        import logging
+        logging.warning("leaderboard: group untimed fetch failed", exc_info=True)
+    return rows
+
+
 def get_quiz_leaderboard(days: int = 7) -> dict:
-    from backend.database import get_challenge_results_since
-    rows = get_challenge_results_since(int(days) * 24)
-    return compute_quiz_leaderboard(rows or [])
+    return compute_quiz_leaderboard(get_leaderboard_rows_since(int(days) * 24))

@@ -65,6 +65,23 @@ class ActivityAggregationTests(unittest.TestCase):
         self.assertEqual(result[222]["poll"], [5, 4])
         self.assertNotIn(222, {k: v for k, v in result.items() if "au" in v})
 
+    def test_fractional_sprint_score_kept_whole_int(self):
+        # Sprint/Battle categories score {0, 0.5, 1} per set → correct can be fractional.
+        # Halves are preserved; whole values are stored as int (so the card shows "1" not "1.0").
+        rows = [(111, "ast", 2, 1.5), (111, "ad", 1, 1.0), (111, "sp", 3, 0.0)]
+        result, _ = self._run(rows)
+        self.assertEqual(result[111]["ast"], [2, 1.5])
+        self.assertEqual(result[111]["ad"], [1, 1])
+        self.assertIsInstance(result[111]["ad"][1], int)
+        self.assertEqual(result[111]["sp"], [3, 0])
+
+    def test_sprint_counts_one_task_per_set_not_per_word(self):
+        # The whole point of the analytics fix: a 143-word Artikel set is ONE task, not 143.
+        _, cur = self._run([])
+        self.assertIn("COUNT(*)::int AS answered", cur.executed_sql)  # sets, not word counts
+        self.assertIn(">= 0.75 THEN 1", cur.executed_sql)             # rounding buckets present
+        self.assertIn(">= 0.5 THEN 0.5", cur.executed_sql)
+
     def test_one_param_per_union_part_all_since_hours(self):
         _, cur = self._run([])
         # 10 per-item tables + 2 listening subqueries + 3 sprint/battle tables = 15 parts,

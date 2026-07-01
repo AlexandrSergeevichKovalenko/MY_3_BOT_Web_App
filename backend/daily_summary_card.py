@@ -72,6 +72,13 @@ def _acc_color(pct: int):
     return RED
 
 
+def _fmtn(x) -> str:
+    """Whole numbers as ints ("3"); halves kept ("0.5"). Sprint/Battle categories score
+    a fractional {0, 0.5, 1} per set, so "Верно" and per-row correct can be non-integer."""
+    x = float(x or 0)
+    return str(int(x)) if x.is_integer() else f"{x:g}"
+
+
 def render_daily_summary(*, date_str: str, answered: int, correct: int, accuracy_pct: int,
                          streak_text: str = "", rows: list[dict] | None = None,
                          hero_png: bytes | None = None) -> bytes | None:
@@ -108,7 +115,7 @@ def render_daily_summary(*, date_str: str, answered: int, correct: int, accuracy
 
     # ── Three stat tiles ──
     tiles = [("Ответил", str(int(answered)), INK),
-             ("Верно", str(int(correct)), GREEN),
+             ("Верно", _fmtn(correct), GREEN),
              ("Точность", f"{int(accuracy_pct)}%", _acc_color(int(accuracy_pct)))]
     gap = 28
     tw = (W - 2 * pad - 2 * gap) // 3
@@ -147,7 +154,7 @@ def render_daily_summary(*, date_str: str, answered: int, correct: int, accuracy
         if i:
             d.line([(label_x, cy), (W - pad - 16, cy)], fill=LINE, width=2)
         a = int(r.get("answered") or 0)
-        c = int(r.get("correct") or 0)
+        c = float(r.get("correct") or 0)
         acc = int(r.get("acc") if r.get("acc") is not None else (round(c / a * 100) if a else 0))
         mid = cy + row_h / 2
         # dot + label
@@ -161,7 +168,7 @@ def render_daily_summary(*, date_str: str, answered: int, correct: int, accuracy
             d.rounded_rectangle([bar_x, mid - 9, bar_x + max(18, fillw), mid + 9],
                                 radius=9, fill=_acc_color(acc))
         # numbers
-        _rtext(d, score_r, mid - 22, f"{c} / {a}", f_score, MUTED)
+        _rtext(d, score_r, mid - 22, f"{_fmtn(c)} / {a}", f_score, MUTED)
         _rtext(d, pct_r, mid - 26, f"{acc}%", f_pct, _acc_color(acc))
 
     _ctext(d, W // 2, H - 66, "Поделись с другом · +7 дней Pro обоим", _font(30, False), MUTED)

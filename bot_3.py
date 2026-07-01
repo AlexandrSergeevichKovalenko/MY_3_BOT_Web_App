@@ -25241,13 +25241,12 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
             logging.warning("challenge notif send failed id=%s", n.get("id"), exc_info=True)
 
 
-# (cat_key, label, dispatch_table | None, fact_kind). cat_key matches the
-# challenge_key prefix (sprint "sp_*" is folded to "sp"; article is its own table).
-# Every fresh-interactive category shown in the daily «Итоги дня» digest, in display
-# order. The numbers come from get_daily_interactive_activity(), which counts each type
-# from its own answer table (all channels — Mini-App AND Telegram group), so ALL kinds
-# are represented, not only the ones answered in the Mini-App. SRS/FSRS review and the
-# self-paced number practice (np) are excluded by design (drill, not a fresh task).
+# Every fresh-interactive category (cat_key, label) shown in the daily «Итоги дня»
+# digest, in display order. The numbers come from get_daily_interactive_activity(), which
+# counts each type from its own answer table (all channels — Mini-App AND Telegram group),
+# so ALL kinds are represented, not only the ones answered in the Mini-App. SRS/FSRS review
+# and the self-paced number practice (np) are excluded by design (drill, not a fresh task).
+# Sprint/Battle sets (sp/ast/ad) count as ONE task each with a fractional {0,0.5,1} score.
 _DIGEST_CATEGORIES = [
     ("art",  "🇩🇪 Артикли (квиз)"),
     ("poll", "📊 Викторина"),
@@ -25264,6 +25263,13 @@ _DIGEST_CATEGORIES = [
     ("ast",  "📐 Артикль-спринт"),
     ("ad",   "📝 Адъектив-спринт"),
 ]
+
+
+def _fmt_score(x) -> str:
+    """Whole numbers as ints ("5"); halves kept ("5.5"). Sprint/Battle sets score a
+    fractional {0,0.5,1}, so digest totals / per-row "Верно" can be non-integer."""
+    x = float(x or 0)
+    return str(int(x)) if x.is_integer() else f"{x:g}"
 
 
 async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
@@ -25321,7 +25327,7 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
         ])
         cap_streak = await _streak_caption_block(int(uid))
         caption = (f"🏁 <b>Итоги дня</b> · {date_str}\n"
-                   f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)")
+                   f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{_fmt_score(correct)}</b> ({acc}%)")
         if cap_streak:
             caption += "\n\n" + cap_streak
         try:
@@ -25331,12 +25337,12 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
             else:
                 # PIL unavailable → honest plain-text fallback (no "sent" denominator).
                 lines = [f"🏁 <b>Итоги дня</b> · {date_str}", "",
-                         f"✅ Ты ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)"]
+                         f"✅ Ты ответил: <b>{answered}</b> · 🎯 Верно: <b>{_fmt_score(correct)}</b> ({acc}%)"]
                 if cap_streak:
                     lines += ["", cap_streak]
                 lines += ["", "<b>По категориям</b> — верно/ответил · точность:"]
                 for r in card_rows:
-                    lines.append(f"{r['label']} — {r['correct']}/{r['answered']} · {r['acc']}%")
+                    lines.append(f"{r['label']} — {_fmt_score(r['correct'])}/{r['answered']} · {r['acc']}%")
                 await context.bot.send_message(chat_id=int(uid), text="\n".join(lines),
                                                parse_mode="HTML", reply_markup=kb)
             sent_count += 1
@@ -25395,7 +25401,7 @@ async def _admin_test_digest_command(update: Update, context: CallbackContext) -
     cap_streak = await _streak_caption_block(uid)
     prefix = "🧪 <i>Превью (пример данных)</i>\n" if sample else "🧪 <i>Превью (твои данные за 24 ч)</i>\n"
     caption = (f"{prefix}🏁 <b>Итоги дня</b> · {date_str}\n"
-               f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{correct}</b> ({acc}%)")
+               f"✅ Ответил: <b>{answered}</b> · 🎯 Верно: <b>{_fmt_score(correct)}</b> ({acc}%)")
     if cap_streak:
         caption += "\n\n" + cap_streak
     if png:
@@ -25406,7 +25412,10 @@ async def _admin_test_digest_command(update: Update, context: CallbackContext) -
                                  parse_mode="HTML", reply_markup=kb)
 
 
-from backend.quiz_leaderboard import compute_quiz_leaderboard as _compute_quiz_leaderboard
+from backend.quiz_leaderboard import (
+    compute_quiz_leaderboard as _compute_quiz_leaderboard,
+    get_leaderboard_rows_since as _get_leaderboard_rows_since,
+)
 
 
 def _build_group_daily_report(lb: dict, title: str | None, *, period: str = "day") -> str | None:
@@ -25500,7 +25509,7 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
         за день» грамота in DM (1-2-3 place + own rank via the ranking button).
     Personal "Итоги дня" stats stay in each user's DM (separate digest job)."""
     try:
-        rows = await asyncio.to_thread(get_challenge_results_since, 24)
+        rows = await asyncio.to_thread(_get_leaderboard_rows_since, 24)
     except Exception:
         logging.warning("group daily report: fetch failed", exc_info=True)
         return
@@ -25666,7 +25675,7 @@ async def _fetch_user_avatar_png(context: CallbackContext, user_id: int) -> byte
 
 
 async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: list[int] | None = None) -> int:
-    rows = await asyncio.to_thread(get_challenge_results_since, days * 24)
+    rows = await asyncio.to_thread(_get_leaderboard_rows_since, days * 24)
     user_ids = {int(r["user_id"]) for r in (rows or []) if r.get("user_id") is not None}
     raw_names = {int(r["user_id"]): str(r.get("name") or "") for r in (rows or []) if r.get("user_id") is not None}
     display_names = await _resolve_report_display_names(context, user_ids, raw_names)
@@ -25746,7 +25755,7 @@ async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int
     window). Outsiders / other-group users are never pulled in — the global
     ranking lives only behind the Mini-App button."""
     try:
-        rows = await asyncio.to_thread(get_challenge_results_since, 7 * 24)
+        rows = await asyncio.to_thread(_get_leaderboard_rows_since, 7 * 24)
     except Exception:
         logging.warning("weekly group champion: fetch failed", exc_info=True)
         return 0

@@ -37707,7 +37707,7 @@ def get_challenge_results_since(since_hours: int = 24) -> list[dict]:
             ]
 
 
-def get_daily_interactive_activity(since_hours: int = 24) -> dict[int, dict[str, list[int]]]:
+def get_daily_interactive_activity(since_hours: int = 24) -> dict[int, dict[str, list]]:
     """Per-user, per-category ``[answered, correct]`` across EVERY fresh interactive
     type in the recent window — the honest source for the end-of-day «Итоги дня» digest.
 
@@ -37723,7 +37723,8 @@ def get_daily_interactive_activity(since_hours: int = 24) -> dict[int, dict[str,
     not answering a newly-dispatched task).
 
     Returns ``{user_id: {category: [answered, correct]}}`` for categories:
-    art poll iq vr rb cw ag au ls nd qf sp ast ad.
+    art poll iq vr rb cw ag au ls nd qf sp ast ad. ``correct`` is fractional for the
+    Sprint/Battle categories (sp/ast/ad), which count one task per set (see below).
     """
     parts: list[str] = []
     params: list[int] = []
@@ -37769,37 +37770,111 @@ def get_daily_interactive_activity(since_hours: int = 24) -> dict[int, dict[str,
         "AND challenge_key LIKE 'ls:%%' GROUP BY user_id"
     )
 
-    # Sprint/Battle games store one aggregate row per finished set.
-    # The syn/ant sprint records only correct_count (no attempt total), so we count those
-    # as both answered and correct — the honest floor of what we actually tracked.
+    # Sprint/Battle games store ONE aggregate row per finished set. A set can hold 100+
+    # words, so counting each word as an answer would dwarf every other category and skew
+    # the daily analytics + accuracy share. Instead each finished set counts as exactly ONE
+    # task, scored by how much of it was completed correctly, snapped to {0, 0.5, 1}:
+    # pct>=0.75 -> 1, pct>=0.5 -> 0.5, else 0 (e.g. 113/143 = 0.79 -> 1). So `correct` here
+    # is fractional (why the outer aggregate is numeric, not int).
+    def _pct_bucket(correct_col: str, total_col: str) -> str:
+        return (
+            f"CASE WHEN {total_col} = 0 THEN 0 "
+            f"WHEN {correct_col}::float / {total_col} >= 0.75 THEN 1 "
+            f"WHEN {correct_col}::float / {total_col} >= 0.5 THEN 0.5 ELSE 0 END"
+        )
+
+    # syn/ant sprint records only correct_count (no attempt total) → no % to measure:
+    # one task per session, credited (1) if the player got anything right.
     _add_part(
-        "SELECT user_id, 'sp' AS category, SUM(correct_count)::int AS answered, "
-        "SUM(correct_count)::int AS correct "
+        "SELECT user_id, 'sp' AS category, COUNT(*)::int AS answered, "
+        "SUM(CASE WHEN correct_count > 0 THEN 1 ELSE 0 END)::numeric AS correct "
         "FROM bt_3_sprint_results WHERE answered_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
     )
     _add_part(
-        "SELECT user_id, 'ast' AS category, SUM(answered_count)::int AS answered, "
-        "SUM(correct_count)::int AS correct "
+        "SELECT user_id, 'ast' AS category, COUNT(*)::int AS answered, "
+        "SUM(" + _pct_bucket("correct_count", "total_count") + ")::numeric AS correct "
         "FROM bt_3_article_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
     )
     _add_part(
-        "SELECT user_id, 'ad' AS category, SUM(answered)::int AS answered, "
-        "SUM(correct)::int AS correct "
+        "SELECT user_id, 'ad' AS category, COUNT(*)::int AS answered, "
+        "SUM(" + _pct_bucket("correct", "total") + ")::numeric AS correct "
         "FROM bt_3_adjektiv_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
     )
 
     sql = (
-        "SELECT user_id, category, SUM(answered)::int, SUM(correct)::int FROM (\n    "
+        "SELECT user_id, category, SUM(answered)::int, SUM(correct)::numeric FROM (\n    "
         + "\n    UNION ALL\n    ".join(parts)
         + "\n) t GROUP BY user_id, category"
     )
-    out: dict[int, dict[str, list[int]]] = {}
+    out: dict[int, dict[str, list]] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(sql, params)
             for uid, cat, answered, correct in (cursor.fetchall() or []):
-                out.setdefault(int(uid), {})[str(cat)] = [int(answered or 0), int(correct or 0)]
+                # correct is fractional only for the sprint/battle categories (sp/ast/ad);
+                # keep whole numbers as int so the card shows "3" not "3.0".
+                c = float(correct or 0)
+                out.setdefault(int(uid), {})[str(cat)] = [int(answered or 0), int(c) if c.is_integer() else c]
     return out
+
+
+def get_group_untimed_answers_since(since_hours: int = 24) -> list[dict]:
+    """Interactive answers recorded ONLY in a per-type answer table — i.e. answered in a
+    Telegram GROUP via inline buttons, not through the Mini-App in-place path — for the
+    quiz leaderboard / champion. These tables carry no timing, so rows return time_ms=None
+    (the leaderboard credits base points but no speed bonus / gold).
+
+    Deduped against bt_3_challenge_results (the Mini-App path) by (user_id, content key),
+    so a Mini-App answer is never counted twice. Content keys match content_ranking_key()
+    exactly ('<kind>:<content_id>'). Crossword's per-word rows are folded into ONE puzzle
+    result (all words correct = correct). Covers the challenge-typed tasks rb/cw/ag/au/qf
+    (article/poll/image/visual quizzes and the Sprint games have their own leaderboards and
+    are intentionally not merged into the speed-ranked champion).
+
+    Returns ``[{challenge_key, user_id, name, is_correct, time_ms(None)}]``.
+    """
+    parts: list[str] = []
+    params: list = []
+
+    def _simple(table: str, dispatch_tbl: str, id_col: str, kind: str) -> None:
+        # one answer row per (user, dispatch); content key = '<kind>:<content_id>'.
+        parts.append(
+            f"SELECT '{kind}:'||d.{id_col} AS challenge_key, a.user_id, a.is_correct "
+            f"FROM {table} a JOIN {dispatch_tbl} d ON d.id = a.dispatch_id "
+            f"WHERE a.answered_at >= NOW() - INTERVAL '1 hour' * %s "
+            f"AND NOT EXISTS (SELECT 1 FROM bt_3_challenge_results c "
+            f"WHERE c.user_id = a.user_id AND c.challenge_key = '{kind}:'||d.{id_col} "
+            f"AND c.created_at >= NOW() - INTERVAL '1 hour' * %s)"
+        )
+        params.append(int(since_hours))
+        params.append(int(since_hours))
+
+    _simple("bt_3_rebus_answers", "bt_3_rebus_dispatches", "compound_id", "rb")
+    _simple("bt_3_anagram_answers", "bt_3_anagram_dispatches", "card_id", "ag")
+    _simple("bt_3_aufgabe_answers", "bt_3_aufgabe_dispatches", "aufgabe_id", "au")
+    _simple("bt_3_quiz_freeform_answers", "bt_3_quiz_freeform_dispatches", "poll_id", "qf")
+    # Crossword: per-word rows → one puzzle result via bool_and; dedup by content key.
+    parts.append(
+        "SELECT 'cw:'||d.crossword_id AS challenge_key, a.user_id, bool_and(a.is_correct) AS is_correct "
+        "FROM bt_3_crossword_answers a JOIN bt_3_crossword_dispatches d ON d.id = a.dispatch_id "
+        "WHERE a.answered_at >= NOW() - INTERVAL '1 hour' * %s "
+        "GROUP BY d.crossword_id, a.user_id "
+        "HAVING NOT EXISTS (SELECT 1 FROM bt_3_challenge_results c "
+        "WHERE c.user_id = a.user_id AND c.challenge_key = 'cw:'||d.crossword_id "
+        "AND c.created_at >= NOW() - INTERVAL '1 hour' * %s)"
+    )
+    params.append(int(since_hours))
+    params.append(int(since_hours))
+
+    sql = "\nUNION ALL\n".join(parts)
+    rows: list[dict] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            for key, uid, is_correct in (cursor.fetchall() or []):
+                rows.append({"challenge_key": str(key), "user_id": int(uid), "name": "",
+                             "is_correct": bool(is_correct), "time_ms": None})
+    return rows
 
 
 # ─── B2+ text tasks ("Aufgabe") DB functions ──────────────────────────────────
