@@ -425,15 +425,17 @@ def _build_scheduler():
     default_tz_name = str(os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip() or "UTC"
     scheduler = BackgroundScheduler(timezone=default_tz_name)
 
-    # -- Daily audio --
+    # -- Daily audio (each morning 06:35 Europe/Vienna; yesterday's mistakes to private) --
+    # Explicit timezone (not the scheduler default) so only THIS job moves to Vienna.
     scheduler.add_job(
         _dispatch_daily_audio,
         "cron",
-        hour=_int_env("AUDIO_SCHEDULER_HOUR", 13),
-        minute=_int_env("AUDIO_SCHEDULER_MINUTE", 0),
+        hour=_int_env("AUDIO_SCHEDULER_HOUR", 6),
+        minute=_int_env("AUDIO_SCHEDULER_MINUTE", 35),
+        timezone=_tz(os.getenv("AUDIO_SCHEDULER_TZ") or "Europe/Vienna"),
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=300,
+        misfire_grace_time=1800,
     )
 
     # -- Dictionary dedup (re-homed; was dropped in the scheduler migration) --

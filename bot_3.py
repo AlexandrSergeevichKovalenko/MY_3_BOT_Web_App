@@ -6508,7 +6508,7 @@ async def admin_send_audio_command(update: Update, context: CallbackContext):
         await message.reply_text("⛔️ Команда доступна только администратору.")
         return
 
-    tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip() or "UTC"
+    tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
     try:
         now = datetime.now(ZoneInfo(tz_name))
     except Exception:
@@ -6553,7 +6553,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     # job_key, label, max_age_hours, default_on, source
     ("today_plan_auto", "План на день в личку (07:00)", 30, True, "guard"),
     ("today_evening_reminders_auto", "Вечерние напоминания (18:00)", 30, True, "guard"),
-    ("daily_audio_auto", "Аудио с ошибками в личку (13:00)", 30, True, "guard"),
+    ("daily_audio_auto", "Аудио с ошибками в личку (06:35 Вена)", 30, True, "guard"),
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
     ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True, "guard"),
@@ -31287,12 +31287,12 @@ def main():
             scheduler.add_job(
                 _run_daily_audio_safe,
                 "cron",
-                hour=int((os.getenv("AUDIO_SCHEDULER_HOUR") or "13").strip() or "13"),
-                minute=int((os.getenv("AUDIO_SCHEDULER_MINUTE") or "0").strip() or "0"),
-                timezone=ZoneInfo(os.getenv("AUDIO_SCHEDULER_TZ") or "UTC"),
+                hour=int((os.getenv("AUDIO_SCHEDULER_HOUR") or "6").strip() or "6"),
+                minute=int((os.getenv("AUDIO_SCHEDULER_MINUTE") or "35").strip() or "35"),
+                timezone=ZoneInfo(os.getenv("AUDIO_SCHEDULER_TZ") or "Europe/Vienna"),
                 coalesce=True,
                 max_instances=1,
-                misfire_grace_time=3600,
+                misfire_grace_time=1800,
             )
         for hour, minute in FLASHCARD_REMINDER_TIMES:
             scheduler.add_job(
