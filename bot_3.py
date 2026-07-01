@@ -3254,8 +3254,14 @@ DRIP_TICK_MINUTES = max(1, int((os.getenv("DRIP_TICK_MINUTES") or "15").strip() 
 MIN_DRIP_INTERVAL_MINUTES = max(1, int((os.getenv("MIN_DRIP_INTERVAL_MINUTES") or "30").strip() or "30"))
 # Types the drip can pull now (each needs a pool-pick + send_X_to_chat). Starts with
 # aufgabe — its many formats already give variety; more kinds added next.
-_DRIP_KINDS = ["aufgabe", "listening", "anagram", "rebus", "crossword", "numdict",
-               "artikel_sprint", "adjektiv_sprint", "artikel_learn"]
+# Drip rotation order. MANDATORY core-skill kinds come FIRST so windowed Pro users
+# (who are served ONLY by the drip job — the live-slot path skips them when
+# DRIP_DELIVERY_ENABLED=1) receive them within their daily budget instead of at the
+# tail. This mirrors the live-path `_tiered_slot_position` "mandatory-to-the-front"
+# guarantee (see MANDATORY_DELIVERY_KINDS): the drip picks _DRIP_KINDS[count % N], so
+# the first `count`s of the day map to these. Non-mandatory variety follows.
+_DRIP_KINDS = ["numdict", "artikel_sprint", "adjektiv_sprint", "listening", "artikel_learn",
+               "aufgabe", "anagram", "rebus", "crossword"]
 # Drip-only dedup discriminators for the daily-singleton reminder kinds (one shared
 # set/day). Distinct from the live slot hours so they never collide, and distinct
 # from each other so artikel_sprint vs artikel_learn (same dispatch table) dedup
