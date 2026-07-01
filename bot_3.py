@@ -28854,12 +28854,18 @@ async def admin_clean_bad_reviews_command(update: Update, context: CallbackConte
         f"• из очереди ошибок: {m}\n• из пула заданий: {b}")
 
 
+# In-memory guard so only ONE /admin_verify_errors runs at a time: each run makes up to
+# ~600 gpt-4.1-mini calls, so a second press while one is in flight would just double the
+# token spend for nothing. Resets on process restart (a crashed run must not lock forever).
+_VERIFY_ERRORS_INFLIGHT = {"active": False}
+
+
 async def admin_verify_errors_command(update: Update, context: CallbackContext) -> None:
     """LLM-verify EXISTING 'Finde den Fehler' items (pool + review queue) and delete the
     grammatically invalid ones (fake case error / a second unflagged error) — the class the
     deterministic /admin_clean_bad_reviews can't catch. Costs tokens (gpt-4.1-mini per item).
     Fail-safe: an item is deleted ONLY on an explicit 'invalid' verdict, never on a verifier
-    error. /admin_verify_errors"""
+    error. Verifies concurrently (bounded) and reports progress. /admin_verify_errors"""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -28867,40 +28873,79 @@ async def admin_verify_errors_command(update: Update, context: CallbackContext) 
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status = await message.reply_text("🔎 Проверяю существующие «Fehler-finden» верификатором…")
+    if _VERIFY_ERRORS_INFLIGHT["active"]:
+        await message.reply_text(
+            "⏳ Верификация уже идёт — дождись результата. Не жми повторно: каждый запуск тратит токены."
+        )
+        return
+    _VERIFY_ERRORS_INFLIGHT["active"] = True
+    status = await message.reply_text("🔎 Проверяю «Fehler-finden» верификатором… (займёт ~минуту)")
     try:
         from backend.database import fetch_aufgabe_error_items, delete_aufgabe_items
         from backend.openai_manager import run_verify_aufgabe_error
+        sem = asyncio.Semaphore(8)  # bound OpenAI concurrency; ~600 items finish in ~1–2 min
         lines: list[str] = []
         total_removed = 0
-        for table, label in (("bt_3_aufgabe_bank", "пул"), ("bt_3_aufgabe_mistakes", "повторы")):
+        progress = {"done": 0, "total": 0, "last_shown": 0}
+
+        tables = (("bt_3_aufgabe_bank", "пул"), ("bt_3_aufgabe_mistakes", "повторы"))
+        fetched = []
+        for table, label in tables:
             rows = await asyncio.to_thread(fetch_aufgabe_error_items, table, limit=300)
-            bad_ids: list = []
-            for row_id, payload in rows:
+            fetched.append((table, label, rows))
+            progress["total"] += len(rows)
+
+        async def _verify_one(payload) -> bool:
+            async with sem:
+                verdict = await run_verify_aufgabe_error(
+                    woerter=payload.get("woerter") or [],
+                    error_index=int(payload.get("error_index", -1)),
+                    correct_word=str(payload.get("correct_word") or ""),
+                    aliases=payload.get("aliases"),
+                )
+            progress["done"] += 1
+            # Throttled progress ping (~every 40 items) so the user sees it's alive.
+            if progress["done"] - progress["last_shown"] >= 40:
+                progress["last_shown"] = progress["done"]
                 try:
-                    verdict = await run_verify_aufgabe_error(
-                        woerter=payload.get("woerter") or [],
-                        error_index=int(payload.get("error_index", -1)),
-                        correct_word=str(payload.get("correct_word") or ""),
-                        aliases=payload.get("aliases"),
+                    await status.edit_text(
+                        f"🔎 Проверяю «Fehler-finden»… {progress['done']}/{progress['total']}"
                     )
                 except Exception:
-                    continue  # fail-safe: never delete an existing item on a verifier error
-                # Only delete on an EXPLICIT invalid verdict (reason present), not on the
-                # fail-closed 'verifier_error'/'unparseable' sentinel used at generation time.
-                if not verdict.get("valid") and verdict.get("reason") not in ("verifier_error", "unparseable_verifier_output", ""):
-                    bad_ids.append(row_id)
+                    pass
+            # Delete ONLY on an EXPLICIT invalid verdict, never on the fail-closed
+            # 'verifier_error'/'unparseable' sentinel (a transient miss must not delete).
+            return (not verdict.get("valid")) and verdict.get("reason") not in (
+                "verifier_error", "unparseable_verifier_output", "",
+            )
+
+        for table, label, rows in fetched:
+            if not rows:
+                lines.append(f"• {label}: проверено 0, удалено 0")
+                continue
+            # return_exceptions=True → a stray error yields a non-True result, so it is
+            # never treated as 'invalid' and the item is kept (fail-safe preserved).
+            results = await asyncio.gather(
+                *[_verify_one(pl) for _rid, pl in rows], return_exceptions=True
+            )
+            bad_ids = [rid for (rid, _pl), res in zip(rows, results) if res is True]
             removed = await asyncio.to_thread(delete_aufgabe_items, table, bad_ids) if bad_ids else 0
             total_removed += removed
             lines.append(f"• {label}: проверено {len(rows)}, удалено {removed}")
+
         await status.edit_text(
-            "🔎 <b>Верификация «Fehler-finden»</b>\n" + "\n".join(lines) +
+            "✅ <b>Верификация «Fehler-finden» завершена</b>\n" + "\n".join(lines) +
             f"\n\nВсего удалено битых: <b>{total_removed}</b>.",
             parse_mode="HTML",
         )
     except Exception as exc:
         logging.exception("admin verify errors command failed user_id=%s", getattr(user, "id", None))
-        await status.edit_text(f"❌ Не удалось выполнить верификацию: {exc}")
+        try:
+            await status.edit_text(f"❌ Не удалось выполнить верификацию: {exc}")
+        except Exception:
+            pass
+    finally:
+        _VERIFY_ERRORS_INFLIGHT["active"] = False
 
 
 async def admin_remove_sponsor_command(update: Update, context: CallbackContext) -> None:
