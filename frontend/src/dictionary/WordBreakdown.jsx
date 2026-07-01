@@ -804,18 +804,27 @@ export function useTts() {
     }
     setState('loading');
     try {
-      await api('/api/webapp/tts/generate', { text: t, language });
-      const params = new URLSearchParams({ text: t, language });
-      let url = '';
-      for (let i = 0; i < 30 && !url; i += 1) {
-        if (mySeq !== seqRef.current) return;
-        const res = await fetch(`/api/webapp/tts/url?${params.toString()}`, {
-          method: 'GET', headers: { 'X-Telegram-InitData': getInitData() },
-        });
-        const data = await res.json().catch(() => ({}));
-        if (data.status === 'ready' && data.audio_url) { url = data.audio_url; break; }
-        if (data.status === 'failed') throw new Error(data.message || 'TTS fehlgeschlagen');
-        await new Promise((r) => setTimeout(r, data.retry_after_ms || 700));
+      // /tts/generate ALREADY returns the ready URL for a cached word (or after the
+      // inline fast-lane synthesises it). Use that response directly — only fall back
+      // to polling /tts/url when generation is genuinely still pending. This drops a
+      // whole extra ~2.5s round-trip for the common (cached) case.
+      const gen = await api('/api/webapp/tts/generate', { text: t, language });
+      let url = (gen && String(gen.status || '') === 'ready' && gen.audio_url) ? String(gen.audio_url) : '';
+      if (!url && String(gen?.status || '') === 'failed') {
+        throw new Error(gen?.message || 'TTS fehlgeschlagen');
+      }
+      if (!url) {
+        const params = new URLSearchParams({ text: t, language });
+        for (let i = 0; i < 30 && !url; i += 1) {
+          if (mySeq !== seqRef.current) return;
+          const res = await fetch(`/api/webapp/tts/url?${params.toString()}`, {
+            method: 'GET', headers: { 'X-Telegram-InitData': getInitData() },
+          });
+          const data = await res.json().catch(() => ({}));
+          if (data.status === 'ready' && data.audio_url) { url = data.audio_url; break; }
+          if (data.status === 'failed') throw new Error(data.message || 'TTS fehlgeschlagen');
+          await new Promise((r) => setTimeout(r, data.retry_after_ms || 700));
+        }
       }
       if (!url) throw new Error('Zeitüberschreitung');
       if (mySeq !== seqRef.current) return;
