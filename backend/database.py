@@ -9216,6 +9216,14 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_interactive_inbox_held
                 ON bt_3_interactive_inbox (user_id, created_at) WHERE pushed = FALSE;
             """)
+            # Answering a task = activity: the scheduler's candidate/active-recent set
+            # range-scans recent answered_at (SELECT DISTINCT user_id WHERE answered_at
+            # >= NOW()-Nd). Partial (answered_at NULL until answered) + user_id trailing
+            # → index-only for the DISTINCT. Runs ~per scheduled send.
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_interactive_inbox_answered_at
+                ON bt_3_interactive_inbox (answered_at, user_id) WHERE answered_at IS NOT NULL;
+            """)
             # ── end interactive inbox ─────────────────────────────────────
 
             # ── Freeform quiz ("keine korrekte Antworten" → type answer) ──
@@ -22167,6 +22175,59 @@ def finish_scheduler_run_guard(
                     str(job_key or "").strip()[:80],
                     str(run_period or "").strip()[:32],
                     str(target_scope or "global").strip()[:80] or "global",
+                ),
+            )
+
+
+def record_scheduler_heartbeat(
+    *,
+    job_key: str,
+    status: str = "completed",
+    metadata: dict | None = None,
+    target_scope: str = "global",
+) -> None:
+    """Non-gating 'this job just ran' marker, for observability ONLY.
+
+    Unlike claim_scheduler_run_guard (a dedup LOCK that can REFUSE a second run and
+    return False), this NEVER blocks execution and NEVER returns a claim decision — it
+    simply upserts a single row per job_key so /scheduler_health can show a last-run
+    time for jobs that don't need dedup (interactive deliveries, cleanups, sweeps).
+
+    It writes under a FIXED run_period='hb' so exactly one heartbeat row exists per
+    job and it coexists harmlessly with any real claim/finish guard rows for the same
+    job_key (the health reader takes the newest row per job_key via DISTINCT ON, so a
+    real guard that finishes later still wins). Best-effort: callers should also guard
+    with try/except so a heartbeat write can never break the underlying job."""
+    normalized_status = str(status or "completed").strip().lower()
+    if normalized_status not in {"completed", "failed", "running"}:
+        normalized_status = "completed"
+    payload = metadata if isinstance(metadata, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_scheduler_run_guards (
+                    job_key,
+                    run_period,
+                    target_scope,
+                    status,
+                    metadata,
+                    claimed_at,
+                    finished_at,
+                    updated_at
+                )
+                VALUES (%s, 'hb', %s, %s, %s::jsonb, NOW(), NOW(), NOW())
+                ON CONFLICT (job_key, run_period, target_scope) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    metadata = EXCLUDED.metadata,
+                    finished_at = NOW(),
+                    updated_at = NOW();
+                """,
+                (
+                    str(job_key or "").strip()[:80],
+                    str(target_scope or "global").strip()[:80] or "global",
+                    normalized_status,
+                    Json(payload),
                 ),
             )
 
