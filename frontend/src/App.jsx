@@ -36900,21 +36900,6 @@ function AppInner() {
                         <div className="billing-support-grid">
                           {billingSupportCards.map((offer) => renderBillingPlanCard(offer))}
                         </div>
-                        {billingSponsors.length > 0 && (
-                          <div className="billing-sponsor-wall">
-                            <h4 className="billing-sponsor-wall__title">{tr('Стена благодарностей', 'Dankeswand')}</h4>
-                            <div className="billing-sponsor-wall__list">
-                              {billingSponsors.map((sponsor, index) => (
-                                <span className="billing-sponsor-chip" key={`sponsor_${index}`}>
-                                  <span className="billing-sponsor-chip__badge">
-                                    {sponsor?.tier === 'support_cheesecake' ? '🍰' : '☕️'}
-                                  </span>
-                                  {String(sponsor?.name || tr('Аноним', 'Anonym'))}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
                       </div>
                     )}
                     {activeBillingPlanDetails && (
