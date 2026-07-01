@@ -6470,8 +6470,10 @@ def _run_telemetry_retention_safe() -> None:
         days = int((os.getenv("TELEMETRY_RETENTION_DAYS") or "30").strip() or "30")
         result = prune_telemetry_retention(retention_days=days)
         logging.info("telemetry retention (bot scheduler): result=%s", result)
+        _record_sched_heartbeat("telemetry_retention", metadata={"days": days})
     except Exception:
         logging.exception("telemetry retention (bot scheduler) failed")
+        _record_sched_heartbeat("telemetry_retention", status="failed")
 
 
 def _run_daily_audio_safe() -> None:
@@ -6578,14 +6580,219 @@ _SCHEDULER_HEALTH_CATALOG = [
     # Now instrumented: the scheduler entry records a guard with the result
     # (generated/upserted) — shown inline below. Pool CONTENT health is still /poolreport.
     ("translation_focus_pool_refill", "Пополнение пула переводов (23:00)", 30, True, "guard"),
+    # --- Interactive task deliveries (heartbeat 'deliver_<kind>' from make_rotation_gated) ---
+    # These run inline in the bot loop; the heartbeat = "this kind's slot fired today"
+    # (a rotation-thinned slot still heartbeats with skipped=true — the scheduler is alive).
+    ("deliver_mc", "Квиз (mc)", 30, True, "guard"),
+    ("deliver_rebus", "Ребус", 30, True, "guard"),
+    ("deliver_article_quiz", "Квиз der/die/das", 30, True, "guard"),
+    ("deliver_crossword", "Кроссворд", 30, True, "guard"),
+    ("deliver_anagram", "Анаграмма", 30, True, "guard"),
+    ("deliver_aufgabe", "Задание (aufgabe)", 30, True, "guard"),
+    ("deliver_sprint", "Спринт", 30, True, "guard"),
+    ("deliver_artikel_sprint", "Artikel Sprint", 30, True, "guard"),
+    ("deliver_adjektiv_sprint", "Adjektiv Sprint", 30, True, "guard"),
+    ("deliver_artikel_learn", "Artikel Trainer (learn)", 30, True, "guard"),
+    ("deliver_listening", "Аудирование", 30, True, "guard"),
+    ("deliver_numdict", "Числа-диктант", 30, True, "guard"),
+    # --- Bot-loop reports / dashboards / reminders (heartbeat by function name via submit_async) ---
+    ("send_morning_reminder", "Утреннее напоминание", 30, True, "guard"),
+    ("send_flashcard_reminder", "Напоминание о карточках", 30, True, "guard"),
+    ("_send_mistake_review_reminders", "Напоминание «повтори ошибки» (11:00)", 30, True, "guard"),
+    ("_send_plan_dashboard_job", "Дашборд плана (06:45)", 30, True, "guard"),
+    ("_send_pool_inventory_report_job", "Отчёт по пулам (07:00)", 30, True, "guard"),
+    ("_send_daily_challenge_digest_job", "Дайджест челленджа (21:30)", 30, True, "guard"),
+    ("_send_group_daily_report_job", "Отчёт в группу (22:57)", 30, True, "guard"),
+    ("send_daily_summary", "Итоги дня (20:52)", 30, True, "guard"),
+    ("_update_streaks_job", "Обновление стриков (08:00)", 30, True, "guard"),
+    ("send_progress_report", "Отчёт о прогрессе (7/12/16)", 30, True, "guard"),
+    ("_send_due_battle_reminders_job", "Напоминания о батлах (*/5)", 6, True, "guard"),
+    ("_mastery_rotation_job", "Ротация освоенного (03:20)", 30, True, "guard"),
+    ("_release_windowed_inbox_job", "Выдача inbox (*/20)", 6, True, "guard"),
+    ("_drip_delivery_job", "Drip-выдача", 6, True, "guard"),
+    ("_send_weekly_certificate_job", "Недельная грамота (Вс 17:00)", 192, True, "guard"),
+    ("_send_calendar_certificate_job", "Календарная грамота (17:05)", 192, True, "guard"),
+    ("_send_weekly_champion_job", "Чемпион недели (Вс 20:00)", 192, True, "guard"),
+    ("_mastery_rotation_weekly_report_job", "Отчёт ротации (Пн 10:10)", 192, True, "guard"),
+    ("send_weekly_summary", "Недельные итоги (Вс 20:55)", 192, True, "guard"),
+    ("send_me_analytics_and_recommend_me", "Аналитика+совет (Пт/Пн)", 192, True, "guard"),
+    # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
+    ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
+    ("flashcard_feel_cleanup", "Чистка flashcard-feel (мес.)", 800, True, "guard"),
+    ("tts_db_cache_cleanup", "Чистка TTS-кэша (БД)", 30, True, "guard"),
+    ("tts_r2_cache_cleanup", "Чистка TTS-кэша (R2)", 30, True, "guard"),
+    ("image_quiz_r2_cleanup", "Чистка image-quiz (R2, Вс)", 192, True, "guard"),
+    ("visual_riddle_r2_cleanup", "Чистка visual-riddle (R2, Вс)", 192, True, "guard"),
+    ("telemetry_retention", "Ретенция телеметрии (03:25)", 30, True, "guard"),
+    # --- High-frequency internal plumbing (throttled liveness — 'жив/мёртв', time is noise) ---
+    ("autosave_sweep", "Автосейв-свип (30с)", 1, True, "guard"),
+    ("skill_state_v2_aggregation", "Агрегация skill_state (60с)", 1, True, "guard"),
+    ("tts_prewarm", "TTS prewarm (30м)", 3, True, "guard"),
+    ("tts_generation_recovery", "Восстановление TTS (10м)", 3, True, "guard"),
 ]
+
+
+def _record_sched_heartbeat(job_key: str, status: str = "completed", metadata: dict | None = None) -> None:
+    """Best-effort non-gating 'this scheduled job just ran' marker (see
+    database.record_scheduler_heartbeat). Never raises — a heartbeat failure must
+    never break the underlying job."""
+    try:
+        from backend.database import record_scheduler_heartbeat
+        record_scheduler_heartbeat(job_key=str(job_key), status=status, metadata=metadata or {})
+    except Exception:
+        logging.debug("scheduler heartbeat failed job_key=%s", job_key, exc_info=True)
+
+
+def _build_scheduler_health_report(view: str = "full") -> str:
+    """Build the /scheduler_health report text (HTML). SYNC — reads the two tracking
+    tables directly, so it's callable from a BackgroundScheduler thread (auto-delivery)
+    and from the async command via asyncio.to_thread.
+
+    view="full"     → every category (morning report).
+    view="problems" → only alarms + a one-line "всё остальное в порядке" summary
+                      (evening digest: "скажи только если что-то сломалось")."""
+    from datetime import timezone as _tz_utc
+    from backend.database import (
+        get_all_latest_scheduler_run_guards,
+        get_all_latest_admin_scheduler_runs,
+    )
+    guard_rows = get_all_latest_scheduler_run_guards()
+    admin_rows = get_all_latest_admin_scheduler_runs()
+    guard_by_key = {str(r.get("job_key") or ""): r for r in (guard_rows or [])}
+    admin_by_key = {str(r.get("job_key") or ""): r for r in (admin_rows or [])}
+    now = datetime.now(_tz_utc.utc)
+
+    def _fmt_age(ts) -> tuple[str, float | None]:
+        if not hasattr(ts, "astimezone"):
+            return ("ещё не было", None)
+        delta = now - ts.astimezone(_tz_utc.utc)
+        hours = delta.total_seconds() / 3600.0
+        if hours < 1:
+            return (f"{int(delta.total_seconds() // 60)} мин назад", hours)
+        if hours < 48:
+            return (f"{hours:.1f} ч назад", hours)
+        return (f"{hours / 24:.1f} дн назад", hours)
+
+    alarms: list[str] = []
+    oks: list[str] = []
+    off: list[str] = []
+    conditional: list[str] = []
+    ok_count = 0
+    for job_key, label, max_age_h, default_on, source in _SCHEDULER_HEALTH_CATALOG:
+        if source == "admin":
+            r = admin_by_key.get(job_key)
+            last_ts = (r or {}).get("created_at")
+            job_status = ""
+        else:  # guard / none
+            r = guard_by_key.get(job_key)
+            last_ts = (r or {}).get("finished_at") or (r or {}).get("updated_at") or (r or {}).get("claimed_at")
+            job_status = str((r or {}).get("status") or "").strip()
+        age_text, hours = _fmt_age(last_ts)
+        run_period = str((r or {}).get("run_period") or "").strip()
+        # 'hb' is the heartbeat run_period — an internal marker, not worth showing.
+        show_period = run_period and run_period != "hb"
+        line = f"• <b>{label}</b>\n   {age_text}" + (f" · {run_period}" if show_period else "")
+        if job_status and job_status != "completed":
+            line += f" · <i>{job_status}</i>"
+        meta = (r or {}).get("metadata") if isinstance((r or {}).get("metadata"), dict) else {}
+        if "generated" in meta or "upserted" in meta:
+            line += f"\n   ген {int(meta.get('generated') or 0)} → добавлено {int(meta.get('upserted') or 0)}"
+            if meta.get("skipped") and "generated" in meta:
+                line += f" · пропуск: {str(meta.get('reason') or '')}"
+
+        if source == "none":
+            conditional.append(f"❔ {line}\n   <i>не отмечается — проверяй /poolreport</i>")
+        elif source == "admin":
+            conditional.append(f"🗓 {line}" + ("  <i>(условная/событийная)</i>" if hours is None else ""))
+        elif not default_on:
+            off.append(f"💤 {line}  <i>(выкл по умолчанию)</i>")
+        elif (hours is None) or (hours > max_age_h) or (job_status == "failed"):
+            mark = "❌ НИКОГДА" if hours is None else "⚠️ ПРОТУХЛО"
+            alarms.append(f"{mark} {line}")
+        else:
+            ok_count += 1
+            oks.append(f"✅ {line}")
+
+    # Unknown job_keys present in either table but not in the catalog (nothing hidden).
+    known = {k for k, *_ in _SCHEDULER_HEALTH_CATALOG}
+    extras = sorted({k for k in guard_by_key if k not in known} | {k for k in admin_by_key if k not in known})
+
+    if view == "problems":
+        parts = ["🩺 <b>Планировщик — вечерняя проверка</b>\n"]
+        if alarms:
+            parts.append("<b>⚠️ Требует внимания:</b>\n" + "\n".join(alarms))
+        else:
+            parts.append("✅ Всё, что должно было отработать — отработало.")
+        parts.append(f"\n<i>В порядке: {ok_count} · условных: {len(conditional)} · выкл: {len(off)}</i>")
+        if extras:
+            parts.append("\n<b>Прочие job_key в БД:</b>\n" + ", ".join(extras))
+        return "\n".join(parts)
+
+    parts = ["🩺 <b>Здоровье планировщика</b> (последний реальный запуск)\n"]
+    if alarms:
+        parts.append("<b>Проблемы:</b>\n" + "\n".join(alarms))
+    if oks:
+        parts.append("\n<b>В порядке:</b>\n" + "\n".join(oks))
+    if conditional:
+        parts.append("\n<b>Условные / без маркера:</b>\n" + "\n".join(conditional))
+    if off:
+        parts.append("\n<b>Отключённые:</b>\n" + "\n".join(off))
+    if extras:
+        parts.append("\n<b>Прочие job_key в БД:</b>\n" + ", ".join(extras))
+    return "\n".join(parts)
+
+
+def _send_scheduler_health_report(view: str = "full") -> dict:
+    """DM the scheduler-health report to all admins. SYNC (runs in the bot's
+    BackgroundScheduler thread), mirrors send_cost_breakdown_report's delivery."""
+    import requests as _requests
+    from backend.database import get_admin_telegram_ids
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    if not token or not admin_ids:
+        return {"ok": False, "sent": 0, "reason": "no_token_or_admins"}
+    text = _build_scheduler_health_report(view=view)
+    sent = 0
+    for uid in admin_ids:
+        for part in _split_telegram_text(text):
+            try:
+                _requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": uid, "text": part, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=20,
+                )
+            except Exception:
+                logging.warning("scheduler health DM failed uid=%s", uid, exc_info=True)
+        sent += 1
+    return {"ok": True, "sent": sent, "view": view}
+
+
+def _run_scheduler_health_report_morning_safe() -> None:
+    """Bot-side morning FULL scheduler-health report to admins. Runs in a
+    BackgroundScheduler thread (must stay synchronous)."""
+    try:
+        result = _send_scheduler_health_report(view="full")
+        logging.info("scheduler health report (morning) result=%s", result)
+    except Exception:
+        logging.exception("scheduler health report (morning) failed")
+
+
+def _run_scheduler_health_report_evening_safe() -> None:
+    """Bot-side evening PROBLEMS-only scheduler-health digest to admins. Runs in a
+    BackgroundScheduler thread (must stay synchronous)."""
+    try:
+        result = _send_scheduler_health_report(view="problems")
+        logging.info("scheduler health report (evening) result=%s", result)
+    except Exception:
+        logging.exception("scheduler health report (evening) failed")
 
 
 async def admin_scheduler_health_command(update: Update, context: CallbackContext):
     """Show, per scheduled job, when it last actually ran — reading the CORRECT tracking
     table per job (run-guards vs admin-runs) so conditional jobs aren't falsely "never".
-    /scheduler_health"""
-    from datetime import timezone as _tz_utc
+    /scheduler_health           → full report
+    /scheduler_health problems  → only what needs attention (the evening-digest view)"""
     sender = update.effective_user
     message = update.effective_message
     if not sender or not message:
@@ -6593,81 +6800,10 @@ async def admin_scheduler_health_command(update: Update, context: CallbackContex
     if not _is_admin_user(sender.id):
         await message.reply_text("⛔️ Команда доступна только администратору.")
         return
+    view = "problems" if (context.args and str(context.args[0]).strip().lower() in {"problems", "проблемы", "p"}) else "full"
     status = await message.reply_text("🩺 Проверяю, что и когда реально отрабатывало…")
     try:
-        from backend.database import (
-            get_all_latest_scheduler_run_guards,
-            get_all_latest_admin_scheduler_runs,
-        )
-        guard_rows = await asyncio.to_thread(get_all_latest_scheduler_run_guards)
-        admin_rows = await asyncio.to_thread(get_all_latest_admin_scheduler_runs)
-        guard_by_key = {str(r.get("job_key") or ""): r for r in (guard_rows or [])}
-        admin_by_key = {str(r.get("job_key") or ""): r for r in (admin_rows or [])}
-        now = datetime.now(_tz_utc.utc)
-
-        def _fmt_age(ts) -> tuple[str, float | None]:
-            if not hasattr(ts, "astimezone"):
-                return ("ещё не было", None)
-            delta = now - ts.astimezone(_tz_utc.utc)
-            hours = delta.total_seconds() / 3600.0
-            if hours < 1:
-                return (f"{int(delta.total_seconds() // 60)} мин назад", hours)
-            if hours < 48:
-                return (f"{hours:.1f} ч назад", hours)
-            return (f"{hours / 24:.1f} дн назад", hours)
-
-        alarms: list[str] = []
-        oks: list[str] = []
-        off: list[str] = []
-        conditional: list[str] = []
-        for job_key, label, max_age_h, default_on, source in _SCHEDULER_HEALTH_CATALOG:
-            if source == "admin":
-                r = admin_by_key.get(job_key)
-                last_ts = (r or {}).get("created_at")
-                job_status = ""
-            else:  # guard / none
-                r = guard_by_key.get(job_key)
-                last_ts = (r or {}).get("finished_at") or (r or {}).get("updated_at") or (r or {}).get("claimed_at")
-                job_status = str((r or {}).get("status") or "").strip()
-            age_text, hours = _fmt_age(last_ts)
-            run_period = str((r or {}).get("run_period") or "").strip()
-            line = f"• <b>{label}</b>\n   {age_text}" + (f" · {run_period}" if run_period else "")
-            if job_status and job_status != "completed":
-                line += f" · <i>{job_status}</i>"
-            meta = (r or {}).get("metadata") if isinstance((r or {}).get("metadata"), dict) else {}
-            if "generated" in meta or "upserted" in meta:
-                line += f"\n   ген {int(meta.get('generated') or 0)} → добавлено {int(meta.get('upserted') or 0)}"
-                if meta.get("skipped"):
-                    line += f" · пропуск: {str(meta.get('reason') or '')}"
-
-            if source == "none":
-                conditional.append(f"❔ {line}\n   <i>не отмечается — проверяй /poolreport</i>")
-            elif source == "admin":
-                conditional.append(f"🗓 {line}" + ("  <i>(условная/событийная)</i>" if hours is None else ""))
-            elif not default_on:
-                off.append(f"💤 {line}  <i>(выкл по умолчанию)</i>")
-            elif (hours is None) or (hours > max_age_h) or (job_status == "failed"):
-                mark = "❌ НИКОГДА" if hours is None else "⚠️ ПРОТУХЛО"
-                alarms.append(f"{mark} {line}")
-            else:
-                oks.append(f"✅ {line}")
-
-        # Unknown job_keys present in either table but not in the catalog (nothing hidden).
-        known = {k for k, *_ in _SCHEDULER_HEALTH_CATALOG}
-        extras = sorted({k for k in guard_by_key if k not in known} | {k for k in admin_by_key if k not in known})
-
-        parts = ["🩺 <b>Здоровье планировщика</b> (последний реальный запуск)\n"]
-        if alarms:
-            parts.append("<b>Проблемы:</b>\n" + "\n".join(alarms))
-        if oks:
-            parts.append("\n<b>В порядке:</b>\n" + "\n".join(oks))
-        if conditional:
-            parts.append("\n<b>Условные / без маркера:</b>\n" + "\n".join(conditional))
-        if off:
-            parts.append("\n<b>Отключённые:</b>\n" + "\n".join(off))
-        if extras:
-            parts.append("\n<b>Прочие job_key в БД:</b>\n" + ", ".join(extras))
-        text = "\n".join(parts)
+        text = await asyncio.to_thread(_build_scheduler_health_report, view)
         await status.delete()
         for chunk in _split_telegram_text(text):
             await message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
@@ -31573,19 +31709,48 @@ def main():
 
 
     # 3) APScheduler → вкидываем корутину в тот же loop
+    # Per-job throttle for the submit_async completion heartbeat: high-frequency jobs
+    # (drip */N, windowed inbox */20, battle reminders */5) must not write a DB row on
+    # every tick. Failures always record (bypass the throttle) so a broken job surfaces.
+    _bot_sched_hb_last: dict[str, float] = {}
+    _BOT_SCHED_HB_MIN_INTERVAL = 55.0
+
     def submit_async(async_func, context=None, *args, **kwargs):
         if context is None:
             context = CallbackContext(application=application)
+
+        # The rotation-gated interactive senders pass an inner '_wrapped' coroutine and
+        # heartbeat themselves as deliver_<kind> — skip them here to avoid a useless
+        # '_wrapped' key. Everything else keys the heartbeat by its function name so
+        # ALL bot-loop scheduled jobs appear in /scheduler_health automatically.
+        job_key = getattr(async_func, "__name__", "") or ""
 
         fut = asyncio.run_coroutine_threadsafe(
             async_func(context, *args, **kwargs),
             loop
         )
         def _log_scheduler_failure(future):
+            crashed = False
             try:
                 future.result()
             except Exception:
+                crashed = True
                 logging.exception("❌ APScheduler job crashed")
+            if not job_key or job_key == "_wrapped":
+                return
+            try:
+                now_ts = pytime.time()
+                last = _bot_sched_hb_last.get(job_key, 0.0)
+                if crashed or (now_ts - last) >= _BOT_SCHED_HB_MIN_INTERVAL:
+                    _bot_sched_hb_last[job_key] = now_ts
+                    loop.run_in_executor(
+                        None,
+                        _record_sched_heartbeat,
+                        job_key,
+                        "failed" if crashed else "completed",
+                    )
+            except Exception:
+                logging.debug("submit_async heartbeat failed job_key=%s", job_key, exc_info=True)
 
         fut.add_done_callback(_log_scheduler_failure)
 
@@ -31609,6 +31774,8 @@ def main():
                         record_rotation_skip(_get_quiz_schedule_now().date(), kind, int(hour), int(minute))
                     except Exception:
                         logging.debug("record_rotation_skip dispatch failed", exc_info=True)
+                    # Heartbeat: the slot DID fire (rotation just thinned it) — scheduler alive.
+                    _record_sched_heartbeat(f"deliver_{kind}", metadata={"skipped": True, "slot": f"{int(hour):02d}:{int(minute):02d}"})
                     return
             except Exception:
                 logging.warning(
@@ -31620,10 +31787,24 @@ def main():
             # sends don't clash; manual/force sends leave it unset → no filtering.
             async def _wrapped(ctx, *a):
                 token = _current_scheduled_send.set((kind, int(hour), int(minute)))
+                hb_status = "completed"
                 try:
                     await async_func(ctx, *a)
+                except Exception:
+                    hb_status = "failed"
+                    raise
                 finally:
                     _current_scheduled_send.reset(token)
+                    # Real-completion heartbeat off the hot loop (see _record_sched_heartbeat).
+                    try:
+                        await asyncio.to_thread(
+                            _record_sched_heartbeat,
+                            f"deliver_{kind}",
+                            hb_status,
+                            {"slot": f"{int(hour):02d}:{int(minute):02d}"},
+                        )
+                    except Exception:
+                        logging.debug("deliver heartbeat failed kind=%s", kind, exc_info=True)
             submit_async(_wrapped, CallbackContext(application=application), *extra)
         return _job
 
@@ -31735,6 +31916,33 @@ def main():
                 hour=int((os.getenv("TELEMETRY_RETENTION_HOUR") or "3").strip() or "3"),
                 minute=int((os.getenv("TELEMETRY_RETENTION_MINUTE") or "25").strip() or "25"),
                 timezone=ZoneInfo(os.getenv("TELEMETRY_RETENTION_TZ") or "Europe/Vienna"),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=3600,
+            )
+        # -- SCHEDULER HEALTH report to admins: morning FULL + evening PROBLEMS-only --
+        # Auto-delivers /scheduler_health so the admin sees, without asking, what ran and
+        # what silently didn't. Bot-side (guaranteed token + admin IDs + DB), same proven
+        # pattern as the economics report. Morning 07:15 = full audit of the overnight/24h;
+        # evening 21:00 = compact "скажи только если что-то сломалось" digest. Set
+        # SCHEDULER_HEALTH_REPORT_ENABLED=0 to disable both.
+        if (os.getenv("SCHEDULER_HEALTH_REPORT_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on"):
+            scheduler.add_job(
+                _run_scheduler_health_report_morning_safe,
+                "cron",
+                hour=int((os.getenv("SCHEDULER_HEALTH_REPORT_MORNING_HOUR") or "7").strip() or "7"),
+                minute=int((os.getenv("SCHEDULER_HEALTH_REPORT_MORNING_MINUTE") or "15").strip() or "15"),
+                timezone=ZoneInfo(os.getenv("SCHEDULER_HEALTH_REPORT_TZ") or "Europe/Vienna"),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=3600,
+            )
+            scheduler.add_job(
+                _run_scheduler_health_report_evening_safe,
+                "cron",
+                hour=int((os.getenv("SCHEDULER_HEALTH_REPORT_EVENING_HOUR") or "21").strip() or "21"),
+                minute=int((os.getenv("SCHEDULER_HEALTH_REPORT_EVENING_MINUTE") or "0").strip() or "0"),
+                timezone=ZoneInfo(os.getenv("SCHEDULER_HEALTH_REPORT_TZ") or "Europe/Vienna"),
                 coalesce=True,
                 max_instances=1,
                 misfire_grace_time=3600,

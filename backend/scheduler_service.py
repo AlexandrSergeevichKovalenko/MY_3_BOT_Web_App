@@ -107,6 +107,32 @@ from backend.background_jobs import (  # noqa: E402
 from backend.database import get_latest_scheduler_run_guard  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# Liveness heartbeat for high-frequency internal plumbing (autosave sweep etc.)
+# These fire every 30–60s and don't need dedup guards; for /scheduler_health we
+# only care "жив/мёртв", not the exact minute. So record a THROTTLED dispatch-time
+# heartbeat (≤ once per 5 min per job) — a trivial single-row upsert that never
+# touches the hot path, never blocks, and never raises out of the dispatcher.
+# ---------------------------------------------------------------------------
+_PLUMBING_HB_LAST: dict[str, float] = {}
+_PLUMBING_HB_MIN_INTERVAL = 300.0
+
+
+def _plumbing_heartbeat(job_key: str) -> None:
+    try:
+        now = time.time()
+        if (now - _PLUMBING_HB_LAST.get(job_key, 0.0)) < _PLUMBING_HB_MIN_INTERVAL:
+            return
+        _PLUMBING_HB_LAST[job_key] = now
+        from backend.database import record_scheduler_heartbeat
+        record_scheduler_heartbeat(
+            job_key=job_key,
+            status="completed",
+            metadata={"src": "scheduler_service", "liveness": True},
+        )
+    except Exception:
+        logging.debug("plumbing heartbeat failed job_key=%s", job_key, exc_info=True)
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -279,10 +305,12 @@ def _dispatch_database_table_sizes_report() -> None:
 
 def _dispatch_tts_prewarm() -> None:
     run_tts_prewarm_scheduler_actor.send()
+    _plumbing_heartbeat("tts_prewarm")
 
 
 def _dispatch_tts_generation_recovery() -> None:
     run_tts_generation_recovery_actor.send()
+    _plumbing_heartbeat("tts_generation_recovery")
 
 
 def _dispatch_tts_prewarm_quota_control() -> None:
@@ -377,10 +405,12 @@ def _dispatch_semantic_audit() -> None:
 
 def _dispatch_skill_state_v2_aggregation() -> None:
     run_skill_state_v2_aggregation_actor.send()
+    _plumbing_heartbeat("skill_state_v2_aggregation")
 
 
 def _dispatch_autosave_sweep() -> None:
     run_autosave_sweep_job.send()
+    _plumbing_heartbeat("autosave_sweep")
 
 
 def _dispatch_agent_worker_schedule_start() -> None:

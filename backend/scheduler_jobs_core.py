@@ -1,3 +1,4 @@
+import functools
 import logging
 import os
 from datetime import datetime
@@ -16,6 +17,35 @@ from backend.translation_workflow import finalize_open_translation_sessions
 from backend.tts_cache_cleanup import run_tts_r2_cache_cleanup
 from backend.r2_storage import r2_bucket_usage_summary
 from backend.job_queue import clear_translation_check_session_state
+
+
+def _heartbeat(job_key: str):
+    """Decorator: record a non-gating scheduler heartbeat when a maintenance job runs,
+    so /scheduler_health shows a last-run time for these otherwise-untracked cleanups.
+    Records 'completed' on normal return (incl. a disabled early-return — the scheduler
+    still fired) and 'failed' before re-raising. Best-effort: a heartbeat write can never
+    break or block the job. Covers both call paths (dramatiq actor + legacy scheduler),
+    since it wraps the shared job function itself."""
+    def _decorator(fn):
+        @functools.wraps(fn)
+        def _wrapper(*args, **kwargs):
+            try:
+                result = fn(*args, **kwargs)
+            except Exception:
+                _record_heartbeat_safe(job_key, "failed")
+                raise
+            _record_heartbeat_safe(job_key, "completed")
+            return result
+        return _wrapper
+    return _decorator
+
+
+def _record_heartbeat_safe(job_key: str, status: str) -> None:
+    try:
+        from backend.database import record_scheduler_heartbeat
+        record_scheduler_heartbeat(job_key=job_key, status=status)
+    except Exception:
+        logging.debug("scheduler heartbeat failed job_key=%s", job_key, exc_info=True)
 
 
 def run_translation_sessions_auto_close_job() -> None:
@@ -59,6 +89,7 @@ def run_translation_check_stale_cleanup_job() -> None:
         raise
 
 
+@_heartbeat("flashcard_feel_cleanup")
 def run_flashcard_feel_cleanup_job() -> None:
     enabled = (os.getenv("FLASHCARD_FEEL_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
@@ -85,6 +116,7 @@ def run_flashcard_feel_cleanup_job() -> None:
         raise
 
 
+@_heartbeat("tts_db_cache_cleanup")
 def run_tts_db_cache_cleanup_job() -> None:
     enabled = (os.getenv("TTS_DB_CACHE_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
@@ -105,6 +137,7 @@ def run_tts_db_cache_cleanup_job() -> None:
         raise
 
 
+@_heartbeat("tts_r2_cache_cleanup")
 def run_tts_r2_cache_cleanup_job() -> None:
     try:
         run_tts_r2_cache_cleanup()
@@ -113,6 +146,7 @@ def run_tts_r2_cache_cleanup_job() -> None:
         raise
 
 
+@_heartbeat("image_quiz_r2_cleanup")
 def run_image_quiz_r2_cleanup_job() -> None:
     from backend.image_quiz_cleanup import run_image_quiz_r2_cleanup
     try:
@@ -122,6 +156,7 @@ def run_image_quiz_r2_cleanup_job() -> None:
         raise
 
 
+@_heartbeat("visual_riddle_r2_cleanup")
 def run_visual_riddle_r2_cleanup_job() -> None:
     from backend.visual_riddle_cleanup import run_visual_riddle_r2_cleanup
     try:
@@ -149,6 +184,7 @@ def _delete_telegram_message(chat_id: int, message_id: int) -> None:
         raise RuntimeError(f"Telegram delete failed: {payload}")
 
 
+@_heartbeat("system_message_cleanup")
 def run_system_message_cleanup_job() -> None:
     enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
