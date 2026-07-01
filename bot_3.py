@@ -23007,6 +23007,8 @@ async def _create_and_broadcast_artikel_wizard(context: CallbackContext, *, crea
     # Pin the creator's own play message until they play their battle.
     await _pin_battle_play_message(context, user_id=int(creator_id), set_id=f"asb_{battle_id}",
                                    chat_id=int(status_chat_id), message_id=int(status_msg_id), kind="artikel")
+    await _schedule_battle_auto_nudge(kind="artikel", battle_id=battle_id,
+                                      user_id=int(creator_id), deadline=deadline)
 
 
 async def artikel_battle_command(update: Update, context: CallbackContext) -> None:
@@ -23061,6 +23063,9 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
     status = await message.reply_text(
         f"⚔️ Батл #{battle_id} создан (тема: {theme_key})! Дедлайн 23:59.\nРассылаю приглашения… 📨",
         reply_markup=play_kb)
+    # Nudge the creator too if they don't get around to playing their own battle.
+    asyncio.create_task(_schedule_battle_auto_nudge(
+        kind="artikel", battle_id=battle_id, user_id=int(user.id), deadline=deadline))
     asyncio.create_task(_broadcast_artikel_cmd_invites(
         context, battle_id=battle_id, creator_id=int(user.id), creator_name=creator_name,
         theme_key=theme_key, status_chat_id=int(message.chat_id), status_msg_id=int(status.message_id)))
@@ -23427,7 +23432,12 @@ async def artikel_battle_remind_callback(update: Update, context: CallbackContex
 
 
 async def _send_due_battle_reminders_job(context: CallbackContext) -> None:
-    """Every few minutes: DM due battle reminders (Smurf-Lancelot image + play)."""
+    """Every few minutes: DM due battle nudges (Smurf-Lancelot image + play button)
+    to members who accepted but haven't played. Covers both battle families and
+    re-arms itself every ~3h until the member plays or the battle closes. Skips the
+    whole tick during quiet hours (reminders stay due for the next non-quiet tick)."""
+    if _is_quiet_hours_now():
+        return
     try:
         due = await asyncio.to_thread(get_due_article_battle_reminders, 50)
     except Exception:
@@ -23438,22 +23448,26 @@ async def _send_due_battle_reminders_job(context: CallbackContext) -> None:
     from backend.battle_card import battle_reminder_image_url
     img = battle_reminder_image_url()
     for r in due:
-        bid, uid = int(r["battle_id"]), int(r["user_id"])
+        bid, uid, kind = int(r["battle_id"]), int(r["user_id"]), str(r.get("kind") or "artikel")
         try:
             await asyncio.to_thread(mark_article_battle_reminder_sent, int(r["id"]))
-            battle = await asyncio.to_thread(get_article_sprint_battle, bid)
-            if not _battle_is_open(battle):
-                continue  # closed meanwhile → skip
+            state = await _battle_play_state(kind, bid, uid)
+            if not state or not state["open"] or state["played"]:
+                continue  # closed, gone, or already played → stop the loop
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-                "⚔️ В бой! Играть", url=get_webapp_deeplink(f"ans_asb_{bid}"))]])
-            cap = "⚔️ <b>Время батла!</b> Ты планировал сыграть — вперёд, до 23:59! 🛡"
+                "⚔️ В бой! Играть", url=get_webapp_deeplink(state["deeplink"]))]])
+            cap = ("⚔️ <b>Не забудь про батл!</b> Тебя ещё ждёт бой — "
+                   "сыграй, пока не закрылся (до 23:59)! 🛡")
             if img:
                 await context.bot.send_photo(chat_id=uid, photo=img, caption=cap,
                                              parse_mode="HTML", reply_markup=kb)
             else:
                 await context.bot.send_message(chat_id=uid, text=cap, parse_mode="HTML", reply_markup=kb)
+            # Re-arm the next nudge ~3h out (stops itself once past the deadline).
+            await _schedule_battle_auto_nudge(kind=kind, battle_id=bid, user_id=uid,
+                                              deadline=state["deadline"])
         except Exception:
-            logging.warning("battle reminder send failed uid=%s bid=%s", uid, bid, exc_info=True)
+            logging.warning("battle reminder send failed uid=%s bid=%s kind=%s", uid, bid, kind, exc_info=True)
 
 
 async def admin_battle_images_command(update: Update, context: CallbackContext) -> None:
@@ -27349,6 +27363,9 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
         asyncio.create_task(_pin_battle_play_message(
             context, user_id=int(user.id), set_id=str(_set_id),
             chat_id=int(message.chat_id), message_id=int(status.message_id), kind="adjektiv"))
+    # Nudge the creator too if they don't get around to playing their own battle.
+    asyncio.create_task(_schedule_battle_auto_nudge(
+        kind="adjektiv", battle_id=bid, user_id=int(user.id), deadline=deadline))
     asyncio.create_task(_broadcast_adjektiv_battle_invites(
         context, battle_id=bid, creator_id=int(user.id), creator_name=creator_name,
         status_chat_id=int(message.chat_id), status_msg_id=int(status.message_id)))
@@ -27442,6 +27459,8 @@ async def _create_and_broadcast_adjektiv_wizard(context: CallbackContext, *, cre
         await _pin_battle_play_message(context, user_id=int(creator_id), set_id=str(set_id),
                                        chat_id=int(status_chat_id), message_id=int(status_msg_id),
                                        kind="adjektiv")
+    await _schedule_battle_auto_nudge(kind="adjektiv", battle_id=bid,
+                                      user_id=int(creator_id), deadline=deadline)
 
 
 async def adjektiv_battle_join_callback(update: Update, context: CallbackContext) -> None:
@@ -27463,25 +27482,88 @@ async def adjektiv_battle_join_callback(update: Update, context: CallbackContext
     name = _display_user_name(q.from_user)
     await asyncio.to_thread(add_adjektiv_sprint_battle_member,
                             battle_id=bid, user_id=int(q.from_user.id), user_name=name)
-    await q.answer("Ты в батле! Играй до 23:59.", show_alert=True)
-    # Release the accepter instantly; ping the creator OFF the critical path.
-    play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
-        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
+    await q.answer("Ты в батле! ⚔️")
+    # Release the accepter instantly: offer play-now / remind-later, then ping the
+    # creator OFF the critical path (same pattern as the Artikel battle).
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
+        [InlineKeyboardButton("⏰ Напомнить позже", callback_data=f"adb_later:{bid}")],
     ])
-    await _edit_battle_invite(
-        q, f"✅ Ты принял Adjektiv-батл #{bid} от {html.escape(str(battle.get('creator_name') or ''))}.\n"
-           f"Играй до 23:59 👇", play_kb)
+    await _edit_battle_invite(q, "✅ Вызов принят! Играй сейчас или запланируй на потом 👇", kb)
     set_id = str(battle.get("set_id") or "")
     if q.message and set_id:
         asyncio.create_task(_pin_battle_play_message(
             context, user_id=int(q.from_user.id), set_id=set_id,
             chat_id=int(q.message.chat.id), message_id=int(q.message.message_id), kind="adjektiv"))
+    # Start the "не забыл про батл?" nudge loop (~3h) for this member until they play.
+    asyncio.create_task(_schedule_battle_auto_nudge(
+        kind="adjektiv", battle_id=bid, user_id=int(q.from_user.id),
+        deadline=battle.get("deadline")))
     creator_id = int(battle.get("creator_user_id") or 0)
     if creator_id and creator_id != int(q.from_user.id):
         asyncio.create_task(_notify_creator_accepted_capped(
             context, kind="adjektiv", battle_id=bid,
             creator_id=creator_id, accepter_name=name))
+
+
+async def adjektiv_battle_later_callback(update: Update, context: CallbackContext) -> None:
+    """adb_later:<id> → show preset reminder times (mirror of the Artikel picker)."""
+    q = update.callback_query
+    if not q:
+        return
+    try:
+        bid = int(str(q.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer(); return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕1 час", callback_data=f"adb_rem:{bid}:60"),
+         InlineKeyboardButton("➕2 часа", callback_data=f"adb_rem:{bid}:120")],
+        [InlineKeyboardButton("➕3 часа", callback_data=f"adb_rem:{bid}:180"),
+         InlineKeyboardButton("🌆 в 21:00", callback_data=f"adb_rem:{bid}:at21")],
+        [InlineKeyboardButton("◀️ Назад", callback_data=f"adb_join:{bid}")],
+    ])
+    await _edit_battle_invite(q, "⏰ Когда напомнить о батле? (батл закроется в 23:59)", kb)
+    await q.answer()
+
+
+async def adjektiv_battle_remind_callback(update: Update, context: CallbackContext) -> None:
+    """adb_rem:<id>:<code> → schedule a reminder before the deadline."""
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    parts = str(q.data or "").split(":")
+    if len(parts) != 3:
+        await q.answer(); return
+    try:
+        bid = int(parts[1])
+    except ValueError:
+        await q.answer(); return
+    code = parts[2]
+    tz = ZoneInfo("Europe/Vienna")
+    now = datetime.now(tz)
+    if code == "at21":
+        remind_at = now.replace(hour=21, minute=0, second=0, microsecond=0)
+    else:
+        try:
+            remind_at = now + timedelta(minutes=int(code))
+        except ValueError:
+            await q.answer(); return
+    from backend.database import get_adjektiv_sprint_battle
+    battle = await asyncio.to_thread(get_adjektiv_sprint_battle, bid)
+    deadline = battle.get("deadline") if battle else None
+    if remind_at <= now:
+        await q.answer("Это время уже прошло 🙂", show_alert=True); return
+    if deadline and remind_at >= deadline:
+        await q.answer("Не успеть — батл закроется в 23:59. Лучше сыграй сейчас!", show_alert=True)
+        return
+    await asyncio.to_thread(schedule_article_battle_reminder,
+                            user_id=int(q.from_user.id), battle_id=bid,
+                            remind_at=remind_at, kind="adjektiv")
+    hhmm = remind_at.strftime("%H:%M")
+    await q.answer(f"⏰ Напомню в {hhmm}")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "▶️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_adb_{bid}"))]])
+    await _edit_battle_invite(q, f"⏰ Напомню в <b>{hhmm}</b>. До встречи на батле! ⚔️", kb)
 
 
 async def _close_adjektiv_sprint_battles_job(context: CallbackContext) -> None:
@@ -28946,37 +29028,6 @@ async def admin_verify_errors_command(update: Update, context: CallbackContext) 
             pass
     finally:
         _VERIFY_ERRORS_INFLIGHT["active"] = False
-
-
-async def admin_remove_sponsor_command(update: Update, context: CallbackContext) -> None:
-    """Remove a user from the Dankeswand (thank-you wall) + clear their sponsor badge.
-    /admin_remove_sponsor [user_id] — default: yourself. Does NOT change access/subscription."""
-    sender = update.effective_user
-    message = update.effective_message
-    if not sender or not message:
-        return
-    if not _is_admin_user(sender.id):
-        await message.reply_text("⛔️ Команда доступна только администратору.")
-        return
-    arg = (context.args or [None])[0]
-    try:
-        target_id = int(arg) if arg else int(sender.id)
-    except (TypeError, ValueError):
-        await message.reply_text("❌ user_id должен быть числом. Пример: /admin_remove_sponsor 117649764")
-        return
-    try:
-        from backend.database import delete_sponsorship
-        removed = await asyncio.to_thread(delete_sponsorship, target_id)
-        if removed > 0:
-            await message.reply_text(
-                f"🧹 Убрал со «Стены благодарности» user_id={target_id} (удалено записей: {removed}). "
-                f"Доступ/подписку не трогал.")
-        else:
-            await message.reply_text(
-                f"ℹ️ Записей спонсора для user_id={target_id} не найдено — на стене его нет.")
-    except Exception as exc:
-        logging.exception("admin remove sponsor command failed user_id=%s", int(sender.id))
-        await message.reply_text(f"❌ Не удалось убрать со стены: {exc}")
 
 
 async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -> None:
@@ -31327,6 +31378,8 @@ def main():
     application.add_handler(CommandHandler("adjbattle", adjektiv_battle_command))
     application.add_handler(CommandHandler("adjlearn", adjektiv_learn_command))
     application.add_handler(CallbackQueryHandler(adjektiv_battle_join_callback, pattern=r"^adb_join:\d+$"))
+    application.add_handler(CallbackQueryHandler(adjektiv_battle_later_callback, pattern=r"^adb_later:\d+$"))
+    application.add_handler(CallbackQueryHandler(adjektiv_battle_remind_callback, pattern=r"^adb_rem:\d+:[a-z0-9]+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_join_callback, pattern=r"^asb_join:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_accept_callback, pattern=r"^asb_acc:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_decline_callback, pattern=r"^asb_dec:\d+$"))
@@ -31337,7 +31390,6 @@ def main():
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("admin_clean_bad_reviews", admin_clean_bad_reviews_command))
     application.add_handler(CommandHandler("admin_verify_errors", admin_verify_errors_command))
-    application.add_handler(CommandHandler("admin_remove_sponsor", admin_remove_sponsor_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_cw_resend", admin_crossword_resend_command))
