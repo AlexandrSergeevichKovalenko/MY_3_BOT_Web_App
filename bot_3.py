@@ -15864,9 +15864,19 @@ async def _collect_scheduler_candidate_user_ids(
                 SELECT DISTINCT user_id
                 FROM bt_3_user_progress
                 WHERE start_time >= NOW() - (%s || ' days')::interval
+                  AND user_id IS NOT NULL
+                UNION
+                -- Answering a daily interactive task IS activity. Without this a user
+                -- who only does the interactive loop (no chat/translation/SRS) looks
+                -- "inactive" after 21d → Free-suppressed → stops getting the very tasks
+                -- they engage with. answered_at is NULL until answered, so this counts
+                -- only genuine engagement (not merely being sent a card).
+                SELECT DISTINCT user_id
+                FROM bt_3_interactive_inbox
+                WHERE answered_at >= NOW() - (%s || ' days')::interval
                   AND user_id IS NOT NULL;
                 """,
-                (safe_days, safe_days, safe_days),
+                (safe_days, safe_days, safe_days, safe_days),
             )
             for row in cursor.fetchall() or []:
                 try:
