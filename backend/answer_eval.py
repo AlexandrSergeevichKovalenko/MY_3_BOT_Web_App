@@ -1445,11 +1445,19 @@ def evaluate_review(*, user_id: int, mistake_id: int, answer: str) -> dict:
         return {"kind": "review", "error": "not_found"}
     fmt = str(m["format"])
     payload = m["payload"] or {}
-    is_correct = _check_aufgabe(fmt, payload, str(answer or ""))
+    wrong_reason = ""
+    if fmt == "error":
+        # Same tolerance as the live task: accept ANY genuinely-wrong word the learner
+        # tapped + correctly fixed, not only the one "intended" tap (a re-drilled sentence
+        # can carry a second latent error, so a valid alternative fix must not be failed).
+        is_correct, wrong_reason = _grade_error(payload, str(answer or ""))
+    else:
+        is_correct = _check_aufgabe(fmt, payload, str(answer or ""))
     reschedule_mistake(mistake_id=int(mistake_id), user_id=int(user_id), is_correct=bool(is_correct))
     result = _aufgabe_result_payload(
         {"payload": payload, "format": fmt},
         is_correct=is_correct, already_answered=False, user_answer=str(answer or ""),
+        wrong_reason=wrong_reason,
     )
     return {"kind": "review", "result": result, "remaining": count_due_mistakes(int(user_id))}
 
@@ -1551,6 +1559,59 @@ def _cloze_judge_full(satz: str, correct: str, user: str) -> dict:
         }
     except Exception:
         return {"match": False, "reason_ru": ""}
+
+
+def _error_judge_full(woerter: list, tapped_index: int, correction: str) -> dict:
+    """Bounded LLM judge for a 'Finde den Fehler' miss: {'match': bool, 'reason_ru': str}.
+    A generated sentence can carry a second latent error, or the intended fix can have a
+    valid variant the pool's `aliases` misses — so on a deterministic miss we ask ONE judge
+    whether the word the learner tapped was GENUINELY wrong and their retype fixes THAT word
+    (judging only that token, not the whole sentence). This credits a learner who spots a
+    real error other than the intended one. reason_ru explains a genuine miss."""
+    corr = str(correction or "").strip()
+    if not isinstance(woerter, list) or not woerter or not corr:
+        return {"match": False, "reason_ru": ""}
+    try:
+        idx = int(tapped_index)
+    except (TypeError, ValueError):
+        return {"match": False, "reason_ru": ""}
+    if not (0 <= idx < len(woerter)) or len(corr) > 40 or len(corr.split()) > 3:
+        return {"match": False, "reason_ru": ""}
+    try:
+        import asyncio
+        from backend.openai_manager import run_check_error
+        res = asyncio.run(asyncio.wait_for(
+            run_check_error(woerter=[str(w) for w in woerter], index=idx, user=corr),
+            timeout=7.0,
+        ))
+        return {
+            "match": bool((res or {}).get("match")),
+            "reason_ru": str((res or {}).get("reason_ru") or "").strip(),
+        }
+    except Exception:
+        return {"match": False, "reason_ru": ""}
+
+
+def _grade_error(payload: dict, raw_input: str) -> tuple:
+    """Grade an 'error' answer with tolerance. Deterministic exact match first (tapped ==
+    error_index AND correction matches correct_word/aliases — the hot path). On a miss, ONE
+    bounded LLM judge credits a learner who tapped a GENUINELY wrong word and fixed it — so
+    a real error other than the intended one (or a valid variant) is accepted instead of
+    being flatly rejected. Returns (is_correct, wrong_reason)."""
+    if _check_aufgabe("error", payload, raw_input):
+        return True, ""
+    answer = str(raw_input or "").strip()
+    idx_str, _, correction = answer.partition("|")
+    if not str(correction or "").strip():
+        return False, ""
+    try:
+        tapped = int(idx_str)
+    except ValueError:
+        return False, ""
+    judged = _error_judge_full(payload.get("woerter") or [], tapped, correction)
+    if bool(judged.get("match")):
+        return True, ""
+    return False, str(judged.get("reason_ru") or "")
 
 
 def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
@@ -1687,6 +1748,12 @@ def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict 
             is_correct = bool(judged.get("match"))
             if not is_correct:
                 wrong_reason = str(judged.get("reason_ru") or "")
+    elif fmt == "error":
+        # Deterministic exact match (tapped index + correction) first; on a miss, ONE
+        # bounded judge credits a learner who tapped a GENUINELY wrong word and fixed it.
+        # Generated sentences can carry a second latent error, so the single "intended"
+        # tap must not be the only accepted answer.
+        is_correct, wrong_reason = _grade_error(payload, raw_input)
     else:
         is_correct = _check_aufgabe(fmt, payload, raw_input)
     record_aufgabe_answer(
