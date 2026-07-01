@@ -7926,15 +7926,26 @@ async def _run_shortcut_text_split(message, user_id: int, text: str, *, origin: 
 
 
 async def handle_forwarded_message_lookup(update: Update, context: CallbackContext) -> None:
-    """Forward any message to the bot in private chat → same LLM split as iOS Shortcut."""
-    if not update.message or not update.message.text:
+    """Forward any message to the bot in private chat → same LLM split as iOS Shortcut.
+    Accepts a plain-text forward AND a forwarded media/audio message whose text is a
+    caption. Never stays silent: if the forward carries no usable text, it says so."""
+    msg = update.message
+    if not msg:
         return
     if not (update.effective_chat and update.effective_chat.type == "private"):
         return
+    text = (msg.text or msg.caption or "").strip()
+    if not text:
+        await msg.reply_text(
+            "В этом пересланном сообщении нет текста для разбора. "
+            "Перешли текстовое сообщение (или медиа с подписью) 🙂",
+            quote=True,
+        )
+        return
     await _run_shortcut_text_split(
-        update.message,
-        int(update.message.from_user.id),
-        update.message.text,
+        msg,
+        int(msg.from_user.id),
+        text,
         origin="forwarded",
     )
 
@@ -31100,7 +31111,7 @@ def main():
     # (DM menu keyboard now stays fresh silently via TrackingExtBot.send_message
     #  — it rides ordinary replies, so no standalone "menu" refresh message is sent.)
 
-    application.add_handler(MessageHandler(filters.FORWARDED & filters.TEXT & ~filters.COMMAND, handle_forwarded_message_lookup, block=False), group=0)
+    application.add_handler(MessageHandler(filters.FORWARDED & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_forwarded_message_lookup, block=False), group=0)
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message, block=False), group=1)  # ✅ Сохраняем переводы
     # Legacy ReplyKeyboard-based flow is disabled by default; keep handler for rollback via env.
