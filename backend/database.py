@@ -37629,6 +37629,101 @@ def get_challenge_results_since(since_hours: int = 24) -> list[dict]:
             ]
 
 
+def get_daily_interactive_activity(since_hours: int = 24) -> dict[int, dict[str, list[int]]]:
+    """Per-user, per-category ``[answered, correct]`` across EVERY fresh interactive
+    type in the recent window — the honest source for the end-of-day «Итоги дня» digest.
+
+    Each interactive persists its answer to its OWN table via the shared evaluator in
+    ``answer_eval.py``, so those tables already hold answers from BOTH channels — the
+    Mini-App in-place path AND the Telegram group path. Aggregating them directly (instead
+    of only ``bt_3_challenge_results``, which the Mini-App path alone feeds) is what makes
+    the digest count group answers, native poll quizzes, image/visual quizzes and the
+    Sprint/Battle games — not just the handful that happened to be answered in the Mini-App.
+
+    Scope: fresh sent-task interactives only. SRS mistake review, FSRS flashcards and the
+    self-paced number practice (``np``) are intentionally excluded (they are review/drill,
+    not answering a newly-dispatched task).
+
+    Returns ``{user_id: {category: [answered, correct]}}`` for categories:
+    art poll iq vr rb cw ag au ls nd qf sp ast ad.
+    """
+    parts: list[str] = []
+    params: list[int] = []
+
+    def _add_part(sql: str) -> None:
+        parts.append(sql)
+        params.append(int(since_hours))
+
+    # Per-item tables: one row per answered item, boolean ``is_correct``. answered =
+    # row count, correct = rows with is_correct. (Crossword rows are per-word, numdict
+    # per-item — each counts as one answer, which is the honest "answers given" metric.)
+    item_sources = [
+        ("bt_3_article_quiz_answers",   "art",  "answered_at"),
+        ("bt_3_telegram_quiz_attempts", "poll", "answered_at"),
+        ("bt_3_image_quiz_answers",     "iq",   "answered_at"),
+        ("bt_3_visual_riddle_answers",  "vr",   "answered_at"),
+        ("bt_3_rebus_answers",          "rb",   "answered_at"),
+        ("bt_3_crossword_answers",      "cw",   "answered_at"),
+        ("bt_3_anagram_answers",        "ag",   "answered_at"),
+        ("bt_3_aufgabe_answers",        "au",   "answered_at"),
+        ("bt_3_numdict_answers",        "nd",   "submitted_at"),
+        ("bt_3_quiz_freeform_answers",  "qf",   "answered_at"),
+    ]
+    for table, cat, ts in item_sources:
+        _add_part(
+            f"SELECT user_id, '{cat}' AS category, COUNT(*)::int AS answered, "
+            f"COUNT(*) FILTER (WHERE is_correct)::int AS correct "
+            f"FROM {table} WHERE {ts} >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
+        )
+
+    # Listening is graded async against a >=75% pass rule, so correctness is not a plain
+    # column: count answered from its own table (both channels), and correct from the
+    # grader's ranking rows (`ls:` in challenge_results, is_correct = passed) — recorded
+    # by the Mini-App grader. A rare Telegram-group listening still counts as answered.
+    _add_part(
+        "SELECT user_id, 'ls' AS category, COUNT(*)::int AS answered, 0 AS correct "
+        "FROM bt_3_listening_answers WHERE submitted_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
+    )
+    _add_part(
+        "SELECT user_id, 'ls' AS category, 0 AS answered, "
+        "COUNT(*) FILTER (WHERE is_correct)::int AS correct "
+        "FROM bt_3_challenge_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s "
+        "AND challenge_key LIKE 'ls:%%' GROUP BY user_id"
+    )
+
+    # Sprint/Battle games store one aggregate row per finished set.
+    # The syn/ant sprint records only correct_count (no attempt total), so we count those
+    # as both answered and correct — the honest floor of what we actually tracked.
+    _add_part(
+        "SELECT user_id, 'sp' AS category, SUM(correct_count)::int AS answered, "
+        "SUM(correct_count)::int AS correct "
+        "FROM bt_3_sprint_results WHERE answered_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
+    )
+    _add_part(
+        "SELECT user_id, 'ast' AS category, SUM(answered_count)::int AS answered, "
+        "SUM(correct_count)::int AS correct "
+        "FROM bt_3_article_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
+    )
+    _add_part(
+        "SELECT user_id, 'ad' AS category, SUM(answered)::int AS answered, "
+        "SUM(correct)::int AS correct "
+        "FROM bt_3_adjektiv_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
+    )
+
+    sql = (
+        "SELECT user_id, category, SUM(answered)::int, SUM(correct)::int FROM (\n    "
+        + "\n    UNION ALL\n    ".join(parts)
+        + "\n) t GROUP BY user_id, category"
+    )
+    out: dict[int, dict[str, list[int]]] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            for uid, cat, answered, correct in (cursor.fetchall() or []):
+                out.setdefault(int(uid), {})[str(cat)] = [int(answered or 0), int(correct or 0)]
+    return out
+
+
 # ─── B2+ text tasks ("Aufgabe") DB functions ──────────────────────────────────
 
 def create_aufgabe(*, aufgabe_id: str, format: str, level: str, payload: dict) -> None:

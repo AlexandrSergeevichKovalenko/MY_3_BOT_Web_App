@@ -25224,60 +25224,50 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
 
 # (cat_key, label, dispatch_table | None, fact_kind). cat_key matches the
 # challenge_key prefix (sprint "sp_*" is folded to "sp"; article is its own table).
+# Every fresh-interactive category shown in the daily «Итоги дня» digest, in display
+# order. The numbers come from get_daily_interactive_activity(), which counts each type
+# from its own answer table (all channels — Mini-App AND Telegram group), so ALL kinds
+# are represented, not only the ones answered in the Mini-App. SRS/FSRS review and the
+# self-paced number practice (np) are excluded by design (drill, not a fresh task).
 _DIGEST_CATEGORIES = [
-    ("art", "🇩🇪 Артикли",        "bt_3_article_quiz_dispatches", "slotHM"),
-    ("rb",  "🧩 Ребус",           "bt_3_rebus_dispatches",        "slotH"),
-    ("cw",  "🔤 Кроссворд",       "bt_3_crossword_dispatches",    "slotH"),
-    ("ag",  "🔀 Анаграмма",       "bt_3_anagram_dispatches",      "slotH"),
-    ("au",  "✏️ Aufgabe",         "bt_3_aufgabe_dispatches",      "slotH"),
-    ("ls",  "🎧 Аудирование",     "bt_3_listening_dispatches",    "listening"),
-    ("nd",  "🔢 Числа-диктант",   "bt_3_numdict_dispatches",      "slotHM"),
-    ("sp",  "🏃 Спринт син/ант",  "bt_3_sprint_dispatches",       "slotHM"),
-    ("qf",  "✍️ Свой вариант",    None,                           None),
+    ("art",  "🇩🇪 Артикли (квиз)"),
+    ("poll", "📊 Викторина"),
+    ("iq",   "🖼️ Картинка-квиз"),
+    ("vr",   "🔍 Визуальная загадка"),
+    ("rb",   "🧩 Ребус"),
+    ("cw",   "🔤 Кроссворд"),
+    ("ag",   "🔀 Анаграмма"),
+    ("au",   "✏️ Aufgabe"),
+    ("ls",   "🎧 Аудирование"),
+    ("nd",   "🔢 Числа-диктант"),
+    ("qf",   "✍️ Свой вариант"),
+    ("sp",   "🏃 Спринт син/ант"),
+    ("ast",  "📐 Артикль-спринт"),
+    ("ad",   "📝 Адъектив-спринт"),
 ]
 
 
 async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     """Evening DM per participant: a clean per-category breakdown (answered/sent ·
     correct) + the day's totals — no cryptic per-task labels or seconds."""
-    from backend.database import (
-        get_dispatched_slot_hours_today, listening_dispatched_today, count_user_dispatches_today,
-        get_article_quiz_answers_since,
-    )
+    from backend.database import get_daily_interactive_activity
+    # Per user → per category [answered, correct], counted across EVERY interactive type
+    # from its own answer table (all channels), not just the Mini-App-fed challenge_results.
+    # We DON'T report "sent": answers come from group broadcasts, on-demand pulls and a
+    # rolling window, so they legitimately exceed "personally sent today" → the old
+    # "answered/sent %" produced impossible >100% numbers. The honest metric is activity.
     try:
-        rows = await asyncio.to_thread(get_challenge_results_since, 24)
-        art_rows = await asyncio.to_thread(get_article_quiz_answers_since, 24)
+        agg = await asyncio.to_thread(get_daily_interactive_activity, 24)
     except Exception:
         logging.warning("daily digest: fetch failed", exc_info=True)
         return
-    if not rows and not art_rows:
+    if not agg:
         return
 
     today = _get_quiz_schedule_now().date()
-    cat_keys = {c for c, _, _, _ in _DIGEST_CATEGORIES}
-
-    # Per user → per category [answered, correct]. We DON'T report "sent": answers come
-    # from group broadcasts, on-demand pulls and a rolling window, so they legitimately
-    # exceed "personally sent today" → the old "answered/sent %" produced impossible
-    # >100% numbers. The honest, coherent metric is activity: answered + accuracy.
-    agg: dict[int, dict] = {}
-
-    def _add(uid: int, cat: str, correct: bool) -> None:
-        cell = agg.setdefault(int(uid), {}).setdefault(cat, [0, 0])
-        cell[0] += 1
-        cell[1] += 1 if correct else 0
-
-    for r in rows:
-        kind = str(r.get("challenge_key") or "").partition(":")[0]
-        cat = "sp" if kind.startswith("sp_") else kind
-        if cat in cat_keys:
-            _add(r["user_id"], cat, r["is_correct"])
-    for r in art_rows:
-        _add(r["user_id"], "art", r["is_correct"])
-
     from backend.daily_summary_card import render_daily_summary
-    labels = {c: lbl for c, lbl, _, _ in _DIGEST_CATEGORIES}
-    order = [c for c, _, _, _ in _DIGEST_CATEGORIES]
+    labels = {c: lbl for c, lbl in _DIGEST_CATEGORIES}
+    order = [c for c, _ in _DIGEST_CATEGORIES]
     date_str = today.strftime("%d.%m.%Y")
     sent_count = 0
     for uid, cats in agg.items():
@@ -25347,31 +25337,15 @@ async def _admin_test_digest_command(update: Update, context: CallbackContext) -
         await message.reply_text("Allowed users only."); return
     uid = int(user.id)
     from backend.daily_summary_card import render_daily_summary
-    from backend.database import get_article_quiz_answers_since
+    from backend.database import get_daily_interactive_activity
 
-    cat_keys = {c for c, _, _, _ in _DIGEST_CATEGORIES}
-    labels = {c: lbl for c, lbl, _, _ in _DIGEST_CATEGORIES}
-    order = [c for c, _, _, _ in _DIGEST_CATEGORIES]
-    cats: dict[str, list] = {}
-
-    def _add(cat: str, correct: bool) -> None:
-        cell = cats.setdefault(cat, [0, 0]); cell[0] += 1; cell[1] += 1 if correct else 0
-
+    labels = {c: lbl for c, lbl in _DIGEST_CATEGORIES}
+    order = [c for c, _ in _DIGEST_CATEGORIES]
     try:
-        rows = await asyncio.to_thread(get_challenge_results_since, 24)
-        art_rows = await asyncio.to_thread(get_article_quiz_answers_since, 24)
+        activity = await asyncio.to_thread(get_daily_interactive_activity, 24)
     except Exception:
-        rows, art_rows = [], []
-    for r in rows:
-        if int(r.get("user_id") or 0) != uid:
-            continue
-        kind = str(r.get("challenge_key") or "").partition(":")[0]
-        cat = "sp" if kind.startswith("sp_") else kind
-        if cat in cat_keys:
-            _add(cat, r["is_correct"])
-    for r in art_rows:
-        if int(r.get("user_id") or 0) == uid:
-            _add("art", r["is_correct"])
+        activity = {}
+    cats: dict[str, list] = dict(activity.get(uid, {}))
 
     sample = not cats
     if sample:  # no activity → show a representative sample card
