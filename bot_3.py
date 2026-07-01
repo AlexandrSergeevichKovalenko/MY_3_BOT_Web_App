@@ -28793,6 +28793,55 @@ async def admin_clean_bad_reviews_command(update: Update, context: CallbackConte
         f"• из очереди ошибок: {m}\n• из пула заданий: {b}")
 
 
+async def admin_verify_errors_command(update: Update, context: CallbackContext) -> None:
+    """LLM-verify EXISTING 'Finde den Fehler' items (pool + review queue) and delete the
+    grammatically invalid ones (fake case error / a second unflagged error) — the class the
+    deterministic /admin_clean_bad_reviews can't catch. Costs tokens (gpt-4.1-mini per item).
+    Fail-safe: an item is deleted ONLY on an explicit 'invalid' verdict, never on a verifier
+    error. /admin_verify_errors"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status = await message.reply_text("🔎 Проверяю существующие «Fehler-finden» верификатором…")
+    try:
+        from backend.database import fetch_aufgabe_error_items, delete_aufgabe_items
+        from backend.openai_manager import run_verify_aufgabe_error
+        lines: list[str] = []
+        total_removed = 0
+        for table, label in (("bt_3_aufgabe_bank", "пул"), ("bt_3_aufgabe_mistakes", "повторы")):
+            rows = await asyncio.to_thread(fetch_aufgabe_error_items, table, limit=300)
+            bad_ids: list = []
+            for row_id, payload in rows:
+                try:
+                    verdict = await run_verify_aufgabe_error(
+                        woerter=payload.get("woerter") or [],
+                        error_index=int(payload.get("error_index", -1)),
+                        correct_word=str(payload.get("correct_word") or ""),
+                        aliases=payload.get("aliases"),
+                    )
+                except Exception:
+                    continue  # fail-safe: never delete an existing item on a verifier error
+                # Only delete on an EXPLICIT invalid verdict (reason present), not on the
+                # fail-closed 'verifier_error'/'unparseable' sentinel used at generation time.
+                if not verdict.get("valid") and verdict.get("reason") not in ("verifier_error", "unparseable_verifier_output", ""):
+                    bad_ids.append(row_id)
+            removed = await asyncio.to_thread(delete_aufgabe_items, table, bad_ids) if bad_ids else 0
+            total_removed += removed
+            lines.append(f"• {label}: проверено {len(rows)}, удалено {removed}")
+        await status.edit_text(
+            "🔎 <b>Верификация «Fehler-finden»</b>\n" + "\n".join(lines) +
+            f"\n\nВсего удалено битых: <b>{total_removed}</b>.",
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logging.exception("admin verify errors command failed user_id=%s", getattr(user, "id", None))
+        await status.edit_text(f"❌ Не удалось выполнить верификацию: {exc}")
+
+
 async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -> None:
     """Run the Aufgabe pool top-up immediately. /admin_aufgabe_pool"""
     user = update.effective_user
@@ -31150,6 +31199,7 @@ def main():
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("admin_clean_bad_reviews", admin_clean_bad_reviews_command))
+    application.add_handler(CommandHandler("admin_verify_errors", admin_verify_errors_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_cw_resend", admin_crossword_resend_command))

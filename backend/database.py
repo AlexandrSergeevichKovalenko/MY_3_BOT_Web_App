@@ -1455,6 +1455,49 @@ def purge_degenerate_aufgabe_mistakes() -> int:
     return _purge_degenerate_aufgabe("bt_3_aufgabe_mistakes", id_col="id")
 
 
+# table → primary-key column, whitelisted so the raw-SQL helpers below can't be
+# pointed at an arbitrary table/column.
+_AUFGABE_TABLE_ID = {"bt_3_aufgabe_bank": "aufgabe_id", "bt_3_aufgabe_mistakes": "id"}
+
+
+def fetch_aufgabe_error_items(table: str, *, limit: int = 300) -> list[tuple]:
+    """Return [(id, payload_dict), …] for 'error'-format rows in an aufgabe table
+    (bank or mistakes), for the LLM validity re-check (run_verify_aufgabe_error)."""
+    id_col = _AUFGABE_TABLE_ID.get(table)
+    if not id_col:
+        return []
+    out: list[tuple] = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {id_col}, payload FROM {table} WHERE format = 'error' LIMIT %s;",
+                    (int(limit),),
+                )
+                for r in cur.fetchall() or []:
+                    payload = _coerce_json_object(r[1]) if not isinstance(r[1], dict) else r[1]
+                    out.append((r[0], payload if isinstance(payload, dict) else {}))
+    except Exception:
+        logging.warning("fetch_aufgabe_error_items failed table=%s", table, exc_info=True)
+    return out
+
+
+def delete_aufgabe_items(table: str, ids: list) -> int:
+    """Delete rows by primary key from a whitelisted aufgabe table. Returns count."""
+    id_col = _AUFGABE_TABLE_ID.get(table)
+    if not id_col or not ids:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM {table} WHERE {id_col} = ANY(%s);", (list(ids),))
+            conn.commit()
+        return len(ids)
+    except Exception:
+        logging.warning("delete_aufgabe_items failed table=%s", table, exc_info=True)
+        return 0
+
+
 def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
                            correct_answer: str, wrong_answer: str) -> None:
     """Store (or refresh) a wrong answer for spaced-repetition review. Best-effort;
