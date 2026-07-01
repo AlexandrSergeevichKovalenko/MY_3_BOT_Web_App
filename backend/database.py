@@ -8042,7 +8042,9 @@ def ensure_webapp_tables() -> None:
                 SET
                     name = EXCLUDED.name,
                     is_paid = EXCLUDED.is_paid,
-                    stripe_price_id = EXCLUDED.stripe_price_id,
+                    -- Не затирать существующий price_id пустым значением: сервис без
+                    -- STRIPE_PRICE_ID_* не должен обнулять цену, выставленную веб-сервисом.
+                    stripe_price_id = COALESCE(EXCLUDED.stripe_price_id, plans.stripe_price_id),
                     daily_cost_cap_eur = EXCLUDED.daily_cost_cap_eur,
                     trial_days = EXCLUDED.trial_days,
                     billing_type = EXCLUDED.billing_type,
