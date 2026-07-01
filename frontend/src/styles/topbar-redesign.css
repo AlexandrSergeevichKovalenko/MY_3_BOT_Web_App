@@ -351,3 +351,41 @@
 .webapp-page.is-theme-light .topbar-home-arrow {
   color: rgba(55, 48, 163, 0.6) !important;
 }
+
+/* ══════════════════════════════════════════════════
+   6. SPONSOR PILL (compact, between title and avatar)
+══════════════════════════════════════════════════ */
+.topbar-sponsor-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  flex: 0 0 auto !important;
+  padding: 4px 8px !important;
+  border-radius: 999px !important;
+  border: 1px solid rgba(212, 165, 92, 0.4) !important;
+  background: rgba(212, 165, 92, 0.16) !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  transition: transform 0.12s ease, background 0.12s ease !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+.topbar-sponsor-pill:active {
+  transform: scale(0.94) !important;
+  background: rgba(212, 165, 92, 0.26) !important;
+}
+
+.topbar-sponsor-pill__emoji {
+  font-size: 12px !important;
+  line-height: 1 !important;
+}
+
+.topbar-sponsor-pill__heart {
+  font-size: 10px !important;
+  line-height: 1 !important;
+}
+
+.webapp-page.is-theme-light .topbar-sponsor-pill {
+  border-color: rgba(171, 139, 98, 0.4) !important;
+  background: rgba(212, 165, 92, 0.2) !important;
+}
