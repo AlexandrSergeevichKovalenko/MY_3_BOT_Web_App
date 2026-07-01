@@ -6546,35 +6546,41 @@ async def admin_send_audio_command(update: Update, context: CallbackContext):
         await status.edit_text(f"❌ Не удалось отправить аудио: {exc}")
 
 
-# Catalog of scheduled jobs that write a run-guard row, with a human label, expected
-# cadence (max age in hours before we flag it stale), and whether it's ON by default.
-# Source of truth = bt_3_scheduler_run_guards (job_key). Lets /scheduler_health show
-# which scheduled jobs actually ran and when — the real answer to "what stopped coming".
+# Catalog of scheduled jobs, with a human label, expected cadence (max age in hours
+# before we flag stale), whether ON by default, and WHICH tracking table records the run:
+#   "guard" → bt_3_scheduler_run_guards (claim/finish, has status)
+#   "admin" → bt_3_admin_scheduler_runs (row-per-delivery, event/conditional jobs)
+#   "none"  → no run-marker at all (verify by effect, e.g. /poolreport)
+# Reading the RIGHT table per job is what keeps /scheduler_health from false "never" alarms.
 _SCHEDULER_HEALTH_CATALOG = [
-    # job_key, label, max_age_hours, default_on
-    ("today_plan_auto", "План на день в личку (07:00)", 30, True),
-    ("today_evening_reminders_auto", "Вечерние напоминания (18:00)", 30, True),
-    ("translation_focus_pool_refill", "Пополнение пула переводов (23:00)", 30, True),
-    ("daily_audio_auto", "Аудио с ошибками в личку (13:00)", 30, True),
-    ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True),
-    ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True),
-    ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True),
-    ("weekly_goals_auto", "Недельные цели (06:45)", 192, True),
-    ("weekly_user_removal_digest", "Дайджест удаления неактивных", 192, True),
-    ("monthly_budget_report", "Месячный бюджет-отчёт", 768, True),
-    ("group_enrollment_prompt", "Приглашение в группу", 192, True),
+    # job_key, label, max_age_hours, default_on, source
+    ("today_plan_auto", "План на день в личку (07:00)", 30, True, "guard"),
+    ("today_evening_reminders_auto", "Вечерние напоминания (18:00)", 30, True, "guard"),
+    ("daily_audio_auto", "Аудио с ошибками в личку (13:00)", 30, True, "guard"),
+    ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
+    ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
+    ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True, "guard"),
+    ("weekly_goals_auto", "Недельные цели (06:45)", 192, True, "guard"),
     # Off by default — silence here is expected, shown for completeness only.
-    ("sentence_prewarm_daily", "Прогрев предложений", 30, False),
-    ("translation_focus_pool_admin_report", "Отчёт по пулу переводов (admin)", 30, False),
-    ("tts_prewarm_quota_control", "TTS prewarm quota control", 30, False),
-    ("semantic_benchmark_prep", "Semantic benchmark prep", 30, False),
-    ("semantic_weekly_audit_digest", "Semantic weekly audit", 192, False),
+    ("sentence_prewarm_daily", "Прогрев предложений", 30, False, "guard"),
+    ("translation_focus_pool_admin_report", "Отчёт по пулу переводов (admin)", 30, False, "guard"),
+    ("tts_prewarm_quota_control", "TTS prewarm quota control", 30, False, "guard"),
+    ("semantic_benchmark_prep", "Semantic benchmark prep", 30, False, "guard"),
+    ("semantic_weekly_audit_digest", "Semantic weekly audit", 192, False, "guard"),
+    # Conditional / event-driven — tracked in bt_3_admin_scheduler_runs; "ещё не было" is
+    # normal (they fire only when there's something to send / on a rare calendar day).
+    ("weekly_user_removal_digest", "Дайджест удаления неактивных", 192, True, "admin"),
+    ("monthly_budget_report", "Месячный бюджет-отчёт", 768, True, "admin"),
+    ("group_enrollment_prompt", "Приглашение в группу", 192, True, "admin"),
+    # No run-marker anywhere — the refill runs inline in scheduler_service and doesn't
+    # write a guard, so a guard read ALWAYS says "never". Check pool health via /poolreport.
+    ("translation_focus_pool_refill", "Пополнение пула переводов (23:00)", 30, True, "none"),
 ]
 
 
 async def admin_scheduler_health_command(update: Update, context: CallbackContext):
-    """Show, per scheduled job, when it last actually ran (from bt_3_scheduler_run_guards),
-    flagging stale daily/weekly jobs. The forensic answer to "what stopped coming".
+    """Show, per scheduled job, when it last actually ran — reading the CORRECT tracking
+    table per job (run-guards vs admin-runs) so conditional jobs aren't falsely "never".
     /scheduler_health"""
     from datetime import timezone as _tz_utc
     sender = update.effective_user
@@ -6586,14 +6592,19 @@ async def admin_scheduler_health_command(update: Update, context: CallbackContex
         return
     status = await message.reply_text("🩺 Проверяю, что и когда реально отрабатывало…")
     try:
-        from backend.database import get_all_latest_scheduler_run_guards
-        rows = await asyncio.to_thread(get_all_latest_scheduler_run_guards)
-        by_key = {str(r.get("job_key") or ""): r for r in (rows or [])}
+        from backend.database import (
+            get_all_latest_scheduler_run_guards,
+            get_all_latest_admin_scheduler_runs,
+        )
+        guard_rows = await asyncio.to_thread(get_all_latest_scheduler_run_guards)
+        admin_rows = await asyncio.to_thread(get_all_latest_admin_scheduler_runs)
+        guard_by_key = {str(r.get("job_key") or ""): r for r in (guard_rows or [])}
+        admin_by_key = {str(r.get("job_key") or ""): r for r in (admin_rows or [])}
         now = datetime.now(_tz_utc.utc)
 
         def _fmt_age(ts) -> tuple[str, float | None]:
             if not hasattr(ts, "astimezone"):
-                return ("никогда", None)
+                return ("ещё не было", None)
             delta = now - ts.astimezone(_tz_utc.utc)
             hours = delta.total_seconds() / 3600.0
             if hours < 1:
@@ -6605,37 +6616,49 @@ async def admin_scheduler_health_command(update: Update, context: CallbackContex
         alarms: list[str] = []
         oks: list[str] = []
         off: list[str] = []
-        for job_key, label, max_age_h, default_on in _SCHEDULER_HEALTH_CATALOG:
-            r = by_key.get(job_key)
-            last_ts = (r or {}).get("finished_at") or (r or {}).get("updated_at") or (r or {}).get("claimed_at")
-            job_status = str((r or {}).get("status") or "").strip()
+        conditional: list[str] = []
+        for job_key, label, max_age_h, default_on, source in _SCHEDULER_HEALTH_CATALOG:
+            if source == "admin":
+                r = admin_by_key.get(job_key)
+                last_ts = (r or {}).get("created_at")
+                job_status = ""
+            else:  # guard / none
+                r = guard_by_key.get(job_key)
+                last_ts = (r or {}).get("finished_at") or (r or {}).get("updated_at") or (r or {}).get("claimed_at")
+                job_status = str((r or {}).get("status") or "").strip()
             age_text, hours = _fmt_age(last_ts)
             run_period = str((r or {}).get("run_period") or "").strip()
-            stale = (hours is None) or (hours > max_age_h) or (job_status == "failed")
             line = f"• <b>{label}</b>\n   {age_text}" + (f" · {run_period}" if run_period else "")
             if job_status and job_status != "completed":
                 line += f" · <i>{job_status}</i>"
-            if not default_on:
+
+            if source == "none":
+                conditional.append(f"❔ {line}\n   <i>не отмечается — проверяй /poolreport</i>")
+            elif source == "admin":
+                conditional.append(f"🗓 {line}" + ("  <i>(условная/событийная)</i>" if hours is None else ""))
+            elif not default_on:
                 off.append(f"💤 {line}  <i>(выкл по умолчанию)</i>")
-            elif stale:
+            elif (hours is None) or (hours > max_age_h) or (job_status == "failed"):
                 mark = "❌ НИКОГДА" if hours is None else "⚠️ ПРОТУХЛО"
                 alarms.append(f"{mark} {line}")
             else:
                 oks.append(f"✅ {line}")
 
-        # Unknown job_keys present in DB but not in the catalog (so nothing is hidden).
+        # Unknown job_keys present in either table but not in the catalog (nothing hidden).
         known = {k for k, *_ in _SCHEDULER_HEALTH_CATALOG}
-        extras = [k for k in by_key if k not in known]
+        extras = sorted({k for k in guard_by_key if k not in known} | {k for k in admin_by_key if k not in known})
 
         parts = ["🩺 <b>Здоровье планировщика</b> (последний реальный запуск)\n"]
         if alarms:
             parts.append("<b>Проблемы:</b>\n" + "\n".join(alarms))
         if oks:
             parts.append("\n<b>В порядке:</b>\n" + "\n".join(oks))
+        if conditional:
+            parts.append("\n<b>Условные / без маркера:</b>\n" + "\n".join(conditional))
         if off:
             parts.append("\n<b>Отключённые:</b>\n" + "\n".join(off))
         if extras:
-            parts.append("\n<b>Прочие job_key в БД:</b>\n" + ", ".join(sorted(extras)))
+            parts.append("\n<b>Прочие job_key в БД:</b>\n" + ", ".join(extras))
         text = "\n".join(parts)
         await status.delete()
         for chunk in _split_telegram_text(text):

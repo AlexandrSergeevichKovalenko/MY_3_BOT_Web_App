@@ -22227,6 +22227,41 @@ def get_all_latest_scheduler_run_guards(*, target_scope: str = "global") -> list
     return result
 
 
+def get_all_latest_admin_scheduler_runs() -> list[dict]:
+    """Latest run per job_key from bt_3_admin_scheduler_runs (a SEPARATE tracking table
+    from bt_3_scheduler_run_guards — presence of a row = the job ran and delivered to a
+    chat). Used by /scheduler_health so admin-report jobs (monthly_budget_report,
+    weekly_user_removal_digest, group_enrollment_prompt) aren't falsely shown as 'never'."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (job_key)
+                    job_key,
+                    run_period,
+                    target_chat_id,
+                    metadata,
+                    created_at
+                FROM bt_3_admin_scheduler_runs
+                ORDER BY job_key, created_at DESC;
+                """
+            )
+            rows = cursor.fetchall()
+    result: list[dict] = []
+    for row in rows:
+        metadata = row[3] if isinstance(row[3], dict) else {}
+        result.append(
+            {
+                "job_key": str(row[0] or "").strip(),
+                "run_period": str(row[1] or "").strip(),
+                "target_chat_id": int(row[2] or 0),
+                "metadata": metadata,
+                "created_at": row[4],
+            }
+        )
+    return result
+
+
 def _map_semantic_benchmark_library_row(row: tuple | None) -> dict | None:
     if not row:
         return None
