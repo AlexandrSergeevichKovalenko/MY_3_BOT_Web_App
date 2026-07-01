@@ -1122,7 +1122,7 @@ function buildOnboardingSlides(uiLang = 'ru') {
         bullets: [
           'Oben stellst du Sprache der Oberfläche, Theme und dein Sprachpaar ein.',
           'Die stabilste und am tiefsten ausgebaute Lernlogik ist aktuell RU ↔ DE.',
-          'Das ? oben oeffnet jederzeit diesen Guide erneut.',
+          'Das ? oben öffnet jederzeit diesen Guide erneut.',
         ],
       },
       {
@@ -1132,7 +1132,7 @@ function buildOnboardingSlides(uiLang = 'ru') {
         bullets: [
           'Heute zeigt dir die nächsten sinnvollen Aufgaben in der richtigen Reihenfolge.',
           'Übersetzungen trainieren Grammatik, Satzbau und typische Fehler am schnellsten.',
-          'Das Hamburger-Menü links oben oeffnet alle Bereiche der App.',
+          'Das Hamburger-Menü links oben öffnet alle Bereiche der App.',
         ],
       },
       {
@@ -1304,8 +1304,8 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'RU / DE schaltet nur die Sprache der Oberfläche um.',
               'DARK / LIGHT schaltet das Farbschema der App um.',
-              'Die Taste mit dem Sprachpaar oeffnet dein Lernprofil: Lernsprache und Muttersprache.',
-              'Das ? oeffnet diesen Guide jederzeit erneut.',
+              'Die Taste mit dem Sprachpaar öffnet dein Lernprofil: Lernsprache und Muttersprache.',
+              'Das ? öffnet diesen Guide jederzeit erneut.',
             ],
           },
           {
@@ -1374,7 +1374,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'Skill-Map: Ringe und Beherrschungsgrad',
             items: [
               'Unterhalb des Tagesplans siehst du die Skill-Map-Karte mit Ringen für jeden Grammatik- und Vokabelbereich.',
-              'Je voller der Ring, desto besser beherrschst du dieses Thema laut deinen Uebungen und Tests.',
+              'Je voller der Ring, desto besser beherrschst du dieses Thema laut deinen Übungen und Tests.',
               'Schwache Ringe sind deine aktuellen Lücken — tippe auf einen Ring, um gezielt daran zu arbeiten.',
             ],
           },
@@ -1402,9 +1402,9 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
-            title: 'Was du während des Uebersetzens tun kannst',
+            title: 'Was du während des Übersetzens tun kannst',
             items: [
-              'Ueber den kleinen Wörterbuch-Sprung neben einem Satz oeffnest du direkt den passenden Lookup.',
+              'Über den kleinen Wörterbuch-Sprung neben einem Satz öffnest du direkt den passenden Lookup.',
               'Du kannst parallel im Wörterbuch arbeiten, ohne den eigentlichen Lernfluss zu verlieren.',
               'Vor dem Prüfen kannst du aktivieren, dass textuelle Grammatikerklärungen später auch im Privat-Chat ankommen.',
             ],
@@ -1428,7 +1428,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'So startest du',
             items: [
               'Du kannst einen YouTube-Link einfügen oder direkt in der App suchen.',
-              'Nach dem Oeffnen startest du das Video und lädst die Untertitel.',
+              'Nach dem Öffnen startest du das Video und lädst die Untertitel.',
               'Bei Bedarf schaltest du Overlay, Muttersprache und Vollbild ein.',
             ],
           },
@@ -1484,12 +1484,12 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'dictionary',
         title: 'Wörterbuch',
-        summary: 'Hier uebersetzt, erklärst, speicherst und organisierst du Wörter und Phrasen — auch ohne Internet.',
+        summary: 'Hier übersetzt, erklärst, speicherst und organisierst du Wörter und Phrasen — auch ohne Internet.',
         sections: [
           {
             title: 'Welche zwei Lookup-Wege es gibt',
             items: [
-              'Schnell: für den direkten Ueberblick.',
+              'Schnell: für den direkten Überblick.',
               'Mit GPT: für tiefere Erklärung, Formen, Beispiele und Nuancen.',
               'Beides ist alltagstauglich, aber für verschiedene Tiefen gedacht.',
             ],
@@ -1507,7 +1507,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'Speichere Wörter und Phrasen direkt in einen Ordner.',
               'Lege neue Ordner an, wenn du Themen sauber trennen willst.',
-              'Später tauchen diese Inhalte in Karten, Space Repetition und weiteren Uebungen wieder auf.',
+              'Später tauchen diese Inhalte in Karten, Space Repetition und weiteren Übungen wieder auf.',
             ],
           },
           {
@@ -1563,7 +1563,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Was du einstellen kannst',
             items: [
-              'Set-Größe, Ordner, Geschwindigkeit und automatischen oder manuellen Uebergang.',
+              'Set-Größe, Ordner, Geschwindigkeit und automatischen oder manuellen Übergang.',
               'Je nach Modus kommen Timer oder Schwierigkeitsstufe dazu.',
               'So kannst du denselben Wortschatz sehr kurz oder sehr gründlich trainieren.',
             ],
@@ -1580,7 +1580,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'Dein gesamtes Vokabular (alle Seiten, die du online geöffnet hast) — für Anzeige und Bearbeitung.',
               'Space-Repetition-Karten — für Wiederholungen und neue Karten.',
-              'Alle offline vorgenommenen Aenderungen (hinzufügen, löschen, Kartenantworten) warten in der lokalen Warteschlange.',
+              'Alle offline vorgenommenen Änderungen (hinzufügen, löschen, Kartenantworten) warten in der lokalen Warteschlange.',
             ],
           },
           {
@@ -1642,7 +1642,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'Welche Zusatzfunktionen es gibt',
             items: [
               'Lesezeichen setzen, Fortschritt speichern und Dokumente archivieren.',
-              'Offline-Audio für ganze Dokumente oder grosse Abschnitte erstellen.',
+              'Offline-Audio für ganze Dokumente oder große Abschnitte erstellen.',
               'Der Reader ist für ruhiges Verstehen und tiefes Lesen gedacht, nicht nur für schnelle Suche.',
             ],
           },
@@ -1681,7 +1681,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Wie er in den Rest der App passt',
             items: [
-              'Sprechminuten können in Ziele und Analytik einfliessen.',
+              'Sprechminuten können in Ziele und Analytik einfließen.',
               'Du kannst diesen Block als eigene Aufgabe im Tagesplan wiedersehen.',
               'So bleibt aktive Sprache ein fester Teil der Routine.',
             ],
@@ -1776,7 +1776,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'Wenn ein schwacher Ring in der Skill-Map oder eine Empfehlung sichtbar ist.',
               'Wenn du nicht breit, sondern punktgenau trainieren willst.',
-              'Wenn du ein Thema wirklich schliessen statt nur wiederholen willst.',
+              'Wenn du ein Thema wirklich schließen statt nur wiederholen willst.',
             ],
           },
         ],
@@ -1797,7 +1797,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Was du dort tun kannst',
             items: [
-              'Ein Wort, eine Phrase oder einen ganzen Satz schicken und uebersetzen lassen.',
+              'Ein Wort, eine Phrase oder einen ganzen Satz schicken und übersetzen lassen.',
               'Nach Grammatik, Bedeutung, Nuance, Herkunft oder natürlicher Formulierung fragen.',
               'Nach der Antwort eine Phrase speichern und direkt eine Rückfrage stellen.',
               'Dort, wo Audio sinnvoll ist, kann der Bot auch Vorlesen oder Audio-Erklärungen liefern.',
@@ -4253,7 +4253,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
         {historyVisible && (
           <section className="webapp-result">
-            <h3>{tr('История переводов за сегодня', 'Uebersetzungsverlauf für heute')}</h3>
+            <h3>{tr('История переводов за сегодня', 'Übersetzungsverlauf für heute')}</h3>
             <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {activeLanguagePairLabel}</p>
             {historyItems.length === 0 ? (
               <p className="webapp-muted">{tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Übersetzungen.')}</p>
@@ -6493,7 +6493,7 @@ function AppInner() {
   }, [webappUser?.id, initData, translationDraftScopeKey]);
   const activeTranslationSessionWarning = tr(
     'У вас уже есть незавершённая сессия. Сначала завершите её кнопкой «Завершить» или переведите оставшиеся предложения. Все показанные, но не переведённые предложения ухудшат вашу статистику и итоговый балл.',
-    'Du hast bereits eine unvollständige Session. Beende sie zuerst mit „Abschliessen“ oder uebersetze die restlichen Sätze. Alle gezeigten, aber nicht uebersetzten Sätze verschlechtern deine Statistik und deinen Gesamtscore.'
+    'Du hast bereits eine unvollständige Session. Beende sie zuerst mit „Abschließen“ oder übersetze die restlichen Sätze. Alle gezeigten, aber nicht übersetzten Sätze verschlechtern deine Statistik und deinen Gesamtscore.'
   );
   const flushTranslationDraftAndroidDebugSummary = useCallback((reason = 'timer') => {
     if (!androidTranslationDraftDebugConfig.enabled) {
@@ -7206,7 +7206,7 @@ function AppInner() {
       return [
         tr(
           'Пока нет данных для weekly summary. Открой приложение позже, когда появится активность.',
-          'Es gibt noch keine Daten für diese Weekly Summary. Oeffne die App später erneut.'
+          'Es gibt noch keine Daten für diese Weekly Summary. Öffne die App später erneut.'
         ),
       ];
     }
@@ -7293,7 +7293,7 @@ function AppInner() {
     const improvedTitles = improved.map((item) => item.title);
     let nextAction = tr(
       'Продолжай в том же темпе и открой аналитику для деталей.',
-      'Halte das Tempo und oeffne die Analytik für die Details.'
+      'Halte das Tempo und öffne die Analytik für die Details.'
     );
     if (lagging) {
       if (lagging.key === 'translations') {
@@ -7445,7 +7445,7 @@ function AppInner() {
       title: tr('Купить разработчику кофе ☕️', 'Dem Entwickler einen Kaffee ☕️ spendieren'),
       blurb: tr(
         'Разовое спасибо. Доступ не меняется — это просто помогает оплачивать серверы. Ты получаешь бейдж спонсора и место на стене благодарностей.',
-        'Einmaliges Dankeschön. Der Zugang aendert sich nicht — es hilft nur, die Server zu bezahlen. Du erhältst ein Sponsor-Abzeichen und einen Platz an der Dankeswand.'
+        'Einmaliges Dankeschön. Der Zugang ändert sich nicht — es hilft nur, die Server zu bezahlen. Du erhältst ein Sponsor-Abzeichen und einen Platz an der Dankeswand.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -7455,7 +7455,7 @@ function AppInner() {
       title: tr('Кофе ☕️ и чизкейк 🍰', 'Kaffee ☕️ und Cheesecake 🍰'),
       blurb: tr(
         'Разовое спасибо покрупнее. Тоже не меняет доступ — отличается только размером поддержки и более заметным бейджем спонсора на стене благодарностей.',
-        'Ein größeres einmaliges Dankeschön. Aendert ebenfalls nichts am Zugang — nur die Höhe der Unterstützung und ein auffälligeres Sponsor-Abzeichen an der Dankeswand.'
+        'Ein größeres einmaliges Dankeschön. Ändert ebenfalls nichts am Zugang — nur die Höhe der Unterstützung und ein auffälligeres Sponsor-Abzeichen an der Dankeswand.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -7529,7 +7529,7 @@ function AppInner() {
         title: tr('Кофе ☕️ — поддержка', 'Kaffee ☕️ — Unterstützung'),
         items: [
           tr('Это разовое спасибо, а не тариф доступа.', 'Das ist ein einmaliges Dankeschön, kein Zugangstarif.'),
-          tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang aendert sich nicht (vollen Zugang gibt das Pro-Abo).'),
+          tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang ändert sich nicht (vollen Zugang gibt das Pro-Abo).'),
           tr('Бейдж спонсора ☕️ рядом с твоим именем.', 'Sponsor-Abzeichen ☕️ neben deinem Namen.'),
           tr('Место на стене благодарностей.', 'Ein Platz an der Dankeswand.'),
           tr('Помогает оплачивать серверы и развитие.', 'Hilft, Server und Weiterentwicklung zu bezahlen.'),
@@ -7539,7 +7539,7 @@ function AppInner() {
         title: tr('Кофе ☕️ и чизкейк 🍰 — поддержка', 'Kaffee ☕️ und Cheesecake 🍰 — Unterstützung'),
         items: [
           tr('Это разовое спасибо покрупнее, а не тариф доступа.', 'Das ist ein größeres einmaliges Dankeschön, kein Zugangstarif.'),
-          tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang aendert sich nicht (vollen Zugang gibt das Pro-Abo).'),
+          tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang ändert sich nicht (vollen Zugang gibt das Pro-Abo).'),
           tr('Более заметный бейдж спонсора 🍰 рядом с твоим именем.', 'Auffälligeres Sponsor-Abzeichen 🍰 neben deinem Namen.'),
           tr('Выше место на стене благодарностей.', 'Höherer Platz an der Dankeswand.'),
           tr('Сильнее помогает оплачивать серверы и развитие.', 'Hilft stärker, Server und Weiterentwicklung zu bezahlen.'),
@@ -7594,7 +7594,7 @@ function AppInner() {
     } else if (!isPaidPlan) {
       buttonText = tr('Бесплатный план', 'Kostenloser Tarif');
     } else if (billingActionLoading) {
-      buttonText = tr('Открываем...', 'Oeffnen...');
+      buttonText = tr('Открываем...', 'Öffnen...');
     }
     return (
       <article className="billing-support-card" key={offer.planCode}>
@@ -7654,7 +7654,7 @@ function AppInner() {
     ) {
       return tr(
         'Сервер перегружен или временно недоступен. Повторите через несколько секунд.',
-        'Der Server ist ueberlastet oder vorübergehend nicht verfügbar. Bitte in ein paar Sekunden erneut versuchen.'
+        'Der Server ist überlastet oder vorübergehend nicht verfügbar. Bitte in ein paar Sekunden erneut versuchen.'
       );
     }
     if (
@@ -7683,7 +7683,7 @@ function AppInner() {
   };
   const initDataMissingMsg = tr(
     'initData не найдено. Откройте Web App внутри Telegram.',
-    'initData nicht gefunden. Oeffne die Web App in Telegram.'
+    'initData nicht gefunden. Öffne die Web App in Telegram.'
   );
   const initDataExpiredMsg = tr(
     'Сессия Telegram устарела. Войдите заново.',
@@ -7969,8 +7969,8 @@ function AppInner() {
                 ? `На Free доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен после сброса: ${resetLabel}.`
                 : 'На Free доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен завтра после сброса.',
               resetLabel
-                ? `Im Free-Tarif ist 1 Uebersetzungsset pro Tag verfügbar: 7 Sätze. Das nächste Set ist nach dem Reset verfügbar: ${resetLabel}.`
-                : 'Im Free-Tarif ist 1 Uebersetzungsset pro Tag verfügbar: 7 Sätze. Das nächste Set ist morgen nach dem Reset verfügbar.'
+                ? `Im Free-Tarif ist 1 Übersetzungsset pro Tag verfügbar: 7 Sätze. Das nächste Set ist nach dem Reset verfügbar: ${resetLabel}.`
+                : 'Im Free-Tarif ist 1 Übersetzungsset pro Tag verfügbar: 7 Sätze. Das nächste Set ist morgen nach dem Reset verfügbar.'
             )}
           </span>
         </div>
@@ -10624,7 +10624,7 @@ function AppInner() {
         }),
       });
       if (!prepareResponse.ok) {
-        throw new Error(await readApiError(prepareResponse, 'Ошибка запуска прокачки', 'Fehler beim Start der Skill-Uebung'));
+        throw new Error(await readApiError(prepareResponse, 'Ошибка запуска прокачки', 'Fehler beim Start der Skill-Übung'));
       }
       const prepareData = await prepareResponse.json();
       const pack = prepareData?.package && typeof prepareData.package === 'object' ? prepareData.package : null;
@@ -10678,7 +10678,7 @@ function AppInner() {
       const friendly = normalizeNetworkErrorMessage(
         error,
         'Не удалось запустить тренировку навыка.',
-        'Skill-Uebung konnte nicht gestartet werden.'
+        'Skill-Übung konnte nicht gestartet werden.'
       );
       setSkillTrainingError(friendly);
       setSkillTrainingData(null);
@@ -11534,7 +11534,7 @@ function AppInner() {
       return;
     }
     if (theoryPracticeAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
-      showInlineToast(tr('Переведите все предложения, чтобы проверить.', 'Bitte alle Sätze uebersetzen.'));
+      showInlineToast(tr('Переведите все предложения, чтобы проверить.', 'Bitte alle Sätze übersetzen.'));
       return;
     }
     try {
@@ -11600,7 +11600,7 @@ function AppInner() {
           showInlineToast(
             tr(
               'Сначала закончите или допереведите текущую сессию. Текущие предложения уже показаны в разделе переводов.',
-              'Bitte zuerst die aktuelle Session beenden oder fertig uebersetzen. Die aktuellen Sätze sind bereits im Uebersetzungsbereich sichtbar.'
+              'Bitte zuerst die aktuelle Session beenden oder fertig übersetzen. Die aktuellen Sätze sind bereits im Übersetzungsbereich sichtbar.'
             ),
             5000,
           );
@@ -12592,10 +12592,10 @@ function AppInner() {
       title: tr('Начните с переводов', 'Starte mit Übersetzungen'),
       body: tr(
         'Выберите тему и уровень, переведите предложения и сразу читайте разбор ошибок. Это главный вход в грамматику и структуру языка.',
-        'Wähle Thema und Niveau, uebersetze Sätze und lies sofort die Fehleranalyse. Das ist dein Haupteinstieg in Grammatik und Satzstruktur.'
+        'Wähle Thema und Niveau, übersetze Sätze und lies sofort die Fehleranalyse. Das ist dein Haupteinstieg in Grammatik und Satzstruktur.'
       ),
       bullets: [
-        tr('Тема задаёт контекст упражнений.', 'Das Thema gibt den Kontext der Uebungen vor.'),
+        tr('Тема задаёт контекст упражнений.', 'Das Thema gibt den Kontext der Übungen vor.'),
         tr('Уровень влияет на сложность предложений.', 'Das Niveau steuert die Schwierigkeit der Sätze.'),
         tr('После проверки разбирайте ошибки, а не только балл.', 'Nach dem Prüfen zählt nicht nur der Score, sondern die Fehleranalyse.'),
       ],
@@ -12635,7 +12635,7 @@ function AppInner() {
       ),
       bullets: [
         tr('Голосовой ассистент нужен для разговорной практики.', 'Der Sprachassistent ist für mündliche Praxis da.'),
-        tr('Skill-Training собирает теорию, видео и упражнения в одном месте.', 'Skill-Training kombiniert Theorie, Video und Uebungen an einem Ort.'),
+        tr('Skill-Training собирает теорию, видео и упражнения в одном месте.', 'Skill-Training kombiniert Theorie, Video und Übungen an einem Ort.'),
         tr('В личке с ботом после `/start` появляется кнопка «💬 Спросить у GPT» для быстрых вопросов по грамматике, переводу и словам.', 'Im Privat-Chat erscheint nach `/start` die Taste „💬 Спросить у GPT“ für schnelle Fragen zu Grammatik, Übersetzung und Wörtern.'),
       ],
     },
@@ -12644,12 +12644,12 @@ function AppInner() {
       title: tr('Подписка и управление тарифом', 'Abo und Tarifverwaltung'),
       body: tr(
         'В разделе «Подписка» видны текущий тариф, лимиты и все доступные планы. Там же открывается Stripe Portal для управления оплатой.',
-        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfügbaren Pläne. Dort oeffnest du auch das Stripe-Portal zur Zahlungsverwaltung.'
+        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfügbaren Pläne. Dort öffnest du auch das Stripe-Portal zur Zahlungsverwaltung.'
       ),
       bullets: [
         tr('Free — базовый бесплатный режим с лимитами. Только в тарифе Pro можно отправить персональный запрос на доработку под себя.', 'Free ist der kostenlose Modus mit Limits. Nur im Tarif Pro kannst du zusätzlich einen persönlichen Anpassungswunsch einreichen.'),
         tr('«Кофе» и «Кофе + чизкейк» сейчас работают как альтернативные платные планы (не параллельные add-on).', '„Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Pläne (keine parallelen Add-ons).'),
-        tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ oeffnet das Stripe-Portal: Karte wechseln, kündigen/reaktivieren und Rechnungen; danach zur Mini App zurückkehren.'),
+        tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ öffnet das Stripe-Portal: Karte wechseln, kündigen/reaktivieren und Rechnungen; danach zur Mini App zurückkehren.'),
       ],
     },
     {
@@ -14176,7 +14176,7 @@ function AppInner() {
         items: [
           {
             key: 'translations',
-            label: tr('Переведено предложений', 'Uebersetzte Sätze'),
+            label: tr('Переведено предложений', 'Übersetzte Sätze'),
             value: `${coveredSentences}`,
             hint: tr('Сколько предложений вы реально закрыли за период.', 'Wie viele Sätze du im Zeitraum wirklich abgeschlossen hast.'),
           },
@@ -14799,7 +14799,7 @@ function AppInner() {
       return;
     }
     if (Number(file.size || 0) > 8 * 1024 * 1024) {
-      setSupportError(tr('Фото слишком большое. Максимум 8 МБ.', 'Das Bild ist zu gross. Maximal 8 MB.'));
+      setSupportError(tr('Фото слишком большое. Максимум 8 МБ.', 'Das Bild ist zu groß. Maximal 8 MB.'));
       clearSupportAttachment();
       return;
     }
@@ -19481,7 +19481,7 @@ function AppInner() {
       return !value;
     });
     if (missing.length > 0) {
-      setWebappError(tr('Для истории нужно перевести все 7 предложений.', 'Für die Story müssen alle 7 Sätze uebersetzt werden.'));
+      setWebappError(tr('Для истории нужно перевести все 7 предложений.', 'Für die Story müssen alle 7 Sätze übersetzt werden.'));
       return;
     }
     if (!storyGuess.trim()) {
@@ -20861,7 +20861,7 @@ function AppInner() {
       setSelectionInlineLookup({
         loading: false,
         word: cleaned,
-        translation: String(error?.message || tr('Ошибка перевода', 'Uebersetzungsfehler')),
+        translation: String(error?.message || tr('Ошибка перевода', 'Übersetzungsfehler')),
         direction: '',
         provider: '',
       });
@@ -21093,7 +21093,7 @@ function AppInner() {
       setSelectionInlineLookup({
         loading: false,
         word: cleaned,
-        translation: String(error?.message || tr('Ошибка перевода', 'Uebersetzungsfehler')),
+        translation: String(error?.message || tr('Ошибка перевода', 'Übersetzungsfehler')),
         direction: '',
         provider: '',
       });
@@ -22483,7 +22483,7 @@ function AppInner() {
         body: JSON.stringify({ initData, document_id: safeDocumentId }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка открытия книги', 'Fehler beim Oeffnen des Dokuments'));
+        throw new Error(await readApiError(response, 'Ошибка открытия книги', 'Fehler beim Öffnen des Dokuments'));
       }
       const data = await response.json();
       const doc = data?.document || {};
@@ -24070,11 +24070,11 @@ function AppInner() {
       ),
       body: tr(
         'У вас ещё нет истории переводов и сформированных слабых навыков, поэтому система пока не знает, какую тему тренировать через YouTube.',
-        'Du hast noch keine Uebersetzungshistorie und noch keine schwachen Skills, daher weiss das System noch nicht, welches Thema über YouTube trainiert werden soll.'
+        'Du hast noch keine Übersetzungshistorie und noch keine schwachen Skills, daher weiß das System noch nicht, welches Thema über YouTube trainiert werden soll.'
       ),
       note: tr(
         'Выберите интересующую тему самостоятельно, найдите видео на YouTube и вставьте сюда ссылку. Позже, когда появится история переводов, видео будут подбираться автоматически.',
-        'Wähle vorerst selbst ein interessantes Thema, suche ein Video auf YouTube und füge hier den Link ein. Später, sobald Uebersetzungshistorie vorhanden ist, werden Videos automatisch empfohlen.'
+        'Wähle vorerst selbst ein interessantes Thema, suche ein Video auf YouTube und füge hier den Link ein. Später, sobald Übersetzungshistorie vorhanden ist, werden Videos automatisch empfohlen.'
       ),
     };
   }, [tr]);
@@ -29527,7 +29527,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка открытия портала', 'Fehler beim Oeffnen des Portals'));
+        throw new Error(await readApiError(response, 'Ошибка открытия портала', 'Fehler beim Öffnen des Portals'));
       }
       const data = await response.json();
       const url = String(data?.url || '').trim();
@@ -30099,7 +30099,7 @@ function AppInner() {
         ${tr('Общий результат', 'Gesamtergebnis')}: ${formatMetricValue('final_score', item?.final_score)}<br/>
         ${tr('Слова', 'Wörter')}: ${formatMetricValue('learned_words', item?.learned_words)}<br/>
         ${tr('Ошибок на 1 предложение', 'Fehler pro Satz')}: ${formatMetricValue('errors_per_sentence', item?.errors_per_sentence)}<br/>
-        ${tr('Переведено', 'Uebersetzt')}: ${item.total_translations}<br/>
+        ${tr('Переведено', 'Übersetzt')}: ${item.total_translations}<br/>
         ${tr('Попытки', 'Versuche')}: ${item.translation_attempts ?? item.total_translations ?? 0}
       `;
     };
@@ -30353,7 +30353,7 @@ function AppInner() {
                         type="button"
                         className="language-pair-button"
                         onClick={openLanguageProfileModal}
-                        title={tr('Изменить языковую пару обучения', 'Sprachpaar aendern')}
+                        title={tr('Изменить языковую пару обучения', 'Sprachpaar ändern')}
                       >
                         {getActiveLanguagePairLabel()}
                       </button>
@@ -30552,7 +30552,7 @@ function AppInner() {
                 <button
                   type="button"
                   className="onboarding-backdrop"
-                  aria-label={tr('Пропустить быстрый старт', 'Schnellstart ueberspringen')}
+                  aria-label={tr('Пропустить быстрый старт', 'Schnellstart überspringen')}
                   onClick={dismissOnboarding}
                 />
                 <div className="onboarding-modal">
@@ -30566,7 +30566,7 @@ function AppInner() {
                       className="secondary-button onboarding-close"
                       onClick={dismissOnboarding}
                     >
-                      {tr('Пропустить', 'Ueberspringen')}
+                      {tr('Пропустить', 'Überspringen')}
                     </button>
                   </div>
                   <div className="onboarding-modal-body">
@@ -30637,7 +30637,7 @@ function AppInner() {
                   isOpen={weeklySummaryModalOpen}
                   title={weeklySummaryVisitConfig.title}
                   subtitle={weeklySummaryVisitConfig.subtitle}
-                  closeLabel={tr('Закрыть weekly summary', 'Weekly Summary schliessen')}
+                  closeLabel={tr('Закрыть weekly summary', 'Weekly Summary schließen')}
                   openAnalyticsLabel={tr('Открыть аналитику', 'Analytik öffnen')}
                   onClose={dismissWeeklySummaryModal}
                   onOpenAnalytics={openAnalyticsFromWeeklySummary}
@@ -30980,7 +30980,7 @@ function AppInner() {
                         onClick={() => setLanguageProfileModalOpen(false)}
                         disabled={languageProfileSaving}
                       >
-                        {tr('Закрыть', 'Schliessen')}
+                        {tr('Закрыть', 'Schließen')}
                       </button>
                     )}
                   </div>
@@ -31522,7 +31522,7 @@ function AppInner() {
                     </div>
 
                     <div className="theory-practice-block">
-                      <h4>{tr('4) Практика: 5 предложений', '4) Uebung: 5 Sätze')}</h4>
+                      <h4>{tr('4) Практика: 5 предложений', '4) Übung: 5 Sätze')}</h4>
                       {(skillTrainingData?.package?.practice_sentences || []).map((sentence, index) => (
                         <label key={`skill-training-practice-${index}`} className="webapp-field">
                           <span>{index + 1}. {String(sentence || '')}</span>
@@ -31673,7 +31673,7 @@ function AppInner() {
                         className="secondary-button"
                         onClick={() => setTheoryPracticeOpen((prev) => !prev)}
                       >
-                        {theoryPracticeOpen ? tr('Скрыть закрепление', 'Uebung verbergen') : tr('Закрепить теорию', 'Theorie festigen')}
+                        {theoryPracticeOpen ? tr('Скрыть закрепление', 'Übung verbergen') : tr('Закрепить теорию', 'Theorie festigen')}
                       </button>
                     </div>
 
@@ -35854,7 +35854,7 @@ function AppInner() {
                             <button
                               type="button"
                               className="analytics-calendar-backdrop"
-                              aria-label={tr('Закрыть выбор диапазона дат', 'Datumsauswahl schliessen')}
+                              aria-label={tr('Закрыть выбор диапазона дат', 'Datumsauswahl schließen')}
                               onClick={() => setAnalyticsCalendarOpen(false)}
                             />
                             <div className="analytics-calendar-popover" role="dialog" aria-modal="true">
@@ -35912,7 +35912,7 @@ function AppInner() {
                                     }
                                   }}
                                 >
-                                  {tr('Закрыть', 'Schliessen')}
+                                  {tr('Закрыть', 'Schließen')}
                                 </button>
                                 <button
                                   type="button"
@@ -36871,8 +36871,8 @@ function AppInner() {
                           <h3 className="billing-zone__title">{tr('Поддержать проект ❤️', 'Projekt unterstützen ❤️')}</h3>
                           <p className="billing-zone__hint">
                             {readerAudioPremiumEnabled
-                              ? tr('У тебя уже есть полный доступ. Это — способ сказать спасибо и помочь оплачивать серверы и развитие. Разовый платёж, доступ не меняется.', 'Du hast bereits vollen Zugang. Das ist eine Möglichkeit, Danke zu sagen und Server und Weiterentwicklung mitzufinanzieren. Einmalige Zahlung, der Zugang aendert sich nicht.')
-                              : tr('Это необязательно: полный доступ открывает подписка Pro выше. А здесь — просто способ поблагодарить проект разовым платежом (доступ не меняется).', 'Optional: vollen Zugang gibt das Pro-Abo oben. Hier kannst du dich einfach mit einer einmaligen Zahlung bedanken (der Zugang aendert sich nicht).')}
+                              ? tr('У тебя уже есть полный доступ. Это — способ сказать спасибо и помочь оплачивать серверы и развитие. Разовый платёж, доступ не меняется.', 'Du hast bereits vollen Zugang. Das ist eine Möglichkeit, Danke zu sagen und Server und Weiterentwicklung mitzufinanzieren. Einmalige Zahlung, der Zugang ändert sich nicht.')
+                              : tr('Это необязательно: полный доступ открывает подписка Pro выше. А здесь — просто способ поблагодарить проект разовым платежом (доступ не меняется).', 'Optional: vollen Zugang gibt das Pro-Abo oben. Hier kannst du dich einfach mit einer einmaligen Zahlung bedanken (der Zugang ändert sich nicht).')}
                           </p>
                         </div>
                         {billingStatus?.is_sponsor && (
@@ -36923,7 +36923,7 @@ function AppInner() {
                               className="secondary-button"
                               onClick={() => setBillingPlanDetailsOpenFor('')}
                             >
-                              {tr('Закрыть', 'Schliessen')}
+                              {tr('Закрыть', 'Schließen')}
                             </button>
                           </div>
                           <ul>
@@ -36938,7 +36938,7 @@ function AppInner() {
                     {billingStatus?.manage?.available && (
                       <div className="webapp-section-actions">
                         <button type="button" className="secondary-button" onClick={handleBillingManage} disabled={billingActionLoading}>
-                          {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Управлять подпиской в Stripe Portal', 'Abo im Stripe-Portal verwalten')}
+                          {billingActionLoading ? tr('Открываем...', 'Öffnen...') : tr('Управлять подпиской в Stripe Portal', 'Abo im Stripe-Portal verwalten')}
                         </button>
                       </div>
                     )}
@@ -37050,7 +37050,7 @@ function AppInner() {
                       </div>
                     )}
                     {selectionInlineLookup.loading
-                      ? tr('Переводим...', 'Uebersetzen...')
+                      ? tr('Переводим...', 'Übersetzen...')
                       : (selectionInlineLookup.translation || '—')}
                   </div>
                 )}
@@ -37096,7 +37096,7 @@ function AppInner() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                     <strong style={{ fontSize: 17 }}>{tr('GPT Объяснение', 'GPT-Erklärung')}</strong>
                     <button type="button" className="secondary-button" onClick={closeSelectionGptSheet}>
-                      {tr('Закрыть', 'Schliessen')}
+                      {tr('Закрыть', 'Schließen')}
                     </button>
                   </div>
                   <div className="webapp-muted" style={{ fontSize: 13, fontStyle: 'italic' }}>

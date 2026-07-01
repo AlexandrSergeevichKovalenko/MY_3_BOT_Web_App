@@ -277,7 +277,7 @@ export default function ReaderSection(props) {
                             onClick={handleBillingUpgrade}
                             disabled={billingActionLoading}
                           >
-                            {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
+                            {billingActionLoading ? tr('Открываем...', 'Öffnen...') : tr('Upgrade', 'Upgrade')}
                           </button>
                         </div>
                       )}
@@ -354,7 +354,7 @@ export default function ReaderSection(props) {
                         disabled={isOpening}
                       >
                         {isOpening
-                          ? tr('Открываем…', 'Oeffnen…')
+                          ? tr('Открываем…', 'Öffnen…')
                           : `▶  ${tr('Продолжить', 'Weiterlesen')}`}
                       </button>
                     </div>
@@ -1146,7 +1146,7 @@ export default function ReaderSection(props) {
                       type="button"
                       className="secondary-button reader-toc-close-btn"
                       onClick={() => setReaderShowToc(false)}
-                      aria-label={tr('Закрыть', 'Schliessen')}
+                      aria-label={tr('Закрыть', 'Schließen')}
                     >×</button>
                   </div>
                   <div className="reader-toc-list">
@@ -1187,7 +1187,7 @@ export default function ReaderSection(props) {
                 <button
                   type="button"
                   className="reader-settings-sheet-backdrop"
-                  aria-label={tr('Закрыть', 'Schliessen')}
+                  aria-label={tr('Закрыть', 'Schließen')}
                   onClick={() => setReaderSettingsOpen(false)}
                 />
                 <div className="reader-settings-sheet">

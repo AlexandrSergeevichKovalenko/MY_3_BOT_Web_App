@@ -267,7 +267,7 @@ export default function HomeDashboardTiles({
 
       <div className="hdt-section-head">
         <span className="hdt-section-label">{tr('Разделы', 'Bereiche')}</span>
-        <span className="hdt-section-hint">{tr('Нажмите для перехода', 'Antippen zum Oeffnen')}</span>
+        <span className="hdt-section-hint">{tr('Нажмите для перехода', 'Antippen zum Öffnen')}</span>
       </div>
 
       <div className="hdt-bento" {...(!canViewEconomics ? { 'data-no-eco': '' } : {})}>

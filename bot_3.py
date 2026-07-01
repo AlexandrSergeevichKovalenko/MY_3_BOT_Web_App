@@ -6436,26 +6436,22 @@ def _run_dict_dedup_daily_report_safe() -> None:
 
 
 def _run_dict_dedup_nightly_safe() -> None:
-    """Bot-side NIGHTLY dictionary dedup trigger. The dedicated SCHEDULER_SERVICE cron
-    has never actually dispatched this job — the DB shows only manual runs since the
-    feature launched 15.06 — so we drive it from the bot's own reliable scheduler, the
-    same pattern as the economics/weekly-report jobs above. Runs in a BackgroundScheduler
-    thread, so it must stay synchronous. Primary path enqueues the real actor onto the
-    healthy scheduler_jobs queue (the exact /dedupenqueue path, which works); if the
-    broker can't be reached, fall back to running the dedup inline in the bot process."""
-    try:
-        from backend.background_jobs import run_dictionary_dedup_actor
-        run_dictionary_dedup_actor.send()
-        logging.info("dict dedup nightly (bot scheduler): enqueued run_dictionary_dedup_actor")
-        return
-    except Exception:
-        logging.exception("dict dedup nightly (bot scheduler): enqueue failed, running inline")
+    """Bot-side NIGHTLY dictionary dedup trigger. Runs the dedup INLINE in the bot's
+    scheduler thread (the exact proven /dedupnow path) rather than enqueuing the dramatiq
+    actor. Why inline: the active dictionary base is tiny (~dozen users) so a full pass
+    finishes in seconds, and the enqueue path silently DROPPED the job — `.send()` here
+    never set up the Redis broker (unlike /dedupenqueue, which calls get_dramatiq_broker()
+    first), so in the bot process it published to an in-memory StubBroker that no worker
+    consumes: no error, no worker, no recorded run. That's why every automatic nightly
+    since launch recorded nothing while both manual paths worked. Inline records the run
+    immediately with no broker/worker dependency. Runs in a BackgroundScheduler thread,
+    so it must stay synchronous."""
     try:
         from backend.database import run_dictionary_dedup_now
         result = run_dictionary_dedup_now(max_users=500, since_days=7)
-        logging.info("dict dedup nightly (bot scheduler) inline result=%s", result)
+        logging.info("dict dedup nightly (bot scheduler, inline) result=%s", result)
     except Exception:
-        logging.exception("dict dedup nightly (bot scheduler) inline failed")
+        logging.exception("dict dedup nightly (bot scheduler, inline) failed")
 
 
 def _run_telemetry_retention_safe() -> None:
