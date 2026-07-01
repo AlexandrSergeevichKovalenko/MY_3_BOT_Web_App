@@ -6135,6 +6135,10 @@ function AppInner() {
 
   const dictionaryRef = useRef(null);
   const dictionaryResultRef = useRef(null);
+  // The collocation-picker panel that opens under the word card when the user taps
+  // "Wort zum Wörterbuch hinzufügen". It appears at the very bottom, off-screen, so
+  // we scroll to it on open and scroll back to the card once the save is confirmed.
+  const collocationsRef = useRef(null);
   // The whole app root. The fullscreen word card portals here so it escapes the
   // dictionary's inner overflow:hidden scroll containers, while still inheriting
   // the --dmps-* theme vars (defined on .webapp-page.is-theme-light).
@@ -6161,6 +6165,19 @@ function AppInner() {
     }
     prevDictLoadingRef.current = dictionaryLoading;
   }, [dictionaryLoading, dictionaryResult]);
+
+  // When the collocation picker opens it renders at the bottom of the card — scroll
+  // it into view so the user actually sees the choices instead of the card sitting
+  // unchanged. Deferred a tick so the panel is mounted before we scroll.
+  useEffect(() => {
+    if (!collocationsVisible) return undefined;
+    const id = setTimeout(() => {
+      try {
+        collocationsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch (_e) { /* ignore */ }
+    }, 60);
+    return () => clearTimeout(id);
+  }, [collocationsVisible]);
 
   useEffect(() => {
     const wasVisible = Boolean(translationConfiguratorWasVisibleRef.current);
@@ -27466,6 +27483,13 @@ function AppInner() {
     setDictionarySaved(label);
     setDictionaryError('');
     setCollocationsVisible(false);
+    // Return the user to the word card they started from — the picker collapses at the
+    // bottom, so without this the view would stay scrolled down on empty space.
+    setTimeout(() => {
+      try {
+        dictionaryResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (_e) { /* ignore */ }
+    }, 60);
     showInlineToast(label);
     (async () => {
       try {
@@ -27753,7 +27777,7 @@ function AppInner() {
           )}
 
           {collocationsVisible && (
-            <div className="translation-dict-collocations">
+            <div className="translation-dict-collocations" ref={collocationsRef}>
               <h4>{tr('Выберите связку для словаря', 'Wähle eine Kollokation')}</h4>
               {collocationsLoading && <div className="webapp-muted">{tr('Генерируем варианты...', 'Varianten werden generiert...')}</div>}
               {collocationsError && <div className="webapp-error">{collocationsError}</div>}
@@ -33745,7 +33769,7 @@ function AppInner() {
                       </div>
                     )}
                     {collocationsVisible && (
-                      <div className="dictionary-collocations">
+                      <div className="dictionary-collocations" ref={collocationsRef}>
                         <h4>{tr('Выберите связку для словаря', 'Wähle eine Kollokation')}</h4>
                         {collocationsLoading && <div className="webapp-muted">{tr('Генерируем варианты...', 'Varianten werden generiert...')}</div>}
                         {collocationsError && <div className="webapp-error">{collocationsError}</div>}
