@@ -19,9 +19,12 @@
 
 | File | What it covers | Status | When to read |
 | --- | --- | --- | --- |
+| `LEARNING_PATH.md` | главный учебный маршрут: методика, порядок чтения, план разборов | learning guide | первым, если изучаете код с нуля |
 | `FSRS.md` | FSRS spaced repetition: tables, API, quick checks | operational note | когда изучаете cards / `/api/cards/*` |
 | `ios_share_extension_backend.md` | backend mobile endpoints for iOS share extension | narrow backend note | когда изучаете mobile/iOS integration; читать вместе с `ios/ShareExtensionTemplate/README.md` |
 | `tts_generation_audit.md` | boundaries and call graph of TTS generation subsystem | audit / extraction support doc | когда изучаете TTS, prewarm, recovery, scheduler interactions |
+| `autosave_scaling_explained.md` | «Ночной автосейв» iOS Shortcut → staging → batch-translate digest, и почему это масштабируется | explainer note | когда изучаете shortcut/autosave pipeline |
+| `shortcut_onboarding.md` | 2-command iOS Shortcut onboarding (collector + nightly processor) | operational note | когда изучаете Shortcut install/onboarding |
 | `voice_architecture.md` | responsibility boundaries of the voice domain | architecture note | когда изучаете LiveKit/voice subsystem |
 | `voice_migration_plan.md` | proposed migration order for voice persistence | draft, not executable SQL | когда сравниваете intent vs current implementation |
 | `voice_schema_draft.md` | proposed minimal voice schema | schema draft, not authoritative current schema | когда хотите понять planned voice data model |
@@ -79,13 +82,16 @@ Important:
 
 ### Closest to current implementation
 
+- `LEARNING_PATH.md`
 - `FSRS.md`
 - `tts_generation_audit.md`
+- `autosave_scaling_explained.md`
 - `voice_architecture.md`
 
 ### Narrow or partial
 
 - `ios_share_extension_backend.md`
+- `shortcut_onboarding.md`
 
 ### Draft / planning docs
 

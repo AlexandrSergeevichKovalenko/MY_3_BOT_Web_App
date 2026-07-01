@@ -18,7 +18,7 @@ Frontend здесь — это в первую очередь Telegram Mini App,
 
 | File | Role | Что делает |
 | --- | --- | --- |
-| `src/main.jsx` | bootstrap entrypoint | определяет app mode, проверяет свежесть bundle через `/api/webapp/version`, управляет service worker policy, монтирует React app |
+| `src/main.jsx` | bootstrap entrypoint | определяет app mode, проверяет свежесть bundle через `/api/webapp/version`, управляет service worker policy, роутит по `startapp` на lazy-overlay экраны (см. ниже) или монтирует полный React app |
 | `src/App.jsx` | главный orchestration file | хранит state, вызывает backend route, переключает секции, связывает UI с Telegram/LiveKit/backend |
 | `src/theme.css` | общая тема | базовый визуальный слой |
 | `src/App.css` | app-specific styles | дополнительный общий стиль |
@@ -37,6 +37,54 @@ Frontend здесь — это в первую очередь Telegram Mini App,
 | `src/components/WeeklySummaryModal.jsx` | weekly summary modal shell | открывается поверх app state |
 | `src/components/ThreeMascot.jsx` | mascot/presentation component | UI-only |
 | `src/components/WebGLMascot.jsx` | WebGL-based mascot/presentation component | UI-only |
+| `src/components/ExplainErrorsModal.jsx` | teacher-grade error breakdown modal | рендерит структурированный payload из `/api/webapp/explain` (summary, per-error cards, alternatives, synonyms) + 🇩🇪 RU/DE toggle |
+
+### Standalone Mini-App overlays (lazy-mounted)
+
+Кроме тяжёлого `App.jsx`, `main.jsx` умеет монтировать маленькие самостоятельные экраны в зависимости от `startapp` / `start_param` (или короткого пути вроде `/dict`). Такой overlay грузится отдельным lazy-чанком и открывается мгновенно поверх чата, минуя основной App. Роутинг живёт в `bootstrapApp()` в `main.jsx`.
+
+| Trigger (`startapp`) | Mount | Файл | Что делает |
+| --- | --- | --- | --- |
+| `ans_*` | AnswerOverlay | `src/answer/AnswerOverlay.jsx` | in-place ответ на групповую задачу; хост для мини-игр |
+| `dive_*` | DeepDiveOverlay | `src/answer/DeepDiveOverlay.jsx` | «deep dive» результата (замена 4 callback-кнопок: прослушать / почувствовать слово / сочетание / спросить) |
+| `plan` | PlanTable | `src/plan/PlanTable.jsx` | таблица today/weekly plan как отдельный экран |
+| `shortcut` | ShortcutGuide | `src/shortcut/ShortcutGuide.jsx` | установка two-command screenshot system (ordered cards + media + pairing code) |
+| `dict` / `/dict` / `/d` | DictionaryOverlay | `src/dictionary/DictionaryOverlay.jsx` | лёгкий «быстрый словарь» bottom-sheet (quick-translate + GPT breakdown + canonical save) |
+| `lb*` | Leaderboard | `src/leaderboard/Leaderboard.jsx` | самостоятельный экран лидерборда |
+
+### `src/answer/` — interactive games and answer overlays
+
+`AnswerOverlay.jsx` и `DeepDiveOverlay.jsx` — точки входа, остальное это мини-игры и общий движок ответа/ревью, которые они хостят:
+
+| File | Role |
+| --- | --- |
+| `AnswerOverlay.jsx` / `DeepDiveOverlay.jsx` | overlay-точки входа (см. таблицу выше) |
+| `AskOverlay.jsx` | «спросить» под результатом |
+| `ReviewSession.jsx` | общий цикл ревью, переиспользуется играми |
+| `AnagramGame.jsx`, `MCGame.jsx`, `ListeningGame.jsx`, `SprintGame.jsx` | базовые мини-игры |
+| `AufgabeGame.jsx`, `CrosswordGrid.jsx` | форматные задачи (aufgabe) и кроссворд |
+| `ArtikelSprintGame.jsx`, `ArtikelLearnGame.jsx` | Artikel Sprint (der/die/das tap) + learn-deck |
+| `AdjektivSprintGame.jsx`, `AdjektivLearnGame.jsx` | Adjektiv Sprint + learn-deck |
+| `NumberDictationGame.jsx`, `NumberDictationPractice.jsx` | Zahlen-Diktat (kind `nd`) + self-paced practice (kind `np`) |
+| `BattleHistory.jsx` | история батлов |
+| `DeepDiveActions.jsx` | набор действий внутри deep-dive |
+| `richText.jsx`, `useFitText.js`, `answer.css` | shared rich-text render, fit-text hook, стили |
+
+### `src/dictionary/` — quick dictionary overlay
+
+| File | Role |
+| --- | --- |
+| `DictionaryOverlay.jsx` | compact bottom-sheet словарь (`?startapp=dict`) |
+| `WordBreakdown.jsx` | POS-aware разбор слова (склонение/спряжение/степени), TTS-хелперы, `api`/`haptic` |
+| `dict.css` | стили overlay |
+
+### Other feature folders
+
+| File | Role |
+| --- | --- |
+| `src/leaderboard/Leaderboard.jsx` (+ `leaderboard.css`) | standalone leaderboard экран |
+| `src/plan/PlanTable.jsx` (+ `plan.css`) | today/weekly plan таблица |
+| `src/shortcut/ShortcutGuide.jsx` (+ `shortcut.css`) | экран установки iOS-Shortcut two-command system |
 
 ### Offline and utilities
 
@@ -46,6 +94,8 @@ Frontend здесь — это в первую очередь Telegram Mini App,
 | `src/offline/vocabCache.js` | IndexedDB cache для vocab + offline SRS queue/mutations | позволяет частичную offline работу |
 | `src/utils/appMode.js` | detect `telegram` / `pwa` / `browser` | runtime mode switch |
 | `src/utils/weeklySummary.js` | weekly summary date/math helpers | pure frontend helper logic |
+| `src/utils/echartsRuntime.js` | curated ECharts core import (bar/line + grid/legend/tooltip, canvas) | tree-shaken chart runtime для analytics |
+| `src/utils/readerAudioGaplessEngine.js` | Web Audio API gapless TTS-плеер для reader | sample-accurate переходы клипов (iOS/Android) |
 | `src/i18n.js` | i18n-related helper layer | UI texts/internationalization support |
 
 ### Styles and tokens
@@ -55,6 +105,7 @@ Frontend здесь — это в первую очередь Telegram Mini App,
 | `src/components/HomeDashboardTiles.css` | tile dashboard styling |
 | `src/components/reader-redesign.css` | reader redesign styling |
 | `src/styles/topbar-redesign.css` | topbar redesign styling |
+| `src/styles/home-browser-redesign.css` | browser-mode home redesign styling |
 | `src/styles/tokens.json` | token data |
 | `src/styles/design-tokens.md` | token documentation note |
 

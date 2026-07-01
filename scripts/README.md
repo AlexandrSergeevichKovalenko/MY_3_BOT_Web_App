@@ -27,6 +27,9 @@
 | `analyze_observability_logs.py` | анализирует structured observability logs для `tts` и `translation_check` flows | log files or stdin -> summary/json |
 | `run_translation_load_test.py` | synthetic load test для translation-check flow | base URL, auth/test params, DB access -> staged results/logs |
 | `summarize_translation_load_stage.py` | summarises one staged translation load test run | stage artifacts/logs/DB snapshots -> summary |
+| `pgbouncer_smoke_test.py` | read-only PgBouncer transaction-pool smoke test (`python -m scripts.pgbouncer_smoke_test`) | active DB target -> sanitized report, non-zero exit on fail; wraps `backend.db_pgbouncer_smoke` |
+| `synthetic_load_runner.py` | Phase 1 scaffold: генерирует synthetic Telegram Update payloads для заданного user-mix/rate (без Telegram API, `SYNTHETIC_LOAD_MODE=1`) | по умолчанию печатает PLAN + sample, не диспатчит |
+| `synthetic_load_dispatch.py` | Phase 2: скармливает synthetic updates в PTB Application со STUB-ботом, чтобы нагрузить реальную инфраструктуру (DB pool, PgBouncer, executor) | жёсткий safety-контракт `assert_safe_to_dispatch` (prod-хосты отклоняются безусловно) |
 
 ### Model and prompt comparisons
 
@@ -57,6 +60,7 @@
 | --- | --- | --- |
 | `import_lingualeo.py` | imports vocabulary pairs from a simple text/CSV-like source into DB | manual data import |
 | `send_daily_audio.sh` | triggers `/api/admin/send-daily-audio` with admin token | direct admin endpoint call |
+| `upload_onboarding_assets.py` | one-time uploader онбординг-фото/видео -> Telegram `file_id` (пишет в `backend/onboarding_assets.py`) | требует LIVE `TELEGRAM_Deutsch_BOT_TOKEN`; file_ids привязаны к токену бота |
 | `fsrs_dry_run.py` | small local dry run of FSRS scheduling progression | good first script to read |
 
 ## 3. Environment Expectations
@@ -147,3 +151,5 @@ Use `scripts/` to learn:
 - model comparison scripts can incur provider cost.
 - `send_daily_audio.sh` calls a real admin endpoint if pointed at a live backend.
 - import scripts can mutate vocabulary data.
+- `synthetic_load_dispatch.py` drives real DB/infrastructure work; it refuses known production hosts unconditionally, but read `assert_safe_to_dispatch` before arming a non-local target.
+- `upload_onboarding_assets.py` uses a LIVE bot token and posts assets to the admin chat; it rewrites `backend/onboarding_assets.py`.

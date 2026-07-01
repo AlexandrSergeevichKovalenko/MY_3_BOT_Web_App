@@ -1,5 +1,16 @@
 # Voice Domain Architecture
 
+> **Status note (2026-07-01):** this design has since largely shipped. The runtime
+> stayed thin (`backend/agent.py` is still the LiveKit `AgentSession` worker), and
+> the persistence layer landed in `backend/database.py` under `bt_3_`-prefixed
+> tables: `bt_3_agent_voice_sessions`, `bt_3_agent_voice_transcript_segments`,
+> `bt_3_voice_session_assessments`, `bt_3_voice_scenarios`, `bt_3_voice_prep_packs`.
+> The "skill bridge later" step below has also shipped: `bt_3_voice_session_mistakes`
+> plus `voice_mistake_extraction_service.py` and `voice_skill_bridge_service.py`
+> (with service wrappers `voice_preparation_service.py`, `voice_assessment_service.py`,
+> `voice_scenario_service.py`, `voice_session_service.py`). This document is kept as
+> the original design rationale.
+
 ## Goal
 
 Add a minimal voice domain foundation for scenario-based speaking practice without changing the current LiveKit runtime, endpoint contracts, or billing flow.

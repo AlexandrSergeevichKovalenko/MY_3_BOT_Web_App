@@ -30,8 +30,8 @@
 <a name="часть-a-методика"></a>
 ## Часть A. Как учить большой код (методика для новичка)
 
-Наш код большой: `bot_3.py` ~20k строк, `backend/backend_server.py` ~53k строк,
-`backend/database.py` ~33k строк. **Читать подряд сверху вниз — худший способ.** Так делать не
+Наш код большой: `bot_3.py` ~33k строк, `backend/backend_server.py` ~56k строк,
+`backend/database.py` ~41k строк. **Читать подряд сверху вниз — худший способ.** Так делать не
 нужно. Вот как делать правильно.
 
 1. **Сверху вниз по абстракции, а не по строкам.** Сначала пойми «какие есть отдельные программы
@@ -154,11 +154,11 @@ TTL, Redis, очередь/брокер/воркер, Dramatiq, планиров
 1. Почему соединение к БД дорого, что такое пул и **PgBouncer** —
    [autosave_scaling_explained.md §3.2](autosave_scaling_explained.md#32-database-connections-pooling-pgbouncer).
 2. Реальная функция доступа: [`get_db_connection_context`](../backend/database.py) —
-   `backend/database.py:2872`. Посмотри, как её используют:
+   `backend/database.py:4203`. Посмотри, как её используют:
    `grep -n "with get_db_connection_context" backend/database.py | head`.
 3. **Redis** (зачем он, какие структуры) — [autosave_scaling_explained.md §3.4](autosave_scaling_explained.md#34-redis).
 4. **Кэш и TTL** на живом примере тумблера — [autosave_scaling_explained.md §3.3](autosave_scaling_explained.md#33-cache--ttl)
-   и код [`_autosave_toggle_cached`](../backend/backend_server.py) `backend/backend_server.py:37257`.
+   и код [`_autosave_toggle_cached`](../backend/backend_server.py) `backend/backend_server.py:39551`.
 
 **Что попрактиковать:** найди в `database.py` любую функцию сохранения (`grep -n "def save_" backend/database.py`)
 и проследи, как она берёт соединение из пула, делает запрос, возвращает результат.
@@ -173,8 +173,8 @@ TTL, Redis, очередь/брокер/воркер, Dramatiq, планиров
 2. Планировщик и «sweep» — [autosave_scaling_explained.md §3.6](autosave_scaling_explained.md#36-the-scheduler--the-sweep).
 3. Код: мост в очередь [`backend/job_queue.py`](../backend/job_queue.py), акторы
    [`backend/background_jobs.py`](../backend/background_jobs.py) (наши примеры:
-   `run_autosave_sweep_job` `backend/background_jobs.py:1277`, `run_autosave_flush_job`
-   `backend/background_jobs.py:1298`), планировщик [`backend/scheduler_service.py`](../backend/scheduler_service.py).
+   `run_autosave_sweep_job` `backend/background_jobs.py:1311`, `run_autosave_flush_job`
+   `backend/background_jobs.py:1332`), планировщик [`backend/scheduler_service.py`](../backend/scheduler_service.py).
 4. Локи/гонки/идемпотентность/«exactly-once» — [autosave_scaling_explained.md §3.8](autosave_scaling_explained.md#38-locks-races-idempotency).
 
 **Что попрактиковать:** найди другой актор (`grep -n "@dramatiq.actor" backend/background_jobs.py`)
@@ -275,3 +275,9 @@ TTL, Redis, очередь/брокер/воркер, Dramatiq, планиров
 к [Части D](#часть-d-все-документы) и [Части E](#часть-е-как-проходить-код) как к навигатору. Всё,
 что подчёркнуто синим, — кликабельно: документы открываются здесь же, ссылки `файл:строка` ведут
 прямо в код в твоём редакторе.
+
+---
+
+> 🔄 **Последняя сверка учебных .md с кодом: 2026-07-01.** Тогда все `файл:строка`, счётчики строк
+> и имена функций/таблиц во всех учебных доках были приведены к актуальному коду. Если правишь код
+> и трогаешь эти ссылки — обнови дату здесь.

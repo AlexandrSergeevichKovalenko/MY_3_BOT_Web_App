@@ -1,6 +1,6 @@
 # TELEGRAM_BOT_DEUTSCHESPRACHE
 
-Этот `README.md` не про маркетинг, а про навигацию по коду. Он описывает текущее состояние репозитория по фактическим файлам, route, entrypoint и env-переменным, найденным в коде на `2026-05-16`.
+Этот `README.md` не про маркетинг, а про навигацию по коду. Он описывает текущее состояние репозитория по фактическим файлам, route, entrypoint и env-переменным, найденным в коде на `2026-07-01`.
 
 ## 1. Project Overview
 
@@ -23,9 +23,12 @@
 - YouTube transcript и перевод фрагментов.
 - Reader / библиотека документов / объяснения / аудио по страницам.
 - TTS generation и object storage.
-- Billing / subscription / Stripe.
+- Billing / subscription / Stripe (Free/Pro доступ + one-time donation-тиры Coffee/Cheesecake, `bt_3_billing_events`).
 - Voice assistant через LiveKit.
 - Analytics, планы, skill-state, daily/weekly automation.
+- Интерактивные задания в группу: аудирование, Satzbau, Aufgabe, Artikel/Adjektiv Sprint, Artikel/Adjektiv батлы, кроссворд, ребус, Zahlen-Diktat (kinds `nd`/`np`) — с branded PNG hero-карточками и in-place ответом через Mini App (`/api/answer/*`).
+- Быстрый словарь: компактный translator-overlay Mini App (`?startapp=dict`, `/api/translate/quick`).
+- Scheduler health / heartbeat coverage + quiet hours: гейтинг доставки интерактива 22:00–07:30 и мониторинг плановых job'ов.
 
 ### Основные пользовательские сценарии
 
@@ -101,9 +104,12 @@ flowchart LR
 │   ├── src/offline/
 │   └── src/utils/
 ├── docs/
+│   ├── LEARNING_PATH.md
 │   ├── FSRS.md
 │   ├── ios_share_extension_backend.md
 │   ├── tts_generation_audit.md
+│   ├── autosave_scaling_explained.md
+│   ├── shortcut_onboarding.md
 │   ├── voice_architecture.md
 │   ├── voice_migration_plan.md
 │   └── voice_schema_draft.md
@@ -232,6 +238,8 @@ sequenceDiagram
 | Billing / subscription | billing state in `App.jsx` | `/api/billing/plans`, `/api/billing/status`, `/api/billing/create-checkout-session`, `/api/billing/create-portal-session`, `/api/billing/webhook` | billing routes in `backend/backend_server.py`, DB helpers in `backend/database.py` | `plans`, `user_subscriptions`, `stripe_events_processed`, `bt_3_billing_*` | Stripe |
 | Telegram bot handlers | Telegram messages / callbacks | Bot update handlers in `bot_3.py` | `start`, `handle_user_message`, `check_user_translation[_webapp]`, dictionary callbacks, quiz callbacks, summary senders | DB tables above + bot-specific quiz/delivery tables | Telegram Bot API, OpenAI paths |
 | Quiz / image quiz | mostly bot-driven, some web state | bot callbacks + admin/test commands; image quiz jobs | `bot_3.py`, `enqueue_image_quiz_template_*` in `backend/job_queue.py`, actors in `backend/background_jobs.py` | `bt_3_quiz_history`, `bt_3_image_quiz_*`, queues `image_quiz_prepare`, `image_quiz_render` | image/template providers and storage paths; exact upstream rendering provider needs verification |
+| Интерактив в группу + in-place ответ | branded hero-карточка в группе, Mini App overlay `ans_*` | `/api/answer/task`, `/api/answer/submit`, `/api/answer/deepdive` | `bot_3.py` senders, `backend/answer_eval.py`, `backend/interactive_card.py` (+ `article_quiz_card.py`, `battle_card.py`) | `bt_3_interactive_inbox`, `bt_3_crossword_*`, `bt_3_numdict_*`, `bt_3_article_battle_*` | OpenAI paths (LLM judge), Google TTS, R2 |
+| Быстрый словарь (overlay) | `frontend/src/dictionary/DictionaryOverlay.jsx` (`?startapp=dict`) | `/api/translate/quick`, `/api/webapp/dictionary/*` | `run_dictionary_lookup_*` в `backend/openai_manager.py` | dictionary/cache tables | OpenAI gateway; DeepL/Libre/Azure/Google/Argos/MyMemory для quick-translate |
 | LiveKit voice flow | `LiveKitRuntime.jsx` + voice state in `App.jsx` | `/api/token`, `/api/assistant/session/start`, `/api/assistant/session/complete`, `/api/assistant/session/assessment/get` | `backend/backend_server.py`, `backend/agent.py`, `backend/api.py`, `backend/voice_session_service.py`, `build_and_store_voice_assessment()`, `apply_voice_skill_bridge()` | `bt_3_agent_voice_sessions`, `bt_3_agent_voice_transcript_segments`, `bt_3_voice_session_assessments`, `bt_3_voice_scenarios`, `bt_3_voice_prep_packs` | LiveKit, OpenAI |
 
 ### Background flow в упрощённом виде
@@ -290,6 +298,11 @@ flowchart LR
   - `/api/webapp/youtube/*`
   - `/api/webapp/tts/*`
   - `/api/webapp/explain`
+- Интерактив / in-place answering / quick translate:
+  - `/api/answer/task`
+  - `/api/answer/submit`
+  - `/api/answer/deepdive`
+  - `/api/translate/quick`
 - Billing / analytics / today / progress / support / voice:
   - `/api/billing/*`
   - `/api/today*`
@@ -460,6 +473,15 @@ flowchart LR
   - `bt_3_image_quiz_templates`
   - `bt_3_image_quiz_dispatches`
   - `bt_3_image_quiz_answers`
+- Интерактив (группа / in-place Mini App):
+  - `bt_3_interactive_inbox`
+  - `bt_3_crossword_bank`, `bt_3_crossword_dispatches`, `bt_3_crossword_answers`
+  - `bt_3_numdict_bank`, `bt_3_numdict_dispatches`, `bt_3_numdict_answers`
+  - `bt_3_article_battle_available`, `bt_3_article_battle_reminders`
+- Scheduler health / поддержка:
+  - `bt_3_scheduler_run_guards` (guard-run marker + heartbeat)
+  - `bt_3_admin_scheduler_runs` (row-per-delivery для event/conditional job'ов)
+  - `bt_3_support_messages`
 - Analytics / plans / skills:
   - `bt_3_daily_plans`
   - `bt_3_weekly_goals`

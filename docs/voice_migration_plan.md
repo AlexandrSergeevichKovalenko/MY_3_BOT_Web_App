@@ -2,6 +2,17 @@
 
 This is a migration draft for the new voice domain foundation. It is not executable SQL.
 
+> **Status note (2026-07-01):** this migration has since been executed inside the
+> `backend/database.py` schema bootstrap. Actual table names carry the `bt_3_`
+> prefix and diverge slightly from the names below: `voice_scenarios` →
+> `bt_3_voice_scenarios`, `voice_prep_packs` → `bt_3_voice_prep_packs`,
+> `voice_session_transcript_segments` → `bt_3_agent_voice_transcript_segments`,
+> `voice_session_assessments` → `bt_3_voice_session_assessments`; the existing
+> voice-session table is `bt_3_agent_voice_sessions`, extended (as planned) with
+> nullable `scenario_id`, `prep_pack_id`, `topic_mode`, `custom_topic_text`
+> (note: `status`/`ended_reason` were not added). A later `bt_3_voice_session_mistakes`
+> table was added for the skill-bridge step. Kept as the original planning record.
+
 ## Likely Additions
 
 ### New tables

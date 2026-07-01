@@ -44,8 +44,10 @@ Backend в этом репозитории не равен одному HTTP-с�
 | `job_queue.py` | enqueue layer + Redis-backed queue/status helpers | web routes, scheduler, watchdog | основной мост между sync web-path и Dramatiq |
 | `background_jobs.py` | Dramatiq actors | worker processes | heavy async work lives here |
 | `run_dramatiq_worker.py` | dedicated translation-check worker shell | translation-check service | не generic worker, а отдельный runtime |
-| `scheduler_service.py` | APScheduler runtime | scheduler service | только планирует/dispatch'ит |
+| `scheduler_service.py` | APScheduler runtime | scheduler service | планирует/dispatch'ит + liveness heartbeat (`_plumbing_heartbeat` -> `record_scheduler_heartbeat`) |
 | `scheduler_jobs_core.py` | scheduler-owned maintenance jobs | `scheduler_service.py`, actors | cleanup, auto-close, daily/system jobs |
+
+> Scheduler health: `bot_3.py` строит `/scheduler_health` (+ `/admin_send_audio`) поверх двух tracking-таблиц — `bt_3_scheduler_run_guards` (guard) и `bt_3_admin_scheduler_runs` (admin). Quiet hours (`_is_quiet_hours_now`, env `QUIET_HOURS_*`) гейтят доставку интерактива 22:00–07:30.
 
 ### Voice domain
 
@@ -84,6 +86,21 @@ Backend в этом репозитории не равен одному HTTP-с�
 | `image_quiz_cleanup.py` | image-quiz R2 cleanup | scheduler/maintenance | worker-safe cleanup |
 | `grammar_focuses.py` | grammar taxonomy/config | translation/skills logic | domain config, not runtime shell |
 | `config_mistakes_data.py` | mistakes config/data | translation feedback flows | domain config |
+
+### Interactive tasks, answer eval, PNG cards
+
+| File | Role | Кто использует | Notes |
+| --- | --- | --- | --- |
+| `answer_eval.py` | grading для in-place интерактива (listening/satzbau/aufgabe/crossword/Zahlen-Diktat) | `/api/answer/*`, bot | deterministic + LLM-judge grade; numdict `nd`/`np` |
+| `interactive_card.py` | branded PNG hero-карточки per group interactive | interactive senders | brand-kit, no color-emoji font |
+| `article_quiz_card.py` | Artikel Sprint/Trainer/Battle карточки | grammar-game senders | share brand kit |
+| `battle_card.py` | Artikel/Adjektiv battle posters | battle flows | invite/reminder art |
+| `daily_summary_card.py` | «Итоги дня» PNG-таблица | daily digest job | branded table |
+| `review_reminder_card.py` | SRS «Пора повторить» due-hero PNG | review reminder job | due-gated |
+| `certificate_poster.py` | weekly «грамота» PNG статистики | achievement job | this/prev/Δ |
+| `overtaken_card.py`, `lazy_day_card.py` | «тебя обошли» / lazy-day plaques | motivational senders | rotating Smurf art |
+| `german_grammar_tables.py` | движок склонений/спряжений для deep quick-dict | dictionary overlay path | noun decl / verb conj / adj degrees |
+| `onboarding_assets.py` | onboarding media (Telegram file_ids) | onboarding flow | uploader needs LIVE token |
 
 ### Observability, cache, messaging, analytics
 

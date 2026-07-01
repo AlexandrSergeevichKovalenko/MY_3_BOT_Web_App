@@ -4,13 +4,27 @@
 
 Remove manual Telegram `user_id` entry from iOS Shortcut usage.
 
-The only supported client flow is:
+> **Current design (2026-07-01): two-shortcut system.** The onboarding evolved into
+> two separate iPhone Shortcuts (see `bot_3.py`):
+>
+> - **Shortcut A — collector** (`📲 1. Шорткат для скриншотов`): saves screenshots
+>   into a `Deutsch Queue` photo album. Needs **no** pairing.
+> - **Shortcut B — nightly processor** (`📲 2. Шорткат ночного перевода`): reads the
+>   album, OCRs it, and pushes words to the DM. This one **does** need pairing and
+>   carries the `install_token` — so the pairing-code → install-token → lookup
+>   architecture described below applies to Shortcut B.
+>
+> Install/pairing is also surfaced inside the Mini-App (deeplink `startapp=shortcut`),
+> not only via chat buttons.
+
+The pairing flow for the processor Shortcut is:
 
 1. User opens the Telegram bot.
-2. User sends `/start`.
-3. Bot shows `📲 Установить Shortcut` and `📱 Connect Shortcut`.
-4. User installs the shared iPhone Shortcut from the install button.
-5. User presses `📱 Connect Shortcut`.
+2. User sends `/start` (menu also exposes `📲 Установить Shortcut`).
+3. Bot shows the install buttons and a `📱 Подключить кодом` button
+   (callback `shortcut:connect`).
+4. User installs the shared iPhone Shortcut(s) from the install button(s).
+5. User presses `📱 Подключить кодом`.
 6. Bot returns a one-time pairing code and detailed iPhone setup instructions.
 7. Installed Shortcut exchanges the pairing code for a permanent `install_token`.
 8. Future requests use `install_token` only.
@@ -172,15 +186,27 @@ Rules:
 
 ## Telegram bot flow
 
-- `/start` in private chat now sends `📲 Установить Shortcut` and `📱 Connect Shortcut`.
-- `📲 Установить Shortcut` opens the shared Shortcut install link.
-- The button issues a fresh pairing code.
-- The bot also sends detailed iPhone-specific instructions:
+- The private-chat menu exposes `📲 Установить Shortcut`; the install keyboard
+  offers both shortcuts (`📲 1. Шорткат для скриншотов`, `📲 2. Шорткат ночного
+  перевода`) plus a `📱 Подключить кодом` button (callback `shortcut:connect`,
+  handled by `handle_shortcut_connect_callback`).
+- The install buttons open the shared Shortcut install links.
+- `📱 Подключить кодом` issues a fresh pairing code and sends detailed
+  iPhone-specific instructions:
   - Install the shared Shortcut first.
   - Action Button path for supported models.
   - Back Tap `Double Tap` path for models without Action Button.
   - Shortcut setup steps for creating the first-run link exchange.
   - Persistent `install_token` storage instructions.
+
+### Related: nightly auto-save
+
+Layered on top of the collector→processor Shortcuts is an opt-in **nightly
+auto-save** (`🌙 Ночной автосейв` toggle; callbacks `asv_tog:` / `asv_save:`):
+staged words are debounced, batch-translated, and offered back as a multi-select
+digest. The fast-translate queue is snapshotted and purged up front on each batch,
+and `/clearqueue` (`clear_dictionary_queue_command`) lets the user drain a stuck
+queue. These are separate from the pairing/token security surface documented here.
 
 ## Threat model
 

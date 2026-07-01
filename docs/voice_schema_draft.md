@@ -1,5 +1,16 @@
 # Voice Schema Draft
 
+> **Status note (2026-07-01):** this draft has since shipped in `backend/database.py`,
+> with `bt_3_`-prefixed names and a column set that differs from the MUST lists below
+> (see code for the authoritative shape). Mapping: `voice_scenarios` →
+> `bt_3_voice_scenarios`, `voice_prep_packs` → `bt_3_voice_prep_packs`, the existing
+> session → `bt_3_agent_voice_sessions`, `voice_session_transcript_segments` →
+> `bt_3_agent_voice_transcript_segments` (uses `metadata`, no `start_ms`/`end_ms`),
+> `voice_session_assessments` → `bt_3_voice_session_assessments` (dimension-specific
+> `*_note` columns + `skill_bridge_*` fields instead of `rubric_version` /
+> `scenario_completion_score`). A `bt_3_voice_session_mistakes` table was added later
+> for the skill bridge. Kept as the original schema-design draft.
+
 This draft covers only the minimal v1 persistence layer for scenario-based voice learning.
 
 It intentionally excludes:

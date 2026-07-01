@@ -3,7 +3,7 @@
 > A plain-language tour of the "🌙 Ночной автосейв" feature: every technology we use
 > (Redis, PgBouncer, caches, queues, workers, locks…), **why** it exists, and **where** in
 > our code it lives. Written for someone new to backend engineering. File references look
-> like `backend/backend_server.py:37272` — click them in your editor to jump to the code.
+> like `backend/backend_server.py:39566` — click them in your editor to jump to the code.
 
 ---
 
@@ -107,7 +107,7 @@ Two layers fix this:
 1. **Connection pool** — instead of opening/closing per query, the app keeps a small set of
    connections open and **reuses** them. Need to run a query? "Check out" a connection from the
    pool, use it, "check it back in." No handshake each time. Our code does this through
-   `get_db_connection_context()` — `backend/database.py:2872`. (A "checkout + round-trip" means:
+   `get_db_connection_context()` — `backend/database.py:4203`. (A "checkout + round-trip" means:
    borrow a connection from the pool, send the query, wait for the answer to come back.)
 
 2. **PgBouncer** — a **connection pooler** that sits *between* our app and Postgres. Postgres
@@ -136,7 +136,7 @@ staler data.
 
 We use this for the auto-save toggle (is it ON for this user?). The answer rarely changes, so we
 cache it for **30 seconds** in the process's own memory, instead of asking the database every
-time. Code: `_autosave_toggle_cached()` — `backend/backend_server.py:37257`:
+time. Code: `_autosave_toggle_cached()` — `backend/backend_server.py:39551`:
 
 ```python
 def _autosave_toggle_cached(user_id: int) -> bool:
@@ -158,7 +158,7 @@ def _autosave_toggle_cached(user_id: int) -> bool:
 services — that's fine here).
 
 > There's a second, identical cache on the **bot** side for the reply-keyboard label
-> (ВКЛ/ВЫКЛ): `_autosave_state_cached()` — `bot_3.py:554`. Same idea: don't hit the DB every time
+> (ВКЛ/ВЫКЛ): `_autosave_state_cached()` — `bot_3.py:1111`. Same idea: don't hit the DB every time
 > we redraw the menu.
 
 ### 3.4 Redis
@@ -181,7 +181,7 @@ implement **locks** and **claims** between many machines (see 3.8).
 
 We give every Redis key a **TTL** too, so leftover data auto-expires (e.g. raw texts live 6h).
 
-Our Redis keys for this feature (all defined near `backend/backend_server.py:37245`):
+Our Redis keys for this feature (all defined near `backend/backend_server.py:39539`):
 
 | Key | Type | Purpose |
 |---|---|---|
@@ -208,7 +208,7 @@ We use **Dramatiq**, a Python library that makes this easy. You mark a function 
 and it becomes a job that can be sent to the queue and run by a worker. Each actor belongs to a
 named **queue**; a worker is configured to listen to certain queue names.
 
-Example — our flush job, `backend/background_jobs.py:1298`:
+Example — our flush job, `backend/background_jobs.py:1332`:
 
 ```python
 @dramatiq.actor(max_retries=0, queue_name="shortcut_lookup")
@@ -233,15 +233,15 @@ We need something to fire **periodically** ("every 30 seconds, check who's ready
 tick fires once, not 5 times). Its only job is to send a tiny "tick" message; it does no heavy
 work itself.
 
-Our tick, registered at `backend/scheduler_service.py:729`, calls `_dispatch_autosave_sweep()`
-(`backend/scheduler_service.py:356`), which just enqueues the **sweep** actor:
+Our tick, registered at `backend/scheduler_service.py:830`, calls `_dispatch_autosave_sweep()`
+(`backend/scheduler_service.py:411`), which just enqueues the **sweep** actor:
 
 ```python
 def _dispatch_autosave_sweep() -> None:
     run_autosave_sweep_job.send()     # "go check who's due", runs on the worker
 ```
 
-The **sweep** (`run_autosave_sweep_job`, `backend/background_jobs.py:1277`) is a cheap once-per-
+The **sweep** (`run_autosave_sweep_job`, `backend/background_jobs.py:1311`) is a cheap once-per-
 tick scan: it looks at all the `autosave_flush_at:*` timestamps, finds users whose batch has gone
 quiet, and **fans out** one flush job per such user. "**Fan-out**" = one job spawns many smaller
 jobs that workers then run in parallel.
@@ -254,15 +254,15 @@ Your 30 photos arrive as 30 *separate* requests over a few minutes. We don't wan
 digests — we want **one**, after the **last** photo. So:
 
 - Every photo sets `autosave_flush_at:{user} = now + 90 seconds` (it keeps pushing the deadline
-  forward — see `_run_shortcut_autosave_staging`, `backend/backend_server.py:37272`).
+  forward — see `_run_shortcut_autosave_staging`, `backend/backend_server.py:39566`).
 - The sweep only flushes a user once `now ≥ flush_at`, i.e. once **90 seconds have passed with no
   new photo**. As long as photos keep coming, the deadline keeps moving and nothing fires.
 
 Think of an elevator door that resets its timer every time someone steps in; it only closes once
 people stop coming.
 
-`_AUTOSAVE_DEBOUNCE_SECONDS` (default 90) is at `backend/backend_server.py:37239`. The sweep
-interval (default 30s) is at `backend/scheduler_service.py:729`.
+`_AUTOSAVE_DEBOUNCE_SECONDS` (default 90) is at `backend/backend_server.py:39533`. The sweep
+interval (default 30s) is at `backend/scheduler_service.py:829`.
 
 ### 3.8 Locks, races, idempotency
 
@@ -274,7 +274,7 @@ We prevent that with three ideas:
 - **Lock** — a "do not disturb" flag only one party can hold. We use Redis `SET key value NX`,
   where **NX** means *"set only if it doesn't already exist."* Because Redis commands are atomic,
   exactly one caller wins the `NX` and gets the lock; everyone else sees it's taken and backs
-  off. See the start of `_run_autosave_flush` (`backend/backend_server.py:37463`):
+  off. See the start of `_run_autosave_flush` (`backend/backend_server.py:39859`):
 
   ```python
   lock_key = _autosave_flush_lock_key(safe_user_id)
@@ -285,7 +285,7 @@ We prevent that with three ideas:
   (`ex=300` = the lock auto-expires after 300s so a crash can't deadlock us forever.)
 
 - **Claim** — when the sweep decides a user is due, it **deletes** that user's `flush_at` key in
-  the same pass (`_autosave_collect_due_user_ids`, `backend/backend_server.py:37310`). Deleting =
+  the same pass (`_autosave_collect_due_user_ids`, `backend/backend_server.py:39617`). Deleting =
   "I've claimed this one." The next sweep won't see it, so it can't enqueue a duplicate.
   Likewise, the flush **reads then deletes** the raw list, so a second run finds nothing to do.
 
@@ -345,7 +345,7 @@ Here's the whole journey of one nightly batch, end to end.
 ```
 
 **Step A — the request path** (`_run_shortcut_autosave_staging`,
-`backend/backend_server.py:37272`). This is the only part the user's Shortcut waits on, so it
+`backend/backend_server.py:39566`). This is the only part the user's Shortcut waits on, so it
 does the absolute minimum — two Redis writes:
 
 ```python
@@ -361,7 +361,7 @@ client.setex(                                            # (re)arm the debounce 
 No OpenAI, no database, no threads — microseconds of Redis. The web tier can absorb a huge burst.
 
 **Step B — the sweep finds who's due** (`_autosave_collect_due_user_ids`,
-`backend/backend_server.py:37310`). One cheap scan over the timestamps, claiming the ripe ones:
+`backend/backend_server.py:39617`). One cheap scan over the timestamps, claiming the ripe ones:
 
 ```python
 for key in client.scan_iter(match="autosave_flush_at:*", count=200):
@@ -372,12 +372,12 @@ for key in client.scan_iter(match="autosave_flush_at:*", count=200):
 ```
 
 **Step C — the heavy work, on the worker** (`_run_autosave_flush`,
-`backend/backend_server.py:37463`): lock, claim the raw list, **one** split call for the whole
+`backend/backend_server.py:39859`): lock, claim the raw list, **one** split call for the whole
 batch (instead of one per photo), **one** prepare call (`_autosave_prepare_cards`,
-`backend/backend_server.py:37358`, which returns the dictionary form + translation + folder
+`backend/backend_server.py:39667`, which returns the dictionary form + translation + folder
 category in a single request), then build and send the digest.
 
-**Step D — saving** (`handle_autosave_digest_save_callback`, `bot_3.py:1992`): the tap gets an
+**Step D — saving** (`handle_autosave_digest_save_callback`, `bot_3.py:3883`): the tap gets an
 **instant** acknowledgement and the buttons vanish, while the actual database writes happen in the
 background — so you never sit there wondering if it worked.
 
@@ -410,7 +410,7 @@ stay fast — and ~30,000 AI calls/night at 1,000 users.
 **Fix:** the request path stores raw text only. **One** worker job later does **one** split over
 the *whole* batch + **one** translate/normalize call. From ~30 AI calls per user down to ~2, and
 all of it on the worker tier, off the user's path. (`_run_autosave_flush`,
-`backend/backend_server.py:37463`.)
+`backend/backend_server.py:39859`.)
 
 ### C3 — A database query on *every* request just to check the toggle (high)
 
@@ -419,7 +419,7 @@ request. Even with PgBouncer making that query cheap, it's still a connection ch
 round-trip *per request*, multiplied by every user and every photo.
 
 **Fix:** a **30-second in-process cache** (`_autosave_toggle_cached`,
-`backend/backend_server.py:37257`). The first request asks the DB; the next ones (for 30s) read
+`backend/backend_server.py:39551`). The first request asks the DB; the next ones (for 30s) read
 the answer from RAM. The toggle almost never changes, so this is essentially free correctness.
 
 ---
@@ -468,8 +468,8 @@ junk slips past one, the next catches it. This "defense in depth" is the key ide
 obviously-not-German stuff *before* it ever becomes a card: URLs/brands, code, math formulas,
 English-heavy text, pure symbols/numbers. Crucially it's **conservative** — anything with a
 German signal (an umlaut/ß, a German-only word, a grammar term) is **always kept**, so we never
-lose real German. Code: `_shortcut_looks_non_german` — `backend/backend_server.py:36181` — used
-inside the gate `_shortcut_is_learnable_unit` — `backend/backend_server.py:36216`.
+lose real German. Code: `_shortcut_looks_non_german` — `backend/backend_server.py:38343` — used
+inside the gate `_shortcut_is_learnable_unit` — `backend/backend_server.py:38378`.
 
 > Why conservative? Because dropping a real German word is worse than letting one piece of junk
 > through — the junk gets caught later (Layers 2–3), but a lost word is gone.
@@ -477,7 +477,7 @@ inside the gate `_shortcut_is_learnable_unit` — `backend/backend_server.py:362
 **Layer 2 — at translation time.** When the translator processes a word and itself reports "this
 isn't valid German / no translation" (e.g. for `/\` it returns *"нет подходящего немецкого
 слова"*), we simply **don't show a card** for it. So junk that slipped past Layer 1 silently
-disappears the moment you press translate. Code: `_dictionary_result_is_garbage` — `bot_3.py:8608`.
+disappears the moment you press translate. Code: `_dictionary_result_is_garbage` — `bot_3.py:11586`.
 
 > This is what stopped "Быстрый перевод" from dumping garbage: the translator already *knows*
 > the input is junk, so we just trust that signal and drop it.
@@ -485,8 +485,8 @@ disappears the moment you press translate. Code: `_dictionary_result_is_garbage`
 **Layer 3 — the self-cleaning queue.** The card-flow "inbox" only removes a word when you act on
 it. A word you *ignore* used to sit there forever (the 1660 pile-up). Now every entry carries a
 `created_at` timestamp, and a nightly sweep drops anything older than a day — junk you never
-touched expires on its own. Code: `_dict_pending_entry_age_seconds` — `bot_3.py:6248` and the
-nightly job `_purge_stale_pending_all_users` — `bot_3.py:6259`. The window is long (24h) on
+touched expires on its own. Code: `_dict_pending_entry_age_seconds` — `bot_3.py:9178` and the
+nightly job `_purge_stale_pending_all_users` — `bot_3.py:9189`. The window is long (24h) on
 purpose, so today's real words you mean to batch tomorrow are never lost.
 
 <a name="72-no-duplicates"></a>
@@ -499,7 +499,7 @@ digest twice** or saving the **same word twice**. Three tools prevent that:
 Redis lock with `SET key value NX` — *set only if it doesn't already exist*. Because Redis runs
 commands one at a time, **exactly one** worker wins; any other worker (a retry, an overlapping
 sweep) sees the lock is taken and backs off. So a user's digest is built by **one** worker at a
-time — no parallel duplicates. Code: the top of `_run_autosave_flush` — `backend/backend_server.py:37686`:
+time — no parallel duplicates. Code: the top of `_run_autosave_flush` — `backend/backend_server.py:39859`:
 
 ```python
 lock_key = _autosave_flush_lock_key(safe_user_id)
@@ -512,7 +512,7 @@ forever.)
 
 **Dedup — "the same word collapses to one."** The same German word from several photos is
 normalized to one key (lowercase, no punctuation; ß≈ss) so it only appears once in a batch. Code:
-`_shortcut_dedup_norm` — `backend/backend_server.py:37212`.
+`_shortcut_dedup_norm` — `backend/backend_server.py:39374`.
 
 **Idempotent save — "saving twice is harmless."** The final dictionary save checks for an
 existing entry first, so pressing save twice (or a retry) never creates a duplicate row.
@@ -538,8 +538,8 @@ Two safeguards:
    (`LTRIM` the processed prefix — photos that arrived mid-flush survive). If the worker is killed
    in the middle, the queue + trigger are untouched, so the next sweep just re-processes it. The
    sweep also no longer deletes the trigger early — the flush owns clearing it on success. Code:
-   `_run_autosave_flush` — `backend/backend_server.py:37686` and the sweep
-   `_autosave_collect_due_user_ids` — `backend/backend_server.py:37444`.
+   `_run_autosave_flush` — `backend/backend_server.py:39859` and the sweep
+   `_autosave_collect_due_user_ids` — `backend/backend_server.py:39617`.
 
 This is the classic **at-least-once vs at-most-once** choice:
 - *At-most-once* (delete first) risks **loss** — unacceptable when photos are already gone.
@@ -555,20 +555,20 @@ This is the classic **at-least-once vs at-most-once** choice:
 - **LLM batch chunking.** One LLM call can't return hundreds of translations — the JSON answer
   gets truncated (this caused "requested 352, returned 7"). We split the work into small chunks
   (~20), run them with limited concurrency, and merge — reliable at any size. Code:
-  `run_dictionary_lookup_multilang_core_fast_batch` — `backend/openai_manager.py:4860`.
+  `run_dictionary_lookup_multilang_core_fast_batch` — `backend/openai_manager.py:5949`.
 - **Decide by real units, not raw lines.** Whether a batch becomes individual cards or one
   digest is decided *after* the split, on the number of actual learnable units (> 12 → digest),
   not on OCR line count — so a single Reel screenshot (a multi-line paragraph → 2–3 units) stays
-  as cards. Code: `_run_shortcut_lookup_delivery` — `backend/backend_server.py:37248`,
-  threshold `_SHORTCUT_CARD_OVERFLOW_UNITS` — `backend/backend_server.py:37606`.
+  as cards. Code: `_run_shortcut_lookup_delivery` — `backend/backend_server.py:39434`,
+  threshold `_SHORTCUT_CARD_OVERFLOW_UNITS` — `backend/backend_server.py:39779`.
 - **Batched upload.** The Shortcut OCRs a whole folder into one list and sends it in **one** HTTP
   request (`{"screenshots": [...]}`) instead of one request per photo — far lighter on the web
   tier. The parser accepts the list in any shape (array, newline string, JSON-in-a-string). Code:
-  `_shortcut_lookup_request_payload` — `backend/backend_server.py:36901`.
+  `_shortcut_lookup_request_payload` — `backend/backend_server.py:39063`.
 - **Instant in-place save.** Tapping a save button instantly shows "💾 Сохраняем…" in place, does
   the DB write in the background, then flips to "✅ Сохранено" — no waiting, no extra chat
   message. Same "instant ack + background work" pattern as the digest. Code:
-  `_save_dictionary_variants_in_place` — `bot_3.py:10831`.
+  `_save_dictionary_variants_in_place` — `bot_3.py:13826`.
 
 ---
 
@@ -622,26 +622,26 @@ This is the classic **at-least-once vs at-most-once** choice:
 ---
 
 *Code map (jump points):*
-`_run_shortcut_autosave_staging` `backend/backend_server.py:37393` ·
-`_autosave_toggle_cached` `backend/backend_server.py:37378` ·
-`_autosave_collect_due_user_ids` `backend/backend_server.py:37444` ·
-`_run_autosave_flush` `backend/backend_server.py:37686` ·
-`_autosave_send_digest_from_blocks` `backend/backend_server.py:37609` ·
-`_autosave_prepare_cards` `backend/backend_server.py:37494` ·
-`_shortcut_looks_non_german` (Layer 1) `backend/backend_server.py:36181` ·
-`_shortcut_is_learnable_unit` `backend/backend_server.py:36216` ·
-`_dictionary_result_is_garbage` (Layer 2) `bot_3.py:8608` ·
-`_purge_stale_pending_all_users` (Layer 3) `bot_3.py:6259` ·
-`_shortcut_dedup_norm` `backend/backend_server.py:37212` ·
-`_run_shortcut_lookup_delivery` (card↔digest, >12 units) `backend/backend_server.py:37248` ·
-`_shortcut_lookup_request_payload` (batched screenshots) `backend/backend_server.py:36901` ·
-`run_dictionary_lookup_multilang_core_fast_batch` (chunking) `backend/openai_manager.py:4860` ·
-`_save_dictionary_variants_in_place` (instant save) `bot_3.py:10831` ·
-`run_autosave_sweep_job` `backend/background_jobs.py:1277` ·
-`run_autosave_flush_job` `backend/background_jobs.py:1298` ·
-`_dispatch_autosave_sweep` `backend/scheduler_service.py:356` ·
-sweep interval `backend/scheduler_service.py:729` ·
-`get_db_connection_context` `backend/database.py:2872` ·
-`get_shortcut_autosave_enabled` `backend/database.py:17699` ·
-`handle_autosave_digest_save_callback` `bot_3.py:1992` ·
+`_run_shortcut_autosave_staging` `backend/backend_server.py:39566` ·
+`_autosave_toggle_cached` `backend/backend_server.py:39551` ·
+`_autosave_collect_due_user_ids` `backend/backend_server.py:39617` ·
+`_run_autosave_flush` `backend/backend_server.py:39859` ·
+`_autosave_send_digest_from_blocks` `backend/backend_server.py:39782` ·
+`_autosave_prepare_cards` `backend/backend_server.py:39667` ·
+`_shortcut_looks_non_german` (Layer 1) `backend/backend_server.py:38343` ·
+`_shortcut_is_learnable_unit` `backend/backend_server.py:38378` ·
+`_dictionary_result_is_garbage` (Layer 2) `bot_3.py:11586` ·
+`_purge_stale_pending_all_users` (Layer 3) `bot_3.py:9189` ·
+`_shortcut_dedup_norm` `backend/backend_server.py:39374` ·
+`_run_shortcut_lookup_delivery` (card↔digest, >12 units) `backend/backend_server.py:39434` ·
+`_shortcut_lookup_request_payload` (batched screenshots) `backend/backend_server.py:39063` ·
+`run_dictionary_lookup_multilang_core_fast_batch` (chunking) `backend/openai_manager.py:5949` ·
+`_save_dictionary_variants_in_place` (instant save) `bot_3.py:13826` ·
+`run_autosave_sweep_job` `backend/background_jobs.py:1311` ·
+`run_autosave_flush_job` `backend/background_jobs.py:1332` ·
+`_dispatch_autosave_sweep` `backend/scheduler_service.py:411` ·
+sweep interval `backend/scheduler_service.py:829` ·
+`get_db_connection_context` `backend/database.py:4203` ·
+`get_shortcut_autosave_enabled` `backend/database.py:21125` ·
+`handle_autosave_digest_save_callback` `bot_3.py:3883` ·
 `_send_private_message` `backend/telegram_notify.py:18`
