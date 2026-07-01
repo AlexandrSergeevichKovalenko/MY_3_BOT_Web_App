@@ -992,6 +992,10 @@ TRANSLATION_FOCUS_POOL_DEFICIT_REFILL_COOLDOWN_SEC = max(
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "350").strip() or "350"))
+# Short interactive text (quick-dict word / short phrase) is synthesised INLINE in the
+# request instead of the distributed worker broker, so pronunciation is ready in ~1s
+# instead of 10s+. Longer text (reader pages) still goes async. 0 disables the fast lane.
+TTS_INLINE_MAX_CHARS = max(0, int((os.getenv("TTS_INLINE_MAX_CHARS") or "64").strip() or "64"))
 # TTS_WEBAPP_DEFAULT_SPEED lives in backend.tts_generation (imported above)
 TTS_GENERATION_WORKERS = max(1, min(32, int((os.getenv("TTS_GENERATION_WORKERS") or "4").strip() or "4")))
 TTS_GENERATION_QUEUE_MAXSIZE = max(
@@ -42931,6 +42935,35 @@ def webapp_tts_generate():
             http_status=200,
         )
         return jsonify(response_payload)
+
+    # ── Fast lane: synthesise SHORT interactive text (a single word / short phrase)
+    # INLINE in this request instead of routing through the distributed worker broker.
+    # Quick-dict pronunciation then returns "ready" in ~1s instead of waiting 10s+ for a
+    # cross-service worker to pick the job up. Long text (reader pages) still goes async.
+    # Any inline failure falls through to the normal enqueue path below — never worse.
+    if TTS_INLINE_MAX_CHARS and len(normalized_text) <= TTS_INLINE_MAX_CHARS:
+        try:
+            _run_tts_generation_job(
+                user_id=int(user_id), language=language, tts_lang_short=tts_lang_short,
+                voice=voice, speaking_rate=speaking_rate, normalized_text=normalized_text,
+                cache_key=cache_key, object_key=object_key, had_existing_meta=had_existing_meta,
+                correlation_id=correlation_id, request_id=request_id,
+            )
+            inline_meta = get_tts_object_meta(cache_key, touch_hit=False) or {}
+            if str(inline_meta.get("status") or "").strip().lower() == "ready":
+                inline_payload, inline_code = _build_tts_url_response_from_meta(
+                    inline_meta, fallback_object_key=object_key)
+                inline_payload["state"] = "inline_ready"
+                _clear_tts_url_poll_attempt(cache_key)
+                _log_flow_observation(
+                    "tts", "tts_generate_completed", request_id=request_id,
+                    correlation_id=correlation_id, user_id=user_id, cache_key=cache_key,
+                    cache_hit=False, cache_miss=True, db_lookup_duration_ms=db_lookup_duration_ms,
+                    claim_duration_ms=claim_duration_ms, final_status="hit", status="ready",
+                    duration_ms=_elapsed_ms_since(started_perf), http_status=int(inline_code))
+                return jsonify(inline_payload), int(inline_code)
+        except Exception:
+            logging.warning("tts inline fast-lane failed cache_key=%s; queueing", cache_key, exc_info=True)
 
     enqueue_ts_ms = _to_epoch_ms()
     enqueue_result = _enqueue_tts_generation_job_result(
