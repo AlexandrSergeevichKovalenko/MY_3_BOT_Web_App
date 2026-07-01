@@ -22997,16 +22997,15 @@ async def _create_and_broadcast_artikel_wizard(context: CallbackContext, *, crea
         [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
-    try:
-        await context.bot.edit_message_text(
-            chat_id=status_chat_id, message_id=status_msg_id,
-            text=f"⚔️ Батл #{battle_id} создан ({html.escape(themes_txt)}). Приглашено: {sent}. Дедлайн 23:59.",
-            parse_mode="HTML", reply_markup=play_kb)
-    except Exception:
-        pass
+    final_cap = (f"⚔️ <b>Artikel-батл #{battle_id} в бою!</b>\n"
+                 f"{html.escape(themes_txt)} · дедлайн 23:59\n"
+                 f"📨 Вызов получили: {sent}\nСыграй первым — задай темп! 👇")
+    eff_msg_id = await _present_battle_status(context, chat_id=int(status_chat_id),
+                                              old_msg_id=int(status_msg_id),
+                                              caption=final_cap, kb=play_kb)
     # Pin the creator's own play message until they play their battle.
     await _pin_battle_play_message(context, user_id=int(creator_id), set_id=f"asb_{battle_id}",
-                                   chat_id=int(status_chat_id), message_id=int(status_msg_id), kind="artikel")
+                                   chat_id=int(status_chat_id), message_id=int(eff_msg_id), kind="artikel")
     await _schedule_battle_auto_nudge(kind="artikel", battle_id=battle_id,
                                       user_id=int(creator_id), deadline=deadline)
 
@@ -23060,15 +23059,17 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
         [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
-    status = await message.reply_text(
-        f"⚔️ Батл #{battle_id} создан (тема: {theme_key})! Дедлайн 23:59.\nРассылаю приглашения… 📨",
-        reply_markup=play_kb)
+    instant_cap = (f"⚔️ <b>Твой Artikel-батл #{battle_id} брошен!</b>\n"
+                   f"2 минуты на der/die/das · дедлайн 23:59\n"
+                   f"📨 Рассылаю приглашения соперникам…")
+    status_mid = await _send_battle_status(context, chat_id=int(message.chat_id),
+                                           caption=instant_cap, kb=play_kb)
     # Nudge the creator too if they don't get around to playing their own battle.
     asyncio.create_task(_schedule_battle_auto_nudge(
         kind="artikel", battle_id=battle_id, user_id=int(user.id), deadline=deadline))
     asyncio.create_task(_broadcast_artikel_cmd_invites(
         context, battle_id=battle_id, creator_id=int(user.id), creator_name=creator_name,
-        theme_key=theme_key, status_chat_id=int(message.chat_id), status_msg_id=int(status.message_id)))
+        theme_key=theme_key, status_chat_id=int(message.chat_id), status_msg_id=status_mid))
 
 
 async def _broadcast_artikel_cmd_invites(context: CallbackContext, *, battle_id: int, creator_id: int,
@@ -23121,13 +23122,11 @@ async def _broadcast_artikel_cmd_invites(context: CallbackContext, *, battle_id:
         [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
-    try:
-        await context.bot.edit_message_text(
-            chat_id=status_chat_id, message_id=status_msg_id,
-            text=f"⚔️ Батл #{battle_id} создан (тема: {theme_key}). Приглашено: {sent}. Дедлайн 23:59.",
-            reply_markup=play_kb)
-    except Exception:
-        pass
+    final_cap = (f"⚔️ <b>Artikel-батл #{battle_id} в бою!</b>\n"
+                 f"2 минуты на der/die/das · дедлайн 23:59\n"
+                 f"📨 Вызов получили: {sent}\nСыграй первым — задай темп! 👇")
+    await _present_battle_status(context, chat_id=status_chat_id, old_msg_id=status_msg_id,
+                                 caption=final_cap, kb=play_kb)
 
 
 async def artikel_battle_join_callback(update: Update, context: CallbackContext) -> None:
@@ -23278,6 +23277,65 @@ async def _edit_battle_invite(q, text: str, kb) -> None:
 def _battle_is_open(battle: dict | None) -> bool:
     return bool(battle and str(battle.get("status")) == "open"
                and not (battle.get("deadline") and battle["deadline"] <= datetime.now(ZoneInfo("UTC"))))
+
+
+def _battle_hero_image() -> str | None:
+    """R2 URL of the Smurf-knights battle art (shared invite/creator-status poster)."""
+    try:
+        from backend.battle_card import battle_invite_image_url
+        return battle_invite_image_url()
+    except Exception:
+        return None
+
+
+async def _send_battle_status(context: CallbackContext, *, chat_id: int, caption: str, kb) -> int:
+    """Send the creator's battle status as a hero-photo card (Smurf-knights art) when
+    available, else plain text. Returns the message id so it can be edited/pinned."""
+    img = _battle_hero_image()
+    if img:
+        try:
+            m = await context.bot.send_photo(chat_id=int(chat_id), photo=img, caption=caption,
+                                             parse_mode="HTML", reply_markup=kb)
+            return int(m.message_id)
+        except Exception:
+            logging.warning("battle status photo send failed chat=%s", chat_id, exc_info=True)
+    m = await context.bot.send_message(chat_id=int(chat_id), text=caption,
+                                       parse_mode="HTML", reply_markup=kb)
+    return int(m.message_id)
+
+
+async def _present_battle_status(context: CallbackContext, *, chat_id: int, old_msg_id: int,
+                                 caption: str, kb) -> int:
+    """Land the creator's battle status as a hero-photo card. If ``old_msg_id`` is
+    already a photo (direct /battle path) edit its caption in place; if it's a text
+    message (wizard UI) replace it with a fresh photo card and drop the old one. Falls
+    back to a plain-text edit when no battle art exists. Returns the effective msg id
+    (differs from ``old_msg_id`` only when we replaced a text message)."""
+    img = _battle_hero_image()
+    if img:
+        try:
+            await context.bot.edit_message_caption(
+                chat_id=int(chat_id), message_id=int(old_msg_id), caption=caption,
+                parse_mode="HTML", reply_markup=kb)
+            return int(old_msg_id)
+        except Exception:
+            pass  # not a photo (wizard text UI) → replace it below
+        try:
+            m = await context.bot.send_photo(chat_id=int(chat_id), photo=img, caption=caption,
+                                             parse_mode="HTML", reply_markup=kb)
+            try:
+                await context.bot.delete_message(chat_id=int(chat_id), message_id=int(old_msg_id))
+            except Exception:
+                pass
+            return int(m.message_id)
+        except Exception:
+            logging.warning("battle status photo replace failed chat=%s", chat_id, exc_info=True)
+    try:
+        await context.bot.edit_message_text(chat_id=int(chat_id), message_id=int(old_msg_id),
+                                             text=caption, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
+    return int(old_msg_id)
 
 
 # How long between "не забыл про батл?" nudges for members who accepted but haven't
@@ -27356,28 +27414,31 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
         [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
     ])
-    status = await message.reply_text(
-        f"⚔️ Adjektiv-батл #{bid} создан! Дедлайн 23:59.\nРассылаю приглашения… 📨",
-        reply_markup=play_kb)
+    instant_cap = (f"⚔️ <b>Твой Adjektiv-батл #{bid} брошен!</b>\n"
+                   f"15 ситуаций на окончания прилагательных · дедлайн 23:59\n"
+                   f"📨 Рассылаю приглашения соперникам…")
+    status_mid = await _send_battle_status(context, chat_id=int(message.chat_id),
+                                           caption=instant_cap, kb=play_kb)
     if _set_id:
         asyncio.create_task(_pin_battle_play_message(
             context, user_id=int(user.id), set_id=str(_set_id),
-            chat_id=int(message.chat_id), message_id=int(status.message_id), kind="adjektiv"))
+            chat_id=int(message.chat_id), message_id=status_mid, kind="adjektiv"))
     # Nudge the creator too if they don't get around to playing their own battle.
     asyncio.create_task(_schedule_battle_auto_nudge(
         kind="adjektiv", battle_id=bid, user_id=int(user.id), deadline=deadline))
     asyncio.create_task(_broadcast_adjektiv_battle_invites(
         context, battle_id=bid, creator_id=int(user.id), creator_name=creator_name,
-        status_chat_id=int(message.chat_id), status_msg_id=int(status.message_id)))
+        status_chat_id=int(message.chat_id), status_msg_id=status_mid))
 
 
 async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle_id: int,
                                              creator_id: int, creator_name: str,
                                              status_chat_id: int, status_msg_id: int,
-                                             target_ids: list[int] | None = None) -> None:
+                                             target_ids: list[int] | None = None) -> int:
     """Off-critical-path: render the invite card once and DM every allowed user
-    (or just ``target_ids`` when the wizard picked specific players), then update
-    the creator's status message with the count."""
+    (or just ``target_ids`` when the wizard picked specific players), then land the
+    creator's status as a hero-photo card. Returns the effective status message id
+    (may change when a text wizard message is replaced by the photo card)."""
     invite_text = (
         f"⚔️ <b>{html.escape(creator_name)}</b> зовёт на <b>Adjektiv Sprint</b> батл!\n"
         f"15 ситуаций на окончания прилагательных, по 5 сек. Играй когда удобно <b>до 23:59</b>. Прими вызов:"
@@ -27415,13 +27476,12 @@ async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle
         [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
     ])
-    try:
-        await context.bot.edit_message_text(
-            chat_id=status_chat_id, message_id=status_msg_id,
-            text=f"⚔️ Adjektiv-батл #{battle_id} создан. Приглашено: {sent}. Дедлайн 23:59.",
-            reply_markup=play_kb)
-    except Exception:
-        pass
+    final_cap = (f"⚔️ <b>Adjektiv-батл #{battle_id} в бою!</b>\n"
+                 f"15 ситуаций на окончания прилагательных · дедлайн 23:59\n"
+                 f"📨 Вызов получили: {sent}\nСыграй первым — задай темп! 👇")
+    return await _present_battle_status(context, chat_id=int(status_chat_id),
+                                        old_msg_id=int(status_msg_id),
+                                        caption=final_cap, kb=play_kb)
 
 
 async def _create_and_broadcast_adjektiv_wizard(context: CallbackContext, *, creator_id: int,
@@ -27451,13 +27511,13 @@ async def _create_and_broadcast_adjektiv_wizard(context: CallbackContext, *, cre
         return
     await asyncio.to_thread(add_adjektiv_sprint_battle_member,
                             battle_id=bid, user_id=int(creator_id), user_name=creator_name)
-    await _broadcast_adjektiv_battle_invites(
+    eff_msg_id = await _broadcast_adjektiv_battle_invites(
         context, battle_id=bid, creator_id=int(creator_id), creator_name=creator_name,
         status_chat_id=int(status_chat_id), status_msg_id=int(status_msg_id),
         target_ids=ind_targets)
     if set_id:
         await _pin_battle_play_message(context, user_id=int(creator_id), set_id=str(set_id),
-                                       chat_id=int(status_chat_id), message_id=int(status_msg_id),
+                                       chat_id=int(status_chat_id), message_id=int(eff_msg_id),
                                        kind="adjektiv")
     await _schedule_battle_auto_nudge(kind="adjektiv", battle_id=bid,
                                       user_id=int(creator_id), deadline=deadline)
