@@ -264,6 +264,23 @@ export default function DictionaryOverlay() {
     }
   }, [query, phase, tts, forcedDir]);
 
+  // Drop the current result and return to the initial compose screen. Called when the
+  // field is emptied (manually or via the × button) so a stale card never lingers.
+  const resetResult = useCallback(() => {
+    seqRef.current += 1; // abort any in-flight translate/lookup
+    tts.stop();
+    setQuick(null); setItem(null); setEnrich('idle'); setPhase('idle');
+    setError(''); setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
+    lastAutoRef.current = '';
+  }, [tts]);
+
+  const clearInput = useCallback(() => {
+    setQuery('');
+    resetResult();
+    haptic('light');
+    try { inputRef.current?.focus(); } catch (_e) { /* ignore */ }
+  }, [resetResult]);
+
   // Auto-translate (DeepL-style): translate ~800ms after the user stops typing.
   useEffect(() => {
     if (!autoOn) return undefined;
@@ -518,17 +535,29 @@ export default function DictionaryOverlay() {
         ) : (
         <>
         <div className="dq-search">
-          <input
-            ref={inputRef}
-            className="ans-input dq-input"
-            type="text"
-            inputMode="text"
-            autoComplete="off"
-            placeholder="Слово или фраза…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={onKeyDown}
-          />
+          <div className="dq-input-wrap">
+            <input
+              ref={inputRef}
+              className="ans-input dq-input"
+              type="text"
+              inputMode="text"
+              autoComplete="off"
+              placeholder="Слово или фраза…"
+              value={query}
+              onChange={(e) => { const v = e.target.value; setQuery(v); if (!v.trim()) resetResult(); }}
+              onKeyDown={onKeyDown}
+            />
+            {query && (
+              <button
+                type="button"
+                className="dq-clear"
+                onClick={clearInput}
+                aria-label="Очистить поле"
+              >
+                ×
+              </button>
+            )}
+          </div>
           <button
             type="button"
             className="dq-go"

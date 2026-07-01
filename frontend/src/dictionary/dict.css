@@ -286,6 +286,39 @@
 }
 .dq-go:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
 
+/* Clear (×) button inside the compact search field. */
+.dq-input-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+}
+.dq-input-wrap .dq-input {
+  flex: 1 1 auto;
+  padding-right: 40px;
+}
+.dq-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(148, 163, 184, 0.20);
+  color: var(--dmps-text-secondary, #94a3b8);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.dq-clear:active { transform: translateY(-50%) scale(0.9); }
+
 .dq-hint {
   font-size: 14px;
   line-height: 1.45;

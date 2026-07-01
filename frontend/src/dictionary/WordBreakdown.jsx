@@ -766,6 +766,9 @@ export function WordBreakdown({ item, tts, onSaveChip, savedChips, hideMeanings 
 export function useTts() {
   const audioRef = useRef(null);
   const seqRef = useRef(0);
+  // Client-side cache: (lang::text) → blob object-URL. Once a word is played, replays
+  // are INSTANT — no /tts/generate, no /tts/url poll, no re-download from R2.
+  const blobCacheRef = useRef(new Map());
   const [state, setState] = useState('idle'); // idle|loading|playing|error
   const [playingText, setPlayingText] = useState('');
 
@@ -776,13 +779,30 @@ export function useTts() {
     setPlayingText('');
   }, []);
 
+  const _startAudio = useCallback(async (src, mySeq) => {
+    if (mySeq !== seqRef.current) return;
+    const audio = new Audio(src);
+    audioRef.current = audio;
+    audio.onended = () => { if (mySeq === seqRef.current) { setState('idle'); setPlayingText(''); } };
+    audio.onerror = () => { if (mySeq === seqRef.current) setState('error'); };
+    setState('playing');
+    await audio.play();
+  }, []);
+
   const play = useCallback(async (text, language = 'de-DE') => {
     const t = String(text || '').trim();
     if (!t) return;
+    const key = `${language}::${t}`;
     const mySeq = ++seqRef.current;
-    setState('loading');
     setPlayingText(t);
     haptic('light');
+    // Fast path: replay from the in-memory blob — instant, zero network.
+    const cachedBlobUrl = blobCacheRef.current.get(key);
+    if (cachedBlobUrl) {
+      try { await _startAudio(cachedBlobUrl, mySeq); return; }
+      catch (_e) { blobCacheRef.current.delete(key); /* fall through to refetch */ }
+    }
+    setState('loading');
     try {
       await api('/api/webapp/tts/generate', { text: t, language });
       const params = new URLSearchParams({ text: t, language });
@@ -799,16 +819,18 @@ export function useTts() {
       }
       if (!url) throw new Error('Zeitüberschreitung');
       if (mySeq !== seqRef.current) return;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = () => { if (mySeq === seqRef.current) { setState('idle'); setPlayingText(''); } };
-      audio.onerror = () => { if (mySeq === seqRef.current) setState('error'); };
-      setState('playing');
-      await audio.play();
+      // Download the MP3 once and cache it as a blob so every later tap is instant.
+      let playSrc = url;
+      try {
+        const blob = await (await fetch(url)).blob();
+        playSrc = URL.createObjectURL(blob);
+        blobCacheRef.current.set(key, playSrc);
+      } catch (_e) { /* blob fetch failed — play straight from the URL */ }
+      await _startAudio(playSrc, mySeq);
     } catch (_e) {
       if (mySeq === seqRef.current) { setState('error'); haptic('bad'); }
     }
-  }, []);
+  }, [_startAudio]);
 
   const warm = useCallback(async (text, language = 'de-DE') => {
     const t = String(text || '').trim();
