@@ -26360,6 +26360,30 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
             except Exception:
                 logging.warning("aufgabe_pool: pin image/vision failed, skipping item", exc_info=True)
                 continue
+        elif fmt == "error":
+            # Bounded LLM verifier: confirm the item has EXACTLY ONE real error at
+            # error_index, that correct_word fixes it, and NOTHING else is wrong. Catches
+            # the fake-case-error ("über die Fehler" is already correct Akkusativ) and the
+            # hidden-second-error ("hat … ärgern" instead of "geärgert") slips the
+            # deterministic gate can't see. Fail-closed: drop the item if not verified.
+            try:
+                from backend.openai_manager import run_verify_aufgabe_error
+                verdict = await run_verify_aufgabe_error(
+                    woerter=payload.get("woerter") or [],
+                    error_index=int(payload.get("error_index", -1)),
+                    correct_word=str(payload.get("correct_word") or ""),
+                    aliases=payload.get("aliases"),
+                )
+                if not verdict.get("valid"):
+                    logging.info(
+                        "aufgabe_pool: 'error' item rejected by verifier (%s) woerter=%s idx=%s correct=%s",
+                        verdict.get("reason"), payload.get("woerter"),
+                        payload.get("error_index"), payload.get("correct_word"),
+                    )
+                    continue
+            except Exception:
+                logging.warning("aufgabe_pool: 'error' verifier failed, skipping item", exc_info=True)
+                continue
         await asyncio.to_thread(
             create_aufgabe, aufgabe_id=aufgabe_id, format=fmt, level=level, payload=payload,
         )

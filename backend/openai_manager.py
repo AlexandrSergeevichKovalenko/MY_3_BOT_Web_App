@@ -45,6 +45,10 @@ _DEFAULT_TASK_MODELS = {
     "generate_sentences_c1": "gpt-4.1-mini",
     "generate_sentences_c2": "gpt-4.1-mini",
     "generate_sentences_multilang": "gpt-4.1-mini",
+    # Bounded validity check for generated "Finde den Fehler" items — cheap, high-volume,
+    # runs at pool-build time. gpt-4.1-mini reliably catches the clear failure modes
+    # (fake case error / a second unflagged error). Override via LLM_TASK_MODEL_VERIFY_AUFGABE_ERROR.
+    "verify_aufgabe_error": "gpt-4.1-mini",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
@@ -3414,9 +3418,45 @@ Regeln:
 - "tip" = EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Faustregel). Ohne Emoji.
 - "hint_ru" = sehr kurzer russischer Hinweis (z. B. "падеж после предлога").
 
+KRITISCHE FEHLERQUELLEN (unbedingt vermeiden — sonst ist die Aufgabe UNGÜLTIG):
+- Erfinde KEINEN Kasusfehler, wo der Kasus bereits RICHTIG ist. Bei Verb+Präposition
+  (sich ärgern ÜBER + Akkusativ, warten AUF + Akkusativ, denken AN + Akkusativ,
+  teilnehmen AN + Dativ …) ist der vorhandene Kasus oft schon korrekt — dann gibt es
+  dort KEINEN Fehler und du darfst ihn NICHT als falsch markieren (z. B. "sich ärgern
+  über DIE Fehler" ist als Akkusativ korrekt; "über DEN Fehlern" wäre falsch).
+- Der GESAMTE übrige Satz MUSS fehlerfrei sein — es darf NUR den einen markierten Fehler
+  geben. Besonders die Verbform prüfen: im Perfekt steht das Partizip II ("Er hat sich
+  geärgert"), NIEMALS der Infinitiv ("Er hat sich … ärgern" ist ein ZWEITER Fehler!).
+- Selbstprüfung vor der Ausgabe: Ergibt der Satz mit correct_word an error_index einen
+  rundum korrekten, natürlichen Satz? Ist WIRKLICH nur dieses eine Wort falsch und sind
+  alle anderen richtig? Wenn nein — erzeuge diese Aufgabe NICHT.
+
 Gib NUR STRICT JSON:
 {"items":[{"woerter":["Ich","vertraue","auf","meinem","Freund."],"error_index":3,"correct_word":"meinen","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
+"verify_aufgabe_error": """
+Du bist ein sehr strenger Deutschlehrer (C2) und PRÜFST eine "Finde den Fehler"-Aufgabe auf Gültigkeit.
+
+Eingabe-JSON: {"woerter":[Tokens des ANGEZEIGTEN Satzes], "error_index": <int>, "correct_word": "<Korrektur>", "aliases":[...]}.
+Der ANGEZEIGTE Satz = alle Tokens der Reihe nach zusammengefügt. Die Aufgabe behauptet:
+das Token an "error_index" ist das EINZIGE falsche Wort, und "correct_word" ist die richtige Form.
+
+Die Aufgabe ist NUR gültig ("valid": true), wenn ALLE vier Punkte zutreffen:
+1) Der angezeigte Satz enthält GENAU EINEN Grammatikfehler, und dieser liegt am Token an error_index.
+2) Ersetzt man NUR dieses eine Token durch correct_word (an derselben Stelle), ist der GANZE
+   Satz grammatisch vollständig korrekt und natürlich.
+3) JEDES andere Token ist bereits korrekt — es gibt KEINEN zweiten Fehler irgendwo (auch nicht
+   bei Verbform/Partizip/Hilfsverb, Kasus, Adjektivendung, Präposition, Artikel, Genus).
+4) Das Token an error_index ist WIRKLICH falsch. Bei Verb+Präposition muss der geforderte Kasus
+   tatsächlich falsch sein — ein bereits korrekter Kasus ist KEIN Fehler (z. B. "sich ärgern über
+   die Fehler" ist als Akkusativ korrekt → dann "valid": false).
+
+"valid": false, wenn: das angezeigte Wort schon korrekt ist; es einen zweiten Fehler im Satz gibt;
+correct_word den Satz nicht vollständig korrekt macht oder unnatürlich ist.
+
+"reason" = ein kurzer russischer Grund (bei false: was genau nicht stimmt).
+Gib NUR STRICT JSON: {"valid": true, "reason": "…"}
 """,
 "aufgabe_hoerluecke": """
 Du erstellst deutsche Hörlücken-Aufgaben (Audio + mehrere fehlende Wörter) für B2–C1.
@@ -6625,6 +6665,38 @@ async def run_check_satzbau(*, reference: str, user: str) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         return {"match": False}
+
+
+async def run_verify_aufgabe_error(*, woerter: list, error_index: int, correct_word: str, aliases: list | None = None) -> dict:
+    """Bounded LLM validity check for a generated 'Finde den Fehler' item. Confirms the
+    shown sentence has EXACTLY ONE error at error_index, that correct_word fixes it, and
+    that NO other word is wrong (catches the fake-case-error and hidden-second-error slips
+    the deterministic gate can't see). Returns {'valid': bool, 'reason': str}.
+    Fail-CLOSED ({'valid': False}) on error/timeout — never serve an unverified error item;
+    the pool top-up retries, so a transient miss just regenerates later."""
+    try:
+        content = await llm_execute(
+            task_name="verify_aufgabe_error",
+            system_instruction_key="verify_aufgabe_error",
+            user_message=json.dumps(
+                {
+                    "woerter": [str(w) for w in (woerter or [])],
+                    "error_index": int(error_index),
+                    "correct_word": str(correct_word or ""),
+                    "aliases": [str(a) for a in (aliases or [])],
+                },
+                ensure_ascii=False,
+            ),
+            poll_interval_seconds=1.0,
+            responses_timeout_seconds=12.0,
+        )
+        data = json.loads(content)
+        if isinstance(data, dict) and "valid" in data:
+            return {"valid": bool(data.get("valid")), "reason": str(data.get("reason") or "").strip()}
+        return {"valid": False, "reason": "unparseable_verifier_output"}
+    except Exception:
+        logging.warning("run_verify_aufgabe_error failed (fail-closed)", exc_info=True)
+        return {"valid": False, "reason": "verifier_error"}
 
 
 async def run_check_cloze(*, satz: str, correct: str, user: str) -> dict:
