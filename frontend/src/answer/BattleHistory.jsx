@@ -56,7 +56,7 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
     body = (<>
       <div className="ans-head"><span className="ans-eyebrow">📜 История батлов</span></div>
       <p className="ans-sub">У тебя пока нет батлов. Прими вызов в личке или создай свой:
-        ⚔️ «Вызвать на батл» (артикли) или ⚔️ «Adjektiv-батл» (окончания).</p>
+        ⚔️ «Artikel-батл» (артикли) или ⚔️ «Adjektiv-батл» (окончания).</p>
       <button className="ans-btn" onClick={onClose}>Schließen</button>
     </>);
   } else {

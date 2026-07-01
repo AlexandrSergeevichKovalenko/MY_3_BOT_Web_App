@@ -1092,7 +1092,7 @@ SCHEDULE_BUTTON_PREFIX = "🗓"  # stable routing prefix; the live button also s
 STREAK_BUTTON_TEXT = "🔥 Мой стрик"
 ARTIKEL_LEARN_BUTTON_TEXT = "📚 Учить артикли"
 ARTIKEL_FOCUS_BUTTON_TEXT = "🎯 Тема на завтра"
-ARTIKEL_BATTLE_CALL_BUTTON_TEXT = "⚔️ Вызвать на батл"
+ARTIKEL_BATTLE_CALL_BUTTON_TEXT = "⚔️ Artikel-батл"
 ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT = "🛡 Готов к батлам"
 ADJEKTIV_SPRINT_BUTTON_TEXT = "🔠 Adjektiv"
 NUMDICT_PRACTICE_BUTTON_TEXT = "🔢 Числа на слух"
@@ -4593,7 +4593,7 @@ def _build_private_start_onboarding_text() -> str:
         "Каждый день бот присылает интерактивные задания (B2+): впиши слово, собери предложение, найди синоним и др. Есть рейтинг и Кубок чемпиона недели. Хотите играть <b>командой с друзьями</b> в общем чате — команда <b>/group</b> подскажет, как настроить.\n\n"
         "🔹 <b>Артикли: учим и сражаемся</b>\n"
         "📚 «Учить артикли» — тренажёр der/die/das с подсказками, звуком и картинками. ⚔️ <b>Батлы</b> — дуэли на скорость: кто-то вызывает, остальные принимают и играют до вечера, а в конце — пьедестал победителей.\n"
-        "👉 Чтобы тебя могли позвать на батл, нажми внизу кнопку <b>«🛡 Готов к батлам»</b> (✅ = ты в списке). А Premium может сам вызывать других кнопкой <b>«⚔️ Вызвать на батл»</b>.\n\n"
+        "👉 Чтобы тебя могли позвать на батл, нажми внизу кнопку <b>«🛡 Готов к батлам»</b> (✅ = ты в списке). А Premium может сам вызывать других кнопкой <b>«⚔️ Artikel-батл»</b>.\n\n"
         "➖➖➖\n"
         "📲 Начните с кнопки <b>«Установить Shortcut»</b> внизу.\n"
         "🎬 А как всё это выглядит на практике — кнопка <b>«Как пользоваться»</b>."
@@ -22730,7 +22730,7 @@ async def handle_battle_wizard_callback(update: Update, context: CallbackContext
     draft = pending_battle_invites.get(uid)
     data = str(q.data or "")
     if not draft:
-        await q.answer("Мастер устарел — нажми «⚔️ Вызвать на батл» снова.", show_alert=True)
+        await q.answer("Мастер устарел — нажми «⚔️ Artikel-батл» снова.", show_alert=True)
         return
     action = data.split(":", 2)
 
@@ -25029,6 +25029,31 @@ def _build_group_daily_report(lb: dict, title: str | None, *, period: str = "day
     return "\n".join(lines)
 
 
+async def _dm_group_champion_fallback(context: CallbackContext, *, participants,
+                                      poster, text, kb, served: set) -> int:
+    """When a group champion post can't reach the GROUP chat (stale/migrated chat_id,
+    bot kicked, missing rights), still deliver the same poster to that group's
+    confirmed members in their DM. `served` dedups members shared across groups so
+    nobody gets it twice in one run. Returns how many DMs went out."""
+    dm = 0
+    for uid in participants:
+        uid = int(uid)
+        if uid <= 0 or uid in served:
+            continue
+        try:
+            if poster:
+                m = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
+                                                 caption=text, parse_mode="HTML", reply_markup=kb)
+                await _preserve_system_message(m, "champion")
+            else:
+                await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML", reply_markup=kb)
+            served.add(uid)
+            dm += 1
+        except Exception:
+            logging.warning("champion DM fallback failed uid=%s", uid, exc_info=True)
+    return dm
+
+
 async def _send_group_daily_report_job(context: CallbackContext) -> None:
     """Evening: post each group's collective day summary (who solved how much, champion
     of the day) into the GROUP chat. Personal "Итоги дня" stays in each user's DM."""
@@ -25051,6 +25076,8 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
     except Exception:
         groups = []
     sent = 0
+    dm_fallback = 0
+    served: set[int] = set()  # members already reached this run (via group post or DM)
     for g in groups or []:
         try:
             chat_id = int(g.get("chat_id") or 0)
@@ -25097,9 +25124,14 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
             else:
                 await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
+            served |= {int(u) for u in participants}  # they saw it in the group
         except Exception:
-            logging.warning("group daily report send failed chat_id=%s", chat_id, exc_info=True)
-    logging.info("group_daily_report sent=%d groups", sent)
+            # Group unreachable (stale/migrated chat_id, bot kicked/no rights) → DM
+            # the poster to that group's confirmed members so they still get it.
+            logging.warning("group daily report send failed chat_id=%s — DM fallback", chat_id, exc_info=True)
+            dm_fallback += await _dm_group_champion_fallback(
+                context, participants=participants, poster=poster, text=text, kb=kb, served=served)
+    logging.info("group_daily_report sent=%d groups dm_fallback=%d", sent, dm_fallback)
 
 
 def _build_champion_card(lb: dict, *, week_no: int, days: int) -> str | None:
@@ -25254,6 +25286,8 @@ async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int
     except Exception:
         groups = []
     sent = 0
+    dm_fallback = 0
+    served: set[int] = set()  # members already reached this run (via group post or DM)
     for g in groups or []:
         try:
             chat_id = int(g.get("chat_id") or 0)
@@ -25298,8 +25332,14 @@ async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int
             else:
                 await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
+            served |= {int(u) for u in participants}  # they saw it in the group
         except Exception:
-            logging.warning("weekly group champion send failed chat_id=%s", chat_id, exc_info=True)
+            # Group unreachable (stale/migrated chat_id, bot kicked/no rights) → DM
+            # the poster to that group's confirmed members so they still get it.
+            logging.warning("weekly group champion send failed chat_id=%s — DM fallback", chat_id, exc_info=True)
+            dm_fallback += await _dm_group_champion_fallback(
+                context, participants=participants, poster=poster, text=text, kb=kb, served=served)
+    logging.info("weekly_group_champion sent=%d groups dm_fallback=%d", sent, dm_fallback)
     return sent
 
 
