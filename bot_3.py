@@ -192,6 +192,7 @@ from backend.database import (
     confirm_webapp_group_participation,
     get_webapp_scope_state,
     list_known_webapp_group_chats,
+    deactivate_group_chat,
     list_webapp_group_contexts,
     upsert_webapp_group_context,
     get_telegram_quiz_next_mode,
@@ -25054,9 +25055,38 @@ async def _dm_group_champion_fallback(context: CallbackContext, *, participants,
     return dm
 
 
+# Telegram errors that mean a group is gone for good (not a transient hiccup):
+# the chat was deleted, the bot was kicked/blocked, or the group migrated to a new
+# supergroup id. On these we retire the group's membership so its users become solo.
+_DEAD_GROUP_SIGNS = (
+    "chat not found", "group chat was deleted", "chat was upgraded",
+    "group chat was upgraded", "bot was kicked", "bot is not a member",
+    "not a member", "peer_id_invalid", "chat_id is empty", "the group chat was deleted",
+)
+
+
+def _is_dead_group_error(exc: Exception) -> bool:
+    """True if `exc` from a group send means the group no longer exists / is unreachable
+    permanently (vs. a transient network/timeout error worth retrying next run)."""
+    try:
+        from telegram.error import Forbidden, BadRequest
+    except Exception:
+        Forbidden = BadRequest = ()
+    if Forbidden and isinstance(exc, Forbidden):
+        return True
+    msg = str(exc or "").lower()
+    if BadRequest and isinstance(exc, BadRequest):
+        return any(s in msg for s in _DEAD_GROUP_SIGNS)
+    return any(s in msg for s in _DEAD_GROUP_SIGNS)
+
+
 async def _send_group_daily_report_job(context: CallbackContext) -> None:
-    """Evening: post each group's collective day summary (who solved how much, champion
-    of the day) into the GROUP chat. Personal "Итоги дня" stays in each user's DM."""
+    """Evening champion-of-the-day, by audience:
+      • GROUP chats → the group's champion poster + ranking button, into the chat.
+      • dead groups → membership retired (deleted/kicked/migrated) so members reclassify.
+      • SOLO users (not in any live group) who played today → the GLOBAL «кто лучший
+        за день» грамота in DM (1-2-3 place + own rank via the ranking button).
+    Personal "Итоги дня" stats stay in each user's DM (separate digest job)."""
     try:
         rows = await asyncio.to_thread(get_challenge_results_since, 24)
     except Exception:
@@ -25077,6 +25107,7 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
         groups = []
     sent = 0
     dm_fallback = 0
+    dead_groups = 0
     served: set[int] = set()  # members already reached this run (via group post or DM)
     for g in groups or []:
         try:
@@ -25125,13 +25156,47 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
                 await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
             served |= {int(u) for u in participants}  # they saw it in the group
-        except Exception:
-            # Group unreachable (stale/migrated chat_id, bot kicked/no rights) → DM
-            # the poster to that group's confirmed members so they still get it.
-            logging.warning("group daily report send failed chat_id=%s — DM fallback", chat_id, exc_info=True)
-            dm_fallback += await _dm_group_champion_fallback(
-                context, participants=participants, poster=poster, text=text, kb=kb, served=served)
-    logging.info("group_daily_report sent=%d groups dm_fallback=%d", sent, dm_fallback)
+        except Exception as exc:
+            if _is_dead_group_error(exc):
+                # Group is gone for good → retire its membership. Its active members
+                # get picked up by the solo/global daily pass below (as normal users).
+                logging.warning("group daily report: group %s is dead (%s) → deactivating", chat_id, exc)
+                try:
+                    await asyncio.to_thread(deactivate_group_chat, chat_id)
+                    dead_groups += 1
+                except Exception:
+                    logging.warning("deactivate_group_chat failed chat_id=%s", chat_id, exc_info=True)
+            else:
+                # Transient failure (network/timeout) → DM the poster to members so
+                # they still get it now; the group stays live and is retried next run.
+                logging.warning("group daily report send failed chat_id=%s — DM fallback", chat_id, exc_info=True)
+                dm_fallback += await _dm_group_champion_fallback(
+                    context, participants=participants, poster=poster, text=text, kb=kb, served=served)
+    logging.info("group_daily_report sent=%d groups dm_fallback=%d dead_groups=%d", sent, dm_fallback, dead_groups)
+
+    # Solo/global daily champion: users NOT in any live group who played today get the
+    # GLOBAL "кто лучший за день" грамота in DM (1-2-3 place + their own rank via the
+    # ranking button). This is what ex-group members now fall back to automatically.
+    try:
+        active_uids = {int(r["user_id"]) for r in rows if r.get("user_id") is not None}
+        group_member_ids = await _collect_all_group_participant_ids(context)
+        targets = await _collect_quiz_delivery_user_targets(context)
+        solo_chat_ids: list[int] = []
+        for t in targets or []:
+            cid = int(t.get("chat_id") or 0)
+            if cid <= 0:  # DM (private) chats only
+                continue
+            uids = [int(u) for u in (t.get("user_ids") or [])]
+            if any(u in group_member_ids for u in uids):
+                continue  # still a member of a live group → gets the group post
+            if not any(u in active_uids for u in uids):
+                continue  # didn't play today → don't DM a daily card
+            solo_chat_ids.append(cid)
+        if solo_chat_ids:
+            solo_sent = await _post_champion_card(context, days=1, chat_ids=solo_chat_ids)
+            logging.info("daily solo champion: sent=%d", solo_sent)
+    except Exception:
+        logging.warning("daily solo champion pass failed", exc_info=True)
 
 
 def _build_champion_card(lb: dict, *, week_no: int, days: int) -> str | None:
@@ -25216,8 +25281,9 @@ async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: 
     except Exception:
         logging.warning("champion poster render failed", exc_info=True)
     champ = (lb.get("leaders") or [{}])[0]
+    period_word = "недели" if days == 7 else ("дня" if days == 1 else f"{days} дн.")
     caption = (
-        f"🏆 <b>Чемпион {'недели' if days == 7 else f'{days} дн.'} №{week_no}</b> — "
+        f"🏆 <b>Чемпион {period_word}</b>{'' if days == 1 else f' №{week_no}'} — "
         f"<b>{html.escape(str(champ.get('name') or ''))}</b>! 🎉\nРешай интерактивы — попади в топ 🎮"
     )
     if chat_ids is None:
@@ -25287,6 +25353,7 @@ async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int
         groups = []
     sent = 0
     dm_fallback = 0
+    dead_groups = 0
     served: set[int] = set()  # members already reached this run (via group post or DM)
     for g in groups or []:
         try:
@@ -25333,13 +25400,22 @@ async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int
                 await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
             served |= {int(u) for u in participants}  # they saw it in the group
-        except Exception:
-            # Group unreachable (stale/migrated chat_id, bot kicked/no rights) → DM
-            # the poster to that group's confirmed members so they still get it.
-            logging.warning("weekly group champion send failed chat_id=%s — DM fallback", chat_id, exc_info=True)
-            dm_fallback += await _dm_group_champion_fallback(
-                context, participants=participants, poster=poster, text=text, kb=kb, served=served)
-    logging.info("weekly_group_champion sent=%d groups dm_fallback=%d", sent, dm_fallback)
+        except Exception as exc:
+            if _is_dead_group_error(exc):
+                # Group is gone → retire membership. Its members become solo and get
+                # the GLOBAL weekly champion in DM via the solo pass in the caller.
+                logging.warning("weekly group champion: group %s is dead (%s) → deactivating", chat_id, exc)
+                try:
+                    await asyncio.to_thread(deactivate_group_chat, chat_id)
+                    dead_groups += 1
+                except Exception:
+                    logging.warning("deactivate_group_chat failed chat_id=%s", chat_id, exc_info=True)
+            else:
+                # Transient failure → DM the poster to members so they still get it now.
+                logging.warning("weekly group champion send failed chat_id=%s — DM fallback", chat_id, exc_info=True)
+                dm_fallback += await _dm_group_champion_fallback(
+                    context, participants=participants, poster=poster, text=text, kb=kb, served=served)
+    logging.info("weekly_group_champion sent=%d groups dm_fallback=%d dead_groups=%d", sent, dm_fallback, dead_groups)
     return sent
 
 
@@ -28484,6 +28560,33 @@ async def admin_pool_refill_command(update: Update, context: CallbackContext) ->
         await status.edit_text(f"❌ Не удалось выполнить пополнение: {exc}")
 
 
+async def admin_translation_pool_report_command(update: Update, context: CallbackContext) -> None:
+    """Send the Translation-pool admin digest (📊 Translation pool · … 🔴 Ниже прогноза) to
+    admins NOW, bypassing the daily run-guard — lets us verify the sentence-pool report on
+    demand (distinct from /poolreport, which is the INTERACTIVES pool). /translationpool"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status = await message.reply_text("📊 Собираю Translation pool отчёт…")
+    try:
+        from backend.backend_server import _send_translation_focus_pool_admin_report
+        result = await asyncio.to_thread(_send_translation_focus_pool_admin_report, force=True)
+        r = result if isinstance(result, dict) else {}
+        if r.get("skipped"):
+            await status.edit_text(f"ℹ️ Пропущено: {r.get('reason') or 'unknown'}")
+        elif r.get("ok", True):
+            await status.edit_text("✅ Отчёт Translation pool отправлен (см. сообщение с картинкой).")
+        else:
+            await status.edit_text(f"⚠️ Готово с оговоркой: {r}")
+    except Exception as exc:
+        logging.exception("admin translation pool report command failed user_id=%s", getattr(user, "id", None))
+        await status.edit_text(f"❌ Не удалось собрать Translation pool отчёт: {exc}")
+
+
 async def admin_pool_remind_command(update: Update, context: CallbackContext) -> None:
     """DM all admins an early pool reminder. /admin_pool_remind"""
     user = update.effective_user
@@ -30903,6 +31006,7 @@ def main():
     application.add_handler(CommandHandler("admin_clearquizpool", admin_clear_quiz_pool_command))
     application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
     application.add_handler(CommandHandler("poolrefill", admin_pool_refill_command))
+    application.add_handler(CommandHandler("translationpool", admin_translation_pool_report_command))
     application.add_handler(CommandHandler("admin_pool_remind", admin_pool_remind_command))
     application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))

@@ -42,6 +42,16 @@ def _ctext(d, cx, y, text, font, fill):
     d.text((cx - tw / 2, y), text, font=font, fill=fill)
 
 
+def _fit_font(d, text, max_w, size, bold=True, min_size=40):
+    """Largest font (<= size, >= min_size) whose rendered width fits max_w."""
+    while size > min_size:
+        f = _font(size, bold)
+        if d.textlength(text, font=f) <= max_w:
+            return f
+        size -= 2
+    return _font(min_size, bold)
+
+
 def _tri(d, cx, cy, size, up, fill):
     if up:
         d.polygon([(cx, cy - size), (cx - size, cy + size), (cx + size, cy + size)], fill=fill)
@@ -84,7 +94,8 @@ def render_certificate(*, name: str, title: str, subtitle: str, rows: list[dict]
 
     # Header.
     _medal(d, W // 2, 150, 52)
-    _ctext(d, W // 2, 250, title, _font(82), GOLD)
+    title_font = _fit_font(d, title, W - 140, 82)
+    _ctext(d, W // 2, 250, title, title_font, GOLD)
     _ctext(d, W // 2, 352, subtitle, _font(34, False), MUTED)
     _ctext(d, W // 2, 410, name, _font(58), INK)
     d.line([(W // 2 - 180, 492), (W // 2 + 180, 492)], fill=GOLD, width=3)

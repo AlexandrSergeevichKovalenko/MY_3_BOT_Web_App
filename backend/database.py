@@ -12737,6 +12737,25 @@ def list_confirmed_group_participants(chat_id: int) -> list[int]:
             return [int(r[0]) for r in (cursor.fetchall() or []) if r and r[0] is not None]
 
 
+def deactivate_group_chat(chat_id: int) -> int:
+    """Clear confirmed-participation for a group that no longer exists (deleted, bot
+    kicked, or migrated to a new supergroup id). Its members stop being counted as
+    group members, so they fall back to the solo (global) delivery path instead of
+    silently getting nothing. Returns how many membership rows were cleared."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_webapp_group_contexts
+                SET participation_confirmed = FALSE,
+                    participation_confirmed_source = 'auto_group_dead'
+                WHERE chat_id = %s AND participation_confirmed = TRUE
+                """,
+                (int(chat_id),),
+            )
+            return int(cursor.rowcount or 0)
+
+
 def list_known_webapp_group_chats(limit: int = 500) -> list[dict]:
     safe_limit = max(1, min(int(limit or 500), 5000))
     with get_db_connection_context() as conn:
