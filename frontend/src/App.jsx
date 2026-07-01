@@ -30305,6 +30305,20 @@ function AppInner() {
                   <div className="topbar-row topbar-row-main">
                     <div className="topbar-leading-spacer" aria-hidden="true" />
                     <div className="topbar-title">Das Deutsche Schlümpfchen</div>
+                    {billingStatus?.is_sponsor && (
+                      <button
+                        type="button"
+                        className="topbar-sponsor-pill"
+                        onClick={() => openSingleSectionAndScroll('subscription', billingRef)}
+                        title={tr('Ты спонсор проекта — спасибо! ❤️', 'Du bist Projekt-Sponsor — danke! ❤️')}
+                        aria-label={tr('Ты спонсор проекта — спасибо! ❤️', 'Du bist Projekt-Sponsor — danke! ❤️')}
+                      >
+                        <span className="topbar-sponsor-pill__emoji" aria-hidden="true">
+                          {billingStatus?.sponsor_tier === 'support_cheesecake' ? '☕️🍰' : '☕️'}
+                        </span>
+                        <span className="topbar-sponsor-pill__heart" aria-hidden="true">❤️</span>
+                      </button>
+                    )}
                     <div className="topbar-profile">
                       <input
                         ref={avatarInputRef}
@@ -36936,9 +36950,27 @@ function AppInner() {
                     )}
 
                     {billingStatus?.manage?.available && (
-                      <div className="webapp-section-actions">
-                        <button type="button" className="secondary-button" onClick={handleBillingManage} disabled={billingActionLoading}>
-                          {billingActionLoading ? tr('Открываем...', 'Öffnen...') : tr('Управлять подпиской в Stripe Portal', 'Abo im Stripe-Portal verwalten')}
+                      <div className="billing-manage-row">
+                        <button
+                          type="button"
+                          className="billing-manage-cta"
+                          onClick={handleBillingManage}
+                          disabled={billingActionLoading}
+                        >
+                          <span className="billing-manage-cta__icon" aria-hidden="true">💳</span>
+                          <span className="billing-manage-cta__text">
+                            <span className="billing-manage-cta__title">
+                              {billingActionLoading
+                                ? tr('Открываем портал…', 'Portal wird geöffnet…')
+                                : tr('Оплата и подписка', 'Zahlung & Abo verwalten')}
+                            </span>
+                            <span className="billing-manage-cta__sub">
+                              {tr('Карта, история платежей и отмена — в Stripe', 'Karte, Zahlungen & Kündigung — im Stripe-Portal')}
+                            </span>
+                          </span>
+                          <span className="billing-manage-cta__chevron" aria-hidden="true">
+                            {billingActionLoading ? '…' : '→'}
+                          </span>
                         </button>
                       </div>
                     )}
