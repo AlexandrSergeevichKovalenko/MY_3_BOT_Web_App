@@ -37877,6 +37877,39 @@ def get_group_untimed_answers_since(since_hours: int = 24) -> list[dict]:
     return rows
 
 
+def get_sprint_leaderboard_rows_since(since_hours: int = 24) -> list[dict]:
+    """Artikel/Adjektiv Sprint & Battle sets as leaderboard rows for the champion — ONE
+    row per finished set (never per word, which would let a 143-word set dominate). Each
+    carries a ``score`` snapped to {0, 0.5, 1} by completion % (pct>=0.75->1, >=0.5->0.5,
+    else 0; e.g. 113/143=0.79->1); compute_quiz_leaderboard turns that into 0/5/10 points
+    and counts it solved at >=0.5. Untimed (time_ms=None) → no speed bonus / gold. Unique
+    per-set challenge_key so each set is its own one-task group. Returns
+    ``[{challenge_key, user_id, name, is_correct, time_ms(None), score}]``."""
+    bucket = (
+        "CASE WHEN {total} = 0 THEN 0 "
+        "WHEN {correct}::float / {total} >= 0.75 THEN 1 "
+        "WHEN {correct}::float / {total} >= 0.5 THEN 0.5 ELSE 0 END"
+    )
+    sql = (
+        "SELECT 'ast:'||set_id AS challenge_key, user_id, "
+        + bucket.format(correct="correct_count", total="total_count") + " AS score "
+        "FROM bt_3_article_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s "
+        "UNION ALL "
+        "SELECT 'ad:'||set_id AS challenge_key, user_id, "
+        + bucket.format(correct="correct", total="total") + " AS score "
+        "FROM bt_3_adjektiv_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s"
+    )
+    rows: list[dict] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (int(since_hours), int(since_hours)))
+            for key, uid, score in (cursor.fetchall() or []):
+                sc = float(score or 0)
+                rows.append({"challenge_key": str(key), "user_id": int(uid), "name": "",
+                             "is_correct": sc >= 0.5, "time_ms": None, "score": sc})
+    return rows
+
+
 # ─── B2+ text tasks ("Aufgabe") DB functions ──────────────────────────────────
 
 def create_aufgabe(*, aufgabe_id: str, format: str, level: str, payload: dict) -> None:

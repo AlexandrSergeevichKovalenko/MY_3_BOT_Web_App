@@ -2,13 +2,15 @@
 bot users who answered the same task). Shared by the bot (champion poster/card) and the
 web tier (Mini-App leaderboard endpoint).
 
-Rows come from two sources (see get_leaderboard_rows_since): TIMED answers from
-bt_3_challenge_results (the Mini-App in-place path, with time_ms), and UNTIMED answers
-from each type's own table (answered in a Telegram GROUP via inline buttons — time_ms is
-None). Untimed rows still earn base points and count toward activity/accuracy, but never a
-speed bonus, a gold, or the "fastest" nomination — we don't know how fast they were.
+Rows come from three sources (see get_leaderboard_rows_since): TIMED answers from
+bt_3_challenge_results (the Mini-App in-place path, with time_ms); UNTIMED answers from
+each type's own table (answered in a Telegram GROUP via inline buttons — time_ms None); and
+Artikel/Adjektiv SPRINT sets, each one task carrying a fractional `score` in {0,0.5,1}.
+Untimed / sprint rows earn points + activity but never a speed bonus, a gold, or the
+"fastest" nomination — we don't know how fast they were.
 
-Scoring: +10 per correct answer + place bonus on each task (🥇+5/🥈+3/🥉+1)."""
+Scoring: +10 per correct answer + place bonus on each task (🥇+5/🥈+3/🥉+1). A sprint set
+scores 0/5/10 points by completion % (score*10) and counts solved at >=0.5."""
 
 
 def compute_quiz_leaderboard(rows: list) -> dict:
@@ -34,6 +36,14 @@ def compute_quiz_leaderboard(rows: list) -> dict:
         for r in rs:
             s = st(int(r["user_id"]), str(r["name"] or ""))
             s["answered"] += 1
+            # Sprint/Battle sets carry a fractional `score` in {0, 0.5, 1}: ONE task worth
+            # 0/5/10 points, counted solved at >=0.5. Untimed → never a gold/speed bonus.
+            score = r.get("score")
+            if score is not None:
+                if float(score) >= 0.5:
+                    s["correct"] += 1
+                s["points"] += round(10 * float(score))
+                continue
             if r["is_correct"]:
                 s["correct"] += 1
                 timed = r.get("time_ms") is not None
@@ -80,13 +90,22 @@ def get_leaderboard_rows_since(since_hours: int) -> list:
     (bt_3_challenge_results) + UNTIMED Telegram-group answers (per-type tables), deduped so
     a Mini-App answer is never double-counted. This is the single source for both the bot
     champion posters and the Mini-App leaderboard, so group play finally counts."""
-    from backend.database import get_challenge_results_since, get_group_untimed_answers_since
+    from backend.database import (
+        get_challenge_results_since, get_group_untimed_answers_since,
+        get_sprint_leaderboard_rows_since,
+    )
     rows = list(get_challenge_results_since(int(since_hours)) or [])
     try:
         rows += get_group_untimed_answers_since(int(since_hours)) or []
     except Exception:
         import logging
         logging.warning("leaderboard: group untimed fetch failed", exc_info=True)
+    try:
+        # Artikel/Adjektiv sprint sets: one task each, fractional {0,0.5,1} score.
+        rows += get_sprint_leaderboard_rows_since(int(since_hours)) or []
+    except Exception:
+        import logging
+        logging.warning("leaderboard: sprint rows fetch failed", exc_info=True)
     return rows
 
 

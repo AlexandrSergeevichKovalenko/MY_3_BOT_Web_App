@@ -26,6 +26,23 @@ class UntimedScoringTests(unittest.TestCase):
         self.assertEqual(by[2]["ctime_n"], 0)                          # untimed excluded from "fastest"
         self.assertEqual(lb["fastest"]["user_id"], 1)
 
+    def test_sprint_set_is_one_task_scored_by_completion(self):
+        # Artikel/Adjektiv sets: ONE task each, fractional score {0,0.5,1} -> 0/5/10 points,
+        # solved at >=0.5, untimed (no gold). Never per-word (that would let a 143-word set
+        # dominate the champion).
+        rows = [
+            {"challenge_key": "ast:s1", "user_id": 1, "name": "A", "is_correct": True, "time_ms": None, "score": 1.0},
+            {"challenge_key": "ast:s2", "user_id": 1, "name": "A", "is_correct": True, "time_ms": None, "score": 0.5},
+            {"challenge_key": "ad:s3", "user_id": 1, "name": "A", "is_correct": False, "time_ms": None, "score": 0.0},
+        ]
+        lb = compute_quiz_leaderboard(rows)
+        a = {l["user_id"]: l for l in lb["leaders"]}[1]
+        self.assertEqual(a["answered"], 3)   # 3 sets = 3 tasks (not word counts)
+        self.assertEqual(a["points"], 15)    # 10 + 5 + 0
+        self.assertEqual(a["correct"], 2)    # the 1.0 and 0.5 sets solved; 0.0 not
+        self.assertEqual(a["golds"], 0)      # untimed → no gold
+        self.assertIsNone(lb["fastest"])     # no timed rows
+
     def test_all_timed_rows_behave_exactly_as_before(self):
         # Backward compat: with real timings, placement/gold unchanged.
         rows = [
@@ -39,22 +56,25 @@ class UntimedScoringTests(unittest.TestCase):
         self.assertEqual(by[2]["points"], 15)  # 1st: +10 +5
         self.assertEqual(by[1]["points"], 13)  # 2nd: +10 +3
 
-    def test_get_leaderboard_rows_since_merges_timed_and_untimed(self):
+    def test_get_leaderboard_rows_since_merges_all_three_sources(self):
         timed = [{"challenge_key": "rb:1", "user_id": 1, "name": "A", "is_correct": True, "time_ms": 3000}]
         untimed = [{"challenge_key": "cw:7", "user_id": 2, "name": "", "is_correct": True, "time_ms": None}]
+        sprint = [{"challenge_key": "ast:s1", "user_id": 3, "name": "", "is_correct": True, "time_ms": None, "score": 1.0}]
         with patch.object(db, "get_challenge_results_since", return_value=timed), \
-             patch.object(db, "get_group_untimed_answers_since", return_value=untimed):
+             patch.object(db, "get_group_untimed_answers_since", return_value=untimed), \
+             patch.object(db, "get_sprint_leaderboard_rows_since", return_value=sprint):
             rows = get_leaderboard_rows_since(24)
-        self.assertEqual(len(rows), 2)
-        self.assertIn(None, [r["time_ms"] for r in rows])
-        self.assertIn(3000, [r["time_ms"] for r in rows])
+        self.assertEqual(len(rows), 3)
+        self.assertIn(3000, [r["time_ms"] for r in rows])         # timed
+        self.assertIn("ast:s1", [r["challenge_key"] for r in rows])  # sprint
 
-    def test_untimed_fetch_failure_is_non_fatal(self):
+    def test_extra_source_failure_is_non_fatal(self):
         timed = [{"challenge_key": "rb:1", "user_id": 1, "name": "A", "is_correct": True, "time_ms": 3000}]
         def _boom(*a, **k):
             raise RuntimeError("db down")
         with patch.object(db, "get_challenge_results_since", return_value=timed), \
-             patch.object(db, "get_group_untimed_answers_since", _boom):
+             patch.object(db, "get_group_untimed_answers_since", _boom), \
+             patch.object(db, "get_sprint_leaderboard_rows_since", _boom):
             rows = get_leaderboard_rows_since(24)   # must not raise
         self.assertEqual(rows, timed)               # falls back to timed rows only
 
