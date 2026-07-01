@@ -105,7 +105,6 @@ _DEFAULT_RESPONSES_TASKS = {
     "check_satzbau",
     "check_cloze",
     "check_error",
-    "check_error_batch",
     "check_wortgruppe_batch",
     "word_order_distractors",
     "image_quiz_sentence_fallback",
@@ -3667,24 +3666,6 @@ Return STRICT JSON ONLY:
 - if it is a legitimate correction: {"match": true}
 - if NOT: {"match": false, "reason_ru": "<кратко по-русски, ≤90 знаков: почему это не исправление, например: 'den здесь верно — дательный после mit'>"}
 """,
-"check_error_batch": """
-You verify German "Finde den Fehler" exercises BEFORE they enter a pool. Each item is a faulty
-sentence with EXACTLY ONE intended error that the learner must find and correct by replacing ONE
-token in place. Input JSON:
-{"items":[{"woerter":["...","..."],"error_index":<int>,"correct_word":"..."}, ...]}.
-For EACH item, in input order, judge whether it is a CLEAN single-error item — ok=true ONLY if ALL hold:
-(a) the token at "error_index" is genuinely wrong, and replacing it with "correct_word" makes THAT word correct;
-(b) after that single replacement, the ENTIRE sentence is fully grammatical, natural, correct German —
-    there is NO OTHER error anywhere (no second wrong case/article/ending/verb form/preposition/gender,
-    no word-order error, no missing or extra word);
-(c) the intended error is the ONLY defect — there is no OTHER single-token change a learner could
-    reasonably make to fix a different real error, and it is unambiguous WHICH word is wrong.
-If the sentence has a second latent error or is ambiguous about which word is wrong, ok=false.
-Also return "aliases": every OTHER equally-correct replacement for the token at error_index (besides
-correct_word), or [] if none. Ignore capitalization and ß↔ss differences.
-Return STRICT JSON ONLY, one result per item, SAME order:
-{"results":[{"ok": true|false, "aliases":["..."]}, ...]}
-""",
 "article_noun_gen": """
 You are a German lexicographer building data for an article (der/die/das) drill.
 Input JSON: {"theme": "...", "subtopic": "...", "count": <int>, "avoid": ["...","..."]}.
@@ -6395,26 +6376,9 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
                         it["accepted"] = acc
                     verified.append(it)
                 items = verified
-        # error: an LLM verifier confirms each sentence has EXACTLY ONE error (fixable at
-        # error_index by correct_word) with the rest fully correct — catches items the
-        # generator left with a second latent error (e.g. wrong case AND wrong verb form),
-        # which make the single-tap task unsolvable-as-designed. Failing items are dropped;
-        # any extra equally-correct replacements are merged into `aliases`. Infra failure →
-        # fail-open (keep items; the deterministic degeneracy gate above still applies).
-        if fmt == "error" and items:
-            verdicts = await run_check_error_batch(items=items)
-            if verdicts and len(verdicts) == len(items):
-                verified = []
-                for it, v in zip(items, verdicts):
-                    if not v.get("ok"):
-                        logging.info("aufgabe error: verifier dropped item woerter=%s", it.get("woerter"))
-                        continue
-                    extra = [a for a in (v.get("aliases") or []) if str(a).strip()]
-                    if extra:
-                        existing = [str(a) for a in (it.get("aliases") or [])]
-                        it["aliases"] = existing + [a for a in extra if a not in existing]
-                    verified.append(it)
-                items = verified
+        # NOTE: 'error' items are verified per-item at pool-build time by the fail-closed
+        # run_verify_aufgabe_error gate in bot_3._aufgabe_topup_format (+ /admin_verify_errors
+        # and the nightly degenerate self-heal), so no batch verifier is needed here.
         return items
     return items
 
@@ -6739,52 +6703,6 @@ async def run_check_error(*, woerter: list[str], index: int, user: str) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         return {"match": False}
-
-
-async def run_check_error_batch(*, items: list[dict]) -> list[dict]:
-    """Verify a batch of 'error' items in ONE LLM call (pool-prep, off the hot path).
-    Each item must have EXACTLY ONE error (fixable at error_index by correct_word) with
-    the rest of the sentence fully correct — catches sentences the generator left with a
-    second latent error (e.g. 'den Aufgaben … abgaben'). Returns a list aligned to input
-    order, [{"ok": bool, "aliases": [...]}]; [] on failure/timeout (caller fails open)."""
-    payload_items = []
-    for it in (items or []):
-        try:
-            ei = int(it.get("error_index"))
-        except (TypeError, ValueError):
-            ei = -1
-        payload_items.append({
-            "woerter": [str(w) for w in (it.get("woerter") or [])],
-            "error_index": ei,
-            "correct_word": str(it.get("correct_word") or ""),
-        })
-    if not payload_items:
-        return []
-    try:
-        content = await llm_execute(
-            task_name="check_error_batch",
-            system_instruction_key="check_error_batch",
-            user_message=json.dumps({"items": payload_items}, ensure_ascii=False),
-            poll_interval_seconds=1.5,
-            responses_timeout_seconds=30.0,
-        )
-        data = json.loads(content)
-        results = data.get("results") if isinstance(data, dict) else None
-        if not isinstance(results, list):
-            return []
-        out: list[dict] = []
-        for r in results:
-            if isinstance(r, dict):
-                out.append({
-                    "ok": bool(r.get("ok")),
-                    "aliases": [str(a) for a in (r.get("aliases") or []) if str(a).strip()],
-                })
-            else:
-                out.append({"ok": False, "aliases": []})
-        return out
-    except Exception:
-        logging.warning("run_check_error_batch failed", exc_info=True)
-        return []
 
 
 def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "image/png") -> dict:
