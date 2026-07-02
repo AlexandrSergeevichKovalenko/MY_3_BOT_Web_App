@@ -37891,11 +37891,11 @@ def get_sprint_leaderboard_rows_since(since_hours: int = 24) -> list[dict]:
         "WHEN {correct}::float / {total} >= 0.5 THEN 0.5 ELSE 0 END"
     )
     sql = (
-        "SELECT 'ast:'||set_id AS challenge_key, user_id, "
+        "SELECT 'ast:'||set_id AS challenge_key, user_id, user_name, "
         + bucket.format(correct="correct_count", total="total_count") + " AS score "
         "FROM bt_3_article_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s "
         "UNION ALL "
-        "SELECT 'ad:'||set_id AS challenge_key, user_id, "
+        "SELECT 'ad:'||set_id AS challenge_key, user_id, user_name, "
         + bucket.format(correct="correct", total="total") + " AS score "
         "FROM bt_3_adjektiv_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s"
     )
@@ -37903,11 +37903,53 @@ def get_sprint_leaderboard_rows_since(since_hours: int = 24) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(sql, (int(since_hours), int(since_hours)))
-            for key, uid, score in (cursor.fetchall() or []):
+            for key, uid, name, score in (cursor.fetchall() or []):
                 sc = float(score or 0)
-                rows.append({"challenge_key": str(key), "user_id": int(uid), "name": "",
+                rows.append({"challenge_key": str(key), "user_id": int(uid), "name": str(name or ""),
                              "is_correct": sc >= 0.5, "time_ms": None, "score": sc})
     return rows
+
+
+def get_display_names_for_users(user_ids: list[int]) -> dict[int, str]:
+    """Best-known display name per user_id, drawn from every table that captures the
+    Telegram display name (translation-session progress + challenge results + both sprint
+    result tables). Picks the MOST RECENT non-empty name per user. Used to backfill
+    leaderboard rows whose source table has no name column (Telegram-GROUP inline answers
+    land in per-type answer tables that only store user_id) so 2nd/3rd/… places don't
+    degrade to the "Student" placeholder. Returns ``{user_id: name}`` (known names only)."""
+    ids = sorted({int(u) for u in (user_ids or []) if u is not None})
+    if not ids:
+        return {}
+    sql = """
+        SELECT DISTINCT ON (user_id) user_id, user_name
+        FROM (
+            SELECT user_id, username AS user_name, start_time::timestamptz AS ts
+            FROM bt_3_user_progress
+            WHERE user_id = ANY(%s) AND COALESCE(username, '') <> ''
+            UNION ALL
+            SELECT user_id, user_name, created_at::timestamptz AS ts
+            FROM bt_3_challenge_results
+            WHERE user_id = ANY(%s) AND COALESCE(user_name, '') <> ''
+            UNION ALL
+            SELECT user_id, user_name, created_at::timestamptz AS ts
+            FROM bt_3_article_sprint_results
+            WHERE user_id = ANY(%s) AND COALESCE(user_name, '') <> ''
+            UNION ALL
+            SELECT user_id, user_name, created_at::timestamptz AS ts
+            FROM bt_3_adjektiv_sprint_results
+            WHERE user_id = ANY(%s) AND COALESCE(user_name, '') <> ''
+        ) t
+        ORDER BY user_id, ts DESC;
+    """
+    out: dict[int, str] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (ids, ids, ids, ids))
+            for uid, name in (cursor.fetchall() or []):
+                nm = str(name or "").strip()
+                if nm:
+                    out[int(uid)] = nm
+    return out
 
 
 # ─── B2+ text tasks ("Aufgabe") DB functions ──────────────────────────────────

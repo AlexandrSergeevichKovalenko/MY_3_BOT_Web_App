@@ -110,4 +110,24 @@ def get_leaderboard_rows_since(since_hours: int) -> list:
 
 
 def get_quiz_leaderboard(days: int = 7) -> dict:
-    return compute_quiz_leaderboard(get_leaderboard_rows_since(int(days) * 24))
+    lb = compute_quiz_leaderboard(get_leaderboard_rows_since(int(days) * 24))
+    # Backfill display names for players whose points came only from nameless sources
+    # (Telegram-GROUP inline answers land in per-type tables that store no user_name), so
+    # they don't degrade to the "Student" placeholder on the podium. Nomination dicts
+    # (fastest/accurate/active) reference the same leader objects, so mutating in place
+    # fixes them too.
+    leaders = lb.get("leaders") or []
+    missing = [l["user_id"] for l in leaders if not str(l.get("name") or "").strip() or l.get("name") == "Student"]
+    if missing:
+        try:
+            from backend.database import get_display_names_for_users
+            names = get_display_names_for_users(missing)
+        except Exception:
+            import logging
+            logging.warning("leaderboard: name backfill failed", exc_info=True)
+            names = {}
+        for l in leaders:
+            resolved = names.get(int(l["user_id"]))
+            if resolved:
+                l["name"] = resolved
+    return lb

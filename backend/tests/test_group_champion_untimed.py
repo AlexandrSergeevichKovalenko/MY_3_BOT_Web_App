@@ -8,7 +8,9 @@ import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
 
-from backend.quiz_leaderboard import compute_quiz_leaderboard, get_leaderboard_rows_since
+from backend.quiz_leaderboard import (
+    compute_quiz_leaderboard, get_leaderboard_rows_since, get_quiz_leaderboard,
+)
 import backend.database as db
 
 
@@ -77,6 +79,40 @@ class UntimedScoringTests(unittest.TestCase):
              patch.object(db, "get_sprint_leaderboard_rows_since", _boom):
             rows = get_leaderboard_rows_since(24)   # must not raise
         self.assertEqual(rows, timed)               # falls back to timed rows only
+
+
+class NameBackfillTests(unittest.TestCase):
+    """Podium places 2/3/… must show real names, not the "Student" placeholder, even when
+    a player's points came only from nameless sources (Telegram-GROUP inline answers, whose
+    per-type answer tables carry no user_name). get_quiz_leaderboard backfills them from the
+    canonical name resolver."""
+
+    def test_nameless_group_player_gets_backfilled_name(self):
+        # Rank 1 came through the Mini-App (carries a name); rank 2 only played in the group
+        # (nameless row). Without the backfill, rank 2 would render as "Student".
+        rows = [
+            {"challenge_key": "rb:1", "user_id": 1, "name": "Aleksandr", "is_correct": True, "time_ms": 3000},
+            {"challenge_key": "cw:7", "user_id": 2, "name": "", "is_correct": True, "time_ms": None},
+        ]
+        with patch.object(db, "get_challenge_results_since", return_value=rows), \
+             patch.object(db, "get_group_untimed_answers_since", return_value=[]), \
+             patch.object(db, "get_sprint_leaderboard_rows_since", return_value=[]), \
+             patch.object(db, "get_display_names_for_users", return_value={2: "Maria"}) as resolver:
+            lb = get_quiz_leaderboard(1)
+        by = {l["user_id"]: l for l in lb["leaders"]}
+        self.assertEqual(by[1]["name"], "Aleksandr")   # already had a name, untouched
+        self.assertEqual(by[2]["name"], "Maria")       # backfilled, not "Student"
+        resolver.assert_called_once()
+        self.assertEqual(list(resolver.call_args[0][0]), [2])  # only the nameless user queried
+
+    def test_unresolvable_name_falls_back_to_placeholder_without_crash(self):
+        rows = [{"challenge_key": "cw:7", "user_id": 9, "name": "", "is_correct": True, "time_ms": None}]
+        with patch.object(db, "get_challenge_results_since", return_value=rows), \
+             patch.object(db, "get_group_untimed_answers_since", return_value=[]), \
+             patch.object(db, "get_sprint_leaderboard_rows_since", return_value=[]), \
+             patch.object(db, "get_display_names_for_users", return_value={}):
+            lb = get_quiz_leaderboard(1)
+        self.assertEqual(lb["leaders"][0]["name"], "Student")   # honest placeholder, no crash
 
 
 class GroupUntimedQueryTests(unittest.TestCase):
