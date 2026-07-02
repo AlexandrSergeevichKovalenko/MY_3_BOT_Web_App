@@ -284,7 +284,7 @@ async function bootstrapApp() {
     await bootstrapShortcutGuide();
     return;
   }
-  if (/^razbor_/i.test(answerStartParam)) {
+  if (/^razbor_/i.test(answerStartParam) || /^share_/i.test(answerStartParam)) {
     await bootstrapDeepAnalysis(answerStartParam);
     return;
   }

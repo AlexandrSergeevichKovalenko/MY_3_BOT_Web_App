@@ -5541,6 +5541,21 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_freq
                 ON bt_3_webapp_dictionary_queries (user_id, frequency_rank);
             """)
+            # Durable copy of a "Полный разбор" so it can be shared by token to
+            # anyone (guest view). Unlike the 24h Redis dict:deep store, this has
+            # no TTL — a shared link must keep working.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_shared_razbor (
+                    token TEXT PRIMARY KEY,
+                    owner_user_id BIGINT NOT NULL,
+                    word TEXT,
+                    source_lang TEXT,
+                    target_lang TEXT,
+                    payload JSONB NOT NULL,
+                    view_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_entries (
                     id BIGSERIAL PRIMARY KEY,
@@ -20778,6 +20793,53 @@ def backfill_frequency_ranks(
         "last_id": after_id,
         "batches": batches,
     }
+
+
+def save_shared_razbor(token: str, owner_user_id: int, record: dict) -> str:
+    """Persist a durable, shareable copy of a deep-analysis record keyed by token."""
+    rec = record if isinstance(record, dict) else {}
+    word = str(rec.get("query_word") or "").strip() or None
+    src = str(rec.get("source_lang") or "").strip().lower() or None
+    tgt = str(rec.get("target_lang") or "").strip().lower() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bt_3_shared_razbor
+                    (token, owner_user_id, word, source_lang, target_lang, payload)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (token) DO NOTHING;
+                """,
+                (str(token), int(owner_user_id), word, src, tgt, Json(rec)),
+            )
+        conn.commit()
+    return str(token)
+
+
+def get_shared_razbor(token: str, bump_views: bool = True) -> dict | None:
+    """Fetch a shared deep-analysis record by token (public, no ownership check)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload FROM bt_3_shared_razbor WHERE token = %s;",
+                (str(token),),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            payload = row[0]
+            if bump_views:
+                cur.execute(
+                    "UPDATE bt_3_shared_razbor SET view_count = view_count + 1 WHERE token = %s;",
+                    (str(token),),
+                )
+                conn.commit()
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError):
+            payload = {}
+    return payload if isinstance(payload, dict) else None
 
 
 def ensure_new_srs_state(user_id: int, card_id: int, now_utc: datetime | None = None, cursor=None) -> dict:

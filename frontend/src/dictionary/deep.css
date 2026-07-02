@@ -386,3 +386,71 @@
   color: #fca5a5;
   text-align: center;
 }
+
+/* ── Share button (owner) ─────────────────────────────────────────────────── */
+.deep-eyebrow-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.deep-share-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--dmps-border, #334155);
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--dmps-text-title, #f1f5f9);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.deep-share-btn:hover { background: rgba(91, 155, 255, 0.22); }
+.deep-share-btn:active { transform: scale(0.92); }
+.deep-share-btn:disabled { opacity: 0.6; cursor: default; }
+.deep-share-spin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(148, 163, 184, 0.4);
+  border-top-color: #5b9bff;
+  animation: deep-share-rot 0.7s linear infinite;
+}
+@keyframes deep-share-rot { to { transform: rotate(360deg); } }
+
+/* ── Guest "request access" CTA ───────────────────────────────────────────── */
+.sec-guest-cta {
+  --deep-accent: #5b9bff;
+  text-align: center;
+}
+.deep-guest-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--dmps-text-title, #f1f5f9);
+  margin-bottom: 6px;
+}
+.deep-guest-note {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--dmps-text-muted, #94a3b8);
+  margin-bottom: 14px;
+}
+.deep-guest-btn {
+  display: inline-block;
+  width: 100%;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(180deg, #5b9bff, #3b74e0);
+  box-shadow: 0 8px 22px rgba(59, 116, 224, 0.4);
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+}
+.deep-guest-btn:hover { box-shadow: 0 10px 26px rgba(59, 116, 224, 0.5); }
+.deep-guest-btn:active { transform: scale(0.98); }

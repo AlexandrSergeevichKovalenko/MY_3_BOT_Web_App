@@ -19,9 +19,12 @@ const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 function clean(v) { return String(v || '').trim(); }
 const hasCyrillic = (s) => /[А-Яа-яЁё]/.test(String(s || ''));
 
-// razbor_req_<key> → run lookup on open; razbor_deep_<id> → pre-computed lookup.
+// razbor_req_<key> → run lookup on open; razbor_deep_<id> → pre-computed lookup;
+// share_<token> → public guest view of someone else's shared breakdown.
 function parseTarget(startParam) {
-  const rest = clean(startParam).replace(/^razbor_/i, '');
+  const raw = clean(startParam);
+  if (/^share_/i.test(raw)) return { kind: 'share', id: raw.replace(/^share_/i, '') };
+  const rest = raw.replace(/^razbor_/i, '');
   if (/^req_/i.test(rest)) return { kind: 'req', id: rest.replace(/^req_/i, '') };
   if (rest) return { kind: 'deep', id: rest };
   return { kind: '', id: '' };
@@ -99,6 +102,10 @@ export default function DeepAnalysis({ startParam }) {
   const [phase, setPhase] = useState('loading'); // loading | done | error
   const [error, setError] = useState('');
   const [savedChips, setSavedChips] = useState(() => new Set());
+  const [isGuest, setIsGuest] = useState(false);       // opened via share_<token> by a non-owner
+  const [botUsername, setBotUsername] = useState('');  // for the guest "request access" CTA
+  const [deepId, setDeepId] = useState('');            // id we can share (owner view only)
+  const [sharing, setSharing] = useState(false);
   const tts = useTts();
 
   // Folder + save-variant selection state (shared by all saves on this screen).
@@ -137,8 +144,14 @@ export default function DeepAnalysis({ startParam }) {
       try {
         const path = target.kind === 'req'
           ? '/api/webapp/dictionary/lookup-by-request'
-          : '/api/webapp/dictionary/deep-analysis';
-        const body = target.kind === 'req' ? { request_id: target.id } : { deep_id: target.id };
+          : target.kind === 'share'
+            ? '/api/webapp/dictionary/shared'
+            : '/api/webapp/dictionary/deep-analysis';
+        const body = target.kind === 'req'
+          ? { request_id: target.id }
+          : target.kind === 'share'
+            ? { share_token: target.id }
+            : { deep_id: target.id };
         const data = await api(path, body);
         if (!alive) return;
         const rich = data?.item || null;
@@ -147,6 +160,13 @@ export default function DeepAnalysis({ startParam }) {
           rich.__language_pair = data?.language_pair || null;
         }
         if (!rich) throw new Error('Пустой разбор');
+        if (data?.is_guest) {
+          setIsGuest(true);
+          setBotUsername(clean(data?.bot_username));
+        } else {
+          // Owner view: remember an id we can share (pre-computed deep_id).
+          setDeepId(clean(data?.deep_id) || (target.kind === 'deep' ? target.id : ''));
+        }
         setItem(rich);
         setPhase('done');
         haptic('ok');
@@ -162,7 +182,7 @@ export default function DeepAnalysis({ startParam }) {
 
   // Load folders once the breakdown is ready (for the save picker).
   useEffect(() => {
-    if (phase !== 'done') return;
+    if (phase !== 'done' || isGuest) return;   // guests can't save → no folder picker
     let alive = true;
     (async () => {
       try {
@@ -171,7 +191,7 @@ export default function DeepAnalysis({ startParam }) {
       } catch (_e) { /* folders are optional */ }
     })();
     return () => { alive = false; };
-  }, [phase]);
+  }, [phase, isGuest]);
 
   const germanText = clean(item?.word_de).replace(/^(der|die|das)\s+/i, '');
   const { warm: warmTts } = tts;
@@ -183,6 +203,7 @@ export default function DeepAnalysis({ startParam }) {
   // Save a chip (synonym / related / collocation) via the canonical pipeline, into
   // the currently-selected folder.
   const saveChip = useCallback((text) => {
+    if (isGuest) return;   // read-only guest view: chips are not clickable-to-save
     const t = clean(text);
     if (!t) return;
     setSavedChips((prev) => { if (prev.has(t)) return prev; const n = new Set(prev); n.add(t); return n; });
@@ -210,7 +231,40 @@ export default function DeepAnalysis({ startParam }) {
         setError(String(e?.message || e)); haptic('bad');
       }
     })();
-  }, [folderId]);
+  }, [folderId, isGuest]);
+
+  // Share this breakdown: get a Telegram prepared inline message (photo card +
+  // deep-link button) and hand it to the native share sheet.
+  const doShare = useCallback(async () => {
+    if (!deepId || sharing) return;
+    setSharing(true); haptic('light');
+    try {
+      const data = await api('/api/webapp/dictionary/share/prepare', { deep_id: deepId });
+      const pmid = clean(data?.prepared_message_id);
+      if (pmid && typeof tg?.shareMessage === 'function') {
+        tg.shareMessage(pmid, (ok) => { if (ok) haptic('ok'); });
+      } else if (clean(data?.deeplink) && typeof tg?.openTelegramLink === 'function') {
+        // Fallback for older Telegram clients without shareMessage.
+        tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(data.deeplink)}`);
+      } else {
+        setError('Обновите Telegram, чтобы делиться разбором.');
+      }
+    } catch (e) {
+      setError(String(e?.message || e)); haptic('bad');
+    } finally {
+      setSharing(false);
+    }
+  }, [deepId, sharing]);
+
+  // Guest CTA: open the bot so a non-user can request access.
+  const requestAccess = useCallback(() => {
+    haptic('light');
+    if (botUsername && typeof tg?.openTelegramLink === 'function') {
+      tg.openTelegramLink(`https://t.me/${botUsername}?start=access`);
+    } else if (typeof tg?.close === 'function') {
+      tg.close();
+    }
+  }, [botUsername]);
 
   // Build a save payload for a «Вариант для сохранения» (both sides + direction known).
   const optionPayload = useCallback((opt) => {
@@ -347,7 +401,30 @@ export default function DeepAnalysis({ startParam }) {
   return (
     <div className="ans-root deep-scroll">
       <div className="deep-card">
-        <div className="deep-eyebrow">🔎 Полный разбор</div>
+        <div className="deep-eyebrow-row">
+          <div className="deep-eyebrow">🔎 Полный разбор</div>
+          {deepId && !isGuest && (
+            <button
+              type="button"
+              className={`deep-share-btn${sharing ? ' is-busy' : ''}`}
+              onClick={doShare}
+              disabled={sharing}
+              aria-label="Поделиться разбором"
+              title="Поделиться"
+            >
+              {sharing ? (
+                <span className="deep-share-spin" />
+              ) : (
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+                     stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3v13" />
+                  <path d="M8 7l4-4 4 4" />
+                  <path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
+                </svg>
+              )}
+            </button>
+          )}
+        </div>
 
         <div className="deep-hero">
           <div className="deep-headword">
@@ -425,7 +502,7 @@ export default function DeepAnalysis({ startParam }) {
         )}
 
         {/* 📌 Варианты для сохранения — мультивыбор + папка + «Сохранить выбранное» */}
-        {options.length > 0 && (
+        {!isGuest && options.length > 0 && (
           <section className="deep-sec sec-save">
             <div className="deep-save-head">
               <h3 className="deep-sec-h">📌 Варианты для сохранения</h3>
@@ -475,6 +552,7 @@ export default function DeepAnalysis({ startParam }) {
         )}
 
         {/* Панель действий: прослушать / почувствовать / сочетания / вопрос */}
+        {!isGuest && (
         <section className="deep-sec sec-actions">
           <h3 className="deep-sec-h">🛠 Действия</h3>
           <div className="deep-act-row">
@@ -529,6 +607,20 @@ export default function DeepAnalysis({ startParam }) {
             ))}
           </div>
         </section>
+        )}
+
+        {isGuest && (
+          <section className="deep-sec sec-guest-cta">
+            <div className="deep-guest-title">Понравился разбор? 🤖</div>
+            <p className="deep-guest-note">
+              Это «Полный разбор» из бота «Deutsche Sprache». Открой доступ — разбирай любое
+              слово так же подробно, сохраняй слова и учи их интервальными повторениями.
+            </p>
+            <button type="button" className="deep-guest-btn" onClick={requestAccess}>
+              🤖 Запросить доступ к боту
+            </button>
+          </section>
+        )}
 
         {error && <div className="deep-inline-err">{error}</div>}
       </div>
