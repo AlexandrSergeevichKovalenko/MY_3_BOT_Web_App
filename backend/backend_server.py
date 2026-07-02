@@ -15350,6 +15350,8 @@ def _run_dictionary_core_lookup_sync(
             word=word,
             source_lang=query_source_lang,
             target_lang=query_target_lang,
+            # explanations always in the user's native language, never the swapped query source
+            explanation_lang=source_lang,
         )
     )
     usage = get_last_llm_usage(reset=True)
@@ -15397,6 +15399,8 @@ def _run_dictionary_full_lookup_sync(
                 word=word,
                 source_lang=query_source_lang,
                 target_lang=query_target_lang,
+                # explanations always in the user's native language, never the swapped query source
+                explanation_lang=source_lang,
             )
         )
         llm_calls_total += 1
@@ -15456,6 +15460,8 @@ def _run_dictionary_full_lookup_sync(
                     word=word,
                     source_lang=query_target_lang,
                     target_lang=query_source_lang,
+                    # direction is reversed here, but explanations still go to the native language
+                    explanation_lang=source_lang,
                 )
             )
             llm_calls_total += 1
@@ -15534,6 +15540,8 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
                 source_lang=str(job.get("query_source_lang") or ""),
                 target_lang=str(job.get("query_target_lang") or ""),
                 core_result=core_raw,
+                # explanations always in the user's native (pre-swap) language
+                explanation_lang=str(job.get("source_lang") or ""),
             )
         )
         usage_enrichment = get_last_llm_usage(reset=True)

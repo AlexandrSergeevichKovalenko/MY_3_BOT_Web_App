@@ -2313,6 +2313,7 @@ Input JSON:
 {
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
   "word": "<user input>"
 }
 
@@ -2447,21 +2448,25 @@ Rules:
       meanings.secondary[].value, synonyms, antonyms, related_words[].word, common_collocations,
       synonym_differences[].word, register_examples[].example_target, common_mistakes[].mistake,
       common_mistakes[].correction, false_friends[].word.
-  (B) EXPLANATIONS the learner reads to understand = ALWAYS in source_language (the user's own
-      base language). NEVER write these in target_language, NEVER in a third language:
+  (B) EXPLANATIONS the learner reads to understand = ALWAYS in explanation_language (the user's own
+      base/native language). NEVER write these in target_language, NEVER in a third language:
       translations[].context, meanings.primary.context, meanings.secondary[].context,
       etymology_note, memory_tip, expression_note, part_of_speech_note, register_note,
       real_life_usage, related_words[].gloss, word_formation parts[].gloss, word_formation note,
       connotation.tone, connotation.note, synonym_differences[].when, synonym_differences[].nuance,
       register_examples[].tone, common_mistakes[].why, false_friends[].looks_like,
       false_friends[].actual_meaning, raw_text.
-      (register_examples[].example_source follows the usual bilingual-example rule: source_language.)
+      (register_examples[].example_source follows the usual bilingual-example rule: explanation_language.)
+  explanation_language is INDEPENDENT of source_language/target_language: those only set the
+  translation direction and may be swapped for reverse lookups, but every explanation ALWAYS stays
+  in explanation_language regardless of which language the looked-up word is in. If explanation_language
+  is missing, fall back to source_language.
   Do NOT infer the explanation language from the value fields — the values are foreign on purpose.
-  The explanation language is source_language, full stop. Example: source_language=ru, target_language=de —
-  translations[].value="das Gerede", translations[].context MUST be Russian (e.g. "разговорное,
-  неодобрительное"), NOT German.
+  The explanation language is explanation_language, full stop. Example: explanation_language=ru,
+  target_language=de — translations[].value="das Gerede", translations[].context MUST be Russian
+  (e.g. "разговорное, неодобрительное"), NOT German.
   (Only exception: if the looked-up item itself is English, the item word may stay English, but every
-  EXPLANATION still stays in source_language.)
+  EXPLANATION still stays in explanation_language.)
 - Examples are BILINGUAL and help the learner read the target language:
   meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
   meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
@@ -2536,6 +2541,7 @@ Input JSON:
 {
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
   "word": "<user input>"
 }
 
@@ -2577,10 +2583,13 @@ Rules:
 - Output ONLY JSON.
 - Keep everything compact.
 - LANGUAGE SPLIT: word_target, translations[].value and usage_examples[].target are in
-  target_language (the foreign words being learned). But translations[].context,
-  usage_examples[].source and raw_text are EXPLANATIONS and MUST be in source_language (the user's
-  own base language) — never in target_language. Do not infer the explanation language from the
-  foreign value fields. E.g. source_language=ru, target_language=de → context in Russian, not German.
+  target_language (the foreign words being learned). translations[].context and raw_text are
+  monolingual EXPLANATIONS and MUST be in explanation_language (the user's own base/native language,
+  INDEPENDENT of source/target which only set the translation direction; fall back to source_language
+  if explanation_language is missing) — never in target_language. usage_examples[].source is the
+  base-language side of the bilingual example pair and stays in source_language. Do not infer the
+  explanation language from the foreign value fields. E.g. explanation_language=ru, target_language=de
+  → context in Russian, not German.
 - Return at most 2 translation variants.
 - Return at most 1 usage example.
 - Return exactly 2 save_worthy_options whenever possible:
@@ -2603,6 +2612,7 @@ Input JSON:
 {
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
   "items": [
     {"key": "<stable request key>", "word": "<user input>"}
   ]
@@ -2653,9 +2663,11 @@ Rules:
 - Return exactly one result object for every input item whenever possible.
 - Keep every item compact.
 - LANGUAGE SPLIT: word_target, translations[].value and usage_examples[].target are in
-  target_language; translations[].context, usage_examples[].source and raw_text are EXPLANATIONS
-  and MUST be in source_language (the user's base language), never in target_language. Do not infer
-  the explanation language from the foreign value fields.
+  target_language; translations[].context and raw_text are monolingual EXPLANATIONS and MUST be in
+  explanation_language (the user's base/native language; fall back to source_language if missing),
+  never in target_language. usage_examples[].source is the base-language side of the bilingual
+  example and stays in source_language. Do not infer the explanation language from the foreign value
+  fields.
 - Return at most 2 translation variants per item.
 - Return at most 1 usage example per item.
 - save_worthy_options:
@@ -2686,6 +2698,7 @@ Input JSON:
 {
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
   "word": "<user input>"
 }
 
@@ -2755,10 +2768,12 @@ Reader-focused rules:
 - LANGUAGE SPLIT — CRITICAL:
   - WORD/TRANSLATION values are the foreign words being learned and stay in target_language:
     word_target, translations[].value, meanings.primary.value, meanings.secondary[].value.
-  - EXPLANATIONS the learner reads must ALWAYS be in source_language (the user's base language),
-    NEVER in target_language: translations[].context, meanings.primary.context,
-    meanings.secondary[].context, etymology_note, usage_note, memory_tip, raw_text.
-  - Do not infer the explanation language from the foreign value fields. E.g. source_language=ru,
+  - EXPLANATIONS the learner reads must ALWAYS be in explanation_language (the user's base/native
+    language, INDEPENDENT of source/target which only set the translation direction; fall back to
+    source_language if explanation_language is missing), NEVER in target_language:
+    translations[].context, meanings.primary.context, meanings.secondary[].context, etymology_note,
+    usage_note, memory_tip, raw_text.
+  - Do not infer the explanation language from the foreign value fields. E.g. explanation_language=ru,
     target_language=de → values in German, all context/notes in Russian.
 - Meanings:
   - primary meaning must be short, simple, practical.
@@ -2877,6 +2892,7 @@ Input JSON:
 {
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
   "word": "<original user input>",
   "core_result": {
     "detected_language": "source|target",
@@ -2950,8 +2966,15 @@ Return STRICT JSON with keys:
 
 Rules:
 - Output ONLY JSON.
-- All explanatory text (notes, glosses, contexts) must be in the learner language
-  (source_language by default; never English unless the word itself is English).
+- All explanatory text (notes, glosses, contexts) — including etymology_note, memory_tip,
+  real_life_usage, usage_note, register_note, part_of_speech_note, related_words[].gloss,
+  word_formation glosses/note, translations[].context — must be in explanation_language (the
+  learner's own base/native language). explanation_language is INDEPENDENT of source_language/
+  target_language, which only set the translation direction and may be swapped for reverse lookups;
+  every explanation stays in explanation_language no matter which language the looked-up word is in.
+  Fall back to source_language only if explanation_language is missing. Never English unless the word
+  itself is English. (usage_examples[].source stays the base-language side of the bilingual example,
+  i.e. source_language.)
 - Return at most 3 translation variants and 2-3 usage_examples.
 - This is a LEARNING dictionary — give rich, useful depth, not just a translation:
   * For a SINGLE-WORD content lemma (noun/verb/adjective/adverb) you MUST provide a
@@ -2985,6 +3008,7 @@ Input JSON:
 {
   "source_language": "ru|en|de|es|it",
   "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
   "word": "<original user input>",
   "core_result": {
     "detected_language": "source|target",
@@ -3040,8 +3064,14 @@ Return STRICT JSON with keys:
 
 Rules:
 - Output ONLY JSON.
-- All explanatory text must be in the learner language (source_language by default; never English
-  unless the phrase itself is English).
+- All explanatory text — literal_meaning, when_to_use, usage_note, real_life_usage, register_note,
+  etymology_note, memory_tip, translations[].context, meanings.primary.context — must be in
+  explanation_language (the learner's own base/native language). explanation_language is INDEPENDENT
+  of source_language/target_language, which only set the translation direction and may be swapped for
+  reverse lookups; every explanation stays in explanation_language no matter which language the phrase
+  is in. Fall back to source_language only if explanation_language is missing. Never English unless the
+  phrase itself is English. (example_source / usage_examples[].source stay the base-language side of
+  the bilingual example, i.e. source_language.)
 - Return at most 3 translation variants and 2-3 usage examples.
 - meanings.primary.value = the real (idiomatic) meaning of the phrase.
 - phrase_kind: classify the item. For an IDIOM or fixed SAYING you MUST also provide:
@@ -5820,6 +5850,7 @@ async def run_dictionary_lookup_multilang(
     source_lang: str,
     target_lang: str,
     *,
+    explanation_lang: str = "",
     task_name: str = "dictionary_assistant_multilang",
     system_instruction_key: str = "dictionary_assistant_multilang",
     responses_timeout_seconds: float | None = None,
@@ -5827,9 +5858,14 @@ async def run_dictionary_lookup_multilang(
     allow_quick_translate_fallback: bool | None = None,
     extra_payload: dict | None = None,
 ) -> dict:
+    # explanation_language = the learner's OWN base language for all notes/glosses/context.
+    # It is intentionally independent of source/target (those only set translation direction, and
+    # get swapped for reverse lookups). Fall back to source_language when not supplied.
+    _explanation_lang = (explanation_lang or source_lang or "").strip().lower()
     payload = {
         "source_language": (source_lang or "").strip().lower(),
         "target_language": (target_lang or "").strip().lower(),
+        "explanation_language": _explanation_lang,
         "word": (word or "").strip(),
     }
     if isinstance(extra_payload, dict):
@@ -5976,11 +6012,13 @@ async def run_dictionary_lookup_multilang_core_fast(
     word: str,
     source_lang: str,
     target_lang: str,
+    explanation_lang: str = "",
 ) -> dict:
     return await run_dictionary_lookup_multilang(
         word=word,
         source_lang=source_lang,
         target_lang=target_lang,
+        explanation_lang=explanation_lang,
         task_name="dictionary_assistant_multilang_core_fast",
         system_instruction_key="dictionary_assistant_multilang_core_fast",
         responses_timeout_seconds=DICTIONARY_CORE_RESPONSES_TIMEOUT_SECONDS,
@@ -6016,7 +6054,7 @@ async def run_dictionary_lookup_multilang_core_fast_batch(
     semaphore = asyncio.Semaphore(max(1, int((os.getenv("DICTIONARY_FAST_BATCH_CONCURRENCY") or "4").strip() or "4")))
 
     async def _run_chunk(chunk: list[dict]) -> dict[str, dict]:
-        payload = {"source_language": src, "target_language": tgt, "items": chunk}
+        payload = {"source_language": src, "target_language": tgt, "explanation_language": src, "items": chunk}
         async with semaphore:
             try:
                 content = await llm_execute(
@@ -6073,6 +6111,7 @@ async def run_dictionary_enrichment_multilang(
     source_lang: str,
     target_lang: str,
     core_result: dict | None = None,
+    explanation_lang: str = "",
 ) -> dict:
     normalized_word = str(word or "").strip()
     core = core_result if isinstance(core_result, dict) else {}
@@ -6092,6 +6131,7 @@ async def run_dictionary_enrichment_multilang(
         word=word,
         source_lang=source_lang,
         target_lang=target_lang,
+        explanation_lang=explanation_lang,
         task_name=task_name,
         system_instruction_key=task_name,
         allow_quick_translate_fallback=False,
