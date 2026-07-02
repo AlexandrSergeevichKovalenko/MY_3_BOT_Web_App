@@ -4000,7 +4000,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 const resultCollapsed = Boolean(collapsedResultCards[resultCardKey]);
                 const explanationCollapsed = Boolean(collapsedExplanationBlocks[explanationKey]);
                 const followupAnswerCollapsed = Boolean(collapsedFollowupAnswerBlocks[explanationKey]);
-                const explanationText = explanations[explanationKey];
                 const followupOpen = Boolean(explanationQuestionOpen[explanationKey]);
                 const followupDraft = String(explanationQuestionDrafts[explanationKey] || '');
                 const followupLoading = Boolean(explanationQuestionLoading[explanationKey]);
@@ -25896,6 +25895,43 @@ function AppInner() {
     };
   }
 
+  // Flatten the structured explanation (summary/errors/alternatives/synonyms) into a
+  // plain-text block. The follow-up-question endpoint takes the prior explanation as free
+  // text context, and the modal now stores the breakdown structured (in `explainStructured`),
+  // not as the legacy plain-text `explanations` map — so we serialize it here.
+  function buildExplanationContextText(structured) {
+    if (!structured || typeof structured !== 'object') return '';
+    const parts = [];
+    const summary = String(structured.summary || '').trim();
+    if (summary) parts.push(summary);
+    const errors = Array.isArray(structured.errors) ? structured.errors : [];
+    errors.forEach((err, i) => {
+      const lines = [];
+      const your = String(err?.your || '').trim();
+      const correct = String(err?.correct || '').trim();
+      if (your || correct) lines.push(`${your}${your && correct ? ' → ' : ''}${correct}`.trim());
+      if (err?.why) lines.push(String(err.why).trim());
+      if (err?.rule) lines.push(`Regel: ${String(err.rule).trim()}`);
+      if (err?.example) lines.push(String(err.example).trim());
+      if (lines.length) parts.push(`${i + 1}. ${lines.join(' | ')}`);
+    });
+    const alternatives = Array.isArray(structured.alternatives) ? structured.alternatives : [];
+    if (alternatives.length) {
+      parts.push('Alternativen: ' + alternatives
+        .map((a) => (a?.note ? `${a.variant} (${a.note})` : String(a?.variant || '')))
+        .filter(Boolean)
+        .join('; '));
+    }
+    const synonyms = Array.isArray(structured.synonyms) ? structured.synonyms : [];
+    if (synonyms.length) {
+      parts.push('Synonyme: ' + synonyms
+        .map((s) => `${String(s?.word || '')} → ${(Array.isArray(s?.options) ? s.options : []).join(', ')}`)
+        .filter((line) => line.replace('→', '').trim())
+        .join('; '));
+    }
+    return parts.join('\n').trim();
+  }
+
   function getResultCardIdentityKey(item, fallbackIndex = 0) {
     return (
       getTranslationResultIdentityKey(item)
@@ -25999,7 +26035,8 @@ function AppInner() {
       return;
     }
     const learnerQuestion = String(explanationQuestionDrafts[key] || '').trim();
-    const explanation = String(explanations[key] || '').trim();
+    const lang = explainLangDe[key] ? 'de' : 'ru';
+    const explanation = buildExplanationContextText(explainStructured[`${key}:${lang}`]).trim();
     if (!learnerQuestion) {
       setWebappError(tr('Сначала напишите вопрос.', 'Bitte schreibe zuerst deine Frage.'));
       return;
