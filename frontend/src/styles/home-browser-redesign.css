@@ -334,6 +334,19 @@
   /* ============ ПЛАНШЕТ: чуть уже контейнер ============ */
   .webapp-page.is-telegram-tablet .webapp-main { max-width: 980px !important; }
   .webapp-page.is-telegram-tablet .hdt-grid { grid-template-columns: repeat(4, 1fr) !important; }
+
+  /* ROOT-CAUSE FIX «окно на пол-ширины» на планшете.
+     .webapp-main это display:grid БЕЗ grid-template-columns → неявная колонка
+     size=auto = ширина контента. У формы (перевод/словарь) собственная ширина
+     ~450px, поэтому на широком планшетном экране секция схлопывалась до ~450 и
+     висела в пустом окне. Дом заполнен только потому, что bento форсит колонку
+     своей фикс-шириной. Делаем единственную колонку 1fr → секция тянется на всю
+     ширину контейнера. Исключаем home (.is-home-bento): у него своя раскладка
+     (bento сам центрируется max-width:720). На телефоне (<700px) правило не
+     действует — весь блок под @media (min-width:700px). */
+  .webapp-page.is-telegram-tablet:not(.is-home-bento) .webapp-main {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
 }
 
 /* На очень широких — комфортные 5 колонок и крупнее контейнер */

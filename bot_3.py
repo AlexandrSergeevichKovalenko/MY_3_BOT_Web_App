@@ -23821,6 +23821,44 @@ async def admin_battle_images_command(update: Update, context: CallbackContext) 
     await status_msg.edit_text(text[:4000])
 
 
+async def admin_battle_digest_command(update: Update, context: CallbackContext) -> None:
+    """Preview the merged «Итоги батлов» digest card with sample data.
+    /admin_battle_digest [n]  (n = how many battle rows, default 4)"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        n = max(2, min(10, int((context.args or ["4"])[0])))
+    except Exception:
+        n = 4
+    sample = []
+    for i in range(n):
+        place = (i + 1) if i < n - 1 else None
+        sample.append({
+            "title": (f"Adjektiv #{40 + i}" if i % 2 else f"Artikel #{70 + i}"),
+            "place": place, "total": 5 + i, "count": max(0, 11 - 2 * i),
+            "is_win": place == 1, "win_name": "Maria", "win_count": 11,
+        })
+    try:
+        from backend.battle_digest_poster import render_battle_digest
+        from backend.battle_card import REMINDER_KEY
+        from backend.r2_storage import r2_get_bytes
+        hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
+        img = await asyncio.to_thread(render_battle_digest, sample, hero_png=hero,
+                                      subtitle=f"{n} батлов")
+    except Exception as exc:
+        await message.reply_text(f"Error: {exc}")
+        return
+    if not img:
+        await message.reply_text("Render failed (PIL missing?).")
+        return
+    await message.reply_photo(photo=io.BytesIO(img), caption="Пример: «Итоги батлов» (объединённая грамота)")
+
+
 async def artikel_mybattles_command(update: Update, context: CallbackContext) -> None:
     """DM a button to open the user's active battles. /mybattles"""
     user = update.effective_user
@@ -23832,84 +23870,202 @@ async def artikel_mybattles_command(update: Update, context: CallbackContext) ->
     await message.reply_text("⚔️ Твои активные батлы (играй до дедлайна):", reply_markup=kb)
 
 
-async def _close_article_sprint_battles_job(context: CallbackContext) -> None:
-    """Close battles past their deadline; DM each member their place + the winner."""
+def _battle_kind_cfg(kind: str) -> dict:
+    """Config for a sprint-battle type. Adjektiv DB helpers are imported lazily
+    (they aren't in the module-level import block)."""
+    if kind == "article":
+        return {
+            "list_to_close": list_article_sprint_battles_to_close,
+            "set_id": lambda b: f"asb_{int(b['id'])}",
+            "ranked": list_article_sprint_results_ranked,
+            "members": list_article_sprint_battle_members,
+            "close": close_article_sprint_battle,
+            "header": "ЛУЧШИЙ АРТИКЛЕВЕД",
+            "title": lambda bid: f"Artikel #{bid}",
+            "caption_kind": "Батл",
+        }
+    from backend.database import (
+        list_adjektiv_sprint_battles_to_close, list_adjektiv_sprint_results_ranked,
+        list_adjektiv_sprint_battle_members, close_adjektiv_sprint_battle,
+    )
+    return {
+        "list_to_close": list_adjektiv_sprint_battles_to_close,
+        "set_id": lambda b: str(b["set_id"]),
+        "ranked": list_adjektiv_sprint_results_ranked,
+        "members": list_adjektiv_sprint_battle_members,
+        "close": close_adjektiv_sprint_battle,
+        "header": "ADJEKTIV-MEISTER",
+        "title": lambda bid: f"Adjektiv #{bid}",
+        "caption_kind": "Adjektiv-батл",
+    }
+
+
+async def _render_battle_podium(context: CallbackContext, ranked: list, *, header: str, bid: int) -> bytes | None:
+    """Render the rich top-3 podium poster for one battle (or None if no players)."""
+    if not ranked:
+        return None
+    leaders = [{
+        "user_id": int(r["user_id"]), "name": str(r.get("name") or "Игрок"),
+        "points": int(r.get("count") or 0), "correct": int(r.get("count") or 0),
+        "answered": int(r.get("count") or 0), "golds": (1 if i == 0 else 0),
+        "ctime_sum": 0, "ctime_n": 0,
+    } for i, r in enumerate(ranked)]
+    lb = {"leaders": leaders, "total_players": len(leaders), "total_tasks": 0,
+          "fastest": None, "accurate": None, "active": None}
+    avatars: dict[int, bytes] = {}
+    for ldr in leaders[:3]:
+        av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
+        if av:
+            avatars[int(ldr["user_id"])] = av
     try:
-        battles = await asyncio.to_thread(list_article_sprint_battles_to_close)
+        from backend.champion_poster import render_champion_poster
+        from backend.battle_card import REMINDER_KEY
+        from backend.r2_storage import r2_get_bytes
+        hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
+        return await asyncio.to_thread(
+            render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
+            header=header, subtitle=f"⚔️ Батл #{bid}", hero_png=hero)
     except Exception:
-        logging.warning("artikel battle close: list failed", exc_info=True)
-        return
+        logging.warning("battle podium render failed bid=%s", bid, exc_info=True)
+        return None
+
+
+async def _collect_battle_results(context: CallbackContext, kind: str) -> list:
+    """Fetch every to-close battle of `kind`, render its podium, and return one
+    dict per battle (ranked/members/poster). Does NOT send or close anything."""
+    cfg = _battle_kind_cfg(kind)
+    try:
+        battles = await asyncio.to_thread(cfg["list_to_close"])
+    except Exception:
+        logging.warning("%s battle close: list failed", kind, exc_info=True)
+        return []
+    out = []
     for b in battles:
         bid = int(b["id"])
-        set_id = f"asb_{bid}"
+        set_id = cfg["set_id"](b)
         try:
-            ranked = await asyncio.to_thread(list_article_sprint_results_ranked, set_id)
-            members = await asyncio.to_thread(list_article_sprint_battle_members, bid)
+            ranked = await asyncio.to_thread(cfg["ranked"], set_id)
+            members = await asyncio.to_thread(cfg["members"], bid)
         except Exception:
-            logging.warning("artikel battle close: data failed bid=%s", bid, exc_info=True)
+            logging.warning("%s battle close: data failed bid=%s", kind, bid, exc_info=True)
             continue
-        place_of = {int(r["user_id"]): i + 1 for i, r in enumerate(ranked)}
+        poster = await _render_battle_podium(context, ranked, header=cfg["header"], bid=bid)
+        out.append({
+            "kind": kind, "bid": bid, "set_id": set_id, "ranked": ranked, "members": members,
+            "poster": poster, "title": cfg["title"](bid), "caption_kind": cfg["caption_kind"],
+            "close": cfg["close"],
+        })
+    return out
+
+
+async def _send_single_battle_result(context: CallbackContext, uid: int, e: dict) -> None:
+    """Deliver one battle result to a user (unchanged look: rich podium + caption)."""
+    p, total, ck, bid = e["place"], e["total"], e["caption_kind"], e["bid"]
+    win_line = (f"🏆 Чемпион: {html.escape(e['win_name'])} ({e['win_count']} верных)"
+                if e["win_name"] and e["win_name"] != "—" else "Никто не сыграл.")
+    if p:
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(p, "🎖️")
+        caption = (f"⚔️ {ck} #{bid} завершён!\n"
+                   f"{medal} Твоё место: <b>{p} из {total}</b> ({e['count']} верных)")
+    else:
+        caption = f"⚔️ {ck} #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
+    if e["poster"]:
+        sent = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(e["poster"]),
+                                            caption=caption, parse_mode="HTML")
+        await _preserve_system_message(sent, "battle_podium")
+    else:
+        await context.bot.send_message(chat_id=uid, text=caption + ("\n" + win_line if p else ""),
+                                       parse_mode="HTML")
+
+
+async def _send_battle_digest(context: CallbackContext, uid: int, entries: list) -> None:
+    """Deliver ALL of a user's battle results as one combined «Итоги батлов» card."""
+    entries = sorted(entries, key=lambda e: (e["place"] is None, e["place"] or 10**9, e["bid"]))
+    played = sum(1 for e in entries if e["place"])
+    wins = sum(1 for e in entries if e["place"] == 1)
+    img = None
+    try:
+        from backend.battle_digest_poster import render_battle_digest
+        from backend.battle_card import REMINDER_KEY
+        from backend.r2_storage import r2_get_bytes
+        hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
+        img = await asyncio.to_thread(
+            render_battle_digest, entries, hero_png=hero, subtitle=f"{len(entries)} батлов")
+    except Exception:
+        logging.warning("battle digest render failed uid=%s", uid, exc_info=True)
+        img = None
+    caption = f"⚔️ Итоги батлов: сыграно {played} из {len(entries)}"
+    if wins:
+        caption += f", побед {wins} 🏆"
+    if img:
+        sent = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(img),
+                                            caption=caption, parse_mode="HTML")
+        await _preserve_system_message(sent, "battle_podium")
+    else:
+        lines = [caption]
+        for e in entries:
+            if e["place"]:
+                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(e["place"], "🎖️")
+                lines.append(f"{medal} {e['title']}: {e['place']} из {e['total']} ({e['count']} верных)")
+            else:
+                lines.append(f"▫️ {e['title']}: не сыграл")
+        await context.bot.send_message(chat_id=uid, text="\n".join(lines), parse_mode="HTML")
+
+
+async def _flush_battle_results(context: CallbackContext, results: list) -> None:
+    """Group all battle results per user, then send ONE combined digest card when a
+    user has 2+ battles (else the single rich podium). Finally unpin + mark closed."""
+    per_user: dict[int, list] = {}
+    for r in results:
+        ranked, members = r["ranked"], r["members"]
+        place_of = {int(x["user_id"]): i + 1 for i, x in enumerate(ranked)}
         winner = ranked[0] if ranked else None
+        win_name = str((winner or {}).get("name") or "—")
+        win_count = int((winner or {}).get("count") or 0)
         total = len(ranked)
-        win_line = (f"🏆 Чемпион: {html.escape(str((winner or {}).get('name') or '—'))} "
-                    f"({(winner or {}).get('count', 0)} верных)") if winner else "Никто не сыграл."
-
-        # Render a battle podium poster (top-3 + avatars) — sent to ALL members
-        # (whoever accepted), for both global and individual battles.
-        poster = None
-        if ranked:
-            leaders = [{
-                "user_id": int(r["user_id"]), "name": str(r.get("name") or "Игрок"),
-                "points": int(r.get("count") or 0), "correct": int(r.get("count") or 0),
-                "answered": int(r.get("count") or 0), "golds": (1 if i == 0 else 0),
-                "ctime_sum": 0, "ctime_n": 0,
-            } for i, r in enumerate(ranked)]
-            lb = {"leaders": leaders, "total_players": len(leaders), "total_tasks": 0,
-                  "fastest": None, "accurate": None, "active": None}
-            avatars: dict[int, bytes] = {}
-            for ldr in leaders[:3]:
-                av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
-                if av:
-                    avatars[int(ldr["user_id"])] = av
-            try:
-                from backend.champion_poster import render_champion_poster
-                from backend.battle_card import REMINDER_KEY
-                from backend.r2_storage import r2_get_bytes
-                hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
-                poster = await asyncio.to_thread(
-                    render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
-                    header="ЛУЧШИЙ АРТИКЛЕВЕД", subtitle=f"⚔️ Батл #{bid}", hero_png=hero)
-            except Exception:
-                logging.warning("battle podium render failed bid=%s", bid, exc_info=True)
-                poster = None
-
         for m in members:
             uid = int(m["user_id"])
-            p = place_of.get(uid)
-            if p:
-                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(p, "🎖️")
-                you = next((r for r in ranked if int(r["user_id"]) == uid), {})
-                caption = (f"⚔️ Батл #{bid} завершён!\n"
-                           f"{medal} Твоё место: <b>{p} из {total}</b> ({you.get('count', 0)} верных)")
-            else:
-                caption = f"⚔️ Батл #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
-            try:
-                if poster:
-                    sent_msg = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
-                                                 caption=caption, parse_mode="HTML")
-                    await _preserve_system_message(sent_msg, "battle_podium")
-                else:
-                    await context.bot.send_message(chat_id=uid, text=caption + ("\n" + win_line if p else ""),
-                                                   parse_mode="HTML")
-            except Exception:
-                pass
-        await _unpin_battle_pins_for_set(context, set_id)
+            you = next((x for x in ranked if int(x["user_id"]) == uid), {})
+            per_user.setdefault(uid, []).append({
+                "kind": r["kind"], "bid": r["bid"], "title": r["title"],
+                "caption_kind": r["caption_kind"], "poster": r["poster"],
+                "place": place_of.get(uid), "total": total, "count": int(you.get("count") or 0),
+                "is_win": place_of.get(uid) == 1, "win_name": win_name, "win_count": win_count,
+            })
+
+    for uid, entries in per_user.items():
         try:
-            await asyncio.to_thread(close_article_sprint_battle, bid)
+            if len(entries) == 1:
+                await _send_single_battle_result(context, uid, entries[0])
+            else:
+                await _send_battle_digest(context, uid, entries)
         except Exception:
-            logging.warning("artikel battle close: mark failed bid=%s", bid, exc_info=True)
-    if battles:
-        logging.info("artikel battles closed: %s", len(battles))
+            pass
+
+    for r in results:
+        await _unpin_battle_pins_for_set(context, r["set_id"])
+        try:
+            await asyncio.to_thread(r["close"], r["bid"])
+        except Exception:
+            logging.warning("%s battle close: mark failed bid=%s", r["kind"], r["bid"], exc_info=True)
+
+
+async def _close_all_sprint_battles_job(context: CallbackContext) -> None:
+    """Close all expired Artikel + Adjektiv battles and deliver results — merged into
+    a single «Итоги батлов» card per user so a heavy battle day isn't a photo spam."""
+    results = await _collect_battle_results(context, "article")
+    results += await _collect_battle_results(context, "adjektiv")
+    await _flush_battle_results(context, results)
+    if results:
+        logging.info("sprint battles closed: %s (article+adjektiv, merged per user)", len(results))
+
+
+async def _close_article_sprint_battles_job(context: CallbackContext) -> None:
+    """Close only Artikel battles (kept for manual/standalone use)."""
+    results = await _collect_battle_results(context, "article")
+    await _flush_battle_results(context, results)
+    if results:
+        logging.info("artikel battles closed: %s", len(results))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -27861,83 +28017,11 @@ async def adjektiv_battle_remind_callback(update: Update, context: CallbackConte
 
 
 async def _close_adjektiv_sprint_battles_job(context: CallbackContext) -> None:
-    """Close expired Adjektiv battles; DM each member their place + a podium poster."""
-    from backend.database import (
-        list_adjektiv_sprint_battles_to_close, list_adjektiv_sprint_results_ranked,
-        list_adjektiv_sprint_battle_members, close_adjektiv_sprint_battle,
-    )
-    try:
-        battles = await asyncio.to_thread(list_adjektiv_sprint_battles_to_close)
-    except Exception:
-        logging.warning("adjektiv battle close: list failed", exc_info=True)
-        return
-    for b in battles:
-        bid = int(b["id"])
-        set_id = str(b["set_id"])
-        try:
-            ranked = await asyncio.to_thread(list_adjektiv_sprint_results_ranked, set_id)
-            members = await asyncio.to_thread(list_adjektiv_sprint_battle_members, bid)
-        except Exception:
-            logging.warning("adjektiv battle close: data failed bid=%s", bid, exc_info=True)
-            continue
-        place_of = {int(r["user_id"]): i + 1 for i, r in enumerate(ranked)}
-        winner = ranked[0] if ranked else None
-        total = len(ranked)
-        win_line = (f"🏆 Чемпион: {html.escape(str((winner or {}).get('name') or '—'))} "
-                    f"({(winner or {}).get('count', 0)} верных)") if winner else "Никто не сыграл."
-        poster = None
-        if ranked:
-            leaders = [{
-                "user_id": int(r["user_id"]), "name": str(r.get("name") or "Игрок"),
-                "points": int(r.get("count") or 0), "correct": int(r.get("count") or 0),
-                "answered": int(r.get("count") or 0), "golds": (1 if i == 0 else 0),
-                "ctime_sum": 0, "ctime_n": 0,
-            } for i, r in enumerate(ranked)]
-            lb = {"leaders": leaders, "total_players": len(leaders), "total_tasks": 0,
-                  "fastest": None, "accurate": None, "active": None}
-            avatars: dict[int, bytes] = {}
-            for ldr in leaders[:3]:
-                av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
-                if av:
-                    avatars[int(ldr["user_id"])] = av
-            try:
-                from backend.champion_poster import render_champion_poster
-                from backend.battle_card import REMINDER_KEY
-                from backend.r2_storage import r2_get_bytes
-                hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
-                poster = await asyncio.to_thread(
-                    render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
-                    header="ADJEKTIV-MEISTER", subtitle=f"⚔️ Батл #{bid}", hero_png=hero)
-            except Exception:
-                logging.warning("adjektiv battle podium render failed bid=%s", bid, exc_info=True)
-                poster = None
-        for m in members:
-            uid = int(m["user_id"])
-            p = place_of.get(uid)
-            if p:
-                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(p, "🎖️")
-                you = next((r for r in ranked if int(r["user_id"]) == uid), {})
-                caption = (f"⚔️ Adjektiv-батл #{bid} завершён!\n"
-                           f"{medal} Твоё место: <b>{p} из {total}</b> ({you.get('count', 0)} верных)")
-            else:
-                caption = f"⚔️ Adjektiv-батл #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
-            try:
-                if poster:
-                    sent_msg = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
-                                                 caption=caption, parse_mode="HTML")
-                    await _preserve_system_message(sent_msg, "battle_podium")
-                else:
-                    await context.bot.send_message(chat_id=uid, text=caption + ("\n" + win_line if p else ""),
-                                                   parse_mode="HTML")
-            except Exception:
-                pass
-        await _unpin_battle_pins_for_set(context, set_id)
-        try:
-            await asyncio.to_thread(close_adjektiv_sprint_battle, bid)
-        except Exception:
-            logging.warning("adjektiv battle close: mark failed bid=%s", bid, exc_info=True)
-    if battles:
-        logging.info("adjektiv battles closed: %s", len(battles))
+    """Close only Adjektiv battles (kept for manual/standalone use)."""
+    results = await _collect_battle_results(context, "adjektiv")
+    await _flush_battle_results(context, results)
+    if results:
+        logging.info("adjektiv battles closed: %s", len(results))
 
 
 async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
@@ -31644,6 +31728,7 @@ def main():
     application.add_handler(CommandHandler("admin_lazy_image", admin_lazy_image_command))
     application.add_handler(CommandHandler("admin_review_image", admin_review_image_command))
     application.add_handler(CommandHandler("admin_battle_images", admin_battle_images_command))
+    application.add_handler(CommandHandler("admin_battle_digest", admin_battle_digest_command))
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
     application.add_handler(CommandHandler("artikelreport", admin_artikel_report_command))
@@ -32306,20 +32391,13 @@ def main():
             minute=int(ARTIKEL_REPORT_SLOT[1]),
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
-        # -- Artikel Sprint: close expired battles + DM results (00:05) --
+        # -- Sprint battles: close all expired Artikel + Adjektiv battles and DM
+        #    results as ONE merged «Итоги батлов» card per user (00:05) --
         scheduler.add_job(
-            lambda: submit_async(_close_article_sprint_battles_job, CallbackContext(application=application)),
+            lambda: submit_async(_close_all_sprint_battles_job, CallbackContext(application=application)),
             "cron",
             hour=0,
             minute=5,
-            timezone=QUIZ_SCHEDULE_TZ_NAME,
-        )
-        # -- Adjektiv Sprint: close expired battles + DM podium (00:06) --
-        scheduler.add_job(
-            lambda: submit_async(_close_adjektiv_sprint_battles_job, CallbackContext(application=application)),
-            "cron",
-            hour=0,
-            minute=6,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Artikel Battle: deliver due "remind me later" reminders (every 5 min) --
