@@ -195,7 +195,7 @@ export default function DeepAnalysis({ startParam }) {
 
   const germanText = clean(item?.word_de).replace(/^(der|die|das)\s+/i, '');
   const { warm: warmTts } = tts;
-  useEffect(() => { if (germanText) warmTts(germanText, 'de-DE'); }, [germanText, warmTts]);
+  useEffect(() => { if (germanText && !isGuest) warmTts(germanText, 'de-DE'); }, [germanText, warmTts, isGuest]);
 
   const dir = clean(item?.__direction);
   const translation = extractRichTranslation(item) || clean(item?.word_ru) || clean(item?.meanings?.primary?.value);
@@ -233,22 +233,22 @@ export default function DeepAnalysis({ startParam }) {
     })();
   }, [folderId, isGuest]);
 
-  // Share this breakdown: get a Telegram prepared inline message (photo card +
-  // deep-link button) and hand it to the native share sheet.
+  // Share this breakdown — INSTANT: one fast call mints a durable share token
+  // (no image render / R2 / Telegram round-trip), then we open Telegram's native
+  // share sheet with the deep-link. Recipient taps it → the same breakdown in a
+  // read-only guest view + "request access" CTA.
   const doShare = useCallback(async () => {
     if (!deepId || sharing) return;
     setSharing(true); haptic('light');
     try {
-      const data = await api('/api/webapp/dictionary/share/prepare', { deep_id: deepId });
-      const pmid = clean(data?.prepared_message_id);
-      if (pmid && typeof tg?.shareMessage === 'function') {
-        tg.shareMessage(pmid, (ok) => { if (ok) haptic('ok'); });
-      } else if (clean(data?.deeplink) && typeof tg?.openTelegramLink === 'function') {
-        // Fallback for older Telegram clients without shareMessage.
-        tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(data.deeplink)}`);
-      } else {
-        setError('Обновите Telegram, чтобы делиться разбором.');
-      }
+      const data = await api('/api/webapp/dictionary/share/link', { deep_id: deepId });
+      const link = clean(data?.deeplink);
+      if (!link) throw new Error('Не удалось создать ссылку');
+      const text = 'Полный разбор немецкого слова — в боте «Deutsche Sprache» 🇩🇪';
+      const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`;
+      if (typeof tg?.openTelegramLink === 'function') tg.openTelegramLink(shareUrl);
+      else window.open(shareUrl, '_blank');
+      haptic('ok');
     } catch (e) {
       setError(String(e?.message || e)); haptic('bad');
     } finally {

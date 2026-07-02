@@ -31456,6 +31456,52 @@ def _extract_share_card_fields(item: dict, query_word: str) -> dict:
     }
 
 
+@app.route("/api/webapp/dictionary/share/link", methods=["POST"])
+def create_webapp_dictionary_share_link():
+    """Fast, instant share: mint a durable share token (one DB insert — NO image
+    render, NO R2, NO Telegram round-trip) and return the deep-link. The Mini-App
+    hands it straight to Telegram's native share sheet, so the tap feels instant.
+    """
+    import secrets as _secrets
+
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    deep_id = str(payload.get("deep_id") or "").strip()
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not deep_id:
+        return jsonify({"error": "deep_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    if not TELEGRAM_BOT_USERNAME:
+        return jsonify({"error": "Шеринг недоступен: бот не сконфигурирован"}), 503
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    record = _get_deep_analysis_record(deep_id)
+    if not isinstance(record, dict):
+        return jsonify({"error": "Разбор устарел. Откройте слово заново."}), 404
+    if int(record.get("user_id") or 0) != int(user_id):
+        return jsonify({"error": "deep_id не принадлежит пользователю"}), 403
+
+    token = _secrets.token_urlsafe(9)
+    try:
+        from backend.database import save_shared_razbor
+        save_shared_razbor(token, int(user_id), record)
+    except Exception:
+        logging.exception("share/link: failed to persist shared razbor")
+        return jsonify({"error": "Не удалось создать ссылку"}), 500
+
+    return jsonify({
+        "ok": True,
+        "share_token": token,
+        "deeplink": f"https://t.me/{TELEGRAM_BOT_USERNAME}?startapp=share_{token}",
+    })
+
+
 @app.route("/api/webapp/dictionary/share/prepare", methods=["POST"])
 def prepare_webapp_dictionary_share():
     """Owner creates a shareable prepared inline message for a «Полный разбор».
