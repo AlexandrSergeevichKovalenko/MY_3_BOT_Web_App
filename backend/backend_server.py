@@ -8283,7 +8283,7 @@ def _list_srs_queue_cards(
                   {recent_seen_sql if exclude_recent_seen else ""}
                   {folder_filter_sql}
                   {allowed_filter_sql}
-                ORDER BY q.created_at ASC
+                ORDER BY q.frequency_rank ASC NULLS LAST, q.created_at ASC
                 LIMIT %s;
                 """,
                 [
@@ -8320,7 +8320,7 @@ def _list_srs_queue_cards(
                       AND q.id <> ALL(%s::bigint[])
                       {folder_filter_sql}
                       {allowed_filter_sql}
-                    ORDER BY q.created_at ASC
+                    ORDER BY q.frequency_rank ASC NULLS LAST, q.created_at ASC
                     LIMIT %s;
                     """,
                     [
@@ -18132,7 +18132,7 @@ def _list_predicted_tts_candidates_for_user(
                   AND s.id IS NULL
                   AND q.source_lang = %s
                   AND q.target_lang = %s
-                ORDER BY q.created_at ASC
+                ORDER BY q.frequency_rank ASC NULLS LAST, q.created_at ASC
                 LIMIT %s;
                 """,
                 (int(user_id), source_lang, target_lang, raw_limit),

@@ -7,6 +7,7 @@ from psycopg2.extras import Json, execute_values
 from psycopg2.pool import ThreadedConnectionPool, PoolError
 import os
 from backend.r2_storage import r2_get_bytes, r2_put_bytes, r2_public_url
+from backend.word_frequency import compute_frequency_rank
 import hashlib
 import atexit
 import math
@@ -2628,6 +2629,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
     normalized_semantic_tag = normalize_dictionary_semantic_tag(semantic_tag)
+    freq_rank = compute_frequency_rank(word_de, normalized_response_json)
     if canonical_entry_id:
         cursor.execute(
             """
@@ -2644,11 +2646,13 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 origin_process,
                 origin_meta,
                 semantic_tag,
-                response_json
+                response_json,
+                frequency_rank
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id, canonical_entry_id) WHERE canonical_entry_id IS NOT NULL
             DO UPDATE SET
+                frequency_rank = COALESCE(EXCLUDED.frequency_rank, bt_3_webapp_dictionary_queries.frequency_rank),
                 folder_id = COALESCE(EXCLUDED.folder_id, bt_3_webapp_dictionary_queries.folder_id),
                 origin_process = EXCLUDED.origin_process,
                 origin_meta = COALESCE(EXCLUDED.origin_meta, bt_3_webapp_dictionary_queries.origin_meta),
@@ -2679,6 +2683,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 Json(normalized_meta) if normalized_meta else None,
                 normalized_semantic_tag or None,
                 Json(normalized_response_json),
+                freq_rank,
             ),
         )
         row = cursor.fetchone()
@@ -2702,9 +2707,10 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
             origin_process,
             origin_meta,
             semantic_tag,
-            response_json
+            response_json,
+            frequency_rank
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
         RETURNING id;
         """,
         (
@@ -2720,6 +2726,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
             Json(normalized_meta) if normalized_meta else None,
             normalized_semantic_tag or None,
             Json(normalized_response_json),
+            freq_rank,
         ),
     )
     row = cursor.fetchone()
@@ -5521,6 +5528,18 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
                 ADD COLUMN IF NOT EXISTS semantic_tag TEXT;
+            """)
+            # frequency_rank: lower = more frequent/useful = introduce earlier in
+            # SRS new-card rotation. Filled by word_frequency.compute_frequency_rank
+            # (corpus rank -> LLM band -> NULL). Nullable ADD COLUMN is metadata-only
+            # (no table rewrite).
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS frequency_rank INTEGER;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_freq
+                ON bt_3_webapp_dictionary_queries (user_id, frequency_rank);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_entries (
@@ -20660,7 +20679,7 @@ def get_next_new_srs_candidate(
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
               {allowed_sql}
-            ORDER BY q.created_at ASC
+            ORDER BY q.frequency_rank ASC NULLS LAST, q.created_at ASC
             LIMIT 1;
             """,
             [int(user_id), *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
@@ -20681,6 +20700,84 @@ def get_next_new_srs_candidate(
     with get_db_connection_context() as conn:
         with conn.cursor() as own_cursor:
             return _fetch(own_cursor)
+
+
+def backfill_frequency_ranks(
+    batch_size: int = 2000,
+    max_batches: int | None = None,
+    only_missing: bool = False,
+    user_id: int | None = None,
+) -> dict:
+    """Recompute frequency_rank across saved dictionary rows, paging by id.
+
+    Idempotent and free (no LLM). Pages by primary key so rows that resolve to
+    NULL are not endlessly reselected. `only_missing=True` restricts to rows
+    that have no rank yet (cheap incremental top-up); the default rescans all
+    rows (picks up newly enriched response_json / an updated frequency list).
+    `user_id` limits to one user (dry-run / preview).
+    """
+    processed = 0
+    updated = 0
+    with_rank = 0
+    after_id = 0
+    batches = 0
+    filters = ["id > %s"]
+    if only_missing:
+        filters.append("frequency_rank IS NULL")
+    if user_id is not None:
+        filters.append("user_id = %s")
+
+    with get_db_connection_context() as conn:
+        while True:
+            params: list = [after_id]
+            if user_id is not None:
+                params.append(int(user_id))
+            params.append(int(batch_size))
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, word_de, response_json
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE {' AND '.join(filters)}
+                    ORDER BY id
+                    LIMIT %s;
+                    """,
+                    params,
+                )
+                rows = cur.fetchall() or []
+                if not rows:
+                    break
+                for row_id, word_de, response_json in rows:
+                    after_id = row_id
+                    processed += 1
+                    new_rank = compute_frequency_rank(word_de, response_json)
+                    if new_rank is not None:
+                        with_rank += 1
+                    cur.execute(
+                        """
+                        UPDATE bt_3_webapp_dictionary_queries
+                        SET frequency_rank = %s
+                        WHERE id = %s
+                          AND frequency_rank IS DISTINCT FROM %s;
+                        """,
+                        (new_rank, row_id, new_rank),
+                    )
+                    if cur.rowcount:
+                        updated += 1
+            conn.commit()
+            batches += 1
+            if len(rows) < batch_size:
+                break
+            if max_batches is not None and batches >= max_batches:
+                break
+
+    return {
+        "processed": processed,
+        "updated": updated,
+        "with_rank": with_rank,
+        "last_id": after_id,
+        "batches": batches,
+    }
 
 
 def ensure_new_srs_state(user_id: int, card_id: int, now_utc: datetime | None = None, cursor=None) -> dict:

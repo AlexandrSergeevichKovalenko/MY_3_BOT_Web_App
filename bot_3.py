@@ -120,6 +120,7 @@ from backend.database import (
     DATABASE_URL as SHARED_DATABASE_URL,
     DB_POOL_ALLOW_DIRECT_FALLBACK,
     DB_POOL_ENABLED,
+    backfill_frequency_ranks,
     get_shortcut_autosave_enabled,
     set_shortcut_autosave_enabled,
     init_db,
@@ -7050,6 +7051,52 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
         text += "\n\nЗапустите с <code>apply</code>, чтобы исправить."
     for part in _split_telegram_text(text):
         await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def admin_backfill_frequency_command(update: Update, context: CallbackContext):
+    """Compute/refresh frequency_rank for saved vocabulary so SRS introduces the
+    most frequent (useful) words first. Free, no LLM — corpus rank → LLM band → NULL.
+
+    Usage:
+      /admin_backfill_frequency            → your entries, only rows still missing a rank
+      /admin_backfill_frequency all        → ALL users, only rows missing a rank
+      /admin_backfill_frequency all rescan → ALL users, recompute every row
+    """
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = [a.strip().lower() for a in (context.args or [])]
+    all_users = "all" in args
+    rescan = "rescan" in args  # recompute every row, not just those missing a rank
+    target_user_id = None if all_users else int(sender.id)
+    scope = "ВСЕ пользователи" if all_users else "только ваши записи"
+    mode = "пересчёт всех строк" if rescan else "только строки без ранга"
+    await message.reply_text(
+        f"🔢 Частотный ранг слов: {mode}, {scope}. Погнали…"
+    )
+    try:
+        report = await asyncio.to_thread(
+            backfill_frequency_ranks,
+            batch_size=2000,
+            only_missing=not rescan,
+            user_id=target_user_id,
+        )
+    except Exception as exc:
+        logging.exception("admin backfill frequency failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Backfill упал: {exc}")
+        return
+    text = (
+        "📊 <b>Частотный ранг: готово</b>\n\n"
+        f"Обработано: <b>{report.get('processed', 0)}</b>\n"
+        f"Обновлено: <b>{report.get('updated', 0)}</b>\n"
+        f"С рангом (корпус/LLM): <b>{report.get('with_rank', 0)}</b>\n"
+        f"Батчей: {report.get('batches', 0)}"
+    )
+    await message.reply_text(text, parse_mode="HTML")
 
 
 async def clear_dictionary_queue_command(update: Update, context: CallbackContext):
@@ -31672,6 +31719,7 @@ def main():
     application.add_handler(CommandHandler("adjsprint", admin_adjektiv_sprint_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("admin_fix_dict_translations", admin_fix_dict_translations_command))
+    application.add_handler(CommandHandler("admin_backfill_frequency", admin_backfill_frequency_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
     application.add_handler(CommandHandler("test_image_quiz", test_image_quiz_command))
