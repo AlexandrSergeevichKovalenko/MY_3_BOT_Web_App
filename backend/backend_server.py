@@ -853,6 +853,10 @@ TELEGRAM_WEBAPP_INIT_TTL_SECONDS = int(os.getenv("TELEGRAM_WEBAPP_INIT_TTL_SECON
 WEBAPP_INSTANCE_LEASE_TTL_SECONDS = max(15, int(os.getenv("WEBAPP_INSTANCE_LEASE_TTL_SECONDS", "45")))
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
 SRS_DUE_PER_DAY = int(os.getenv("SRS_DUE_PER_DAY", "30"))
+# Reserve every Nth new-card slot for the OLDEST saved word regardless of
+# frequency_rank, so un-ranked / rare words never starve behind the
+# frequency-ordered queue. 4 → ~25% of daily new cards are age-first. 0 disables.
+SRS_NEW_AGED_RESERVE_EVERY = max(0, int(os.getenv("SRS_NEW_AGED_RESERVE_EVERY", "4")))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 # Mirror the bot-side referral knobs so the shared PDF card promises match reality.
 REFERRAL_REWARD_DAYS = max(1, int((os.getenv("REFERRAL_REWARD_DAYS") or "7").strip() or "7"))
@@ -8261,41 +8265,74 @@ def _list_srs_queue_cards(
         new_fallback_added = 0
 
         if new_limit > 0:
-            cur.execute(
-                f"""
-                SELECT
-                    q.id,
-                    q.word_ru,
-                    q.translation_de,
-                    q.word_de,
-                    q.translation_ru,
-                    q.response_json,
-                    q.source_lang,
-                    q.target_lang
-                FROM bt_3_webapp_dictionary_queries q
-                LEFT JOIN bt_3_card_srs_state s
-                  ON s.user_id = q.user_id
-                 AND s.card_id = q.id
-                WHERE q.user_id = %s
-                  {lang_filter_sql}
-                  AND s.id IS NULL
-                  AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
-                  {recent_seen_sql if exclude_recent_seen else ""}
-                  {folder_filter_sql}
-                  {allowed_filter_sql}
-                ORDER BY q.frequency_rank ASC NULLS LAST, q.created_at ASC
-                LIMIT %s;
-                """,
-                [
-                    *base_params,
-                    *(recent_seen_params if exclude_recent_seen else []),
-                    *folder_params,
-                    *allowed_filter_params,
-                    int(new_limit),
-                ],
-            )
-            new_rows = list(cur.fetchall() or [])
-            new_selected_ids = {int(row[0]) for row in new_rows}
+            # Reserve a slice of the daily new-card budget for the OLDEST saved
+            # words regardless of frequency_rank (#6): otherwise un-ranked / rare
+            # words sit permanently behind the frequency queue and never surface.
+            aged_quota = (new_limit // SRS_NEW_AGED_RESERVE_EVERY) if SRS_NEW_AGED_RESERVE_EVERY and new_limit >= SRS_NEW_AGED_RESERVE_EVERY else 0
+            if aged_quota > 0:
+                cur.execute(
+                    f"""
+                    SELECT
+                        q.id, q.word_ru, q.translation_de, q.word_de,
+                        q.translation_ru, q.response_json, q.source_lang, q.target_lang
+                    FROM bt_3_webapp_dictionary_queries q
+                    LEFT JOIN bt_3_card_srs_state s
+                      ON s.user_id = q.user_id AND s.card_id = q.id
+                    WHERE q.user_id = %s
+                      {lang_filter_sql}
+                      AND s.id IS NULL
+                      AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                      {recent_seen_sql if exclude_recent_seen else ""}
+                      {folder_filter_sql}
+                      {allowed_filter_sql}
+                    ORDER BY q.created_at ASC
+                    LIMIT %s;
+                    """,
+                    [
+                        *base_params,
+                        *(recent_seen_params if exclude_recent_seen else []),
+                        *folder_params,
+                        *allowed_filter_params,
+                        int(aged_quota),
+                    ],
+                )
+                aged_rows = list(cur.fetchall() or [])
+                new_rows.extend(aged_rows)
+                new_selected_ids.update(int(row[0]) for row in aged_rows)
+
+            freq_limit = new_limit - len(new_rows)
+            if freq_limit > 0:
+                cur.execute(
+                    f"""
+                    SELECT
+                        q.id, q.word_ru, q.translation_de, q.word_de,
+                        q.translation_ru, q.response_json, q.source_lang, q.target_lang
+                    FROM bt_3_webapp_dictionary_queries q
+                    LEFT JOIN bt_3_card_srs_state s
+                      ON s.user_id = q.user_id AND s.card_id = q.id
+                    WHERE q.user_id = %s
+                      {lang_filter_sql}
+                      AND s.id IS NULL
+                      AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                      AND q.id <> ALL(%s::bigint[])
+                      {recent_seen_sql if exclude_recent_seen else ""}
+                      {folder_filter_sql}
+                      {allowed_filter_sql}
+                    ORDER BY q.frequency_rank ASC NULLS LAST, q.created_at ASC
+                    LIMIT %s;
+                    """,
+                    [
+                        *base_params,
+                        list(new_selected_ids) or [0],
+                        *(recent_seen_params if exclude_recent_seen else []),
+                        *folder_params,
+                        *allowed_filter_params,
+                        int(freq_limit),
+                    ],
+                )
+                freq_rows = list(cur.fetchall() or [])
+                new_rows.extend(freq_rows)
+                new_selected_ids.update(int(row[0]) for row in freq_rows)
 
             if exclude_recent_seen and len(new_rows) < new_limit:
                 cur.execute(
@@ -8454,8 +8491,11 @@ def _build_next_srs_payload(
                 "step": int(srs_payload.get("step") or 0),
             }
     else:
+        _cap = len(allowed_card_ids) if allowed_card_ids else NEW_PER_DAY
         if include_queue_info:
-            can_take_new = int(queue_info.get("new_remaining_today") or 0) > 0
+            _remaining = int(queue_info.get("new_remaining_today") or 0)
+            introduced_today = max(_cap - _remaining, 0)
+            can_take_new = _remaining > 0
         else:
             introduced_today = count_new_cards_introduced_today(
                 user_id=user_id,
@@ -8465,15 +8505,20 @@ def _build_next_srs_payload(
                 allowed_card_ids=allowed_card_ids,
                 cursor=cursor,
             )
-            _cap = len(allowed_card_ids) if allowed_card_ids else NEW_PER_DAY
             can_take_new = max(_cap - int(introduced_today or 0), 0) > 0
         if can_take_new:
+            # Every Nth introduced new card is age-first (the #6 reserve), so the
+            # single-card path doesn't starve un-ranked words either.
+            prefer_oldest = bool(SRS_NEW_AGED_RESERVE_EVERY) and (
+                (int(introduced_today or 0) + 1) % SRS_NEW_AGED_RESERVE_EVERY == 0
+            )
             candidate = get_next_new_srs_candidate(
                 user_id=user_id,
                 source_lang=source_lang,
                 target_lang=target_lang,
                 allowed_card_ids=allowed_card_ids,
                 cursor=cursor,
+                prefer_oldest=prefer_oldest,
             )
             if candidate:
                 state = ensure_new_srs_state(

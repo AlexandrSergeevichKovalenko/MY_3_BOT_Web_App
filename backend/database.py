@@ -20675,6 +20675,7 @@ def get_next_new_srs_candidate(
     target_lang: str | None = None,
     allowed_card_ids: list[int] | None = None,
     cursor=None,
+    prefer_oldest: bool = False,
 ) -> dict | None:
     normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
     if allowed_card_ids is not None and not normalized_allowed_ids:
@@ -20687,6 +20688,13 @@ def get_next_new_srs_candidate(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
+        # prefer_oldest: pick the oldest saved word regardless of rank (the #6
+        # anti-starvation reserve); otherwise frequency-first.
+        order_by = (
+            "q.created_at ASC"
+            if prefer_oldest
+            else "q.frequency_rank ASC NULLS LAST, q.created_at ASC"
+        )
         cur.execute(
             f"""
             SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json
@@ -20698,7 +20706,7 @@ def get_next_new_srs_candidate(
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
               {allowed_sql}
-            ORDER BY q.frequency_rank ASC NULLS LAST, q.created_at ASC
+            ORDER BY {order_by}
             LIMIT 1;
             """,
             [int(user_id), *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
