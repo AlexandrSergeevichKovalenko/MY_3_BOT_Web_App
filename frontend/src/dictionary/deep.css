@@ -1,0 +1,268 @@
+/* «Полный разбор» (startapp=razbor_<id>) — WOW breakdown card. Scoped under
+ * .deep-card so it never touches the quick-dictionary look. Reuses dict.css tokens
+ * (--dmps-*) and the gender colors, adds a hero header + color-accented sections. */
+
+.ans-root.deep-scroll {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 60px);
+  padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+}
+
+.deep-card {
+  width: 100%;
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 16px 16px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--dmps-text-title, #f1f5f9);
+}
+
+.deep-eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────────────── */
+.deep-hero {
+  position: relative;
+  padding: 18px 18px 16px;
+  border-radius: 20px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgba(91, 155, 255, 0.16), transparent 60%),
+    linear-gradient(180deg, rgba(148, 163, 184, 0.10), rgba(148, 163, 184, 0.03));
+  border: 1px solid var(--dmps-border, #334155);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+}
+.deep-headword {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: Georgia, 'Times New Roman', 'Noto Serif', serif;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  hyphens: auto;
+  word-break: break-word;
+}
+.deep-head-main { color: var(--dmps-text-title, #f8fafc); }
+.deep-art { font-style: italic; font-weight: 700; }
+.deep-art.g-m { color: #5b9bff; }
+.deep-art.g-f { color: #ff7a90; }
+.deep-art.g-n { color: #4ad08a; }
+.deep-headword .dq-tts { align-self: center; }
+.deep-head-tr {
+  margin-top: 8px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--dmps-text-secondary, #cbd5e1);
+}
+.deep-head-pron {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+.deep-ipa { font-family: 'SF Mono', ui-monospace, monospace; }
+
+/* ── Sections (each with its own accent) ──────────────────────────────────── */
+.deep-sec {
+  position: relative;
+  padding: 14px 14px 14px 16px;
+  border-radius: 16px;
+  background: var(--dmps-card-alt, rgba(148, 163, 184, 0.06));
+  border: 1px solid var(--dmps-border, #334155);
+  border-left: 3px solid var(--deep-accent, #64748b);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.deep-sec-h {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--deep-accent, #cbd5e1);
+  letter-spacing: 0.01em;
+}
+.deep-sec-note {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--dmps-text-secondary, #cbd5e1);
+}
+.sec-nuance { --deep-accent: #b794f6; }
+.sec-syn    { --deep-accent: #2dd4bf; }
+.sec-reg    { --deep-accent: #f6ad55; }
+.sec-warn   { --deep-accent: #f87171; }
+.sec-save   { --deep-accent: #4ad08a; }
+
+/* 🎭 Нюанс */
+.deep-tone-chip {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #d6bcfa;
+  background: rgba(183, 148, 246, 0.16);
+  border: 1px solid rgba(183, 148, 246, 0.35);
+}
+
+/* 🔀 Синонимы-различия */
+.deep-syn-list { display: flex; flex-direction: column; gap: 12px; }
+.deep-syn-row {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(45, 212, 191, 0.06);
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.deep-syn-word {
+  align-self: flex-start;
+  font-size: 15px;
+  font-weight: 700;
+  color: #5eead4;
+  background: none;
+  border: none;
+  padding: 0 0 2px;
+  cursor: pointer;
+}
+.deep-syn-word.is-saved { color: #4ad08a; }
+.deep-syn-when, .deep-syn-nuance { font-size: 13px; line-height: 1.45; color: var(--dmps-text-secondary, #cbd5e1); }
+.deep-syn-when b, .deep-syn-nuance b { color: var(--dmps-text-muted, #94a3b8); font-weight: 600; }
+
+/* 🪜 Регистр */
+.deep-reg-list { display: flex; flex-direction: column; gap: 10px; }
+.deep-reg-row {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(246, 173, 85, 0.06);
+  border: 1px solid rgba(246, 173, 85, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.deep-reg-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.deep-reg-badge {
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #fbd38d;
+  background: rgba(246, 173, 85, 0.16);
+}
+.deep-reg-row.lvl-colloquial .deep-reg-badge { color: #9ae6b4; background: rgba(74, 208, 138, 0.16); }
+.deep-reg-row.lvl-formal .deep-reg-badge { color: #90cdf4; background: rgba(91, 155, 255, 0.16); }
+.deep-reg-tone { font-size: 12px; color: var(--dmps-text-muted, #94a3b8); }
+.deep-reg-de {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 15px;
+  color: var(--dmps-text-title, #f1f5f9);
+}
+.deep-reg-ru { font-size: 13px; color: var(--dmps-text-secondary, #cbd5e1); }
+.deep-reveal {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--deep-accent, #f6ad55);
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+/* ⚠️ Ошибки / ложные друзья */
+.deep-mistake, .deep-ff {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(248, 113, 113, 0.06);
+  border: 1px solid rgba(248, 113, 113, 0.20);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.deep-mis-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; font-weight: 600; }
+.deep-mis-bad { color: #fca5a5; text-decoration: line-through; text-decoration-color: rgba(252,165,165,0.5); }
+.deep-mis-arrow { color: var(--dmps-text-muted, #94a3b8); }
+.deep-mis-good { color: #86efac; }
+.deep-mis-why, .deep-ff-mean { font-size: 13px; line-height: 1.45; color: var(--dmps-text-secondary, #cbd5e1); }
+.deep-ff-head { font-size: 15px; }
+.deep-ff-head b { color: #fca5a5; }
+.deep-ff-look { color: var(--dmps-text-muted, #94a3b8); font-style: italic; }
+
+/* 📌 Варианты для сохранения */
+.deep-save-list { display: flex; flex-direction: column; gap: 10px; }
+.deep-save-card {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(74, 208, 138, 0.08);
+  border: 1px solid rgba(74, 208, 138, 0.28);
+  cursor: pointer;
+  transition: transform 0.08s ease, background 0.15s ease;
+}
+.deep-save-card:active { transform: scale(0.99); }
+.deep-save-card.is-saved { background: rgba(74, 208, 138, 0.16); border-color: rgba(74, 208, 138, 0.5); }
+.deep-save-de { font-size: 15px; font-weight: 700; color: var(--dmps-text-title, #f1f5f9); }
+.deep-save-ru { font-size: 13px; color: var(--dmps-text-secondary, #cbd5e1); }
+.deep-save-cta {
+  margin-top: 4px;
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 700;
+  color: #4ad08a;
+}
+
+/* ── States ───────────────────────────────────────────────────────────────── */
+.deep-loading, .deep-error {
+  max-width: 460px;
+  margin: auto;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--dmps-text-secondary, #cbd5e1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.deep-spinner {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 3px solid var(--dmps-border, #334155);
+  border-top-color: #5b9bff;
+  animation: deep-spin 0.8s linear infinite;
+}
+@keyframes deep-spin { to { transform: rotate(360deg); } }
+.deep-inline-err {
+  font-size: 13px;
+  color: #fca5a5;
+  text-align: center;
+}

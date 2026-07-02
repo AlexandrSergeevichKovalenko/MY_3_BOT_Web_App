@@ -254,6 +254,18 @@ async function bootstrapDictionary() {
   );
 }
 
+// Full "Полный разбор" card: launched from a DM chat button via startapp=razbor_<id>.
+// Reads the pre-computed lookup by id and mounts the rich WOW breakdown only.
+async function bootstrapDeepAnalysis(startParam) {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: DeepAnalysis } = await import('./dictionary/DeepAnalysis.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <DeepAnalysis startParam={startParam} />
+    </React.StrictMode>,
+  );
+}
+
 async function bootstrapApp() {
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
@@ -270,6 +282,10 @@ async function bootstrapApp() {
   }
   if (/^shortcut$/i.test(answerStartParam)) {
     await bootstrapShortcutGuide();
+    return;
+  }
+  if (/^razbor_/i.test(answerStartParam)) {
+    await bootstrapDeepAnalysis(answerStartParam);
     return;
   }
   if (/^dict$/i.test(answerStartParam)) {

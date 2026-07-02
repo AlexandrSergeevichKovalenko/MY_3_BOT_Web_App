@@ -1251,6 +1251,33 @@ def _get_shared_dictionary_enrichment_job_for_cache_keys(*cache_keys: str) -> di
         if isinstance(payload, dict):
             return payload
     return None
+
+
+# --- Deep analysis ("Полный разбор") shared store -------------------------------
+# The bot process computes a full dictionary lookup for a DM word/phrase/sentence,
+# writes the raw lookup here keyed by an id, and replies with a `?startapp=razbor_<id>`
+# button. The Mini-App then reads it back by id (no second LLM call). Redis-only,
+# TTL 24h — long enough for a chat link opened later, no new DB table (DiskFull-safe).
+_DEEP_ANALYSIS_STORE_TTL_SEC = 86400
+
+
+def _deep_analysis_redis_key(deep_id: str) -> str:
+    return f"dict:deep:{str(deep_id or '').strip()}"
+
+
+def _get_deep_analysis_record(deep_id: str) -> dict[str, Any] | None:
+    client = get_redis_client()
+    normalized = str(deep_id or "").strip()
+    if client is None or not normalized:
+        return None
+    raw = client.get(_deep_analysis_redis_key(normalized))
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 HOTPATH_FRONT_CACHE_MAX_ENTRIES = max(
     1000,
     min(200000, int((os.getenv("HOTPATH_FRONT_CACHE_MAX_ENTRIES") or "20000").strip() or "20000")),
@@ -6043,11 +6070,16 @@ def _merge_dictionary_raw_payloads(
         "synonyms",
         "antonyms",
         "related_words",
+        "synonym_differences",
+        "register_examples",
+        "common_mistakes",
+        "false_friends",
     }
     dict_keys = {
         "forms",
         "pronunciation",
         "meanings",
+        "connotation",
     }
     for key, value in enrich.items():
         if key in list_keys:
@@ -15211,6 +15243,11 @@ def _build_multilang_dictionary_result(
         "phrase_kind",
         "literal_meaning",
         "when_to_use",
+        "connotation",
+        "synonym_differences",
+        "register_examples",
+        "common_mistakes",
+        "false_friends",
     )
     for key in passthrough_keys:
         value = raw.get(key)
@@ -31278,6 +31315,63 @@ def get_webapp_dictionary_lookup_status():
         http_status=200,
     )
     return jsonify(response_payload)
+
+
+@app.route("/api/webapp/dictionary/deep-analysis", methods=["POST"])
+def get_webapp_dictionary_deep_analysis():
+    """Return a pre-computed DM lookup for the "Полный разбор" Mini-App card.
+
+    The bot stored the raw lookup under dict:deep:{id}; we normalize it to the same
+    item shape quick-dict uses (via _build_multilang_dictionary_result) and attach
+    grammar tables — no LLM call happens here.
+    """
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    deep_id = str(payload.get("deep_id") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not deep_id:
+        return jsonify({"error": "deep_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    record = _get_deep_analysis_record(deep_id)
+    if not isinstance(record, dict):
+        return jsonify({"error": "deep_id не найден"}), 404
+    if int(record.get("user_id") or 0) != int(user_id):
+        return jsonify({"error": "deep_id не принадлежит пользователю"}), 403
+
+    source_lang = str(record.get("source_lang") or "").strip().lower()
+    target_lang = str(record.get("target_lang") or "").strip().lower()
+    raw = record.get("lookup") if isinstance(record.get("lookup"), dict) else {}
+    query_word = str(record.get("query_word") or "").strip()
+
+    try:
+        item, direction, _src_value, _tgt_value = _build_multilang_dictionary_result(
+            raw, query_word, source_lang, target_lang
+        )
+    except Exception:
+        # Fall back to the stored raw dict — WordBreakdown reads the same top-level fields.
+        item = raw
+        direction = str(record.get("direction") or "").strip().lower()
+
+    return jsonify(
+        {
+            "ok": True,
+            "deep_id": deep_id,
+            "item": _with_grammar_tables(item),
+            "direction": direction,
+            "save_locked": False,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
 
 
 def _strip_html(html_text: str) -> str:

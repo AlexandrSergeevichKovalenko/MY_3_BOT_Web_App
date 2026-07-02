@@ -10383,6 +10383,7 @@ def _build_dictionary_card_text(
     lookup: dict,
     *,
     original_query: str = "",
+    preview: bool = False,
 ) -> str:
     def _esc(value: str) -> str:
         return html.escape(str(value or "").strip())
@@ -10417,6 +10418,27 @@ def _build_dictionary_card_text(
     lines.append(f"• <code>{_esc(original_request or source_text or '—')}</code>")
     if show_corrected:
         lines.append(f"• Исправленная форма: <code>{_esc(corrected_form)}</code>")
+
+    # Preview mode: compact chat card (перевод + один пример). The full linguistic
+    # breakdown (грамматика/нюансы/синонимы) lives in the Mini-App «Полный разбор».
+    if preview:
+        primary = meanings[0] if meanings else {}
+        primary_value = _apply_article_for_display(
+            str(translation or primary.get("value") or "—"), lookup, target_lang
+        )
+        lines.append("")
+        lines.append("🎯 <b>Перевод</b>")
+        if translation_variants:
+            lines.append(f"• <b>{_esc('; '.join(translation_variants))}</b>")
+        else:
+            lines.append(f"• <b>{_esc(primary_value)}</b>")
+        example_source = str(primary.get("example_source") or "").strip()
+        example_target = str(primary.get("example_target") or "").strip()
+        if example_source:
+            lines.append(f"• Пример: {_esc(example_source)}")
+            if example_target:
+                lines.append(f"  ↳ {_esc(example_target)}")
+        return "\n".join(lines)
 
     if meanings:
         primary = meanings[0]
@@ -10495,6 +10517,48 @@ def _build_dictionary_card_text(
         lines.extend(note_lines)
 
     return "\n".join(lines)
+
+
+_DEEP_ANALYSIS_STORE_TTL_SEC = 86400
+
+
+def _store_deep_analysis_lookup(
+    user_id: int,
+    lookup: dict,
+    source_lang: str,
+    target_lang: str,
+    query_word: str,
+) -> str | None:
+    """Persist a full DM lookup so the Mini-App can open it by id (?startapp=razbor_<id>).
+
+    Redis-only, 24h TTL — mirrors the enrichment-job store; the Mini-App only reads it
+    back (no second LLM call). Returns the deep id, or None if Redis is unavailable.
+    """
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is None:
+            return None
+        raw_seed = f"{user_id}:{query_word}:{pytime.time()}"
+        deep_id = f"deep_{int(pytime.time() * 1000)}_{hashlib.sha1(raw_seed.encode('utf-8')).hexdigest()[:10]}"
+        record = {
+            "user_id": int(user_id),
+            "lookup": lookup,
+            "query_word": str(query_word or "").strip(),
+            "source_lang": str(source_lang or "").strip().lower(),
+            "target_lang": str(target_lang or "").strip().lower(),
+            "direction": str(lookup.get("direction") or "").strip().lower(),
+            "created_at": int(pytime.time()),
+        }
+        client.setex(
+            f"dict:deep:{deep_id}",
+            _DEEP_ANALYSIS_STORE_TTL_SEC,
+            json.dumps(record, ensure_ascii=False, default=str),
+        )
+        return deep_id
+    except Exception:
+        logging.debug("Failed to store deep analysis lookup", exc_info=True)
+        return None
 
 
 def _store_pending_dictionary_card(
@@ -11640,12 +11704,20 @@ async def _send_dictionary_lookup_result(
         )
         return
 
+    deep_id = _store_deep_analysis_lookup(
+        int(user_id),
+        prepared["lookup"],
+        source_lang,
+        target_lang,
+        lookup_input,
+    )
     card_text = _build_dictionary_card_text(
         source_lang,
         target_lang,
         prepared["source_text"],
         prepared["lookup"],
         original_query=lookup_input,
+        preview=True,
     )
     variants_text = _build_save_variants_text(source_lang, target_lang, prepared["options"])
     full_text = f"{card_text}\n\n{variants_text}"
@@ -11657,6 +11729,14 @@ async def _send_dictionary_lookup_result(
         speak_card_key=prepared["card_key"],
         question_request_key=prepared["question_request_key"],
     )
+    if deep_id:
+        # Prepend the hero CTA that opens the rich breakdown in the Mini-App.
+        rows = list(keyboard.inline_keyboard)
+        rows.insert(
+            0,
+            [InlineKeyboardButton("🔎 Полный разбор", url=get_webapp_deeplink(f"razbor_{deep_id}"))],
+        )
+        keyboard = InlineKeyboardMarkup(rows)
     msg = await message.reply_text(
         full_text,
         reply_markup=keyboard,

@@ -2411,6 +2411,22 @@ Return STRICT JSON with keys:
   "related_words": [
     {"word": "<same-root German word, with article if noun>", "gloss": "<short meaning>"}
   ],
+  "connotation": {
+    "tone": "string|null",
+    "note": "string|null"
+  },
+  "synonym_differences": [
+    {"word": "<near-synonym in target_language>", "when": "...", "nuance": "..."}
+  ],
+  "register_examples": [
+    {"level": "colloquial|neutral|formal", "example_target": "...", "example_source": "...", "tone": "..."}
+  ],
+  "common_mistakes": [
+    {"mistake": "...", "correction": "...", "why": "..."}
+  ],
+  "false_friends": [
+    {"word": "...", "looks_like": "...", "actual_meaning": "..."}
+  ],
   "usage_examples": [
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."}
@@ -2428,13 +2444,18 @@ Rules:
 - LANGUAGE SPLIT — THIS IS CRITICAL. There are TWO distinct kinds of fields:
   (A) WORD/TRANSLATION values = the foreign words the learner is studying. These are ALWAYS in
       target_language: word_target, translations[].value, meanings.primary.value,
-      meanings.secondary[].value, synonyms, antonyms, related_words[].word, common_collocations.
+      meanings.secondary[].value, synonyms, antonyms, related_words[].word, common_collocations,
+      synonym_differences[].word, register_examples[].example_target, common_mistakes[].mistake,
+      common_mistakes[].correction, false_friends[].word.
   (B) EXPLANATIONS the learner reads to understand = ALWAYS in source_language (the user's own
       base language). NEVER write these in target_language, NEVER in a third language:
       translations[].context, meanings.primary.context, meanings.secondary[].context,
       etymology_note, memory_tip, expression_note, part_of_speech_note, register_note,
       real_life_usage, related_words[].gloss, word_formation parts[].gloss, word_formation note,
-      raw_text.
+      connotation.tone, connotation.note, synonym_differences[].when, synonym_differences[].nuance,
+      register_examples[].tone, common_mistakes[].why, false_friends[].looks_like,
+      false_friends[].actual_meaning, raw_text.
+      (register_examples[].example_source follows the usual bilingual-example rule: source_language.)
   Do NOT infer the explanation language from the value fields — the values are foreign on purpose.
   The explanation language is source_language, full stop. Example: source_language=ru, target_language=de —
   translations[].value="das Gerede", translations[].context MUST be Russian (e.g. "разговорное,
@@ -2470,6 +2491,23 @@ Rules:
 - synonyms (up to 4) and antonyms (up to 3): close German synonyms / opposites; omit antonyms when none exist.
 - related_words (up to 4): SAME-ROOT German words (word family) with a short gloss; nouns carry their article.
 - register: one short stylistic label for the word; null only if truly neutral-unknown.
+- DEPTH FIELDS — fill these to give the learner a FEELING for the word, not just a translation.
+  Provide them for content words (noun/verb/adjective/adverb/phrase); use null or [] when they would
+  be artificial (function words, numbers, proper names) or when you are genuinely unsure.
+  - connotation: the emotional/stylistic coloring. connotation.tone = a short label (e.g.
+    "неодобрительное, ироничное", "тёплое, разговорное"); connotation.note = 1 short sentence on the
+    feeling/force the word carries and when it lands that way.
+  - synonym_differences (up to 3): the closest confusable near-synonyms in target_language, each with
+    "when" (in what situation you pick this one) and "nuance" (the fine shade of meaning that sets it
+    apart from the headword). Pick genuinely confusable words, not random synonyms.
+  - register_examples (up to 3): the SAME idea said across registers — colloquial → neutral → formal.
+    Each item: level, one natural example_target sentence, its example_source translation, and a short
+    "tone" note. Skip a level if it has no natural form.
+  - common_mistakes (up to 3): real mistakes learners make with THIS word (wrong case/preposition,
+    wrong auxiliary, wrong meaning). Each: the wrong form (mistake), the fixed form (correction), and
+    "why" it is wrong. false_friends (up to 2): only genuine false friends for a Russian/English
+    speaker — word (the German word), looks_like (the deceptive lookalike in the learner's language),
+    actual_meaning (what it really means). Use [] when there is no real false friend.
 - GERMAN HEADWORD NORMALIZATION:
   - Whenever the source-side or target-side main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun". Never return a bare German noun.
   - Whenever the main German word is a standalone verb, normalize it to the infinitive.
@@ -5909,6 +5947,11 @@ async def run_dictionary_lookup_multilang(
         "word_formation": None,
         "level": None,
         "frequency": None,
+        "connotation": None,
+        "synonym_differences": [],
+        "register_examples": [],
+        "common_mistakes": [],
+        "false_friends": [],
         "usage_examples": [],
         "save_worthy_options": [],
         "raw_text": content,
