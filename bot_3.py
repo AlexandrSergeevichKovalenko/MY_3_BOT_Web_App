@@ -9280,6 +9280,24 @@ async def _nightly_pending_cleanup_job(context: CallbackContext) -> None:
         logging.exception("nightly_pending_cleanup failed")
 
 
+async def _nightly_frequency_backfill_job(context: CallbackContext) -> None:
+    """Fill frequency_rank for any rows still missing it (words that slipped past
+    save-time ranking, or newly enriched response_json). Free — corpus + JSONB,
+    no OpenAI. Only touches rows where frequency_rank IS NULL."""
+    try:
+        report = await asyncio.to_thread(
+            backfill_frequency_ranks, batch_size=2000, only_missing=True
+        )
+        logging.info(
+            "nightly_frequency_backfill done processed=%d updated=%d with_rank=%d",
+            report.get("processed", 0),
+            report.get("updated", 0),
+            report.get("with_rank", 0),
+        )
+    except Exception:
+        logging.exception("nightly_frequency_backfill failed")
+
+
 def _dict_pending_redis_key(user_id: int) -> str:
     return f"dict_pending_user:{user_id}"
 
@@ -31924,6 +31942,15 @@ def main():
             logging.info("scheduled nightly_pending_cleanup at 23:59 Europe/Vienna")
         except Exception:
             logging.warning("failed to schedule nightly_pending_cleanup", exc_info=True)
+        try:
+            application.job_queue.run_daily(
+                _nightly_frequency_backfill_job,
+                time=time(hour=3, minute=30, tzinfo=ZoneInfo("Europe/Vienna")),
+                name="nightly_frequency_backfill",
+            )
+            logging.info("scheduled nightly_frequency_backfill at 03:30 Europe/Vienna")
+        except Exception:
+            logging.warning("failed to schedule nightly_frequency_backfill", exc_info=True)
     elif application.job_queue:
         logging.info("Skipping bot startup run_once jobs in this process")
         _emit_bot_startup_phase(
