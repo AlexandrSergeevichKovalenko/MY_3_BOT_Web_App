@@ -27,6 +27,49 @@ function parseTarget(startParam) {
   return { kind: '', id: '' };
 }
 
+// The ask/feel model replies in light Markdown (*bold*, _italic_, `code`, "* " bullets).
+// Render it instead of showing raw asterisks/underscores.
+function renderInline(text) {
+  const nodes = [];
+  let rest = String(text || '');
+  const re = /(\*\*([^*]+)\*\*|\*([^*\n]+)\*|__([^_\n]+)__|_([^_\n]+)_|`([^`\n]+)`)/;
+  let key = 0;
+  while (rest) {
+    const m = re.exec(rest);
+    if (!m) { nodes.push(rest); break; }
+    if (m.index > 0) nodes.push(rest.slice(0, m.index));
+    if (m[2] != null) nodes.push(<b key={key++}>{m[2]}</b>);
+    else if (m[3] != null) nodes.push(<b key={key++}>{m[3]}</b>);
+    else if (m[4] != null) nodes.push(<i key={key++}>{m[4]}</i>);
+    else if (m[5] != null) nodes.push(<i key={key++}>{m[5]}</i>);
+    else if (m[6] != null) nodes.push(<code key={key++}>{m[6]}</code>);
+    rest = rest.slice(m.index + m[0].length);
+  }
+  return nodes;
+}
+
+function RichText({ text }) {
+  const lines = String(text || '').split(/\n/);
+  const out = [];
+  let bullets = null;
+  const flush = () => {
+    if (bullets) { out.push(<ul key={`u${out.length}`} className="deep-md-ul">{bullets}</ul>); bullets = null; }
+  };
+  lines.forEach((line, i) => {
+    const bm = /^\s*[*\-•]\s+(.*)$/.exec(line);
+    if (bm) {
+      if (!bullets) bullets = [];
+      bullets.push(<li key={i}>{renderInline(bm[1])}</li>);
+    } else {
+      flush();
+      const t = line.trim();
+      if (t) out.push(<p key={i} className="deep-md-p">{renderInline(t)}</p>);
+    }
+  });
+  flush();
+  return <>{out}</>;
+}
+
 const REGISTER_LABELS = { colloquial: 'разговорный', neutral: 'нейтральный', formal: 'официальный' };
 
 function RegisterRow({ row, tts }) {
@@ -443,7 +486,7 @@ export default function DeepAnalysis({ startParam }) {
             <button type="button" className="deep-act-btn" onClick={runFeel} disabled={feel.state === 'loading'}>
               {feel.state === 'loading' ? '⏳ Генерирую…' : '📌 Почувствовать слово'}
             </button>
-            {feel.state === 'done' && feel.text && <div className="deep-act-out">{feel.text}</div>}
+            {feel.state === 'done' && feel.text && <div className="deep-act-out"><RichText text={feel.text} /></div>}
           </div>
 
           <div className="deep-act-block">
@@ -481,7 +524,7 @@ export default function DeepAnalysis({ startParam }) {
             {ask.history.map((turn, i) => (
               <div className="deep-ask-turn" key={i}>
                 <div className="deep-ask-q">❓ {turn.q}</div>
-                <div className="deep-ask-a">{turn.a}</div>
+                <div className="deep-ask-a"><RichText text={turn.a} /></div>
               </div>
             ))}
           </div>
