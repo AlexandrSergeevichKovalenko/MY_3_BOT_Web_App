@@ -6713,10 +6713,6 @@ def _build_scheduler_health_report(view: str = "full") -> str:
             ok_count += 1
             oks.append(f"✅ {line}")
 
-    # Unknown job_keys present in either table but not in the catalog (nothing hidden).
-    known = {k for k, *_ in _SCHEDULER_HEALTH_CATALOG}
-    extras = sorted({k for k in guard_by_key if k not in known} | {k for k in admin_by_key if k not in known})
-
     if view == "problems":
         parts = ["🩺 <b>Планировщик — вечерняя проверка</b>\n"]
         if alarms:
@@ -6724,8 +6720,6 @@ def _build_scheduler_health_report(view: str = "full") -> str:
         else:
             parts.append("✅ Всё, что должно было отработать — отработало.")
         parts.append(f"\n<i>В порядке: {ok_count} · условных: {len(conditional)} · выкл: {len(off)}</i>")
-        if extras:
-            parts.append("\n<b>Прочие job_key в БД:</b>\n" + ", ".join(extras))
         return "\n".join(parts)
 
     parts = ["🩺 <b>Здоровье планировщика</b> (последний реальный запуск)\n"]
@@ -6737,8 +6731,6 @@ def _build_scheduler_health_report(view: str = "full") -> str:
         parts.append("\n<b>Условные / без маркера:</b>\n" + "\n".join(conditional))
     if off:
         parts.append("\n<b>Отключённые:</b>\n" + "\n".join(off))
-    if extras:
-        parts.append("\n<b>Прочие job_key в БД:</b>\n" + ", ".join(extras))
     return "\n".join(parts)
 
 
@@ -9578,7 +9570,9 @@ def _build_dictionary_mode_keyboard(request_key: str, source_lang: str, target_l
     pair = f"{source_lang}-{target_lang}"
     rows = [
         [InlineKeyboardButton("⚡ Быстрый перевод", callback_data=f"dictmode:{request_key}:{pair}:quick")],
-        [InlineKeyboardButton("🧠 Расширенный перевод", callback_data=f"dictmode:{request_key}:{pair}:full")],
+        # «Расширенный» opens the Mini-App directly (razbor_req_<key>); the app runs the
+        # full lookup on open. One tap = mode choice + open, nothing sent to chat.
+        [InlineKeyboardButton("🧠 Расширенный перевод", url=get_webapp_deeplink(f"razbor_req_{request_key}"))],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -10520,6 +10514,40 @@ def _build_dictionary_card_text(
 
 
 _DEEP_ANALYSIS_STORE_TTL_SEC = 86400
+_DEEP_REQUEST_STORE_TTL_SEC = 3600
+
+
+def _store_deep_request(
+    request_key: str,
+    user_id: int,
+    word: str,
+    source_lang: str,
+    target_lang: str,
+) -> bool:
+    """Persist a pending «Расширенный перевод» request so the Mini-App can run the full
+    lookup when it opens (razbor_req_<request_key>). Redis-only, 1h TTL. The word lives
+    in the record value (not the URL), so full sentences are fine."""
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is None:
+            return False
+        record = {
+            "user_id": int(user_id),
+            "word": str(word or "").strip(),
+            "source_lang": str(source_lang or "").strip().lower(),
+            "target_lang": str(target_lang or "").strip().lower(),
+            "created_at": int(pytime.time()),
+        }
+        client.setex(
+            f"dict:deepreq:{request_key}",
+            _DEEP_REQUEST_STORE_TTL_SEC,
+            json.dumps(record, ensure_ascii=False, default=str),
+        )
+        return True
+    except Exception:
+        logging.debug("Failed to store deep request", exc_info=True)
+        return False
 
 
 def _store_deep_analysis_lookup(
@@ -12366,6 +12394,8 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
         return
 
     await query.answer(f"Пара выбрана ({source_lang.upper()} -> {target_lang.upper()})")
+    # Persist the request so the Mini-App can run the full lookup when «Расширенный» opens it.
+    _store_deep_request(request_key, int(user.id), lookup_input, source_lang, target_lang)
     try:
         await query.edit_message_text(
             _build_dictionary_mode_selection_text(lookup_input, source_lang, target_lang),
