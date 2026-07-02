@@ -551,6 +551,10 @@ body {
   height: auto;
   min-height: 0;
   max-height: none;
+  /* Lift the whole frame (card + rating buttons) off the very bottom edge (~2 cm)
+     so the grade buttons aren't a thumb-stretch away and the screen looks balanced.
+     Scales down on short phones so tall content never clips. */
+  margin-bottom: clamp(32px, 8vh, 76px);
 }
 
 /* Home dashboard (phone): pin the whole chain to the EXACT visible viewport
