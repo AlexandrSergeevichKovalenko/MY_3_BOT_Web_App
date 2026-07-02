@@ -6222,6 +6222,10 @@ function AppInner() {
   const flashcardRoundStartRef = useRef(Date.now());
   const blocksMenuRef = useRef(null);
   const srsShownAtRef = useRef(null);
+  // Active-time accumulator for the answer "Response time": we add only foreground
+  // milliseconds (clamped per tick), never a raw wall-clock delta, so a backgrounded/
+  // frozen web view can't inflate it. Reset to 0 on every fresh reveal.
+  const srsRevealActiveMsRef = useRef(0);
   const srsAutoTtsPlayedRef = useRef('');
   const srsTtsPrefetchSignatureRef = useRef('');
   const srsCardRef = useRef(null);
@@ -11300,25 +11304,27 @@ function AppInner() {
 
   useEffect(() => {
     if (!flashcardsDailyTimerActive) return undefined;
-    // Sleep/lock detection: a 1s interval can't fire while the device is asleep (screen locked
-    // or the Telegram web view suspended in the background). On iOS those don't reliably emit
-    // visibilitychange/blur, so the wall-clock timer would otherwise jump forward on unlock.
-    // When a tick arrives much later than the ~1s it should, treat the extra as "asleep" time
-    // and shift the segment start forward so that gap is NOT counted — the timer simply resumes
-    // where you left it. (If visibilitychange DID fire, the timer is already paused and this
-    // interval isn't running, so the two mechanisms never double-correct.)
-    const SLEEP_GAP_MS = 3000;
+    // Foreground-only accounting: a 1s interval can't fire while the device is asleep
+    // (screen locked) or the Telegram web view is suspended in the background. On iOS those
+    // do NOT reliably emit visibilitychange/pagehide/blur, so we must not depend on them to
+    // stop the clock. Instead, on EVERY tick we count only the time up to MAX_STEP_MS
+    // (~2× the interval, absorbing normal jitter); anything beyond that is background/asleep
+    // time and is subtracted by shifting the segment start forward, so it is never counted.
+    // Because a frozen web view simply can't tick, background time can't accrue at all — this
+    // is the primary, event-independent guard that stops the badge counting while swiped away.
+    // (When visibilitychange DOES fire, the timer is already paused and this interval isn't
+    // running, so the two mechanisms never double-correct.)
+    const MAX_STEP_MS = 2000;
     let lastTickMs = Date.now();
     const intervalId = window.setInterval(() => {
       const now = Date.now();
-      const gap = now - lastTickMs;
+      const backgroundMs = Math.max(0, (now - lastTickMs) - MAX_STEP_MS);
       if (
-        gap > SLEEP_GAP_MS
+        backgroundMs > 0
         && flashcardsDailyActiveRef.current
         && flashcardsDailyStartedAtRef.current
       ) {
-        const asleepMs = gap - 1000; // everything beyond the normal 1s tick was asleep time
-        flashcardsDailyStartedAtRef.current = Number(flashcardsDailyStartedAtRef.current) + asleepMs;
+        flashcardsDailyStartedAtRef.current = Number(flashcardsDailyStartedAtRef.current) + backgroundMs;
         // Persist the corrected elapsed so a reload/snapshot stays consistent too.
         writeFlashcardsDailyTimerSnapshot(getFlashcardsDailyDisplayElapsedSeconds(now));
       }
@@ -11339,22 +11345,41 @@ function AppInner() {
     const pauseForBackground = () => {
       if (flashcardsDailyActiveRef.current) pauseFlashcardsDailyTimer('app_hidden');
     };
+    const resumeForForeground = () => {
+      if (flashcardActiveMode && !flashcardsDailyActiveRef.current) {
+        startFlashcardsDailyTimer();
+      }
+    };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         pauseForBackground();
-      } else if (
-        document.visibilityState === 'visible'
-        && flashcardActiveMode
-        && !flashcardsDailyActiveRef.current
-      ) {
-        startFlashcardsDailyTimer();
+      } else if (document.visibilityState === 'visible') {
+        resumeForForeground();
       }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pagehide', pauseForBackground);
+    // Telegram-native lifecycle (Bot API 8.0+): the client emits `deactivated`/`activated`
+    // even on iOS, where the DOM visibilitychange/pagehide events are unreliable when the
+    // app is swiped away. Registering them gives an instant, exact pause on those clients;
+    // on older clients they simply never fire and the per-tick clamp above still covers us.
+    let telegramLifecycleBound = false;
+    if (telegramApp && typeof telegramApp.onEvent === 'function') {
+      try {
+        telegramApp.onEvent('deactivated', pauseForBackground);
+        telegramApp.onEvent('activated', resumeForForeground);
+        telegramLifecycleBound = true;
+      } catch (_e) { /* unsupported client — DOM events + clamp remain */ }
+    }
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', pauseForBackground);
+      if (telegramLifecycleBound && typeof telegramApp.offEvent === 'function') {
+        try {
+          telegramApp.offEvent('deactivated', pauseForBackground);
+          telegramApp.offEvent('activated', resumeForForeground);
+        } catch (_e) { /* no-op */ }
+      }
     };
   }, [flashcardActiveMode, pauseFlashcardsDailyTimer, startFlashcardsDailyTimer]);
 
@@ -11992,8 +12017,10 @@ function AppInner() {
       setSrsError(tr('У карточки нет идентификатора. Обновите экран.', 'Karten-ID fehlt. Bitte Bildschirm aktualisieren.'));
       return;
     }
-    const startedAt = srsShownAtRef.current || Date.now();
-    const responseMs = Math.max(0, Date.now() - startedAt);
+    // Response time for FSRS = active foreground ms since the answer was revealed
+    // (same clamped accumulator shown as "Response time"), NOT a raw wall-clock delta
+    // — otherwise a card left open in the background would report tens of minutes.
+    const responseMs = Math.max(0, Math.round(Number(srsRevealActiveMsRef.current || 0)));
     if (ratingValue === 'EASY' && srsEasyLocked) return;
     if (ratingValue === 'GOOD' && srsGoodLocked) return;
 
@@ -12141,13 +12168,23 @@ function AppInner() {
       setSrsRevealElapsedSec(0);
       return undefined;
     }
-    const startedAt = srsRevealStartedAt || Date.now();
     if (!srsRevealStartedAt) {
-      setSrsRevealStartedAt(startedAt);
+      setSrsRevealStartedAt(Date.now());
     }
-    setSrsRevealElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    // Count only active foreground time: each tick adds the elapsed since the last
+    // tick, CLAMPED to REVEAL_MAX_STEP_MS. While the app is backgrounded/frozen the
+    // interval simply doesn't fire, so no time is added; on return the single catch-up
+    // tick can add at most the clamp (~1s) instead of the whole away period. This is
+    // why "Response time" no longer keeps counting while the app is swiped away.
+    const REVEAL_MAX_STEP_MS = 1000;
+    let lastTickMs = Date.now();
+    setSrsRevealElapsedSec(Math.max(0, Math.floor((srsRevealActiveMsRef.current || 0) / 1000)));
     const intervalId = window.setInterval(() => {
-      setSrsRevealElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+      const now = Date.now();
+      const step = Math.min(Math.max(0, now - lastTickMs), REVEAL_MAX_STEP_MS);
+      lastTickMs = now;
+      srsRevealActiveMsRef.current = (srsRevealActiveMsRef.current || 0) + step;
+      setSrsRevealElapsedSec(Math.max(0, Math.floor(srsRevealActiveMsRef.current / 1000)));
     }, 250);
     return () => {
       window.clearInterval(intervalId);
@@ -12164,6 +12201,7 @@ function AppInner() {
     if (!frontCardId || srsRevealAnswer || srsLoading || srsSubmitting) return undefined;
     const timeoutId = window.setTimeout(() => {
       setSrsRevealStartedAt(Date.now());
+      srsRevealActiveMsRef.current = 0;
       setSrsRevealElapsedSec(0);
       setSrsRevealAnswer(true);
     }, SRS_AUTO_REVEAL_AFTER_SEC * 1000);
@@ -34620,6 +34658,7 @@ function AppInner() {
                                       className="fsrs-show-answer-btn"
                                       onClick={() => {
                                         setSrsRevealStartedAt(Date.now());
+                                        srsRevealActiveMsRef.current = 0;
                                         setSrsRevealElapsedSec(0);
                                         setSrsRevealAnswer(true);
                                       }}
