@@ -17594,33 +17594,43 @@ body {
   pointer-events: none;
 }
 
+/* ── Tablet immersive reader: honest flex-fill (Step 1 — no magic heights) ─────
+   Previously the article and page-sheet were pinned to calc(app-height − 168px),
+   a hand-guessed reserve for topbar + scrubber. But the topbar dock has
+   flex-wrap:wrap and folds to TWO rows on tablets, so the real chrome is taller
+   than 168px → the sheet ended up taller than the free space and the first/last
+   lines slid under the (translucent) topbar and scrubber. That is the clipping.
+   Fix: let the topbar and scrubber take their natural height and let .reader-article
+   flex-fill the EXACT remainder (this is how the phone layout already works). The
+   hidden measure node and the rendered sheet then share one box (both height:100%
+   of .reader-pages-layout, same width via the 36em inner cap, same padding via the
+   shared .reader-page-sheet selector), so text can never be clipped no matter how
+   tall the chrome grows. Native Telegram top chrome is cleared ONCE, on the
+   container, via padding-top — not via per-element sticky offsets. */
+.webapp-page.is-telegram-tablet.is-reader-immersive {
+  height: var(--app-height, 100dvh);
+}
+
+.webapp-page.is-telegram-tablet .webapp-reader.is-immersive {
+  box-sizing: border-box;
+  padding-top: var(--telegram-tablet-top-safe-offset);
+}
+
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-article {
   padding: 10px 2px 14px;
-  max-height: calc(100dvh - 168px);
-  min-height: calc(100dvh - 168px);
-  max-height: calc(var(--app-height, 100dvh) - 168px);
-  min-height: calc(var(--app-height, 100dvh) - 168px);
 }
 
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-page-sheet {
   width: min(calc(100vw - 36px), 920px);
   max-width: 920px;
-  min-height: calc(100dvh - 168px);
-  height: calc(100dvh - 168px);
-  min-height: calc(var(--app-height, 100dvh) - 168px);
-  height: calc(var(--app-height, 100dvh) - 168px);
-  padding: clamp(28px, 3vw, 44px) clamp(44px, 5.5vw, 88px) 18px;
+  padding: clamp(22px, 2.6vw, 38px) clamp(40px, 5.5vw, 84px) 12px;
 }
 
-.webapp-page.is-telegram-tablet .webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
-  max-height: calc(100dvh - 68px);
-  min-height: calc(100dvh - 68px);
-  max-height: calc(var(--app-height, 100dvh) - 68px);
-  min-height: calc(var(--app-height, 100dvh) - 68px);
-}
-
-.webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-topbar {
-  top: var(--telegram-tablet-top-safe-offset);
+/* Chrome clears the native bar via the container padding-top now, so drop the
+   sticky top offsets that did nothing useful in the non-scrolling flex column. */
+.webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-topbar,
+.webapp-page.is-telegram-tablet .webapp-reader .reader-topbar-peek {
+  top: 0;
 }
 
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-immersive-topbar,
@@ -17629,18 +17639,10 @@ body {
   padding-right: var(--telegram-tablet-inline-safe-offset);
 }
 
-.webapp-page.is-telegram-tablet .webapp-reader .reader-topbar-peek {
-  top: var(--telegram-tablet-top-safe-offset);
-}
-
 @media (orientation: portrait) {
   .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-page-sheet {
     width: min(calc(100vw - 24px), 820px);
     max-width: 820px;
-    min-height: calc(100dvh - 156px);
-    height: calc(100dvh - 156px);
-    min-height: calc(var(--app-height, 100dvh) - 156px);
-    height: calc(var(--app-height, 100dvh) - 156px);
   }
 }
 
