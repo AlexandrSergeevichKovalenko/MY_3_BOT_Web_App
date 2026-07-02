@@ -1278,6 +1278,35 @@ def _get_deep_analysis_record(deep_id: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+# A pending «Расширенный перевод» request written by the bot at mode-selection time
+# (dict:deepreq:{request_key} = {user_id, word, source_lang, target_lang}). The Mini-App
+# opens ?startapp=razbor_req_<key>, and the backend runs the full lookup on open.
+def _deep_request_redis_key(request_id: str) -> str:
+    return f"dict:deepreq:{str(request_id or '').strip()}"
+
+
+def _get_deep_request_record(request_id: str) -> dict[str, Any] | None:
+    client = get_redis_client()
+    normalized = str(request_id or "").strip()
+    if client is None or not normalized:
+        return None
+    raw = client.get(_deep_request_redis_key(normalized))
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _deep_request_cache_id(user_id: int, word: str, source_lang: str, target_lang: str) -> str:
+    """Deterministic dict:deep id for a (user, word, pair) so re-opening the same
+    request reuses the computed lookup instead of re-running the LLM."""
+    seed = f"{int(user_id)}|{str(word or '').strip()}|{source_lang}|{target_lang}"
+    return "reqc_" + hashlib.sha1(seed.encode("utf-8", "ignore")).hexdigest()[:16]
 HOTPATH_FRONT_CACHE_MAX_ENTRIES = max(
     1000,
     min(200000, int((os.getenv("HOTPATH_FRONT_CACHE_MAX_ENTRIES") or "20000").strip() or "20000")),
@@ -31372,6 +31401,173 @@ def get_webapp_dictionary_deep_analysis():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+
+
+@app.route("/api/webapp/dictionary/lookup-by-request", methods=["POST"])
+def lookup_webapp_dictionary_by_request():
+    """Run the full «Расширенный перевод» lookup when the Mini-App opens it via
+    razbor_req_<id>. Reads the pending request the bot stored (dict:deepreq:{id}),
+    runs the lookup once, caches it (dict:deep) for idempotent re-opens, and returns
+    the same item shape as /deep-analysis."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    request_id = str(payload.get("request_id") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not request_id:
+        return jsonify({"error": "request_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    record = _get_deep_request_record(request_id)
+    if not isinstance(record, dict):
+        return jsonify({"error": "Разбор устарел, отправьте слово ещё раз"}), 404
+    if int(record.get("user_id") or 0) != int(user_id):
+        return jsonify({"error": "Запрос не принадлежит пользователю"}), 403
+
+    word = str(record.get("word") or "").strip()
+    source_lang = str(record.get("source_lang") or "").strip().lower()
+    target_lang = str(record.get("target_lang") or "").strip().lower()
+    if not word:
+        return jsonify({"error": "Пустой запрос"}), 400
+
+    def _finish(item, direction):
+        return jsonify(
+            {
+                "ok": True,
+                "item": _with_grammar_tables(item),
+                "direction": direction,
+                "save_locked": False,
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+        )
+
+    # Idempotency: reuse a previously computed lookup for this (user, word, pair).
+    cache_id = _deep_request_cache_id(int(user_id), word, source_lang, target_lang)
+    cached = _get_deep_analysis_record(cache_id)
+    if isinstance(cached, dict) and isinstance(cached.get("lookup"), dict):
+        try:
+            item, direction, _s, _t = _build_multilang_dictionary_result(
+                cached["lookup"], word, source_lang, target_lang
+            )
+        except Exception:
+            item = cached["lookup"]
+            direction = str(cached.get("direction") or f"{source_lang}-{target_lang}")
+        return _finish(item, direction)
+
+    # Free-tier daily save-limit precheck (mirror the live lookup endpoint): don't burn
+    # an LLM call if the user can't save the result today anyway.
+    try:
+        _dict_save_feature = "dictionary_lookup_save_daily"
+        _ent = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+        _mode = str(_ent.get("effective_mode") or "free").strip().lower() or "free"
+        if _mode == "free":
+            _limit_meta = get_free_feature_limit_metadata(_dict_save_feature) or {}
+            _limit_value = float(_limit_meta.get("free_limit") or 0)
+            _used_today = get_free_feature_usage_today(
+                user_id=int(user_id), feature_key=_dict_save_feature, tz="Europe/Vienna",
+            )
+            if _limit_value >= 0 and _used_today + 1.0 > _limit_value:
+                return jsonify(
+                    build_free_limit_error(_dict_save_feature, used=_used_today, limit=_limit_value, tz="Europe/Vienna")
+                ), 429
+    except Exception:
+        logging.debug("deep lookup-by-request save-limit precheck failed", exc_info=True)
+
+    try:
+        query_source_lang, query_target_lang = _resolve_dictionary_query_languages(
+            word=word, source_lang=source_lang, target_lang=target_lang, lookup_lang="",
+        )
+        full = _run_dictionary_full_lookup_sync(
+            word=word,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang="",
+            user_id=int(user_id),
+        )
+    except Exception as exc:
+        logging.exception("deep lookup-by-request failed: %s", exc)
+        return jsonify({"error": "Не удалось построить разбор. Попробуйте снова."}), 500
+
+    item = full.get("item") if isinstance(full.get("item"), dict) else {}
+    direction = str(full.get("direction") or f"{source_lang}-{target_lang}")
+
+    # Cache the raw lookup so re-opening the same link doesn't re-run the LLM.
+    try:
+        client = get_redis_client()
+        if client is not None:
+            client.setex(
+                _deep_analysis_redis_key(cache_id),
+                _DEEP_ANALYSIS_STORE_TTL_SEC,
+                json.dumps(
+                    {
+                        "user_id": int(user_id),
+                        "lookup": full.get("raw") if isinstance(full.get("raw"), dict) else item,
+                        "query_word": word,
+                        "source_lang": source_lang,
+                        "target_lang": target_lang,
+                        "direction": direction,
+                        "created_at": int(time.time()),
+                    },
+                    ensure_ascii=False, default=str,
+                ),
+            )
+    except Exception:
+        logging.debug("deep lookup-by-request cache write failed", exc_info=True)
+
+    return _finish(item, direction)
+
+
+@app.route("/api/webapp/dictionary/feel", methods=["POST"])
+def get_webapp_dictionary_feel():
+    """«Почувствовать слово» for a fresh (unsaved) lookup — no entry_id required.
+    Runs the multilingual feel prompt and returns a short mnemonic/feel text."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    source_text = str(payload.get("source_text") or "").strip()
+    target_text = str(payload.get("target_text") or "").strip()
+    source_lang = _normalize_short_lang_code(payload.get("source_lang"), fallback="")
+    target_lang = _normalize_short_lang_code(payload.get("target_lang"), fallback="")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not (source_text or target_text):
+        return jsonify({"error": "текст обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    if not source_lang or not target_lang:
+        source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
+    try:
+        feel_text = asyncio.run(
+            run_feel_word_multilang(
+                source_text=source_text or target_text,
+                target_text=target_text or source_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        )
+    except Exception as exc:
+        logging.exception("dictionary feel failed: %s", exc)
+        return jsonify({"error": "Не удалось сгенерировать. Попробуйте снова."}), 500
+
+    return jsonify({"ok": True, "feel_text": str(feel_text or "").strip()})
 
 
 def _strip_html(html_text: str) -> str:

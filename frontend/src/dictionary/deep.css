@@ -213,32 +213,141 @@
 .deep-ff-head b { color: #fca5a5; }
 .deep-ff-look { color: var(--dmps-text-muted, #94a3b8); font-style: italic; }
 
-/* 📌 Варианты для сохранения */
-.deep-save-list { display: flex; flex-direction: column; gap: 10px; }
-.deep-save-card {
+/* 📌 Варианты для сохранения — мультивыбор + папка + сохранить */
+.deep-save-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.deep-mini-link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: #4ad08a; opacity: 0.9;
+}
+.deep-save-list { display: flex; flex-direction: column; gap: 8px; }
+.deep-opt {
   width: 100%;
   text-align: left;
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(74, 208, 138, 0.08);
-  border: 1px solid rgba(74, 208, 138, 0.28);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(74, 208, 138, 0.06);
+  border: 1px solid rgba(74, 208, 138, 0.20);
   cursor: pointer;
   transition: transform 0.08s ease, background 0.15s ease;
 }
-.deep-save-card:active { transform: scale(0.99); }
-.deep-save-card.is-saved { background: rgba(74, 208, 138, 0.16); border-color: rgba(74, 208, 138, 0.5); }
-.deep-save-de { font-size: 15px; font-weight: 700; color: var(--dmps-text-title, #f1f5f9); }
-.deep-save-ru { font-size: 13px; color: var(--dmps-text-secondary, #cbd5e1); }
-.deep-save-cta {
-  margin-top: 4px;
-  align-self: flex-start;
-  font-size: 12px;
-  font-weight: 700;
-  color: #4ad08a;
+.deep-opt:active { transform: scale(0.99); }
+.deep-opt.is-on { background: rgba(74, 208, 138, 0.14); border-color: rgba(74, 208, 138, 0.5); }
+.deep-opt:disabled { opacity: 0.7; cursor: default; }
+.deep-opt-box {
+  flex: 0 0 auto;
+  width: 22px; height: 22px;
+  border-radius: 7px;
+  border: 2px solid rgba(74, 208, 138, 0.45);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 800; color: #4ad08a;
 }
+.deep-opt.is-on .deep-opt-box { background: rgba(74, 208, 138, 0.22); }
+.deep-opt-texts { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.deep-opt-de { font-size: 15px; font-weight: 700; color: var(--dmps-text-title, #f1f5f9); }
+.deep-opt-ru { font-size: 13px; color: var(--dmps-text-secondary, #cbd5e1); }
+
+.deep-folder { position: relative; }
+.deep-folder-btn {
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: var(--dmps-card-alt, rgba(148,163,184,0.06));
+  border: 1px solid var(--dmps-border, #334155);
+  color: var(--dmps-text-secondary, #cbd5e1);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.deep-folder-caret { opacity: 0.6; }
+.deep-folder-list {
+  margin-top: 6px;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--dmps-card-alt, rgba(148,163,184,0.06));
+  border: 1px solid var(--dmps-border, #334155);
+  max-height: 220px; overflow-y: auto;
+}
+.deep-folder-item {
+  text-align: left; padding: 8px 10px; border-radius: 9px;
+  background: none; border: none; color: var(--dmps-text-title, #f1f5f9);
+  font-size: 13px; cursor: pointer;
+}
+.deep-folder-item:active { background: rgba(148,163,184,0.12); }
+.deep-folder-new { color: #4ad08a; font-weight: 600; }
+
+.deep-save-btn {
+  width: 100%;
+  padding: 12px;
+  border-radius: 14px;
+  border: none;
+  background: #4ad08a;
+  color: #06281a;
+  font-size: 15px; font-weight: 800; cursor: pointer;
+  transition: transform 0.08s ease, opacity 0.15s ease;
+}
+.deep-save-btn:active { transform: scale(0.99); }
+.deep-save-btn:disabled { opacity: 0.5; cursor: default; }
+.deep-save-btn.is-saved { background: rgba(74, 208, 138, 0.2); color: #86efac; }
+
+/* 🛠 Действия */
+.sec-actions { --deep-accent: #8fb4ff; }
+.deep-act-row { display: flex; align-items: center; gap: 10px; }
+.deep-act-hint { font-size: 13px; color: var(--dmps-text-secondary, #cbd5e1); }
+.deep-act-block { display: flex; flex-direction: column; gap: 8px; }
+.deep-act-btn {
+  align-self: flex-start;
+  padding: 9px 14px;
+  border-radius: 12px;
+  background: rgba(143, 180, 255, 0.12);
+  border: 1px solid rgba(143, 180, 255, 0.30);
+  color: #cdddff;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.deep-act-btn:active { transform: scale(0.99); }
+.deep-act-btn:disabled { opacity: 0.6; cursor: default; }
+.deep-act-out {
+  font-size: 14px; line-height: 1.5;
+  color: var(--dmps-text-secondary, #cbd5e1);
+  background: var(--dmps-card-alt, rgba(148,163,184,0.06));
+  border-radius: 12px; padding: 10px 12px;
+}
+.deep-collo-list { display: flex; flex-direction: column; gap: 6px; }
+.deep-collo {
+  text-align: left; display: flex; flex-direction: column; gap: 2px;
+  padding: 9px 12px; border-radius: 11px;
+  background: rgba(45, 212, 191, 0.06); border: 1px solid rgba(45, 212, 191, 0.22);
+  cursor: pointer;
+}
+.deep-collo.is-saved { background: rgba(74, 208, 138, 0.14); border-color: rgba(74, 208, 138, 0.4); }
+.deep-collo-de { font-size: 14px; font-weight: 600; color: var(--dmps-text-title, #f1f5f9); }
+.deep-collo-ru { font-size: 12px; color: var(--dmps-text-secondary, #cbd5e1); }
+
+.deep-ask-row { display: flex; gap: 8px; }
+.deep-ask-input {
+  flex: 1 1 auto; min-width: 0;
+  padding: 10px 12px; border-radius: 12px;
+  background: var(--dmps-card-alt, rgba(148,163,184,0.06));
+  border: 1px solid var(--dmps-border, #334155);
+  color: var(--dmps-text-title, #f1f5f9);
+  font-size: 14px;
+}
+.deep-ask-input::placeholder { color: var(--dmps-text-muted, #94a3b8); }
+.deep-ask-send {
+  flex: 0 0 auto; width: 44px; border-radius: 12px; border: none;
+  background: #8fb4ff; color: #0a1c3a; font-size: 16px; font-weight: 800; cursor: pointer;
+}
+.deep-ask-send:disabled { opacity: 0.5; cursor: default; }
+.deep-ask-turn {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 12px; border-radius: 12px;
+  background: var(--dmps-card-alt, rgba(148,163,184,0.06));
+}
+.deep-ask-q { font-size: 13px; font-weight: 600; color: var(--dmps-text-muted, #94a3b8); }
+.deep-ask-a { font-size: 14px; line-height: 1.5; color: var(--dmps-text-secondary, #cbd5e1); white-space: pre-wrap; }
 
 /* ── States ───────────────────────────────────────────────────────────────── */
 .deep-loading, .deep-error {
