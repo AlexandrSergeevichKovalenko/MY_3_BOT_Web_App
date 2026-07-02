@@ -31487,10 +31487,18 @@ def create_webapp_dictionary_share_link():
     if int(record.get("user_id") or 0) != int(user_id):
         return jsonify({"error": "deep_id не принадлежит пользователю"}), 403
 
-    token = _secrets.token_urlsafe(9)
     try:
-        from backend.database import save_shared_razbor
-        save_shared_razbor(token, int(user_id), record)
+        from backend.database import save_shared_razbor, find_shared_razbor_token
+        # Reuse an existing token for the same word instead of leaking a new row per tap.
+        token = find_shared_razbor_token(
+            int(user_id),
+            record.get("query_word"),
+            record.get("source_lang"),
+            record.get("target_lang"),
+        )
+        if not token:
+            token = _secrets.token_urlsafe(9)
+            save_shared_razbor(token, int(user_id), record)
     except Exception:
         logging.exception("share/link: failed to persist shared razbor")
         return jsonify({"error": "Не удалось создать ссылку"}), 500
@@ -31632,7 +31640,7 @@ def get_webapp_dictionary_shared():
 
     try:
         from backend.database import get_shared_razbor
-        record = get_shared_razbor(token)
+        record = get_shared_razbor(token, bump_views=False)  # read-only: no write on view
     except Exception:
         logging.exception("shared: failed to load shared razbor")
         record = None

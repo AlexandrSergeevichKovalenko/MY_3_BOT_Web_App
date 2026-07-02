@@ -39,6 +39,12 @@ _BUCKET_OFFSET = {
 # Tiny nudge so, within a bucket, easier CEFR sorts a touch earlier.
 _CEFR_NUDGE = {"A1": 0, "A2": 200, "B1": 400, "B2": 600, "C1": 800, "C2": 1_000}
 
+# Words with neither a corpus hit nor an LLM frequency band get this "unknown"
+# band — after every ranked word (rare = 300_000), but a REAL value, not NULL.
+# This keeps them out of the nightly re-scan and safe from being clobbered, while
+# still sorting them last (ordered by created_at via the SQL tiebreak).
+_FALLBACK_BAND = _LLM_BASE + 500_000
+
 # German articles / determiners to strip before matching a single-word lemma.
 _ARTICLES = {
     "der", "die", "das", "den", "dem", "des",
@@ -111,10 +117,22 @@ def compute_frequency_rank(word_de: str | None, response_json=None) -> int | Non
             return rank
 
     data = _coerce_response_json(response_json)
+    level = (data.get("level") or "").strip().upper()
     freq = (data.get("frequency") or "").strip().lower()
     offset = _BUCKET_OFFSET.get(freq)
     if offset is not None:
-        level = (data.get("level") or "").strip().upper()
         return _LLM_BASE + offset + _CEFR_NUDGE.get(level, 500)
 
+    # No corpus hit and no frequency band → a real "unknown" rank (never NULL),
+    # as long as there is an actual word to rank.
+    if str(word_de or "").strip():
+        return _FALLBACK_BAND + _CEFR_NUDGE.get(level, 500)
     return None
+
+
+# Warm the corpus at import time (process startup) so the first word-save never
+# pays the ~49k-line load inside its DB transaction.
+try:
+    _load_ranks()
+except Exception:  # pragma: no cover - defensive
+    logger.debug("word_frequency: eager warm failed", exc_info=True)

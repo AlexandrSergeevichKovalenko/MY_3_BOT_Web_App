@@ -5557,6 +5557,10 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_shared_razbor_owner_word
+                ON bt_3_shared_razbor (owner_user_id, word);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_entries (
                     id BIGSERIAL PRIMARY KEY,
                     source_lang TEXT NOT NULL,
@@ -20766,8 +20770,9 @@ def backfill_frequency_ranks(
                     after_id = row_id
                     processed += 1
                     new_rank = compute_frequency_rank(word_de, response_json)
-                    if new_rank is not None:
-                        with_rank += 1
+                    if new_rank is None:
+                        continue  # never overwrite a stored rank with NULL
+                    with_rank += 1
                     cur.execute(
                         """
                         UPDATE bt_3_webapp_dictionary_queries
@@ -20814,6 +20819,38 @@ def save_shared_razbor(token: str, owner_user_id: int, record: dict) -> str:
             )
         conn.commit()
     return str(token)
+
+
+def find_shared_razbor_token(
+    owner_user_id: int, word: str, source_lang: str, target_lang: str
+) -> str | None:
+    """Return an existing share token for this owner+word+pair, or None.
+
+    Lets re-sharing the same word reuse one token/row instead of leaking a new
+    one per tap.
+    """
+    w = str(word or "").strip()
+    if not w:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT token FROM bt_3_shared_razbor
+                WHERE owner_user_id = %s AND word = %s
+                  AND COALESCE(source_lang, '') = %s
+                  AND COALESCE(target_lang, '') = %s
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (
+                    int(owner_user_id), w,
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                ),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row else None
 
 
 def get_shared_razbor(token: str, bump_views: bool = True) -> dict | None:
