@@ -329,8 +329,11 @@ und darunter deine Aufbereitung.
 
 Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
 
-1) "summary_ru": 1–2 Sätze auf RUSSISCH — worum es in der Nachricht geht (neugierig machend,
-   konkret, keine Floskeln).
+1) "summary_points": 2–4 sehr kurze THESEN auf RUSSISCH — je EIN Fakt pro Zeile, wie
+   Schlagzeilen. KEINE Verbindungswörter ("кроме того", "но", "также"), KEINE Wertung,
+   kein Wasser. Nur die nackten Fakten, jede These 3–9 Wörter. Beispiel:
+   ["правительство Германии планирует изменить закон о налогах и больничных",
+    "новые атаки России на Украину", "крупный штраф Google в Европе"].
 
 2) "phrases": 12–18 wirklich nützliche, im Transkript tatsächlich vorkommende Wörter und
    Wendungen (bevorzugt Wortgruppen/Kollokationen, nicht triviale Wörter wie "und", "sein").
@@ -360,7 +363,7 @@ Transkript:
 
 Erzeuge das JSON exakt in diesem Format:
 {{
-  "summary_ru": "…",
+  "summary_points": ["…", "…", "…"],
   "phrases": [
     {{"de": "…", "translation_ru": "…", "usage_ru": "…"}}
   ],
@@ -395,7 +398,16 @@ def _call_llm(title: str, transcript: str) -> dict:
 
 
 def _validate_and_normalize_pack(data: dict) -> dict:
-    summary_ru = str((data or {}).get("summary_ru") or "").strip()
+    # Summary as 2–4 terse thesis lines (stored newline-joined). Fall back to splitting a
+    # legacy paragraph summary_ru into sentences if the model still returns one.
+    raw_points = (data or {}).get("summary_points")
+    points: list[str] = []
+    if isinstance(raw_points, list):
+        points = [str(x).strip() for x in raw_points if str(x).strip()]
+    if not points:
+        legacy = str((data or {}).get("summary_ru") or "").strip()
+        points = [s.strip() for s in re.split(r"(?<=[.!?])\s+", legacy) if s.strip()]
+    summary_ru = "\n".join(points[:4])
 
     raw_phrases = (data or {}).get("phrases")
     if not isinstance(raw_phrases, list):

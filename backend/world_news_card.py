@@ -161,40 +161,11 @@ def render_world_news_card(entry: dict) -> bytes:
     base.paste(ovp, (0, 0), ovp)
     _ctext(d, W // 2, 108, pill, pf, (255, 255, 255, 240))
 
-    # Text block flows from the lower half (over the darkest part of the scrim).
-    y = 560
-
-    # Title (up to 2 lines, auto-shrunk to fit width).
-    if title:
-        tf = _font(60, True)
-        tlines = _wrap_lines(d, title, tf, W - 150, 2)
-        # Shrink if a single very long word still overflows (guard .size for bitmap fallback font).
-        while tlines and any(d.textlength(ln, font=tf) > W - 150 for ln in tlines) and getattr(tf, "size", 0) > 40:
-            tf = _font(getattr(tf, "size", 44) - 4, True)
-            tlines = _wrap_lines(d, title, tf, W - 150, 2)
-        for ln in tlines:
-            _ctext(d, W // 2 + 3, y + 4, ln, tf, (0, 0, 0, 110))  # shadow
-            _ctext(d, W // 2, y, ln, tf, WHITE)
-            y += int(tf.size * 1.18)
-        y += 20
-
-    # Summary (up to 3 lines).
-    if summary:
-        sf = _font(38, False)
-        for ln in _wrap_lines(d, summary, sf, W - 170, 3):
-            _ctext(d, W // 2, y, ln, sf, (232, 240, 252, 226))
-            y += int(sf.size * 1.28)
-        y += 16
-
-    # Meta line (amber): channel · duration · N слов. No emoji — the server font would
-    # render e.g. ⏱ as a tofu box, so duration is spelled out in minutes.
-    dur_min = (dur + 59) // 60 if dur else 0
-    meta_parts = [p for p in (channel, (f"{dur_min} мин" if dur_min else ""),
-                              (f"{n_words} {_plural_words_ru(n_words)}" if n_words else "")) if p]
-    meta = _strip_emoji(" · ".join(meta_parts))
-    if meta:
-        mf = _fit_font(d, meta, W - 160, 36, bold=True, floor=26)
-        _ctext(d, W // 2, min(y, 966), meta, mf, (255, 224, 130, 235))
+    # The actual news text (title + theses) lives in the message caption — do NOT duplicate it
+    # on the image. Keep the photo clean & branded: just the mascot + a generic tagline.
+    tagline = "Смотри · Учи слова · Проверь себя"
+    tf = _fit_font(d, tagline, W - 160, 42, bold=True, floor=30)
+    _ctext(d, W // 2, 912, tagline, tf, (255, 224, 130, 235))
 
     _ctext(d, W // 2, 1016, "Deutsche Sprache · Новости", _font(30, False), (220, 232, 250, 175))
 

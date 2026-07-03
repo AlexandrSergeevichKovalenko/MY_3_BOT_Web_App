@@ -7124,9 +7124,12 @@ def _world_news_morning_card_text(entry: dict) -> str:
     title = str(entry.get("video_title") or "").strip()
     if title:
         lines.append(f"\n🎬 <b>{title}</b>")
+    # summary_ru is now newline-separated theses → render as a tidy bullet list (no water).
     summary = str(entry.get("summary_ru") or "").strip()
-    if summary:
-        lines.append(f"\n📰 {summary}")
+    points = [p.strip().lstrip("•-–—").strip() for p in summary.split("\n") if p.strip()]
+    if points:
+        lines.append("")
+        lines.extend(f"• {p}" for p in points)
     meta = []
     if entry.get("channel_title"):
         meta.append(str(entry["channel_title"]).strip())
