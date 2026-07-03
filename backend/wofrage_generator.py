@@ -631,12 +631,16 @@ def _build_one(entry: dict) -> dict:
     if target == "person":
         correct = personword
         name, _ = random.choice(_PERSON_NAMES)
-        clue = f"{prep.capitalize()} {name}."
+        # Clue in RU-context: a bare NAME signals a PERSON, without leaking the
+        # German preposition (which is the exact string on the correct button).
+        clue = f"{name}."
         obj_display, obj_ru = name, ""
     else:
         correct = woword
         obj_phrase, obj_ru = random.choice(entry["obj"])
-        clue = _decline_clue(prep, case, obj_phrase) + "."
+        # Clue = Russian gloss of the THING → signals "вещь" but hides the German
+        # preposition, so the learner must recall the verb government themselves.
+        clue = (obj_ru[:1].upper() + obj_ru[1:] + ".") if obj_ru else (_decline_clue(prep, case, obj_phrase) + ".")
         obj_display = obj_phrase
 
     return {
