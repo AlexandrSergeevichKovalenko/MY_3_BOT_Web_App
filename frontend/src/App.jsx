@@ -5323,11 +5323,14 @@ function AppInner() {
   const [youtubeNewsMode, setYoutubeNewsMode] = useState(false);
   const [worldNewsData, setWorldNewsData] = useState(null); // null=unloaded, {available:false}=none
   const [worldNewsLoading, setWorldNewsLoading] = useState(false);
-  const [worldNewsSelected, setWorldNewsSelected] = useState(() => new Set()); // checked phrase indices
-  const [worldNewsSaving, setWorldNewsSaving] = useState(false);
-  const [worldNewsSavedCount, setWorldNewsSavedCount] = useState(0); // >0 → shows «Сохранено (N)»
+  const [worldNewsSelected, setWorldNewsSelected] = useState(() => new Set()); // saved phrase indices
   const [worldNewsQuizAnswers, setWorldNewsQuizAnswers] = useState({}); // {questionIdx: chosenOptionIdx}
   const [worldNewsScrollToQuiz, setWorldNewsScrollToQuiz] = useState(false); // deep-link ?startapp=worldnews_quiz
+  // Stepwise wizard: 'words' (swipe deck) → 'video' (player) → 'quiz' (one Q at a time).
+  const [worldNewsStage, setWorldNewsStage] = useState('words');
+  const [worldNewsCardIndex, setWorldNewsCardIndex] = useState(0); // current phrase card in the deck
+  const [worldNewsQuizIndex, setWorldNewsQuizIndex] = useState(0); // current quiz question
+  const [worldNewsVideoEnded, setWorldNewsVideoEnded] = useState(false); // reveals the quiz CTA
   const [youtubeError, setYoutubeError] = useState('');
   const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
@@ -6214,6 +6217,7 @@ function AppInner() {
   const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeNewsTranscriptRequestedRef = useRef(''); // news mode: auto-load subs once per video
   const worldNewsRequestedRef = useRef(false); // news mode: fetch today's entry exactly once
+  const worldNewsTouchXRef = useRef(null); // swipe-deck touch start X
   const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeResumeLastSyncedSecondRef = useRef(-1);
   const youtubePhraseGestureRef = useRef(null);
@@ -28316,12 +28320,13 @@ function AppInner() {
         const data = response.ok ? await response.json() : null;
         if (data && data.available) {
           setWorldNewsData(data);
-          // Default: all phrases checked — the user unchecks the few they don't want, mirroring
-          // the morning-Shortcut digest.
-          const phraseCount = Array.isArray(data.phrases) ? data.phrases.length : 0;
-          setWorldNewsSelected(new Set(Array.from({ length: phraseCount }, (_v, i) => i)));
-          setWorldNewsSavedCount(0);
+          // Swipe deck: nothing saved yet — the user bookmarks the cards they want.
+          setWorldNewsSelected(new Set()); // set of already-saved phrase indices
           setWorldNewsQuizAnswers({});
+          setWorldNewsStage(worldNewsScrollToQuiz ? 'quiz' : 'words');
+          setWorldNewsCardIndex(0);
+          setWorldNewsQuizIndex(0);
+          setWorldNewsVideoEnded(false);
           // News video is authoritative: replace whatever was restored from the resume cache.
           const url = String(data.video_url || '').trim()
             || (data.video_id ? `https://youtu.be/${data.video_id}` : '');
@@ -28368,65 +28373,65 @@ function AppInner() {
     });
   }, []);
 
-  const toggleWorldNewsPhrase = useCallback((index) => {
-    setWorldNewsSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(index)) next.delete(index); else next.add(index);
-      return next;
-    });
-    setWorldNewsSavedCount(0); // selection changed → allow a fresh save
-  }, []);
-
-  // Optimistic bulk-save of the checked phrases into the dictionary (same endpoint + canonical
-  // pipeline as the tap-a-word widget). Confirms instantly, persists in the background, and
-  // reconciles the saved count if some entries fail (e.g. daily save cap).
-  const saveSelectedWorldNewsWords = useCallback(async () => {
-    if (worldNewsSaving) return;
+  // Swipe-deck: save ONE phrase (the current card) optimistically into the dictionary. Same
+  // canonical pipeline as the tap-a-word widget. `worldNewsSelected` holds the saved indices.
+  const saveWorldNewsCard = useCallback((index) => {
     const phrases = Array.isArray(worldNewsData?.phrases) ? worldNewsData.phrases : [];
-    const chosen = Array.from(worldNewsSelected)
-      .sort((a, b) => a - b)
-      .map((i) => phrases[i])
-      .filter((p) => p && String(p.de || '').trim() && String(p.translation_ru || '').trim());
-    if (!chosen.length) return;
+    const phrase = phrases[index];
+    const de = String(phrase?.de || '').trim();
+    const ru = String(phrase?.translation_ru || '').trim();
+    if (!de || !ru) return;
+    if (worldNewsSelected.has(index)) return; // already saved
     if (!initData) {
       showInlineToast(initDataMissingMsg, 4000);
       return;
     }
-    setWorldNewsSaving(true);
-    setWorldNewsSavedCount(chosen.length); // optimistic: show «Сохранено (N)» immediately
-    try {
-      const results = await Promise.allSettled(chosen.map((p) => fetch('/api/webapp/dictionary/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          source_text: String(p.de).trim(),
-          target_text: String(p.translation_ru).trim(),
-          source_lang: 'de',
-          target_lang: 'ru',
-          direction: 'de-ru',
-          origin_process: 'worldnews_phrase_save',
-          origin_meta: { flow: 'worldnews_phrase_list', from: 'worldnews_phrase_list' },
-        }),
-      }).then((r) => r.ok)));
-      const okCount = results.filter((r) => r.status === 'fulfilled' && r.value).length;
-      setWorldNewsSavedCount(okCount);
-      if (okCount < chosen.length) {
-        showInlineToast(
-          tr(
-            `Сохранили ${okCount} из ${chosen.length}. Возможно, достигнут дневной лимит сохранений.`,
-            `${okCount} von ${chosen.length} gespeichert. Vielleicht ist das Tageslimit erreicht.`,
-          ),
-          5000,
-        );
+    setWorldNewsSelected((prev) => new Set(prev).add(index)); // optimistic ✓ Сохранено
+    (async () => {
+      try {
+        const r = await fetch('/api/webapp/dictionary/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            source_text: de,
+            target_text: ru,
+            source_lang: 'de',
+            target_lang: 'ru',
+            direction: 'de-ru',
+            origin_process: 'worldnews_phrase_save',
+            origin_meta: { flow: 'worldnews_word_deck', from: 'worldnews_word_deck' },
+          }),
+        });
+        if (!r.ok) {
+          setWorldNewsSelected((prev) => { const n = new Set(prev); n.delete(index); return n; });
+          const err = await readDictionarySaveApiError(r);
+          if (err.isLimit) showDictionarySaveLimitToast();
+          else showInlineToast(tr('Не удалось сохранить слово.', 'Wort konnte nicht gespeichert werden.'), 4000);
+        }
+      } catch (_error) {
+        setWorldNewsSelected((prev) => { const n = new Set(prev); n.delete(index); return n; });
+        showInlineToast(tr('Не удалось сохранить слово.', 'Wort konnte nicht gespeichert werden.'), 4000);
       }
-    } catch (_error) {
-      setWorldNewsSavedCount(0); // real failure → revert the optimistic confirmation
-      showInlineToast(tr('Не удалось сохранить, попробуйте ещё раз.', 'Speichern fehlgeschlagen, bitte erneut versuchen.'), 4000);
-    } finally {
-      setWorldNewsSaving(false);
+    })();
+  }, [worldNewsData, worldNewsSelected, initData, initDataMissingMsg, showInlineToast, tr]);
+
+  const worldNewsPhrases = Array.isArray(worldNewsData?.phrases) ? worldNewsData.phrases : [];
+  const worldNewsQuiz = Array.isArray(worldNewsData?.quiz) ? worldNewsData.quiz : [];
+
+  const worldNewsGoToStage = useCallback((stage) => {
+    setWorldNewsStage(stage);
+    if (typeof window !== 'undefined') {
+      try { scrollToRef(youtubeRef, { block: 'start' }); } catch (_e) { /* noop */ }
     }
-  }, [worldNewsSaving, worldNewsData, worldNewsSelected, initData, initDataMissingMsg, showInlineToast, tr]);
+  }, [scrollToRef, youtubeRef]);
+
+  const worldNewsDeckPrev = useCallback(() => {
+    setWorldNewsCardIndex((i) => Math.max(0, i - 1));
+  }, []);
+  const worldNewsDeckNext = useCallback(() => {
+    setWorldNewsCardIndex((i) => Math.min(worldNewsPhrases.length - 1, i + 1));
+  }, [worldNewsPhrases.length]);
 
   useEffect(() => {
     if (!youtubeSectionVisible) {
@@ -28563,7 +28568,7 @@ function AppInner() {
       const hostNode = document.getElementById('youtube-player');
       if (!hostNode) return;
       if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
-        youtubePlayerRef.current.destroy();
+        try { youtubePlayerRef.current.destroy(); } catch (_e) { /* stale player */ }
       }
       youtubePlayerRef.current = new window.YT.Player(hostNode, {
         videoId: youtubeId,
@@ -28635,6 +28640,7 @@ function AppInner() {
               setYoutubeIsPaused(false);
             } else if (state === 0 || state === 5 || state === -1) {
               setYoutubeIsPaused(true);
+              if (state === 0) setWorldNewsVideoEnded(true); // reveal the «Проверить знания» CTA
             }
           },
         },
@@ -28647,7 +28653,9 @@ function AppInner() {
         youtubeTimeIntervalRef.current = null;
       }
     };
-  }, [persistYoutubeResumeState, syncYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible]);
+    // worldNewsStage: in news mode the player host only mounts in the 'video' stage, so re-run
+    // when the stage changes to (re)create the player once its host is in the DOM.
+  }, [persistYoutubeResumeState, syncYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible, worldNewsStage]);
 
   useEffect(() => {
     if (!youtubePlayerReady || !youtubeId || !initData || !youtubePlayerRef.current?.seekTo) return;
@@ -32125,6 +32133,23 @@ function AppInner() {
                       ref={youtubeRef}
                       data-no-edge-swipe="true"
                     >
+                    {youtubeNewsMode && worldNewsData?.available && (
+                      <div className="worldnews-stepper">
+                        {[['words', tr('Слова', 'Wörter')], ['video', tr('Видео', 'Video')], ['quiz', tr('Тест', 'Quiz')]].map(([key, label], i) => (
+                          <button
+                            type="button"
+                            key={`wn-step-${key}`}
+                            className={`worldnews-step ${worldNewsStage === key ? 'is-active' : ''}`}
+                            onClick={() => worldNewsGoToStage(key)}
+                          >
+                            <span className="worldnews-step-num">{i + 1}</span>
+                            <span className="worldnews-step-label">{label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {(!youtubeNewsMode || worldNewsStage === 'video') && (
+                    <>
                     <div className="webapp-local-section-head youtube-player-first-head">
                       <div className="youtube-desktop-command-bar">
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
@@ -32465,6 +32490,19 @@ function AppInner() {
                       </div>
                     </div>
                     {(youtubeOverlayEnabled || !youtubeSubtitlesReady) && renderYoutubeSentenceJumpBar()}
+                    {youtubeNewsMode && worldNewsData?.available && worldNewsQuiz.length > 0 && (
+                      <button
+                        type="button"
+                        className={`worldnews-next-cta worldnews-to-quiz ${worldNewsVideoEnded ? 'is-ready' : 'is-idle'}`}
+                        onClick={() => worldNewsGoToStage('quiz')}
+                      >
+                        {worldNewsVideoEnded
+                          ? tr('🧩 Проверить знания', '🧩 Wissen testen')
+                          : tr('Досмотри — потом тест 🧩', 'Zu Ende schauen — dann Quiz 🧩')}
+                      </button>
+                    )}
+                    </>
+                    )}
                     {youtubeNewsMode && worldNewsLoading && !worldNewsData && (
                       <div className="youtube-recommendation-note">{tr('Загружаем новость дня…', 'Nachricht des Tages wird geladen…')}</div>
                     )}
@@ -32475,112 +32513,126 @@ function AppInner() {
                         <p>{tr('Загляни утром — свежий ролик появится здесь.', 'Schau morgens vorbei — das frische Video erscheint hier.')}</p>
                       </div>
                     )}
-                    {youtubeNewsMode && worldNewsData?.available && Array.isArray(worldNewsData.phrases) && worldNewsData.phrases.length > 0 && (
-                      <div className="worldnews-words">
-                        <div className="worldnews-words-head">
-                          <h4>{tr('Слова из новости', 'Wörter aus den News')}</h4>
-                          <span className="worldnews-words-hint">{tr('Отметьте нужные и сохраните в словарь', 'Markieren und im Wörterbuch speichern')}</span>
-                        </div>
-                        <ul className="worldnews-words-list">
-                          {worldNewsData.phrases.map((phrase, index) => {
-                            const checked = worldNewsSelected.has(index);
-                            return (
-                              <li
-                                key={`wn-phrase-${index}`}
-                                className={`worldnews-word-row ${checked ? 'is-checked' : ''}`}
-                                onClick={() => toggleWorldNewsPhrase(index)}
-                                role="checkbox"
-                                aria-checked={checked}
-                                tabIndex={0}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter' || event.key === ' ') {
-                                    event.preventDefault();
-                                    toggleWorldNewsPhrase(index);
-                                  }
-                                }}
-                              >
-                                <span className="worldnews-word-check" aria-hidden="true">{checked ? '✅' : '⬜️'}</span>
-                                <span className="worldnews-word-body">
-                                  <span className="worldnews-word-de">{phrase.de}</span>
-                                  {phrase.translation_ru && <span className="worldnews-word-ru">{phrase.translation_ru}</span>}
-                                  {phrase.usage_ru && <span className="worldnews-word-usage">{phrase.usage_ru}</span>}
-                                </span>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                        <button
-                          type="button"
-                          className="worldnews-words-save"
-                          onClick={saveSelectedWorldNewsWords}
-                          disabled={worldNewsSaving || worldNewsSelected.size === 0 || worldNewsSavedCount > 0}
-                        >
-                          {worldNewsSavedCount > 0
-                            ? tr(`✅ Сохранено (${worldNewsSavedCount})`, `✅ Gespeichert (${worldNewsSavedCount})`)
-                            : worldNewsSaving
-                              ? tr('💾 Сохраняем…', '💾 Speichern…')
-                              : tr(`💾 Сохранить выбранные (${worldNewsSelected.size})`, `💾 Ausgewählte speichern (${worldNewsSelected.size})`)}
-                        </button>
-                      </div>
-                    )}
-                    {youtubeNewsMode && worldNewsData?.available && Array.isArray(worldNewsData.quiz) && worldNewsData.quiz.length > 0 && (
-                      <div className="worldnews-quiz" id="worldnews-quiz">
-                        <div className="worldnews-quiz-head">
-                          <h4>{tr('Проверьте знания', 'Wissen testen')}</h4>
-                          {(() => {
-                            const total = worldNewsData.quiz.length;
-                            const answered = Object.keys(worldNewsQuizAnswers).length;
-                            const score = worldNewsData.quiz.reduce((acc, q, qi) => (
-                              worldNewsQuizAnswers[qi] === Number(q?.correct_index) ? acc + 1 : acc
-                            ), 0);
-                            return (
-                              <span className="worldnews-quiz-score">
-                                {answered >= total
-                                  ? tr(`Результат: ${score}/${total}`, `Ergebnis: ${score}/${total}`)
-                                  : tr(`${answered}/${total} отвечено`, `${answered}/${total} beantwortet`)}
-                              </span>
-                            );
-                          })()}
-                        </div>
-                        {worldNewsData.quiz.map((question, qi) => {
-                          const options = Array.isArray(question?.options) ? question.options : [];
-                          const correctIndex = Number(question?.correct_index);
-                          const chosen = worldNewsQuizAnswers[qi];
-                          const answered = Object.prototype.hasOwnProperty.call(worldNewsQuizAnswers, qi);
-                          return (
-                            <div key={`wn-quiz-${qi}`} className="worldnews-quiz-card">
-                              <div className="worldnews-quiz-question">{qi + 1}. {question?.question_de}</div>
-                              <div className="worldnews-quiz-options">
-                                {options.map((option, oi) => {
-                                  let stateClass = '';
-                                  if (answered) {
-                                    if (oi === correctIndex) stateClass = 'is-correct';
-                                    else if (oi === chosen) stateClass = 'is-wrong';
-                                  }
-                                  return (
-                                    <button
-                                      type="button"
-                                      key={`wn-quiz-${qi}-opt-${oi}`}
-                                      className={`worldnews-quiz-option ${stateClass}`}
-                                      onClick={() => answerWorldNewsQuiz(qi, oi)}
-                                      disabled={answered}
-                                    >
-                                      <span className="worldnews-quiz-option-mark" aria-hidden="true">
-                                        {answered && oi === correctIndex ? '✅' : (answered && oi === chosen ? '❌' : '')}
-                                      </span>
-                                      <span className="worldnews-quiz-option-text">{option}</span>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                              {answered && question?.explanation_ru && (
-                                <div className="worldnews-quiz-explain">{question.explanation_ru}</div>
-                              )}
+                    {youtubeNewsMode && worldNewsStage === 'words' && worldNewsData?.available && worldNewsPhrases.length > 0 && (() => {
+                      const idx = Math.min(worldNewsCardIndex, worldNewsPhrases.length - 1);
+                      const phrase = worldNewsPhrases[idx] || {};
+                      const saved = worldNewsSelected.has(idx);
+                      return (
+                        <div className="worldnews-deck">
+                          <div className="worldnews-deck-progress">{idx + 1} / {worldNewsPhrases.length}</div>
+                          <div
+                            className="worldnews-card"
+                            onTouchStart={(e) => { worldNewsTouchXRef.current = e.changedTouches?.[0]?.clientX ?? null; }}
+                            onTouchEnd={(e) => {
+                              const x0 = worldNewsTouchXRef.current;
+                              const x1 = e.changedTouches?.[0]?.clientX;
+                              if (x0 != null && x1 != null) {
+                                const dx = x1 - x0;
+                                if (dx < -40) worldNewsDeckNext();
+                                else if (dx > 40) worldNewsDeckPrev();
+                              }
+                              worldNewsTouchXRef.current = null;
+                            }}
+                          >
+                            <div className="worldnews-card-de">{phrase.de}</div>
+                            {phrase.translation_ru && <div className="worldnews-card-ru">{phrase.translation_ru}</div>}
+                            {phrase.usage_ru && <div className="worldnews-card-usage">↳ {phrase.usage_ru}</div>}
+                            <button
+                              type="button"
+                              className={`worldnews-card-save ${saved ? 'is-saved' : ''}`}
+                              onClick={() => saveWorldNewsCard(idx)}
+                              disabled={saved}
+                            >
+                              {saved ? tr('✓ Сохранено', '✓ Gespeichert') : tr('🔖 Сохранить', '🔖 Speichern')}
+                            </button>
+                          </div>
+                          <div className="worldnews-deck-nav">
+                            <button type="button" className="worldnews-deck-arrow" onClick={worldNewsDeckPrev} disabled={idx === 0} aria-label={tr('Назад', 'Zurück')}>‹</button>
+                            <div className="worldnews-deck-dots">
+                              {worldNewsPhrases.map((_p, di) => (
+                                <span key={`wn-dot-${di}`} className={`worldnews-deck-dot ${di === idx ? 'is-active' : ''} ${worldNewsSelected.has(di) ? 'is-saved' : ''}`} />
+                              ))}
                             </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                            <button type="button" className="worldnews-deck-arrow" onClick={worldNewsDeckNext} disabled={idx >= worldNewsPhrases.length - 1} aria-label={tr('Вперёд', 'Weiter')}>›</button>
+                          </div>
+                          <button type="button" className="worldnews-next-cta" onClick={() => worldNewsGoToStage('video')}>
+                            {tr('▶ Смотреть видео', '▶ Video ansehen')}
+                          </button>
+                        </div>
+                      );
+                    })()}
+                    {youtubeNewsMode && worldNewsStage === 'quiz' && worldNewsData?.available && worldNewsQuiz.length > 0 && (() => {
+                      const total = worldNewsQuiz.length;
+                      const score = worldNewsQuiz.reduce((acc, q, i) => (
+                        worldNewsQuizAnswers[i] === Number(q?.correct_index) ? acc + 1 : acc
+                      ), 0);
+                      if (worldNewsQuizIndex >= total) {
+                        const label = score === total
+                          ? tr('Отлично! 🎉', 'Perfekt! 🎉')
+                          : score >= Math.ceil(total / 2)
+                            ? tr('Хорошо! 👍', 'Gut! 👍')
+                            : tr('Есть куда расти 💪', 'Da geht noch was 💪');
+                        return (
+                          <div className="worldnews-quiz" id="worldnews-quiz">
+                            <div className="worldnews-quiz-result">
+                              <div className="worldnews-quiz-result-score">{score} / {total}</div>
+                              <div className="worldnews-quiz-result-label">{label}</div>
+                              <button type="button" className="worldnews-next-cta" onClick={() => worldNewsGoToStage('words')}>
+                                {tr('🔖 Вернуться к словам', '🔖 Zurück zu den Wörtern')}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+                      const qi = worldNewsQuizIndex;
+                      const question = worldNewsQuiz[qi] || {};
+                      const options = Array.isArray(question.options) ? question.options : [];
+                      const correctIndex = Number(question.correct_index);
+                      const answered = Object.prototype.hasOwnProperty.call(worldNewsQuizAnswers, qi);
+                      const chosen = worldNewsQuizAnswers[qi];
+                      const isLast = qi >= total - 1;
+                      const pct = Math.round(((qi + (answered ? 1 : 0)) / total) * 100);
+                      return (
+                        <div className="worldnews-quiz" id="worldnews-quiz">
+                          <div className="worldnews-quiz-progress">
+                            <div className="worldnews-quiz-bar"><span style={{ width: `${pct}%` }} /></div>
+                            <span className="worldnews-quiz-count">{qi + 1} / {total}</span>
+                          </div>
+                          <div className="worldnews-quiz-question">{question.question_de}</div>
+                          <div className="worldnews-quiz-options">
+                            {options.map((option, oi) => {
+                              let stateClass = '';
+                              if (answered) {
+                                if (oi === correctIndex) stateClass = 'is-correct';
+                                else if (oi === chosen) stateClass = 'is-wrong';
+                              }
+                              return (
+                                <button
+                                  type="button"
+                                  key={`wn-q-${qi}-o-${oi}`}
+                                  className={`worldnews-quiz-option ${stateClass}`}
+                                  onClick={() => answerWorldNewsQuiz(qi, oi)}
+                                  disabled={answered}
+                                >
+                                  <span className="worldnews-quiz-option-mark" aria-hidden="true">
+                                    {answered && oi === correctIndex ? '✅' : (answered && oi === chosen ? '❌' : '')}
+                                  </span>
+                                  <span className="worldnews-quiz-option-text">{option}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {answered && question.explanation_ru && (
+                            <div className="worldnews-quiz-explain">{question.explanation_ru}</div>
+                          )}
+                          {answered && (
+                            <button type="button" className="worldnews-next-cta" onClick={() => setWorldNewsQuizIndex((i) => i + 1)}>
+                              {isLast ? tr('Посмотреть результат', 'Ergebnis ansehen') : tr('Дальше →', 'Weiter →')}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
                     {youtubeRecommendationLoading && (
                       <div className="youtube-recommendation-note">{youtubeRecommendationStatusLabel}</div>
                     )}

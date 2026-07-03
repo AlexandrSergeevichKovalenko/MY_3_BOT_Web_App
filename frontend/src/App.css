@@ -14862,96 +14862,219 @@ body {
   margin-top: 4px;
 }
 
-/* «Начни день с коротких новостей» — curated phrase list with save checkboxes (news mode). */
-.worldnews-words {
-  margin-top: 14px;
-  padding: 16px;
-  border-radius: 16px;
-  border: 1px solid var(--yt-border-default);
-  background: var(--yt-bg-card);
-  display: grid;
-  gap: 12px;
-}
-.worldnews-words-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 4px 12px;
-}
-.worldnews-words-head h4 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 800;
-  color: var(--yt-text-primary);
-}
-.worldnews-words-hint {
-  font-size: 12px;
-  color: var(--yt-text-secondary);
-}
-.worldnews-words-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-.worldnews-word-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--yt-border-default);
-  background: var(--yt-bg-card-alt);
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-.worldnews-word-row:hover {
-  background: var(--yt-bg-hover);
-}
-.worldnews-word-row.is-checked {
-  border-color: var(--yt-action-primary);
-}
-.worldnews-word-check {
-  font-size: 16px;
-  line-height: 1.5;
-  flex: 0 0 auto;
-}
-.worldnews-word-body {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-.worldnews-word-de {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--yt-text-primary);
-}
-.worldnews-word-ru {
-  font-size: 14px;
-  color: var(--yt-text-secondary);
-}
-.worldnews-word-usage {
-  font-size: 12px;
-  font-style: italic;
-  color: var(--yt-text-secondary);
-  opacity: 0.85;
-}
-.worldnews-words-save {
+/* «Начни день с коротких новостей» — stepwise wizard (words deck → video → quiz). */
+
+/* Shared primary CTA (Смотреть видео / Дальше / Проверить знания). */
+.worldnews-next-cta {
   justify-self: stretch;
-  min-height: 44px;
+  width: 100%;
+  min-height: 50px;
+  margin-top: 4px;
   border: none;
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--yt-action-primary);
   color: #ffffff;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 800;
   cursor: pointer;
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
-.worldnews-words-save:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.worldnews-next-cta:hover { transform: translateY(-1px); }
+.worldnews-next-cta:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+
+/* Stepper */
+.worldnews-stepper {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+.worldnews-step {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--yt-border-default);
+  background: var(--yt-bg-card-alt);
+  color: var(--yt-text-secondary);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.worldnews-step.is-active {
+  border-color: var(--yt-action-primary);
+  background: var(--yt-action-primary);
+  color: #ffffff;
+}
+.worldnews-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  font-size: 12px;
+}
+.worldnews-step.is-active .worldnews-step-num { background: rgba(255, 255, 255, 0.28); }
+
+/* Word swipe deck */
+.worldnews-deck {
+  display: grid;
+  gap: 14px;
+  padding: 4px 0 8px;
+}
+.worldnews-deck-progress {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--yt-text-secondary);
+  letter-spacing: 0.04em;
+}
+.worldnews-card {
+  min-height: 230px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  padding: 28px 22px;
+  border-radius: 22px;
+  border: 1px solid var(--yt-border-default);
+  background: linear-gradient(160deg, var(--yt-bg-card) 0%, var(--yt-bg-card-alt) 100%);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  user-select: none;
+  touch-action: pan-y;
+}
+.worldnews-card-de {
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: var(--yt-text-primary);
+}
+.worldnews-card-ru {
+  font-size: 18px;
+  color: var(--yt-text-secondary);
+}
+.worldnews-card-usage {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--yt-text-secondary);
+  opacity: 0.8;
+  max-width: 34ch;
+}
+.worldnews-card-save {
+  margin-top: 6px;
+  min-height: 42px;
+  padding: 0 22px;
+  border-radius: 999px;
+  border: 1px solid var(--yt-action-primary);
+  background: transparent;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.worldnews-card-save.is-saved {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: #22c55e;
+  cursor: default;
+}
+.worldnews-deck-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+.worldnews-deck-arrow {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--yt-border-default);
+  background: var(--yt-bg-card-alt);
+  color: var(--yt-text-primary);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+.worldnews-deck-arrow:disabled { opacity: 0.35; cursor: default; }
+.worldnews-deck-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  max-width: 60%;
+}
+.worldnews-deck-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--yt-border-default);
+}
+.worldnews-deck-dot.is-active { background: var(--yt-action-primary); }
+.worldnews-deck-dot.is-saved { background: #22c55e; }
+
+/* «Проверить знания» CTA on the video stage: subdued until the video ends. */
+.worldnews-to-quiz { margin-top: 12px; }
+.worldnews-to-quiz.is-idle {
+  background: var(--yt-bg-card-alt);
+  color: var(--yt-text-secondary);
+  box-shadow: none;
+  font-weight: 700;
+}
+.worldnews-to-quiz.is-ready { animation: worldnews-pulse 1.6s ease-in-out infinite; }
+@keyframes worldnews-pulse {
+  0%, 100% { box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35); }
+  50% { box-shadow: 0 6px 26px rgba(37, 99, 235, 0.7); }
+}
+
+/* Quiz progress + result (one-question-at-a-time) */
+.worldnews-quiz-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.worldnews-quiz-bar {
+  flex: 1 1 auto;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--yt-bg-card-alt);
+  overflow: hidden;
+}
+.worldnews-quiz-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--yt-action-primary);
+  transition: width 0.3s ease;
+}
+.worldnews-quiz-count {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--yt-text-secondary);
+}
+.worldnews-quiz-result {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  text-align: center;
+  padding: 24px 12px 8px;
+}
+.worldnews-quiz-result-score {
+  font-size: 46px;
+  font-weight: 800;
+  color: var(--yt-text-primary);
+}
+.worldnews-quiz-result-label {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--yt-text-secondary);
 }
 
 /* News-mode quiz: 4 MC questions with immediate correct/wrong feedback + explanation. */
