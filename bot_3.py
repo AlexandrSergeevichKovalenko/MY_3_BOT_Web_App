@@ -7264,10 +7264,24 @@ async def run_world_news_evening_prep(context: CallbackContext):
         existing = await asyncio.to_thread(get_world_news_for_date, target)
     except Exception:
         existing = None
-    if existing and existing.get("is_pinned"):
-        logging.info("world_news evening: %s already approved — skip", target)
-        return
     admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    if existing and existing.get("is_pinned"):
+        # Already approved (e.g. admin prepped/approved manually earlier). Don't re-prompt, but
+        # don't go silent either — confirm the job ran and show which topic will go out at 6:30,
+        # with the keyboard so it can still be re-formed if wanted.
+        logging.info("world_news evening: %s already approved — notify only", target)
+        text = _world_news_preview_text(
+            existing, header="🌙 <b>Новость на завтра уже одобрена</b> — уйдёт утром в 6:30"
+        )
+        kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(existing))
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=kb
+                )
+            except Exception:
+                pass
+        return
     try:
         from backend.world_news_generator import prepare_world_news
         entry = await asyncio.to_thread(prepare_world_news, target)
