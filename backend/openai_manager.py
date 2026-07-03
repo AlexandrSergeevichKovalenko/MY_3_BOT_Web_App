@@ -75,6 +75,8 @@ _DEFAULT_RESPONSES_TASKS = {
     "check_translation_story_arena",
     "check_translation_with_claude",
     "check_translation_explanation_multilang",
+    "check_story_explanation_core",
+    "check_story_explanation_meta",
     "audio_sentence_grammar_explain_multilang",
     "check_story_guess_semantic",
     "recheck_translation",
@@ -854,6 +856,64 @@ RULES:
 
 Output ONLY valid minified JSON (no markdown, no code fences, no extra text) with EXACTLY this shape:
 {"summary":"...","sentences":[{"index":1,"correct":"...","verdict":"minor","good":"...","errors":[{"type":"grammar","your":"...","correct":"...","why":"...","rule":"...","example":"..."}],"alternatives":[{"variant":"...","note":"..."}],"synonyms":[{"word":"...","options":["..."]}]}],"pattern":{"detected":false,"title":"","explanation":"","examples":[]},"grammar_focus":[{"title":"...","theory":"...","examples":[{"de":"...","ru":"..."}]}],"practice":[{"ru":"...","hint":"..."}]}
+""",
+"check_story_explanation_core":"""
+You are a professional German teacher and linguist giving a full, structured per-sentence review of a student's translation of a 7-sentence story. Be precise, pedagogically clear, kind and motivating — like a real teacher who wants the student to GROW.
+
+Input JSON:
+{
+  "explanation_language": "ru|de|en|es|it",
+  "explanation_language_name": "e.g. Russian (русский)",
+  "target_language": "de",
+  "sentences": [{"index":1,"original":"<original sentence>","user":"<student's German>"}, ... up to 7]
+}
+
+RULES:
+- ⚠️ LANGUAGE IS CRITICAL. Write EVERY explanatory string in explanation_language_name: the summary; every sentence "good"; every error "why" and "rule"; every alternative "note". If explanation_language is "ru", these MUST be in Russian — writing them in German is a hard ERROR, even for grammar terms (translate the term, e.g. "Adjektivbildung bei Materialien" → "Образование прилагательных от материалов").
+- Keep in German ONLY the actual language SAMPLES: "correct", "your", "example", "variant", synonym "word"/"options". Everything else = explanation_language.
+- Do NOT use Markdown inside any string (no **, *, _, #). Plain text only.
+- Be linguistically rigorous AND complete: cover grammar rules, lexical correctness, and word order.
+- For EACH sentence return an object:
+  - "index": the sentence number,
+  - "correct": the fully correct, natural German version of the whole sentence,
+  - "verdict": "correct" (no real errors) | "minor" (small slips) | "major" (meaning/grammar broken),
+  - "good": ONE short encouraging sentence in explanation_language naming what the student did WELL in THIS sentence (correct case, good word choice, right word order…). Always try to find something genuine; "" only if the sentence is almost entirely wrong,
+  - "errors": array (max 4, ordered by importance) of REAL mistakes only, each:
+      { "type": one of "grammar","vocabulary","syntax","style","orthography",
+        "your": exact wrong fragment copied from the student,
+        "correct": the corrected fragment,
+        "why": clear, unambiguous reason WHY the student's version is wrong (1-2 sentences, no jargon dump),
+        "rule": the concrete underlying rule, named (e.g. "Wechselpräposition 'in' + Akkusativ bei Richtung, Frage wohin?"),
+        "example": ONE short correct German example that demonstrates the rule },
+  - "alternatives": up to 2 natural alternative ways to phrase the WHOLE sentence ({"variant": German, "note": short note in explanation_language}), [] if none add value,
+  - "synonyms": up to 3 useful words from the sentence ({"word": German, "options": up to 3 German synonyms}), [] if none.
+- Do NOT invent mistakes. A correct sentence gets "errors": [] and verdict "correct".
+- "summary": 2-3 sentences — warm overall impression + the single most important thing to work on.
+
+Output ONLY valid minified JSON (no markdown, no code fences, no extra text) with EXACTLY this shape:
+{"summary":"...","sentences":[{"index":1,"correct":"...","verdict":"minor","good":"...","errors":[{"type":"grammar","your":"...","correct":"...","why":"...","rule":"...","example":"..."}],"alternatives":[{"variant":"...","note":"..."}],"synonyms":[{"word":"...","options":["..."]}]}]}
+""",
+"check_story_explanation_meta":"""
+You are a professional German teacher and linguist. A student translated a 7-sentence story into German (originals + the student's German are given). Produce concise cross-story META feedback (NOT a per-sentence review — that is done separately). Be precise, kind and motivating.
+
+Input JSON:
+{
+  "explanation_language": "ru|de|en|es|it",
+  "explanation_language_name": "e.g. Russian (русский)",
+  "target_language": "de",
+  "sentences": [{"index":1,"original":"<original sentence>","user":"<student's German>"}, ... up to 7]
+}
+
+RULES:
+- ⚠️ LANGUAGE IS CRITICAL. Write EVERY explanatory string in explanation_language_name: the pattern "title", "explanation" and example "note"; every grammar_focus "title" and "theory"; every practice "ru" and "hint". If explanation_language is "ru", these MUST be in Russian — German here is a hard ERROR, even for grammar terms and titles (translate the term).
+- Keep in German ONLY the actual language SAMPLES: pattern example "wrong"/"right", grammar example "de". Everything else = explanation_language.
+- Do NOT use Markdown inside any string (no **, *, _, #). Plain text only.
+- "pattern": look across ALL 7 sentences for a RECURRING mistake or recurring mistake TYPE the student keeps making. If found: {"detected": true, "title": short name of the pattern, "explanation": clear explanation of the systematic error and HOW to feel/fix it (2-4 sentences), "examples": up to 3 {"wrong": German, "right": German, "note": short note}}. If no real recurring pattern: {"detected": false, "title": "", "explanation": "", "examples": []}.
+- "grammar_focus": 2-4 key German grammar constructions worth practicing from this story, each {"title": construction name, "theory": short theory in explanation_language, "examples": up to 2 {"de": German example, "ru": its translation in explanation_language}}.
+- "practice": 2-3 short NEW practice sentences that target the student's weak spots, each {"ru": sentence to translate written in explanation_language, "hint": short hint in explanation_language what to watch for}.
+
+Output ONLY valid minified JSON (no markdown, no code fences, no extra text) with EXACTLY this shape:
+{"pattern":{"detected":false,"title":"","explanation":"","examples":[]},"grammar_focus":[{"title":"...","theory":"...","examples":[{"de":"...","ru":"..."}]}],"practice":[{"ru":"...","hint":"..."}]}
 """,
 "tts_chunk_de":"""
 You are a German sentence chunker for spaced-repetition TTS training.
@@ -7577,12 +7637,44 @@ def _coerce_story_explanation(raw: str) -> dict:
     }
 
 
+async def _run_story_explanation_part(
+    task_name: str,
+    payload: dict,
+) -> str:
+    """Run one half of the split story review. Forced onto the fast single-shot
+    `responses` path (assistants fallback still allowed) so we never pay the
+    slow thread/run/poll tax that made the breakdown feel sluggish."""
+    content = ""
+    for _ in range(3):
+        try:
+            content = (await llm_execute(
+                task_name=task_name,
+                system_instruction_key=task_name,
+                user_message=json.dumps(payload, ensure_ascii=False),
+                poll_interval_seconds=1.0,
+                responses_only=True,
+            ) or "").strip()
+        except Exception:
+            content = ""
+        if content:
+            break
+        await asyncio.sleep(2)
+    return content
+
+
 async def run_story_explanation_structured(
     sentences: list[dict],
     explanation_language: str,
 ) -> dict:
     """Teacher-grade structured 7-sentence story review (JSON) for the story result modal.
-    `sentences` = [{"index": int, "original": str, "user": str}, ...]."""
+    `sentences` = [{"index": int, "original": str, "user": str}, ...].
+
+    Speed/scale: the one huge blocking essay is split into two SMALLER prompts that
+    run concurrently — "core" (summary + per-sentence breakdown, the part the learner
+    stares at) and "meta" (recurring pattern + grammar focus + practice). Each output
+    is smaller, so both finish far sooner than one monolithic generation, and total
+    wall-clock ≈ max(core, meta) instead of their sum. Merged back into the exact same
+    shape the modal already consumes, so nothing downstream changes."""
     lang_code = (explanation_language or "ru").strip().lower()
     lang_names = {"ru": "Russian (русский)", "de": "German (Deutsch)", "en": "English",
                   "es": "Spanish (español)", "it": "Italian (italiano)"}
@@ -7599,21 +7691,23 @@ async def run_story_explanation_structured(
             for i, s in enumerate(sentences or [])
         ],
     }
-    content = ""
-    for _ in range(3):
-        try:
-            content = (await llm_execute(
-                task_name="check_story_explanation_structured",
-                system_instruction_key="check_story_explanation_structured",
-                user_message=json.dumps(payload, ensure_ascii=False),
-                poll_interval_seconds=1.0,
-            ) or "").strip()
-        except Exception:
-            content = ""
-        if content:
-            break
-        await asyncio.sleep(3)
-    return _coerce_story_explanation(content)
+
+    core_raw, meta_raw = await asyncio.gather(
+        _run_story_explanation_part("check_story_explanation_core", payload),
+        _run_story_explanation_part("check_story_explanation_meta", payload),
+    )
+
+    # Both halves share the tolerant coercer (it always returns the full shape with
+    # empty defaults), so we just cherry-pick each half's keys and merge.
+    core = _coerce_story_explanation(core_raw)
+    meta = _coerce_story_explanation(meta_raw)
+    return {
+        "summary": core.get("summary", ""),
+        "sentences": core.get("sentences", []),
+        "pattern": meta.get("pattern", {"detected": False, "title": "", "explanation": "", "examples": []}),
+        "grammar_focus": meta.get("grammar_focus", []),
+        "practice": meta.get("practice", []),
+    }
 
 
 system_message.update({

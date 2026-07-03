@@ -68,7 +68,45 @@ function typeLabel(type, langDe) {
   return `${m.emoji} ${langDe ? m.de : m.ru}`;
 }
 
-function ErrorCard({ err, i, langDe, tr }) {
+/**
+ * A tappable German fragment/word that saves straight into the dictionary — same
+ * one-tap-save affordance the learner already has all over the app (translation
+ * drafts, reader, YouTube selections). Optimistic: flips to ✓ instantly and the
+ * canonical lookup→save runs in the background; on a real failure it shows ↻ to retry.
+ */
+function SaveDe({ text, onSaveWord, tr, prefix = '', className = '' }) {
+  const [state, setState] = useState('idle'); // idle | saved | error
+  const clean = String(text || '').trim();
+  if (!clean) return null;
+  const save = (e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (!onSaveWord || state === 'saved') return; // already saved → no-op (idle/error → attempt)
+    setState('saved');
+    Promise.resolve(onSaveWord(clean))
+      .then((ok) => { if (ok === false) setState('error'); })
+      .catch(() => setState('error'));
+  };
+  const ico = state === 'saved' ? '✓' : (state === 'error' ? '↻' : '＋');
+  const title = state === 'saved'
+    ? tr('Сохранено в словарь', 'Im Wörterbuch gespeichert')
+    : (state === 'error' ? tr('Не сохранилось — нажмите ещё раз', 'Nicht gespeichert — nochmal tippen')
+      : tr('Сохранить в словарь', 'Ins Wörterbuch speichern'));
+  return (
+    <button
+      type="button"
+      className={`story-save-de is-${state} ${className}`}
+      onClick={save}
+      title={title}
+      aria-label={title}
+    >
+      {prefix ? <span className="story-save-de-prefix">{prefix}</span> : null}
+      <span className="story-save-de-text">{clean}</span>
+      <span className="story-save-de-ico" aria-hidden="true">{ico}</span>
+    </button>
+  );
+}
+
+function ErrorCard({ err, i, langDe, tr, onSaveWord }) {
   const meta = TYPE_META[err.type] || TYPE_META.grammar;
   return (
     <div className={`explain-error-card ${meta.cls}`}>
@@ -80,7 +118,7 @@ function ErrorCard({ err, i, langDe, tr }) {
         <div className="explain-frag-row">
           {err.your ? <span className="explain-frag-bad">{err.your}</span> : null}
           {err.your && err.correct ? <span className="explain-frag-arrow">→</span> : null}
-          {err.correct ? <span className="explain-frag-good">✅ {err.correct}</span> : null}
+          {err.correct ? <SaveDe text={err.correct} onSaveWord={onSaveWord} tr={tr} prefix="✅" className="is-good" /> : null}
         </div>
       )}
       {err.why && (
@@ -96,7 +134,7 @@ function ErrorCard({ err, i, langDe, tr }) {
   );
 }
 
-function SentenceBlock({ sent, langDe, tr }) {
+function SentenceBlock({ sent, langDe, tr, onSaveWord }) {
   const errors = Array.isArray(sent.errors) ? sent.errors : [];
   const alternatives = Array.isArray(sent.alternatives) ? sent.alternatives : [];
   const synonyms = Array.isArray(sent.synonyms) ? sent.synonyms : [];
@@ -112,11 +150,12 @@ function SentenceBlock({ sent, langDe, tr }) {
       )}
       {sent.correct && (
         <div className="story-sent-correct">
-          <span className="story-sent-correct-label">{tr('Верный вариант', 'Korrekt')}:</span> {sent.correct}
+          <span className="story-sent-correct-label">{tr('Верный вариант', 'Korrekt')}:</span>{' '}
+          <SaveDe text={sent.correct} onSaveWord={onSaveWord} tr={tr} className="is-sentence" />
         </div>
       )}
       {errors.length > 0 ? (
-        errors.map((err, i) => <ErrorCard key={i} err={err} i={i} langDe={langDe} tr={tr} />)
+        errors.map((err, i) => <ErrorCard key={i} err={err} i={i} langDe={langDe} tr={tr} onSaveWord={onSaveWord} />)
       ) : (
         <div className="story-sent-ok">✅ {tr('Ошибок нет — отлично!', 'Keine Fehler — super!')}</div>
       )}
@@ -125,7 +164,7 @@ function SentenceBlock({ sent, langDe, tr }) {
           <div className="explain-section-title">🔁 {tr('Как ещё сказать', 'Alternativen')}</div>
           {alternatives.map((alt, i) => (
             <div className="explain-alt" key={i}>
-              <span className="explain-alt-variant">{alt.variant}</span>
+              <SaveDe text={alt.variant} onSaveWord={onSaveWord} tr={tr} className="is-alt" />
               {alt.note ? <span className="explain-alt-note"> — {alt.note}</span> : null}
             </div>
           ))}
@@ -136,9 +175,13 @@ function SentenceBlock({ sent, langDe, tr }) {
           <div className="explain-section-title">🔤 {tr('Синонимы', 'Synonyme')}</div>
           {synonyms.map((syn, i) => (
             <div className="explain-syn" key={i}>
-              <b className="explain-syn-word">{syn.word}</b>
+              <SaveDe text={syn.word} onSaveWord={onSaveWord} tr={tr} className="is-synword" />
               <span className="explain-syn-arrow"> → </span>
-              <span className="explain-syn-opts">{(syn.options || []).join(', ')}</span>
+              <span className="explain-syn-opts">
+                {(syn.options || []).map((opt, j) => (
+                  <SaveDe key={j} text={opt} onSaveWord={onSaveWord} tr={tr} className="is-synopt" />
+                ))}
+              </span>
             </div>
           ))}
         </div>
@@ -159,6 +202,7 @@ export default function StoryResultModal({
   onToggleLang,
   initData,
   storyContext,
+  onSaveWord,
 }) {
   const [qOpen, setQOpen] = useState(false);
   const [qDraft, setQDraft] = useState('');
@@ -316,7 +360,8 @@ export default function StoryResultModal({
               {sentences.length > 0 && (
                 <div className="explain-section">
                   <div className="explain-section-title">🧠 {tr('Разбор по предложениям', 'Satz für Satz')}</div>
-                  {sentences.map((s) => <SentenceBlock key={s.index} sent={s} langDe={langDe} tr={tr} />)}
+                  <div className="story-save-hint">💾 {tr('Совет: коснитесь любого немецкого слова или фразы, чтобы сохранить в словарь.', 'Tipp: Tippe ein deutsches Wort oder eine Phrase an, um es im Wörterbuch zu speichern.')}</div>
+                  {sentences.map((s) => <SentenceBlock key={s.index} sent={s} langDe={langDe} tr={tr} onSaveWord={onSaveWord} />)}
                 </div>
               )}
 
@@ -329,7 +374,7 @@ export default function StoryResultModal({
                     <div className="explain-frag-row" key={i}>
                       {ex.wrong ? <span className="explain-frag-bad">{ex.wrong}</span> : null}
                       {ex.wrong && ex.right ? <span className="explain-frag-arrow">→</span> : null}
-                      {ex.right ? <span className="explain-frag-good">✅ {ex.right}</span> : null}
+                      {ex.right ? <SaveDe text={ex.right} onSaveWord={onSaveWord} tr={tr} prefix="✅" className="is-good" /> : null}
                       {ex.note ? <span className="explain-alt-note"> — {ex.note}</span> : null}
                     </div>
                   ))}
@@ -345,7 +390,7 @@ export default function StoryResultModal({
                       {gf.theory && <p className="story-grammar-theory">{gf.theory}</p>}
                       {(gf.examples || []).map((ex, j) => (
                         <div className="story-grammar-ex" key={j}>
-                          <span className="story-grammar-de">{ex.de}</span>
+                          <SaveDe text={ex.de} onSaveWord={onSaveWord} tr={tr} className="is-grammar" />
                           {ex.ru ? <span className="story-grammar-ru"> — {ex.ru}</span> : null}
                         </div>
                       ))}

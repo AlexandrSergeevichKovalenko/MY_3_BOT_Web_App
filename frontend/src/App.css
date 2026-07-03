@@ -25826,6 +25826,64 @@ html[data-scheme="light"] .explain-line,
 .story-modal-links a { color: #93c5fd; word-break: break-word; }
 .explain-summary-p { margin: 0; font-size: 15px; line-height: 1.5; color: #e2e8f0; }
 
+/* ── Tap-to-save German fragments (one-tap dictionary save, like everywhere else) ── */
+.story-save-hint {
+  font-size: 12.5px; line-height: 1.45; color: #a9b8cf;
+  background: rgba(96, 165, 250, 0.08); border: 1px dashed rgba(96, 165, 250, 0.3);
+  border-radius: 10px; padding: 8px 11px; margin-bottom: 10px;
+}
+.story-save-de {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  font: inherit; text-align: left; cursor: pointer;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(148, 163, 184, 0.08);
+  color: #e2e8f0;
+  padding: 1px 8px; border-radius: 8px;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.06s ease;
+  -webkit-tap-highlight-color: transparent;
+  line-height: 1.4;
+}
+.story-save-de:hover { background: rgba(148, 163, 184, 0.16); border-color: rgba(148, 163, 184, 0.5); }
+.story-save-de:active { transform: scale(0.97); }
+.story-save-de-ico { font-size: 12px; font-weight: 700; opacity: 0.65; flex: 0 0 auto; color: #94a3b8; }
+.story-save-de-prefix { flex: 0 0 auto; }
+.story-save-de.is-good { color: #86efac; background: rgba(74, 222, 128, 0.12); border-color: rgba(74, 222, 128, 0.3); font-weight: 600; }
+.story-save-de.is-good .story-save-de-ico { color: #4ade80; }
+.story-save-de.is-synword { color: #fcd34d; background: rgba(252, 211, 77, 0.1); border-color: rgba(252, 211, 77, 0.3); }
+.story-save-de.is-synword .story-save-de-ico { color: #fcd34d; }
+.story-save-de.is-synopt { margin-right: 6px; margin-top: 4px; }
+.story-save-de.is-alt, .story-save-de.is-sentence, .story-save-de.is-grammar { color: #eaf2ff; }
+.story-save-de.is-saved { background: rgba(52, 211, 153, 0.18); border-color: rgba(52, 211, 153, 0.55); color: #86efac; }
+.story-save-de.is-saved .story-save-de-ico { color: #34d399; opacity: 1; }
+.story-save-de.is-error { border-color: rgba(251, 146, 60, 0.6); }
+.story-save-de.is-error .story-save-de-ico { color: #fb923c; opacity: 1; }
+.explain-syn-opts { display: inline-flex; flex-wrap: wrap; align-items: baseline; }
+
+/* ── Friendly story-submit nudge (replaces the scary red error box) ── */
+.story-submit-hint {
+  display: flex; align-items: center; gap: 10px;
+  margin: 2px 0 10px; padding: 12px 14px; border-radius: 14px;
+  background: linear-gradient(180deg, rgba(96, 165, 250, 0.16), rgba(96, 165, 250, 0.07));
+  border: 1px solid rgba(96, 165, 250, 0.34);
+  color: #dbeafe; font-size: 14px; line-height: 1.45;
+  animation: storyHintIn 0.2s ease;
+}
+.story-submit-hint-ico { font-size: 18px; flex: 0 0 auto; }
+.story-submit-hint-text { flex: 1 1 auto; }
+@keyframes storyHintIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* Light theme for the save chips + hints */
+html[data-scheme="light"] .story-save-de,
+.webapp-page.theme-light .story-save-de { background: #eef2f8; border-color: #d3dce8; color: #24324a; }
+html[data-scheme="light"] .story-save-de.is-good,
+.webapp-page.theme-light .story-save-de.is-good { color: #15803d; background: rgba(34, 197, 94, 0.12); border-color: rgba(34, 197, 94, 0.34); }
+html[data-scheme="light"] .story-save-de.is-synword,
+.webapp-page.theme-light .story-save-de.is-synword { color: #a16207; background: rgba(234, 179, 8, 0.14); border-color: rgba(234, 179, 8, 0.36); }
+html[data-scheme="light"] .story-save-de.is-saved,
+.webapp-page.theme-light .story-save-de.is-saved { color: #15803d; background: rgba(34, 197, 94, 0.16); border-color: rgba(34, 197, 94, 0.5); }
+html[data-scheme="light"] .story-submit-hint,
+.webapp-page.theme-light .story-submit-hint { color: #1e3a5f; background: linear-gradient(180deg, rgba(59, 130, 246, 0.12), rgba(59, 130, 246, 0.05)); border-color: rgba(59, 130, 246, 0.3); }
+
 /* Follow-up Q&A inside the modal — the translations-scoped rules don't reach here,
    so the textarea/actions/answer are styled explicitly (full width). */
 .explain-modal .story-followup-form { display: grid; gap: 10px; margin-top: 12px; }

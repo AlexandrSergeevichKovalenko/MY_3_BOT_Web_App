@@ -2920,6 +2920,7 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   checkDisabled,
   checkLoading,
   checkStatusText,
+  showCheckButton = true,
   onJumpToDictionary,
   onSaveDraft,
   saveLabel,
@@ -3196,21 +3197,23 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
       </span>
       <textarea {...textareaProps} />
       <div className="translation-actions">
-        <button
-          type="button"
-          className={`translation-item-check-button ${checkLoading ? 'is-loading' : ''}`}
-          onClick={() => onCheckTranslation?.(sentenceId)}
-          disabled={Boolean(checkDisabled || checkLoading)}
-          aria-label={checkLoading ? checkLoadingLabel : checkLabel}
-          aria-busy={checkLoading ? 'true' : 'false'}
-        >
-          {checkLoading ? (
-            <>
-              <span className="translation-item-check-spinner" aria-hidden="true" />
-              <span>{checkLoadingLabel}</span>
-            </>
-          ) : checkLabel}
-        </button>
+        {showCheckButton && (
+          <button
+            type="button"
+            className={`translation-item-check-button ${checkLoading ? 'is-loading' : ''}`}
+            onClick={() => onCheckTranslation?.(sentenceId)}
+            disabled={Boolean(checkDisabled || checkLoading)}
+            aria-label={checkLoading ? checkLoadingLabel : checkLabel}
+            aria-busy={checkLoading ? 'true' : 'false'}
+          >
+            {checkLoading ? (
+              <>
+                <span className="translation-item-check-spinner" aria-hidden="true" />
+                <span>{checkLoadingLabel}</span>
+              </>
+            ) : checkLabel}
+          </button>
+        )}
         <button
           type="button"
           className="translation-dict-jump"
@@ -3294,6 +3297,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
   hasActiveTranslationSentences,
   storyGuess,
   setStoryGuess,
+  storySubmitHint,
+  setStorySubmitHint,
   translationPrivateGrammarTextOptIn,
   setTranslationPrivateGrammarTextOptIn,
   translationCheckProgress,
@@ -3769,6 +3774,9 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       checkDisabled={webappLoading}
                       checkLoading={Number(singleSentenceCheckLoadingId || 0) === Number(item.id_for_mistake_table || 0)}
                       checkStatusText={tr('Проверяем это предложение. Результат появится ниже.', 'Dieser Satz wird geprüft. Das Ergebnis erscheint weiter unten.')}
+                      // Загадочная история: проверка идёт целиком по кнопке «Проверить историю»,
+                      // поэтому по-предложенная «Проверить» тут скрыта (в обычных переводах остаётся).
+                      showCheckButton={!isStorySession}
                       onJumpToDictionary={jumpToDictionaryFromSentence}
                       onSaveDraft={handleSaveSentenceDraft}
                       saveLabel={tr('Сохранить', 'Speichern')}
@@ -3785,13 +3793,19 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 <input
                   type="text"
                   value={storyGuess}
-                  onChange={(event) => setStoryGuess(event.target.value)}
+                  onChange={(event) => { setStoryGuess(event.target.value); if (storySubmitHint) setStorySubmitHint?.(''); }}
                   placeholder={tr('Ваш ответ...', 'Deine Antwort...')}
                 />
               </label>
             )}
             {hasActiveTranslationSentences && (
               <>
+                {storySubmitHint && !webappLoading && (
+                  <div className="story-submit-hint" role="status">
+                    <span className="story-submit-hint-ico" aria-hidden="true">💡</span>
+                    <span className="story-submit-hint-text">{storySubmitHint}</span>
+                  </div>
+                )}
                 {webappError && !webappLoading && (
                   (String(webappError).includes(PAID_FEATURE_ERROR_PREFIX) && renderStoryPaidFeatureNotice
                     ? <PaidFeatureSpotlight>{renderStoryPaidFeatureNotice()}</PaidFeatureSpotlight>
@@ -5896,6 +5910,10 @@ function AppInner() {
   const [storyHistoryError, setStoryHistoryError] = useState('');
   const [selectedStoryId, setSelectedStoryId] = useState('');
   const [storyGuess, setStoryGuess] = useState('');
+  // Friendly, non-error nudge for the story submit flow (missing translations / missing
+  // guess). Kept separate from webappError so it renders as a warm hint card, not a
+  // scary red error box.
+  const [storySubmitHint, setStorySubmitHint] = useState('');
   const [storyResult, setStoryResult] = useState(null);
   // Two-call story result modal: submit fills Part 1 (score/guess), /story/explain
   // fills the progressive teacher breakdown (Part 2/3).
@@ -19553,13 +19571,14 @@ function AppInner() {
       return !value;
     });
     if (missing.length > 0) {
-      setWebappError(tr('Переведи, пожалуйста, все 7 предложений — тогда проверим историю целиком 🙂', 'Übersetze bitte alle 7 Sätze — dann prüfen wir die ganze Geschichte 🙂'));
+      setStorySubmitHint(tr('Переведи, пожалуйста, все 7 предложений — тогда проверим историю целиком 🙂', 'Übersetze bitte alle 7 Sätze — dann prüfen wir die ganze Geschichte 🙂'));
       return;
     }
     if (!storyGuess.trim()) {
-      setWebappError(tr('Осталось вписать догадку: о ком или о чём была история? ✍️', 'Nur noch deine Vermutung: worum oder um wen ging es in der Geschichte? ✍️'));
+      setStorySubmitHint(tr('Осталось вписать догадку: о ком или о чём была история? ✍️', 'Nur noch deine Vermutung: worum oder um wen ging es in der Geschichte? ✍️'));
       return;
     }
+    setStorySubmitHint('');
     setWebappLoading(true);
     translationProgressiveFillPollTokenRef.current += 1;
     setTranslationProgressiveFill({
@@ -31912,6 +31931,8 @@ function AppInner() {
                 hasActiveTranslationSentences={hasActiveTranslationSentences}
                 storyGuess={storyGuess}
                 setStoryGuess={setStoryGuess}
+                storySubmitHint={storySubmitHint}
+                setStorySubmitHint={setStorySubmitHint}
                 translationPrivateGrammarTextOptIn={translationPrivateGrammarTextOptIn}
                 setTranslationPrivateGrammarTextOptIn={setTranslationPrivateGrammarTextOptIn}
                 translationCheckProgress={translationCheckProgress}
@@ -31999,6 +32020,7 @@ function AppInner() {
               onToggleLang={handleToggleStoryExplainLang}
               initData={initData}
               storyContext={storyContext}
+              onSaveWord={handleSaveSentenceDraft}
             />
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
