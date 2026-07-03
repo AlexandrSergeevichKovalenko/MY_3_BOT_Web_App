@@ -616,6 +616,14 @@ html[data-scheme="light"] .au-lemma-tense { background: #eef1f7; }
 }
 .au-adj-key:disabled { opacity: 0.5; }
 html[data-scheme="light"] .au-adj-key { color: #0f172a; background: #eef1f7; }
+/* Artikel review card (der/die/das), mirrors the Sprint look */
+.au-artikel-word {
+  text-align: center; margin: 8px 0 14px;
+  font-size: 34px; font-weight: 800; letter-spacing: -0.01em;
+  color: var(--dmps-text-primary, #F8FAFC);
+}
+html[data-scheme="light"] .au-artikel-word { color: #0f172a; }
+.au-artikel-key { min-width: 92px; }
 /* Satzbau assemble zones */
 .sb-answer {
   display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;

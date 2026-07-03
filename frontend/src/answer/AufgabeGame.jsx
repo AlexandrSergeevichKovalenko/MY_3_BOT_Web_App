@@ -319,6 +319,31 @@ function AufgabeAdjektiv({ task, onSubmit, submitting }) {
   );
 }
 
+function AufgabeArtikel({ task, onSubmit, submitting }) {
+  // der/die/das review (mirrors Artikel Sprint): one tap = instant answer.
+  const options = task.options && task.options.length ? task.options : ['der', 'die', 'das'];
+  const [pick, setPick] = useState(null);
+  const choose = (a) => {
+    if (submitting || pick) return;  // lock after the first tap (submit in flight)
+    setPick(a); tapHaptic(); onSubmit(a);
+  };
+  return (
+    <>
+      <div className="au-artikel-word">{task.wort}</div>
+      {task.hint_ru ? <p className="au-hint" style={{ textAlign: 'center' }}>{task.hint_ru}</p> : null}
+      <div className="au-adj-opts">
+        {options.map((a) => (
+          <button
+            key={a} type="button"
+            className={`au-adj-key au-artikel-key${pick === a ? ' on' : ''}`}
+            onClick={() => choose(a)} disabled={submitting}
+          >{a}</button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 export default function AufgabeGame({ task, onSubmit, submitting }) {
   const fmt = task.format || 'cloze';
   if (fmt === 'error') return <AufgabeError task={task} onSubmit={onSubmit} submitting={submitting} />;
@@ -326,5 +351,6 @@ export default function AufgabeGame({ task, onSubmit, submitting }) {
   if (fmt === 'pin') return <AufgabePin task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'satzbau') return <AufgabeSatzbau task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'adjektiv') return <AufgabeAdjektiv task={task} onSubmit={onSubmit} submitting={submitting} />;
+  if (fmt === 'artikel') return <AufgabeArtikel task={task} onSubmit={onSubmit} submitting={submitting} />;
   return <AufgabeText task={task} onSubmit={onSubmit} submitting={submitting} />;
 }

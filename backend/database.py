@@ -1552,6 +1552,34 @@ def count_due_mistakes(user_id: int) -> int:
         return 0
 
 
+def force_due_mistakes(user_id: int, *, fmt: str | None = None) -> int:
+    """TEST/admin: make this user's review items due right now (due_at=NOW,
+    un-master). Scoped to one format (e.g. 'artikel') or all when fmt is None.
+    Returns rows affected."""
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                if fmt:
+                    cur.execute(
+                        "UPDATE bt_3_aufgabe_mistakes SET due_at=NOW(), mastered=FALSE "
+                        "WHERE user_id=%s AND format=%s;",
+                        (int(user_id), str(fmt)),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE bt_3_aufgabe_mistakes SET due_at=NOW(), mastered=FALSE "
+                        "WHERE user_id=%s;",
+                        (int(user_id),),
+                    )
+                affected = cur.rowcount
+            conn.commit()
+        return int(affected or 0)
+    except Exception:
+        logging.warning("force_due_mistakes failed user_id=%s fmt=%s", user_id, fmt, exc_info=True)
+        return 0
+
+
 def get_next_due_mistake(user_id: int) -> dict | None:
     try:
         ensure_aufgabe_mistakes_schema()

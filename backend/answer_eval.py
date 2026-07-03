@@ -1217,8 +1217,49 @@ def evaluate_freeform(*, dispatch_id: int, user_id: int, raw_input: str) -> dict
 
 # ── B2+ text tasks ("Aufgabe": cloze / …): load + evaluate ───────────────────
 
+# Deterministic gender-signal mnemonics for the `artikel` review card ("чуйка").
+# Only shown AFTER the answer is revealed AND only when the signal agrees with the
+# true article (`a == art` guard) — so a tendency-suffix (-er→der, -at→das) is never
+# stated for a word that breaks it. No LLM. Falls back to an honest "just remember it".
+_ARTIKEL_SIGNALS = [
+    ("chen", "das", "-chen → всегда das (уменьшительное): das Mädchen, das Kätzchen"),
+    ("lein", "das", "-lein → всегда das (уменьшительное): das Fräulein"),
+    ("ung", "die", "-ung → почти всегда die: die Ordnung, die Zeitung"),
+    ("heit", "die", "-heit → die: die Freiheit, die Krankheit"),
+    ("keit", "die", "-keit → die: die Möglichkeit"),
+    ("schaft", "die", "-schaft → die: die Mannschaft, die Wissenschaft"),
+    ("ität", "die", "-ität → die: die Universität, die Aktivität"),
+    ("tät", "die", "-tät → die: die Fakultät"),
+    ("ion", "die", "-ion → die: die Nation, die Direktion"),
+    ("enz", "die", "-enz → die: die Konferenz"),
+    ("anz", "die", "-anz → die: die Distanz"),
+    ("ie", "die", "-ie → die: die Geografie, die Linguistik→die Ling…"),
+    ("ling", "der", "-ling → der: der Lehrling, der Schmetterling"),
+    ("ismus", "der", "-ismus → der: der Kapitalismus"),
+    ("ment", "das", "-ment → часто das: das Instrument, das Dokument"),
+    ("um", "das", "-um → часто das (лат.): das Zentrum, das Studium"),
+    ("at", "das", "-at → часто das: das Direktorat, das Referat"),
+    ("or", "der", "-or → часто der: der Motor, der Direktor"),
+    ("er", "der", "-er (деятель/предмет) → часто der: der Lehrer, der Rechner"),
+]
+
+
+def artikel_review_hint(wort: str, article: str) -> str:
+    """A deterministic gender-signal tip for the artikel review card, or an honest
+    'just memorize it' when the word carries no reliable signal."""
+    w = str(wort or "").strip().lower()
+    art = str(article or "").strip().lower()
+    for suf, a, hint in _ARTIKEL_SIGNALS:
+        if a == art and w.endswith(suf) and len(w) - len(suf) >= 2:
+            return hint
+    return "У этого слова нет надёжного суффикс-сигнала — запоминай род вместе со словом (der/die/das)."
+
+
 def _aufgabe_correct_answer(payload: dict) -> str:
     """The canonical answer to show after answering (per format)."""
+    art = str(payload.get("correct") or "").strip().lower()
+    if art in ("der", "die", "das") and payload.get("wort") and not payload.get("satz"):  # artikel
+        return f"{art} {payload.get('wort')}".strip()
     if payload.get("before") is not None and payload.get("after") is not None:  # adjektiv
         full = str(payload.get("full") or "").strip()
         if full:
@@ -1283,6 +1324,9 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
     # Synonym/antonym: every accepted word is tappable to save to the dictionary
     # (German in our save format + its own Russian translation).
     saveable = accepted_pairs(payload.get("accepted")) if fmt in ("synonym", "antonym") else []
+    # Artikel review: no stored tip — derive a deterministic gender-signal mnemonic.
+    tip = (artikel_review_hint(str(payload.get("wort") or ""), str(payload.get("correct") or ""))
+           if fmt == "artikel" else str(payload.get("tip") or ""))
     return {
         "kind": "aufgabe",
         "format": fmt,
@@ -1291,9 +1335,9 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
         "is_sentence": bool(is_sentence),
         "user_answer": _display_user_answer(fmt, user_answer, payload),
         "saveable": saveable,
-        "hint_ru": str(payload.get("hint_ru") or ""),
+        "hint_ru": str(payload.get("hint_ru") or payload.get("ru") or ""),
         "explanation": str(payload.get("erklaerung") or payload.get("explanation") or ""),
-        "tip": str(payload.get("tip") or ""),
+        "tip": tip,
         "wrong_reason": str(wrong_reason or ""),
         "already_answered": bool(already_answered),
         "saveable_words": [],
@@ -1331,6 +1375,13 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
             pass
         meta["before"] = before
         meta["after"] = after
+    elif fmt == "artikel":
+        # der/die/das review card (mirrors Artikel Sprint). Send the noun + the three
+        # options; NEVER the correct article. The RU meaning is not the answer, so it
+        # may be shown as a subtitle to identify the word.
+        meta["wort"] = str(payload.get("wort") or "")
+        meta["options"] = ["der", "die", "das"]
+        meta["hint_ru"] = str(payload.get("ru") or "")
     elif fmt == "transform":
         meta["original"] = str(payload.get("original") or "")
         meta["schluesselwort"] = str(payload.get("schluesselwort") or "")
@@ -1618,6 +1669,11 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     answer = str(raw_input or "").strip()
     if not answer:
         return False
+    if fmt == "artikel":
+        # raw_input = the chosen article ("der"/"die"/"das"). The correct one is
+        # carried in payload["correct"] (never sent to the client).
+        correct = str(payload.get("correct") or "").strip().lower()
+        return bool(correct) and answer.strip().lower() == correct
     if fmt in ("synonym", "antonym"):
         accepted = accepted_de(payload.get("accepted"))
         if any(check_quiz_freeform_deterministic(user_text=answer, correct_text=c) for c in accepted if str(c).strip()):

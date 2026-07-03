@@ -24224,6 +24224,29 @@ def artikel_submit():
             threading.Thread(target=_log_words, daemon=True).start()
         except Exception:
             pass
+        # Feed wrong articles (incl. timeouts → chosen "") into the shared
+        # "работа над ошибками" spaced-repetition queue as an `artikel` card.
+        # Off the critical path; a timeout means "didn't know it" → still a mistake.
+        try:
+            wrong_items = [
+                {"w": it["w"], "a": it["a"], "chosen": it["chosen"], "ru": it.get("ru", "")}
+                for it in items if not it["ok"]
+            ]
+            if wrong_items:
+                def _log_article_mistakes():
+                    try:
+                        from backend.database import record_aufgabe_mistake
+                        for it in wrong_items:
+                            record_aufgabe_mistake(
+                                user_id=int(user_id), fmt="artikel",
+                                payload={"wort": it["w"], "ru": it["ru"], "correct": it["a"]},
+                                correct_answer=it["a"], wrong_answer=it["chosen"],
+                            )
+                    except Exception:
+                        logging.warning("artikel mistake-queue log failed set=%s", set_id, exc_info=True)
+                threading.Thread(target=_log_article_mistakes, daemon=True).start()
+        except Exception:
+            pass
     if not recorded:
         prev = get_article_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))

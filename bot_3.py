@@ -26390,6 +26390,31 @@ async def review_mistakes_command(update: Update, context: CallbackContext) -> N
         await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
+async def admin_review_makedue_command(update: Update, context: CallbackContext) -> None:
+    """TEST: make YOUR review mistakes due right now (skip the 1-day SR wait).
+    /review_makedue            → only your `artikel` mistakes
+    /review_makedue all        → every format
+    Then open «🔁 Разобрать ошибки» (/review) to drill them immediately."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(getattr(user, "id", None)):
+        await message.reply_text("Admins only.")
+        return
+    args = [a.strip().lower() for a in (context.args or []) if a.strip()]
+    fmt = None if (args and args[0] in ("all", "все", "всё")) else "artikel"
+    from backend.database import force_due_mistakes
+    n = await asyncio.to_thread(force_due_mistakes, int(user.id), fmt=fmt)
+    scope = "все форматы" if fmt is None else "формат «artikel»"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🔁 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
+    await message.reply_text(
+        f"✅ Готово: {n} ошибок ({scope}) созрели сейчас. Открой повторение 👇",
+        reply_markup=kb,
+    )
+
+
 async def _send_weekly_champion_job(context: CallbackContext) -> None:
     """Weekly champion, split by audience:
       • GROUP chats  → a group-scoped poster (only that group's members).
@@ -31864,6 +31889,7 @@ def main():
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
+    application.add_handler(CommandHandler("review_makedue", admin_review_makedue_command))
     application.add_handler(CommandHandler("adjsprint", admin_adjektiv_sprint_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("admin_fix_dict_translations", admin_fix_dict_translations_command))
