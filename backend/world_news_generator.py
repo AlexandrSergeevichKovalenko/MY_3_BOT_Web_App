@@ -40,17 +40,42 @@ def _search_queries() -> list[str]:
     raw = (os.getenv("WORLD_NEWS_SEARCH_QUERIES") or "").strip()
     if raw:
         return [q.strip() for q in raw.split("|") if q.strip()]
-    # Learner-oriented German news with reliable subtitles, newest-first.
+    # STRICTLY news, learner-oriented, reliable German subtitles, newest-first.
     return [
-        "Langsam gesprochene Nachrichten",
-        "DW Nachrichten leicht",
-        "Deutsch lernen Nachrichten",
+        "Langsam gesprochene Nachrichten",      # DW — slow news for learners
+        "tagesschau in Einfacher Sprache",      # ARD — simple-language news
+        "nachrichtenleicht",                    # Deutschlandfunk — easy news
+        "DW Nachrichten",
     ]
 
 
 def _channel_ids() -> list[str]:
     raw = (os.getenv("WORLD_NEWS_CHANNEL_IDS") or "").strip()
     return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def _news_channel_allow() -> list[str]:
+    """Lowercased channel-title substrings that count as REAL news sources. Anything else
+    (entertainment, docs, vlogs) is rejected — this is a strict news rubric. Env-overridable
+    via WORLD_NEWS_ALLOWED_CHANNELS (|-separated). Set to '*' to disable the filter."""
+    raw = (os.getenv("WORLD_NEWS_ALLOWED_CHANNELS") or "").strip()
+    if raw:
+        return [c.strip().lower() for c in raw.split("|") if c.strip()]
+    return [
+        "deutsche welle", "dw deutsch", "dw nachrichten", "learn german with dw",
+        "tagesschau", "zdfheute", "zdf heute", "heute journal",
+        "nachrichtenleicht", "deutschlandfunk",
+    ]
+
+
+def _is_allowed_news_channel(channel_title: str) -> bool:
+    allow = _news_channel_allow()
+    if allow == ["*"]:
+        return True
+    ct = str(channel_title or "").strip().lower()
+    if not ct:
+        return False
+    return any(sub in ct for sub in allow)
 
 
 WORLD_NEWS_MAX_SECONDS = _env_int("WORLD_NEWS_MAX_SECONDS", 900)   # ≤ 15 min (DW «Langsam
@@ -225,7 +250,7 @@ def _pick_video_with_transcript(*, manual_url: str | None = None) -> tuple[dict 
     or None, diag). `diag` counts why candidates were rejected (dur / no-captions / too-short)
     so a failure is diagnosable from the error message instead of a generic 'not found'."""
     diag: dict = {"candidates": 0, "dur_skipped": 0, "no_transcript": 0, "short_transcript": 0,
-                  "manual": bool(manual_url), "has_yt_key": bool(_youtube_api_key())}
+                  "channel_rejected": 0, "manual": bool(manual_url), "has_yt_key": bool(_youtube_api_key())}
     if manual_url:
         vid = _extract_video_id(manual_url)
         if not vid:
@@ -263,6 +288,11 @@ def _pick_video_with_transcript(*, manual_url: str | None = None) -> tuple[dict 
     for cand in candidates:
         vid = cand["video_id"]
         det = details_map.get(vid, {})
+        # STRICT news filter: only accept real news channels (reject entertainment/docs/vlogs).
+        channel_title = det.get("channel_title") or cand.get("channel_title") or ""
+        if not _is_allowed_news_channel(channel_title):
+            diag["channel_rejected"] += 1
+            continue
         dur = det.get("duration_seconds") or 0
         if dur and not (WORLD_NEWS_MIN_SECONDS <= dur <= WORLD_NEWS_MAX_SECONDS):
             diag["dur_skipped"] += 1
