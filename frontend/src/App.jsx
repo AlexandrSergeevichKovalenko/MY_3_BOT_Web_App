@@ -5323,6 +5323,9 @@ function AppInner() {
   const [youtubeNewsMode, setYoutubeNewsMode] = useState(false);
   const [worldNewsData, setWorldNewsData] = useState(null); // null=unloaded, {available:false}=none
   const [worldNewsLoading, setWorldNewsLoading] = useState(false);
+  const [worldNewsSelected, setWorldNewsSelected] = useState(() => new Set()); // checked phrase indices
+  const [worldNewsSaving, setWorldNewsSaving] = useState(false);
+  const [worldNewsSavedCount, setWorldNewsSavedCount] = useState(0); // >0 → shows «Сохранено (N)»
   const [youtubeError, setYoutubeError] = useState('');
   const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
@@ -28293,6 +28296,11 @@ function AppInner() {
         if (cancelled) return;
         if (data && data.available) {
           setWorldNewsData(data);
+          // Default: all phrases checked — the user unchecks the few they don't want, mirroring
+          // the morning-Shortcut digest.
+          const phraseCount = Array.isArray(data.phrases) ? data.phrases.length : 0;
+          setWorldNewsSelected(new Set(Array.from({ length: phraseCount }, (_v, i) => i)));
+          setWorldNewsSavedCount(0);
           const url = String(data.video_url || '').trim()
             || (data.video_id ? `https://youtu.be/${data.video_id}` : '');
           if (url) setYoutubeInput(url);
@@ -28317,6 +28325,66 @@ function AppInner() {
     youtubeNewsTranscriptRequestedRef.current = youtubeId;
     fetchTranscript();
   }, [youtubeNewsMode, youtubeId, initData, youtubeTranscriptLoading, youtubeTranscript]);
+
+  const toggleWorldNewsPhrase = useCallback((index) => {
+    setWorldNewsSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index); else next.add(index);
+      return next;
+    });
+    setWorldNewsSavedCount(0); // selection changed → allow a fresh save
+  }, []);
+
+  // Optimistic bulk-save of the checked phrases into the dictionary (same endpoint + canonical
+  // pipeline as the tap-a-word widget). Confirms instantly, persists in the background, and
+  // reconciles the saved count if some entries fail (e.g. daily save cap).
+  const saveSelectedWorldNewsWords = useCallback(async () => {
+    if (worldNewsSaving) return;
+    const phrases = Array.isArray(worldNewsData?.phrases) ? worldNewsData.phrases : [];
+    const chosen = Array.from(worldNewsSelected)
+      .sort((a, b) => a - b)
+      .map((i) => phrases[i])
+      .filter((p) => p && String(p.de || '').trim() && String(p.translation_ru || '').trim());
+    if (!chosen.length) return;
+    if (!initData) {
+      showInlineToast(initDataMissingMsg, 4000);
+      return;
+    }
+    setWorldNewsSaving(true);
+    setWorldNewsSavedCount(chosen.length); // optimistic: show «Сохранено (N)» immediately
+    try {
+      const results = await Promise.allSettled(chosen.map((p) => fetch('/api/webapp/dictionary/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          source_text: String(p.de).trim(),
+          target_text: String(p.translation_ru).trim(),
+          source_lang: 'de',
+          target_lang: 'ru',
+          direction: 'de-ru',
+          origin_process: 'worldnews_phrase_save',
+          origin_meta: { flow: 'worldnews_phrase_list', from: 'worldnews_phrase_list' },
+        }),
+      }).then((r) => r.ok)));
+      const okCount = results.filter((r) => r.status === 'fulfilled' && r.value).length;
+      setWorldNewsSavedCount(okCount);
+      if (okCount < chosen.length) {
+        showInlineToast(
+          tr(
+            `Сохранили ${okCount} из ${chosen.length}. Возможно, достигнут дневной лимит сохранений.`,
+            `${okCount} von ${chosen.length} gespeichert. Vielleicht ist das Tageslimit erreicht.`,
+          ),
+          5000,
+        );
+      }
+    } catch (_error) {
+      setWorldNewsSavedCount(0); // real failure → revert the optimistic confirmation
+      showInlineToast(tr('Не удалось сохранить, попробуйте ещё раз.', 'Speichern fehlgeschlagen, bitte erneut versuchen.'), 4000);
+    } finally {
+      setWorldNewsSaving(false);
+    }
+  }, [worldNewsSaving, worldNewsData, worldNewsSelected, initData, initDataMissingMsg, showInlineToast, tr]);
 
   useEffect(() => {
     if (!youtubeSectionVisible) {
@@ -32363,6 +32431,54 @@ function AppInner() {
                         <div className="youtube-empty-state-badge">{tr('Новость дня', 'News des Tages')}</div>
                         <h4>{tr('На сегодня новостей пока нет', 'Heute noch keine News')}</h4>
                         <p>{tr('Загляни утром — свежий ролик появится здесь.', 'Schau morgens vorbei — das frische Video erscheint hier.')}</p>
+                      </div>
+                    )}
+                    {youtubeNewsMode && worldNewsData?.available && Array.isArray(worldNewsData.phrases) && worldNewsData.phrases.length > 0 && (
+                      <div className="worldnews-words">
+                        <div className="worldnews-words-head">
+                          <h4>{tr('Слова из новости', 'Wörter aus den News')}</h4>
+                          <span className="worldnews-words-hint">{tr('Отметьте нужные и сохраните в словарь', 'Markieren und im Wörterbuch speichern')}</span>
+                        </div>
+                        <ul className="worldnews-words-list">
+                          {worldNewsData.phrases.map((phrase, index) => {
+                            const checked = worldNewsSelected.has(index);
+                            return (
+                              <li
+                                key={`wn-phrase-${index}`}
+                                className={`worldnews-word-row ${checked ? 'is-checked' : ''}`}
+                                onClick={() => toggleWorldNewsPhrase(index)}
+                                role="checkbox"
+                                aria-checked={checked}
+                                tabIndex={0}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    toggleWorldNewsPhrase(index);
+                                  }
+                                }}
+                              >
+                                <span className="worldnews-word-check" aria-hidden="true">{checked ? '✅' : '⬜️'}</span>
+                                <span className="worldnews-word-body">
+                                  <span className="worldnews-word-de">{phrase.de}</span>
+                                  {phrase.translation_ru && <span className="worldnews-word-ru">{phrase.translation_ru}</span>}
+                                  {phrase.usage_ru && <span className="worldnews-word-usage">{phrase.usage_ru}</span>}
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                        <button
+                          type="button"
+                          className="worldnews-words-save"
+                          onClick={saveSelectedWorldNewsWords}
+                          disabled={worldNewsSaving || worldNewsSelected.size === 0 || worldNewsSavedCount > 0}
+                        >
+                          {worldNewsSavedCount > 0
+                            ? tr(`✅ Сохранено (${worldNewsSavedCount})`, `✅ Gespeichert (${worldNewsSavedCount})`)
+                            : worldNewsSaving
+                              ? tr('💾 Сохраняем…', '💾 Speichern…')
+                              : tr(`💾 Сохранить выбранные (${worldNewsSelected.size})`, `💾 Ausgewählte speichern (${worldNewsSelected.size})`)}
+                        </button>
                       </div>
                     )}
                     {youtubeRecommendationLoading && (
