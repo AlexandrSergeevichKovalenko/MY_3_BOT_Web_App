@@ -28674,6 +28674,17 @@ function AppInner() {
               setYoutubeIsPaused(false);
               setYoutubePlaybackStarted(true);
               setYoutubeForceShowPanel(false);
+              if (youtubeNewsMode) {
+                // On play: pull the player to the very top (the stepper hides) so the max
+                // amount of DE + RU subtitles fits below — no manual scroll needed.
+                setTimeout(() => {
+                  try {
+                    const host = document.getElementById('youtube-player');
+                    const card = (host && host.closest) ? host.closest('.youtube-player-card') : null;
+                    (card || host)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+                  } catch (_e) { /* noop */ }
+                }, 140);
+              }
             } else if (state === 3) {
               setYoutubeIsPaused(false);
             } else if (state === 0 || state === 5 || state === -1) {
@@ -32171,7 +32182,7 @@ function AppInner() {
                       ref={youtubeRef}
                       data-no-edge-swipe="true"
                     >
-                    {youtubeNewsMode && worldNewsData?.available && (
+                    {youtubeNewsMode && worldNewsData?.available && !(worldNewsStage === 'video' && youtubePlaybackStarted && !youtubeIsPaused) && (
                       <div className="worldnews-stepper">
                         {[['words', tr('Слова', 'Wörter')], ['video', tr('Видео', 'Video')], ['quiz', tr('Тест', 'Quiz')]].map(([key, label]) => (
                           <button
