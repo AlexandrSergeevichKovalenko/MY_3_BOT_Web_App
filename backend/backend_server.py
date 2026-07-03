@@ -49205,10 +49205,8 @@ def submit_webapp_group_message():
     if len(lines) == 1:
         return jsonify({"error": "Нет заполненных переводов"}), 400
 
-    summary = build_user_daily_summary(user_id=user_id, username=username)
-    if summary:
-        lines.append("")
-        lines.append(summary)
+    # Техническую карточку «Сегодняшняя статистика» больше не дописываем —
+    # после перевода такие сводки не отправляем никуда (личка/группа), это лишняя нагрузка.
 
     try:
         target_chat_id = _resolve_user_delivery_chat_id(int(user_id), job_name="submit_webapp_group_message")
@@ -56101,29 +56099,9 @@ def finish_webapp_translation():
         summary_delivery_attempted = False
         summary_delivery_target = None
         should_run_post_finish_bookkeeping = finish_result_status == "completed"
-        if should_run_post_finish_bookkeeping and can_enqueue_background_jobs():
-            try:
-                summary_enqueue_started_perf = time.perf_counter()
-                summary_job_id = enqueue_finish_daily_summary_job(
-                    user_id=int(user_id),
-                    username=username or user_name,
-                    user_name=user_name,
-                    request_id=request_id,
-                    correlation_id=correlation_id,
-                )
-                summary_enqueue_ms = int((time.perf_counter() - summary_enqueue_started_perf) * 1000)
-                summary_job_enqueued = True
-            except Exception as exc:
-                summary_enqueue_ms = int((time.perf_counter() - summary_enqueue_started_perf) * 1000)
-                logging.warning(
-                    "finish_webapp_translation: async daily summary enqueue failed for user_id=%s: %s",
-                    user_id,
-                    exc,
-                    exc_info=True,
-                )
-                group_warning = f"Не удалось поставить сводку в очередь: {exc}"
-        elif should_run_post_finish_bookkeeping:
-            group_warning = "Фоновая очередь недоступна для отправки сводки."
+        # Карточку «Сегодняшняя статистика» в чат больше не отправляем: пользователям
+        # она не нужна и создаёт лишнюю нагрузку. Остальной post-finish bookkeeping
+        # (очистка состояния сессии и т.п.) ниже сохраняется.
         response_payload = {"ok": True, **result}
         if group_warning:
             response_payload["group_warning"] = group_warning
