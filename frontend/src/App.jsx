@@ -6213,6 +6213,7 @@ function AppInner() {
   const youtubeTranscriptVideoIdRef = useRef('');
   const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeNewsTranscriptRequestedRef = useRef(''); // news mode: auto-load subs once per video
+  const worldNewsRequestedRef = useRef(false); // news mode: fetch today's entry exactly once
   const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeResumeLastSyncedSecondRef = useRef(-1);
   const youtubePhraseGestureRef = useRef(null);
@@ -18688,6 +18689,19 @@ function AppInner() {
   }, [selectedTopic]);
 
   useEffect(() => {
+    // When launched into news mode (?startapp=worldnews…), the daily news video is authoritative —
+    // don't restore the user's last-watched video over it (that showed the old clip + a stuck spinner).
+    try {
+      const launchParam = String(
+        telegramApp?.initDataUnsafe?.start_param
+        || new URLSearchParams(window.location.search).get('startapp')
+        || new URLSearchParams(window.location.search).get('start_param')
+        || ''
+      ).toLowerCase();
+      if (launchParam.startsWith('worldnews')) return;
+    } catch (_error) {
+      // fall through to normal restore
+    }
     const stored = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
     if (stored) {
       try {
@@ -28285,9 +28299,12 @@ function AppInner() {
   // World-news loader: once we're in news mode and initData is ready, fetch the day's entry and
   // feed its video into the normal YouTube pipeline (setYoutubeInput → youtubeId → player).
   useEffect(() => {
-    if (!youtubeNewsMode || !initData) return undefined;
-    if (worldNewsData != null || worldNewsLoading) return undefined;
-    let cancelled = false;
+    if (!youtubeNewsMode || !initData) return;
+    // Ref-guarded (NOT state-guarded): keeping worldNewsLoading/worldNewsData in the deps would
+    // make this effect re-run the moment it sets loading=true, cancel its own in-flight fetch,
+    // and leave «загружается…» stuck forever. Fire exactly once per news-mode entry instead.
+    if (worldNewsRequestedRef.current) return;
+    worldNewsRequestedRef.current = true;
     setWorldNewsLoading(true);
     (async () => {
       try {
@@ -28297,7 +28314,6 @@ function AppInner() {
           body: JSON.stringify({ initData }),
         });
         const data = response.ok ? await response.json() : null;
-        if (cancelled) return;
         if (data && data.available) {
           setWorldNewsData(data);
           // Default: all phrases checked — the user unchecks the few they don't want, mirroring
@@ -28306,6 +28322,7 @@ function AppInner() {
           setWorldNewsSelected(new Set(Array.from({ length: phraseCount }, (_v, i) => i)));
           setWorldNewsSavedCount(0);
           setWorldNewsQuizAnswers({});
+          // News video is authoritative: replace whatever was restored from the resume cache.
           const url = String(data.video_url || '').trim()
             || (data.video_id ? `https://youtu.be/${data.video_id}` : '');
           if (url) setYoutubeInput(url);
@@ -28313,13 +28330,12 @@ function AppInner() {
           setWorldNewsData({ available: false });
         }
       } catch (_error) {
-        if (!cancelled) setWorldNewsData({ available: false });
+        setWorldNewsData({ available: false });
       } finally {
-        if (!cancelled) setWorldNewsLoading(false);
+        setWorldNewsLoading(false);
       }
     })();
-    return () => { cancelled = true; };
-  }, [youtubeNewsMode, initData, worldNewsData, worldNewsLoading]);
+  }, [youtubeNewsMode, initData]);
 
   // In news mode, auto-load subtitles once the video id resolves — the user shouldn't have to
   // tap «Загрузить субтитры» for the curated daily video. Guarded per-video so it fires once.
@@ -32248,7 +32264,7 @@ function AppInner() {
                       <div className="youtube-mobile-head">
                         <div className="youtube-player-first-title-row">
                           <div className="youtube-player-first-title-wrap">
-                            <h3>{tr('YouTube', 'YouTube')}</h3>
+                            <h3>{youtubeNewsMode ? tr('📰 Новость дня', '📰 News des Tages') : tr('YouTube', 'YouTube')}</h3>
                             {youtubeTaskDone && (
                               <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
                             )}
@@ -32735,26 +32751,30 @@ function AppInner() {
                             </button>
                           </div>
                           <div className="youtube-settings-sheet-list">
-                            <button
-                              type="button"
-                              className="youtube-settings-row"
-                              onClick={() => {
-                                setYoutubeForceShowPanel(true);
-                                setYoutubeSettingsOpen(false);
-                              }}
-                            >
-                              <span>{tr('Сменить видео', 'Change video')}</span>
-                              <span>{tr('Открыть поиск', 'Open search')}</span>
-                            </button>
-                            <button
-                              type="button"
-                              className="youtube-settings-row"
-                              onClick={() => searchYoutubeVideos()}
-                              disabled={youtubeSearchLoading}
-                            >
-                              <span>{tr('Искать в YouTube', 'Search on YouTube')}</span>
-                              <span>{youtubeSearchLoading ? tr('Загрузка...', 'Loading...') : tr('Запустить', 'Run')}</span>
-                            </button>
+                            {!youtubeNewsMode && (
+                              <button
+                                type="button"
+                                className="youtube-settings-row"
+                                onClick={() => {
+                                  setYoutubeForceShowPanel(true);
+                                  setYoutubeSettingsOpen(false);
+                                }}
+                              >
+                                <span>{tr('Сменить видео', 'Change video')}</span>
+                                <span>{tr('Открыть поиск', 'Open search')}</span>
+                              </button>
+                            )}
+                            {!youtubeNewsMode && (
+                              <button
+                                type="button"
+                                className="youtube-settings-row"
+                                onClick={() => searchYoutubeVideos()}
+                                disabled={youtubeSearchLoading}
+                              >
+                                <span>{tr('Искать в YouTube', 'Search on YouTube')}</span>
+                                <span>{youtubeSearchLoading ? tr('Загрузка...', 'Loading...') : tr('Запустить', 'Run')}</span>
+                              </button>
+                            )}
                             {canManageYoutubeTranscripts && (
                               <button
                                 type="button"
