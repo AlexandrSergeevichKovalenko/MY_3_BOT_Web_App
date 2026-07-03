@@ -567,6 +567,13 @@ def render_adjektiv_card(*, level: str = "B2+") -> bytes | None:
                  accent=(139, 92, 246), motif=_motif_adjektiv, cta="Wähle die richtige Endung")
 
 
+def render_wofrage_card(*, level: str = "B1+") -> bytes | None:
+    return _card(badge="GRAMMATIK", title="Wo-Fragen", subtitle=f"Worauf? Womit? Woran?  ·  {level}",
+                 accent=(14, 165, 233),
+                 motif=(lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "?")),
+                 cta="Wähle das richtige Fragewort")
+
+
 def render_artikel_learn_card(*, level: str = "") -> bytes | None:
     return _card(badge="LERNEN", title="Artikel Trainer",
                  subtitle="der / die / das  ·  в своём темпе",

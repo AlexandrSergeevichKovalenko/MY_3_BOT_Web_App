@@ -2292,6 +2292,496 @@ def list_user_adjektiv_battles_with_standing(user_id, limit: int = 20) -> list[d
         return []
 
 
+# ── Wo-Frage Sprint: timed 10-item "pick the right Wo(r)+Präposition" game ───
+#    Clone of the Adjektiv Sprint (deterministic engine, per-item timer). The item
+#    already carries its own 4 `opts` (1-of-N, unlike Artikel's fixed der/die/das).
+_WOFRAGE_SPRINT_SCHEMA_DONE = False
+
+
+def ensure_wofrage_sprint_schema() -> None:
+    global _WOFRAGE_SPRINT_SCHEMA_DONE
+    if _WOFRAGE_SPRINT_SCHEMA_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_wofrage_sprint_sets (
+                    set_id TEXT PRIMARY KEY,
+                    items_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    total INT NOT NULL DEFAULT 0,
+                    kind TEXT NOT NULL DEFAULT 'daily',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_wofrage_sprint_daily (
+                    play_date DATE NOT NULL,
+                    slot INT NOT NULL DEFAULT 0,
+                    set_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (play_date, slot)
+                );"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_wofrage_sprint_dispatches (
+                    id BIGSERIAL PRIMARY KEY,
+                    set_id TEXT NOT NULL,
+                    slot_date DATE NOT NULL,
+                    slot_hour INT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (slot_date, slot_hour, chat_id)
+                );"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_wofrage_sprint_results (
+                    set_id TEXT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    user_name TEXT,
+                    correct INT NOT NULL DEFAULT 0,
+                    answered INT NOT NULL DEFAULT 0,
+                    total INT NOT NULL DEFAULT 0,
+                    time_ms BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (set_id, user_id)
+                );"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wofrage_sprint_results_rank "
+                "ON bt_3_wofrage_sprint_results (set_id, correct DESC, time_ms ASC);"
+            )
+        conn.commit()
+    _WOFRAGE_SPRINT_SCHEMA_DONE = True
+
+
+def pick_wofrage_payloads(n: int = 10) -> list[dict]:
+    """`n` Wo-Frage items from the DETERMINISTIC rule engine (unlimited, 100% correct,
+    no LLM). Returns [] only if the engine ever fails (no bank fallback needed —
+    the engine ships with its own bank)."""
+    try:
+        from backend.wofrage_generator import build_wofrage_items
+        items = build_wofrage_items(int(n))
+        if items:
+            return items
+    except Exception:
+        logging.warning("pick_wofrage_payloads: deterministic gen failed", exc_info=True)
+    return []
+
+
+def _wofrage_item_for_game(p: dict) -> dict:
+    """Normalize a generator item to the stored/client shape. The client renders
+    `s`/`clue`/`opts` and local-grades against `a`; the server re-grades on submit."""
+    p = p or {}
+    opts = [str(o) for o in (p.get("opts") or []) if str(o).strip()]
+    return {
+        "s": str(p.get("s") or ""),
+        "clue": str(p.get("clue") or ""),
+        "a": str(p.get("a") or ""),
+        "opts": opts,
+        "target": str(p.get("target") or "thing"),
+        "prep": str(p.get("prep") or ""),
+        "case": str(p.get("case") or ""),
+        "lemma": str(p.get("lemma") or ""),
+        "verb_ru": str(p.get("verb_ru") or ""),
+        "obj": str(p.get("obj") or ""),
+        "obj_ru": str(p.get("obj_ru") or ""),
+        "erklaerung": str(p.get("erklaerung") or ""),
+        "tip": str(p.get("tip") or ""),
+    }
+
+
+def create_wofrage_sprint_set(items: list[dict], *, kind: str = "daily") -> str:
+    import json as _json
+    import uuid as _uuid
+    ensure_wofrage_sprint_schema()
+    set_id = str(_uuid.uuid4())
+    game_items = [_wofrage_item_for_game(p) for p in (items or [])]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bt_3_wofrage_sprint_sets (set_id, items_json, total, kind) "
+                "VALUES (%s,%s::jsonb,%s,%s);",
+                (set_id, _json.dumps(game_items, ensure_ascii=False), len(game_items), str(kind)),
+            )
+        conn.commit()
+    return set_id
+
+
+def get_wofrage_sprint_set(set_id: str) -> dict | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_id, items_json, total, kind FROM bt_3_wofrage_sprint_sets WHERE set_id=%s;",
+                    (str(set_id),),
+                )
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"set_id": r[0], "items": r[1] or [], "total": int(r[2] or 0), "kind": str(r[3] or "daily")}
+    except Exception:
+        return None
+
+
+def get_or_create_daily_wofrage_set(play_date, slot: int) -> str | None:
+    ensure_wofrage_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_id FROM bt_3_wofrage_sprint_daily WHERE play_date=%s AND slot=%s;",
+                (play_date, int(slot)),
+            )
+            r = cur.fetchone()
+            if r:
+                return str(r[0])
+    items = pick_wofrage_payloads(10)
+    if not items:
+        return None
+    set_id = create_wofrage_sprint_set(items, kind="daily")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bt_3_wofrage_sprint_daily (play_date, slot, set_id) VALUES (%s,%s,%s) "
+                "ON CONFLICT (play_date, slot) DO NOTHING;",
+                (play_date, int(slot), set_id),
+            )
+        conn.commit()
+    return set_id
+
+
+def get_latest_daily_wofrage_set(play_date) -> str | None:
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_id FROM bt_3_wofrage_sprint_daily WHERE play_date=%s "
+                    "ORDER BY slot DESC, created_at DESC LIMIT 1;",
+                    (play_date,),
+                )
+                r = cur.fetchone()
+        return str(r[0]) if r else None
+    except Exception:
+        return None
+
+
+def create_wofrage_dispatch(*, set_id, slot_date, slot_hour, chat_id) -> int | None:
+    ensure_wofrage_sprint_schema()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO bt_3_wofrage_sprint_dispatches (set_id, slot_date, slot_hour, chat_id)
+                       VALUES (%s,%s,%s,%s)
+                       ON CONFLICT (slot_date, slot_hour, chat_id) DO NOTHING RETURNING id;""",
+                    (str(set_id), slot_date, int(slot_hour), int(chat_id)),
+                )
+                r = cur.fetchone()
+            conn.commit()
+        return int(r[0]) if r else None
+    except Exception:
+        logging.warning("create_wofrage_dispatch failed", exc_info=True)
+        return None
+
+
+def update_wofrage_dispatch_message_id(dispatch_id, *, telegram_message_id) -> None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_wofrage_sprint_dispatches SET telegram_message_id=%s WHERE id=%s;",
+                    (int(telegram_message_id), int(dispatch_id)),
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def record_wofrage_sprint_result(*, set_id, user_id, user_name, correct, answered, total, time_ms) -> bool:
+    ensure_wofrage_sprint_schema()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO bt_3_wofrage_sprint_results
+                         (set_id,user_id,user_name,correct,answered,total,time_ms)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (set_id,user_id) DO NOTHING;""",
+                    (str(set_id), int(user_id), str(user_name or ""), int(correct),
+                     int(answered), int(total), int(time_ms)),
+                )
+                inserted = cur.rowcount > 0
+            conn.commit()
+        return inserted
+    except Exception:
+        logging.warning("record_wofrage_sprint_result failed", exc_info=True)
+        return False
+
+
+def get_wofrage_sprint_result(set_id, user_id) -> dict | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT correct,answered,total,time_ms FROM bt_3_wofrage_sprint_results "
+                    "WHERE set_id=%s AND user_id=%s;",
+                    (str(set_id), int(user_id)),
+                )
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"correct": int(r[0]), "answered": int(r[1]), "total": int(r[2]), "time_ms": int(r[3])}
+    except Exception:
+        return None
+
+
+def delete_wofrage_sprint_result(set_id, user_id) -> None:
+    """Drop one user's result for a set so they can replay it (admin test helper)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM bt_3_wofrage_sprint_results WHERE set_id=%s AND user_id=%s;",
+                    (str(set_id), int(user_id)),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("delete_wofrage_sprint_result failed", exc_info=True)
+
+
+def list_wofrage_sprint_results_ranked(set_id) -> list[dict]:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id, user_name, correct, time_ms FROM bt_3_wofrage_sprint_results "
+                    "WHERE set_id=%s ORDER BY correct DESC, time_ms ASC;",
+                    (str(set_id),),
+                )
+                return [{"user_id": int(r[0]), "name": r[1] or "Игрок",
+                         "count": int(r[2]), "time_ms": int(r[3])} for r in (cur.fetchall() or [])]
+    except Exception:
+        return []
+
+
+def compute_wofrage_sprint_ranking(*, set_id, user_id) -> dict:
+    full = list_wofrage_sprint_results_ranked(set_id)
+    if not full:
+        return {"total": 0, "your_place": None, "top3": []}
+    place = next((i + 1 for i, u in enumerate(full) if int(u["user_id"]) == int(user_id)), None)
+    return {"total": len(full), "your_place": place, "top3": full[:3]}
+
+
+# ── Wo-Frage Sprint BATTLE (clone of the Adjektiv battle, theme-free) ─────────
+_WOFRAGE_BATTLE_SCHEMA_DONE = False
+
+
+def ensure_wofrage_battle_schema() -> None:
+    global _WOFRAGE_BATTLE_SCHEMA_DONE
+    if _WOFRAGE_BATTLE_SCHEMA_DONE:
+        return
+    ensure_wofrage_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_wofrage_sprint_battles (
+                    id BIGSERIAL PRIMARY KEY,
+                    creator_user_id BIGINT NOT NULL,
+                    creator_name TEXT,
+                    set_id TEXT NOT NULL,
+                    deadline TIMESTAMPTZ NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_wofrage_sprint_battle_members (
+                    battle_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    user_name TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (battle_id, user_id)
+                );"""
+            )
+        conn.commit()
+    _WOFRAGE_BATTLE_SCHEMA_DONE = True
+
+
+def create_wofrage_battle_with_set(*, creator_user_id, creator_name, deadline) -> tuple:
+    """Build a 12-item set + open battle in one go. Returns (battle_id, set_id) or
+    (None, None) if the pool is empty."""
+    ensure_wofrage_battle_schema()
+    items = pick_wofrage_payloads(12)
+    if not items:
+        return (None, None)
+    set_id = create_wofrage_sprint_set(items, kind="battle")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bt_3_wofrage_sprint_battles (creator_user_id, creator_name, set_id, deadline, status) "
+                "VALUES (%s,%s,%s,%s,'open') RETURNING id;",
+                (int(creator_user_id), str(creator_name or ""), str(set_id), deadline),
+            )
+            bid = int(cur.fetchone()[0])
+        conn.commit()
+    return (bid, set_id)
+
+
+def get_wofrage_sprint_battle(battle_id) -> dict | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, creator_user_id, creator_name, set_id, deadline, status "
+                    "FROM bt_3_wofrage_sprint_battles WHERE id=%s;",
+                    (int(battle_id),),
+                )
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"id": int(r[0]), "creator_user_id": int(r[1]), "creator_name": r[2],
+                "set_id": str(r[3]), "deadline": r[4], "status": str(r[5])}
+    except Exception:
+        return None
+
+
+def add_wofrage_sprint_battle_member(*, battle_id, user_id, user_name) -> bool:
+    ensure_wofrage_battle_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bt_3_wofrage_sprint_battle_members (battle_id, user_id, user_name) "
+                "VALUES (%s,%s,%s) ON CONFLICT (battle_id, user_id) DO NOTHING;",
+                (int(battle_id), int(user_id), str(user_name or "")),
+            )
+            added = bool(cur.rowcount and cur.rowcount > 0)
+        conn.commit()
+    return added
+
+
+def is_wofrage_sprint_battle_member(battle_id, user_id) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM bt_3_wofrage_sprint_battle_members WHERE battle_id=%s AND user_id=%s LIMIT 1;",
+                (int(battle_id), int(user_id)),
+            )
+            return cur.fetchone() is not None
+
+
+def get_wofrage_battle_id_by_set_id(set_id) -> int | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM bt_3_wofrage_sprint_battles WHERE set_id=%s ORDER BY id DESC LIMIT 1;",
+                    (str(set_id),),
+                )
+                r = cur.fetchone()
+        return int(r[0]) if r else None
+    except Exception:
+        return None
+
+
+def list_wofrage_sprint_battle_members(battle_id) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, user_name FROM bt_3_wofrage_sprint_battle_members WHERE battle_id=%s;",
+                (int(battle_id),),
+            )
+            return [{"user_id": int(r[0]), "user_name": str(r[1] or "")} for r in (cur.fetchall() or [])]
+
+
+def list_open_wofrage_battles_for_user(user_id) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT b.id, b.creator_name, b.set_id, b.deadline
+                   FROM bt_3_wofrage_sprint_battles b
+                   JOIN bt_3_wofrage_sprint_battle_members m ON m.battle_id = b.id
+                   WHERE m.user_id=%s AND b.status='open' AND b.deadline > NOW()
+                   ORDER BY b.deadline ASC;""",
+                (int(user_id),),
+            )
+            return [{"id": int(r[0]), "creator_name": r[1], "set_id": str(r[2]), "deadline": r[3]}
+                    for r in (cur.fetchall() or [])]
+
+
+def list_wofrage_sprint_battles_to_close() -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, creator_user_id, creator_name, set_id, deadline "
+                "FROM bt_3_wofrage_sprint_battles WHERE status='open' AND deadline <= NOW();"
+            )
+            return [{"id": int(r[0]), "creator_user_id": int(r[1]), "creator_name": r[2],
+                     "set_id": str(r[3]), "deadline": r[4]} for r in (cur.fetchall() or [])]
+
+
+def close_wofrage_sprint_battle(battle_id) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE bt_3_wofrage_sprint_battles SET status='closed' WHERE id=%s;", (int(battle_id),))
+        conn.commit()
+
+
+def list_user_wofrage_battles_with_standing(user_id, limit: int = 20) -> list[dict]:
+    """Wo-Frage battle history with the user's place + winner + total in ONE query
+    (same shape as the Adjektiv version; set_id stored on the battle row)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH my AS (
+                        SELECT b.id, b.creator_name, b.set_id, b.deadline, b.status
+                        FROM bt_3_wofrage_sprint_battles b
+                        JOIN bt_3_wofrage_sprint_battle_members m ON m.battle_id = b.id
+                        WHERE m.user_id = %s
+                        ORDER BY b.deadline DESC
+                        LIMIT %s
+                    ),
+                    summary AS (
+                        SELECT set_id, COUNT(*) AS total,
+                               (ARRAY_AGG(user_name ORDER BY correct DESC, time_ms ASC))[1] AS winner
+                        FROM bt_3_wofrage_sprint_results
+                        WHERE set_id IN (SELECT set_id FROM my)
+                        GROUP BY set_id
+                    ),
+                    mine AS (
+                        SELECT set_id, place, correct FROM (
+                            SELECT set_id, user_id, correct,
+                                   RANK() OVER (PARTITION BY set_id
+                                                ORDER BY correct DESC, time_ms ASC) AS place
+                            FROM bt_3_wofrage_sprint_results
+                            WHERE set_id IN (SELECT set_id FROM my)
+                        ) z WHERE user_id = %s
+                    )
+                    SELECT my.id, my.creator_name, my.set_id, my.deadline, my.status,
+                           mine.place, mine.correct,
+                           COALESCE(summary.total, 0), summary.winner
+                    FROM my
+                    LEFT JOIN summary ON summary.set_id = my.set_id
+                    LEFT JOIN mine ON mine.set_id = my.set_id
+                    ORDER BY my.deadline DESC;
+                    """,
+                    (int(user_id), int(limit), int(user_id)),
+                )
+                rows = cur.fetchall() or []
+        return [{
+            "id": int(r[0]), "creator_name": r[1], "set_id": str(r[2]),
+            "deadline": r[3], "status": str(r[4]), "label": "Wo-Fragen",
+            "your_place": int(r[5]) if r[5] is not None else None,
+            "your_count": int(r[6] or 0), "total": int(r[7] or 0),
+            "winner": str(r[8] or ""),
+        } for r in rows]
+    except Exception:
+        logging.warning("list_user_wofrage_battles_with_standing failed", exc_info=True)
+        return []
+
+
 # ── Battle invite pins (keep the play message pinned per participant until they
 #    play; unpinned event-driven on result — no screen polling) ─────────────────
 _BATTLE_PIN_SCHEMA_DONE = False
@@ -38210,6 +38700,11 @@ def get_daily_interactive_activity(since_hours: int = 24) -> dict[int, dict[str,
         "SUM(" + _pct_bucket("correct", "total") + ")::numeric AS correct "
         "FROM bt_3_adjektiv_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
     )
+    _add_part(
+        "SELECT user_id, 'wf' AS category, COUNT(*)::int AS answered, "
+        "SUM(" + _pct_bucket("correct", "total") + ")::numeric AS correct "
+        "FROM bt_3_wofrage_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s GROUP BY user_id"
+    )
 
     sql = (
         "SELECT user_id, category, SUM(answered)::int, SUM(correct)::numeric FROM (\n    "
@@ -38307,12 +38802,16 @@ def get_sprint_leaderboard_rows_since(since_hours: int = 24) -> list[dict]:
         "UNION ALL "
         "SELECT 'ad:'||set_id AS challenge_key, user_id, user_name, "
         + bucket.format(correct="correct", total="total") + " AS score "
-        "FROM bt_3_adjektiv_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s"
+        "FROM bt_3_adjektiv_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s "
+        "UNION ALL "
+        "SELECT 'wf:'||set_id AS challenge_key, user_id, user_name, "
+        + bucket.format(correct="correct", total="total") + " AS score "
+        "FROM bt_3_wofrage_sprint_results WHERE created_at >= NOW() - INTERVAL '1 hour' * %s"
     )
     rows: list[dict] = []
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(sql, (int(since_hours), int(since_hours)))
+            cursor.execute(sql, (int(since_hours), int(since_hours), int(since_hours)))
             for key, uid, name, score in (cursor.fetchall() or []):
                 sc = float(score or 0)
                 rows.append({"challenge_key": str(key), "user_id": int(uid), "name": str(name or ""),
@@ -38502,6 +39001,7 @@ _ACTIVE_USER_SOURCES = [
     ("bt_3_listening_answers", "submitted_at"),
     ("bt_3_article_sprint_results", "created_at"),
     ("bt_3_adjektiv_sprint_results", "created_at"),
+    ("bt_3_wofrage_sprint_results", "created_at"),
 ]
 
 

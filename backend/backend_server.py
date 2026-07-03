@@ -23902,6 +23902,7 @@ def battles_history():
         return err
     from backend.database import (
         list_user_article_battles_with_standing, list_user_adjektiv_battles_with_standing,
+        list_user_wofrage_battles_with_standing,
     )
 
     def _row(b, play_kind):
@@ -23918,12 +23919,15 @@ def battles_history():
     # One window-function query per game type (was an N+1 of ~40-80 round-trips).
     art = [_row(b, "asb") for b in list_user_article_battles_with_standing(int(user_id), 20)]
     adj = [_row(b, "adb") for b in list_user_adjektiv_battles_with_standing(int(user_id), 20)]
+    wof = [_row(b, "wfb") for b in list_user_wofrage_battles_with_standing(int(user_id), 20)]
 
     sections = []
     if art:
         sections.append({"key": "artikel", "label": "⚡ Artikel", "battles": art})
     if adj:
         sections.append({"key": "adjektiv", "label": "🔠 Adjektiv", "battles": adj})
+    if wof:
+        sections.append({"key": "wofrage", "label": "❓ Wo-Fragen", "battles": wof})
     return jsonify({"ok": True, "sections": sections})
 
 
@@ -24023,6 +24027,244 @@ def adjektiv_battles():
             "battle_id": int(b["id"]),
             "creator_name": b.get("creator_name") or "",
             "theme_label": "Adjektivendungen",
+            "deadline": b["deadline"].isoformat() if b.get("deadline") else "",
+            "played": played,
+        })
+    return jsonify({"ok": True, "battles": out})
+
+
+def _wofrage_slim(items: list) -> list:
+    """Play items: the question, the context clue, the 4 options and the correct
+    answer (client local-grades; the server re-grades on submit). Explanations stay
+    server-side and come back with the result."""
+    return [{"s": it.get("s", ""), "clue": it.get("clue", ""),
+             "opts": it.get("opts", []), "a": it.get("a", "")} for it in (items or [])]
+
+
+@app.route("/api/webapp/wofrage/today", methods=["POST"])
+def wofrage_today():
+    """Wo-Frage Sprint: load today's latest daily set (10 items, preloaded for
+    zero-latency play). Built by the scheduled broadcast job."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from backend.database import (
+        get_latest_daily_wofrage_set, get_wofrage_sprint_set,
+        get_wofrage_sprint_result, compute_wofrage_sprint_ranking,
+    )
+    play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
+    set_id = get_latest_daily_wofrage_set(play_date)
+    if not set_id:
+        return jsonify({"ok": False, "error_code": "wofrage_set_not_ready",
+                        "error": "Сет Wo-Frage Sprint на сегодня ещё готовится. Загляни чуть позже."}), 200
+    s = get_wofrage_sprint_set(set_id)
+    if not s or not s.get("items"):
+        return jsonify({"ok": False, "error_code": "wofrage_set_empty", "error": "Сет пуст."}), 200
+    existing = get_wofrage_sprint_result(set_id, int(user_id))
+    result_payload = None
+    if existing:
+        result_payload = {
+            **existing,
+            "pct": round(100 * existing["correct"] / existing["answered"]) if existing.get("answered") else 0,
+            "items": [],
+            "ranking": compute_wofrage_sprint_ranking(set_id=set_id, user_id=int(user_id)),
+            "already_played": True,
+        }
+    return jsonify({
+        "ok": True, "set_id": set_id, "theme_label": "Wo-Fragen",
+        "items": _wofrage_slim(s["items"]), "per_item_s": 8,
+        "already_played": bool(existing), "result": result_payload,
+    })
+
+
+@app.route("/api/webapp/wofrage/submit", methods=["POST"])
+def wofrage_submit():
+    """Wo-Frage Sprint: official scoring — re-grade answers (by item order) against
+    the stored set, record the first attempt, return a detailed per-item review."""
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    set_id = str(payload.get("set_id") or "").strip()
+    answers = payload.get("answers")
+    answers = answers if isinstance(answers, list) else []
+    try:
+        time_ms = int(payload.get("time_ms") or 0)
+    except (TypeError, ValueError):
+        time_ms = 0
+    from backend.database import (
+        get_wofrage_sprint_set, record_wofrage_sprint_result,
+        get_wofrage_sprint_result, compute_wofrage_sprint_ranking,
+    )
+    s = get_wofrage_sprint_set(set_id)
+    if not s or not s.get("items"):
+        return jsonify({"error": "Сет не найден"}), 404
+    set_items = s["items"]
+    items = []
+    correct = 0
+    answered = 0
+    for i, it in enumerate(set_items):
+        ans = answers[i] if i < len(answers) else None
+        chosen = str((ans or {}).get("chosen") or "").strip()
+        corr = str(it.get("a") or "").strip()
+        ok = bool(chosen) and chosen == corr
+        if chosen:
+            answered += 1
+            if ok:
+                correct += 1
+        items.append({
+            "s": it.get("s", ""), "clue": it.get("clue", ""), "opts": it.get("opts", []),
+            "a": corr, "chosen": chosen, "ok": ok, "target": it.get("target", ""),
+            "erklaerung": it.get("erklaerung", ""), "tip": it.get("tip", ""),
+            "lemma": it.get("lemma", ""), "verb_ru": it.get("verb_ru", ""),
+            "obj": it.get("obj", ""), "obj_ru": it.get("obj_ru", ""),
+        })
+    total = len(set_items)
+    recorded = record_wofrage_sprint_result(
+        set_id=set_id, user_id=int(user_id), user_name=user_name or "",
+        correct=correct, answered=answered, total=total, time_ms=time_ms,
+    )
+    _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
+    _flip_battle_ctas_done_async(int(user_id), set_id)  # flip play buttons → «✅ Сыграно»
+    if not recorded:
+        prev = get_wofrage_sprint_result(set_id, int(user_id)) or {}
+        correct = int(prev.get("correct", correct))
+        answered = int(prev.get("answered", answered))
+    # Overtake plaque for Wo-Frage BATTLES: beating someone DMs them the crying-Smurf
+    # card with a deeplink back into that battle.
+    if recorded:
+        try:
+            from backend.database import (
+                get_wofrage_battle_id_by_set_id, list_wofrage_sprint_results_ranked,
+                get_overtaken_user_ids_for_challenge, upsert_overtaken_notification,
+            )
+            battle_id = get_wofrage_battle_id_by_set_id(set_id)
+            if battle_id:
+                challenge_key = f"wfb:{set_id}"
+                full = list_wofrage_sprint_results_ranked(set_id)
+                if len(full) >= 2:
+                    place_of = {int(u["user_id"]): i + 1 for i, u in enumerate(full)}
+                    targets = set(get_overtaken_user_ids_for_challenge(challenge_key))
+                    if place_of.get(int(user_id)) == 1:
+                        targets.add(int(full[1]["user_id"]))
+                    targets.discard(int(user_id))
+                    for uid in targets:
+                        p = place_of.get(uid)
+                        if not p or p < 2:
+                            continue
+                        above = full[p - 2]
+                        upsert_overtaken_notification(
+                            user_id=uid, challenge_key=challenge_key,
+                            payload={
+                                "task_kind": "Wo-Frage Battle", "place": int(p),
+                                "total_correct": len(full),
+                                "leader_name": str(full[0]["name"] or ""),
+                                "leader_user_id": int(full[0]["user_id"]),
+                                "above_name": str(above["name"] or ""),
+                                "above_user_id": int(above["user_id"]),
+                                "open_kind": "wfb", "battle_id": int(battle_id),
+                            })
+        except Exception:
+            logging.warning("wofrage overtake enqueue failed set=%s", set_id, exc_info=True)
+    pct = round(100 * correct / answered) if answered else 0
+    if recorded:
+        _inbox_mark_kind_done(int(user_id), "wf")  # ✅ the Wo-Frage Sprint card
+    return jsonify({
+        "ok": True, "correct": correct, "answered": answered, "total": total, "pct": pct,
+        "items": items, "already_played": not recorded,
+        "ranking": compute_wofrage_sprint_ranking(set_id=set_id, user_id=int(user_id)),
+    })
+
+
+@app.route("/api/webapp/wofrage/learn", methods=["POST"])
+def wofrage_learn():
+    """Wo-Frage Trainer («тренировка»): an endless self-paced deck with the rule +
+    tip revealed after each tap. No timer, no scoring — pure learning."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from backend.database import pick_wofrage_payloads
+    payload = request.get_json(silent=True) or {}
+    try:
+        n = max(5, min(20, int(payload.get("count") or 12)))
+    except (TypeError, ValueError):
+        n = 12
+    out = []
+    for p in pick_wofrage_payloads(n):
+        out.append({
+            "s": str(p.get("s") or ""), "clue": str(p.get("clue") or ""),
+            "opts": p.get("opts") or [], "a": str(p.get("a") or ""),
+            "target": str(p.get("target") or ""),
+            "erklaerung": str(p.get("erklaerung") or ""), "tip": str(p.get("tip") or ""),
+            "lemma": str(p.get("lemma") or ""), "verb_ru": str(p.get("verb_ru") or ""),
+            "obj": str(p.get("obj") or ""), "obj_ru": str(p.get("obj_ru") or ""),
+        })
+    if not out:
+        return jsonify({"ok": False, "error": "Колода пока готовится. Загляни чуть позже."}), 200
+    return jsonify({"ok": True, "items": out})
+
+
+@app.route("/api/webapp/wofrage/battle", methods=["POST"])
+def wofrage_battle():
+    """Load a Wo-Frage battle's shared set. Member-gated; closed/expired refused."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        battle_id = int(payload.get("battle_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "battle_id обязателен"}), 400
+    from datetime import datetime as _dt, timezone as _tz
+    from backend.database import (
+        get_wofrage_sprint_battle, is_wofrage_sprint_battle_member,
+        get_wofrage_sprint_set, get_wofrage_sprint_result, compute_wofrage_sprint_ranking,
+    )
+    battle = get_wofrage_sprint_battle(battle_id)
+    if not battle:
+        return jsonify({"ok": False, "error": "Батл не найден"}), 404
+    if str(battle.get("status")) != "open" or (battle.get("deadline") and battle["deadline"] <= _dt.now(_tz.utc)):
+        return jsonify({"ok": False, "error_code": "battle_closed", "error": "Этот батл уже закрыт."}), 200
+    if not is_wofrage_sprint_battle_member(battle_id, int(user_id)):
+        return jsonify({"ok": False, "error_code": "not_member",
+                        "error": "Ты не в этом батле. Прими вызов в личке."}), 200
+    set_id = str(battle.get("set_id") or "")
+    s = get_wofrage_sprint_set(set_id)
+    if not s or not s.get("items"):
+        return jsonify({"ok": False, "error": "Набор батла пуст."}), 200
+    existing = get_wofrage_sprint_result(set_id, int(user_id))
+    result_payload = None
+    if existing:
+        result_payload = {
+            **existing,
+            "pct": round(100 * existing["correct"] / existing["answered"]) if existing.get("answered") else 0,
+            "items": [],
+            "ranking": compute_wofrage_sprint_ranking(set_id=set_id, user_id=int(user_id)),
+            "already_played": True,
+        }
+    return jsonify({
+        "ok": True, "set_id": set_id, "theme_label": "⚔️ Battle",
+        "items": _wofrage_slim(s["items"]), "per_item_s": 8,
+        "already_played": bool(existing), "result": result_payload,
+    })
+
+
+@app.route("/api/webapp/wofrage/battles", methods=["POST"])
+def wofrage_battles():
+    """List the user's open Wo-Frage battles ('Мои батлы')."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from backend.database import list_open_wofrage_battles_for_user, get_wofrage_sprint_result
+    out = []
+    for b in list_open_wofrage_battles_for_user(int(user_id)):
+        played = bool(get_wofrage_sprint_result(b["set_id"], int(user_id)))
+        out.append({
+            "battle_id": int(b["id"]),
+            "creator_name": b.get("creator_name") or "",
+            "theme_label": "Wo-Fragen",
             "deadline": b["deadline"].isoformat() if b.get("deadline") else "",
             "played": played,
         })

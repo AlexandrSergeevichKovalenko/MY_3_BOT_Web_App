@@ -717,7 +717,7 @@ GLOBAL_DAILY_SEND_BUDGET = max(1, int((os.getenv("GLOBAL_DAILY_SEND_BUDGET") or 
 # Kinds that always fire (never thinned): the 1×/2× interactives.
 _ROTATION_ALWAYS_ON_KINDS = {
     "rebus", "crossword", "anagram", "sprint",
-    "artikel_sprint", "adjektiv_sprint", "artikel_learn", "listening",
+    "artikel_sprint", "adjektiv_sprint", "wofrage_sprint", "artikel_learn", "listening",
     "numdict",
 }
 
@@ -732,10 +732,10 @@ _ROTATION_ALWAYS_ON_KINDS = {
 # (so 4 mandatory + the remaining Free budget = «на выбор» rotation). Toggle via
 # MANDATORY_DELIVERY_ENABLED.
 MANDATORY_DELIVERY_KINDS = {
-    "listening", "numdict", "artikel_sprint", "artikel_learn", "adjektiv_sprint",
+    "listening", "numdict", "artikel_sprint", "artikel_learn", "adjektiv_sprint", "wofrage_sprint",
 }
 FREE_MANDATORY_KINDS = {
-    "listening", "numdict", "artikel_sprint", "adjektiv_sprint",
+    "listening", "numdict", "artikel_sprint", "adjektiv_sprint", "wofrage_sprint",
 }
 
 
@@ -770,6 +770,7 @@ def _build_rotation_catalog() -> list:
     add("anagram", ANAGRAM_SLOT_TIMES, always_on=True)
     add("sprint", SPRINT_SLOT_TIMES.keys(), always_on=True)
     add("adjektiv_sprint", ADJEKTIV_SPRINT_SLOTS, always_on=True)
+    add("wofrage_sprint", WOFRAGE_SPRINT_SLOTS, always_on=True)
     add("artikel_sprint", [ARTIKEL_SPRINT_SLOT], always_on=True)
     add("artikel_learn", [ARTIKEL_LEARN_SLOT], always_on=True)
     add("listening", [LISTENING_SLOT_TIME], always_on=True)
@@ -1097,9 +1098,11 @@ ARTIKEL_FOCUS_BUTTON_TEXT = "🎯 Тема на завтра"
 ARTIKEL_BATTLE_CALL_BUTTON_TEXT = "⚔️ Artikel-батл"
 ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT = "🛡 Готов к батлам"
 ADJEKTIV_SPRINT_BUTTON_TEXT = "🔠 Adjektiv"
+WOFRAGE_SPRINT_BUTTON_TEXT = "❓ Wo-Fragen"
 NUMDICT_PRACTICE_BUTTON_TEXT = "🔢 Числа на слух"
 NUMDICT_PRACTICE_FEATURE_KEY = "numdict_practice_daily"
 ADJEKTIV_BATTLE_BUTTON_TEXT = "⚔️ Adjektiv-батл"
+WOFRAGE_BATTLE_BUTTON_TEXT = "⚔️ Wo-Frage-батл"
 BATTLE_HISTORY_BUTTON_TEXT = "📜 История батлов"
 ADMIN_BROADCAST_BUTTON_TEXT = "📣 Рассылка всем"
 SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
@@ -4508,11 +4511,12 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
 
     # 2) Тренажёры (учить). Pro: +персональная тема на завтра.
     rows.append([ARTIKEL_LEARN_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
-    rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT, NUMDICT_PRACTICE_BUTTON_TEXT])
+    rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT, WOFRAGE_SPRINT_BUTTON_TEXT, NUMDICT_PRACTICE_BUTTON_TEXT])
 
     # 3) Батлы. Создавать батл — Pro; быть в списке приглашаемых + история — всем.
     if is_pro:
         rows.append([ARTIKEL_BATTLE_CALL_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
+        rows.append([WOFRAGE_BATTLE_BUTTON_TEXT])
     rows.append([_battle_available_button_text(user_id), BATTLE_HISTORY_BUTTON_TEXT])
 
     # 4) Слова и помощь.
@@ -7708,8 +7712,10 @@ async def handle_button_click(update: Update, context: CallbackContext):
         ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
         ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT,
         ADJEKTIV_SPRINT_BUTTON_TEXT,
+        WOFRAGE_SPRINT_BUTTON_TEXT,
         NUMDICT_PRACTICE_BUTTON_TEXT,
         ADJEKTIV_BATTLE_BUTTON_TEXT,
+        WOFRAGE_BATTLE_BUTTON_TEXT,
         BATTLE_HISTORY_BUTTON_TEXT,
         NEXT_TASK_BUTTON_TEXT,
         SCHEDULE_BUTTON_TEXT,
@@ -7812,6 +7818,28 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await update.message.reply_text(
             "🔠 <b>Adjektivendungen</b> — окончания прилагательных: спринт на скорость или тренажёр с правилами 👇",
             parse_mode="HTML", reply_markup=kb)
+    elif text == WOFRAGE_SPRINT_BUTTON_TEXT:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❓ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
+            [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+            [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
+        ])
+        caption = (
+            "❓ <b>Wo-Fragen</b> — вопросительные слова (Worauf? Womit? Woran?): "
+            "спринт на скорость или тренажёр с правилом «вещь vs человек» 👇"
+        )
+        poster = None
+        try:
+            from backend.interactive_card import render_wofrage_card
+            poster = await asyncio.to_thread(render_wofrage_card)
+        except Exception:
+            logging.warning("wofrage: card render failed", exc_info=True)
+        if poster:
+            await update.message.reply_photo(
+                photo=io.BytesIO(poster), caption=caption,
+                parse_mode="HTML", reply_markup=kb)
+        else:
+            await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     elif text == NUMDICT_PRACTICE_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "🎧 Открыть тренажёр", url=get_webapp_deeplink("ans_np_0"))]])
@@ -7835,6 +7863,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
             await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     elif text == ADJEKTIV_BATTLE_BUTTON_TEXT:
         await _start_battle_wizard(update, context, kind="adjektiv")
+    elif text == WOFRAGE_BATTLE_BUTTON_TEXT:
+        await _start_battle_wizard(update, context, kind="wofrage")
     elif text == BATTLE_HISTORY_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "📜 Открыть историю", url=get_webapp_deeplink("ans_bh_0"))]])
@@ -9463,8 +9493,10 @@ def _is_quiz_freeform_navigation_text(text: str) -> bool:
         ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
         ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT,
         ADJEKTIV_SPRINT_BUTTON_TEXT,
+        WOFRAGE_SPRINT_BUTTON_TEXT,
         NUMDICT_PRACTICE_BUTTON_TEXT,
         ADJEKTIV_BATTLE_BUTTON_TEXT,
+        WOFRAGE_BATTLE_BUTTON_TEXT,
         BATTLE_HISTORY_BUTTON_TEXT,
         ADMIN_BROADCAST_BUTTON_TEXT,
         LANGUAGE_TUTOR_BUTTON_TEXT,
@@ -23481,13 +23513,17 @@ def _battle_wizard_render(draft: dict) -> tuple[str, InlineKeyboardMarkup]:
     # main view
     mode = draft.get("mode") or "all"
     who = "всех" if mode == "all" else f"выбрано {len(draft['users'])}"
-    # Adjektiv battles have no themes (set is built deterministically by the rule
-    # engine), so the wizard only offers who-to-invite — no «Темы» step.
-    if (draft.get("kind") or "artikel") == "adjektiv":
+    # Adjektiv & Wo-Frage battles have no themes (set is built deterministically by
+    # the rule engine), so the wizard only offers who-to-invite — no «Темы» step.
+    _kind = draft.get("kind") or "artikel"
+    if _kind in ("adjektiv", "wofrage"):
+        _title = "Adjektiv-батл" if _kind == "adjektiv" else "Wo-Frage-батл"
+        _desc = ("15 ситуаций на окончания прилагательных." if _kind == "adjektiv"
+                 else "12 вопросов на вопросительные слова (Worauf/Womit/Woran…).")
         text = (
-            "⚔️ <b>Создать Adjektiv-батл</b>\n\n"
+            f"⚔️ <b>Создать {_title}</b>\n\n"
             f"👥 Кого зовём: <b>{who}</b>\n\n"
-            "15 ситуаций на окончания прилагательных. Настрой и жми «Отправить»."
+            f"{_desc} Настрой и жми «Отправить»."
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(("● " if mode == "all" else "○ ") + "Всех", callback_data="bw:all"),
@@ -23597,6 +23633,16 @@ async def _battle_wizard_send(q, context: CallbackContext, draft: dict) -> None:
         except Exception:
             pass
         asyncio.create_task(_create_and_broadcast_adjektiv_wizard(
+            context, creator_id=int(user.id), creator_name=creator_name,
+            ind_targets=ind_targets,
+            status_chat_id=int(q.message.chat.id), status_msg_id=int(q.message.message_id)))
+        return
+    if kind == "wofrage":
+        try:
+            await q.edit_message_text("⚔️ Собираю Wo-Frage-батл и рассылаю приглашения… 📨")
+        except Exception:
+            pass
+        asyncio.create_task(_create_and_broadcast_wofrage_wizard(
             context, creator_id=int(user.id), creator_name=creator_name,
             ind_targets=ind_targets,
             status_chat_id=int(q.message.chat.id), status_msg_id=int(q.message.message_id)))
@@ -23838,7 +23884,7 @@ async def _notify_battle_creator_accepted(context: CallbackContext, *, creator_i
     """
     if not creator_id:
         return
-    label = "Adjektiv-батл" if kind == "adjektiv" else "батл"
+    label = {"adjektiv": "Adjektiv-батл", "wofrage": "Wo-Frage-батл"}.get(kind, "батл")
     cap = (f"✅ <b>{html.escape(str(accepter_name or ''))}</b> принял твой вызов "
            f"на {label} #{battle_id}! ⚔️")
     # 1) Smurf-knight invite image by R2 URL.
@@ -23852,8 +23898,10 @@ async def _notify_battle_creator_accepted(context: CallbackContext, *, creator_i
         logging.info("battle accept notify: R2 image failed bid=%s, trying rendered card", battle_id)
     # 2) In-memory brand card (no external fetch).
     try:
-        from backend.interactive_card import render_adjektiv_card, render_sprint_card
-        png = render_adjektiv_card() if kind == "adjektiv" else render_sprint_card()
+        from backend.interactive_card import render_adjektiv_card, render_sprint_card, render_wofrage_card
+        png = (render_adjektiv_card() if kind == "adjektiv"
+               else render_wofrage_card() if kind == "wofrage"
+               else render_sprint_card())
         if png:
             await context.bot.send_photo(chat_id=creator_id, photo=io.BytesIO(png),
                                          caption=cap, parse_mode="HTML")
@@ -23875,6 +23923,8 @@ async def _notify_creator_accepted_capped(context: CallbackContext, *, kind: str
     try:
         if kind == "adjektiv":
             from backend.database import list_adjektiv_sprint_battle_members as _members
+        elif kind == "wofrage":
+            from backend.database import list_wofrage_sprint_battle_members as _members
         else:
             _members = list_article_sprint_battle_members
         members = await asyncio.to_thread(_members, battle_id)
@@ -24021,6 +24071,17 @@ async def _battle_play_state(kind: str, battle_id: int, user_id: int) -> dict | 
                  and not (b.get("deadline") and b["deadline"] <= datetime.now(ZoneInfo("UTC"))))
         return {"open": open_, "played": played, "deadline": b.get("deadline"),
                 "deeplink": f"ans_adb_{battle_id}", "set_id": set_id}
+    if str(kind) == "wofrage":
+        from backend.database import get_wofrage_sprint_battle, get_wofrage_sprint_result
+        b = await asyncio.to_thread(get_wofrage_sprint_battle, battle_id)
+        if not b:
+            return None
+        set_id = str(b.get("set_id") or "")
+        played = bool(set_id and await asyncio.to_thread(get_wofrage_sprint_result, set_id, user_id))
+        open_ = (str(b.get("status")) == "open"
+                 and not (b.get("deadline") and b["deadline"] <= datetime.now(ZoneInfo("UTC"))))
+        return {"open": open_, "played": played, "deadline": b.get("deadline"),
+                "deeplink": f"ans_wfb_{battle_id}", "set_id": set_id}
     from backend.database import get_article_sprint_result
     b = await asyncio.to_thread(get_article_sprint_battle, battle_id)
     if not b:
@@ -24312,6 +24373,21 @@ def _battle_kind_cfg(kind: str) -> dict:
             "title": lambda bid: f"Artikel #{bid}",
             "caption_kind": "Батл",
         }
+    if kind == "wofrage":
+        from backend.database import (
+            list_wofrage_sprint_battles_to_close, list_wofrage_sprint_results_ranked,
+            list_wofrage_sprint_battle_members, close_wofrage_sprint_battle,
+        )
+        return {
+            "list_to_close": list_wofrage_sprint_battles_to_close,
+            "set_id": lambda b: str(b["set_id"]),
+            "ranked": list_wofrage_sprint_results_ranked,
+            "members": list_wofrage_sprint_battle_members,
+            "close": close_wofrage_sprint_battle,
+            "header": "WO-FRAGE-MEISTER",
+            "title": lambda bid: f"Wo-Frage #{bid}",
+            "caption_kind": "Wo-Frage-батл",
+        }
     from backend.database import (
         list_adjektiv_sprint_battles_to_close, list_adjektiv_sprint_results_ranked,
         list_adjektiv_sprint_battle_members, close_adjektiv_sprint_battle,
@@ -24483,9 +24559,10 @@ async def _close_all_sprint_battles_job(context: CallbackContext) -> None:
     a single «Итоги батлов» card per user so a heavy battle day isn't a photo spam."""
     results = await _collect_battle_results(context, "article")
     results += await _collect_battle_results(context, "adjektiv")
+    results += await _collect_battle_results(context, "wofrage")
     await _flush_battle_results(context, results)
     if results:
-        logging.info("sprint battles closed: %s (article+adjektiv, merged per user)", len(results))
+        logging.info("sprint battles closed: %s (article+adjektiv+wofrage, merged per user)", len(results))
 
 
 async def _close_article_sprint_battles_job(context: CallbackContext) -> None:
@@ -28477,6 +28554,419 @@ async def _close_adjektiv_sprint_battles_job(context: CallbackContext) -> None:
         logging.info("adjektiv battles closed: %s", len(results))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# WO-FRAGE SPRINT (pick the right Wo(r)+Präposition / Präp+wen-wem; clone of Adjektiv)
+# ══════════════════════════════════════════════════════════════════════════════
+# Wo-Frage Sprint: two timed sets per day (11:00 + 16:30 Vienna).
+WOFRAGE_SPRINT_SLOTS = [(11, 0), (16, 30)]
+
+
+def _wofrage_sprint_enabled() -> bool:
+    return (os.getenv("WOFRAGE_SPRINT_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _send_scheduled_wofrage_sprint(context: CallbackContext) -> None:
+    """Two daily Wo-Frage-Sprint sets. Items are generated deterministically
+    (backend.wofrage_generator) — no LLM top-up; the /today endpoint reads the
+    prebuilt set."""
+    if _is_quiet_hours_now() or not _wofrage_sprint_enabled():
+        return
+    from backend.database import (
+        get_or_create_daily_wofrage_set, create_wofrage_dispatch,
+        update_wofrage_dispatch_message_id,
+    )
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
+    set_id = await asyncio.to_thread(get_or_create_daily_wofrage_set, slot_date, slot_hour)
+    if not set_id:
+        await _alert_admin_interactive(
+            context, "⚠️ Wo-Frage Sprint: пул пуст, сет не собран.", throttle_key="wofrage_sprint_empty")
+        return
+    targets = await _collect_quiz_delivery_user_targets(context)
+    if not targets:
+        return
+    poster = None
+    try:
+        from backend.interactive_card import render_wofrage_card
+        poster = await asyncio.to_thread(render_wofrage_card)
+    except Exception:
+        logging.warning("wofrage_sprint: card render failed", exc_info=True)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❓ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
+        [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+    ])
+    caption = (
+        "❓ *Wo-Frage Sprint*\n\n"
+        "10 вопросов · по 8 секунд — выбери правильное вопросительное слово (Worauf? Womit? Woran?)!\n"
+        "🏆 В конце — разбор с правилом «вещь vs человек»."
+    )
+    sent = 0
+    for t in targets:
+        cid = int(t.get("chat_id") or 0)
+        if cid == 0:
+            continue
+        did = await asyncio.to_thread(
+            create_wofrage_dispatch,
+            set_id=set_id, slot_date=slot_date, slot_hour=slot_hour, chat_id=cid)
+        if did is None:
+            continue  # already sent this slot to this chat
+        try:
+            if poster:
+                msg = await context.bot.send_photo(
+                    chat_id=cid, photo=io.BytesIO(poster), caption=caption,
+                    parse_mode="Markdown", reply_markup=kb)
+            else:
+                msg = await context.bot.send_message(
+                    chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
+            await asyncio.to_thread(
+                update_wofrage_dispatch_message_id, int(did), telegram_message_id=int(msg.message_id))
+            if cid > 0:  # DM feed → ✅ marker + "next task"
+                try:
+                    await asyncio.to_thread(
+                        record_interactive_inbox,
+                        user_id=cid, kind="wf", dispatch_id=int(did), chat_id=cid,
+                        telegram_message_id=int(msg.message_id),
+                        deeplink="ans_wf_0", title="❓ Wo-Frage Sprint",
+                        keyboard_json=_inbox_kb_json(kb),
+                    )
+                except Exception:
+                    logging.debug("wofrage sprint: inbox record failed did=%s", did, exc_info=True)
+            sent += 1
+        except Exception as exc:
+            logging.warning("wofrage_sprint: send failed chat=%s: %s", cid, exc)
+    logging.info("wofrage_sprint sent=%s set=%s slot=%s", sent, set_id, slot_hour)
+
+
+async def admin_wofrage_sprint_command(update: Update, context: CallbackContext) -> None:
+    """Build + broadcast a Wo-Frage Sprint set now (test). /wofragesprint"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    await message.reply_text("⏳ Собираю и рассылаю Wo-Frage Sprint…")
+    await _send_scheduled_wofrage_sprint(context)
+
+
+async def admin_wofrage_test_command(update: Update, context: CallbackContext) -> None:
+    """PRIVATE test: send the Wo-Frage Sprint card only to YOUR chat (no broadcast) and
+    reset your own result so the timed game is replayable. /wofragetest"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.database import (
+        get_or_create_daily_wofrage_set, delete_wofrage_sprint_result,
+        create_wofrage_dispatch, update_wofrage_dispatch_message_id,
+    )
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
+    set_id = await asyncio.to_thread(get_or_create_daily_wofrage_set, slot_date, slot_hour)
+    if not set_id:
+        await message.reply_text("⚠️ Пул пуст, сет не собран.")
+        return
+    # Let the tester replay the timed game as many times as they like.
+    await asyncio.to_thread(delete_wofrage_sprint_result, set_id, int(user.id))
+    poster = None
+    try:
+        from backend.interactive_card import render_wofrage_card
+        poster = await asyncio.to_thread(render_wofrage_card)
+    except Exception:
+        logging.warning("wofragetest: card render failed", exc_info=True)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❓ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
+        [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+    ])
+    caption = (
+        "🧪 *Wo-Frage Sprint — тест (только тебе)*\n\n"
+        "10 вопросов · по 8 секунд — выбери правильное вопросительное слово (Worauf? Womit? Woran?)!\n"
+        "🏆 В конце — разбор с правилом «вещь vs человек».\n"
+        "_Твой результат сброшен — можно переигрывать._"
+    )
+    cid = int(message.chat_id)
+    if poster:
+        msg = await message.reply_photo(photo=io.BytesIO(poster), caption=caption,
+                                        parse_mode="Markdown", reply_markup=kb)
+    else:
+        msg = await message.reply_text(caption, parse_mode="Markdown", reply_markup=kb)
+    if cid > 0:  # DM → also exercise the ✅ inbox / «следующее задание» marker
+        try:
+            did = await asyncio.to_thread(
+                create_wofrage_dispatch, set_id=set_id, slot_date=slot_date,
+                slot_hour=slot_hour, chat_id=cid)
+            if did is not None:
+                await asyncio.to_thread(
+                    update_wofrage_dispatch_message_id, int(did), telegram_message_id=int(msg.message_id))
+                await asyncio.to_thread(
+                    record_interactive_inbox,
+                    user_id=cid, kind="wf", dispatch_id=int(did), chat_id=cid,
+                    telegram_message_id=int(msg.message_id),
+                    deeplink="ans_wf_0", title="❓ Wo-Frage Sprint",
+                    keyboard_json=_inbox_kb_json(kb),
+                )
+        except Exception:
+            logging.debug("wofragetest: inbox record failed", exc_info=True)
+
+
+async def wofrage_learn_command(update: Update, context: CallbackContext) -> None:
+    """Open the Wo-Frage Trainer (self-paced deck). /wofragelearn"""
+    message = update.effective_message
+    if not message:
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))]])
+    await message.reply_text(
+        "📚 <b>Wo-Frage Trainer</b> — тренируй вопросительные слова (Worauf/Womit/Woran…) "
+        "в своём темпе: вопрос, выбери слово, читай правило, свайпай дальше 👇",
+        parse_mode="HTML", reply_markup=kb,
+    )
+
+
+async def wofrage_battle_command(update: Update, context: CallbackContext) -> None:
+    """Create a Wo-Frage Sprint battle (Pro only) + broadcast the invite. /wofragebattle"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not await asyncio.to_thread(is_user_pro, int(user.id)):
+        await message.reply_text("⚔️ Создавать батл может только Premium. Принять чужой вызов могут все.")
+        return
+    from backend.database import (
+        create_wofrage_battle_with_set, add_wofrage_sprint_battle_member,
+    )
+    deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
+    creator_name = _display_user_name(user)
+    bid, _set_id = await asyncio.to_thread(
+        create_wofrage_battle_with_set, creator_user_id=int(user.id),
+        creator_name=creator_name, deadline=deadline)
+    if not bid:
+        await message.reply_text("Не удалось собрать набор батла. Попробуй позже.")
+        return
+    await asyncio.to_thread(add_wofrage_sprint_battle_member,
+                            battle_id=bid, user_id=int(user.id), user_name=creator_name)
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_wfb_{bid}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
+    ])
+    instant_cap = (f"⚔️ <b>Твой Wo-Frage-батл #{bid} брошен!</b>\n"
+                   f"12 вопросов на Wo-Fragen · дедлайн 23:59\n"
+                   f"📨 Рассылаю приглашения соперникам…")
+    status_mid = await _send_battle_status(context, chat_id=int(message.chat_id),
+                                           caption=instant_cap, kb=play_kb)
+    if _set_id:
+        asyncio.create_task(_pin_battle_play_message(
+            context, user_id=int(user.id), set_id=str(_set_id),
+            chat_id=int(message.chat_id), message_id=status_mid, kind="wofrage"))
+    asyncio.create_task(_schedule_battle_auto_nudge(
+        kind="wofrage", battle_id=bid, user_id=int(user.id), deadline=deadline))
+    asyncio.create_task(_broadcast_wofrage_battle_invites(
+        context, battle_id=bid, creator_id=int(user.id), creator_name=creator_name,
+        status_chat_id=int(message.chat_id), status_msg_id=status_mid))
+
+
+async def _broadcast_wofrage_battle_invites(context: CallbackContext, *, battle_id: int,
+                                            creator_id: int, creator_name: str,
+                                            status_chat_id: int, status_msg_id: int,
+                                            target_ids: list[int] | None = None) -> int:
+    """Off-critical-path: render the invite card once and DM every allowed user
+    (or just ``target_ids``), then land the creator's status as a hero-photo card."""
+    invite_text = (
+        f"⚔️ <b>{html.escape(creator_name)}</b> зовёт на <b>Wo-Frage</b> батл!\n"
+        f"12 вопросов на вопросительные слова, по 8 сек. Играй когда удобно <b>до 23:59</b>. Прими вызов:"
+    )
+    join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "✅ Принять вызов", callback_data=f"wfb_join:{battle_id}")]])
+    poster = None
+    try:
+        from backend.interactive_card import render_wofrage_card
+        poster = await asyncio.to_thread(render_wofrage_card)
+    except Exception:
+        poster = None
+    if target_ids is not None:
+        targets = list(target_ids)
+    else:
+        try:
+            targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+        except Exception:
+            targets = []
+    sent = 0
+    for uid in targets or []:
+        if int(uid) == int(creator_id):
+            continue
+        try:
+            if poster:
+                await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(poster),
+                                             caption=invite_text, parse_mode="HTML", reply_markup=join_kb)
+            else:
+                await context.bot.send_message(chat_id=int(uid), text=invite_text,
+                                               parse_mode="HTML", reply_markup=join_kb)
+            sent += 1
+        except Exception:
+            pass
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_wfb_{battle_id}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
+    ])
+    final_cap = (f"⚔️ <b>Wo-Frage-батл #{battle_id} в бою!</b>\n"
+                 f"12 вопросов на Wo-Fragen · дедлайн 23:59\n"
+                 f"📨 Вызов получили: {sent}\nСыграй первым — задай темп! 👇")
+    return await _present_battle_status(context, chat_id=int(status_chat_id),
+                                        old_msg_id=int(status_msg_id),
+                                        caption=final_cap, kb=play_kb)
+
+
+async def _create_and_broadcast_wofrage_wizard(context: CallbackContext, *, creator_id: int,
+                                               creator_name: str, ind_targets,
+                                               status_chat_id: int, status_msg_id: int) -> None:
+    """Wizard path for Wo-Frage battles (mirror of the Adjektiv version)."""
+    from backend.database import (
+        create_wofrage_battle_with_set, add_wofrage_sprint_battle_member,
+    )
+    deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
+    try:
+        bid, set_id = await asyncio.to_thread(
+            create_wofrage_battle_with_set, creator_user_id=int(creator_id),
+            creator_name=creator_name, deadline=deadline)
+    except Exception:
+        logging.warning("wofrage wizard create failed creator=%s", creator_id, exc_info=True)
+        bid, set_id = None, None
+    if not bid:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=status_chat_id, message_id=status_msg_id,
+                text="⚠️ Не удалось собрать набор батла. Попробуй позже.")
+        except Exception:
+            pass
+        return
+    await asyncio.to_thread(add_wofrage_sprint_battle_member,
+                            battle_id=bid, user_id=int(creator_id), user_name=creator_name)
+    eff_msg_id = await _broadcast_wofrage_battle_invites(
+        context, battle_id=bid, creator_id=int(creator_id), creator_name=creator_name,
+        status_chat_id=int(status_chat_id), status_msg_id=int(status_msg_id),
+        target_ids=ind_targets)
+    if set_id:
+        await _pin_battle_play_message(context, user_id=int(creator_id), set_id=str(set_id),
+                                       chat_id=int(status_chat_id), message_id=int(eff_msg_id),
+                                       kind="wofrage")
+    await _schedule_battle_auto_nudge(kind="wofrage", battle_id=bid,
+                                      user_id=int(creator_id), deadline=deadline)
+
+
+async def wofrage_battle_join_callback(update: Update, context: CallbackContext) -> None:
+    """Accept a Wo-Frage battle invite (wfb_join:<id>) → join + play button."""
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    try:
+        bid = int(str(q.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer()
+        return
+    from backend.database import get_wofrage_sprint_battle, add_wofrage_sprint_battle_member
+    battle = await asyncio.to_thread(get_wofrage_sprint_battle, bid)
+    if (not battle or str(battle.get("status")) != "open"
+            or (battle.get("deadline") and battle["deadline"] <= datetime.now(ZoneInfo("UTC")))):
+        await q.answer("Этот батл уже закрыт.", show_alert=True)
+        return
+    name = _display_user_name(q.from_user)
+    await asyncio.to_thread(add_wofrage_sprint_battle_member,
+                            battle_id=bid, user_id=int(q.from_user.id), user_name=name)
+    await q.answer("Ты в батле! ⚔️")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_wfb_{bid}"))],
+        [InlineKeyboardButton("⏰ Напомнить позже", callback_data=f"wfb_later:{bid}")],
+    ])
+    await _edit_battle_invite(q, "✅ Вызов принят! Играй сейчас или запланируй на потом 👇", kb)
+    set_id = str(battle.get("set_id") or "")
+    if q.message and set_id:
+        asyncio.create_task(_pin_battle_play_message(
+            context, user_id=int(q.from_user.id), set_id=set_id,
+            chat_id=int(q.message.chat.id), message_id=int(q.message.message_id), kind="wofrage"))
+    asyncio.create_task(_schedule_battle_auto_nudge(
+        kind="wofrage", battle_id=bid, user_id=int(q.from_user.id),
+        deadline=battle.get("deadline")))
+    creator_id = int(battle.get("creator_user_id") or 0)
+    if creator_id and creator_id != int(q.from_user.id):
+        asyncio.create_task(_notify_creator_accepted_capped(
+            context, kind="wofrage", battle_id=bid,
+            creator_id=creator_id, accepter_name=name))
+
+
+async def wofrage_battle_later_callback(update: Update, context: CallbackContext) -> None:
+    """wfb_later:<id> → show preset reminder times."""
+    q = update.callback_query
+    if not q:
+        return
+    try:
+        bid = int(str(q.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer(); return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕1 час", callback_data=f"wfb_rem:{bid}:60"),
+         InlineKeyboardButton("➕2 часа", callback_data=f"wfb_rem:{bid}:120")],
+        [InlineKeyboardButton("➕3 часа", callback_data=f"wfb_rem:{bid}:180"),
+         InlineKeyboardButton("🌆 в 21:00", callback_data=f"wfb_rem:{bid}:at21")],
+        [InlineKeyboardButton("◀️ Назад", callback_data=f"wfb_join:{bid}")],
+    ])
+    await _edit_battle_invite(q, "⏰ Когда напомнить о батле? (батл закроется в 23:59)", kb)
+    await q.answer()
+
+
+async def wofrage_battle_remind_callback(update: Update, context: CallbackContext) -> None:
+    """wfb_rem:<id>:<code> → schedule a reminder before the deadline."""
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    parts = str(q.data or "").split(":")
+    if len(parts) != 3:
+        await q.answer(); return
+    try:
+        bid = int(parts[1])
+    except ValueError:
+        await q.answer(); return
+    code = parts[2]
+    tz = ZoneInfo("Europe/Vienna")
+    now = datetime.now(tz)
+    if code == "at21":
+        remind_at = now.replace(hour=21, minute=0, second=0, microsecond=0)
+    else:
+        try:
+            remind_at = now + timedelta(minutes=int(code))
+        except ValueError:
+            await q.answer(); return
+    from backend.database import get_wofrage_sprint_battle
+    battle = await asyncio.to_thread(get_wofrage_sprint_battle, bid)
+    deadline = battle.get("deadline") if battle else None
+    if remind_at <= now:
+        await q.answer("Это время уже прошло 🙂", show_alert=True); return
+    if deadline and remind_at >= deadline:
+        await q.answer("Не успеть — батл закроется в 23:59. Лучше сыграй сейчас!", show_alert=True)
+        return
+    await asyncio.to_thread(schedule_article_battle_reminder,
+                            user_id=int(q.from_user.id), battle_id=bid,
+                            remind_at=remind_at, kind="wofrage")
+    hhmm = remind_at.strftime("%H:%M")
+    await q.answer(f"⏰ Напомню в {hhmm}")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "▶️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_wfb_{bid}"))]])
+    await _edit_battle_invite(q, f"⏰ Напомню в <b>{hhmm}</b>. До встречи на батле! ⚔️", kb)
+
+
+async def _close_wofrage_sprint_battles_job(context: CallbackContext) -> None:
+    """Close only Wo-Frage battles (kept for manual/standalone use)."""
+    results = await _collect_battle_results(context, "wofrage")
+    await _flush_battle_results(context, results)
+    if results:
+        logging.info("wofrage battles closed: %s", len(results))
+
+
 async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
     """Daily 19:00 reminder: ensure today's shared set exists, then post the play
     button to the delivery targets. Skips quietly if the set isn't ready."""
@@ -32219,6 +32709,13 @@ def main():
     application.add_handler(CallbackQueryHandler(adjektiv_battle_join_callback, pattern=r"^adb_join:\d+$"))
     application.add_handler(CallbackQueryHandler(adjektiv_battle_later_callback, pattern=r"^adb_later:\d+$"))
     application.add_handler(CallbackQueryHandler(adjektiv_battle_remind_callback, pattern=r"^adb_rem:\d+:[a-z0-9]+$"))
+    application.add_handler(CommandHandler("wofragesprint", admin_wofrage_sprint_command))
+    application.add_handler(CommandHandler("wofragetest", admin_wofrage_test_command))
+    application.add_handler(CommandHandler("wofragebattle", wofrage_battle_command))
+    application.add_handler(CommandHandler("wofragelearn", wofrage_learn_command))
+    application.add_handler(CallbackQueryHandler(wofrage_battle_join_callback, pattern=r"^wfb_join:\d+$"))
+    application.add_handler(CallbackQueryHandler(wofrage_battle_later_callback, pattern=r"^wfb_later:\d+$"))
+    application.add_handler(CallbackQueryHandler(wofrage_battle_remind_callback, pattern=r"^wfb_rem:\d+:[a-z0-9]+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_join_callback, pattern=r"^asb_join:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_accept_callback, pattern=r"^asb_acc:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_decline_callback, pattern=r"^asb_dec:\d+$"))
@@ -32820,6 +33317,15 @@ def main():
                 "cron",
                 hour=int(_adj_h),
                 minute=int(_adj_m),
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- Wo-Frage Sprint: two daily sets (11:00 and 16:30) --
+        for _wf_h, _wf_m in WOFRAGE_SPRINT_SLOTS:
+            scheduler.add_job(
+                make_rotation_gated("wofrage_sprint", int(_wf_h), int(_wf_m), _send_scheduled_wofrage_sprint),
+                "cron",
+                hour=int(_wf_h),
+                minute=int(_wf_m),
                 timezone=QUIZ_SCHEDULE_TZ_NAME,
             )
         # -- Artikel Trainer: morning learning nudge / all-day entry point (08:00) --
