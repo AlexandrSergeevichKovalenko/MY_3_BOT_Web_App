@@ -33785,7 +33785,9 @@ def main():
             minute=10,
         )
 
-        for hour in [7,12,16]:
+        # Только вечерний отчёт в 18:05 (hour=16 UTC). Утренний 09:05 (7) и дневной 14:05 (12)
+        # отключены — по просьбе, чтобы не перегружать сообщениями.
+        for hour in [16]:
             scheduler.add_job(lambda: submit_async(send_progress_report), "cron", hour=hour, minute=5)
 
     #scheduler.add_job(lambda: submit_async(get_yesterdays_mistakes_for_audio_message, CallbackContext(application=application)), "cron", hour=4, minute=15)

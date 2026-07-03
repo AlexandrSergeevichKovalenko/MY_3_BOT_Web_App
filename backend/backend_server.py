@@ -51074,17 +51074,18 @@ def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PL
             if not snapshot.get("has_plan"):
                 continue
             if not snapshot.get("is_complete"):
-                text = (
-                    f"⏰ {username}, напоминание: сегодня выполнено "
-                    f"{snapshot.get('done_items', 0)}/{snapshot.get('total_items', 0)} задач.\n"
-                    "Если будет возможность, закрой дневной план до конца."
-                )
-                target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_today_evening_reminders.remind")
-                if int(target_chat_id) < 0:
-                    _send_group_message(text, reply_markup=plan_button, chat_id=int(target_chat_id))
-                else:
-                    _send_private_message(user_id=int(target_chat_id), text=text, reply_markup=plan_button)
-                reminded += 1
+                # Напоминание «закрой дневной план» отключено (перегруз сообщений) — не отправляем.
+                # text = (
+                #     f"⏰ {username}, напоминание: сегодня выполнено "
+                #     f"{snapshot.get('done_items', 0)}/{snapshot.get('total_items', 0)} задач.\n"
+                #     "Если будет возможность, закрой дневной план до конца."
+                # )
+                # target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_today_evening_reminders.remind")
+                # if int(target_chat_id) < 0:
+                #     _send_group_message(text, reply_markup=plan_button, chat_id=int(target_chat_id))
+                # else:
+                #     _send_private_message(user_id=int(target_chat_id), text=text, reply_markup=plan_button)
+                # reminded += 1
                 continue
 
             streak = _compute_daily_plan_streak(user_id, target_date)
