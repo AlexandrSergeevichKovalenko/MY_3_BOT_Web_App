@@ -245,12 +245,15 @@ def _gather_candidates() -> list[dict]:
     return candidates[: max(1, WORLD_NEWS_CANDIDATES)]
 
 
-def _pick_video_with_transcript(*, manual_url: str | None = None) -> tuple[dict | None, dict]:
+def _pick_video_with_transcript(*, manual_url: str | None = None,
+                                exclude_video_ids: set[str] | None = None) -> tuple[dict | None, dict]:
     """Return ({video_id, video_url, title, channel_title, duration_seconds, lang, text, items}
     or None, diag). `diag` counts why candidates were rejected (dur / no-captions / too-short)
-    so a failure is diagnosable from the error message instead of a generic 'not found'."""
+    so a failure is diagnosable from the error message instead of a generic 'not found'.
+    `exclude_video_ids` skips those videos (used by «переформировать» to pick a DIFFERENT one)."""
+    exclude = {str(v).strip() for v in (exclude_video_ids or set()) if str(v).strip()}
     diag: dict = {"candidates": 0, "dur_skipped": 0, "no_transcript": 0, "short_transcript": 0,
-                  "channel_rejected": 0, "manual": bool(manual_url), "has_yt_key": bool(_youtube_api_key())}
+                  "channel_rejected": 0, "excluded": 0, "manual": bool(manual_url), "has_yt_key": bool(_youtube_api_key())}
     if manual_url:
         vid = _extract_video_id(manual_url)
         if not vid:
@@ -287,6 +290,9 @@ def _pick_video_with_transcript(*, manual_url: str | None = None) -> tuple[dict 
     details_map = _yt_api_video_details([c["video_id"] for c in candidates])
     for cand in candidates:
         vid = cand["video_id"]
+        if vid in exclude:
+            diag["excluded"] += 1
+            continue
         det = details_map.get(vid, {})
         # STRICT news filter: only accept real news channels (reject entertainment/docs/vlogs).
         channel_title = det.get("channel_title") or cand.get("channel_title") or ""
@@ -472,14 +478,16 @@ def prepare_world_news(
     *,
     manual_url: str | None = None,
     status: str = "ready",
+    exclude_video_ids: set[str] | None = None,
 ) -> dict:
     """Pick a video, build the pack, persist to bt_3_world_news_daily. Returns the stored
-    entry dict. Raises on any failure so callers can degrade cleanly."""
+    entry dict. Raises on any failure so callers can degrade cleanly. `exclude_video_ids`
+    forces a DIFFERENT video (used by «переформировать»)."""
     from backend.database import upsert_world_news_daily, get_world_news_for_date
 
     date_str = (news_date or _today_str()).strip()
 
-    picked, diag = _pick_video_with_transcript(manual_url=manual_url)
+    picked, diag = _pick_video_with_transcript(manual_url=manual_url, exclude_video_ids=exclude_video_ids)
     if not picked:
         raise RuntimeError(f"world_news: no suitable video with transcript found — diag={diag}")
 

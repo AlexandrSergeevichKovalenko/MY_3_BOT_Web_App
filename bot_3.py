@@ -7044,7 +7044,53 @@ def _world_news_preview_keyboard_rows(entry: dict) -> list[list[InlineKeyboardBu
         rows.append([InlineKeyboardButton(
             f"🔤 Сохранить слова в словарь ({n_words})", callback_data=f"wn_words:{date_str}"
         )])
+    rows.append([InlineKeyboardButton(
+        "🔄 Переформировать (другое видео)", callback_data=f"wn_regen:{date_str}"
+    )])
     return rows
+
+
+async def handle_world_news_regen_callback(update: Update, context: CallbackContext):
+    """Admin didn't like the news → pick a DIFFERENT video for that date and re-send the preview
+    for approval. Resets approval (upsert defaults is_pinned=False)."""
+    query = update.callback_query
+    if not query:
+        return
+    user = query.from_user
+    if not user or not _is_admin_user(user.id):
+        await query.answer("⛔️ Только для админа", show_alert=True)
+        return
+    date_str = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+    if not date_str:
+        await query.answer("❌ Ошибка даты", show_alert=True)
+        return
+    await query.answer("🔄 Подбираю другое видео…")
+    try:
+        from backend.database import get_world_news_for_date
+        cur = await asyncio.to_thread(get_world_news_for_date, date_str)
+    except Exception:
+        cur = None
+    exclude = {str(cur["video_id"])} if cur and cur.get("video_id") else set()
+    try:
+        from backend.world_news_generator import prepare_world_news
+        entry = await asyncio.to_thread(prepare_world_news, date_str, exclude_video_ids=exclude)
+    except Exception as exc:
+        logging.warning("world_news regen failed for %s: %s", date_str, exc)
+        try:
+            await query.message.reply_text(
+                f"❌ Не удалось переформировать ({date_str}): {exc}\n"
+                "Другого подходящего новостного ролика с субтитрами не нашлось. "
+                "Можно задать вручную: /worldnews <youtube_url>."
+            )
+        except Exception:
+            pass
+        return
+    text = _world_news_preview_text(entry, header="🔄 <b>Переформировано — проверь и одобри</b>")
+    kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
+    try:
+        await query.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        logging.exception("world_news regen: send preview failed")
 
 
 async def handle_world_news_words_callback(update: Update, context: CallbackContext):
@@ -32756,6 +32802,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
     application.add_handler(CallbackQueryHandler(handle_world_news_pin_callback, pattern=r"^wn_pin:"))
     application.add_handler(CallbackQueryHandler(handle_world_news_words_callback, pattern=r"^wn_words:"))
+    application.add_handler(CallbackQueryHandler(handle_world_news_regen_callback, pattern=r"^wn_regen:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
     application.add_handler(CallbackQueryHandler(handle_artikel_settheme_callback, pattern=r"^art_st:"))
