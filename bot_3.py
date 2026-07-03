@@ -7112,6 +7112,72 @@ async def run_world_news_nightly(context: CallbackContext):
             pass
 
 
+def _world_news_morning_card_text(entry: dict) -> str:
+    """User-facing morning плашка «Начни день с коротких новостей» (title + summary + duration)."""
+    dur = int(entry.get("duration_seconds") or 0)
+    dur_txt = f"{dur // 60}:{dur % 60:02d}" if dur else None
+    lines = ["🌅 <b>Начни день с коротких новостей</b>"]
+    title = str(entry.get("video_title") or "").strip()
+    if title:
+        lines.append(f"\n🎬 <b>{title}</b>")
+    summary = str(entry.get("summary_ru") or "").strip()
+    if summary:
+        lines.append(f"\n📰 {summary}")
+    meta = []
+    if entry.get("channel_title"):
+        meta.append(str(entry["channel_title"]).strip())
+    if dur_txt:
+        meta.append(f"⏱ {dur_txt}")
+    n_phrases = len(_world_news_words_to_digest_items(entry.get("phrases") or []))
+    if n_phrases:
+        meta.append(f"🔤 {n_phrases} слов")
+    if meta:
+        lines.append(f"\n{' · '.join(meta)}")
+    lines.append("\nПосмотри короткое видео с субтитрами, сохрани слова и проверь себя — прямо в приложении 👇")
+    return "\n".join(lines)
+
+
+def _world_news_morning_card_keyboard(context: CallbackContext) -> InlineKeyboardMarkup:
+    """Two Mini-App deep-link buttons for the morning card: watch (news page) + jump to quiz."""
+    bot_username = getattr(getattr(context, "bot", None), "username", None)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶️ Смотреть новости", url=get_webapp_deeplink("worldnews", bot_username=bot_username))],
+        [InlineKeyboardButton("🧩 Протестировать знания", url=get_webapp_deeplink("worldnews_quiz", bot_username=bot_username))],
+    ])
+
+
+async def admin_world_news_card_command(update: Update, context: CallbackContext):
+    """Send the morning «Начни день с коротких новостей» card to yourself to test the full
+    Mini-App flow (watch → save words → quiz). /worldnews_card — admin only.
+    Prepare today's entry first with /worldnews if it isn't ready yet."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    try:
+        from backend.database import get_world_news_for_date
+        today = datetime.now().strftime("%Y-%m-%d")
+        entry = await asyncio.to_thread(get_world_news_for_date, today)
+    except Exception:
+        logging.exception("worldnews card: load failed user_id=%s", int(sender.id))
+        entry = None
+    if not entry:
+        await message.reply_text(
+            "❌ На сегодня новость дня ещё не готова.\n"
+            "Сначала подготовь её: /worldnews (или /worldnews <youtube_url>)."
+        )
+        return
+    await message.reply_text(
+        _world_news_morning_card_text(entry),
+        parse_mode="HTML",
+        reply_markup=_world_news_morning_card_keyboard(context),
+        disable_web_page_preview=True,
+    )
+
+
 async def admin_dedup_now_command(update: Update, context: CallbackContext):
     """Run the dictionary dedup job right now and report the result. /dedupnow"""
     sender = update.effective_user
@@ -31971,6 +32037,7 @@ def main():
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
     application.add_handler(CommandHandler("reviewcard", admin_review_card_command))
     application.add_handler(CommandHandler("worldnews", admin_world_news_command))
+    application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))

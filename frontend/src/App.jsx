@@ -5326,6 +5326,8 @@ function AppInner() {
   const [worldNewsSelected, setWorldNewsSelected] = useState(() => new Set()); // checked phrase indices
   const [worldNewsSaving, setWorldNewsSaving] = useState(false);
   const [worldNewsSavedCount, setWorldNewsSavedCount] = useState(0); // >0 → shows «Сохранено (N)»
+  const [worldNewsQuizAnswers, setWorldNewsQuizAnswers] = useState({}); // {questionIdx: chosenOptionIdx}
+  const [worldNewsScrollToQuiz, setWorldNewsScrollToQuiz] = useState(false); // deep-link ?startapp=worldnews_quiz
   const [youtubeError, setYoutubeError] = useState('');
   const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
@@ -17734,9 +17736,11 @@ function AppInner() {
     } else if (startParam === 'worldnews' || startParam.startsWith('worldnews')) {
       // «Начни день с коротких новостей» → open the YouTube section in news mode. The actual
       // video + phrases + quiz are fetched by the worldNews loader effect once initData is ready.
+      // `worldnews_quiz` (the card's «Тест» button) jumps straight to the quiz once it renders.
       setFlashcardsOnly(false);
       setFlashcardSessionActive(false);
       setYoutubeNewsMode(true);
+      if (startParam.includes('quiz')) setWorldNewsScrollToQuiz(true);
       setSelectedSections(new Set(['youtube']));
       const t = setTimeout(() => { scrollToRef(youtubeRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
@@ -28301,6 +28305,7 @@ function AppInner() {
           const phraseCount = Array.isArray(data.phrases) ? data.phrases.length : 0;
           setWorldNewsSelected(new Set(Array.from({ length: phraseCount }, (_v, i) => i)));
           setWorldNewsSavedCount(0);
+          setWorldNewsQuizAnswers({});
           const url = String(data.video_url || '').trim()
             || (data.video_id ? `https://youtu.be/${data.video_id}` : '');
           if (url) setYoutubeInput(url);
@@ -28325,6 +28330,27 @@ function AppInner() {
     youtubeNewsTranscriptRequestedRef.current = youtubeId;
     fetchTranscript();
   }, [youtubeNewsMode, youtubeId, initData, youtubeTranscriptLoading, youtubeTranscript]);
+
+  // «Тест» deep-link (?startapp=worldnews_quiz): once the quiz has rendered, scroll to it.
+  useEffect(() => {
+    if (!worldNewsScrollToQuiz || !worldNewsData?.available) return undefined;
+    const timer = setTimeout(() => {
+      const node = typeof document !== 'undefined' ? document.getElementById('worldnews-quiz') : null;
+      if (node && typeof node.scrollIntoView === 'function') {
+        node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      setWorldNewsScrollToQuiz(false);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [worldNewsScrollToQuiz, worldNewsData]);
+
+  // Quiz: lock the first answer per question (immediate feedback learning quiz — no re-tries).
+  const answerWorldNewsQuiz = useCallback((questionIndex, optionIndex) => {
+    setWorldNewsQuizAnswers((prev) => {
+      if (Object.prototype.hasOwnProperty.call(prev, questionIndex)) return prev;
+      return { ...prev, [questionIndex]: optionIndex };
+    });
+  }, []);
 
   const toggleWorldNewsPhrase = useCallback((index) => {
     setWorldNewsSelected((prev) => {
@@ -32479,6 +32505,64 @@ function AppInner() {
                               ? tr('💾 Сохраняем…', '💾 Speichern…')
                               : tr(`💾 Сохранить выбранные (${worldNewsSelected.size})`, `💾 Ausgewählte speichern (${worldNewsSelected.size})`)}
                         </button>
+                      </div>
+                    )}
+                    {youtubeNewsMode && worldNewsData?.available && Array.isArray(worldNewsData.quiz) && worldNewsData.quiz.length > 0 && (
+                      <div className="worldnews-quiz" id="worldnews-quiz">
+                        <div className="worldnews-quiz-head">
+                          <h4>{tr('Проверьте знания', 'Wissen testen')}</h4>
+                          {(() => {
+                            const total = worldNewsData.quiz.length;
+                            const answered = Object.keys(worldNewsQuizAnswers).length;
+                            const score = worldNewsData.quiz.reduce((acc, q, qi) => (
+                              worldNewsQuizAnswers[qi] === Number(q?.correct_index) ? acc + 1 : acc
+                            ), 0);
+                            return (
+                              <span className="worldnews-quiz-score">
+                                {answered >= total
+                                  ? tr(`Результат: ${score}/${total}`, `Ergebnis: ${score}/${total}`)
+                                  : tr(`${answered}/${total} отвечено`, `${answered}/${total} beantwortet`)}
+                              </span>
+                            );
+                          })()}
+                        </div>
+                        {worldNewsData.quiz.map((question, qi) => {
+                          const options = Array.isArray(question?.options) ? question.options : [];
+                          const correctIndex = Number(question?.correct_index);
+                          const chosen = worldNewsQuizAnswers[qi];
+                          const answered = Object.prototype.hasOwnProperty.call(worldNewsQuizAnswers, qi);
+                          return (
+                            <div key={`wn-quiz-${qi}`} className="worldnews-quiz-card">
+                              <div className="worldnews-quiz-question">{qi + 1}. {question?.question_de}</div>
+                              <div className="worldnews-quiz-options">
+                                {options.map((option, oi) => {
+                                  let stateClass = '';
+                                  if (answered) {
+                                    if (oi === correctIndex) stateClass = 'is-correct';
+                                    else if (oi === chosen) stateClass = 'is-wrong';
+                                  }
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={`wn-quiz-${qi}-opt-${oi}`}
+                                      className={`worldnews-quiz-option ${stateClass}`}
+                                      onClick={() => answerWorldNewsQuiz(qi, oi)}
+                                      disabled={answered}
+                                    >
+                                      <span className="worldnews-quiz-option-mark" aria-hidden="true">
+                                        {answered && oi === correctIndex ? '✅' : (answered && oi === chosen ? '❌' : '')}
+                                      </span>
+                                      <span className="worldnews-quiz-option-text">{option}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {answered && question?.explanation_ru && (
+                                <div className="worldnews-quiz-explain">{question.explanation_ru}</div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                     {youtubeRecommendationLoading && (
