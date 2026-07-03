@@ -511,7 +511,8 @@ IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT = max(1, int((os.getenv("IMAGE_QUIZ_TOPUP_AC
 IMAGE_QUIZ_GLOBAL_POOL_CAP = max(1, int((os.getenv("IMAGE_QUIZ_GLOBAL_POOL_CAP") or "40").strip() or "40"))
 IMAGE_QUIZ_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("IMAGE_QUIZ_POOL_TOPUP_HOUR") or "2").strip() or "2")))
 IMAGE_QUIZ_POOL_TOPUP_MINUTE = max(0, min(59, int((os.getenv("IMAGE_QUIZ_POOL_TOPUP_MINUTE") or "0").strip() or "0")))
-FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
+# Once per day only (afternoon) — the earlier 07:00 send was a duplicate nudge.
+FLASHCARD_REMINDER_TIMES = [(16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
 quiz_ru_translation_cache = {}
@@ -6597,7 +6598,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("deliver_listening", "Аудирование", 30, True, "guard"),
     ("deliver_numdict", "Числа-диктант", 30, True, "guard"),
     # --- Bot-loop reports / dashboards / reminders (heartbeat by function name via submit_async) ---
-    ("send_morning_reminder", "Утреннее напоминание", 30, True, "guard"),
+    ("send_morning_reminder", "Streak-нудж «загляни в приложение» (17:30)", 30, True, "guard"),
     ("send_flashcard_reminder", "Напоминание о карточках", 30, True, "guard"),
     ("_send_mistake_review_reminders", "Напоминание «повтори ошибки» (11:00)", 30, True, "guard"),
     ("_send_plan_dashboard_job", "Дашборд плана (06:45)", 30, True, "guard"),
@@ -8011,93 +8012,84 @@ async def log_message(update: Update, context: CallbackContext):
     except Exception:
         logging.warning("⚠️ Ошибка при записи bt_3_messages activity for user_id=%s", safe_user_id, exc_info=True)
 
-# утреннее приветствие членом группы
-async def send_morning_reminder(context:CallbackContext):
-    time_now= datetime.now().time()
-    # Формируем утреннее сообщение
-    message = (
-        f"🌅 {'Доброе утро' if time(2, 0) < time_now < time(10, 0) else ('Добрый день' if time(10, 1) < time_now < time(17, 0) else 'Добрый вечер')}!\n\n"
-        "Чтобы начать обучение, откройте приложение через кнопку Start learning которая расположена возле клавиатуры с левой стороны.\n\n"
-        "Что доступно в приложении:\n"
-        "🔹 Переводы и проверка предложений.\n"
-        "🔹 Карточки (FSRS, Quiz, Blocks, Дополни предложение).\n"
-        "🔹 Видео по слабым темам, словарь и читалка.\n"
-        "🔹 Практика с AI-учителем и прокачка навыков.\n"
-        "🔹 Дневной план и персональная аналитика прогресса.\n\n"
-        "🎯 Рекомендация: откройте раздел «Задачи на день» и выполняйте план по шагам.\n"
-    )
-
-    # формируем список команд
-    commands = (
-        "📜 **Доступные команды:**\n"
-        "📌 Выбрать тему - Выбрать тему для перевода\n"
-        "🚀 Начать перевод - Получить предложение для перевода после выбора темы.\n"
-        "📜 Проверить перевод - После отправки предложений, проверить перевод\n"
-        "✅ Завершить перевод - Завершить перевод и зафиксировать время.\n"
-        "/stats - Узнать свою статистику\n"
-    )
-
+# «Загляни в приложение» — личный streak-нудж (раз в день, 17:30).
+# Раньше это было утреннее приветствие в группу + длинный список команд, которое
+# слалось дважды в день. Теперь это ОДНО личное сообщение с картой серии и кнопкой
+# «Открыть приложение» — короткий призыв не дать сгореть прогрессу. В группу больше
+# не шлём (нудж персональный по определению).
+async def send_morning_reminder(context: CallbackContext):
     bot_username = context.bot.username
     if not bot_username:
         bot_info = await context.bot.get_me()
         bot_username = bot_info.username
     webapp_url = get_webapp_deeplink("webapp", bot_username=bot_username)
-
-    group_reply_markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🚀 Открыть Web App", url=webapp_url)]]
-    )
-    private_reply_markup = InlineKeyboardMarkup(
+    open_app_kb = InlineKeyboardMarkup(
         [[InlineKeyboardButton("🚀 Открыть приложение", url=webapp_url)]]
     )
 
     try:
         targets = await _collect_scheduler_delivery_targets(context, lookback_days=30, job_name="send_morning_reminder")
     except Exception:
-        logging.warning("⚠️ Не удалось собрать targets для morning reminder", exc_info=True)
+        logging.warning("⚠️ Не удалось собрать targets для streak reminder", exc_info=True)
         targets = []
 
     if not targets:
-        logging.info("ℹ️ morning reminder: нет targets для рассылки")
+        logging.info("ℹ️ streak reminder: нет targets для рассылки")
         return
 
+    from backend.streak_reminder_card import render_streak_reminder_card, _plural_days_ru
+
+    sent = 0
     for target_chat_id in targets:
         try:
-            if int(target_chat_id) < 0:
-                await context.bot.send_message(
-                    chat_id=int(target_chat_id),
-                    text=message,
-                    reply_markup=group_reply_markup,
-                )
+            cid = int(target_chat_id)
+            # DM-only: this is a personal streak nudge, groups have no single streak.
+            if cid < 0:
                 continue
             try:
-                _streak_blk = (await _streak_status_block(int(target_chat_id))).replace("<b>", "").replace("</b>", "")
+                st = await asyncio.to_thread(get_user_streak, cid)
+                streak_days = int((st or {}).get("current_streak") or 0)
             except Exception:
-                _streak_blk = ""
-            # Recurring schedule nudge: Tue/Fri morning only, and only for users who
-            # have NOT configured a schedule yet (auto-stops once they do).
-            _sched_nudge = ""
-            try:
-                _now = datetime.now()
-                if _now.weekday() in (1, 4) and _now.hour < 12 \
-                        and not await _has_configured_schedule(int(target_chat_id)):
-                    _is_pro = await asyncio.to_thread(is_user_pro, int(target_chat_id))
-                    _sched_nudge = "\n\n" + _schedule_nudge_text(_is_pro)
-            except Exception:
-                _sched_nudge = ""
-            private_text = (
-                (f"{_streak_blk}\n\n" if _streak_blk else "")
-                + "ℹ️ Вы сейчас не состоите в группе, поэтому отправляю напоминание в личку.\n\n"
-                + f"{message}"
-                + _sched_nudge
-            )
-            await context.bot.send_message(
-                chat_id=int(target_chat_id),
-                text=private_text,
-                reply_markup=private_reply_markup,
-            )
+                streak_days = 0
+
+            if streak_days >= 1:
+                caption = (
+                    "Если у тебя есть 5 минут — загляни в приложение и не дай сгореть "
+                    "твоему прогрессу.\n\n"
+                    f"🔥 Ты занимаешься уже <b>{streak_days}</b> {_plural_days_ru(streak_days)} "
+                    "подряд — продли серию сегодня!"
+                )
+                png = None
+                try:
+                    png = await asyncio.to_thread(
+                        render_streak_reminder_card, streak_days=streak_days,
+                    )
+                except Exception:
+                    logging.warning("streak reminder: card render failed chat_id=%s", cid, exc_info=True)
+                if png:
+                    await context.bot.send_photo(
+                        chat_id=cid, photo=io.BytesIO(png), caption=caption,
+                        parse_mode="HTML", reply_markup=open_app_kb,
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=cid, text=caption, parse_mode="HTML",
+                        reply_markup=open_app_kb,
+                    )
+            else:
+                # No streak yet — invite to start one today (no "0 days" card).
+                text = (
+                    "Если у тебя есть 5 минут — загляни в приложение.\n\n"
+                    "Позанимайся сегодня — и твоя серия 🔥 начнётся!"
+                )
+                await context.bot.send_message(
+                    chat_id=cid, text=text, parse_mode="HTML",
+                    reply_markup=open_app_kb,
+                )
+            sent += 1
         except Exception as exc:
-            logging.warning("⚠️ Не удалось отправить morning reminder в chat_id=%s: %s", target_chat_id, exc)
-    #await context.bot.send_message(chat_id=BOT_GROUP_CHAT_ID_Deutsch, text= commands)
+            logging.warning("⚠️ Не удалось отправить streak reminder в chat_id=%s: %s", target_chat_id, exc)
+    logging.info("streak reminder: sent=%s targets=%s", sent, len(targets))
 
 async def send_flashcard_reminder(context: CallbackContext):
     base_url = get_public_web_url()
@@ -32409,8 +32401,8 @@ def main():
         # Prepare «Начни день с коротких новостей» before the morning send (heavy work
         # once/day; the 5:05 broadcast only reads the prepared row).
         scheduler.add_job(lambda: submit_async(run_world_news_nightly,CallbackContext(application=application)),"cron", hour=4, minute=30)
-        scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
-        scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
+        # Personal «загляни в приложение» streak nudge — once/day at 17:30 (was 05:05 + 15:30).
+        scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=17, minute=30)
         scheduler.add_job(
             lambda: submit_async(backfill_group_enrollment_prompts, CallbackContext(application=application)),
             "cron",
