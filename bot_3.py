@@ -7028,10 +7028,14 @@ async def admin_world_news_command(update: Update, context: CallbackContext):
 
 
 def _world_news_preview_keyboard_rows(entry: dict) -> list[list[InlineKeyboardButton]]:
-    """Buttons under a news preview: pin + (if any words) «Сохранить слова в словарь»."""
+    """Buttons under a news preview: approve-for-broadcast + «Сохранить слова в словарь»."""
     date_str = str(entry.get("news_date") or "")
     n_words = len(_world_news_words_to_digest_items(entry.get("phrases") or []))
-    rows = [[InlineKeyboardButton("📌 Закрепить на сегодня", callback_data=f"wn_pin:{date_str}")]]
+    approved = bool(entry.get("is_pinned"))
+    rows = [[InlineKeyboardButton(
+        "✅ Одобрено — уйдёт утром" if approved else "✅ Одобрить (уйдёт утром в 6:30)",
+        callback_data=f"wn_pin:{date_str}",
+    )]]
     if n_words:
         rows.append([InlineKeyboardButton(
             f"🔤 Сохранить слова в словарь ({n_words})", callback_data=f"wn_words:{date_str}"
@@ -7091,7 +7095,7 @@ async def handle_world_news_pin_callback(update: Update, context: CallbackContex
         date_str = query.data.split(":", 1)[1]
         from backend.database import set_world_news_pinned
         await asyncio.to_thread(set_world_news_pinned, date_str, True)
-        await query.answer("📌 Закреплено — ночной автоподбор её не перезапишет")
+        await query.answer("✅ Одобрено — уйдёт в утренней рассылке (6:30)", show_alert=True)
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -7101,44 +7105,110 @@ async def handle_world_news_pin_callback(update: Update, context: CallbackContex
         await query.answer("❌ Ошибка", show_alert=True)
 
 
-async def run_world_news_nightly(context: CallbackContext):
-    """Nightly (pre-morning) prep of the daily news rubric. Skips if today's entry is
-    already pinned. DMs admins a short preview on success or an alert on failure."""
+async def run_world_news_evening_prep(context: CallbackContext):
+    """Evening (≈20:00) prep of TOMORROW's news for admin review. DMs admins a preview with
+    an «✅ Одобрить» button; only an approved (pinned) entry is broadcast next morning at 6:30.
+    Skips if tomorrow's entry is already approved."""
     from backend.database import get_admin_telegram_ids, get_world_news_for_date
-    today = datetime.now().strftime("%Y-%m-%d")
+    target = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     try:
-        existing = await asyncio.to_thread(get_world_news_for_date, today)
+        existing = await asyncio.to_thread(get_world_news_for_date, target)
     except Exception:
         existing = None
     if existing and existing.get("is_pinned"):
-        logging.info("world_news nightly: %s already pinned — skip auto prep", today)
+        logging.info("world_news evening: %s already approved — skip", target)
         return
     admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
     try:
         from backend.world_news_generator import prepare_world_news
-        entry = await asyncio.to_thread(prepare_world_news, today)
+        entry = await asyncio.to_thread(prepare_world_news, target)
     except Exception as exc:
-        logging.warning("world_news nightly prep failed for %s: %s", today, exc)
+        logging.warning("world_news evening prep failed for %s: %s", target, exc)
         for admin_id in admin_ids:
             try:
                 await context.bot.send_message(
                     chat_id=admin_id,
                     text=(
-                        f"⚠️ Новость дня на {today} не подготовилась: {exc}\n"
-                        "Утренняя рассылка сегодня уйдёт в обычном виде. "
-                        "Можно задать вручную: /worldnews <youtube_url>"
+                        f"⚠️ Новость на завтра ({target}) не подготовилась: {exc}\n"
+                        "Без одобрения утром рассылки не будет. "
+                        "Можно задать вручную: /worldnews <youtube_url> → /worldnews_card."
                     ),
                 )
             except Exception:
                 pass
         return
-    text = _world_news_preview_text(entry, header="🌅 <b>Новость дня готова к утренней рассылке</b>")
+    text = _world_news_preview_text(entry, header="🌙 <b>Новость на завтра — проверь и одобри</b>")
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     for admin_id in admin_ids:
         try:
             await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=kb)
         except Exception:
             pass
+
+
+async def run_world_news_morning_broadcast(context: CallbackContext):
+    """Morning (6:30) broadcast: if today's entry was APPROVED (pinned) last evening, send the
+    branded card to the group + every recently-active user's DM. Strict — no approval = no send.
+    Idempotent via status='sent'. Bypasses quiet hours (this IS the morning starter)."""
+    from backend.database import get_world_news_for_date, set_world_news_status, active_user_ids_in_window
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        entry = await asyncio.to_thread(get_world_news_for_date, today)
+    except Exception:
+        entry = None
+    if not entry or not entry.get("is_pinned"):
+        logging.info("world_news morning: no APPROVED entry for %s — skip broadcast", today)
+        return
+    if str(entry.get("status") or "") == "sent":
+        logging.info("world_news morning: %s already sent — skip", today)
+        return
+
+    caption = _world_news_morning_card_text(entry)
+    kb = _world_news_morning_card_keyboard(context)
+    try:
+        from backend.world_news_card import render_world_news_card
+        png = await asyncio.to_thread(render_world_news_card, entry)
+    except Exception:
+        logging.exception("world_news morning: card render failed")
+        png = None
+
+    async def _send(chat_id: int) -> bool:
+        try:
+            if png:
+                await context.bot.send_photo(
+                    chat_id=int(chat_id), photo=io.BytesIO(png),
+                    caption=caption[:1024], parse_mode="HTML", reply_markup=kb,
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=int(chat_id), text=caption, parse_mode="HTML",
+                    reply_markup=kb, disable_web_page_preview=True,
+                )
+            return True
+        except Exception:
+            return False
+
+    group_ok = False
+    if BOT_GROUP_CHAT_ID_Deutsch:
+        group_ok = await _send(BOT_GROUP_CHAT_ID_Deutsch)
+
+    now = datetime.now()
+    try:
+        uids = await asyncio.to_thread(active_user_ids_in_window, now - timedelta(days=14), now)
+    except Exception:
+        logging.exception("world_news morning: active users lookup failed")
+        uids = set()
+    sent = 0
+    for uid in uids:
+        if await _send(int(uid)):
+            sent += 1
+        await asyncio.sleep(0.05)  # gentle pacing to stay within Telegram limits
+
+    try:
+        await asyncio.to_thread(set_world_news_status, today, "sent")
+    except Exception:
+        logging.debug("world_news morning: set status=sent failed", exc_info=True)
+    logging.info("world_news morning broadcast %s: group=%s dm_sent=%d/%d", today, group_ok, sent, len(uids))
 
 
 def _world_news_morning_card_text(entry: dict) -> str:
@@ -7222,6 +7292,36 @@ async def admin_world_news_card_command(update: Update, context: CallbackContext
         await message.reply_text(
             caption, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True,
         )
+
+
+async def admin_world_news_send_now_command(update: Update, context: CallbackContext):
+    """Broadcast today's APPROVED news to the group + active users right now (same as the 6:30
+    job). Only sends if today's entry is approved. /worldnews_send_now — admin only."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    from backend.database import get_world_news_for_date
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry = await asyncio.to_thread(get_world_news_for_date, today)
+    if not entry:
+        await message.reply_text("❌ На сегодня новости нет. Сначала: /worldnews.")
+        return
+    if not entry.get("is_pinned"):
+        await message.reply_text(
+            "⛔️ Новость на сегодня НЕ одобрена — рассылка не уйдёт.\n"
+            "Одобри её (кнопка «✅ Одобрить» под превью /worldnews), потом повтори."
+        )
+        return
+    if str(entry.get("status") or "") == "sent":
+        await message.reply_text("ℹ️ Сегодняшняя новость уже разослана. Повторно не отправляю.")
+        return
+    await message.reply_text("📣 Запускаю рассылку в группу и активным пользователям…")
+    await run_world_news_morning_broadcast(context)
+    await message.reply_text("✅ Рассылка выполнена (см. логи для деталей).")
 
 
 async def admin_world_news_image_command(update: Update, context: CallbackContext):
@@ -32610,6 +32710,7 @@ def main():
     application.add_handler(CommandHandler("worldnews", admin_world_news_command))
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
+    application.add_handler(CommandHandler("worldnews_send_now", admin_world_news_send_now_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
@@ -33013,7 +33114,8 @@ def main():
         print("📌 Добавляем задачу в scheduler...")
         # Prepare «Начни день с коротких новостей» before the morning send (heavy work
         # once/day; the 5:05 broadcast only reads the prepared row).
-        scheduler.add_job(lambda: submit_async(run_world_news_nightly,CallbackContext(application=application)),"cron", hour=4, minute=30)
+        scheduler.add_job(lambda: submit_async(run_world_news_evening_prep,CallbackContext(application=application)),"cron", hour=20, minute=0)
+        scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30)
         scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
         scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
         scheduler.add_job(
