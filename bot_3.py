@@ -4534,14 +4534,18 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     if is_pro:
         rows.append([_schedule_button_text(user_id)])
 
-    # 2) Тренажёры (учить). Pro: +персональная тема на завтра.
-    rows.append([ARTIKEL_LEARN_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
-    rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT, WOFRAGE_SPRINT_BUTTON_TEXT, NUMDICT_PRACTICE_BUTTON_TEXT])
+    # 2) Тренажёры + батлы, сгруппированные ПО ТЕМЕ — по строке на тему
+    #    [тренировка · батл]. Ровно 2 кнопки в ряд → читаемо на узких экранах.
+    #    ОДНА клавиатура для всех: батл-кнопки видны и Free тоже; при нажатии Free
+    #    получает аккуратную подсказку, что создавать батл может только Pro, а
+    #    участвовать (по приглашению) может каждый (гейт — в _start_battle_wizard).
+    rows.append([ARTIKEL_LEARN_BUTTON_TEXT, ARTIKEL_BATTLE_CALL_BUTTON_TEXT])
+    rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
+    rows.append([WOFRAGE_SPRINT_BUTTON_TEXT, WOFRAGE_BATTLE_BUTTON_TEXT])
+    # Прочие тренажёры без батла: числа на слух + (Pro) персональная тема на завтра.
+    rows.append([NUMDICT_PRACTICE_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
 
-    # 3) Батлы. Создавать батл — Pro; быть в списке приглашаемых + история — всем.
-    if is_pro:
-        rows.append([ARTIKEL_BATTLE_CALL_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
-        rows.append([WOFRAGE_BATTLE_BUTTON_TEXT])
+    # 3) Общее по батлам — доступно всем (быть в списке приглашаемых + история).
     rows.append([_battle_available_button_text(user_id), BATTLE_HISTORY_BUTTON_TEXT])
 
     # 4) Слова и помощь.
@@ -23684,7 +23688,12 @@ async def _start_battle_wizard(update: Update, context: CallbackContext, kind: s
     if not user or not message:
         return
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
-        await message.reply_text("⚔️ Создавать батл может только Premium. Принять чужой вызов могут все.")
+        await message.reply_text(
+            "⚔️ <b>Батлы создаёт Premium</b>\n\n"
+            "Бросить вызов другим может только Pro-пользователь. "
+            "Но <b>участвовать</b> можешь и ты — просто дождись приглашения "
+            "от друга с Premium и играй наравне со всеми. 🛡",
+            parse_mode="HTML")
         return
     draft = {"mode": "all", "users": set(), "themes": set(), "view": "main", "kind": kind}
     pending_battle_invites[int(user.id)] = draft
@@ -23852,7 +23861,12 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
     if not user or not message:
         return
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
-        await message.reply_text("⚔️ Создавать батл может только Premium-пользователь. Принять чужой вызов могут все.")
+        await message.reply_text(
+            "⚔️ <b>Батлы создаёт Premium</b>\n\n"
+            "Бросить вызов другим может только Pro-пользователь. "
+            "Но <b>участвовать</b> можешь и ты — просто дождись приглашения "
+            "от друга с Premium и играй наравне со всеми. 🛡",
+            parse_mode="HTML")
         return
     args = [a.strip() for a in (context.args or []) if a.strip()]
 
@@ -28439,7 +28453,12 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
     if not user or not message:
         return
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
-        await message.reply_text("⚔️ Создавать батл может только Premium. Принять чужой вызов могут все.")
+        await message.reply_text(
+            "⚔️ <b>Батлы создаёт Premium</b>\n\n"
+            "Бросить вызов другим может только Pro-пользователь. "
+            "Но <b>участвовать</b> можешь и ты — просто дождись приглашения "
+            "от друга с Premium и играй наравне со всеми. 🛡",
+            parse_mode="HTML")
         return
     from backend.database import (
         create_adjektiv_battle_with_set, add_adjektiv_sprint_battle_member,
@@ -28864,7 +28883,12 @@ async def wofrage_battle_command(update: Update, context: CallbackContext) -> No
     if not user or not message:
         return
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
-        await message.reply_text("⚔️ Создавать батл может только Premium. Принять чужой вызов могут все.")
+        await message.reply_text(
+            "⚔️ <b>Батлы создаёт Premium</b>\n\n"
+            "Бросить вызов другим может только Pro-пользователь. "
+            "Но <b>участвовать</b> можешь и ты — просто дождись приглашения "
+            "от друга с Premium и играй наравне со всеми. 🛡",
+            parse_mode="HTML")
         return
     from backend.database import (
         create_wofrage_battle_with_set, add_wofrage_sprint_battle_member,
