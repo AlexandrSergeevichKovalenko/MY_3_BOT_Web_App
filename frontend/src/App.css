@@ -14862,6 +14862,98 @@ body {
   margin-top: 4px;
 }
 
+/* «Начни день с коротких новостей» — curated phrase list with save checkboxes (news mode). */
+.worldnews-words {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid var(--yt-border-default);
+  background: var(--yt-bg-card);
+  display: grid;
+  gap: 12px;
+}
+.worldnews-words-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.worldnews-words-head h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--yt-text-primary);
+}
+.worldnews-words-hint {
+  font-size: 12px;
+  color: var(--yt-text-secondary);
+}
+.worldnews-words-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.worldnews-word-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--yt-border-default);
+  background: var(--yt-bg-card-alt);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.worldnews-word-row:hover {
+  background: var(--yt-bg-hover);
+}
+.worldnews-word-row.is-checked {
+  border-color: var(--yt-action-primary);
+}
+.worldnews-word-check {
+  font-size: 16px;
+  line-height: 1.5;
+  flex: 0 0 auto;
+}
+.worldnews-word-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.worldnews-word-de {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--yt-text-primary);
+}
+.worldnews-word-ru {
+  font-size: 14px;
+  color: var(--yt-text-secondary);
+}
+.worldnews-word-usage {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--yt-text-secondary);
+  opacity: 0.85;
+}
+.worldnews-words-save {
+  justify-self: stretch;
+  min-height: 44px;
+  border: none;
+  border-radius: 12px;
+  background: var(--yt-action-primary);
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.worldnews-words-save:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .webapp-video.youtube-player-first .webapp-video-form.youtube-setup-form {
   background: var(--yt-bg-card);
   border: 1px solid var(--yt-border-default);
