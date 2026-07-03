@@ -633,6 +633,7 @@ from backend.translation_workflow import (
     start_translation_session_webapp,
     start_story_session_webapp,
     submit_story_translation_webapp,
+    explain_story_translation_webapp,
     get_story_history_webapp,
     get_active_session_type,
     prewarm_shared_translation_sentence_pool,
@@ -48821,9 +48822,78 @@ def submit_webapp_story():
         metadata={
             "translations_count": len(translations),
             "has_guess": bool(guess),
-            "estimated_llm_calls": 3,
+            "estimated_llm_calls": 2,  # arena scoring + semantic guess; teacher breakdown billed by /story/explain
         },
     )
+
+    return jsonify(
+        {
+            "ok": True,
+            **result,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+@app.route("/api/webapp/story/explain", methods=["POST"])
+def explain_webapp_story():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    session_id = payload.get("session_id")
+    explanation_language = (payload.get("explanation_language") or "ru").strip().lower()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="story_mode",
+        feature_title="Загадочная история",
+    )
+    if paid_gate_payload is not None:
+        return jsonify(paid_gate_payload), paid_gate_status
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+
+    try:
+        result = asyncio.run(
+            explain_story_translation_webapp(
+                user_id=user_id,
+                session_id=session_id,
+                explanation_language=explanation_language,
+            )
+        )
+    except Exception as exc:
+        detailed_message = _extract_api_error_message(exc)
+        if detailed_message:
+            return jsonify({"error": f"Ошибка разбора: {detailed_message}"}), 500
+        return jsonify({"error": "Ошибка разбора: не удалось подготовить разбор"}), 500
+
+    if isinstance(result, dict) and result.get("error"):
+        return jsonify({"error": result["error"]}), 400
+
+    # Only bill when we actually ran the LLM (cached re-opens are free).
+    if not result.get("cached"):
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="story_explain",
+            provider="openai",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"story_explain:{user_id}:{result.get('session_id') or time.time_ns()}:{explanation_language}",
+            status="estimated",
+            metadata={"estimated_llm_calls": 1, "explanation_language": explanation_language},
+        )
 
     return jsonify(
         {

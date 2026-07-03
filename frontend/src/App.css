@@ -25721,6 +25721,115 @@ html[data-scheme="light"] .explain-line,
 
 
 /* ================================================================
+   «Загадочная история» — result modal (extends .explain-modal)
+   ================================================================ */
+.story-modal { width: min(760px, 100%); }
+
+.story-open-analysis-btn { margin-top: 10px; width: 100%; }
+
+.story-modal-scorebars {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(124, 140, 248, 0.08);
+  border: 1px solid rgba(124, 140, 248, 0.18);
+}
+.story-modal-scorebars .arena-bar-row { display: grid; grid-template-columns: 96px 1fr 52px; align-items: center; gap: 10px; }
+.story-modal-scorebars .arena-bar-label { font-size: 13px; color: #a9b8cf; }
+.story-modal-scorebars .arena-bar-track { height: 8px; border-radius: 999px; background: rgba(148,163,184,0.2); overflow: hidden; }
+.story-modal-scorebars .arena-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #60a5fa, #34d399); }
+.story-modal-scorebars .arena-bar-val { font-size: 12px; font-weight: 700; color: #cbd5e1; text-align: right; }
+
+.story-modal-guess {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border-left: 3px solid #64748b;
+  background: rgba(148, 163, 184, 0.08);
+}
+.story-modal-guess.is-ok { border-left-color: #34d399; background: rgba(52, 211, 153, 0.10); }
+.story-modal-guess.is-no { border-left-color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
+.story-modal-guess-verdict { font-size: 15px; color: #e2e8f0; }
+.story-modal-guess-answer { margin-top: 5px; font-size: 15px; color: #f1f5f9; }
+.story-modal-guess-reason { margin-top: 4px; font-size: 13px; color: #a9b8cf; line-height: 1.45; }
+
+.story-sent-card {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(148, 163, 184, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-left: 3px solid #60a5fa;
+}
+.story-sent-card.is-correct { border-left-color: #34d399; }
+.story-sent-card.is-minor { border-left-color: #fbbf24; }
+.story-sent-card.is-major { border-left-color: #f87171; }
+.story-sent-head { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+.story-sent-num {
+  display: inline-grid; place-items: center;
+  width: 24px; height: 24px; border-radius: 999px;
+  background: rgba(124, 140, 248, 0.22); color: #c7d2fe;
+  font-size: 13px; font-weight: 800;
+}
+.story-sent-verdict { font-size: 15px; }
+.story-sent-correct { font-size: 15px; line-height: 1.5; color: #eaf2ff; margin-bottom: 8px; }
+.story-sent-correct-label { color: #86efac; font-weight: 700; }
+.story-sent-ok { font-size: 14px; color: #86efac; }
+.story-sent-sub { margin-top: 10px; }
+
+.story-pattern {
+  padding: 14px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(250, 204, 21, 0.10), rgba(250, 204, 21, 0.04));
+  border: 1px solid rgba(250, 204, 21, 0.28);
+}
+.story-pattern-title { font-size: 15px; font-weight: 800; color: #fde68a; margin: 2px 0 6px; }
+.story-pattern-text { margin: 0 0 8px; font-size: 14px; line-height: 1.55; color: #e2e8f0; }
+
+.story-grammar-item { margin-top: 12px; padding-left: 12px; border-left: 2px solid rgba(96, 165, 250, 0.4); }
+.story-grammar-title { font-size: 14px; font-weight: 800; color: #93c5fd; }
+.story-grammar-theory { margin: 4px 0 6px; font-size: 14px; line-height: 1.5; color: #d8e2f0; }
+.story-grammar-ex { font-size: 14px; line-height: 1.5; }
+.story-grammar-de { color: #eaf2ff; }
+.story-grammar-ru { color: #93a4bd; font-style: italic; }
+
+.story-practice { background: rgba(52, 211, 153, 0.07); border: 1px solid rgba(52, 211, 153, 0.22); border-radius: 16px; padding: 14px; }
+.story-practice-item { margin-top: 8px; }
+.story-practice-item:first-of-type { margin-top: 4px; }
+.story-practice-ru { font-size: 15px; color: #eaf2ff; }
+.story-practice-hint { font-size: 13px; color: #a9b8cf; margin-top: 2px; }
+
+.story-modal-links { margin: 6px 0 0; padding-left: 18px; }
+.story-modal-links a { color: #93c5fd; word-break: break-all; }
+.explain-summary-p { margin: 0; font-size: 15px; line-height: 1.5; color: #e2e8f0; }
+.story-followup-answer-text { margin: 6px 0 0; font-size: 15px; line-height: 1.55; color: #e2e8f0; white-space: pre-wrap; }
+
+/* Light theme */
+html[data-scheme="light"] .story-modal-guess-verdict,
+.webapp-page.theme-light .story-modal-guess-verdict,
+html[data-scheme="light"] .story-sent-correct,
+.webapp-page.theme-light .story-sent-correct,
+html[data-scheme="light"] .story-pattern-text,
+.webapp-page.theme-light .story-pattern-text,
+html[data-scheme="light"] .story-grammar-theory,
+.webapp-page.theme-light .story-grammar-theory,
+html[data-scheme="light"] .story-practice-ru,
+.webapp-page.theme-light .story-practice-ru,
+html[data-scheme="light"] .story-followup-answer-text,
+.webapp-page.theme-light .story-followup-answer-text,
+html[data-scheme="light"] .explain-summary-p,
+.webapp-page.theme-light .explain-summary-p { color: #243246; }
+html[data-scheme="light"] .story-sent-card,
+.webapp-page.theme-light .story-sent-card { background: #f6f8fc; border-color: #dce3ee; }
+html[data-scheme="light"] .story-pattern-title,
+.webapp-page.theme-light .story-pattern-title { color: #a16207; }
+html[data-scheme="light"] .story-modal-guess-answer,
+.webapp-page.theme-light .story-modal-guess-answer { color: #0f1b2d; }
+
+
+/* ================================================================
    Словарь · вкладка «Библиотека» — финальный дизайн «B»
    «Поиск сверху · Папки-аккордеон · Плавающая нижняя панель»
    Эталон внешнего вида: «Библиотека B — Эталон (обе темы).html»

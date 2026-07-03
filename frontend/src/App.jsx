@@ -8,6 +8,7 @@ import ReaderSection from './components/ReaderSection';
 import HomeMoreTiles from './components/HomeMoreTiles';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
 import ExplainErrorsModal from './components/ExplainErrorsModal';
+import StoryResultModal from './components/StoryResultModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic } from './dictionary/WordBreakdown';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
@@ -3300,6 +3301,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   finishMessage,
   storyResult,
   renderStoryFeedback,
+  onOpenStoryResultModal,
   results,
   extractCorrectTranslationText,
   handleSelection,
@@ -3957,36 +3959,18 @@ const TranslationsSection = React.memo(function TranslationsSection({
               )}
 
               <div className="story-result-head">
-                <strong>{tr('⭐ Итоговый балл (GPT-разбор):', '⭐ Gesamtscore (GPT):')}</strong> {storyResult.score ?? '—'} / 100
+                <strong>{tr('⭐ Итоговый балл:', '⭐ Gesamtscore:')}</strong> {storyResult.score ?? '—'} / 100
               </div>
 
-              {storyResult.feedback && renderStoryFeedback(storyResult.feedback)}
-
-              <div className="webapp-result-text story-result-answer">
-                <div><strong>{tr('🎯 Ответ пользователя:', '🎯 Antwort des Nutzers:')}</strong> {storyResult.guess_correct ? tr('верно по смыслу', 'inhaltlich richtig') : tr('неверно по смыслу', 'inhaltlich falsch')}</div>
-                <div><strong>{tr('✅ Эталон:', '✅ Referenz:')}</strong> {storyResult.answer || '—'}</div>
-                {storyResult.guess_reason && (
-                  <div><strong>{tr('📝 Пояснение:', '📝 Erklärung:')}</strong> {storyResult.guess_reason}</div>
-                )}
-              </div>
-
-              {storyResult.extra_de && (
-                <div className="webapp-result-text story-result-extra">
-                  <strong>{tr('📌 Дополнительно (DE):', '📌 Zusätzlich (DE):')}</strong> {storyResult.extra_de}
-                </div>
-              )}
-              {Array.isArray(storyResult.source_links) && storyResult.source_links.length > 0 && (
-                <div className="webapp-result-text story-result-links">
-                  <strong>{tr('🔗 Официальные источники:', '🔗 Offizielle Quellen:')}</strong>
-                  <ul>
-                    {storyResult.source_links.map((item, idx) => (
-                      <li key={`${item.url}-${idx}`}>
-                        <a href={item.url} target="_blank" rel="noreferrer">{item.lang}: {item.url}</a>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              {/* The full teacher breakdown + guess/answer + material links live in the
+                  wide result modal (opened automatically after submit). This CTA re-opens it. */}
+              <button
+                type="button"
+                className="primary-button story-open-analysis-btn"
+                onClick={() => onOpenStoryResultModal && onOpenStoryResultModal()}
+              >
+                🔎 {tr('Открыть подробный разбор', 'Ausführliche Analyse öffnen')}
+              </button>
             </div>
           </section>
         )}
@@ -5914,6 +5898,15 @@ function AppInner() {
   const [selectedStoryId, setSelectedStoryId] = useState('');
   const [storyGuess, setStoryGuess] = useState('');
   const [storyResult, setStoryResult] = useState(null);
+  // Two-call story result modal: submit fills Part 1 (score/guess), /story/explain
+  // fills the progressive teacher breakdown (Part 2/3).
+  const [storyResultModalOpen, setStoryResultModalOpen] = useState(false);
+  const [storyExplain, setStoryExplain] = useState(null);
+  const [storyExplainLoading, setStoryExplainLoading] = useState(false);
+  const [storyExplainErr, setStoryExplainErr] = useState('');
+  const [storyExplainDe, setStoryExplainDe] = useState(false);
+  const [storySessionId, setStorySessionId] = useState('');
+  const [storyContext, setStoryContext] = useState({ originalText: '', userText: '' });
   const [arenaPhase, setArenaPhase] = useState('');
   const [arenaCandidates, setArenaCandidates] = useState([]);
   const [arenaCandidatesLoading, setArenaCandidatesLoading] = useState(false);
@@ -19602,7 +19595,17 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка проверки истории', 'Fehler beim Prüfen der Story'));
       }
       const data = await response.json();
+      // Capture the story text for the modal's follow-up Q&A BEFORE clearing sentences.
+      const orderedOriginals = sentences.map((s) => s.sentence || '');
+      const orderedUser = sentences.map((s) => (liveDrafts[String(s.id_for_mistake_table)] || ''));
+      setStoryContext({ originalText: orderedOriginals.join('\n'), userText: orderedUser.join('\n') });
       setStoryResult(data);
+      setStorySessionId(data.session_id || '');
+      setStoryExplain(null);
+      setStoryExplainErr('');
+      setStoryExplainDe(false);
+      setStoryResultModalOpen(true);                 // open the modal with Part 1 immediately
+      void fetchStoryExplain(data.session_id, 'ru');  // Part 2/3 fills in progressively
       setStoryLeaderboard(null);
       setStoryVotes(null);
       setSentences([]);
@@ -19613,6 +19616,40 @@ function AppInner() {
     } finally {
       setWebappLoading(false);
     }
+  };
+
+  const fetchStoryExplain = async (sessionId, lang) => {
+    if (!initData) return;
+    setStoryExplainLoading(true);
+    setStoryExplainErr('');
+    try {
+      const response = await fetch('/api/webapp/story/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          session_id: sessionId || storySessionId || null,
+          explanation_language: lang || 'ru',
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка разбора', 'Analyse-Fehler'));
+      }
+      const data = await response.json();
+      setStoryExplain(data.explanation_json || null);
+    } catch (error) {
+      setStoryExplainErr(String(error.message || error));
+    } finally {
+      setStoryExplainLoading(false);
+    }
+  };
+
+  const openStoryResultModal = () => { if (storyResult) setStoryResultModalOpen(true); };
+  const closeStoryResultModal = () => setStoryResultModalOpen(false);
+  const handleToggleStoryExplainLang = (checkedDe) => {
+    setStoryExplainDe(!!checkedDe);
+    setStoryExplain(null);   // show the skeleton while the other-language breakdown regenerates
+    void fetchStoryExplain(storySessionId, checkedDe ? 'de' : 'ru');
   };
 
   const handleFetchArenaCandidates = async () => {
@@ -28981,6 +29018,7 @@ function AppInner() {
   const handleExplainTranslationStable = useStableCallback(handleExplainTranslation);
   const handleSaveSentenceDraftStable = useStableCallback(handleSaveSentenceDraft);
   const closeExplainModalStable = useStableCallback(closeExplainModal);
+  const openStoryResultModalStable = useStableCallback(openStoryResultModal);
   const handleSetExplainLangStable = useStableCallback(handleSetExplainLang);
   const handleToggleResultCardCollapsedStable = useStableCallback(handleToggleResultCardCollapsed);
   const handleToggleExplanationCollapsedStable = useStableCallback(handleToggleExplanationCollapsed);
@@ -32107,6 +32145,7 @@ function AppInner() {
                 finishMessage={finishMessage}
                 storyResult={storyResult}
                 renderStoryFeedback={renderStoryFeedbackStable}
+                onOpenStoryResultModal={openStoryResultModalStable}
                 results={results}
                 extractCorrectTranslationText={extractCorrectTranslationTextStable}
                 handleSelection={handleSelectionStable}
@@ -32174,6 +32213,20 @@ function AppInner() {
               />
             )}
             {renderTranslationDictionaryWidget()}
+
+            <StoryResultModal
+              isOpen={storyResultModalOpen}
+              onClose={closeStoryResultModal}
+              tr={tr}
+              storyResult={storyResult}
+              explanation={storyExplain}
+              explanationLoading={storyExplainLoading}
+              explanationErr={storyExplainErr}
+              langDe={storyExplainDe}
+              onToggleLang={handleToggleStoryExplainLang}
+              initData={initData}
+              storyContext={storyContext}
+            />
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>

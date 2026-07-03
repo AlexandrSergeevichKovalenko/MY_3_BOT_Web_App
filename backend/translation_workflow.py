@@ -34,6 +34,7 @@ from backend.openai_manager import (
     run_check_translation_story,
     run_check_translation_story_arena,
     run_check_story_guess_semantic,
+    run_story_explanation_structured,
 )
 from backend.analytics import _calculate_final_score
 from backend.database import (
@@ -1563,22 +1564,20 @@ async def submit_story_translation_webapp(
 
             original_text = "\n".join(original_sentences)
             user_text = "\n".join(user_sentences)
+            # Only the fast 4-criteria arena scoring runs here so the user gets the
+            # score + guess verdict quickly. The heavy per-sentence teacher breakdown
+            # is generated on demand via /api/webapp/story/explain (two-call split) and
+            # fills the result modal progressively.
             try:
                 provider_started_at = time.perf_counter()
-                raw_feedback, raw_arena = await asyncio.gather(
-                    run_check_translation_story(original_text, user_text),
-                    run_check_translation_story_arena(original_text, user_text),
-                    return_exceptions=True,
-                )
+                raw_arena = await run_check_translation_story_arena(original_text, user_text)
                 provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
                 provider_wait_ms_total += provider_wait_ms
                 note_db_provider_wait(provider_wait_ms, provider_label="story_translation_check")
-                if isinstance(raw_feedback, BaseException):
-                    raise raw_feedback
             except Exception as exc:
                 detailed_message = _extract_nested_error_message(exc)
                 logging.warning(
-                    "Story translation check failed for user_id=%s session_id=%s: %s",
+                    "Story arena scoring failed for user_id=%s session_id=%s: %s",
                     user_id,
                     session_id,
                     detailed_message or exc,
@@ -1590,33 +1589,10 @@ async def submit_story_translation_webapp(
 
             arena_scores = _parse_arena_feedback(raw_arena) if isinstance(raw_arena, str) else {"grammar": 0, "accuracy": 0, "style": 0, "completeness": 0, "total": 0}
 
-            if not isinstance(raw_feedback, str):
-                detailed_message = _extract_nested_error_message(raw_feedback)
-                logging.warning(
-                    "Story translation check returned non-string payload for user_id=%s session_id=%s: %r",
-                    user_id,
-                    session_id,
-                    raw_feedback,
-                )
-                if detailed_message:
-                    return {"error": f"Не удалось проверить историю. {detailed_message}"}
-                return {"error": "Не удалось проверить историю. Попробуйте ещё раз."}
-
-            stripped_feedback = raw_feedback.strip()
-            if stripped_feedback.startswith("{") and stripped_feedback.endswith("}"):
-                detailed_message = _extract_nested_error_message(stripped_feedback)
-                if detailed_message and detailed_message != stripped_feedback:
-                    logging.warning(
-                        "Story translation check returned error payload for user_id=%s session_id=%s: %s",
-                        user_id,
-                        session_id,
-                        detailed_message,
-                    )
-                    return {"error": f"Не удалось проверить историю. {detailed_message}"}
-
-            parsed = _parse_story_feedback(raw_feedback)
-            score_value = parsed["score"]
-            feedback = parsed["feedback"] or raw_feedback
+            # Headline score = the arena total (grammar 40 + accuracy 20 + style 20 +
+            # completeness 20), so it no longer depends on the slow teacher essay.
+            score_value = int(arena_scores.get("total") or 0)
+            feedback = ""  # detailed breakdown persisted later by explain_story_translation_webapp
 
             normalized_guess = _normalize_guess(guess)
             normalized_answer = _normalize_guess(answer or "")
@@ -1785,6 +1761,7 @@ async def submit_story_translation_webapp(
                 "ok": True,
                 "score": score_value,
                 "feedback": feedback,
+                "feedback_pending": True,  # detailed teacher breakdown loads via /story/explain
                 "guess_correct": is_correct,
                 "guess_reason": guess_reason,
                 "answer": answer,
@@ -1792,6 +1769,7 @@ async def submit_story_translation_webapp(
                 "source_links": source_links,
                 "arena_scores": arena_scores,
                 "story_id": story_id,
+                "session_id": str(session_id),
             }
         finally:
             db_summary = summarize_db_acquire_events(db_acquire_events)
@@ -1806,6 +1784,124 @@ async def submit_story_translation_webapp(
                 db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
                 **db_summary,
             )
+
+
+async def explain_story_translation_webapp(
+    user_id: int,
+    session_id: str | None = None,
+    explanation_language: str = "ru",
+) -> dict[str, Any]:
+    """Second half of the two-call story flow: generate the heavy, teacher-grade
+    per-sentence breakdown (grammar rule / why-wrong / fix / alternatives / synonyms),
+    plus a recurring-mistake pattern analysis and targeted practice sentences.
+
+    Loads the just-submitted story sentences (originals from bt_3_daily_sentences,
+    the learner's German from bt_3_translations), runs the structured LLM review, and
+    caches the JSON on bt_3_story_sessions.feedback so it can be re-opened cheaply.
+    """
+    with get_db_connection_context() as conn:
+        cursor = conn.cursor()
+        try:
+            # Resolve the target session: prefer the explicit one, else the most
+            # recently completed story session for this user.
+            if session_id:
+                cursor.execute(
+                    """
+                    SELECT s.session_id, s.story_id, s.feedback
+                    FROM bt_3_story_sessions s
+                    WHERE s.user_id = %s AND s.session_id = %s
+                    ORDER BY s.created_at DESC
+                    LIMIT 1;
+                    """,
+                    (user_id, str(session_id)),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT s.session_id, s.story_id, s.feedback
+                    FROM bt_3_story_sessions s
+                    WHERE s.user_id = %s AND s.completed_at IS NOT NULL
+                    ORDER BY s.completed_at DESC
+                    LIMIT 1;
+                    """,
+                    (user_id,),
+                )
+            srow = cursor.fetchone()
+            if not srow:
+                return {"error": "История для разбора не найдена."}
+            resolved_session_id, story_id, cached_feedback = srow[0], srow[1], srow[2]
+
+            # Serve a cached structured breakdown if we already have one (idempotent
+            # re-open, no extra LLM cost). Only RU is cached, so only reuse it for RU
+            # requests — a DE toggle regenerates live (like the translations modal).
+            if cached_feedback and (explanation_language or "ru").strip().lower() == "ru":
+                try:
+                    cached = json.loads(cached_feedback)
+                    if isinstance(cached, dict) and cached.get("sentences"):
+                        return {"ok": True, "explanation_json": cached, "cached": True,
+                                "session_id": str(resolved_session_id)}
+                except (json.JSONDecodeError, TypeError):
+                    pass  # legacy plain-text feedback → regenerate as structured
+
+            # Reunite each original sentence with the learner's translation.
+            cursor.execute(
+                """
+                SELECT d.unique_id, d.sentence, t.user_translation
+                FROM bt_3_daily_sentences d
+                LEFT JOIN bt_3_translations t
+                  ON t.sentence_id = d.id AND t.session_id = d.session_id AND t.user_id = d.user_id
+                WHERE d.user_id = %s AND d.session_id = %s
+                ORDER BY d.unique_id ASC;
+                """,
+                (user_id, str(resolved_session_id)),
+            )
+            rows = cursor.fetchall()
+        finally:
+            cursor.close()
+
+    if not rows:
+        return {"error": "Предложения истории не найдены."}
+
+    sentences = [
+        {"index": i + 1, "original": (r[1] or ""), "user": (r[2] or "")}
+        for i, r in enumerate(rows)
+    ]
+
+    try:
+        explanation = await run_story_explanation_structured(
+            sentences=sentences,
+            explanation_language=(explanation_language or "ru"),
+        )
+    except Exception as exc:
+        logging.warning(
+            "Story explanation failed for user_id=%s session_id=%s: %s",
+            user_id, resolved_session_id, exc, exc_info=True,
+        )
+        return {"error": "Не удалось подготовить разбор. Попробуйте ещё раз."}
+
+    # Cache the structured JSON (best-effort; the answer is already returned even if
+    # persistence fails). Only cache the German (default) run to avoid churn between
+    # language toggles — a re-fetch in another language just regenerates.
+    if (explanation_language or "ru").strip().lower() == "ru":
+        try:
+            with get_db_connection_context() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        """
+                        UPDATE bt_3_story_sessions
+                        SET feedback = %s
+                        WHERE user_id = %s AND session_id = %s;
+                        """,
+                        (json.dumps(explanation, ensure_ascii=False), user_id, str(resolved_session_id)),
+                    )
+                    conn.commit()
+                finally:
+                    cur.close()
+        except Exception:
+            logging.warning("Failed to cache story explanation for user_id=%s", user_id, exc_info=True)
+
+    return {"ok": True, "explanation_json": explanation, "session_id": str(resolved_session_id)}
 
 
 async def generate_sentences_webapp(
