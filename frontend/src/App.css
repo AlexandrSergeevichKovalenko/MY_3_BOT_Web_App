@@ -14881,6 +14881,65 @@ body.worldnews-active .webapp-shell,
 body.worldnews-active .webapp-main {
   background: transparent !important;
 }
+/* No «На главную» in the news view — the stepper is the only navigation we need. */
+body.worldnews-active .webapp-topbar {
+  display: none !important;
+}
+
+/* Video stage: strip the full YouTube chrome (title, import/timer/dict/settings icons,
+   overlay/fullscreen/status chips) — a light morning view needs only the player + subtitles.
+   The RU toggle is re-provided as .worldnews-subbar. */
+.youtube-player-first.is-worldnews .youtube-player-first-head,
+.youtube-player-first.is-worldnews .youtube-mobile-head {
+  display: none !important;
+}
+
+/* Whiten the player card + subtitles panel (were cream) to the interactive look. */
+.youtube-player-first.is-worldnews .youtube-player-card,
+.youtube-player-first.is-worldnews .youtube-subtitles-card,
+.youtube-player-first.is-worldnews .youtube-subtitles-panel {
+  background: #ffffff !important;
+  border: 1px solid #dfe4ec !important;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10) !important;
+}
+.youtube-player-first.is-worldnews .youtube-subtitles-panel-head strong {
+  color: #0f172a;
+}
+
+/* Nicer, more readable subtitle typography (serif, roomy) — pleasant to read. */
+.youtube-player-first.is-worldnews .webapp-subtitles-list p {
+  font-family: Georgia, "Noto Serif", "Times New Roman", serif;
+  font-size: 18px;
+  line-height: 1.72;
+  color: #23303f;
+  letter-spacing: 0.1px;
+}
+.youtube-player-first.is-worldnews .webapp-subtitles-list p.is-active {
+  background: rgba(37, 99, 235, 0.10) !important;
+  color: #0f172a !important;
+  border-radius: 10px;
+}
+
+/* Clean single RU-subtitle toggle (replaces the removed command bar). */
+.worldnews-subbar {
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 6px;
+}
+.worldnews-sub-toggle {
+  min-height: 44px;
+  padding: 0 22px;
+  border-radius: 999px;
+  border: 1.5px solid #2563eb;
+  background: #ffffff;
+  color: #2563eb;
+  font-size: 14.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.worldnews-sub-toggle.is-on { background: #2563eb; color: #ffffff; }
+.worldnews-sub-toggle:disabled { opacity: 0.5; cursor: default; }
 .worldnews-stepper,
 .worldnews-deck,
 .worldnews-quiz {

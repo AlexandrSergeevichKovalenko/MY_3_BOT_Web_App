@@ -32161,7 +32161,7 @@ function AppInner() {
                 {isSectionVisible('youtube') && (
                   <PerfProfiler id="section.youtube">
                     <section
-                      className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`}
+                      className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''} ${youtubeNewsMode ? 'is-worldnews' : ''}`}
                       ref={youtubeRef}
                       data-no-edge-swipe="true"
                     >
@@ -32182,6 +32182,20 @@ function AppInner() {
                     )}
                     {(!youtubeNewsMode || worldNewsStage === 'video') && (
                     <>
+                    {youtubeNewsMode && (
+                      <div className="worldnews-subbar">
+                        <button
+                          type="button"
+                          className={`worldnews-sub-toggle ${youtubeTranslationEnabled ? 'is-on' : ''}`}
+                          onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                          disabled={!youtubeSubtitlesReady}
+                        >
+                          {youtubeTranslationEnabled
+                            ? tr('🇷🇺 Русский перевод: вкл', '🇷🇺 RU-Übersetzung: an')
+                            : tr('🇷🇺 Показать перевод', '🇷🇺 Übersetzung zeigen')}
+                        </button>
+                      </div>
+                    )}
                     <div className="webapp-local-section-head youtube-player-first-head">
                       <div className="youtube-desktop-command-bar">
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
