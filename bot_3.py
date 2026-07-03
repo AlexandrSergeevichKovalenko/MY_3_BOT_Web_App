@@ -7170,11 +7170,64 @@ async def admin_world_news_card_command(update: Update, context: CallbackContext
             "Сначала подготовь её: /worldnews (или /worldnews <youtube_url>)."
         )
         return
-    await message.reply_text(
-        _world_news_morning_card_text(entry),
-        parse_mode="HTML",
-        reply_markup=_world_news_morning_card_keyboard(context),
-        disable_web_page_preview=True,
+    caption = _world_news_morning_card_text(entry)
+    kb = _world_news_morning_card_keyboard(context)
+    try:
+        from backend.world_news_card import render_world_news_card
+        png = await asyncio.to_thread(render_world_news_card, entry)
+    except Exception:
+        logging.exception("worldnews card: render failed user_id=%s", int(sender.id))
+        png = None
+    if png:
+        await context.bot.send_photo(
+            chat_id=int(message.chat_id),
+            photo=io.BytesIO(png),
+            caption=caption[:1024],
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    else:
+        await message.reply_text(
+            caption, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True,
+        )
+
+
+async def admin_world_news_image_command(update: Update, context: CallbackContext):
+    """Generate the Smurf-reading-the-newspaper background for the world-news card via
+    gpt-image-1 and store it in R2. Run once; the morning card then uses it (blue morning
+    gradient until then). /admin_worldnews_image"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(user.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    status_msg = await message.reply_text("Генерирую смурф-картинку «читает новости»…")
+
+    def _gen() -> dict:
+        from backend.image_generation_provider import generate_image_bytes
+        from backend.r2_storage import r2_put_bytes
+        from backend.world_news_card import WORLD_NEWS_IMAGE_PROMPT, world_news_bg_key, bust_world_news_bg_cache
+        res = generate_image_bytes(
+            prompt=WORLD_NEWS_IMAGE_PROMPT, template_id=0, user_id=0, action_type="worldnews_image",
+        )
+        data = bytes(res.get("data") or b"")
+        if not data:
+            raise RuntimeError("empty image payload")
+        r2_put_bytes(world_news_bg_key(), data, content_type="image/png",
+                     cache_control="public, max-age=86400")
+        bust_world_news_bg_cache()
+        return {"key": world_news_bg_key(), "bytes": len(data)}
+
+    try:
+        result = await asyncio.to_thread(_gen)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    await status_msg.edit_text(
+        f"✅ Готово: {result.get('key')} ({result.get('bytes')} B).\n"
+        "Кэш фона обновится в течение ~10 мин. Проверь: /worldnews_card"
     )
 
 
@@ -32038,6 +32091,7 @@ def main():
     application.add_handler(CommandHandler("reviewcard", admin_review_card_command))
     application.add_handler(CommandHandler("worldnews", admin_world_news_command))
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
+    application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
