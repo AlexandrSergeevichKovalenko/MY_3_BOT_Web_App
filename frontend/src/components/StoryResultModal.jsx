@@ -68,6 +68,9 @@ function SentenceBlock({ sent, langDe, tr }) {
         <span className="story-sent-num">{sent.index}</span>
         <span className="story-sent-verdict">{vmeta.emoji}</span>
       </div>
+      {sent.good && (
+        <div className="story-sent-good">👍 {sent.good}</div>
+      )}
       {sent.correct && (
         <div className="story-sent-correct">
           <span className="story-sent-correct-label">{tr('Верный вариант', 'Korrekt')}:</span> {sent.correct}

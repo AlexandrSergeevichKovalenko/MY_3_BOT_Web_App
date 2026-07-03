@@ -3300,7 +3300,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
   webappError,
   finishMessage,
   storyResult,
-  renderStoryFeedback,
   onOpenStoryResultModal,
   results,
   extractCorrectTranslationText,
@@ -26799,230 +26798,6 @@ function AppInner() {
     );
   };
 
-  const normalizeStoryFeedbackLine = (line) => String(line || '')
-    .replace(/\u00a0/g, ' ')
-    .replace(/^\s+/, '')
-    .replace(/\s+$/, '');
-
-  const stripStoryListMarker = (line) => normalizeStoryFeedbackLine(line)
-    .replace(/^[-•▪◦●■▸▹▶►]+\s*/, '');
-
-  const parseStoryFeedback = (feedback) => {
-    if (!feedback) return null;
-    const sections = {
-      intro: [],
-      summary: [],
-      sentence: [],
-      grammar: [],
-      extra: [],
-    };
-    let currentSection = 'intro';
-
-    String(feedback)
-      .replace(/\r/g, '')
-      .split('\n')
-      .forEach((rawLine) => {
-        const line = normalizeStoryFeedbackLine(rawLine);
-        if (!line) return;
-        if (/^Score:/i.test(line) || /^Feedback:/i.test(line)) return;
-        if (/^🟨\s*ОБЩАЯ ОЦЕНКА/i.test(line)) {
-          currentSection = 'summary';
-          return;
-        }
-        if (/^🧠\s*РАЗБОР ПО ПРЕДЛОЖЕНИЯМ/i.test(line)) {
-          currentSection = 'sentence';
-          return;
-        }
-        if (/^📚\s*ГРАММАТИКА ДЛЯ ПРОРАБОТКИ/i.test(line)) {
-          currentSection = 'grammar';
-          return;
-        }
-        if (/^🔎\s*ДОПОЛНИТЕЛЬНО/i.test(line)) {
-          currentSection = 'extra';
-          return;
-        }
-        sections[currentSection].push(line);
-      });
-
-    const sentenceBlocks = [];
-    let currentBlock = [];
-    let currentItem = null;
-
-    const flushSentenceBlock = () => {
-      if (!currentBlock.length) return;
-      sentenceBlocks.push(currentBlock);
-      currentBlock = [];
-      currentItem = null;
-    };
-
-    sections.sentence.forEach((line) => {
-      if (/^1\)\s*Оригинал\b/i.test(line) && currentBlock.length) {
-        flushSentenceBlock();
-      }
-      const match = line.match(/^(\d+)\)\s*([^:]+):\s*(.*)$/u);
-      if (match) {
-        currentItem = {
-          sourceIndex: Number(match[1] || 0),
-          label: String(match[2] || '').trim(),
-          contentLines: String(match[3] || '').trim() ? [String(match[3] || '').trim()] : [],
-        };
-        currentBlock.push(currentItem);
-        return;
-      }
-      if (currentItem) {
-        currentItem.contentLines.push(line);
-        return;
-      }
-      sections.intro.push(line);
-    });
-    flushSentenceBlock();
-
-    return {
-      intro: sections.intro.map(stripStoryListMarker).filter(Boolean),
-      summary: sections.summary.map(stripStoryListMarker).filter(Boolean),
-      sentenceLines: sections.sentence.map(normalizeStoryFeedbackLine).filter(Boolean),
-      sentenceBlocks,
-      grammar: sections.grammar.map(stripStoryListMarker).filter(Boolean),
-      extra: sections.extra.map(stripStoryListMarker).filter(Boolean),
-    };
-  };
-
-  const renderStoryFeedbackContent = (contentLines, keyPrefix) => {
-    const lines = (Array.isArray(contentLines) ? contentLines : [contentLines])
-      .map(normalizeStoryFeedbackLine)
-      .filter(Boolean);
-    if (!lines.length) {
-      return <span className="story-feedback-item-content">—</span>;
-    }
-    if (lines.length === 1 && !/^[-•▪◦●■▸▹▶►]\s*/.test(lines[0])) {
-      return <span className="story-feedback-item-content">{lines[0]}</span>;
-    }
-    return (
-      <ul className="story-feedback-sublist">
-        {lines.map((line, index) => (
-          <li key={`${keyPrefix}-${index}`} className="story-feedback-subitem">
-            {stripStoryListMarker(line)}
-          </li>
-        ))}
-      </ul>
-    );
-  };
-
-  const renderStoryFeedbackList = (items, keyPrefix) => {
-    if (!Array.isArray(items) || items.length === 0) return null;
-    return (
-      <ul className="story-feedback-list">
-        {items.map((item, index) => (
-          <li key={`${keyPrefix}-${index}`} className="story-feedback-list-item">
-            {item}
-          </li>
-        ))}
-      </ul>
-    );
-  };
-
-  const renderStoryFeedback = (feedback) => {
-    if (!feedback) return null;
-    const parsed = parseStoryFeedback(feedback);
-    const hasStructuredContent = parsed
-      && (
-        parsed.intro.length > 0
-        || parsed.summary.length > 0
-        || parsed.sentenceBlocks.length > 0
-        || parsed.grammar.length > 0
-        || parsed.extra.length > 0
-      );
-
-    if (!hasStructuredContent) {
-      return (
-        <div
-          className="webapp-result-text story-result-feedback"
-          dangerouslySetInnerHTML={{ __html: renderRichText(feedback) }}
-        />
-      );
-    }
-
-    return (
-      <div className="webapp-result-text story-result-feedback">
-        {parsed.intro.length > 0 && (
-          <section className="story-feedback-section">
-            {renderStoryFeedbackList(parsed.intro, 'story-intro')}
-          </section>
-        )}
-
-        {parsed.summary.length > 0 && (
-          <section className="story-feedback-section">
-            <div className="story-feedback-section-title">
-              {tr('Общая оценка', 'Gesamtbewertung')}
-            </div>
-            {renderStoryFeedbackList(parsed.summary, 'story-summary')}
-          </section>
-        )}
-
-        {parsed.sentenceBlocks.length > 0 && (
-          <section className="story-feedback-section">
-            <div className="story-feedback-section-title">
-              {tr('Разбор по предложениям', 'Satzanalyse')}
-            </div>
-            <div className="story-feedback-sentences">
-              {parsed.sentenceBlocks.map((block, sentenceIndex) => (
-                <section
-                  key={`story-sentence-${sentenceIndex}`}
-                  className="story-feedback-sentence-card"
-                >
-                  <div className="story-feedback-sentence-title">
-                    {sentenceIndex + 1}) {tr('Предложение', 'Satz')} {sentenceIndex + 1}
-                  </div>
-                  <div className="story-feedback-sentence-items">
-                    {block.map((item, itemIndex) => (
-                      <div
-                        key={`story-sentence-${sentenceIndex}-item-${item.sourceIndex || itemIndex}`}
-                        className="story-feedback-sentence-item"
-                      >
-                        <div className="story-feedback-item-label">{item.label}</div>
-                        {renderStoryFeedbackContent(
-                          item.contentLines,
-                          `story-sentence-${sentenceIndex}-item-${itemIndex}`
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {parsed.sentenceBlocks.length === 0 && parsed.sentenceLines.length > 0 && (
-          <section className="story-feedback-section">
-            <div className="story-feedback-section-title">
-              {tr('Разбор по предложениям', 'Satzanalyse')}
-            </div>
-            {renderStoryFeedbackList(parsed.sentenceLines.map(stripStoryListMarker), 'story-sentences-fallback')}
-          </section>
-        )}
-
-        {parsed.grammar.length > 0 && (
-          <section className="story-feedback-section">
-            <div className="story-feedback-section-title">
-              {tr('Грамматика для проработки', 'Grammatik zum Ueben')}
-            </div>
-            {renderStoryFeedbackList(parsed.grammar, 'story-grammar')}
-          </section>
-        )}
-
-        {parsed.extra.length > 0 && (
-          <section className="story-feedback-section">
-            <div className="story-feedback-section-title">
-              {tr('Дополнительно', 'Zusätzlich')}
-            </div>
-            {renderStoryFeedbackList(parsed.extra, 'story-extra')}
-          </section>
-        )}
-      </div>
-    );
-  };
-
   const renderExplanationContent = (text) => {
     if (!text) return null;
     const lines = String(text || '').split(/\r?\n/);
@@ -29013,7 +28788,6 @@ function AppInner() {
   const handleTranslationVoteStable = useStableCallback(handleTranslationVote);
   const extractCorrectTranslationTextStable = useStableCallback(extractCorrectTranslationText);
   const handleSelectionStable = useStableCallback(handleSelection);
-  const renderStoryFeedbackStable = useStableCallback(renderStoryFeedback);
   const renderFeedbackStable = useStableCallback(renderFeedback);
   const handleExplainTranslationStable = useStableCallback(handleExplainTranslation);
   const handleSaveSentenceDraftStable = useStableCallback(handleSaveSentenceDraft);
@@ -32144,7 +31918,6 @@ function AppInner() {
                 webappError={webappError}
                 finishMessage={finishMessage}
                 storyResult={storyResult}
-                renderStoryFeedback={renderStoryFeedbackStable}
                 onOpenStoryResultModal={openStoryResultModalStable}
                 results={results}
                 extractCorrectTranslationText={extractCorrectTranslationTextStable}

@@ -1786,6 +1786,39 @@ async def submit_story_translation_webapp(
             )
 
 
+def _format_story_sentence_feedback(sent: dict) -> str:
+    """Render one structured sentence review into a compact readable text block for the
+    per-row bt_3_translations.feedback (shown in «История за сегодня»)."""
+    if not isinstance(sent, dict):
+        return ""
+    lines: list[str] = []
+    good = str(sent.get("good") or "").strip()
+    if good:
+        lines.append(f"👍 {good}")
+    correct = str(sent.get("correct") or "").strip()
+    if correct:
+        lines.append(f"✅ {correct}")
+    for e in (sent.get("errors") or []):
+        if not isinstance(e, dict):
+            continue
+        your = str(e.get("your") or "").strip()
+        corr = str(e.get("correct") or "").strip()
+        why = str(e.get("why") or "").strip()
+        rule = str(e.get("rule") or "").strip()
+        seg = "• "
+        if your and corr:
+            seg += f"{your} → {corr}"
+        elif corr:
+            seg += corr
+        if why:
+            seg += f" — {why}"
+        if rule:
+            seg += f" ({rule})"
+        if seg.strip() != "•":
+            lines.append(seg)
+    return "\n".join(lines).strip()
+
+
 async def explain_story_translation_webapp(
     user_id: int,
     session_id: str | None = None,
@@ -1846,7 +1879,7 @@ async def explain_story_translation_webapp(
             # Reunite each original sentence with the learner's translation.
             cursor.execute(
                 """
-                SELECT d.unique_id, d.sentence, t.user_translation
+                SELECT d.unique_id, d.sentence, t.user_translation, d.id
                 FROM bt_3_daily_sentences d
                 LEFT JOIN bt_3_translations t
                   ON t.sentence_id = d.id AND t.session_id = d.session_id AND t.user_id = d.user_id
@@ -1879,10 +1912,13 @@ async def explain_story_translation_webapp(
         )
         return {"error": "Не удалось подготовить разбор. Попробуйте ещё раз."}
 
-    # Cache the structured JSON (best-effort; the answer is already returned even if
-    # persistence fails). Only cache the German (default) run to avoid churn between
-    # language toggles — a re-fetch in another language just regenerates.
+    # Cache the structured JSON on the session + write a clean per-sentence feedback
+    # text back onto each bt_3_translations row (so «История за сегодня» shows a real
+    # per-sentence review, not an empty box). Best-effort; the answer is already
+    # returned even if persistence fails. Only the RU (default) run is persisted to
+    # avoid churn between language toggles — a re-fetch in another language regenerates.
     if (explanation_language or "ru").strip().lower() == "ru":
+        by_index = {int(s.get("index") or 0): s for s in (explanation.get("sentences") or [])}
         try:
             with get_db_connection_context() as conn:
                 cur = conn.cursor()
@@ -1895,6 +1931,20 @@ async def explain_story_translation_webapp(
                         """,
                         (json.dumps(explanation, ensure_ascii=False), user_id, str(resolved_session_id)),
                     )
+                    for i, r in enumerate(rows):
+                        sentence_pk = r[3]
+                        sent = by_index.get(i + 1)
+                        text = _format_story_sentence_feedback(sent) if sent else ""
+                        if not text:
+                            continue
+                        cur.execute(
+                            """
+                            UPDATE bt_3_translations
+                            SET feedback = %s
+                            WHERE user_id = %s AND session_id = %s AND sentence_id = %s;
+                            """,
+                            (text, user_id, str(resolved_session_id), sentence_pk),
+                        )
                     conn.commit()
                 finally:
                     cur.close()

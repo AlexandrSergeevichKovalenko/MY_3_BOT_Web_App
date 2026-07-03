@@ -25774,6 +25774,7 @@ html[data-scheme="light"] .explain-line,
   font-size: 13px; font-weight: 800;
 }
 .story-sent-verdict { font-size: 15px; }
+.story-sent-good { font-size: 14px; line-height: 1.5; color: #86efac; margin-bottom: 6px; }
 .story-sent-correct { font-size: 15px; line-height: 1.5; color: #eaf2ff; margin-bottom: 8px; }
 .story-sent-correct-label { color: #86efac; font-weight: 700; }
 .story-sent-ok { font-size: 14px; color: #86efac; }

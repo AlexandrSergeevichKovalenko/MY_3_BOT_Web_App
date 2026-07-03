@@ -834,6 +834,7 @@ RULES:
   - "index": the sentence number,
   - "correct": the fully correct, natural German version of the whole sentence,
   - "verdict": "correct" (no real errors) | "minor" (small slips) | "major" (meaning/grammar broken),
+  - "good": ONE short encouraging sentence in explanation_language naming what the student did WELL in THIS sentence (correct case, good word choice, right word order…). Always try to find something genuine; "" only if the sentence is almost entirely wrong,
   - "errors": array (max 4, ordered by importance) of REAL mistakes only, each:
       { "type": one of "grammar","vocabulary","syntax","style","orthography",
         "your": exact wrong fragment copied from the student,
@@ -850,7 +851,7 @@ RULES:
 - "practice": 2-3 short NEW practice sentences that target the student's weak spots, each {"ru": sentence to translate written in explanation_language, "hint": short hint in explanation_language what to watch for}.
 
 Output ONLY valid minified JSON (no markdown, no code fences, no extra text) with EXACTLY this shape:
-{"summary":"...","sentences":[{"index":1,"correct":"...","verdict":"minor","errors":[{"type":"grammar","your":"...","correct":"...","why":"...","rule":"...","example":"..."}],"alternatives":[{"variant":"...","note":"..."}],"synonyms":[{"word":"...","options":["..."]}]}],"pattern":{"detected":false,"title":"","explanation":"","examples":[]},"grammar_focus":[{"title":"...","theory":"...","examples":[{"de":"...","ru":"..."}]}],"practice":[{"ru":"...","hint":"..."}]}
+{"summary":"...","sentences":[{"index":1,"correct":"...","verdict":"minor","good":"...","errors":[{"type":"grammar","your":"...","correct":"...","why":"...","rule":"...","example":"..."}],"alternatives":[{"variant":"...","note":"..."}],"synonyms":[{"word":"...","options":["..."]}]}],"pattern":{"detected":false,"title":"","explanation":"","examples":[]},"grammar_focus":[{"title":"...","theory":"...","examples":[{"de":"...","ru":"..."}]}],"practice":[{"ru":"...","hint":"..."}]}
 """,
 "tts_chunk_de":"""
 You are a German sentence chunker for spaced-repetition TTS training.
@@ -7524,6 +7525,7 @@ def _coerce_story_explanation(raw: str) -> dict:
             "index": s_index,
             "correct": _str(sent.get("correct")),
             "verdict": verdict,
+            "good": _str(sent.get("good")),
             "errors": _errors(sent.get("errors")),
             "alternatives": _alts(sent.get("alternatives")),
             "synonyms": _syns(sent.get("synonyms")),
