@@ -28611,6 +28611,11 @@ function AppInner() {
           fs: 0,
           disablekb: 1,
           playsinline: 1,
+          // News mode: hide the native YouTube chrome (settings, CC, fullscreen, «Watch on
+          // YouTube») — we provide subtitles/controls in-app. Tap the video to play/pause.
+          controls: youtubeNewsMode ? 0 : 1,
+          iv_load_policy: 3,
+          cc_load_policy: 0,
         },
         events: {
           onReady: () => {
@@ -32168,14 +32173,13 @@ function AppInner() {
                     >
                     {youtubeNewsMode && worldNewsData?.available && (
                       <div className="worldnews-stepper">
-                        {[['words', tr('Слова', 'Wörter')], ['video', tr('Видео', 'Video')], ['quiz', tr('Тест', 'Quiz')]].map(([key, label], i) => (
+                        {[['words', tr('Слова', 'Wörter')], ['video', tr('Видео', 'Video')], ['quiz', tr('Тест', 'Quiz')]].map(([key, label]) => (
                           <button
                             type="button"
                             key={`wn-step-${key}`}
                             className={`worldnews-step ${worldNewsStage === key ? 'is-active' : ''}`}
                             onClick={() => worldNewsGoToStage(key)}
                           >
-                            <span className="worldnews-step-num">{i + 1}</span>
                             <span className="worldnews-step-label">{label}</span>
                           </button>
                         ))}

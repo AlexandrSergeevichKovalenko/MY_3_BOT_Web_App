@@ -14909,6 +14909,22 @@ body.worldnews-active .webapp-topbar {
 .youtube-player-first.is-worldnews .youtube-subtitles-panel-head strong {
   color: #0f172a;
 }
+/* Tighten vertical rhythm in news mode: video sits high, more subtitles fit on screen. */
+.youtube-player-first.is-worldnews {
+  gap: 8px !important;
+}
+.youtube-player-first.is-worldnews .youtube-subtitles-block-de,
+.youtube-player-first.is-worldnews .youtube-subtitles-block-ru,
+.youtube-player-first.is-worldnews .webapp-subtitles,
+.youtube-player-first.is-worldnews .webapp-subtitles.is-translation {
+  background: transparent !important;
+}
+.youtube-player-first.is-worldnews .youtube-subtitles-card {
+  padding: 12px 14px !important;
+}
+.youtube-player-first.is-worldnews .youtube-subtitles-panel-content {
+  gap: 8px !important;
+}
 
 /* Clean, highly readable subtitle typography — the neutral system sans that reading /
    subtitle apps use (crisp on iOS), generous size + line-height. */
@@ -14988,46 +15004,36 @@ body.worldnews-active .webapp-topbar {
 .worldnews-next-cta:hover { transform: translateY(-1px); }
 .worldnews-next-cta:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
 
-/* Stepper */
+/* Stepper — thin right-pointing arrow chips (Слова › Видео › Тест), ~half height. */
 .worldnews-stepper {
   display: flex;
-  gap: 8px;
-  margin: 4px 0 16px;
+  gap: 4px;
+  margin: 0 0 8px;
 }
 .worldnews-step {
   flex: 1 1 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  min-height: 40px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid var(--wn-border);
-  background: var(--wn-card);
-  color: var(--wn-muted);
-  font-size: 13px;
+  min-height: 22px;
+  padding: 0 6px;
+  border: none;
+  background: #dbe3ef;
+  color: #64748b;
+  font-size: 11.5px;
   font-weight: 700;
+  letter-spacing: 0.02em;
   cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%, 10px 50%);
+}
+.worldnews-step:first-child {
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%);
+  border-radius: 7px 0 0 7px;
 }
 .worldnews-step.is-active {
-  border-color: #2563eb;
   background: #2563eb;
   color: #ffffff;
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.3);
 }
-.worldnews-step-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: rgba(148, 163, 184, 0.22);
-  color: var(--wn-text-2);
-  font-size: 12px;
-}
-.worldnews-step.is-active .worldnews-step-num { background: rgba(255, 255, 255, 0.26); color: #ffffff; }
 
 /* Word swipe deck — each card is a compact word breakdown */
 .worldnews-deck {
