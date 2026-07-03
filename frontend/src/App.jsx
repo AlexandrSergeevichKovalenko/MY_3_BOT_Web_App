@@ -32517,6 +32517,12 @@ function AppInner() {
                       const idx = Math.min(worldNewsCardIndex, worldNewsPhrases.length - 1);
                       const phrase = worldNewsPhrases[idx] || {};
                       const saved = worldNewsSelected.has(idx);
+                      const artMatch = String(phrase.de || '').match(/^\s*(der|die|das)\s+(.+)$/i);
+                      const article = artMatch ? artMatch[1] : '';
+                      const headRest = artMatch ? artMatch[2] : String(phrase.de || '');
+                      const gClass = article
+                        ? (article.toLowerCase() === 'der' ? 'g-m' : article.toLowerCase() === 'die' ? 'g-f' : 'g-n')
+                        : '';
                       return (
                         <div className="worldnews-deck">
                           <div className="worldnews-deck-progress">{idx + 1} / {worldNewsPhrases.length}</div>
@@ -32534,16 +32540,24 @@ function AppInner() {
                               worldNewsTouchXRef.current = null;
                             }}
                           >
-                            <div className="worldnews-card-de">{phrase.de}</div>
+                            <div className="worldnews-card-de">
+                              {article && <span className={`worldnews-art ${gClass}`}>{article} </span>}
+                              <span className="worldnews-head-main">{headRest}</span>
+                            </div>
                             {phrase.translation_ru && <div className="worldnews-card-ru">{phrase.translation_ru}</div>}
-                            {phrase.usage_ru && <div className="worldnews-card-usage">↳ {phrase.usage_ru}</div>}
+                            {phrase.usage_ru && (
+                              <div className="worldnews-card-note">
+                                <span className="worldnews-card-note-label">{tr('Как употреблять', 'Verwendung')}</span>
+                                <span className="worldnews-card-note-text">{phrase.usage_ru}</span>
+                              </div>
+                            )}
                             <button
                               type="button"
                               className={`worldnews-card-save ${saved ? 'is-saved' : ''}`}
                               onClick={() => saveWorldNewsCard(idx)}
                               disabled={saved}
                             >
-                              {saved ? tr('✓ Сохранено', '✓ Gespeichert') : tr('🔖 Сохранить', '🔖 Speichern')}
+                              {saved ? tr('✓ Сохранено', '✓ Gespeichert') : tr('🔖 Сохранить в словарь', '🔖 Ins Wörterbuch')}
                             </button>
                           </div>
                           <div className="worldnews-deck-nav">
@@ -32707,7 +32721,7 @@ function AppInner() {
                         )}
                       </div>
                     )}
-                    {!youtubeOverlayEnabled && youtubeSubtitlesReady && (
+                    {(!youtubeNewsMode || worldNewsStage === 'video') && !youtubeOverlayEnabled && youtubeSubtitlesReady && (
                       <div className="youtube-subtitles-card youtube-subtitles-panel">
                         <div className="youtube-subtitles-panel-head">
                           <div className="youtube-subtitles-panel-copy">

@@ -14862,32 +14862,51 @@ body {
   margin-top: 4px;
 }
 
-/* «Начни день с коротких новостей» — stepwise wizard (words deck → video → quiz). */
+/* «Начни день с коротких новостей» — stepwise wizard, styled to match the app's
+   interactive games + word-breakdown (white cards, cool borders, blue accent,
+   der/die/das colors, serif headword). Explicit values so it reads correctly
+   regardless of the surrounding page theme. */
+.worldnews-stepper,
+.worldnews-deck,
+.worldnews-quiz {
+  --wn-card: #ffffff;
+  --wn-surface: #f3f5f9;
+  --wn-border: #dfe4ec;
+  --wn-text: #0f172a;
+  --wn-text-2: #334155;
+  --wn-muted: #6b7686;
+  --wn-primary: #2563eb;
+  --wn-der: #2563eb;
+  --wn-die: #db2777;
+  --wn-das: #059669;
+  --wn-ok: #15803d;
+  --wn-bad: #dc2626;
+}
 
 /* Shared primary CTA (Смотреть видео / Дальше / Проверить знания). */
 .worldnews-next-cta {
   justify-self: stretch;
   width: 100%;
-  min-height: 50px;
+  min-height: 54px;
   margin-top: 4px;
   border: none;
-  border-radius: 14px;
-  background: var(--yt-action-primary);
+  border-radius: 16px;
+  background: #2563eb;
   color: #ffffff;
   font-size: 16px;
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
   transition: transform 0.12s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 .worldnews-next-cta:hover { transform: translateY(-1px); }
-.worldnews-next-cta:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+.worldnews-next-cta:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
 
 /* Stepper */
 .worldnews-stepper {
   display: flex;
   gap: 8px;
-  margin: 4px 0 14px;
+  margin: 4px 0 16px;
 }
 .worldnews-step {
   flex: 1 1 0;
@@ -14895,20 +14914,21 @@ body {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-height: 38px;
+  min-height: 40px;
   padding: 0 8px;
   border-radius: 999px;
-  border: 1px solid var(--yt-border-default);
-  background: var(--yt-bg-card-alt);
-  color: var(--yt-text-secondary);
+  border: 1px solid var(--wn-border);
+  background: var(--wn-card);
+  color: var(--wn-muted);
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
 }
 .worldnews-step.is-active {
-  border-color: var(--yt-action-primary);
-  background: var(--yt-action-primary);
+  border-color: #2563eb;
+  background: #2563eb;
   color: #ffffff;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.3);
 }
 .worldnews-step-num {
   display: inline-flex;
@@ -14917,73 +14937,97 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(148, 163, 184, 0.22);
+  color: var(--wn-text-2);
   font-size: 12px;
 }
-.worldnews-step.is-active .worldnews-step-num { background: rgba(255, 255, 255, 0.28); }
+.worldnews-step.is-active .worldnews-step-num { background: rgba(255, 255, 255, 0.26); color: #ffffff; }
 
-/* Word swipe deck */
+/* Word swipe deck — each card is a compact word breakdown */
 .worldnews-deck {
   display: grid;
   gap: 14px;
-  padding: 4px 0 8px;
+  padding: 2px 0 8px;
 }
 .worldnews-deck-progress {
   text-align: center;
   font-size: 13px;
   font-weight: 700;
-  color: var(--yt-text-secondary);
+  color: var(--wn-muted);
   letter-spacing: 0.04em;
 }
 .worldnews-card {
-  min-height: 230px;
+  min-height: 236px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  gap: 12px;
-  padding: 28px 22px;
+  gap: 14px;
+  padding: 30px 22px;
   border-radius: 22px;
-  border: 1px solid var(--yt-border-default);
-  background: linear-gradient(160deg, var(--yt-bg-card) 0%, var(--yt-bg-card-alt) 100%);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--wn-border);
+  background: var(--wn-card);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
   user-select: none;
   touch-action: pan-y;
 }
 .worldnews-card-de {
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
   font-size: 30px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1.15;
-  color: var(--yt-text-primary);
+  color: #111827;
 }
+.worldnews-art { font-style: italic; font-weight: 700; }
+.worldnews-art.g-m { color: var(--wn-der); }
+.worldnews-art.g-f { color: var(--wn-die); }
+.worldnews-art.g-n { color: var(--wn-das); }
 .worldnews-card-ru {
   font-size: 18px;
-  color: var(--yt-text-secondary);
+  font-weight: 600;
+  color: var(--wn-text-2);
 }
-.worldnews-card-usage {
+.worldnews-card-note {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--wn-surface);
+  border: 1px solid var(--wn-border);
+  text-align: left;
+}
+.worldnews-card-note-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8fa0b8;
+}
+.worldnews-card-note-text {
   font-size: 14px;
-  font-style: italic;
-  color: var(--yt-text-secondary);
-  opacity: 0.8;
-  max-width: 34ch;
+  line-height: 1.4;
+  color: var(--wn-text-2);
 }
 .worldnews-card-save {
-  margin-top: 6px;
-  min-height: 42px;
-  padding: 0 22px;
+  margin-top: 2px;
+  min-height: 46px;
+  padding: 0 26px;
   border-radius: 999px;
-  border: 1px solid var(--yt-action-primary);
+  border: 1.5px solid #2563eb;
   background: transparent;
-  color: #ffffff;
-  font-size: 14px;
+  color: #2563eb;
+  font-size: 14.5px;
   font-weight: 800;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
+.worldnews-card-save:hover:not(:disabled) { background: rgba(37, 99, 235, 0.08); }
 .worldnews-card-save.is-saved {
-  background: rgba(34, 197, 94, 0.18);
-  border-color: #22c55e;
+  background: rgba(22, 163, 74, 0.12);
+  border-color: #16a34a;
+  color: #15803d;
   cursor: default;
 }
 .worldnews-deck-nav {
@@ -14996,14 +15040,15 @@ body {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  border: 1px solid var(--yt-border-default);
-  background: var(--yt-bg-card-alt);
-  color: var(--yt-text-primary);
+  border: 1px solid var(--wn-border);
+  background: var(--wn-card);
+  color: var(--wn-text);
   font-size: 24px;
   line-height: 1;
   cursor: pointer;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
-.worldnews-deck-arrow:disabled { opacity: 0.35; cursor: default; }
+.worldnews-deck-arrow:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
 .worldnews-deck-dots {
   display: flex;
   flex-wrap: wrap;
@@ -15015,26 +15060,36 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--yt-border-default);
+  background: #cbd3df;
 }
-.worldnews-deck-dot.is-active { background: var(--yt-action-primary); }
-.worldnews-deck-dot.is-saved { background: #22c55e; }
+.worldnews-deck-dot.is-active { background: #2563eb; transform: scale(1.25); }
+.worldnews-deck-dot.is-saved { background: #16a34a; }
 
 /* «Проверить знания» CTA on the video stage: subdued until the video ends. */
 .worldnews-to-quiz { margin-top: 12px; }
 .worldnews-to-quiz.is-idle {
-  background: var(--yt-bg-card-alt);
-  color: var(--yt-text-secondary);
+  background: #eef1f6;
+  color: #64748b;
   box-shadow: none;
   font-weight: 700;
 }
 .worldnews-to-quiz.is-ready { animation: worldnews-pulse 1.6s ease-in-out infinite; }
 @keyframes worldnews-pulse {
-  0%, 100% { box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35); }
-  50% { box-shadow: 0 6px 26px rgba(37, 99, 235, 0.7); }
+  0%, 100% { box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35); }
+  50% { box-shadow: 0 10px 30px rgba(37, 99, 235, 0.7); }
 }
 
-/* Quiz progress + result (one-question-at-a-time) */
+/* Quiz — one question at a time, styled like the interactive MC games */
+.worldnews-quiz {
+  margin-top: 14px;
+  padding: 18px;
+  border-radius: 20px;
+  border: 1px solid var(--wn-border);
+  background: var(--wn-card);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.10);
+  display: grid;
+  gap: 14px;
+}
 .worldnews-quiz-progress {
   display: flex;
   align-items: center;
@@ -15044,130 +15099,93 @@ body {
   flex: 1 1 auto;
   height: 8px;
   border-radius: 999px;
-  background: var(--yt-bg-card-alt);
+  background: #e6eaf1;
   overflow: hidden;
 }
 .worldnews-quiz-bar > span {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: var(--yt-action-primary);
+  background: linear-gradient(90deg, #2563eb, #059669);
   transition: width 0.3s ease;
 }
 .worldnews-quiz-count {
   font-size: 13px;
   font-weight: 700;
-  color: var(--yt-text-secondary);
+  color: var(--wn-muted);
+}
+.worldnews-quiz-question {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #111827;
+}
+.worldnews-quiz-options {
+  display: grid;
+  gap: 8px;
+}
+.worldnews-quiz-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  min-height: 50px;
+  padding: 11px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--wn-border);
+  background: #f1f4f9;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.worldnews-quiz-option:hover:not(:disabled) { background: #e8edf5; }
+.worldnews-quiz-option:disabled { cursor: default; }
+.worldnews-quiz-option.is-correct {
+  border-color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+  color: #14532d;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.35);
+}
+.worldnews-quiz-option.is-wrong {
+  border-color: #dc2626;
+  background: rgba(220, 38, 38, 0.10);
+  color: #7f1d1d;
+}
+.worldnews-quiz-option-mark {
+  flex: 0 0 auto;
+  width: 20px;
+  text-align: center;
+}
+.worldnews-quiz-option-text { min-width: 0; }
+.worldnews-quiz-explain {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--wn-text-2);
+  padding: 10px 12px;
+  border-left: 3px solid #2563eb;
+  background: var(--wn-surface);
+  border-radius: 0 10px 10px 0;
 }
 .worldnews-quiz-result {
   display: grid;
   gap: 10px;
   justify-items: center;
   text-align: center;
-  padding: 24px 12px 8px;
+  padding: 26px 12px 10px;
 }
 .worldnews-quiz-result-score {
-  font-size: 46px;
+  font-size: 52px;
   font-weight: 800;
-  color: var(--yt-text-primary);
+  color: #111827;
 }
 .worldnews-quiz-result-label {
   font-size: 18px;
   font-weight: 700;
-  color: var(--yt-text-secondary);
+  color: var(--wn-text-2);
 }
 
-/* News-mode quiz: 4 MC questions with immediate correct/wrong feedback + explanation. */
-.worldnews-quiz {
-  margin-top: 14px;
-  padding: 16px;
-  border-radius: 16px;
-  border: 1px solid var(--yt-border-default);
-  background: var(--yt-bg-card);
-  display: grid;
-  gap: 12px;
-}
-.worldnews-quiz-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 4px 12px;
-}
-.worldnews-quiz-head h4 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 800;
-  color: var(--yt-text-primary);
-}
-.worldnews-quiz-score {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--yt-text-secondary);
-}
-.worldnews-quiz-card {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid var(--yt-border-default);
-  background: var(--yt-bg-card-alt);
-}
-.worldnews-quiz-question {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--yt-text-primary);
-}
-.worldnews-quiz-options {
-  display: grid;
-  gap: 6px;
-}
-.worldnews-quiz-option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  text-align: left;
-  min-height: 42px;
-  padding: 8px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--yt-border-default);
-  background: var(--yt-bg-card);
-  color: var(--yt-text-primary);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-.worldnews-quiz-option:hover:not(:disabled) {
-  background: var(--yt-bg-hover);
-}
-.worldnews-quiz-option:disabled {
-  cursor: default;
-}
-.worldnews-quiz-option.is-correct {
-  border-color: #22c55e;
-  background: rgba(34, 197, 94, 0.16);
-}
-.worldnews-quiz-option.is-wrong {
-  border-color: #ef4444;
-  background: rgba(239, 68, 68, 0.16);
-}
-.worldnews-quiz-option-mark {
-  flex: 0 0 auto;
-  width: 18px;
-  text-align: center;
-}
-.worldnews-quiz-option-text {
-  min-width: 0;
-}
-.worldnews-quiz-explain {
-  font-size: 13px;
-  color: var(--yt-text-secondary);
-  padding: 8px 10px;
-  border-left: 3px solid var(--yt-action-primary);
-  background: var(--yt-bg-card);
-  border-radius: 0 8px 8px 0;
-}
 
 .webapp-video.youtube-player-first .webapp-video-form.youtube-setup-form {
   background: var(--yt-bg-card);
