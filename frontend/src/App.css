@@ -21602,6 +21602,26 @@ body.worldnews-active .webapp-topbar {
 
 .tr-finish-btn:disabled { opacity: 0.45; cursor: default; }
 
+/* When finishing is the next action (enabled + not yet done) make it bright and
+   gently pulse so it doesn't get lost as a dim grey button. */
+.tr-finish-btn:not(:disabled):not(.is-done) {
+  border-color: transparent;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.32);
+  animation: tr-finish-pulse 1.8s ease-in-out infinite;
+}
+.tr-finish-btn:not(:disabled):not(.is-done):hover {
+  background: linear-gradient(135deg, #5457ec 0%, #7c3aed 100%);
+}
+@keyframes tr-finish-pulse {
+  0%, 100% { box-shadow: 0 6px 18px rgba(99, 102, 241, 0.30); transform: translateY(0); }
+  50% { box-shadow: 0 10px 26px rgba(99, 102, 241, 0.55); transform: translateY(-1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tr-finish-btn:not(:disabled):not(.is-done) { animation: none; }
+}
+
 .tr-finish-btn.is-done {
   border-color: rgba(22, 163, 74, 0.35);
   background: rgba(22, 163, 74, 0.08);
@@ -25803,9 +25823,61 @@ html[data-scheme="light"] .explain-line,
 .story-practice-hint { font-size: 13px; color: #a9b8cf; margin-top: 2px; }
 
 .story-modal-links { margin: 6px 0 0; padding-left: 18px; }
-.story-modal-links a { color: #93c5fd; word-break: break-all; }
+.story-modal-links a { color: #93c5fd; word-break: break-word; }
 .explain-summary-p { margin: 0; font-size: 15px; line-height: 1.5; color: #e2e8f0; }
-.story-followup-answer-text { margin: 6px 0 0; font-size: 15px; line-height: 1.55; color: #e2e8f0; white-space: pre-wrap; }
+
+/* Follow-up Q&A inside the modal — the translations-scoped rules don't reach here,
+   so the textarea/actions/answer are styled explicitly (full width). */
+.explain-modal .story-followup-form { display: grid; gap: 10px; margin-top: 12px; }
+.explain-modal .story-followup-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 92px;
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(148, 163, 184, 0.08);
+  color: #e6edf6;
+  padding: 12px 14px;
+  font: inherit;
+  line-height: 1.45;
+}
+.explain-modal .webapp-explanation-followup-actions { display: flex; gap: 10px; margin-top: 10px; }
+.explain-modal .webapp-explanation-followup-action-button { flex: 1 1 0; min-height: 46px; border-radius: 14px; justify-content: center; font-weight: 700; }
+
+.story-followup-answer {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(124, 140, 248, 0.22);
+  background: rgba(124, 140, 248, 0.08);
+}
+.story-followup-answer-label {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+  color: #a9b8cf; margin-bottom: 8px;
+}
+.story-followup-answer-text { font-size: 15px; line-height: 1.6; color: #e6edf6; }
+.story-md-p { margin: 0 0 10px; }
+.story-md-p:last-child { margin-bottom: 0; }
+.story-md-p strong { color: #f8fafc; }
+.story-md-term {
+  font-style: normal;
+  font-weight: 600;
+  color: #c7d2fe;
+  background: rgba(124, 140, 248, 0.14);
+  padding: 0 5px;
+  border-radius: 5px;
+}
+
+/* Light theme for the follow-up */
+html[data-scheme="light"] .explain-modal .story-followup-form textarea,
+.webapp-page.theme-light .explain-modal .story-followup-form textarea { background: #f4f7fb; color: #1f2a3a; border-color: #d8e0ea; }
+html[data-scheme="light"] .story-followup-answer-text,
+.webapp-page.theme-light .story-followup-answer-text { color: #243246; }
+html[data-scheme="light"] .story-md-p strong,
+.webapp-page.theme-light .story-md-p strong { color: #0f1b2d; }
+html[data-scheme="light"] .story-md-term,
+.webapp-page.theme-light .story-md-term { color: #4338ca; background: rgba(99, 102, 241, 0.12); }
 
 /* Light theme */
 html[data-scheme="light"] .story-modal-guess-verdict,

@@ -820,6 +820,7 @@ You are a professional German teacher and linguist giving a full, structured rev
 Input JSON:
 {
   "explanation_language": "ru|de|en|es|it",
+  "explanation_language_name": "e.g. Russian (русский)",
   "target_language": "de",
   "sentences": [{"index":1,"original":"<original sentence>","user":"<student's German>"}, ... up to 7]
 }
@@ -827,8 +828,9 @@ Input JSON:
 Analyze each user sentence against its original and produce a deep, structured breakdown.
 
 RULES:
-- Write ALL explanatory text (summary, why, rule, note, theory, pattern text, hints) in explanation_language.
-- Keep ALL German fragments (correct, your, example, variant, word, options, de) in German.
+- ⚠️ LANGUAGE IS CRITICAL. Write EVERY explanatory string in explanation_language_name. This applies to ALL of: summary; every sentence's "good"; every error "why" and "rule"; every alternative "note"; every synonym stays German but any note is explanation_language; the pattern "title", "explanation" and example "note"; every grammar_focus "title" and "theory"; every practice "ru" and "hint". If explanation_language is "ru", these MUST be in Russian — writing them in German is a hard ERROR, even for grammar terms and section titles (translate the term, e.g. "Adjektivbildung bei Materialien" → "Образование прилагательных от материалов").
+- Keep in German ONLY the actual language SAMPLES: "correct", "your", "example", "variant", synonym "word"/"options", grammar example "de", pattern example "wrong"/"right". Everything else = explanation_language.
+- Do NOT use Markdown inside any string (no **, *, _, #). Plain text only.
 - Be linguistically rigorous AND complete: cover grammar rules, lexical correctness, and word order.
 - For EACH sentence return an object:
   - "index": the sentence number,
@@ -7581,8 +7583,12 @@ async def run_story_explanation_structured(
 ) -> dict:
     """Teacher-grade structured 7-sentence story review (JSON) for the story result modal.
     `sentences` = [{"index": int, "original": str, "user": str}, ...]."""
+    lang_code = (explanation_language or "ru").strip().lower()
+    lang_names = {"ru": "Russian (русский)", "de": "German (Deutsch)", "en": "English",
+                  "es": "Spanish (español)", "it": "Italian (italiano)"}
     payload = {
-        "explanation_language": (explanation_language or "ru").strip().lower(),
+        "explanation_language": lang_code,
+        "explanation_language_name": lang_names.get(lang_code, "Russian (русский)"),
         "target_language": "de",
         "sentences": [
             {

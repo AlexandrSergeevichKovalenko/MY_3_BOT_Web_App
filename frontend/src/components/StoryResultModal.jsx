@@ -1,4 +1,43 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+
+// Lightweight markdown-ish renderer for the follow-up answer (GPT returns *bold*,
+// **bold** and _Wort_ emphasis + blank-line paragraphs). Keeps it readable instead
+// of dumping raw asterisks/underscores as plain text.
+function renderInline(text) {
+  const parts = [];
+  const re = /(\*\*[^*]+\*\*|\*[^*\n]+\*|_[^_\n]+_)/g;
+  let last = 0; let m; let k = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith('**')) parts.push(<strong key={k++}>{tok.slice(2, -2)}</strong>);
+    else if (tok.startsWith('*')) parts.push(<strong key={k++}>{tok.slice(1, -1)}</strong>);
+    else parts.push(<em key={k++} className="story-md-term">{tok.slice(1, -1)}</em>);
+    last = re.lastIndex;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function renderRichAnswer(text) {
+  return String(text || '').split(/\n{2,}/).map((para, i) => (
+    <p className="story-md-p" key={i}>
+      {para.split('\n').map((line, j) => (
+        <React.Fragment key={j}>
+          {j > 0 && <br />}
+          {renderInline(line)}
+        </React.Fragment>
+      ))}
+    </p>
+  ));
+}
+
+function linkLabel(item) {
+  const lang = (item.lang || '').toUpperCase();
+  let host = '';
+  try { host = new URL(item.url).hostname.replace(/^www\./, ''); } catch (_e) { /* ignore */ }
+  return `${lang ? lang + ' · ' : ''}${host || item.url}`;
+}
 
 /**
  * "Загадочная история" result, shown as a wide centered modal (so it doesn't
@@ -126,6 +165,21 @@ export default function StoryResultModal({
   const [qLoading, setQLoading] = useState(false);
   const [qAnswer, setQAnswer] = useState('');
   const [qError, setQError] = useState('');
+  const formRef = useRef(null);
+
+  // When the question field opens, bring it into view + focus it (it renders below
+  // the long breakdown, so users didn't notice it appeared).
+  useEffect(() => {
+    if (!qOpen) return;
+    const t = window.setTimeout(() => {
+      const form = formRef.current;
+      if (!form) return;
+      form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const ta = form.querySelector('textarea');
+      if (ta) ta.focus({ preventScroll: true });
+    }, 90);
+    return () => window.clearTimeout(t);
+  }, [qOpen]);
 
   if (!isOpen || !storyResult) return null;
 
@@ -327,7 +381,7 @@ export default function StoryResultModal({
               <ul className="story-modal-links">
                 {sourceLinks.map((item, idx) => (
                   <li key={`${item.url}-${idx}`}>
-                    <a href={item.url} target="_blank" rel="noreferrer">{item.lang ? `${item.lang}: ` : ''}{item.url}</a>
+                    <a href={item.url} target="_blank" rel="noreferrer">{linkLabel(item)}</a>
                   </li>
                 ))}
               </ul>
@@ -345,7 +399,7 @@ export default function StoryResultModal({
               {qOpen ? tr('Скрыть вопрос', 'Frage ausblenden') : tr('💬 Задать вопрос', '💬 Frage stellen')}
             </button>
             {qOpen && (
-              <div className="webapp-explanation-followup-form">
+              <div className="webapp-explanation-followup-form story-followup-form" ref={formRef}>
                 <textarea
                   rows={3}
                   value={qDraft}
@@ -364,9 +418,9 @@ export default function StoryResultModal({
             )}
             {qError && <div className="explain-modal-errorbox">⚠️ {qError}</div>}
             {qAnswer && (
-              <div className="webapp-explanation-followup-answer">
-                <div className="webapp-feedback-label">{tr('Ответ на ваш вопрос:', 'Antwort auf deine Frage:')}</div>
-                <p className="story-followup-answer-text">{qAnswer}</p>
+              <div className="webapp-explanation-followup-answer story-followup-answer">
+                <div className="story-followup-answer-label">💬 {tr('Ответ на ваш вопрос', 'Antwort auf deine Frage')}</div>
+                <div className="story-followup-answer-text">{renderRichAnswer(qAnswer)}</div>
               </div>
             )}
           </div>
