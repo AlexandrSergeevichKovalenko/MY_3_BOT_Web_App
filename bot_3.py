@@ -116,6 +116,12 @@ from backend.admin_economics import (
     send_dict_dedup_daily_report,
     send_dict_dedup_weekly_report,
 )
+from backend.admin_command_catalog import (
+    ADMIN_COMMAND_TOPICS,
+    render_topic,
+    render_topics_overview,
+    split_for_telegram as _split_admin_catalog_text,
+)
 from backend.database import (
     DATABASE_URL as SHARED_DATABASE_URL,
     DB_POOL_ALLOW_DIRECT_FALLBACK,
@@ -1105,6 +1111,7 @@ ADJEKTIV_BATTLE_BUTTON_TEXT = "⚔️ Adjektiv-батл"
 WOFRAGE_BATTLE_BUTTON_TEXT = "⚔️ Wo-Frage-батл"
 BATTLE_HISTORY_BUTTON_TEXT = "📜 История батлов"
 ADMIN_BROADCAST_BUTTON_TEXT = "📣 Рассылка всем"
+ADMIN_COMMANDS_BUTTON_TEXT = "🛠 Команды админа"
 SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
 _AUTOSAVE_BUTTON_PREFIX = "🌙 Автосейв:"  # dynamic label prefix used for routing reply-button taps
 # Short-lived cache so rendering the reply keyboard doesn't hit the DB on every menu draw.
@@ -1179,7 +1186,7 @@ def _is_known_reply_menu_button(text: str) -> bool:
     static_labels = {
         ARTIKEL_LEARN_BUTTON_TEXT, ARTIKEL_FOCUS_BUTTON_TEXT, ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
         ADJEKTIV_SPRINT_BUTTON_TEXT, NUMDICT_PRACTICE_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT, BATTLE_HISTORY_BUTTON_TEXT,
-        ADMIN_BROADCAST_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
+        ADMIN_BROADCAST_BUTTON_TEXT, ADMIN_COMMANDS_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT, SHORTCUT_AUTOSAVE_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT,
     }
@@ -4560,7 +4567,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
 
     # 7) Админ — отдельной строкой в самом низу.
     if is_admin:
-        rows.append([ADMIN_BROADCAST_BUTTON_TEXT])
+        rows.append([ADMIN_BROADCAST_BUTTON_TEXT, ADMIN_COMMANDS_BUTTON_TEXT])
 
     return ReplyKeyboardMarkup(
         rows,
@@ -4569,6 +4576,98 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
         # it stays reachable via the keyboard icon. (Do NOT set True.)
         is_persistent=False,
     )
+
+
+# ── Admin command palette ────────────────────────────────────────────────────
+# One reply-keyboard button ("🛠 Команды админа") opens an inline list of topics;
+# tapping a topic edits the message to show that topic's commands with their
+# description, accepted arguments and an example. Data lives in
+# backend/admin_command_catalog.py — add a command there when you register a new
+# admin CommandHandler. Callback data: admincmd:home | admincmd:t:<topic_id>.
+def _build_admin_commands_topics_keyboard() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for tid, title, cmds in ADMIN_COMMAND_TOPICS:
+        row.append(InlineKeyboardButton(f"{title} · {len(cmds)}", callback_data=f"admincmd:t:{tid}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+async def _send_admin_commands_overview(update: Update, context: CallbackContext) -> None:
+    """React to the "🛠 Команды админа" reply-button tap: send the topic list."""
+    await update.message.reply_text(
+        render_topics_overview(),
+        parse_mode="HTML",
+        reply_markup=_build_admin_commands_topics_keyboard(),
+        disable_web_page_preview=True,
+    )
+
+
+async def handle_admin_commands_callback(update: Update, context: CallbackContext) -> None:
+    """Inline navigation for the admin command palette."""
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    data = str(query.data or "").strip()
+    await query.answer()
+
+    if data == "admincmd:home":
+        try:
+            await query.message.edit_text(
+                render_topics_overview(),
+                parse_mode="HTML",
+                reply_markup=_build_admin_commands_topics_keyboard(),
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            await query.message.reply_text(
+                render_topics_overview(),
+                parse_mode="HTML",
+                reply_markup=_build_admin_commands_topics_keyboard(),
+                disable_web_page_preview=True,
+            )
+        return
+
+    if data.startswith("admincmd:t:"):
+        topic_id = data.split(":", 2)[2]
+        text = render_topic(topic_id)
+        if not text:
+            await query.answer("Тема не найдена.", show_alert=True)
+            return
+        parts = _split_admin_catalog_text(text)
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Все темы", callback_data="admincmd:home")]])
+        # First chunk replaces the topic-list message; extra chunks (rare) follow;
+        # the "back" button rides the last chunk.
+        try:
+            await query.message.edit_text(
+                parts[0],
+                parse_mode="HTML",
+                reply_markup=back_kb if len(parts) == 1 else None,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            await query.message.reply_text(
+                parts[0],
+                parse_mode="HTML",
+                reply_markup=back_kb if len(parts) == 1 else None,
+                disable_web_page_preview=True,
+            )
+        for index, part in enumerate(parts[1:], start=1):
+            await query.message.reply_text(
+                part,
+                parse_mode="HTML",
+                reply_markup=back_kb if index == len(parts) - 1 else None,
+                disable_web_page_preview=True,
+            )
+        return
 
 
 # ── Silent keyboard re-attach ────────────────────────────────────────────────
@@ -8717,6 +8816,9 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 parse_mode="Markdown",
                 reply_markup=_build_private_language_tutor_reply_keyboard(int(user_id)),
             )
+            return
+        if update.effective_chat and update.effective_chat.type == "private" and text == ADMIN_COMMANDS_BUTTON_TEXT:
+            await _send_admin_commands_overview(update, context)
             return
         pending_broadcast = _restore_admin_broadcast_input(int(user_id))
         if (pending_broadcast and update.effective_chat and update.effective_chat.type == "private"
@@ -32828,6 +32930,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_user_removal_action, pattern=r"^userpurge:(confirm|cancel):"))
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
+    application.add_handler(CallbackQueryHandler(handle_admin_commands_callback, pattern=r"^admincmd:"))
     application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_question_cancel_callback, pattern=r"^quizaskcancel$"))

@@ -1,0 +1,795 @@
+# -*- coding: utf-8 -*-
+"""Self-documenting catalog of admin/ops bot commands.
+
+AUTO-ORGANIZED reference used by the "🛠 Команды админа" DM button so the
+admin can browse commands by topic without memorising them. Each entry:
+  cmd     — the slash command
+  desc    — one-line RU description of what it triggers
+  args    — RU description of accepted arguments (or "нет аргументов")
+  example — a concrete example invocation
+
+Add a new command here when you register a new admin CommandHandler.
+"""
+
+from __future__ import annotations
+
+import html
+
+# (topic_id, title, [ {cmd, desc, args, example}, ... ])
+ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
+    ('access', '👥 Доступ и пользователи', [
+        {
+            "cmd": '/allow',
+            "desc": 'Команда администратора: выдаёт пользователю доступ к боту и WebApp, одобряет его заявку и отменяет запланированное удаление.',
+            "args": '<telegram_user_id> — числовой Telegram ID пользователя (обязательный); [username] — необязательная подсказка-юзернейм (может состоять из нескольких слов).',
+            "example": '/allow 123456789 ivan',
+        },
+        {
+            "cmd": '/deny',
+            "desc": 'Команда администратора: отклоняет заявку и/или отзывает доступ пользователя, ставит его данные в очередь на удаление и отменяет платную подписку.',
+            "args": '<telegram_user_id> — числовой Telegram ID пользователя (обязательный); [username] — необязательная подсказка-юзернейм (может состоять из нескольких слов).',
+            "example": '/deny 123456789',
+        },
+        {
+            "cmd": '/allowed',
+            "desc": 'Команда администратора: показывает список разрешённых пользователей (до 50) с их ID и юзернеймами.',
+            "args": 'нет аргументов',
+            "example": '/allowed',
+        },
+        {
+            "cmd": '/pending',
+            "desc": 'Команда администратора: показывает текущие ожидающие рассмотрения заявки на доступ.',
+            "args": 'нет аргументов',
+            "example": '/pending',
+        },
+        {
+            "cmd": '/pending_purges',
+            "desc": 'Команда администратора: показывает очередь пользователей, запланированных на удаление (статусы scheduled и awaiting_admin_confirmation, до 200).',
+            "args": 'нет аргументов',
+            "example": '/pending_purges',
+        },
+        {
+            "cmd": '/admin_grant_pro',
+            "desc": 'Выдаёт указанному пользователю заработанный Pro на заданное число дней и показывает, как изменился его is_user_pro-статус.',
+            "args": '<user_id> — числовой Telegram ID пользователя (обязательный); [days] — число дней Pro (необязательный, по умолчанию 1).',
+            "example": '/admin_grant_pro 123456789 3',
+        },
+        {
+            "cmd": '/mobile_token',
+            "desc": 'Выдаёт разрешённому пользователю mobile access token и base_url для iOS Share Extension, проверяя токен обращением к backend.',
+            "args": 'нет аргументов',
+            "example": '/mobile_token',
+        },
+        {
+            "cmd": '/request_access',
+            "desc": 'Отправляет запрос на доступ к боту администратору (с антиспам-задержкой в 60 секунд) и подтверждает отправку пользователю.',
+            "args": 'нет аргументов',
+            "example": '/request_access',
+        },
+    ]),
+    ('econ', '📊 Аналитика, экономика, бюджеты', [
+        {
+            "cmd": '/economics',
+            "desc": 'Собирает и отправляет administrator-отчёт по экономике проекта с кнопками управления лимитами.',
+            "args": 'нет аргументов',
+            "example": '/economics',
+        },
+        {
+            "cmd": '/costs',
+            "desc": 'Показывает разбивку затрат OpenAI по видам активности за указанный период.',
+            "args": 'Необязательный первый аргумент — число дней (ограничивается диапазоном 1–90); по умолчанию 7.',
+            "example": '/costs 30',
+        },
+        {
+            "cmd": '/dau',
+            "desc": 'Показывает администратору статистику DAU/WAU/MAU, липкость и сводку по стрикам.',
+            "args": 'нет аргументов',
+            "example": '/dau',
+        },
+        {
+            "cmd": '/ttsbudget',
+            "desc": 'Управляет месячным бюджетом Google TTS/Translate: статус, увеличение лимита, блокировка и отправка отчёта.',
+            "args": 'Подкоманда (первый аргумент): status (по умолчанию), sendnow, add <число_символов>, block, а также варианты с префиксом translate_ (например translate_add) для Google Translate; для add вторым аргументом идёт количество символов.',
+            "example": '/ttsbudget add 200000',
+        },
+        {
+            "cmd": '/budgets',
+            "desc": 'Псевдоним команды /ttsbudget: управляет месячным бюджетом Google TTS/Translate.',
+            "args": 'Подкоманда (первый аргумент): status (по умолчанию), sendnow, add <число_символов>, block, translate_add и т.п.; для add вторым аргументом — количество символов.',
+            "example": '/budgets sendnow',
+        },
+        {
+            "cmd": '/ttsprewarmquota',
+            "desc": 'Показывает панель управления квотой TTS-прогрева с текущим лимитом и кнопками для его изменения.',
+            "args": 'нет аргументов',
+            "example": '/ttsprewarmquota',
+        },
+    ]),
+    ('schedule', '🗓 Планировщик, рассылки, здоровье', [
+        {
+            "cmd": '/announce_schedule',
+            "desc": 'Разовая рассылка анонса функции расписания всем разрешённым пользователям, которым он ещё не отправлялся (безопасно для повторного запуска).',
+            "args": 'нет аргументов',
+            "example": '/announce_schedule',
+        },
+        {
+            "cmd": '/admin_run_streaks',
+            "desc": 'Немедленно запускает ежедневный подсчёт стриков за вчера, не дожидаясь планового времени (08:00).',
+            "args": 'нет аргументов',
+            "example": '/admin_run_streaks',
+        },
+        {
+            "cmd": '/plan',
+            "desc": 'Присылает в личку ссылку на живую таблицу плана рассылок в Mini-App.',
+            "args": 'нет аргументов',
+            "example": '/plan',
+        },
+        {
+            "cmd": '/admin_testalert',
+            "desc": 'Отправляет всем админам тестовый алерт о падении интерактива (пустой пул / ошибка генерации / 0 доставлено).',
+            "args": 'нет аргументов',
+            "example": '/admin_testalert',
+        },
+        {
+            "cmd": '/scheduler_health',
+            "desc": 'Показывает по каждому запланированному заданию, когда оно реально в последний раз отрабатывало.',
+            "args": 'Необязательный первый аргумент: problems (или проблемы / p) — показать только требующее внимания; иначе полный отчёт.',
+            "example": '/scheduler_health problems',
+        },
+        {
+            "cmd": '/admin_send_audio',
+            "desc": 'Вручную рассылает пользователям в личку ежедневное аудио с ошибками за указанную дату.',
+            "args": 'Необязательный первый аргумент — дата в формате YYYY-MM-DD; без него берётся вчерашний день.',
+            "example": '/admin_send_audio 2026-06-29',
+        },
+        {
+            "cmd": '/admin_rotate',
+            "desc": 'Запускает ротацию по «освоенности толпой» сейчас; мгновенный ответ, тяжёлая регенерация в фоне с отчётом в личку.',
+            "args": 'нет аргументов',
+            "example": '/admin_rotate',
+        },
+        {
+            "cmd": '/admin_pool_remind',
+            "desc": 'Рассылает всем админам предварительное напоминание о состоянии пула интерактивов.',
+            "args": 'нет аргументов',
+            "example": '/admin_pool_remind',
+        },
+        {
+            "cmd": '/admin_digest',
+            "desc": 'Отправляет только вызвавшему админу превью карточки «Итоги дня» с двумя кнопками (реальные данные за 24 ч или пример).',
+            "args": 'нет аргументов',
+            "example": '/admin_digest',
+        },
+    ]),
+    ('pools', '📦 Пулы и отчёты', [
+        {
+            "cmd": '/poolreport',
+            "desc": 'Присылает по запросу отчёт-инвентаризацию пула интерактивов (сколько заданий в базе, расход по слотам, сколько дозальют).',
+            "args": 'нет аргументов',
+            "example": '/poolreport',
+        },
+        {
+            "cmd": '/poolrefill',
+            "desc": 'Форсирует пополнение пула переводов прямо сейчас и показывает сгенерировано-vs-добавлено (небольшая стоимость OpenAI).',
+            "args": 'нет аргументов',
+            "example": '/poolrefill',
+        },
+        {
+            "cmd": '/translationpool',
+            "desc": 'Отправляет админам дайджест Translation-пула (пул предложений) прямо сейчас, минуя суточный run-guard.',
+            "args": 'нет аргументов',
+            "example": '/translationpool',
+        },
+        {
+            "cmd": '/artikelreport',
+            "desc": 'Присылает по запросу отчёт о том, что ночные джобы Artikel-Trainer добавили и сгенерировали (слова по темам + медиа).',
+            "args": 'нет аргументов',
+            "example": '/artikelreport',
+        },
+        {
+            "cmd": '/admin_aufgabe_pool',
+            "desc": 'Немедленно запускает ручное пополнение пула Aufgabe и показывает отчёт по пулу.',
+            "args": 'нет аргументов',
+            "example": '/admin_aufgabe_pool',
+        },
+        {
+            "cmd": '/admin_aq_pool',
+            "desc": 'Запускает подготовку пула квизов по артиклям.',
+            "args": 'необязательный [target] — целевое число готовых элементов (min 10); по умолчанию ARTICLE_QUIZ_POOL_TARGET.',
+            "example": '/admin_aq_pool 50',
+        },
+        {
+            "cmd": '/admin_rebus_pool',
+            "desc": 'Запускает подготовку пула ребусов до целевого количества готовых.',
+            "args": 'нет аргументов',
+            "example": '/admin_rebus_pool',
+        },
+        {
+            "cmd": '/admin_clearquizpool',
+            "desc": 'Очищает пул подготовленных poll-квизов, чтобы они пересоздались новым промптом.',
+            "args": 'необязательный первый аргумент — тип квиза: word_order | word_choice | translation; без аргумента чистит все типы.',
+            "example": '/admin_clearquizpool translation',
+        },
+        {
+            "cmd": '/admin_riddle_health',
+            "desc": 'Показывает состояние пула визуальных загадок (готово/в работе/ошибки, target, последние слоты).',
+            "args": 'нет аргументов',
+            "example": '/admin_riddle_health',
+        },
+    ]),
+    ('aufgabe', '✍️ Aufgabe (B2+ упражнения)', [
+        {
+            "cmd": '/admin_aufgabe_send',
+            "desc": 'Немедленно отправляет админу задание B2+, при пустом пуле генерируя его на лету.',
+            "args": 'необязательный первый аргумент — формат: cloze | wortbildung | transform | error | hoerluecke | pin; без аргумента берётся случайный формат, отличный от предыдущего вызова.',
+            "example": '/admin_aufgabe_send cloze',
+        },
+        {
+            "cmd": '/admin_aufgabe_all',
+            "desc": 'Отправляет по одному заданию каждого формата B2+ (витрина для админа), досоздавая недостающие форматы на лету.',
+            "args": 'нет аргументов',
+            "example": '/admin_aufgabe_all',
+        },
+        {
+            "cmd": '/admin_clearaufgabe',
+            "desc": 'Списывает все элементы указанного формата Aufgabe и регенерирует их с фиксированным промптом.',
+            "args": 'необязательный первый аргумент — формат: cloze | wortbildung | transform | error | hoerluecke | pin; без аргумента transform.',
+            "example": '/admin_clearaufgabe wortbildung',
+        },
+        {
+            "cmd": '/admin_verify_errors',
+            "desc": 'LLM-верифицирует существующие задания «Finde den Fehler» (пул + очередь повторов) и удаляет грамматически невалидные (только по явному вердикту invalid; тратит токены).',
+            "args": 'нет аргументов',
+            "example": '/admin_verify_errors',
+        },
+        {
+            "cmd": '/admin_clean_bad_reviews',
+            "desc": 'Детерминированно удаляет вырожденные задания wortbildung (производное == основа, напр. krise→Krise) из очереди повторов и из пула заданий.',
+            "args": 'нет аргументов',
+            "example": '/admin_clean_bad_reviews',
+        },
+        {
+            "cmd": '/review',
+            "desc": 'Открывает пользователю «Работу над ошибками» по запросу с кнопкой перехода в Mini-App.',
+            "args": 'нет аргументов',
+            "example": '/review',
+        },
+        {
+            "cmd": '/review_makedue',
+            "desc": 'Тестовая команда: делает ошибки пользователя доступными для повтора прямо сейчас, минуя суточное ожидание.',
+            "args": 'необязательный первый аргумент: all/все/всё — все форматы; иначе (без аргумента) только формат artikel.',
+            "example": '/review_makedue all',
+        },
+    ]),
+    ('artikel_content', '🔤 Artikel — контент и темы', [
+        {
+            "cmd": '/artikel_themes',
+            "desc": 'Выводит список тем Artikel Sprint со счётчиками verified/target и тему на завтра.',
+            "args": 'нет аргументов',
+            "example": '/artikel_themes',
+        },
+        {
+            "cmd": '/artikel_settheme',
+            "desc": 'Назначает тему Artikel Sprint на конкретный день.',
+            "args": '[tomorrow|today|YYYY-MM-DD] <theme_key>; при одном аргументе он трактуется как theme_key на завтра. Слова-даты также tomorrow/завтра, today/сегодня.',
+            "example": '/artikel_settheme tomorrow kueche',
+        },
+        {
+            "cmd": '/artikel_fill',
+            "desc": 'Генерирует, верифицирует и сохраняет существительные для темы через GPT.',
+            "args": '<theme_key> [count]; count — целое 1–300, ограничивает число новых слов за прогон; без него до target.',
+            "example": '/artikel_fill kueche 50',
+        },
+        {
+            "cmd": '/artikel_addwords',
+            "desc": 'Добавляет свои существительные в тему (с верификацией артикля и авто-переводом).',
+            "args": '<theme_key> в первой строке, затем каждое слово с новой строки (опционально der/die/das Слово и = перевод, разделитель = / : / - / —).',
+            "example": '/artikel_addwords kueche\nder Loeffel\ndie Gabel = вилка',
+        },
+        {
+            "cmd": '/artikel_autofill',
+            "desc": 'Вручную запускает авто-догенерацию слов во всех темах ниже target (та же задача, что ночью).',
+            "args": 'Необязательный [total_cap] — целое 1–500, общий лимит добавляемых слов; без него значение по умолчанию.',
+            "example": '/artikel_autofill 200',
+        },
+        {
+            "cmd": '/artikel_sample',
+            "desc": 'Показывает N случайных verified-существительных темы для проверки качества артиклей.',
+            "args": '<theme_key> [n]; n — целое 1–60, по умолчанию 25.',
+            "example": '/artikel_sample kueche 30',
+        },
+        {
+            "cmd": '/artikel_buildtoday',
+            "desc": 'Собирает (или пересобирает) дневной общий сет Artikel Sprint и показывает превью.',
+            "args": 'Необязательный [YYYY-MM-DD] — дата сета; без него сегодня.',
+            "example": '/artikel_buildtoday 2026-07-04',
+        },
+        {
+            "cmd": '/artikel_reset',
+            "desc": 'Сбрасывает результат Artikel Sprint, чтобы можно было пройти сет заново.',
+            "args": '[today|YYYY-MM-DD|<set_id>] [all]; без аргументов — твой результат за сегодня, дата или явный set_id — соответствующий сет, завершающее all — сброс у всех.',
+            "example": '/artikel_reset 2026-07-03 all',
+        },
+        {
+            "cmd": '/artikel_recheck',
+            "desc": 'Заново применяет детерминированную проверку рода к сохранённым существительным темы и исправляет неверные артикли.',
+            "args": 'обязательный <theme_key> — ключ темы; без него выводит подсказку по использованию.',
+            "example": '/artikel_recheck koerper',
+        },
+        {
+            "cmd": '/addartikel',
+            "desc": 'Добавляет слово в очередь квиза по артиклям как отрисованную грамматическую карточку.',
+            "args": '<der|die|das> <Wort> [| значение [| пояснение]] — обязательны артикль и слово, части разделяются символом |.',
+            "example": '/addartikel der Gedanke | мысль | род мужской',
+        },
+        {
+            "cmd": '/artikel_remindtheme',
+            "desc": 'Немедленно отправляет админам в личку тестовое напоминание «выбери тему на завтра» для Artikel-Trainer.',
+            "args": 'нет аргументов',
+            "example": '/artikel_remindtheme',
+        },
+        {
+            "cmd": '/artikel_play',
+            "desc": 'Присылает в личку кнопки для игры в сегодняшний набор Artikel Sprint (для теста).',
+            "args": 'нет аргументов',
+            "example": '/artikel_play',
+        },
+    ]),
+    ('artikel_media', '🖼 Artikel — медиа и обучение', [
+        {
+            "cmd": '/artikel_learn',
+            "desc": 'Присылает в личку кнопку для открытия обучающего свайп-тренажёра Artikel Trainer.',
+            "args": 'нет аргументов',
+            "example": '/artikel_learn',
+        },
+        {
+            "cmd": '/artikel_learn_preview',
+            "desc": 'Показывает превью обучающей колоды Artikel Trainer (слова + подсказки «почему») для оценки качества подсказок.',
+            "args": 'Необязательный [today|YYYY-MM-DD] — дата колоды; today/сегодня или без аргументов — сегодня.',
+            "example": '/artikel_learn_preview 2026-07-04',
+        },
+        {
+            "cmd": '/artikel_learn_prewarm',
+            "desc": 'Прогревает сегодняшнюю обучающую колоду (именно показываемые слова): мнемоники + аудио + картинки.',
+            "args": 'Необязательный [YYYY-MM-DD] — дата колоды; без него сегодня.',
+            "example": '/artikel_learn_prewarm 2026-07-04',
+        },
+        {
+            "cmd": '/artikel_mnemonics',
+            "desc": 'Генерирует и кэширует русские мнемоники рода (через LLM) для существительных темы.',
+            "args": '<theme_key> [count]; count — целое 1–120, сколько слов заполнить за прогон, по умолчанию 30.',
+            "example": '/artikel_mnemonics kueche 40',
+        },
+        {
+            "cmd": '/artikel_audio',
+            "desc": 'Генерирует и кэширует TTS-озвучку (артикль + слово) для существительных темы.',
+            "args": '<theme_key> [count]; count — целое 1–200, по умолчанию 25.',
+            "example": '/artikel_audio kueche 50',
+        },
+        {
+            "cmd": '/artikel_images',
+            "desc": 'Подбирает и кэширует бесплатные стоковые фото для конкретных существительных темы (абстрактные остаются цветными карточками).',
+            "args": '<theme_key> [count]; count — целое 1–60, по умолчанию 20. Требует PIXABAY_API_KEY.',
+            "example": '/artikel_images kueche 30',
+        },
+        {
+            "cmd": '/artikel_fillmedia',
+            "desc": 'Заполняет мнемоники + аудио + картинки для всей темы за один прогон (ограничено, повторять до нуля).',
+            "args": '<theme_key> [cap]; cap — целое 10–300, лимит слов на тип за прогон, по умолчанию ARTIKEL_NIGHTLY_MEDIA_CAP.',
+            "example": '/artikel_fillmedia kueche 150',
+        },
+        {
+            "cmd": '/artikel_pixtest',
+            "desc": 'Прямая проба Pixabay для проверки ключа/соединения.',
+            "args": '<query> — поисковый запрос (все слова после команды объединяются); по умолчанию dog.',
+            "example": '/artikel_pixtest dog',
+        },
+        {
+            "cmd": '/artikel_focus',
+            "desc": 'Присылает в личку Pro-выбор темы артиклей для изучения на завтра.',
+            "args": 'нет аргументов',
+            "example": '/artikel_focus',
+        },
+    ]),
+    ('battles', '⚔️ Батлы и тренажёры (Adjektiv/Wo-Frage)', [
+        {
+            "cmd": '/battle',
+            "desc": 'Создаёт батл Artikel Sprint (только для Pro) и рассылает приглашение всем пользователям, открыт до 23:59.',
+            "args": 'необязательный [theme_key] — ключ темы; если не задан или не найден, тема берётся по расписанию/фолбэку.',
+            "example": '/battle koerper',
+        },
+        {
+            "cmd": '/adjbattle',
+            "desc": 'Создаёт батл Adjektiv Sprint (только для Pro) и рассылает приглашение.',
+            "args": 'нет аргументов',
+            "example": '/adjbattle',
+        },
+        {
+            "cmd": '/wofragebattle',
+            "desc": 'Создаёт батл Wo-Frage Sprint (только для Pro) и рассылает приглашение.',
+            "args": 'нет аргументов',
+            "example": '/wofragebattle',
+        },
+        {
+            "cmd": '/mybattles',
+            "desc": 'Присылает в личку кнопку для открытия активных батлов пользователя.',
+            "args": 'нет аргументов',
+            "example": '/mybattles',
+        },
+        {
+            "cmd": '/admin_battle_images',
+            "desc": 'Генерирует картинки смурфов-рыцарей для приглашения и напоминания о батле (gpt-image-1 → R2), запускается один раз.',
+            "args": 'нет аргументов',
+            "example": '/admin_battle_images',
+        },
+        {
+            "cmd": '/admin_battle_digest',
+            "desc": 'Показывает превью объединённой грамоты «Итоги батлов» на тестовых данных.',
+            "args": 'необязательный [n] — число строк-батлов, зажимается в диапазон 2–10, по умолчанию 4.',
+            "example": '/admin_battle_digest 6',
+        },
+        {
+            "cmd": '/adjlearn',
+            "desc": 'Открывает Adjektiv Trainer — самостоятельную колоду для изучения окончаний прилагательных.',
+            "args": 'нет аргументов',
+            "example": '/adjlearn',
+        },
+        {
+            "cmd": '/wofragelearn',
+            "desc": 'Открывает Wo-Frage Trainer — самостоятельную колоду для тренировки вопросительных слов.',
+            "args": 'нет аргументов',
+            "example": '/wofragelearn',
+        },
+        {
+            "cmd": '/adjsprint',
+            "desc": 'Собирает и рассылает набор Adjektiv Sprint прямо сейчас (тест).',
+            "args": 'нет аргументов',
+            "example": '/adjsprint',
+        },
+        {
+            "cmd": '/wofragesprint',
+            "desc": 'Собирает и рассылает набор Wo-Frage Sprint прямо сейчас (тест).',
+            "args": 'нет аргументов',
+            "example": '/wofragesprint',
+        },
+        {
+            "cmd": '/wofragetest',
+            "desc": 'Приватный тест: отправляет карточку Wo-Frage Sprint только в чат вызвавшего и сбрасывает его результат для повторной игры.',
+            "args": 'нет аргументов',
+            "example": '/wofragetest',
+        },
+    ]),
+    ('rebus_cw', '🧩 Ребусы и кроссворды', [
+        {
+            "cmd": '/admin_rebus_send',
+            "desc": 'Отправляет ребус (Komposita) в текущий чат немедленно (тестовая команда).',
+            "args": 'нет аргументов',
+            "example": '/admin_rebus_send',
+        },
+        {
+            "cmd": '/admin_rebus_add',
+            "desc": 'Импортирует явно одобренные админом составные слова для ребусов (разметка GPT + генерация картинок).',
+            "args": 'Список немецких составных слов после команды, каждое с новой строки (или через запятую/точку с запятой); максимум 30 слов за раз.',
+            "example": '/admin_rebus_add\nHandschuh\nApfelbaum',
+        },
+        {
+            "cmd": '/admin_rebus_recheck',
+            "desc": 'Перепроверяет существующие картинки компонентов ребусов через vision-гейт и бракует несоответствующие.',
+            "args": 'Необязательно [limit] — число картинок (обычный режим по умолчанию 120, кап 300). Первый аргумент pregate|pre|stale — только до-гейтовые картинки (по умолчанию и кап 500), затем опционально число.',
+            "example": '/admin_rebus_recheck pregate 200',
+        },
+        {
+            "cmd": '/admin_rebus_audit',
+            "desc": 'Аудит всей базы ребусов на рассинхрон слово↔композит; по умолчанию только отчёт.',
+            "args": 'Необязательный первый аргумент retire|fix|1|yes — не только отчёт, но и ретайр плохих записей; иначе только отчёт.',
+            "example": '/admin_rebus_audit retire',
+        },
+        {
+            "cmd": '/admin_rebus_reset',
+            "desc": 'Ресинхронизирует банк из кода и заставляет композиты с указанными словами-частями перекомпоноваться, затем пополняет пул.',
+            "args": 'Одно или несколько слов-частей через пробел (например Ei Apfel); без аргументов используется Ei.',
+            "example": '/admin_rebus_reset Ei Apfel',
+        },
+        {
+            "cmd": '/admin_cw_send',
+            "desc": 'Немедленно отправляет кроссворд в текущий чат (админ-тест, с самовосстановлением при битой картинке).',
+            "args": 'нет аргументов',
+            "example": '/admin_cw_send',
+        },
+        {
+            "cmd": '/admin_cw_resend',
+            "desc": 'Удаляет последний кроссворд во всех чатах (группы и личка) и рассылает один свежий кроссворд всем адресатам вне расписания.',
+            "args": 'нет аргументов',
+            "example": '/admin_cw_resend',
+        },
+        {
+            "cmd": '/admin_cw_pool',
+            "desc": 'Запускает генерацию пула кроссвордов и рендер их изображений; при флаге пересоздаёт пул с нуля.',
+            "args": 'необязательный первый аргумент-флаг: fresh, force, new или regen (форсирует полную регенерацию); без него — обычное пополнение.',
+            "example": '/admin_cw_pool fresh',
+        },
+        {
+            "cmd": '/admin_cw_rerender',
+            "desc": 'Сбрасывает все изображения кроссвордов в статус pending и заново их рендерит.',
+            "args": 'нет аргументов',
+            "example": '/admin_cw_rerender',
+        },
+    ]),
+    ('numbers', '🔢 Числа и аудирование', [
+        {
+            "cmd": '/admin_nd_send',
+            "desc": 'Отправляет сессию Zahlen-Diktat (числовой диктант, 3 задания) в текущий чат прямо сейчас (админ-тест).',
+            "args": 'нет аргументов',
+            "example": '/admin_nd_send',
+        },
+        {
+            "cmd": '/admin_nd_pool',
+            "desc": 'Генерирует записи Zahlen-Diktat вместе с аудио до целевого числа.',
+            "args": 'необязательный первый аргумент — целевое число N (целое ≥1); по умолчанию NUMDICT_POOL_TARGET.',
+            "example": '/admin_nd_pool 10',
+        },
+        {
+            "cmd": '/admin_nd_fresh',
+            "desc": 'Ретайрит все текущие записи Zahlen-Diktat и генерирует N свежих по последней логике генератора, затем синтезирует их аудио.',
+            "args": 'необязательный первый аргумент — число N (целое ≥1); по умолчанию NUMDICT_POOL_TARGET.',
+            "example": '/admin_nd_fresh 12',
+        },
+        {
+            "cmd": '/admin_nd_resynth',
+            "desc": 'Пересинтезирует всё активное аудио Zahlen-Diktat по текущей логике чтения (контент/ответы не меняются, только аудио; без GPT).',
+            "args": 'нет аргументов',
+            "example": '/admin_nd_resynth',
+        },
+        {
+            "cmd": '/admin_ls_send',
+            "desc": 'Отправляет квиз на аудирование (Hörverständnis) в текущий чат прямо сейчас (админ-тест).',
+            "args": 'нет аргументов',
+            "example": '/admin_ls_send',
+        },
+        {
+            "cmd": '/admin_ls_pool',
+            "desc": 'Генерирует записи пула аудирования до целевого числа.',
+            "args": 'необязательный первый аргумент — целевое число N (целое ≥1); по умолчанию LISTENING_POOL_TARGET.',
+            "example": '/admin_ls_pool 8',
+        },
+    ]),
+    ('games', '🎲 Игры и квизы — отправить сейчас', [
+        {
+            "cmd": '/admin_mc_send',
+            "desc": 'Отправляет тестовую карточку MC-квиза (Mini-App) в текущий чат прямо сейчас.',
+            "args": 'нет аргументов',
+            "example": '/admin_mc_send',
+        },
+        {
+            "cmd": '/admin_anagram_send',
+            "desc": 'Немедленно отправляет карточку анаграммы в текущий чат (админский тест).',
+            "args": 'нет аргументов',
+            "example": '/admin_anagram_send',
+        },
+        {
+            "cmd": '/admin_riddle_send',
+            "desc": 'Отправляет визуальную загадку в текущий чат немедленно (тестовая команда).',
+            "args": 'Необязательный [template_id] — целое число, ID шаблона загадки для отправки; без него генерируется новая загадка.',
+            "example": '/admin_riddle_send 42',
+        },
+        {
+            "cmd": '/admin_sprint',
+            "desc": 'Отправляет спринт синонимов или антонимов в текущий чат прямо сейчас (при пустом банке сначала генерирует).',
+            "args": 'необязательный первый аргумент: synonym или antonym (по умолчанию synonym).',
+            "example": '/admin_sprint antonym',
+        },
+        {
+            "cmd": '/admin_clearsprint',
+            "desc": 'Очищает банк спринтов синонимов/антонимов и регенерирует его заново (чтобы accepted нёс перевод по каждому слову).',
+            "args": 'необязательный первый аргумент: synonym или antonym (иначе чистятся оба типа).',
+            "example": '/admin_clearsprint synonym',
+        },
+        {
+            "cmd": '/champion',
+            "desc": 'Публикует карточку глобального чемпиона квизов в текущий чат по запросу.',
+            "args": 'необязательный первый аргумент days — число дней окна (ограничено 1–365); без аргумента 7.',
+            "example": '/champion 30',
+        },
+        {
+            "cmd": '/admin_aq_send',
+            "desc": 'Немедленно отправляет квиз по артиклям в текущий чат (админ-тест).',
+            "args": 'нет аргументов',
+            "example": '/admin_aq_send',
+        },
+        {
+            "cmd": '/test_image_quiz',
+            "desc": 'Отправляет тестовый картинка-квиз в текущий чат для самого вызывающего пользователя.',
+            "args": 'нет аргументов',
+            "example": '/test_image_quiz',
+        },
+        {
+            "cmd": '/admin_image_quiz_batch',
+            "desc": 'Отправляет пачку картинка-квизов подряд в текущий чат (останавливается на первой неудаче).',
+            "args": 'необязательный первый аргумент — количество N (целое, зажато в диапазон 1–50); по умолчанию 20.',
+            "example": '/admin_image_quiz_batch 30',
+        },
+        {
+            "cmd": '/test_image_quiz_fallback',
+            "desc": 'Тестирует фолбэк картинка-квиза: намеренно ломает отправку картинки (битый photo ref) и проверяет, что вместо неё уходит poll-квиз.',
+            "args": 'нет аргументов',
+            "example": '/test_image_quiz_fallback',
+        },
+    ]),
+    ('news', '📰 Новости дня', [
+        {
+            "cmd": '/worldnews',
+            "desc": 'Готовит и показывает превью «Начни день с коротких новостей» на сегодня.',
+            "args": 'Необязательный первый аргумент — ссылка на YouTube-видео для ручной сборки; без него подбирается свежий ролик DW автоматически.',
+            "example": '/worldnews https://youtube.com/watch?v=abc123',
+        },
+        {
+            "cmd": '/worldnews_card',
+            "desc": 'Отправляет самому себе утреннюю карточку новостей дня для теста Mini-App потока.',
+            "args": 'нет аргументов',
+            "example": '/worldnews_card',
+        },
+        {
+            "cmd": '/worldnews_send_now',
+            "desc": 'Немедленно рассылает одобренную сегодняшнюю новость в группу и активным пользователям.',
+            "args": 'нет аргументов',
+            "example": '/worldnews_send_now',
+        },
+        {
+            "cmd": '/admin_worldnews_image',
+            "desc": 'Генерирует через gpt-image-1 фон «смурф читает газету» для карточки новостей и сохраняет его в R2.',
+            "args": 'нет аргументов',
+            "example": '/admin_worldnews_image',
+        },
+    ]),
+    ('dict', '📖 Словарь и слова', [
+        {
+            "cmd": '/dedupnow',
+            "desc": 'Немедленно запускает дедупликацию словаря вручную и показывает результат.',
+            "args": 'нет аргументов',
+            "example": '/dedupnow',
+        },
+        {
+            "cmd": '/dedupenqueue',
+            "desc": 'Диагностически ставит реальный ночной актор дедупликации в очередь scheduler_jobs для проверки пути воркера.',
+            "args": 'нет аргументов',
+            "example": '/dedupenqueue',
+        },
+        {
+            "cmd": '/dedupreport',
+            "desc": 'Показывает по запросу недельную сводку удалённых дубликатов словаря.',
+            "args": 'нет аргументов',
+            "example": '/dedupreport',
+        },
+        {
+            "cmd": '/admin_fix_dict_translations',
+            "desc": 'Бэкфилл записей быстрого словаря, сохранённых без русского перевода.',
+            "args": 'Флаги (порядок не важен): apply — записать изменения (без него пробный прогон), all — обрабатывать всех пользователей (без него только записи вызвавшего).',
+            "example": '/admin_fix_dict_translations apply all',
+        },
+        {
+            "cmd": '/admin_backfill_frequency',
+            "desc": 'Вычисляет/обновляет частотный ранг сохранённых слов, чтобы SRS вводил самые частотные первыми.',
+            "args": 'Флаги (порядок не важен): all — все пользователи (без него только записи вызвавшего), rescan — пересчитать все строки (без него только строки без ранга).',
+            "example": '/admin_backfill_frequency all rescan',
+        },
+        {
+            "cmd": '/admin_retag',
+            "desc": 'Запускает в фоне перетегирование словаря (семантические теги через GPT-батчи) и присылает отчёт по завершении.',
+            "args": 'нет аргументов',
+            "example": '/admin_retag',
+        },
+        {
+            "cmd": '/clearqueue',
+            "desc": 'Очищает собственную очередь ожидающих быстрых переводов (память и все ключи Redis) и останавливает текущий батч «Быстрый перевод».',
+            "args": 'нет аргументов',
+            "example": '/clearqueue',
+        },
+    ]),
+    ('media', '🎨 Картинки, грамоты, карточки', [
+        {
+            "cmd": '/admin_overtaken_images',
+            "desc": 'Генерирует ротационные смурф-фоны «тебя обошли» (подиум/гонка) через gpt-image-1 и сохраняет в R2.',
+            "args": 'нет аргументов',
+            "example": '/admin_overtaken_images',
+        },
+        {
+            "cmd": '/admin_lazy_image',
+            "desc": 'Генерирует смурф-фоны «день лени» и «молодцы» через gpt-image-1 и сохраняет в R2.',
+            "args": 'нет аргументов',
+            "example": '/admin_lazy_image',
+        },
+        {
+            "cmd": '/admin_review_image',
+            "desc": 'Генерирует смурф-фон «пора повторить» для карточки SRS-напоминания через gpt-image-1 и сохраняет в R2.',
+            "args": 'нет аргументов',
+            "example": '/admin_review_image',
+        },
+        {
+            "cmd": '/reviewcard',
+            "desc": 'Присылает превью карточки-напоминания о повторении слов (SRS) с фоном-смурфом.',
+            "args": 'Необязательные позиционные аргументы: [due] — количество слов к повторению, [streak] — длина стрика; без них берутся реальные значения пользователя.',
+            "example": '/reviewcard 15 7',
+        },
+        {
+            "cmd": '/admin_certificate',
+            "desc": 'Показывает превью собственной грамоты со статистикой за выбранный период.',
+            "args": 'необязательный первый аргумент — период: week | month | quarter | half | year; без аргумента week (неизвестное значение трактуется как month).',
+            "example": '/admin_certificate month',
+        },
+    ]),
+    ('misc', '🧰 Прочее / пользовательские', [
+        {
+            "cmd": '/streak',
+            "desc": 'Показывает пользователю его текущую серию дней подряд (streak), рекорд, число заморозок и статус заработанного Pro.',
+            "args": 'нет аргументов',
+            "example": '/streak',
+        },
+        {
+            "cmd": '/invite',
+            "desc": 'Выдаёт персональную реферальную ссылку для приглашения друга и число успешных приглашений.',
+            "args": 'нет аргументов',
+            "example": '/invite',
+        },
+        {
+            "cmd": '/group',
+            "desc": 'Объясняет одиночному (личному) пользователю, как играть командой в группе.',
+            "args": 'нет аргументов',
+            "example": '/group',
+        },
+    ]),
+]
+
+
+def _e(s: str) -> str:
+    return html.escape(str(s or ""))
+
+
+def topic_by_id(topic_id: str):
+    for tid, title, cmds in ADMIN_COMMAND_TOPICS:
+        if tid == topic_id:
+            return tid, title, cmds
+    return None
+
+
+def render_topics_overview() -> str:
+    """Intro text shown above the topic buttons."""
+    total = sum(len(cmds) for _, _, cmds in ADMIN_COMMAND_TOPICS)
+    return (
+        "🛠 <b>Команды администратора</b>\n"
+        f"Всего команд: <b>{total}</b> в {len(ADMIN_COMMAND_TOPICS)} темах.\n\n"
+        "Выберите тему — пришлю список команд с описанием и параметрами."
+    )
+
+
+def render_topic(topic_id: str) -> str | None:
+    """Full HTML text for one topic: every command with desc, args, example."""
+    found = topic_by_id(topic_id)
+    if not found:
+        return None
+    _, title, cmds = found
+    lines = [f"<b>{_e(title)}</b>", ""]
+    for o in cmds:
+        lines.append(f"<b>{_e(o['cmd'])}</b>")
+        lines.append(_e(o["desc"]))
+        lines.append(f"<i>Аргументы:</i> {_e(o['args'])}")
+        lines.append(f"<i>Пример:</i> <code>{_e(o['example'])}</code>")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def split_for_telegram(text: str, limit: int = 3800) -> list[str]:
+    """Split a long HTML message on blank lines so no chunk exceeds Telegram's cap."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    cur = ""
+    for block in text.split("\n\n"):
+        candidate = (cur + "\n\n" + block) if cur else block
+        if len(candidate) > limit and cur:
+            chunks.append(cur)
+            cur = block
+        else:
+            cur = candidate
+    if cur:
+        chunks.append(cur)
+    return chunks
