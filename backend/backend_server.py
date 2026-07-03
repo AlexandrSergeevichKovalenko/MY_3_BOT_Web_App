@@ -44485,6 +44485,64 @@ def translation_draft_state():
     )
 
 
+@app.route("/api/webapp/worldnews/today", methods=["POST"])
+def get_worldnews_today():
+    """Return the prepared «Начни день с коротких новостей» entry for the Mini-App news page.
+    Only exposes an entry that is actually sendable (ready/sent/pinned) — never a stale day.
+    Response: {available: bool, ...entry fields} so the frontend can degrade cleanly."""
+    payload = request.get_json(silent=True) or {}
+    init_data = _extract_request_init_data(payload)
+    user_id, _name = _extract_webapp_user_from_init_data(init_data)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    # Optional explicit date (admin preview / testing); default = server-local today, matching
+    # the nightly generator and the morning broadcast.
+    date_str = str(payload.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    try:
+        from backend.database import get_sendable_world_news
+        entry = get_sendable_world_news(date_str)
+    except Exception:
+        logging.exception("worldnews/today: load failed date=%s user_id=%s", date_str, user_id)
+        return jsonify({"error": "Не удалось загрузить новость дня"}), 500
+
+    if not entry:
+        return jsonify({"available": False, "news_date": date_str})
+
+    phrases = [
+        {
+            "de": str(p.get("de") or "").strip(),
+            "translation_ru": str(p.get("translation_ru") or "").strip(),
+            "usage_ru": str(p.get("usage_ru") or "").strip(),
+        }
+        for p in (entry.get("phrases") or [])
+        if isinstance(p, dict) and str(p.get("de") or "").strip()
+    ]
+    quiz = [
+        {
+            "question_de": str(q.get("question_de") or "").strip(),
+            "options": [str(o) for o in (q.get("options") or [])],
+            "correct_index": int(q.get("correct_index") or 0),
+            "explanation_ru": str(q.get("explanation_ru") or "").strip(),
+        }
+        for q in (entry.get("quiz") or [])
+        if isinstance(q, dict) and (q.get("options") or [])
+    ]
+    return jsonify({
+        "available": True,
+        "news_date": entry.get("news_date"),
+        "video_id": entry.get("video_id"),
+        "video_url": entry.get("video_url"),
+        "video_title": entry.get("video_title"),
+        "channel_title": entry.get("channel_title"),
+        "duration_seconds": int(entry.get("duration_seconds") or 0),
+        "transcript_lang": entry.get("transcript_lang") or "de",
+        "summary_ru": entry.get("summary_ru") or "",
+        "phrases": phrases,
+        "quiz": quiz,
+    })
+
+
 @app.route("/api/webapp/youtube/catalog", methods=["POST"])
 def get_youtube_catalog():
     started_perf = time.perf_counter()
