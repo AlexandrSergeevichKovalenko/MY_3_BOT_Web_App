@@ -3780,7 +3780,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
             {isStorySession && hasActiveTranslationSentences && (
               <label className="webapp-field">
-                <span>{tr('А теперь угадай, о ком / чем шла речь', 'Rate jetzt, worum oder um wen es ging')}</span>
+                <span>{tr('🤔 И самое интересное — угадай, о ком или о чём была история', '🤔 Und jetzt das Spannendste — rate, worum oder um wen es ging')}</span>
                 <input
                   type="text"
                   value={storyGuess}
@@ -3829,7 +3829,9 @@ const TranslationsSection = React.memo(function TranslationsSection({
           </form>
         )}
 
-        {webappError && (
+        {/* When active sentences are shown, the inline error block above the
+            check button already renders webappError — avoid the duplicate box. */}
+        {webappError && !hasActiveTranslationSentences && (
           (String(webappError).includes(PAID_FEATURE_ERROR_PREFIX) && renderStoryPaidFeatureNotice
             ? <PaidFeatureSpotlight>{renderStoryPaidFeatureNotice()}</PaidFeatureSpotlight>
             : null)
@@ -19559,11 +19561,11 @@ function AppInner() {
       return !value;
     });
     if (missing.length > 0) {
-      setWebappError(tr('Для истории нужно перевести все 7 предложений.', 'Für die Story müssen alle 7 Sätze übersetzt werden.'));
+      setWebappError(tr('Переведи, пожалуйста, все 7 предложений — тогда проверим историю целиком 🙂', 'Übersetze bitte alle 7 Sätze — dann prüfen wir die ganze Geschichte 🙂'));
       return;
     }
     if (!storyGuess.trim()) {
-      setWebappError(tr('Введите ваш ответ: о ком/чем была история.', 'Gib deine Antwort ein: Worum oder um wen ging die Story?'));
+      setWebappError(tr('Осталось вписать догадку: о ком или о чём была история? ✍️', 'Nur noch deine Vermutung: worum oder um wen ging es in der Geschichte? ✍️'));
       return;
     }
     setWebappLoading(true);
