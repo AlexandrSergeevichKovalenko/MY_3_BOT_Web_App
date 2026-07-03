@@ -25114,6 +25114,12 @@ function AppInner() {
   const normalizeSubtitleText = (text) => {
     if (!text) return '';
     return text
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&#160;/g, ' ')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#(\d+);/g, (_m, n) => { try { return String.fromCodePoint(Number(n)); } catch (_e) { return ' '; } })
+      .replace(/&#x([0-9a-f]+);/gi, (_m, n) => { try { return String.fromCodePoint(parseInt(n, 16)); } catch (_e) { return ' '; } })
       .replace(/&gt;/g, '>')
       .replace(/&lt;/g, '<')
       .replace(/&amp;/g, '&')
@@ -28168,7 +28174,24 @@ function AppInner() {
   };
 
   const applyYoutubeTranscriptPayload = (data) => {
-    const items = data?.items || [];
+    const rawItems = data?.items || [];
+    // Some caption sources deliver text with literal HTML entities (e.g. "&nbsp;"); decode at
+    // ingestion so every consumer (subtitles panel, clickable words, translate) sees clean text.
+    const decodeEntities = (s) => String(s || '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&#160;/g, ' ')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#(\d+);/g, (_m, n) => { try { return String.fromCodePoint(Number(n)); } catch (_e) { return ' '; } })
+      .replace(/&#x([0-9a-f]+);/gi, (_m, n) => { try { return String.fromCodePoint(parseInt(n, 16)); } catch (_e) { return ' '; } })
+      .replace(/&gt;/g, '>')
+      .replace(/&lt;/g, '<')
+      .replace(/&amp;/g, '&');
+    const items = rawItems.map((item) => (
+      item && typeof item === 'object' && item.text != null
+        ? { ...item, text: decodeEntities(item.text) }
+        : item
+    ));
     setYoutubeTranscript(items);
     setYoutubeTranslations(data?.translations || {});
     const hasTiming = items.some((item) => Number(item?.start) > 0);

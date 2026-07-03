@@ -187,12 +187,16 @@ def _fetch_transcript(video_id: str) -> dict | None:
 
 
 def _transcript_to_text(items: list) -> str:
+    import html
     parts = []
     for it in items or []:
         txt = str((it or {}).get("text") or "").strip()
         if txt:
             parts.append(txt)
-    text = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    # Caption sources sometimes carry literal HTML entities (&nbsp;, &amp;, …); decode them so
+    # the LLM (and the phrases it extracts) never sees "&nbsp;".
+    text = html.unescape(" ".join(parts))
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
