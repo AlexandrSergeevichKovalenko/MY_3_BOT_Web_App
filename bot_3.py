@@ -6898,6 +6898,135 @@ async def admin_review_card_command(update: Update, context: CallbackContext):
         await message.reply_text(f"❌ Не удалось отрисовать карточку: {exc}")
 
 
+# ── «Начни день с коротких новостей» — admin preview + nightly prep ─────────────
+
+def _world_news_preview_text(entry: dict, *, header: str) -> str:
+    """Compact admin-facing preview of a prepared daily news entry."""
+    phrases = entry.get("phrases") or []
+    quiz = entry.get("quiz") or []
+    dur = int(entry.get("duration_seconds") or 0)
+    dur_txt = f"{dur // 60}:{dur % 60:02d}" if dur else "—"
+    lines = [
+        header,
+        f"📅 <b>{entry.get('news_date')}</b> · статус: <code>{entry.get('status')}</code>"
+        + (" · 📌 pinned" if entry.get("is_pinned") else ""),
+        f"🎬 <b>{(entry.get('video_title') or '—')}</b>",
+        f"📺 {entry.get('channel_title') or '—'} · ⏱ {dur_txt}",
+        f"🔗 {entry.get('video_url')}",
+    ]
+    if entry.get("summary_ru"):
+        lines.append(f"\n📰 {entry['summary_ru']}")
+    lines.append(f"\n🔤 <b>Фразы ({len(phrases)}):</b>")
+    for p in phrases[:12]:
+        usage = f" — <i>{p['usage_ru']}</i>" if p.get("usage_ru") else ""
+        lines.append(f"• <b>{p.get('de')}</b> — {p.get('translation_ru')}{usage}")
+    if len(phrases) > 12:
+        lines.append(f"…ещё {len(phrases) - 12}")
+    lines.append(f"\n🧩 <b>Тест ({len(quiz)} вопр.):</b>")
+    for i, q in enumerate(quiz, 1):
+        opts = q.get("options") or []
+        ci = int(q.get("correct_index") or 0)
+        correct = opts[ci] if 0 <= ci < len(opts) else "—"
+        lines.append(f"{i}. {q.get('question_de')}  ✅ <b>{correct}</b>")
+    return "\n".join(lines)
+
+
+async def admin_world_news_command(update: Update, context: CallbackContext):
+    """Prepare / preview today's «Начни день с коротких новостей».
+    /worldnews             — auto-pick a fresh DW learner-news video and build the pack
+    /worldnews <youtube>   — build from a specific video (admin replace)."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    manual_url = (context.args[0].strip() if context.args else None)
+    status = await message.reply_text(
+        "📰 Готовлю новость дня… (ищу свежий ролик с субтитрами и делаю разбор)"
+    )
+    try:
+        from backend.world_news_generator import prepare_world_news
+        entry = await asyncio.to_thread(prepare_world_news, None, manual_url=manual_url)
+    except Exception as exc:
+        logging.exception("admin worldnews prep failed user_id=%s", int(sender.id))
+        await status.edit_text(
+            f"❌ Не удалось подготовить новость дня: {exc}\n"
+            "Попробуй ещё раз или задай ссылку: /worldnews <youtube_url>"
+        )
+        return
+    text = _world_news_preview_text(entry, header="✅ <b>Новость дня готова</b>")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📌 Закрепить на сегодня", callback_data=f"wn_pin:{entry.get('news_date')}"),
+    ]])
+    await status.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def handle_world_news_pin_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not query:
+        return
+    user = query.from_user
+    if not user or not _is_admin_user(user.id):
+        await query.answer("⛔️ Только для админа", show_alert=True)
+        return
+    try:
+        date_str = query.data.split(":", 1)[1]
+        from backend.database import set_world_news_pinned
+        await asyncio.to_thread(set_world_news_pinned, date_str, True)
+        await query.answer("📌 Закреплено — ночной автоподбор её не перезапишет")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    except Exception:
+        logging.exception("world news pin callback failed")
+        await query.answer("❌ Ошибка", show_alert=True)
+
+
+async def run_world_news_nightly(context: CallbackContext):
+    """Nightly (pre-morning) prep of the daily news rubric. Skips if today's entry is
+    already pinned. DMs admins a short preview on success or an alert on failure."""
+    from backend.database import get_admin_telegram_ids, get_world_news_for_date
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        existing = await asyncio.to_thread(get_world_news_for_date, today)
+    except Exception:
+        existing = None
+    if existing and existing.get("is_pinned"):
+        logging.info("world_news nightly: %s already pinned — skip auto prep", today)
+        return
+    admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    try:
+        from backend.world_news_generator import prepare_world_news
+        entry = await asyncio.to_thread(prepare_world_news, today)
+    except Exception as exc:
+        logging.warning("world_news nightly prep failed for %s: %s", today, exc)
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=(
+                        f"⚠️ Новость дня на {today} не подготовилась: {exc}\n"
+                        "Утренняя рассылка сегодня уйдёт в обычном виде. "
+                        "Можно задать вручную: /worldnews <youtube_url>"
+                    ),
+                )
+            except Exception:
+                pass
+        return
+    text = _world_news_preview_text(entry, header="🌅 <b>Новость дня готова к утренней рассылке</b>")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📌 Закрепить на сегодня", callback_data=f"wn_pin:{entry.get('news_date')}"),
+    ]])
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
+
+
 async def admin_dedup_now_command(update: Update, context: CallbackContext):
     """Run the dictionary dedup job right now and report the result. /dedupnow"""
     sender = update.effective_user
@@ -31731,6 +31860,7 @@ def main():
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
     application.add_handler(CommandHandler("reviewcard", admin_review_card_command))
+    application.add_handler(CommandHandler("worldnews", admin_world_news_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
@@ -31749,6 +31879,7 @@ def main():
     application.add_handler(CommandHandler("admin_retag", admin_retag_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
+    application.add_handler(CallbackQueryHandler(handle_world_news_pin_callback, pattern=r"^wn_pin:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
     application.add_handler(CallbackQueryHandler(handle_artikel_settheme_callback, pattern=r"^art_st:"))
@@ -32122,6 +32253,9 @@ def main():
 
     if scheduler is not None:
         print("📌 Добавляем задачу в scheduler...")
+        # Prepare «Начни день с коротких новостей» before the morning send (heavy work
+        # once/day; the 5:05 broadcast only reads the prepared row).
+        scheduler.add_job(lambda: submit_async(run_world_news_nightly,CallbackContext(application=application)),"cron", hour=4, minute=30)
         scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
         scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
         scheduler.add_job(

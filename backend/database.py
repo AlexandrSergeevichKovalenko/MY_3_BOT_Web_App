@@ -7037,6 +7037,32 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_transcripts_updated
                 ON bt_3_youtube_transcripts (updated_at);
             """)
+            # ── «Начни день с коротких новостей» — one shared daily news entry for all users.
+            # Heavy prep (video pick + transcript + LLM phrases + MC quiz) runs ONCE nightly
+            # and lands here; the morning broadcast is just a cheap read of one row.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_world_news_daily (
+                    news_date DATE PRIMARY KEY,
+                    video_id TEXT NOT NULL,
+                    video_url TEXT NOT NULL,
+                    video_title TEXT,
+                    channel_title TEXT,
+                    duration_seconds INTEGER,
+                    transcript_lang TEXT,
+                    summary_ru TEXT,
+                    phrases JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    quiz JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    hero_object_key TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_world_news_daily_status
+                ON bt_3_world_news_daily (status, news_date DESC);
+            """)
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bt_3_youtube_watch_state (
@@ -18764,6 +18790,158 @@ def upsert_youtube_translations(video_id: str, translations: dict) -> None:
                 SET translations = COALESCE(bt_3_youtube_transcripts.translations, '{}'::jsonb) || EXCLUDED.translations,
                     updated_at = NOW();
             """, (video_id, json.dumps(translations, ensure_ascii=False)))
+
+
+# ── «Начни день с коротких новостей» — daily shared news entry helpers ──────────
+
+def _world_news_row_to_dict(row) -> dict | None:
+    if not row:
+        return None
+    (news_date, video_id, video_url, video_title, channel_title, duration_seconds,
+     transcript_lang, summary_ru, phrases, quiz, hero_object_key, status,
+     is_pinned, created_at, updated_at) = row
+    if isinstance(phrases, str):
+        try:
+            phrases = json.loads(phrases)
+        except Exception:
+            phrases = []
+    if isinstance(quiz, str):
+        try:
+            quiz = json.loads(quiz)
+        except Exception:
+            quiz = []
+    return {
+        "news_date": news_date.isoformat() if news_date else None,
+        "video_id": str(video_id or "").strip(),
+        "video_url": str(video_url or "").strip(),
+        "video_title": str(video_title or "").strip(),
+        "channel_title": str(channel_title or "").strip(),
+        "duration_seconds": int(duration_seconds or 0),
+        "transcript_lang": transcript_lang,
+        "summary_ru": str(summary_ru or "").strip(),
+        "phrases": phrases or [],
+        "quiz": quiz or [],
+        "hero_object_key": hero_object_key,
+        "status": str(status or "draft").strip(),
+        "is_pinned": bool(is_pinned),
+        "created_at": created_at.isoformat() if created_at else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
+_WORLD_NEWS_COLS = (
+    "news_date, video_id, video_url, video_title, channel_title, duration_seconds, "
+    "transcript_lang, summary_ru, phrases, quiz, hero_object_key, status, "
+    "is_pinned, created_at, updated_at"
+)
+
+
+def get_world_news_for_date(news_date) -> dict | None:
+    """Return the prepared news entry for a given date (YYYY-MM-DD string or date)."""
+    if not news_date:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT {_WORLD_NEWS_COLS} FROM bt_3_world_news_daily WHERE news_date = %s;",
+                (news_date,),
+            )
+            return _world_news_row_to_dict(cursor.fetchone())
+
+
+def get_sendable_world_news(news_date) -> dict | None:
+    """Entry to broadcast this morning: today's row iff it is 'ready'/'sent'/pinned.
+    Never falls back to a different day — a missing/failed entry means the morning
+    path cleanly degrades to the plain reminder (no stale news)."""
+    row = get_world_news_for_date(news_date)
+    if not row:
+        return None
+    if row.get("is_pinned") or row.get("status") in ("ready", "sent"):
+        return row
+    return None
+
+
+def upsert_world_news_daily(
+    *,
+    news_date,
+    video_id: str,
+    video_url: str,
+    video_title: str | None = None,
+    channel_title: str | None = None,
+    duration_seconds: int | None = None,
+    transcript_lang: str | None = None,
+    summary_ru: str | None = None,
+    phrases: list | None = None,
+    quiz: list | None = None,
+    hero_object_key: str | None = None,
+    status: str = "draft",
+    is_pinned: bool = False,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_world_news_daily
+                    (news_date, video_id, video_url, video_title, channel_title,
+                     duration_seconds, transcript_lang, summary_ru, phrases, quiz,
+                     hero_object_key, status, is_pinned, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (news_date) DO UPDATE
+                SET video_id = EXCLUDED.video_id,
+                    video_url = EXCLUDED.video_url,
+                    video_title = EXCLUDED.video_title,
+                    channel_title = EXCLUDED.channel_title,
+                    duration_seconds = EXCLUDED.duration_seconds,
+                    transcript_lang = EXCLUDED.transcript_lang,
+                    summary_ru = EXCLUDED.summary_ru,
+                    phrases = EXCLUDED.phrases,
+                    quiz = EXCLUDED.quiz,
+                    hero_object_key = COALESCE(EXCLUDED.hero_object_key, bt_3_world_news_daily.hero_object_key),
+                    status = EXCLUDED.status,
+                    is_pinned = EXCLUDED.is_pinned,
+                    updated_at = NOW();
+                """,
+                (
+                    news_date, video_id, video_url, video_title, channel_title,
+                    duration_seconds, transcript_lang, summary_ru,
+                    json.dumps(phrases or [], ensure_ascii=False),
+                    json.dumps(quiz or [], ensure_ascii=False),
+                    hero_object_key, status, is_pinned,
+                ),
+            )
+
+
+def set_world_news_status(news_date, status: str) -> None:
+    if not news_date or not status:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_world_news_daily SET status = %s, updated_at = NOW() WHERE news_date = %s;",
+                (status, news_date),
+            )
+
+
+def set_world_news_pinned(news_date, pinned: bool) -> None:
+    if not news_date:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_world_news_daily SET is_pinned = %s, updated_at = NOW() WHERE news_date = %s;",
+                (bool(pinned), news_date),
+            )
+
+
+def set_world_news_hero_key(news_date, hero_object_key: str) -> None:
+    if not news_date:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_world_news_daily SET hero_object_key = %s, updated_at = NOW() WHERE news_date = %s;",
+                (hero_object_key, news_date),
+            )
 
 
 def _youtube_watch_state_row_to_dict(row) -> dict | None:
