@@ -14866,6 +14866,21 @@ body {
    interactive games + word-breakdown (white cards, cool borders, blue accent,
    der/die/das colors, serif headword). Explicit values so it reads correctly
    regardless of the surrounding page theme. */
+
+/* While the news view is open, paint the WHOLE background the interactive cool
+   grey-blue (+ a soft top blue glow) instead of the app's warm cream — so the
+   environment matches the games, not just the cards. Toggled via body.worldnews-active. */
+body.worldnews-active {
+  background:
+    radial-gradient(circle at 50% -10%, rgba(37, 99, 235, 0.16), transparent 55%),
+    radial-gradient(circle at 85% 8%, rgba(124, 92, 255, 0.10), transparent 50%),
+    #e9edf3 !important;
+}
+/* The warm cream lives on these shells — make them see-through so the cool body shows. */
+body.worldnews-active .webapp-shell,
+body.worldnews-active .webapp-main {
+  background: transparent !important;
+}
 .worldnews-stepper,
 .worldnews-deck,
 .worldnews-quiz {

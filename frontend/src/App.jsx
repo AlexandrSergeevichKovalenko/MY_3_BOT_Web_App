@@ -28375,6 +28375,15 @@ function AppInner() {
     fetchTranscript();
   }, [youtubeNewsMode, youtubeId, initData, youtubeTranscriptLoading, youtubeTranscript]);
 
+  // Paint the whole page the interactive cool background (not the app's warm cream) while the
+  // news view is open, so the environment matches the games/breakdown — not just the cards.
+  useEffect(() => {
+    if (typeof document === 'undefined' || !document.body) return undefined;
+    const active = Boolean(youtubeNewsMode && youtubeSectionVisible);
+    document.body.classList.toggle('worldnews-active', active);
+    return () => { document.body.classList.remove('worldnews-active'); };
+  }, [youtubeNewsMode, youtubeSectionVisible]);
+
   // «Тест» deep-link (?startapp=worldnews_quiz): once the quiz has rendered, scroll to it.
   useEffect(() => {
     if (!worldNewsScrollToQuiz || !worldNewsData?.available) return undefined;
