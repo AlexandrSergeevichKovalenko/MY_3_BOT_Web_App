@@ -53,7 +53,9 @@ def _channel_ids() -> list[str]:
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
-WORLD_NEWS_MAX_SECONDS = _env_int("WORLD_NEWS_MAX_SECONDS", 360)   # ≤ 6 min
+WORLD_NEWS_MAX_SECONDS = _env_int("WORLD_NEWS_MAX_SECONDS", 900)   # ≤ 15 min (DW «Langsam
+# gesprochene Nachrichten» — the most reliable learner-news source with real German subtitles —
+# runs ~9–10 min, so a 6-min cap silently excluded it. Env-overridable if you want it shorter.
 WORLD_NEWS_MIN_SECONDS = _env_int("WORLD_NEWS_MIN_SECONDS", 40)
 WORLD_NEWS_CANDIDATES = _env_int("WORLD_NEWS_CANDIDATES", 12)
 WORLD_NEWS_MIN_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MIN_TRANSCRIPT_CHARS", 300)
@@ -214,24 +216,28 @@ def _gather_candidates() -> list[dict]:
     return candidates[: max(1, WORLD_NEWS_CANDIDATES)]
 
 
-def _pick_video_with_transcript(*, manual_url: str | None = None) -> dict | None:
-    """Return {video_id, video_url, title, channel_title, duration_seconds, lang, text, items}
-    for the newest candidate that fits the length cap and has a real German transcript.
-    None if nothing qualifies."""
+def _pick_video_with_transcript(*, manual_url: str | None = None) -> tuple[dict | None, dict]:
+    """Return ({video_id, video_url, title, channel_title, duration_seconds, lang, text, items}
+    or None, diag). `diag` counts why candidates were rejected (dur / no-captions / too-short)
+    so a failure is diagnosable from the error message instead of a generic 'not found'."""
+    diag: dict = {"candidates": 0, "dur_skipped": 0, "no_transcript": 0, "short_transcript": 0,
+                  "manual": bool(manual_url), "has_yt_key": bool(_youtube_api_key())}
     if manual_url:
         vid = _extract_video_id(manual_url)
         if not vid:
-            logger.warning("world_news: could not parse video id from %r", manual_url)
-            return None
+            diag["reason"] = "bad_url"
+            return None, diag
         details = _yt_api_video_details([vid]).get(vid, {})
         data = _fetch_transcript(vid)
         if not data:
-            logger.warning("world_news: manual video %s has no transcript", vid)
-            return None
+            diag["no_transcript"] = 1
+            diag["reason"] = "manual_no_transcript"
+            return None, diag
         text = _transcript_to_text(data.get("items") or [])
         if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
-            logger.warning("world_news: manual video %s transcript too short", vid)
-            return None
+            diag["short_transcript"] = 1
+            diag["reason"] = "manual_transcript_too_short"
+            return None, diag
         return {
             "video_id": vid,
             "video_url": f"https://www.youtube.com/watch?v={vid}",
@@ -241,24 +247,29 @@ def _pick_video_with_transcript(*, manual_url: str | None = None) -> dict | None
             "lang": data.get("language") or "de",
             "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
             "items": data.get("items") or [],
-        }
+        }, diag
 
     candidates = _gather_candidates()
+    diag["candidates"] = len(candidates)
     if not candidates:
-        logger.warning("world_news: no candidates from YouTube search")
-        return None
+        diag["reason"] = "no_candidates" if diag["has_yt_key"] else "no_youtube_api_key"
+        logger.warning("world_news: no candidates from YouTube search (diag=%s)", diag)
+        return None, diag
     details_map = _yt_api_video_details([c["video_id"] for c in candidates])
     for cand in candidates:
         vid = cand["video_id"]
         det = details_map.get(vid, {})
         dur = det.get("duration_seconds") or 0
         if dur and not (WORLD_NEWS_MIN_SECONDS <= dur <= WORLD_NEWS_MAX_SECONDS):
+            diag["dur_skipped"] += 1
             continue
         data = _fetch_transcript(vid)
         if not data:
+            diag["no_transcript"] += 1
             continue
         text = _transcript_to_text(data.get("items") or [])
         if len(text) < WORLD_NEWS_MIN_TRANSCRIPT_CHARS:
+            diag["short_transcript"] += 1
             continue
         return {
             "video_id": vid,
@@ -269,9 +280,10 @@ def _pick_video_with_transcript(*, manual_url: str | None = None) -> dict | None
             "lang": data.get("language") or "de",
             "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
             "items": data.get("items") or [],
-        }
-    logger.warning("world_news: no candidate passed duration+transcript checks")
-    return None
+        }, diag
+    diag["reason"] = "all_candidates_rejected"
+    logger.warning("world_news: no candidate passed duration+transcript checks (diag=%s)", diag)
+    return None, diag
 
 
 # ── LLM pack (summary + phrases + 4 MC questions) ───────────────────────────────
@@ -421,9 +433,9 @@ def prepare_world_news(
 
     date_str = (news_date or _today_str()).strip()
 
-    picked = _pick_video_with_transcript(manual_url=manual_url)
+    picked, diag = _pick_video_with_transcript(manual_url=manual_url)
     if not picked:
-        raise RuntimeError("world_news: no suitable video with transcript found")
+        raise RuntimeError(f"world_news: no suitable video with transcript found — diag={diag}")
 
     pack = _validate_and_normalize_pack(_call_llm(picked["title"], picked["text"]))
 
