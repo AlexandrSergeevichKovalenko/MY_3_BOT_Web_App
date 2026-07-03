@@ -28542,14 +28542,32 @@ function AppInner() {
       document.body.appendChild(script);
     });
 
+    let cancelled = false;
     ensureApiReady().then(() => {
+      // A stale init for a previously-selected video must not run after a newer pick superseded
+      // it — otherwise it recreates the player with the old id (the "old video stays" symptom).
+      if (cancelled) return;
       if (!window.YT || !window.YT.Player) return;
+      // Stable React-owned host. We must NOT let the YT API replace this node directly: YT swaps
+      // the target element for an <iframe>, which detaches it from React's tree, and a later
+      // destroy() then leaves getElementById('youtube-player') returning null — so the next
+      // player never attaches and the OLD video keeps showing until React re-commits on the
+      // second pick. Instead we hand YT a throwaway inner child on every (re)creation, so React
+      // and YT never fight over the same DOM node.
       const hostNode = document.getElementById('youtube-player');
       if (!hostNode) return;
       if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
-        youtubePlayerRef.current.destroy();
+        try { youtubePlayerRef.current.destroy(); } catch (_e) { /* stale player */ }
+        youtubePlayerRef.current = null;
       }
-      youtubePlayerRef.current = new window.YT.Player(hostNode, {
+      // Wipe any orphaned iframe from a previous player, then mount a fresh throwaway target.
+      hostNode.innerHTML = '';
+      const mountNode = document.createElement('div');
+      hostNode.appendChild(mountNode);
+      // Show the correct new video immediately via the lightweight fallback iframe while the
+      // full API player boots (onReady flips this back to true).
+      setYoutubePlayerReady(false);
+      youtubePlayerRef.current = new window.YT.Player(mountNode, {
         videoId: youtubeId,
         playerVars: {
           rel: 0,
@@ -28626,6 +28644,7 @@ function AppInner() {
     });
 
     return () => {
+      cancelled = true;
       if (youtubeTimeIntervalRef.current) {
         clearInterval(youtubeTimeIntervalRef.current);
         youtubeTimeIntervalRef.current = null;
