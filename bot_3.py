@@ -3264,8 +3264,8 @@ MIN_DRIP_INTERVAL_MINUTES = max(1, int((os.getenv("MIN_DRIP_INTERVAL_MINUTES") o
 # tail. This mirrors the live-path `_tiered_slot_position` "mandatory-to-the-front"
 # guarantee (see MANDATORY_DELIVERY_KINDS): the drip picks _DRIP_KINDS[count % N], so
 # the first `count`s of the day map to these. Non-mandatory variety follows.
-_DRIP_KINDS = ["numdict", "artikel_sprint", "adjektiv_sprint", "listening", "artikel_learn",
-               "aufgabe", "anagram", "rebus", "crossword"]
+_DRIP_KINDS = ["numdict", "artikel_sprint", "adjektiv_sprint", "wofrage_sprint", "listening",
+               "artikel_learn", "aufgabe", "anagram", "rebus", "crossword"]
 # Drip-only dedup discriminators for the daily-singleton reminder kinds (one shared
 # set/day). Distinct from the live slot hours so they never collide, and distinct
 # from each other so artikel_sprint vs artikel_learn (same dispatch table) dedup
@@ -3273,6 +3273,7 @@ _DRIP_KINDS = ["numdict", "artikel_sprint", "adjektiv_sprint", "listening", "art
 _DRIP_AS_HOUR = 1   # artikel_sprint
 _DRIP_AL_HOUR = 2   # artikel_learn (reuses the article-sprint dispatch table)
 _DRIP_AD_HOUR = 1   # adjektiv_sprint (separate table)
+_DRIP_WF_HOUR = 1   # wofrage_sprint (separate table)
 _DRIP_AUFGABE_FORMATS = ["cloze", "satzbau", "synonym", "antonym", "transform",
                          "error", "wortbildung", "wortgruppe"]
 
@@ -3463,6 +3464,30 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         return await _drip_emit_reminder(context, uid, did, kb=kb, caption=caption,
             poster_fn=render_adjektiv_card, inbox_kind="ad", deeplink="ans_ad_0",
             title="🔠 Adjektiv Sprint", held=held, msgid_setter=update_adjektiv_sprint_dispatch_message_id)
+    if kind == "wofrage_sprint":
+        if not _wofrage_sprint_enabled():
+            return False
+        from backend.database import (
+            get_or_create_daily_wofrage_set, create_wofrage_dispatch,
+            update_wofrage_dispatch_message_id,
+        )
+        set_id = await asyncio.to_thread(get_or_create_daily_wofrage_set, slot_date, _DRIP_WF_HOUR)
+        if not set_id:
+            return False
+        did = await asyncio.to_thread(create_wofrage_dispatch, set_id=set_id,
+                                      slot_date=slot_date, slot_hour=_DRIP_WF_HOUR, chat_id=uid)
+        if did is None:
+            return False
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❓ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
+            [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
+        ])
+        caption = ("❓ *Wo-Frage Sprint*\n\n10 вопросов · по 8 секунд — выбери правильное вопросительное "
+                   "слово (Worauf? Womit? Woran?)!\n🏆 В конце — разбор с правилом «вещь vs человек».")
+        from backend.interactive_card import render_wofrage_card
+        return await _drip_emit_reminder(context, uid, did, kb=kb, caption=caption,
+            poster_fn=render_wofrage_card, inbox_kind="wf", deeplink="ans_wf_0",
+            title="❓ Wo-Frage Sprint", held=held, msgid_setter=update_wofrage_dispatch_message_id)
     if kind == "artikel_learn":
         if not _artikel_sprint_enabled():
             return False
