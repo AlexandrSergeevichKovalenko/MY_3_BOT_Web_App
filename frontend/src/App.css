@@ -14954,6 +14954,98 @@ body {
   cursor: not-allowed;
 }
 
+/* News-mode quiz: 4 MC questions with immediate correct/wrong feedback + explanation. */
+.worldnews-quiz {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid var(--yt-border-default);
+  background: var(--yt-bg-card);
+  display: grid;
+  gap: 12px;
+}
+.worldnews-quiz-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.worldnews-quiz-head h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--yt-text-primary);
+}
+.worldnews-quiz-score {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--yt-text-secondary);
+}
+.worldnews-quiz-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--yt-border-default);
+  background: var(--yt-bg-card-alt);
+}
+.worldnews-quiz-question {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--yt-text-primary);
+}
+.worldnews-quiz-options {
+  display: grid;
+  gap: 6px;
+}
+.worldnews-quiz-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  min-height: 42px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--yt-border-default);
+  background: var(--yt-bg-card);
+  color: var(--yt-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.worldnews-quiz-option:hover:not(:disabled) {
+  background: var(--yt-bg-hover);
+}
+.worldnews-quiz-option:disabled {
+  cursor: default;
+}
+.worldnews-quiz-option.is-correct {
+  border-color: #22c55e;
+  background: rgba(34, 197, 94, 0.16);
+}
+.worldnews-quiz-option.is-wrong {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.16);
+}
+.worldnews-quiz-option-mark {
+  flex: 0 0 auto;
+  width: 18px;
+  text-align: center;
+}
+.worldnews-quiz-option-text {
+  min-width: 0;
+}
+.worldnews-quiz-explain {
+  font-size: 13px;
+  color: var(--yt-text-secondary);
+  padding: 8px 10px;
+  border-left: 3px solid var(--yt-action-primary);
+  background: var(--yt-bg-card);
+  border-radius: 0 8px 8px 0;
+}
+
 .webapp-video.youtube-player-first .webapp-video-form.youtube-setup-form {
   background: var(--yt-bg-card);
   border: 1px solid var(--yt-border-default);
