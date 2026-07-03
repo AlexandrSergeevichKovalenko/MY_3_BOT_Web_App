@@ -5318,6 +5318,11 @@ function AppInner() {
   const [dictionaryShareLoading, setDictionaryShareLoading] = useState(false);
   const [youtubeInput, setYoutubeInput] = useState('');
   const [youtubeId, setYoutubeId] = useState('');
+  // World-news «Начни день с коротких новостей»: the YouTube section runs in a stripped
+  // "news mode" (no catalog/search — just the day's video + subtitles + phrase list + quiz).
+  const [youtubeNewsMode, setYoutubeNewsMode] = useState(false);
+  const [worldNewsData, setWorldNewsData] = useState(null); // null=unloaded, {available:false}=none
+  const [worldNewsLoading, setWorldNewsLoading] = useState(false);
   const [youtubeError, setYoutubeError] = useState('');
   const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
@@ -6202,6 +6207,7 @@ function AppInner() {
   const youtubeInputDraftRef = useRef('');
   const youtubeTranscriptVideoIdRef = useRef('');
   const youtubeResumeAppliedForVideoRef = useRef('');
+  const youtubeNewsTranscriptRequestedRef = useRef(''); // news mode: auto-load subs once per video
   const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeResumeLastSyncedSecondRef = useRef(-1);
   const youtubePhraseGestureRef = useRef(null);
@@ -17722,6 +17728,15 @@ function AppInner() {
       setSelectedSections(new Set(['guide']));
       const t = setTimeout(() => { scrollToRef(guideRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
+    } else if (startParam === 'worldnews' || startParam.startsWith('worldnews')) {
+      // «Начни день с коротких новостей» → open the YouTube section in news mode. The actual
+      // video + phrases + quiz are fetched by the worldNews loader effect once initData is ready.
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setYoutubeNewsMode(true);
+      setSelectedSections(new Set(['youtube']));
+      const t = setTimeout(() => { scrollToRef(youtubeRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
     }
     if (window.location.pathname === '/webapp/review') {
       setFlashcardsVisible(true);
@@ -28260,6 +28275,49 @@ function AppInner() {
     }
   }, [youtubeId, initData]);
 
+  // World-news loader: once we're in news mode and initData is ready, fetch the day's entry and
+  // feed its video into the normal YouTube pipeline (setYoutubeInput → youtubeId → player).
+  useEffect(() => {
+    if (!youtubeNewsMode || !initData) return undefined;
+    if (worldNewsData != null || worldNewsLoading) return undefined;
+    let cancelled = false;
+    setWorldNewsLoading(true);
+    (async () => {
+      try {
+        const response = await fetch('/api/webapp/worldnews/today', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData }),
+        });
+        const data = response.ok ? await response.json() : null;
+        if (cancelled) return;
+        if (data && data.available) {
+          setWorldNewsData(data);
+          const url = String(data.video_url || '').trim()
+            || (data.video_id ? `https://youtu.be/${data.video_id}` : '');
+          if (url) setYoutubeInput(url);
+        } else {
+          setWorldNewsData({ available: false });
+        }
+      } catch (_error) {
+        if (!cancelled) setWorldNewsData({ available: false });
+      } finally {
+        if (!cancelled) setWorldNewsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [youtubeNewsMode, initData, worldNewsData, worldNewsLoading]);
+
+  // In news mode, auto-load subtitles once the video id resolves — the user shouldn't have to
+  // tap «Загрузить субтитры» for the curated daily video. Guarded per-video so it fires once.
+  useEffect(() => {
+    if (!youtubeNewsMode || !youtubeId || !initData) return;
+    if (youtubeTranscriptLoading || youtubeTranscript.length > 0) return;
+    if (youtubeNewsTranscriptRequestedRef.current === youtubeId) return;
+    youtubeNewsTranscriptRequestedRef.current = youtubeId;
+    fetchTranscript();
+  }, [youtubeNewsMode, youtubeId, initData, youtubeTranscriptLoading, youtubeTranscript]);
+
   useEffect(() => {
     if (!youtubeSectionVisible) {
       setYoutubeSettingsOpen(false);
@@ -31962,7 +32020,7 @@ function AppInner() {
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
                           <div className="youtube-desktop-mainline">
                             <div className="youtube-player-first-title-wrap">
-                              <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
+                              <h3>{youtubeNewsMode ? tr('Новость дня', 'News des Tages') : tr('Видео YouTube', 'YouTube Video')}</h3>
                               {youtubeTaskDone && (
                                 <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
                               )}
@@ -31987,24 +32045,28 @@ function AppInner() {
                         </div>
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-controls">
                           <div className="youtube-desktop-control-group youtube-desktop-control-group-source">
-                            <button
-                              type="button"
-                              className="youtube-command-action"
-                              onClick={() => setYoutubeForceShowPanel(true)}
-                            >
-                              {tr('Сменить видео', 'Change video')}
-                            </button>
-                            <button
-                              type="button"
-                              className="youtube-command-action"
-                              onClick={() => {
-                                setYoutubeForceShowPanel(true);
-                                searchYoutubeVideos();
-                              }}
-                              disabled={youtubeSearchLoading}
-                            >
-                              {youtubeSearchLoading ? tr('Ищем...', 'Searching...') : tr('Искать в YouTube', 'Search on YouTube')}
-                            </button>
+                            {!youtubeNewsMode && (
+                              <button
+                                type="button"
+                                className="youtube-command-action"
+                                onClick={() => setYoutubeForceShowPanel(true)}
+                              >
+                                {tr('Сменить видео', 'Change video')}
+                              </button>
+                            )}
+                            {!youtubeNewsMode && (
+                              <button
+                                type="button"
+                                className="youtube-command-action"
+                                onClick={() => {
+                                  setYoutubeForceShowPanel(true);
+                                  searchYoutubeVideos();
+                                }}
+                                disabled={youtubeSearchLoading}
+                              >
+                                {youtubeSearchLoading ? tr('Ищем...', 'Searching...') : tr('Искать в YouTube', 'Search on YouTube')}
+                              </button>
+                            )}
                             {canManageYoutubeTranscripts && (
                               <button
                                 type="button"
@@ -32293,6 +32355,16 @@ function AppInner() {
                       </div>
                     </div>
                     {(youtubeOverlayEnabled || !youtubeSubtitlesReady) && renderYoutubeSentenceJumpBar()}
+                    {youtubeNewsMode && worldNewsLoading && !worldNewsData && (
+                      <div className="youtube-recommendation-note">{tr('Загружаем новость дня…', 'Nachricht des Tages wird geladen…')}</div>
+                    )}
+                    {youtubeNewsMode && worldNewsData && worldNewsData.available === false && (
+                      <div className="youtube-empty-state">
+                        <div className="youtube-empty-state-badge">{tr('Новость дня', 'News des Tages')}</div>
+                        <h4>{tr('На сегодня новостей пока нет', 'Heute noch keine News')}</h4>
+                        <p>{tr('Загляни утром — свежий ролик появится здесь.', 'Schau morgens vorbei — das frische Video erscheint hier.')}</p>
+                      </div>
+                    )}
                     {youtubeRecommendationLoading && (
                       <div className="youtube-recommendation-note">{youtubeRecommendationStatusLabel}</div>
                     )}
@@ -32308,7 +32380,7 @@ function AppInner() {
                     {youtubeTranscriptError && (
                       renderYoutubeTranscriptNotice(youtubeTranscriptError) || <div className="webapp-error">{youtubeTranscriptError}</div>
                     )}
-                    {youtubeSearchExpanded && (
+                    {youtubeSearchExpanded && !youtubeNewsMode && (
                       <div className="webapp-video-form youtube-setup-form">
                         <YoutubeQueryInputField
                           value={youtubeInput}
