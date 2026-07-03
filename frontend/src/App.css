@@ -14870,18 +14870,22 @@ body {
 /* While the news view is open, paint the WHOLE background the interactive cool
    grey-blue (+ a soft top blue glow) instead of the app's warm cream — so the
    environment matches the games, not just the cards. Toggled via body.worldnews-active. */
-body.worldnews-active {
+body.worldnews-active,
+.webapp-page.is-worldnews-page {
   background:
     radial-gradient(circle at 50% -10%, rgba(37, 99, 235, 0.16), transparent 55%),
     radial-gradient(circle at 85% 8%, rgba(124, 92, 255, 0.10), transparent 50%),
     #e9edf3 !important;
 }
-/* The warm cream lives on these shells — make them see-through so the cool body shows. */
+/* The warm cream lives on these shells — make them see-through so the cool bg shows. */
+.webapp-page.is-worldnews-page .webapp-shell,
+.webapp-page.is-worldnews-page .webapp-main,
 body.worldnews-active .webapp-shell,
 body.worldnews-active .webapp-main {
   background: transparent !important;
 }
 /* No «На главную» in the news view — the stepper is the only navigation we need. */
+.webapp-page.is-worldnews-page .webapp-topbar,
 body.worldnews-active .webapp-topbar {
   display: none !important;
 }
@@ -14906,12 +14910,14 @@ body.worldnews-active .webapp-topbar {
   color: #0f172a;
 }
 
-/* Nicer, more readable subtitle typography (serif, roomy) — pleasant to read. */
+/* Clean, highly readable subtitle typography — the neutral system sans that reading /
+   subtitle apps use (crisp on iOS), generous size + line-height. */
 .youtube-player-first.is-worldnews .webapp-subtitles-list p {
-  font-family: Georgia, "Noto Serif", "Times New Roman", serif;
-  font-size: 18px;
-  line-height: 1.72;
-  color: #23303f;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+  font-size: 18.5px;
+  font-weight: 500;
+  line-height: 1.55;
+  color: #1e2733;
   letter-spacing: 0.1px;
 }
 .youtube-player-first.is-worldnews .webapp-subtitles-list p.is-active {
@@ -14920,26 +14926,32 @@ body.worldnews-active .webapp-topbar {
   border-radius: 10px;
 }
 
-/* Clean single RU-subtitle toggle (replaces the removed command bar). */
-.worldnews-subbar {
-  display: flex;
-  justify-content: center;
-  margin: 2px 0 6px;
-}
-.worldnews-sub-toggle {
-  min-height: 44px;
-  padding: 0 22px;
-  border-radius: 999px;
+/* Subtitle control buttons: Оригинал (left) + Русский (right) — rounded rectangles. */
+.worldnews-sub-btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 11px;
   border: 1.5px solid #2563eb;
   background: #ffffff;
   color: #2563eb;
-  font-size: 14.5px;
+  font-size: 13.5px;
   font-weight: 700;
   cursor: pointer;
+  white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease;
 }
-.worldnews-sub-toggle.is-on { background: #2563eb; color: #ffffff; }
-.worldnews-sub-toggle:disabled { opacity: 0.5; cursor: default; }
+.worldnews-sub-btn.is-on { background: #2563eb; color: #ffffff; }
+.youtube-subtitles-card-head-spacer { display: flex; justify-content: flex-end; }
+/* When original subtitles are toggled off, hide the DE lines but keep the control row. */
+.youtube-subtitles-panel.wn-hide-de .youtube-subtitles-block-de .webapp-subtitles {
+  display: none;
+}
+/* Recolor the tan playback/nav controls to the cool scheme in news mode. */
+.youtube-player-first.is-worldnews .youtube-subtitles-card-nav button {
+  background: #f1f4f9 !important;
+  border: 1px solid #dfe4ec !important;
+  color: #2563eb !important;
+}
 .worldnews-stepper,
 .worldnews-deck,
 .worldnews-quiz {

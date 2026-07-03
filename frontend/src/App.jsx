@@ -5331,6 +5331,7 @@ function AppInner() {
   const [worldNewsCardIndex, setWorldNewsCardIndex] = useState(0); // current phrase card in the deck
   const [worldNewsQuizIndex, setWorldNewsQuizIndex] = useState(0); // current quiz question
   const [worldNewsVideoEnded, setWorldNewsVideoEnded] = useState(false); // reveals the quiz CTA
+  const [worldNewsShowOriginal, setWorldNewsShowOriginal] = useState(true); // DE subtitles toggle (news mode)
   const [youtubeError, setYoutubeError] = useState('');
   const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
@@ -30541,7 +30542,7 @@ function AppInner() {
     return (
       <div
         ref={webappPageRef}
-        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${isWebAppMode && !flashcardsOnly && !(readerHasContent && readerImmersive) && !(isHomeScreen && !activeHomeSubsectionKey) && !dictionarySectionVisible && !youtubeWatchFocusMode ? 'is-sticky-topbar' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
+        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${youtubeNewsMode && youtubeSectionVisible ? 'is-worldnews-page' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${isWebAppMode && !flashcardsOnly && !(readerHasContent && readerImmersive) && !(isHomeScreen && !activeHomeSubsectionKey) && !dictionarySectionVisible && !youtubeWatchFocusMode ? 'is-sticky-topbar' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
         data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
       >
         <pre id="app-perf-report" style={{ display: 'none' }} />
@@ -32182,20 +32183,6 @@ function AppInner() {
                     )}
                     {(!youtubeNewsMode || worldNewsStage === 'video') && (
                     <>
-                    {youtubeNewsMode && (
-                      <div className="worldnews-subbar">
-                        <button
-                          type="button"
-                          className={`worldnews-sub-toggle ${youtubeTranslationEnabled ? 'is-on' : ''}`}
-                          onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
-                          disabled={!youtubeSubtitlesReady}
-                        >
-                          {youtubeTranslationEnabled
-                            ? tr('🇷🇺 Русский перевод: вкл', '🇷🇺 RU-Übersetzung: an')
-                            : tr('🇷🇺 Показать перевод', '🇷🇺 Übersetzung zeigen')}
-                        </button>
-                      </div>
-                    )}
                     <div className="webapp-local-section-head youtube-player-first-head">
                       <div className="youtube-desktop-command-bar">
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
@@ -32536,17 +32523,6 @@ function AppInner() {
                       </div>
                     </div>
                     {(youtubeOverlayEnabled || !youtubeSubtitlesReady) && renderYoutubeSentenceJumpBar()}
-                    {youtubeNewsMode && worldNewsData?.available && worldNewsQuiz.length > 0 && (
-                      <button
-                        type="button"
-                        className={`worldnews-next-cta worldnews-to-quiz ${worldNewsVideoEnded ? 'is-ready' : 'is-idle'}`}
-                        onClick={() => worldNewsGoToStage('quiz')}
-                      >
-                        {worldNewsVideoEnded
-                          ? tr('🧩 Проверить знания', '🧩 Wissen testen')
-                          : tr('Досмотри — потом тест 🧩', 'Zu Ende schauen — dann Quiz 🧩')}
-                      </button>
-                    )}
                     </>
                     )}
                     {youtubeNewsMode && worldNewsLoading && !worldNewsData && (
@@ -32637,8 +32613,12 @@ function AppInner() {
                             <div className="worldnews-quiz-result">
                               <div className="worldnews-quiz-result-score">{score} / {total}</div>
                               <div className="worldnews-quiz-result-label">{label}</div>
-                              <button type="button" className="worldnews-next-cta" onClick={() => worldNewsGoToStage('words')}>
-                                {tr('🔖 Вернуться к словам', '🔖 Zurück zu den Wörtern')}
+                              <button
+                                type="button"
+                                className="worldnews-next-cta"
+                                onClick={() => { try { telegramApp?.close?.(); } catch (_e) { /* noop */ } }}
+                              >
+                                {tr('Закрыть', 'Schließen')}
                               </button>
                             </div>
                           </div>
@@ -32768,23 +32748,45 @@ function AppInner() {
                       </div>
                     )}
                     {(!youtubeNewsMode || worldNewsStage === 'video') && !youtubeOverlayEnabled && youtubeSubtitlesReady && (
-                      <div className="youtube-subtitles-card youtube-subtitles-panel">
-                        <div className="youtube-subtitles-panel-head">
-                          <div className="youtube-subtitles-panel-copy">
-                            <strong>{tr('Субтитры', 'Subtitles')}</strong>
-                            <span>{String(languageProfile?.learning_language || 'de').toUpperCase()} · {tr('всегда ON', 'always ON')}</span>
+                      <div className={`youtube-subtitles-card youtube-subtitles-panel ${youtubeNewsMode && !worldNewsShowOriginal ? 'wn-hide-de' : ''}`}>
+                        {!youtubeNewsMode && (
+                          <div className="youtube-subtitles-panel-head">
+                            <div className="youtube-subtitles-panel-copy">
+                              <strong>{tr('Субтитры', 'Subtitles')}</strong>
+                              <span>{String(languageProfile?.learning_language || 'de').toUpperCase()} · {tr('всегда ON', 'always ON')}</span>
+                            </div>
                           </div>
-                        </div>
+                        )}
                         <div className={`youtube-subtitles-panel-content ${youtubeTranslationEnabled ? 'is-dual' : 'is-single'}`}>
                           <div className="youtube-subtitles-block youtube-subtitles-block-de">
                             <div className="youtube-subtitles-card-head youtube-subtitles-card-head-with-nav">
                               <div className="youtube-subtitles-card-badge">
-                                <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                                {youtubeNewsMode ? (
+                                  <button
+                                    type="button"
+                                    className={`worldnews-sub-btn ${worldNewsShowOriginal ? 'is-on' : ''}`}
+                                    onClick={() => setWorldNewsShowOriginal((v) => !v)}
+                                  >
+                                    {tr('Оригинал', 'Original')}
+                                  </button>
+                                ) : (
+                                  <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
+                                )}
                               </div>
                               <div className="youtube-subtitles-card-nav">
                                 {renderYoutubeSentenceJumpBar({ inline: true })}
                               </div>
-                              <div className="youtube-subtitles-card-head-spacer" aria-hidden="true" />
+                              <div className="youtube-subtitles-card-head-spacer">
+                                {youtubeNewsMode && (
+                                  <button
+                                    type="button"
+                                    className={`worldnews-sub-btn ${youtubeTranslationEnabled ? 'is-on' : ''}`}
+                                    onClick={() => setYoutubeTranslationEnabled((v) => !v)}
+                                  >
+                                    {tr('Русский', 'Russisch')}
+                                  </button>
+                                )}
+                              </div>
                             </div>
                             <div className="webapp-subtitles" ref={youtubeSubtitlesRef}>
                               <div
