@@ -33302,8 +33302,8 @@ def main():
         print("📌 Добавляем задачу в scheduler...")
         # Prepare «Начни день с коротких новостей» before the morning send (heavy work
         # once/day; the 5:05 broadcast only reads the prepared row).
-        scheduler.add_job(lambda: submit_async(run_world_news_evening_prep,CallbackContext(application=application)),"cron", hour=20, minute=0)
-        scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30)
+        scheduler.add_job(lambda: submit_async(run_world_news_evening_prep,CallbackContext(application=application)),"cron", hour=20, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME)
+        scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME)
         scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
         scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
         scheduler.add_job(
