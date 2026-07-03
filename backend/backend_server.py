@@ -49445,6 +49445,22 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         script = build_full_script(enriched, source_lang=source_lang, target_lang=target_lang)
         return render_script_to_audio(script)
 
+    def _send_mistakes_card(*, target_chat_id: int, name: str, count: int, kind: str) -> None:
+        """Branded hero card sent right BEFORE the audio so this important morning
+        send isn't scrolled past. Best-effort — never blocks the audio delivery."""
+        try:
+            from backend.mistakes_audio_card import render_mistakes_audio_card
+            png = render_mistakes_audio_card(
+                name=name, date=target_date, count=int(count), kind=kind,
+            )
+            filename = f"mistakes_card_{kind}_{target_date.isoformat()}.png"
+            if int(target_chat_id) < 0:
+                _send_group_photo(png, filename, chat_id=int(target_chat_id))
+            else:
+                _send_private_photo(int(target_chat_id), png, filename)
+        except Exception:
+            logging.debug("mistakes-audio hero card failed", exc_info=True)
+
     sent_daily = 0
     sent_story = 0
     errors: list[str] = []
@@ -49471,6 +49487,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     pair_label = _pair_code(source_lang, target_lang)
                     filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
                     caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
+                    _send_mistakes_card(target_chat_id=int(chat_id), name=name, count=len(mistakes), kind="daily")
                     _send_group_audio(audio, filename, caption, chat_id=int(chat_id))
                     sent_daily += 1
                 except Exception as exc:
@@ -49485,6 +49502,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     pair_label = _pair_code(source_lang, target_lang)
                     filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
                     caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
+                    _send_mistakes_card(target_chat_id=int(chat_id), name=name, count=len(mistakes), kind="story")
                     _send_group_audio(audio, filename, caption, chat_id=int(chat_id))
                     sent_story += 1
                 except Exception as exc:
@@ -49500,6 +49518,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
                 caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
                 target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.daily")
+                _send_mistakes_card(target_chat_id=int(target_chat_id), name=name, count=len(mistakes), kind="daily")
                 if int(target_chat_id) < 0:
                     _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
                 else:
@@ -49518,6 +49537,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
                 caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
                 target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.story")
+                _send_mistakes_card(target_chat_id=int(target_chat_id), name=name, count=len(mistakes), kind="story")
                 if int(target_chat_id) < 0:
                     _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
                 else:
