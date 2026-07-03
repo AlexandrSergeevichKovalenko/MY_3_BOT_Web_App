@@ -6931,6 +6931,43 @@ def _world_news_preview_text(entry: dict, *, header: str) -> str:
     return "\n".join(lines)
 
 
+def _world_news_words_digest_body_text(items: list[dict]) -> str:
+    """Readable numbered list for the news-words multi-select digest — same shape as the
+    nightly Shortcut autosave подборка so the save UX is identical."""
+    n = len(items)
+    lines = [
+        f"🔤 <b>Слова из новости дня</b> — {n} шт.",
+        "Отметьте нужные галочками и нажмите «💾 Сохранить выбранные» — они уйдут в ваш словарь.",
+        "",
+    ]
+    for idx, it in enumerate(items):
+        de = str(it.get("canonical") or "").strip()
+        ru = str(it.get("translation") or "").strip()
+        lines.append(f"{idx + 1}. <b>{de}</b>" + (f" — {ru}" if ru else ""))
+    return "\n".join(lines)
+
+
+def _world_news_words_to_digest_items(phrases: list) -> list[dict]:
+    """Map prepared news phrases → autosave-digest item shape (canonical/translation), so the
+    existing asv_tog/asv_save handlers can save them with zero new save code. Nouns already come
+    with their article, so `de` is the canonical form; translation_ru is the Russian gloss."""
+    items: list[dict] = []
+    seen: set[str] = set()
+    for p in phrases or []:
+        if not isinstance(p, dict):
+            continue
+        de = str(p.get("de") or "").strip()
+        ru = str(p.get("translation_ru") or "").strip()
+        if not de or not ru:
+            continue
+        key = de.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({"canonical": de, "term": de, "translation": ru, "semantic_category": ""})
+    return items
+
+
 async def admin_world_news_command(update: Update, context: CallbackContext):
     """Prepare / preview today's «Начни день с коротких новостей».
     /worldnews             — auto-pick a fresh DW learner-news video and build the pack
@@ -6957,10 +6994,60 @@ async def admin_world_news_command(update: Update, context: CallbackContext):
         )
         return
     text = _world_news_preview_text(entry, header="✅ <b>Новость дня готова</b>")
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📌 Закрепить на сегодня", callback_data=f"wn_pin:{entry.get('news_date')}"),
-    ]])
+    kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     await status.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+def _world_news_preview_keyboard_rows(entry: dict) -> list[list[InlineKeyboardButton]]:
+    """Buttons under a news preview: pin + (if any words) «Сохранить слова в словарь»."""
+    date_str = str(entry.get("news_date") or "")
+    n_words = len(_world_news_words_to_digest_items(entry.get("phrases") or []))
+    rows = [[InlineKeyboardButton("📌 Закрепить на сегодня", callback_data=f"wn_pin:{date_str}")]]
+    if n_words:
+        rows.append([InlineKeyboardButton(
+            f"🔤 Сохранить слова в словарь ({n_words})", callback_data=f"wn_words:{date_str}"
+        )])
+    return rows
+
+
+async def handle_world_news_words_callback(update: Update, context: CallbackContext):
+    """Expand the day's news phrases into the same multi-select checkbox digest used by the
+    morning Shortcut autosave — reuses asv_tog/asv_save handlers to save into the dictionary."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    user_id = int(query.from_user.id)
+    date_str = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+    try:
+        from backend.database import get_world_news_for_date
+        entry = await asyncio.to_thread(get_world_news_for_date, date_str) if date_str else None
+    except Exception:
+        logging.exception("world news words: load failed date=%s", date_str)
+        entry = None
+    items = _world_news_words_to_digest_items((entry or {}).get("phrases") or [])
+    if not items:
+        await query.answer("Слов для сохранения нет.", show_alert=True)
+        return
+    selected = [True] * len(items)  # default all checked — user unchecks the few they don't want
+    digest_id = hashlib.sha1(f"wn:{user_id}:{date_str}".encode("utf-8")).hexdigest()[:12]
+    _autosave_write_digest(digest_id, {
+        "user_id": user_id,
+        "source_lang": "de",
+        "target_lang": "ru",
+        "items": items,
+        "selected": selected,
+    })
+    await query.answer()
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=_world_news_words_digest_body_text(items),
+            parse_mode="HTML",
+            reply_markup=_autosave_build_digest_keyboard(digest_id, items, selected),
+        )
+    except Exception:
+        logging.exception("world news words: digest send failed user_id=%s", user_id)
+        await query.answer("Не удалось открыть подборку.", show_alert=True)
 
 
 async def handle_world_news_pin_callback(update: Update, context: CallbackContext):
@@ -7017,9 +7104,7 @@ async def run_world_news_nightly(context: CallbackContext):
                 pass
         return
     text = _world_news_preview_text(entry, header="🌅 <b>Новость дня готова к утренней рассылке</b>")
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📌 Закрепить на сегодня", callback_data=f"wn_pin:{entry.get('news_date')}"),
-    ]])
+    kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
     for admin_id in admin_ids:
         try:
             await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=kb)
@@ -31880,6 +31965,7 @@ def main():
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
     application.add_handler(CallbackQueryHandler(handle_world_news_pin_callback, pattern=r"^wn_pin:"))
+    application.add_handler(CallbackQueryHandler(handle_world_news_words_callback, pattern=r"^wn_words:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
     application.add_handler(CallbackQueryHandler(handle_artikel_settheme_callback, pattern=r"^art_st:"))
