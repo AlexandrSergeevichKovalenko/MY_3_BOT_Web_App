@@ -8001,6 +8001,62 @@ async def admin_world_news_tomorrow_command(update: Update, context: CallbackCon
             )
 
 
+async def admin_world_news_show_command(update: Update, context: CallbackContext):
+    """Show the STORED news entry for a date WITHOUT regenerating — read-only viewer with the
+    same approve/regen keyboard. Fills the gap that /worldnews_card only covers today.
+    /worldnews_show            — tomorrow (default)
+    /worldnews_show tomorrow   — tomorrow
+    /worldnews_show today      — today
+    /worldnews_show 2026-07-05 — a specific date. Admin only."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    arg = (context.args[0].strip().lower() if context.args else "tomorrow")
+    if arg in ("tomorrow", "завтра"):
+        target = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif arg in ("today", "сегодня"):
+        target = datetime.now().strftime("%Y-%m-%d")
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", arg):
+        target = arg
+    else:
+        await message.reply_text(
+            "❓ Формат: /worldnews_show [today|tomorrow|ГГГГ-ММ-ДД]\n"
+            "Пример: /worldnews_show tomorrow"
+        )
+        return
+    try:
+        from backend.database import get_world_news_for_date
+        entry = await asyncio.to_thread(get_world_news_for_date, target)
+    except Exception:
+        logging.exception("worldnews_show: load failed date=%s", target)
+        entry = None
+    if not entry:
+        await message.reply_text(
+            f"❌ На {target} темы нет.\n"
+            + ("Подготовь: /worldnews_tomorrow" if arg in ("tomorrow", "завтра")
+               else "Подготовь: /worldnews")
+        )
+        return
+    text = _world_news_preview_text(entry, header=f"👁 <b>Новость на {target}</b>")
+    kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
+    try:
+        await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        logging.exception("worldnews_show: preview send failed date=%s", target)
+        title = entry.get("video_title") or "—"
+        pinned = "одобрена ✅" if entry.get("is_pinned") else "НЕ одобрена"
+        await message.reply_text(
+            f"👁 Новость на {target}: <b>{title}</b> ({pinned}).\n"
+            "Полное превью показать не удалось (слишком длинное/ошибка).",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+
+
 async def admin_world_news_image_command(update: Update, context: CallbackContext):
     """Generate the Smurf-reading-the-newspaper background for the world-news card via
     gpt-image-1 and store it in R2. Run once; the morning card then uses it (blue morning
@@ -33412,6 +33468,7 @@ def main():
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
     application.add_handler(CommandHandler("worldnews_approve", admin_world_news_approve_command))
     application.add_handler(CommandHandler("worldnews_tomorrow", admin_world_news_tomorrow_command))
+    application.add_handler(CommandHandler("worldnews_show", admin_world_news_show_command))
     application.add_handler(CommandHandler("describe_new", admin_describe_new_command))
     application.add_handler(CommandHandler("worldnews_send_now", admin_world_news_send_now_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))

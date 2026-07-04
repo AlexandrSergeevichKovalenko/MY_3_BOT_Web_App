@@ -641,6 +641,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "example": '/worldnews_tomorrow',
         },
         {
+            "cmd": '/worldnews_show',
+            "desc": 'Показывает СОХРАНЁННУЮ тему на дату без переформирования (read-only), с той же клавиатурой «✅ Одобрить»/«🔄 Переформировать». Закрывает пробел: /worldnews_card показывает только сегодня.',
+            "args": 'Необязательный аргумент: today | tomorrow | ГГГГ-ММ-ДД. Без аргумента — завтра.',
+            "example": '/worldnews_show tomorrow',
+        },
+        {
             "cmd": '/worldnews_send_now',
             "desc": 'Немедленно рассылает одобренную сегодняшнюю новость в группу и активным пользователям.',
             "args": 'нет аргументов',
