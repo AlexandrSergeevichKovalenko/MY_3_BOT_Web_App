@@ -123,6 +123,7 @@ from backend.admin_command_catalog import (
     register_discovered_topic as _register_discovered_admin_topic,
     render_topic,
     render_topics_overview,
+    set_db_descriptions as _set_admin_db_descriptions,
     split_for_telegram as _split_admin_catalog_text,
 )
 from backend.database import (
@@ -4634,6 +4635,15 @@ def sync_discovered_admin_commands(application) -> None:
         cataloged = _catalog_command_names()
     except Exception:
         cataloged = set()
+    # Load approved runtime descriptions from the DB and treat those commands as described
+    # (so they leave «🆕 Новые» and render under their curated topic).
+    try:
+        from backend.database import get_admin_command_descriptions
+        db_desc = get_admin_command_descriptions("approved")
+        _set_admin_db_descriptions(db_desc)
+        cataloged = set(cataloged) | set(db_desc.keys())
+    except Exception:
+        logging.debug("sync palette: DB descriptions load failed", exc_info=True)
     discovered: list[dict] = []
     seen: set[str] = set()
     try:
@@ -4739,6 +4749,215 @@ async def _dm_admins_uncatalogued_commands(context: CallbackContext) -> None:
                                            disable_web_page_preview=True)
         except Exception:
             logging.debug("palette-status DM failed for admin=%s", admin_id, exc_info=True)
+
+
+# ── /describe_new — LLM-generate RU descriptions for uncatalogued admin commands ──────
+# Admin taps «✅ Сохранить» on a generated draft → stored (DB, durable) as approved →
+# the command leaves «🆕 Новые» and renders under its topic in the palette. The catalog
+# file stays untouched (Railway FS is ephemeral, so descriptions live in the DB).
+_DESCRIBE_MAX = 8  # cap per /describe_new run to bound LLM cost/latency
+_DESCRIBE_PENDING: dict[int, str] = {}  # admin_id -> slug awaiting a custom typed description
+
+
+def _introspect_admin_command(application, slug: str) -> tuple[str, str]:
+    """(docstring, source) for the CommandHandler serving /slug, or ('','')."""
+    import inspect
+    for handlers in (getattr(application, "handlers", {}) or {}).values():
+        for h in handlers or []:
+            if not isinstance(h, CommandHandler):
+                continue
+            try:
+                names = [str(c) for c in (h.commands or [])]
+            except Exception:
+                names = []
+            if slug not in names:
+                continue
+            cb = getattr(h, "callback", None)
+            try:
+                doc = (inspect.getdoc(cb) or "").strip()
+            except Exception:
+                doc = ""
+            try:
+                src = inspect.getsource(cb)
+            except Exception:
+                src = ""
+            return doc, src
+    return "", ""
+
+
+def _describe_topic_title(tid: str) -> str:
+    for t, title, _ in ADMIN_COMMAND_TOPICS:
+        if t == tid:
+            return title
+    return tid
+
+
+def _render_describe_preview(slug: str, gen: dict) -> str:
+    return (
+        f"🆕 <b>/{html.escape(slug)}</b>\n\n"
+        f"<b>Описание:</b> {html.escape(gen.get('desc') or '')}\n"
+        f"<b>Аргументы:</b> {html.escape(gen.get('args') or 'нет аргументов')}\n"
+        f"<b>Пример:</b> <code>{html.escape(gen.get('example') or '/' + slug)}</code>\n"
+        f"<b>Тема:</b> {html.escape(_describe_topic_title(gen.get('topic_id') or 'misc'))}"
+    )
+
+
+def _describe_keyboard(slug: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Сохранить", callback_data=f"dnew_save:{slug}"),
+        InlineKeyboardButton("🔄 Другой вариант", callback_data=f"dnew_regen:{slug}"),
+        InlineKeyboardButton("✏️ Своё", callback_data=f"dnew_edit:{slug}"),
+    ]])
+
+
+async def admin_describe_new_command(update: Update, context: CallbackContext) -> None:
+    """Generate RU descriptions (LLM) for admin commands still missing from the palette
+    catalog and send each as a draft with «Сохранить / Другой вариант / Своё» buttons.
+    /describe_new — admin only."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    await asyncio.to_thread(sync_discovered_admin_commands, context.application)
+    cmds = list(_UNCATALOGUED_ADMIN_COMMANDS)
+    if not cmds:
+        await message.reply_text("✅ Все админ-команды уже описаны — новых нет.")
+        return
+    total = len(cmds)
+    batch = cmds[:_DESCRIBE_MAX]
+    note = f"🤖 Генерирую описания для {len(batch)} команд…"
+    if total > _DESCRIBE_MAX:
+        note += f"\n(показаны первые {_DESCRIBE_MAX} из {total}; повтори /describe_new для остальных)"
+    await message.reply_text(note)
+    topics = [(tid, title) for tid, title, _ in ADMIN_COMMAND_TOPICS]
+    from backend.admin_command_describer import generate_description
+    from backend.database import upsert_admin_command_desc
+    for c in batch:
+        slug = str(c.get("cmd") or "").lstrip("/").strip()
+        if not slug:
+            continue
+        doc, src = _introspect_admin_command(context.application, slug)
+        try:
+            gen = await asyncio.to_thread(generate_description, slug, doc, src, topics)
+        except Exception as exc:
+            await message.reply_text(f"⚠️ /{slug}: не удалось сгенерировать описание ({exc})")
+            continue
+        try:
+            await asyncio.to_thread(
+                upsert_admin_command_desc, slug, descr=gen["desc"], args=gen["args"],
+                example=gen["example"], topic_id=gen["topic_id"], status="draft",
+            )
+        except Exception:
+            logging.debug("describe_new: draft upsert failed for /%s", slug, exc_info=True)
+        await message.reply_text(
+            _render_describe_preview(slug, gen), parse_mode="HTML",
+            reply_markup=_describe_keyboard(slug), disable_web_page_preview=True,
+        )
+
+
+async def handle_describe_new_callback(update: Update, context: CallbackContext) -> None:
+    """Buttons under a /describe_new draft: save / regenerate / type your own."""
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if not _is_admin_user(user.id):
+        await query.answer("⛔️ Только для админа", show_alert=True)
+        return
+    data = str(query.data or "")
+    try:
+        action, slug = data.split(":", 1)
+    except ValueError:
+        await query.answer()
+        return
+    slug = slug.strip()
+    from backend.database import (
+        get_admin_command_desc, set_admin_command_desc_status, upsert_admin_command_desc,
+    )
+    if action == "dnew_save":
+        ok = await asyncio.to_thread(set_admin_command_desc_status, slug, "approved")
+        await asyncio.to_thread(sync_discovered_admin_commands, context.application)
+        cur = await asyncio.to_thread(get_admin_command_desc, slug) or {}
+        title = _describe_topic_title(cur.get("topic_id") or "misc")
+        await query.answer("Сохранено ✅" if ok else "Черновик не найден", show_alert=False)
+        try:
+            await query.edit_message_text(
+                f"✅ <b>/{html.escape(slug)}</b> сохранена в тему «{html.escape(title)}».\n"
+                "Открой «🛠 Команды админа» — она уже там.", parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+    if action == "dnew_regen":
+        await query.answer("🔄 Генерирую другой вариант…")
+        doc, src = _introspect_admin_command(context.application, slug)
+        topics = [(tid, title) for tid, title, _ in ADMIN_COMMAND_TOPICS]
+        from backend.admin_command_describer import generate_description
+        try:
+            gen = await asyncio.to_thread(
+                generate_description, slug, doc, src, topics,
+                variant_hint="Дай заметно другую формулировку описания.",
+            )
+        except Exception as exc:
+            await query.answer(f"Ошибка генерации: {exc}", show_alert=True)
+            return
+        await asyncio.to_thread(
+            upsert_admin_command_desc, slug, descr=gen["desc"], args=gen["args"],
+            example=gen["example"], topic_id=gen["topic_id"], status="draft",
+        )
+        try:
+            await query.edit_message_text(
+                _render_describe_preview(slug, gen), parse_mode="HTML",
+                reply_markup=_describe_keyboard(slug), disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+        return
+    if action == "dnew_edit":
+        _DESCRIBE_PENDING[int(user.id)] = slug
+        await query.answer()
+        try:
+            await query.edit_message_text(
+                f"✏️ Пришли своё описание для <b>/{html.escape(slug)}</b> одним сообщением.\n"
+                "Можно просто текст описания, или через <code>|</code>:\n"
+                "<i>описание | аргументы | пример | тема_id</i>", parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+    await query.answer()
+
+
+async def handle_describe_custom_input(update: Update, context: CallbackContext) -> None:
+    """Catch the admin's typed custom description after «✏️ Своё» and save it approved.
+    Runs in an early handler group; only consumes the message when that admin is pending."""
+    if not update.message or not (update.message.text or ""):
+        return
+    user = update.effective_user
+    if not user or int(user.id) not in _DESCRIBE_PENDING:
+        return
+    txt = (update.message.text or "").strip()
+    if txt.startswith("/"):
+        return  # let real commands through; keep the pending state
+    slug = _DESCRIBE_PENDING.pop(int(user.id))
+    from backend.database import get_admin_command_desc, upsert_admin_command_desc
+    cur = await asyncio.to_thread(get_admin_command_desc, slug) or {}
+    parts = [p.strip() for p in txt.split("|")]
+    desc = parts[0] if parts and parts[0] else (cur.get("desc") or "")
+    args = parts[1] if len(parts) > 1 and parts[1] else (cur.get("args") or "нет аргументов")
+    example = parts[2] if len(parts) > 2 and parts[2] else (cur.get("example") or f"/{slug}")
+    topic = parts[3] if len(parts) > 3 and parts[3] else (cur.get("topic_id") or "misc")
+    await asyncio.to_thread(
+        upsert_admin_command_desc, slug, descr=desc, args=args, example=example,
+        topic_id=topic, status="approved",
+    )
+    await asyncio.to_thread(sync_discovered_admin_commands, context.application)
+    await update.message.reply_text(
+        f"✅ Описание для /{slug} сохранено в тему «{_describe_topic_title(topic)}».")
+    raise ApplicationHandlerStop
 
 
 async def _send_admin_commands_overview(update: Update, context: CallbackContext) -> None:
@@ -33122,6 +33341,7 @@ def main():
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
     application.add_handler(CommandHandler("worldnews_approve", admin_world_news_approve_command))
+    application.add_handler(CommandHandler("describe_new", admin_describe_new_command))
     application.add_handler(CommandHandler("worldnews_send_now", admin_world_news_send_now_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
@@ -33171,6 +33391,10 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
     application.add_handler(CallbackQueryHandler(handle_admin_commands_callback, pattern=r"^admincmd:"))
+    application.add_handler(CallbackQueryHandler(handle_describe_new_callback, pattern=r"^dnew_"))
+    # Early group: capture an admin's typed custom description after «✏️ Своё» (consumes
+    # the message via ApplicationHandlerStop only when that admin is pending).
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_describe_custom_input), group=-2)
     application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_question_cancel_callback, pattern=r"^quizaskcancel$"))

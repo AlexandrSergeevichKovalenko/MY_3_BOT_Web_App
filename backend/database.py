@@ -19482,6 +19482,116 @@ def set_world_news_hero_key(news_date, hero_object_key: str) -> None:
             )
 
 
+# ── Admin command descriptions (durable, DB-backed) ──────────────────────────
+# Descriptions curated at RUNTIME (via the /describe_new Telegram flow) for admin
+# commands that aren't hand-listed in backend/admin_command_catalog.py. Stored in the DB
+# (not the source file) because the Railway container filesystem is ephemeral — a file
+# write would vanish on the next deploy. status: 'draft' (generated, awaiting approval)
+# → 'approved' (shown in the «🛠 Команды админа» palette).
+_ADMIN_CMD_DESC_SCHEMA_READY = False
+
+
+def _ensure_admin_cmd_desc_schema() -> None:
+    global _ADMIN_CMD_DESC_SCHEMA_READY
+    if _ADMIN_CMD_DESC_SCHEMA_READY:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_admin_command_desc (
+                    cmd        TEXT PRIMARY KEY,
+                    descr      TEXT NOT NULL DEFAULT '',
+                    args       TEXT NOT NULL DEFAULT 'нет аргументов',
+                    example    TEXT NOT NULL DEFAULT '',
+                    topic_id   TEXT NOT NULL DEFAULT 'misc',
+                    status     TEXT NOT NULL DEFAULT 'draft',
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+    _ADMIN_CMD_DESC_SCHEMA_READY = True
+
+
+def upsert_admin_command_desc(cmd: str, *, descr: str, args: str, example: str,
+                              topic_id: str, status: str = "draft") -> None:
+    """Insert/update a command's generated description. cmd is the slug (no leading slash)."""
+    slug = str(cmd or "").lstrip("/").strip()
+    if not slug:
+        return
+    _ensure_admin_cmd_desc_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_admin_command_desc (cmd, descr, args, example, topic_id, status, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (cmd) DO UPDATE SET
+                    descr=EXCLUDED.descr, args=EXCLUDED.args, example=EXCLUDED.example,
+                    topic_id=EXCLUDED.topic_id, status=EXCLUDED.status, updated_at=NOW();
+                """,
+                (slug, str(descr or ""), str(args or "нет аргументов"),
+                 str(example or f"/{slug}"), str(topic_id or "misc"), str(status or "draft")),
+            )
+        conn.commit()
+
+
+def set_admin_command_desc_status(cmd: str, status: str) -> bool:
+    slug = str(cmd or "").lstrip("/").strip()
+    if not slug:
+        return False
+    _ensure_admin_cmd_desc_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_admin_command_desc SET status=%s, updated_at=NOW() WHERE cmd=%s RETURNING cmd;",
+                (str(status or "draft"), slug),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return bool(row)
+
+
+def get_admin_command_desc(cmd: str) -> dict | None:
+    """One command's stored description (any status), or None."""
+    slug = str(cmd or "").lstrip("/").strip()
+    if not slug:
+        return None
+    try:
+        _ensure_admin_cmd_desc_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT cmd, descr, args, example, topic_id, status FROM bt_3_admin_command_desc WHERE cmd=%s;",
+                    (slug,),
+                )
+                r = cursor.fetchone()
+    except Exception:
+        return None
+    if not r:
+        return None
+    return {"cmd": r[0], "desc": r[1], "args": r[2], "example": r[3], "topic_id": r[4], "status": r[5]}
+
+
+def get_admin_command_descriptions(status: str = "approved") -> dict:
+    """All stored descriptions of the given status as {slug: {desc, args, example, topic_id}}."""
+    out: dict = {}
+    try:
+        _ensure_admin_cmd_desc_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT cmd, descr, args, example, topic_id FROM bt_3_admin_command_desc WHERE status=%s;",
+                    (str(status or "approved"),),
+                )
+                for r in cursor.fetchall() or []:
+                    out[str(r[0])] = {"desc": r[1], "args": r[2], "example": r[3], "topic_id": r[4]}
+    except Exception:
+        logging.warning("get_admin_command_descriptions failed", exc_info=True)
+    return out
+
+
 def _youtube_watch_state_row_to_dict(row) -> dict | None:
     if not row:
         return None

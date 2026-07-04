@@ -742,6 +742,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "args": 'нет аргументов',
             "example": '/group',
         },
+        {
+            "cmd": '/describe_new',
+            "desc": 'Генерирует через LLM русские описания для админ-команд, которых ещё нет в этом каталоге, и присылает черновик с кнопками «Сохранить / Другой вариант / Своё»; сохранённое хранится в БД и сразу попадает в палитру.',
+            "args": 'нет аргументов',
+            "example": '/describe_new',
+        },
     ]),
 ]
 
@@ -767,9 +773,48 @@ def register_discovered_topic(tid: str, title: str, cmds: list[dict]) -> None:
         _EXTRA_TOPICS.append((tid, title, list(cmds)))
 
 
+# Approved runtime descriptions loaded from the DB (slug -> {desc, args, example,
+# topic_id}), set by set_db_descriptions() at startup and after each /describe_new save.
+# Merged into their topic by all_topics() so a described command leaves «🆕 Новые».
+_DB_DESCRIPTIONS: dict[str, dict] = {}
+
+
+def set_db_descriptions(mapping: dict) -> None:
+    """Replace the DB-backed description set (slug -> {desc, args, example, topic_id})."""
+    global _DB_DESCRIPTIONS
+    _DB_DESCRIPTIONS = dict(mapping or {})
+
+
+def db_described_names() -> set[str]:
+    """Command slugs that have an approved DB description (so discovery can skip them)."""
+    return set(_DB_DESCRIPTIONS.keys())
+
+
 def all_topics() -> list[tuple[str, str, list[dict]]]:
-    """Curated topics + any runtime-discovered ones — the full palette to render."""
-    return list(ADMIN_COMMAND_TOPICS) + list(_EXTRA_TOPICS)
+    """Curated topics + DB-described commands merged into their topic + runtime-discovered
+    («🆕 Новые») ones — the full palette to render."""
+    curated = catalog_command_names()
+    # Fresh copies of the curated command lists so we can append without mutating the source.
+    topics = [(tid, title, list(cmds)) for (tid, title, cmds) in ADMIN_COMMAND_TOPICS]
+    by_id = {tid: cmds for (tid, _title, cmds) in topics}
+    for slug, d in (_DB_DESCRIPTIONS or {}).items():
+        if slug in curated:
+            continue  # code catalog is authoritative for hand-listed commands
+        tid = str(d.get("topic_id") or "misc")
+        if tid not in by_id:
+            tid = "misc"
+        cmds = by_id.get(tid)
+        if cmds is None:
+            continue
+        if any(str(c.get("cmd") or "").lstrip("/") == slug for c in cmds):
+            continue
+        cmds.append({
+            "cmd": f"/{slug}",
+            "desc": d.get("desc") or "",
+            "args": d.get("args") or "нет аргументов",
+            "example": d.get("example") or f"/{slug}",
+        })
+    return topics + list(_EXTRA_TOPICS)
 
 
 def catalog_command_names() -> set[str]:
