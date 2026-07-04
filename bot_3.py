@@ -4614,6 +4614,11 @@ def _build_admin_commands_topics_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+# Uncatalogued admin commands found at startup (set by sync_discovered_admin_commands),
+# read by the one-shot startup DM so it doesn't have to re-introspect.
+_UNCATALOGUED_ADMIN_COMMANDS: list[dict] = []
+
+
 def sync_discovered_admin_commands(application) -> None:
     """Auto-surface admin commands missing from admin_command_catalog.py in the palette.
 
@@ -4624,6 +4629,7 @@ def sync_discovered_admin_commands(application) -> None:
     IMMEDIATELY — no manual catalog edit needed — and a warning is logged listing them so
     a proper RU description can be curated later. Best-effort: never blocks startup."""
     import inspect
+    global _UNCATALOGUED_ADMIN_COMMANDS
     try:
         cataloged = _catalog_command_names()
     except Exception:
@@ -4671,6 +4677,7 @@ def sync_discovered_admin_commands(application) -> None:
                     "example": f"/{key}",
                 })
     discovered.sort(key=lambda d: d["cmd"])
+    _UNCATALOGUED_ADMIN_COMMANDS = discovered
     try:
         _register_discovered_admin_topic("autodiscovered", "🆕 Новые (без описания)", discovered)
     except Exception:
@@ -4683,6 +4690,40 @@ def sync_discovered_admin_commands(application) -> None:
         )
     else:
         logging.info("admin palette: catalog is in sync — no uncatalogued admin commands")
+
+
+async def _dm_admins_uncatalogued_commands(context: CallbackContext) -> None:
+    """One-shot on startup: DM every admin the list of admin commands that are NOT yet
+    described in admin_command_catalog.py (they're already visible in the palette under
+    «🆕 Новые», but this nudges to give them a curated RU description). Sends nothing when
+    the catalog is fully in sync, so a clean start stays quiet."""
+    cmds = list(_UNCATALOGUED_ADMIN_COMMANDS)
+    if not cmds:
+        return
+    try:
+        from backend.database import get_admin_telegram_ids
+        admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    except Exception:
+        admin_ids = []
+    if not admin_ids:
+        return
+    lines = [
+        f"🆕 <b>Новые команды без описания</b> — {len(cmds)}",
+        "Они уже видны в «🛠 Команды админа» → «🆕 Новые (без описания)», но пока с временным "
+        "описанием из docstring. Допиши нормальное в <code>backend/admin_command_catalog.py</code>.",
+        "",
+    ]
+    for c in cmds[:40]:
+        lines.append(f"• <code>{html.escape(c['cmd'])}</code> — {html.escape(c['desc'])[:160]}")
+    if len(cmds) > 40:
+        lines.append(f"…ещё {len(cmds) - 40}")
+    text = "\n".join(lines)
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML",
+                                           disable_web_page_preview=True)
+        except Exception:
+            logging.debug("uncatalogued-commands DM failed for admin=%s", admin_id, exc_info=True)
 
 
 async def _send_admin_commands_overview(update: Update, context: CallbackContext) -> None:
@@ -33477,6 +33518,9 @@ def main():
         # Startup catch-up: if a restart/redeploy straddled either slot (this is what ate
         # 2026-07-04's news), prepare tomorrow / send today's approved-but-unsent entry now.
         scheduler.add_job(lambda: submit_async(run_world_news_startup_catchup,CallbackContext(application=application)),"date", run_date=_get_quiz_schedule_now() + timedelta(seconds=45))
+        # One-shot: DM admins the admin commands still missing a curated description (the
+        # list is filled by sync_discovered_admin_commands, which runs just before polling).
+        scheduler.add_job(lambda: submit_async(_dm_admins_uncatalogued_commands,CallbackContext(application=application)),"date", run_date=_get_quiz_schedule_now() + timedelta(seconds=60))
         # ⛔️ Отключено: скучное текстовое утреннее/дневное напоминание заменено на
         # утреннюю рассылку новостей «Начни день с коротких новостей» (красивая плашка +
         # разбор слов + тесты, run_world_news_morning_broadcast в 6:30). НЕ отправляем.
