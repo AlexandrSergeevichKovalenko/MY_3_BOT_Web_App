@@ -4693,10 +4693,11 @@ def sync_discovered_admin_commands(application) -> None:
 
 
 async def _dm_admins_uncatalogued_commands(context: CallbackContext) -> None:
-    """One-shot on startup: DM every admin a short palette-status report so it's always
-    visible that the check ran. If some admin commands lack a curated description in
-    admin_command_catalog.py → list them (they're already live in the palette under
-    «🆕 Новые», with their provisional docstring); otherwise → a one-line «в синхроне ✅»."""
+    """One-shot on startup: DM every admin a short palette-status report. If some admin
+    commands lack a curated description in admin_command_catalog.py → list them EVERY
+    startup (they're already live in the palette under «🆕 Новые» with their provisional
+    docstring). If the catalog is fully in sync → send «в синхроне ✅» AT MOST ONCE PER
+    DAY (a per-day DB run-guard), so frequent redeploys don't spam an all-clear."""
     cmds = list(_UNCATALOGUED_ADMIN_COMMANDS)
     try:
         from backend.database import get_admin_telegram_ids
@@ -4705,6 +4706,19 @@ async def _dm_admins_uncatalogued_commands(context: CallbackContext) -> None:
         admin_ids = []
     if not admin_ids:
         return
+    if not cmds:
+        # In-sync all-clear: throttle to once/day across restarts via the run guard.
+        try:
+            from backend.database import claim_scheduler_run_guard
+            period = _get_quiz_schedule_now().strftime("%Y-%m-%d")
+            claimed = await asyncio.to_thread(
+                claim_scheduler_run_guard,
+                job_key="admin_palette_synced_dm", run_period=period, target_scope="global",
+            )
+        except Exception:
+            claimed = True  # guard unavailable → don't suppress the (rare) all-clear
+        if not claimed:
+            return
     if cmds:
         lines = [
             f"🆕 <b>Команды админа без описания</b> — {len(cmds)}",
