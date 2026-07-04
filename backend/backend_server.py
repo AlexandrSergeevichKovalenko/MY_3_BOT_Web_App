@@ -51872,8 +51872,18 @@ def _run_weekly_goals_scheduler_job() -> None:
         logging.info("ℹ️ Weekly goals scheduler skipped: run guard already claimed for %s", run_period)
         return
     try:
-        result_week = _dispatch_plan_period_progress(target_date=target_date, period="week")
-        logging.info("✅ Weekly goals scheduler finished (week): %s", result_week)
+        # Weekly "Личные цели (неделя)" chart DM was disabled by the user as unwanted
+        # (too many messages). Keep it OFF by default; re-enable via WEEKLY_GOALS_CHART_ENABLED=1.
+        # The Monday weekly group badges below are unaffected.
+        weekly_chart_enabled = (
+            os.getenv("WEEKLY_GOALS_CHART_ENABLED") or "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if weekly_chart_enabled:
+            result_week = _dispatch_plan_period_progress(target_date=target_date, period="week")
+            logging.info("✅ Weekly goals scheduler finished (week): %s", result_week)
+        else:
+            result_week = {"skipped": "weekly_goals_chart_disabled"}
+            logging.info("ℹ️ Weekly goals chart send skipped (WEEKLY_GOALS_CHART_ENABLED off)")
         metadata: dict[str, Any] = {"week": result_week} if isinstance(result_week, dict) else {}
         weekly_badges_enabled = (os.getenv("WEEKLY_BADGES_GROUP_ENABLED") or "1").strip().lower()
         if weekly_badges_enabled in ("1", "true", "yes", "on") and target_date.weekday() == 0:
