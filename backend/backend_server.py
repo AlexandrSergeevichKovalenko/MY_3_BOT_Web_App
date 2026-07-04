@@ -797,6 +797,19 @@ _TRANSLATION_CHECK_FINALIZE_BATCH_SIZE = max(
     1,
     min(8, int((os.getenv("TRANSLATION_CHECK_FINALIZE_BATCH_SIZE") or "3").strip() or "3")),
 )
+# The batch persist + finalize are the ONLY steps that actually save a graded
+# sentence. Both are idempotent (persist = ON CONFLICT upsert; finalize = guarded by
+# status NOT IN ('done','failed')), so a bounded retry on a fresh connection recovers
+# a transient DB hiccup (PgBouncer closing a queued connection) instead of aborting the
+# whole session and stranding one sentence 'pending' forever — the recurring "6 of 7".
+_TRANSLATION_CHECK_FINALIZE_RETRY_ATTEMPTS = max(
+    1,
+    min(6, int((os.getenv("TRANSLATION_CHECK_FINALIZE_RETRY_ATTEMPTS") or "3").strip() or "3")),
+)
+_TRANSLATION_CHECK_FINALIZE_RETRY_DELAY_S = max(
+    0.0,
+    float((os.getenv("TRANSLATION_CHECK_FINALIZE_RETRY_DELAY_S") or "0.4").strip() or "0.4"),
+)
 _TRANSLATION_CHECK_QUEUE_NAME = str(
     os.getenv("TRANSLATION_CHECK_QUEUE_NAME") or "translation_check"
 ).strip() or "translation_check"
@@ -25982,6 +25995,88 @@ def _process_translation_check_session_item(
         }
 
 
+def _reconcile_stranded_translation_check_items(
+    *,
+    session_id: int,
+    worker_job_id: str | None,
+    unfinalized_batch_metrics: list[dict[str, Any]],
+) -> None:
+    """Guarantee no graded sentence is left stranded when a batch's persist/finalize
+    exhausted its in-loop retries. First re-drive the stashed grades (both ops are
+    idempotent), then sweep any item still not done/failed and mark it failed with an
+    honest error so the session's counts are complete and nothing silently stays
+    'pending' — the root cause of the recurring "user sent 7, only 6 checked"."""
+    # 1. Best-effort re-drive of the stashed (already computed) grades.
+    if unfinalized_batch_metrics:
+        deferred_store_payloads = [
+            dict(metrics.get("deferred_store_payload") or {})
+            for metrics in unfinalized_batch_metrics
+            if isinstance(metrics.get("deferred_store_payload"), dict)
+        ]
+        try:
+            if deferred_store_payloads:
+                persist_translation_webapp_item_results_batch(store_payloads=deferred_store_payloads)
+            finalize_translation_check_items_batch(
+                session_id=int(session_id),
+                item_results=unfinalized_batch_metrics,
+                worker_job_id=worker_job_id,
+            )
+        except Exception:
+            logging.warning(
+                "translation-check reconcile re-drive of stashed grades failed (falling through to failed-mark): session=%s count=%s",
+                session_id,
+                len(unfinalized_batch_metrics),
+                exc_info=True,
+            )
+    # 2. Sweep: any item still not done/failed gets marked failed so counts are honest.
+    try:
+        remaining_items = [
+            item
+            for item in (list_translation_check_items(session_id=int(session_id)) or [])
+            if str(item.get("status") or "").strip().lower() not in {"done", "failed"}
+        ]
+    except Exception:
+        logging.warning(
+            "translation-check reconcile item re-list failed: session=%s",
+            session_id,
+            exc_info=True,
+        )
+        return
+    if not remaining_items:
+        return
+    logging.error(
+        "translation-check reconcile marking %s stranded item(s) failed: session=%s items=%s",
+        len(remaining_items),
+        session_id,
+        [item.get("id") for item in remaining_items],
+    )
+    failed_metrics = [
+        {
+            "item_id": int(item["id"]),
+            "item_status": "failed",
+            "item_outcome": "error",
+            "result_json": item.get("result_json") if isinstance(item.get("result_json"), dict) else None,
+            "result_text": None,
+            "error_text": "Проверка этого предложения не была сохранена (временный сбой БД). Попробуйте ещё раз.",
+            "webapp_check_id": item.get("webapp_check_id"),
+        }
+        for item in remaining_items
+        if item.get("id") is not None
+    ]
+    try:
+        finalize_translation_check_items_batch(
+            session_id=int(session_id),
+            item_results=failed_metrics,
+            worker_job_id=worker_job_id,
+        )
+    except Exception:
+        logging.error(
+            "translation-check reconcile failed to mark stranded items failed: session=%s",
+            session_id,
+            exc_info=True,
+        )
+
+
 def _run_translation_check_session(
     session_id: int,
     *,
@@ -26398,6 +26493,10 @@ def _run_translation_check_session(
         )
         processed_item_metrics: list[dict[str, Any]] = []
         finalize_batch_metrics: list[dict[str, Any]] = []
+        # Batches whose essential persist/finalize kept failing even after retries. We
+        # never let that abort the session (that stranded a graded sentence); instead we
+        # remember the metrics and re-drive them in the terminal reconcile pass below.
+        unfinalized_batch_metrics: list[dict[str, Any]] = []
         incremental_finalize_duration_ms = 0
         resolved_items_count = 0
         item_max_workers = max(1, min(_TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY, total_pending_items or 1))
@@ -26416,72 +26515,123 @@ def _run_translation_check_session(
                 for item_metrics in batch_metrics
                 if isinstance(item_metrics.get("deferred_store_payload"), dict)
             ]
-            if deferred_store_payloads:
-                persisted_payloads = persist_translation_webapp_item_results_batch(
-                    store_payloads=deferred_store_payloads,
-                )
-                persisted_by_sentence_id = {
-                    int(payload["sentence_pk_id"]): payload
-                    for payload in persisted_payloads
-                    if payload.get("sentence_pk_id") is not None
-                }
-                for item_metrics in batch_metrics:
-                    deferred_store_payload = item_metrics.get("deferred_store_payload")
-                    if not isinstance(deferred_store_payload, dict):
-                        continue
-                    persisted_payload = persisted_by_sentence_id.get(
-                        int(deferred_store_payload.get("sentence_pk_id") or 0)
+            def _run_batch_db_op_with_retry(op, *, label: str):
+                # persist (ON CONFLICT upsert) and finalize (guarded by status NOT IN
+                # ('done','failed')) are both idempotent, so a transient DB failure —
+                # PgBouncer closing a queued connection under load — is safely recovered
+                # by retrying on a fresh connection. This is the fix for the recurring
+                # "6 of 7": previously ONE such raise escaped the as_completed loop,
+                # aborted the whole session ("failed") and stranded a graded sentence.
+                last_exc: Exception | None = None
+                for attempt in range(1, _TRANSLATION_CHECK_FINALIZE_RETRY_ATTEMPTS + 1):
+                    try:
+                        return op()
+                    except Exception as op_exc:  # noqa: BLE001 - retried; re-raised if exhausted
+                        last_exc = op_exc
+                        if attempt >= _TRANSLATION_CHECK_FINALIZE_RETRY_ATTEMPTS:
+                            break
+                        logging.warning(
+                            "translation-check %s batch DB op failed (attempt %s/%s), retrying: session=%s batch_size=%s err=%s",
+                            label,
+                            attempt,
+                            _TRANSLATION_CHECK_FINALIZE_RETRY_ATTEMPTS,
+                            session_id,
+                            len(batch_metrics),
+                            op_exc,
+                        )
+                        if _TRANSLATION_CHECK_FINALIZE_RETRY_DELAY_S > 0:
+                            time.sleep(_TRANSLATION_CHECK_FINALIZE_RETRY_DELAY_S * attempt)
+                if last_exc is not None:
+                    raise last_exc
+
+            def _finalize_batch_scoped():
+                with db_acquire_scope("translation_check_session_finalize_batch"):
+                    return finalize_translation_check_items_batch(
+                        session_id=int(session_id),
+                        item_results=batch_metrics,
+                        worker_job_id=worker_job_id,
                     )
-                    if not persisted_payload:
-                        continue
-                    result_json = item_metrics.get("result_json")
-                    if isinstance(result_json, dict):
-                        result_json["translation_id"] = persisted_payload.get("translation_id")
-                        result_json["user_translation"] = persisted_payload.get("stored_user_translation")
-                        result_json["score"] = persisted_payload.get("stored_score_value")
-                        result_json["feedback"] = persisted_payload.get("stored_feedback")
-                    item_metrics["webapp_check_id"] = persisted_payload.get("translation_id")
-                    item_metrics["result_text"] = str(
-                        persisted_payload.get("stored_feedback")
-                        or item_metrics.get("result_text")
-                        or ""
-                    ).strip() or None
-                    if persisted_payload.get("inserted_new_row") and persisted_payload.get("translation_id") is not None:
-                        deferred_side_effect_payload = {
-                            "user_id": int(persisted_payload["user_id"]),
-                            "original_text": str(persisted_payload.get("original_text") or ""),
-                            "user_translation": str(persisted_payload.get("user_translation") or ""),
-                            "sentence_pk_id": int(persisted_payload["sentence_pk_id"]),
-                            "session_id": int(persisted_payload["session_id"]) if persisted_payload.get("session_id") is not None else None,
-                            "sentence_id_for_mistake": int(persisted_payload["sentence_id_for_mistake"]),
-                            "score_value": int(persisted_payload["score_value"]),
-                            "correct_translation": str(persisted_payload.get("correct_translation") or "").strip() or None,
-                            "categories": list(persisted_payload.get("categories") or []),
-                            "subcategories": list(persisted_payload.get("subcategories") or []),
-                            "source_lang": str(persisted_payload.get("source_lang") or "ru"),
-                            "target_lang": str(persisted_payload.get("target_lang") or "de"),
-                        }
-                        try:
-                            if can_enqueue_background_jobs():
-                                enqueue_translation_result_side_effects_job(**deferred_side_effect_payload)
-                            else:
+
+            try:
+                if deferred_store_payloads:
+                    persisted_payloads = _run_batch_db_op_with_retry(
+                        lambda: persist_translation_webapp_item_results_batch(
+                            store_payloads=deferred_store_payloads,
+                        ),
+                        label="persist",
+                    )
+                    persisted_by_sentence_id = {
+                        int(payload["sentence_pk_id"]): payload
+                        for payload in persisted_payloads
+                        if payload.get("sentence_pk_id") is not None
+                    }
+                    for item_metrics in batch_metrics:
+                        deferred_store_payload = item_metrics.get("deferred_store_payload")
+                        if not isinstance(deferred_store_payload, dict):
+                            continue
+                        persisted_payload = persisted_by_sentence_id.get(
+                            int(deferred_store_payload.get("sentence_pk_id") or 0)
+                        )
+                        if not persisted_payload:
+                            continue
+                        result_json = item_metrics.get("result_json")
+                        if isinstance(result_json, dict):
+                            result_json["translation_id"] = persisted_payload.get("translation_id")
+                            result_json["user_translation"] = persisted_payload.get("stored_user_translation")
+                            result_json["score"] = persisted_payload.get("stored_score_value")
+                            result_json["feedback"] = persisted_payload.get("stored_feedback")
+                        item_metrics["webapp_check_id"] = persisted_payload.get("translation_id")
+                        item_metrics["result_text"] = str(
+                            persisted_payload.get("stored_feedback")
+                            or item_metrics.get("result_text")
+                            or ""
+                        ).strip() or None
+                        if persisted_payload.get("inserted_new_row") and persisted_payload.get("translation_id") is not None:
+                            deferred_side_effect_payload = {
+                                "user_id": int(persisted_payload["user_id"]),
+                                "original_text": str(persisted_payload.get("original_text") or ""),
+                                "user_translation": str(persisted_payload.get("user_translation") or ""),
+                                "sentence_pk_id": int(persisted_payload["sentence_pk_id"]),
+                                "session_id": int(persisted_payload["session_id"]) if persisted_payload.get("session_id") is not None else None,
+                                "sentence_id_for_mistake": int(persisted_payload["sentence_id_for_mistake"]),
+                                "score_value": int(persisted_payload["score_value"]),
+                                "correct_translation": str(persisted_payload.get("correct_translation") or "").strip() or None,
+                                "categories": list(persisted_payload.get("categories") or []),
+                                "subcategories": list(persisted_payload.get("subcategories") or []),
+                                "source_lang": str(persisted_payload.get("source_lang") or "ru"),
+                                "target_lang": str(persisted_payload.get("target_lang") or "de"),
+                            }
+                            try:
+                                if can_enqueue_background_jobs():
+                                    enqueue_translation_result_side_effects_job(**deferred_side_effect_payload)
+                                else:
+                                    asyncio.run(apply_translation_result_side_effects(**deferred_side_effect_payload))
+                            except Exception:
+                                logging.warning(
+                                    "translation_result_side_effects enqueue failed; running inline user_id=%s sentence_id_for_mistake=%s",
+                                    deferred_side_effect_payload["user_id"],
+                                    deferred_side_effect_payload["sentence_id_for_mistake"],
+                                    exc_info=True,
+                                )
                                 asyncio.run(apply_translation_result_side_effects(**deferred_side_effect_payload))
-                        except Exception:
-                            logging.warning(
-                                "translation_result_side_effects enqueue failed; running inline user_id=%s sentence_id_for_mistake=%s",
-                                deferred_side_effect_payload["user_id"],
-                                deferred_side_effect_payload["sentence_id_for_mistake"],
-                                exc_info=True,
-                            )
-                            asyncio.run(apply_translation_result_side_effects(**deferred_side_effect_payload))
-            finalize_started_perf = time.perf_counter()
-            with db_acquire_scope("translation_check_session_finalize_batch"):
-                finalized_session = finalize_translation_check_items_batch(
-                    session_id=int(session_id),
-                    item_results=batch_metrics,
-                    worker_job_id=worker_job_id,
+                finalize_started_perf = time.perf_counter()
+                finalized_session = _run_batch_db_op_with_retry(_finalize_batch_scoped, label="finalize")
+                finalize_duration_ms = _elapsed_ms_since(finalize_started_perf)
+            except Exception:
+                # Essential persist/finalize still failing after every retry. Do NOT let
+                # this escape and abort the whole session — that is exactly what dropped a
+                # graded sentence and produced the "6 of 7". Keep the (already computed)
+                # grades and hand them to the terminal reconcile pass, which re-drives
+                # them once more and, only as a last resort, marks the items failed so
+                # nothing is ever left silently 'pending'.
+                logging.error(
+                    "translation-check batch persist/finalize exhausted retries; deferring to reconcile: session=%s batch_size=%s",
+                    session_id,
+                    len(batch_metrics),
+                    exc_info=True,
                 )
-            finalize_duration_ms = _elapsed_ms_since(finalize_started_perf)
+                unfinalized_batch_metrics.extend(batch_metrics)
+                return
             incremental_finalize_duration_ms += finalize_duration_ms
             per_item_finalize_duration_ms = max(1, int(round(finalize_duration_ms / max(1, len(batch_metrics)))))
             if isinstance(finalized_session, dict):
@@ -26548,11 +26698,45 @@ def _run_translation_check_session(
                 }
 
                 for future in as_completed(item_futures):
-                    item_metrics = future.result()
+                    try:
+                        item_metrics = future.result()
+                    except Exception:
+                        # The item task always returns its own failed-metrics dict; if it
+                        # somehow raised anyway, synthesize a failed result rather than let
+                        # it abort the loop (which would strand every un-flushed sentence).
+                        stranded_item = item_futures[future]
+                        logging.error(
+                            "translation-check item future raised unexpectedly: session=%s item=%s",
+                            session_id,
+                            stranded_item.get("id"),
+                            exc_info=True,
+                        )
+                        item_metrics = {
+                            "item_id": int(stranded_item.get("id") or 0),
+                            "item_order": int(stranded_item.get("item_order") or 0),
+                            "sentence_number": stranded_item.get("sentence_number"),
+                            "item_status": "failed",
+                            "item_outcome": "error",
+                            "result_json": None,
+                            "result_text": None,
+                            "error_text": "Ошибка проверки предложения.",
+                            "webapp_check_id": None,
+                            "deferred_store_payload": None,
+                        }
                     resolved_items_count += 1
                     finalize_batch_metrics.append(item_metrics)
                     _flush_finalize_batch(force=False)
                 _flush_finalize_batch(force=True)
+
+        # Terminal reconcile: never let a transient DB hiccup strand a graded sentence.
+        # Re-drive any batch whose persist/finalize exhausted its retries, then sweep for
+        # any item still not done/failed and mark it failed with an honest error — so the
+        # session's counts are complete and no sentence silently vanishes (the "6 of 7").
+        _reconcile_stranded_translation_check_items(
+            session_id=int(session_id),
+            worker_job_id=worker_job_id,
+            unfinalized_batch_metrics=unfinalized_batch_metrics,
+        )
 
         last_error = None
         if session and int(session.get("failed_items") or 0) >= int(session.get("total_items") or 0) and int(session.get("total_items") or 0) > 0:
