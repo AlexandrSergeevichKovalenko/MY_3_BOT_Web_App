@@ -7549,6 +7549,39 @@ async def admin_world_news_send_now_command(update: Update, context: CallbackCon
     await message.reply_text("✅ Рассылка выполнена (см. логи для деталей).")
 
 
+async def admin_world_news_approve_command(update: Update, context: CallbackContext):
+    """Approve (pin) TODAY's prepared news from the command line — a button-independent
+    path to the same is_pinned=true that the «✅ Одобрить» inline button sets, so an admin
+    can approve without waiting for the 20:00 DM. /worldnews_approve — admin only.
+    Flow: /worldnews → /worldnews_approve → /worldnews_send_now (or wait for 6:30)."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    from backend.database import get_world_news_for_date, set_world_news_pinned
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry = await asyncio.to_thread(get_world_news_for_date, today)
+    if not entry:
+        await message.reply_text("❌ На сегодня темы нет. Сначала подготовь: /worldnews")
+        return
+    if entry.get("is_pinned"):
+        await message.reply_text(
+            "ℹ️ Тема на сегодня уже одобрена.\n"
+            "Разослать сейчас: /worldnews_send_now (или уйдёт автоматически в 6:30)."
+        )
+        return
+    await asyncio.to_thread(set_world_news_pinned, today, True)
+    title = entry.get("video_title") or "—"
+    await message.reply_text(
+        f"✅ Одобрено на сегодня: <b>{title}</b>\n"
+        "Разослать сейчас: /worldnews_send_now — или уйдёт автоматически завтра в 6:30.",
+        parse_mode="HTML",
+    )
+
+
 async def admin_world_news_image_command(update: Update, context: CallbackContext):
     """Generate the Smurf-reading-the-newspaper background for the world-news card via
     gpt-image-1 and store it in R2. Run once; the morning card then uses it (blue morning
@@ -32958,6 +32991,7 @@ def main():
     application.add_handler(CommandHandler("worldnews", admin_world_news_command))
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
+    application.add_handler(CommandHandler("worldnews_approve", admin_world_news_approve_command))
     application.add_handler(CommandHandler("worldnews_send_now", admin_world_news_send_now_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))

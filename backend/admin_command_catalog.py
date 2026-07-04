@@ -629,6 +629,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "example": '/worldnews_card',
         },
         {
+            "cmd": '/worldnews_approve',
+            "desc": 'Одобряет (пинит) подготовленную на сегодня новость из командной строки — то же, что кнопка «✅ Одобрить» под превью, но без ожидания вечернего ДМ. После неё можно /worldnews_send_now.',
+            "args": 'нет аргументов',
+            "example": '/worldnews_approve',
+        },
+        {
             "cmd": '/worldnews_send_now',
             "desc": 'Немедленно рассылает одобренную сегодняшнюю новость в группу и активным пользователям.',
             "args": 'нет аргументов',
