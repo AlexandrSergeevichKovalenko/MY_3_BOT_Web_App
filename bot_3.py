@@ -4693,13 +4693,11 @@ def sync_discovered_admin_commands(application) -> None:
 
 
 async def _dm_admins_uncatalogued_commands(context: CallbackContext) -> None:
-    """One-shot on startup: DM every admin the list of admin commands that are NOT yet
-    described in admin_command_catalog.py (they're already visible in the palette under
-    «🆕 Новые», but this nudges to give them a curated RU description). Sends nothing when
-    the catalog is fully in sync, so a clean start stays quiet."""
+    """One-shot on startup: DM every admin a short palette-status report so it's always
+    visible that the check ran. If some admin commands lack a curated description in
+    admin_command_catalog.py → list them (they're already live in the palette under
+    «🆕 Новые», with their provisional docstring); otherwise → a one-line «в синхроне ✅»."""
     cmds = list(_UNCATALOGUED_ADMIN_COMMANDS)
-    if not cmds:
-        return
     try:
         from backend.database import get_admin_telegram_ids
         admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
@@ -4707,23 +4705,26 @@ async def _dm_admins_uncatalogued_commands(context: CallbackContext) -> None:
         admin_ids = []
     if not admin_ids:
         return
-    lines = [
-        f"🆕 <b>Новые команды без описания</b> — {len(cmds)}",
-        "Они уже видны в «🛠 Команды админа» → «🆕 Новые (без описания)», но пока с временным "
-        "описанием из docstring. Допиши нормальное в <code>backend/admin_command_catalog.py</code>.",
-        "",
-    ]
-    for c in cmds[:40]:
-        lines.append(f"• <code>{html.escape(c['cmd'])}</code> — {html.escape(c['desc'])[:160]}")
-    if len(cmds) > 40:
-        lines.append(f"…ещё {len(cmds) - 40}")
-    text = "\n".join(lines)
+    if cmds:
+        lines = [
+            f"🆕 <b>Команды админа без описания</b> — {len(cmds)}",
+            "Они уже видны в «🛠 Команды админа» → «🆕 Новые (без описания)», но пока с временным "
+            "описанием из docstring. Допиши нормальное в <code>backend/admin_command_catalog.py</code>.",
+            "",
+        ]
+        for c in cmds[:40]:
+            lines.append(f"• <code>{html.escape(c['cmd'])}</code> — {html.escape(c['desc'])[:160]}")
+        if len(cmds) > 40:
+            lines.append(f"…ещё {len(cmds) - 40}")
+        text = "\n".join(lines)
+    else:
+        text = "✅ <b>Каталог команд в синхроне</b> — все админ-команды описаны в «🛠 Команды админа»."
     for admin_id in admin_ids:
         try:
             await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML",
                                            disable_web_page_preview=True)
         except Exception:
-            logging.debug("uncatalogued-commands DM failed for admin=%s", admin_id, exc_info=True)
+            logging.debug("palette-status DM failed for admin=%s", admin_id, exc_info=True)
 
 
 async def _send_admin_commands_overview(update: Update, context: CallbackContext) -> None:
