@@ -350,14 +350,24 @@ Du bekommst das Transkript des Videos. Erstelle daraus ein JSON-Paket mit:
      - "usage_ru": ein sehr kurzer russischer Hinweis, WIE/WANN man es benutzt (1 Satz),
        ggf. mit Rektion/Kasus.
 
-3) "quiz": GENAU 4 Multiple-Choice-Fragen auf DEUTSCH zum Inhalt des Videos, die echtes
-   Verständnis prüfen (Details, Zahlen, Daten, Zusammenhänge — nicht nur Vokabeln).
+3) "quiz": GENAU 4 KNIFFLIGE Multiple-Choice-Fragen auf DEUTSCH, die PRÄZISES Hörverständnis
+   prüfen — NICHT den groben Sinn. Jede Frage muss sich an EINEM konkreten Detail aus dem
+   Transkript festmachen, das man nur bei aufmerksamem Zuhören mitbekommt:
+     • Zahlen, Beträge, Prozente, Mengen, Jahre, Daten, Uhrzeiten, Fristen, Reihenfolgen;
+     • Eigennamen (Personen, Orte, Organisationen, Parteien) und wer GENAU was gesagt/getan hat;
+     • exakte Bedingungen und Zusammenhänge (Ursache→Folge, "nur wenn…", "ab wann…", "trotz…").
+   Wenn im Transkript Zahlen, Beträge oder Daten vorkommen, MÜSSEN mindestens 2 der 4 Fragen
+   genau darauf zielen. VERMEIDE reine Gist-, Meinungs- oder "Wie wird X beschrieben"-Fragen und
+   alles, was man ohne das Video allein aus Weltwissen erraten kann.
    Jede Frage:
-     - "question_de": klar formulierte Frage auf Deutsch.
-     - "options": GENAU 4 plausible Antworten auf Deutsch; die falschen sind knifflige,
-       aber eindeutig falsche Distraktoren (ähnliche Zahlen/Namen/Bedingungen).
-     - "correct_index": Index (0–3) der einzig richtigen Antwort.
-     - "explanation_ru": 1 kurzer russischer Satz, warum die Antwort richtig ist.
+     - "question_de": klar und eindeutig, auf EIN präzises Detail zugespitzt.
+     - "options": GENAU 4 Antworten; die 3 Distraktoren sind absichtlich MINIMAL verschieden
+       (Nachbar-Zahlen wie 2019 statt 2018, 14 % statt 40 %, 300 Mio. statt 300 Mrd.,
+       vertauschte Namen/Rollen, fast identische Bedingung) — so dass NUR wer genau hingehört
+       hat die richtige erkennt. Alle Optionen etwa gleich lang und gleich plausibel, KEINE
+       offensichtlich absurde Antwort.
+     - "correct_index": Index (0–3) der einzig richtigen, im Transkript belegten Antwort.
+     - "explanation_ru": 1 kurzer russischer Satz mit dem konkreten Beleg (Zahl/Datum/Name/Bedingung).
 
 Antworte NUR mit validem JSON, ohne Erklärungen drumherum."""
 
