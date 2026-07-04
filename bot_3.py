@@ -7978,27 +7978,29 @@ async def admin_world_news_tomorrow_command(update: Update, context: CallbackCon
         entry, header="🌙 <b>Новость на завтра переформирована — проверь и одобри</b>"
     )
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
-    # The rich preview REPLACES the «Переформировываю…» bubble in place. If that edit fails
-    # (parse/length/network), the topic is already saved — so always leave the admin a
-    # confirmation + the approve keyboard instead of a silent success they can't see or approve.
+    # Send the preview as a NEW message rather than editing the «Переформировываю…» bubble in
+    # place — Telegram intermittently rejects that edit with "Message can't be edited", which
+    # silently swallowed the result. A fresh message is reliable and is what the admin expects.
     try:
-        await status.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
     except Exception:
-        logging.exception("worldnews_tomorrow: preview edit failed date=%s", target)
+        logging.exception("worldnews_tomorrow: preview send failed date=%s", target)
         title = entry.get("video_title") or "—"
+        await message.reply_text(
+            f"✅ Новость на завтра ({target}) переформирована: <b>{title}</b>\n"
+            "Полное превью показать не удалось (слишком длинное/ошибка), но тема сохранена.\n"
+            "Одобри её кнопкой ниже 👇",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    # Clean up the placeholder bubble (best-effort; delete, else relabel).
+    try:
+        await status.delete()
+    except Exception:
         try:
-            await message.reply_text(
-                f"✅ Новость на завтра ({target}) переформирована: <b>{title}</b>\n"
-                "Превью показать не удалось (слишком длинное/ошибка), но тема сохранена.\n"
-                "Одобри её кнопкой ниже 👇",
-                parse_mode="HTML",
-                reply_markup=kb,
-            )
+            await status.edit_text(f"🌙 Новость на завтра ({target}) переформирована — превью ниже 👇")
         except Exception:
-            await message.reply_text(
-                f"✅ Новость на завтра ({target}) переформирована, но показать не удалось. "
-                "Повтори /worldnews_tomorrow или задай ссылку вручную."
-            )
+            pass
 
 
 async def admin_world_news_show_command(update: Update, context: CallbackContext):
