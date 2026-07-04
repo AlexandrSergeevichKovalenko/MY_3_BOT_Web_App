@@ -2882,6 +2882,20 @@ STREAK_FREEZE_EVERY = max(2, int((os.getenv("STREAK_FREEZE_EVERY") or "7").strip
 STREAK_FREEZE_MAX = max(0, int((os.getenv("STREAK_FREEZE_MAX") or "2").strip() or "2"))
 
 
+def _streak_days_word(n: int) -> str:
+    """Russian plural of «день» for a day-count: 1 день, 2/3/4 дня, 5+ дней (11–14 → дней).
+    Mirrors backend.review_reminder_card._plural_days_ru so text and card agree."""
+    n = abs(int(n))
+    if 11 <= n % 100 <= 14:
+        return "дней"
+    d = n % 10
+    if d == 1:
+        return "день"
+    if 2 <= d <= 4:
+        return "дня"
+    return "дней"
+
+
 def _streak_next_reward_in(cur: int) -> int:
     """Days left in the current cycle until the next earned Pro day."""
     r = int(cur) % STREAK_REWARD_EVERY
@@ -2914,13 +2928,13 @@ async def _streak_status_block(uid: int) -> str:
         m = _streak_next_milestone(cur)
         if m is not None and (m - cur) <= 3:
             return f"{L}: <b>{cur}</b> · ещё {m - cur} до грамоты за {m} дней 🏆"
-        return f"{L}: <b>{cur}</b> дней подряд — так держать!"
+        return f"{L}: <b>{cur}</b> {_streak_days_word(cur)} подряд — так держать!"
     rem = _streak_next_reward_in(cur)
     if rem == 1:
         return f"{L}: <b>{cur}</b> — ещё 1 день, и получишь <b>день Pro</b>! 🔥"
     if rem == 2:
         return f"{L}: <b>{cur}</b> · ты уже на полпути до <b>дня Pro</b> 🔥"
-    return f"{L}: <b>{cur}</b> дней подряд · до дня Pro ещё {rem}"
+    return f"{L}: <b>{cur}</b> {_streak_days_word(cur)} подряд · до дня Pro ещё {rem} {_streak_days_word(rem)}"
 
 
 async def _streak_caption_block(uid: int) -> str:
@@ -3204,11 +3218,11 @@ async def _update_streaks_job(context: CallbackContext) -> None:
                         if _pro:
                             # Already Pro → the earned day BANKS onto the end of the paid
                             # period (grant_pro_days), so it extends the subscription.
-                            _rtxt = (f"🔥 <b>{new_streak} дней подряд!</b>\n"
+                            _rtxt = (f"🔥 <b>{new_streak} {_streak_days_word(new_streak)} подряд!</b>\n"
                                      f"Заработан ещё <b>день Pro</b> — он добавится в конец твоей подписки 🎁\n"
                                      f"Не прерывай серию 🔥")
                         else:
-                            _rtxt = (f"🔥 <b>{new_streak} дней подряд!</b>\n"
+                            _rtxt = (f"🔥 <b>{new_streak} {_streak_days_word(new_streak)} подряд!</b>\n"
                                      f"Лови подарок — <b>+1 день Pro</b> 🎁\n"
                                      f"Каждые {STREAK_REWARD_EVERY} дней подряд = ещё день Pro. Не прерывай 🔥")
                         try:
@@ -3232,7 +3246,7 @@ async def _update_streaks_job(context: CallbackContext) -> None:
                     try:
                         await context.bot.send_message(
                             chat_id=int(ref_id), parse_mode="HTML",
-                            text=(f"🎉 Твой друг втянулся ({new_streak} дня подряд)! "
+                            text=(f"🎉 Твой друг втянулся ({new_streak} {_streak_days_word(new_streak)} подряд)! "
                                   f"Лови <b>+{REFERRAL_REWARD_DAYS} дней Pro</b> за приглашение 🔥"))
                     except Exception:
                         pass
@@ -7372,6 +7386,54 @@ async def run_world_news_morning_broadcast(context: CallbackContext):
     except Exception:
         logging.debug("world_news morning: set status=sent failed", exc_info=True)
     logging.info("world_news morning broadcast %s: group=%s dm_sent=%d/%d", today, group_ok, sent, len(uids))
+
+
+async def run_world_news_startup_catchup(context: CallbackContext):
+    """Heal a restart/redeploy that straddled a world-news cron slot — the exact failure
+    that ate 2026-07-04's news (the 20:00 tz-fix redeploy landed after the day's 20:00
+    evening-prep window, so tomorrow was never prepared → silent no-news next morning).
+
+    On startup:
+      • Evening (>=20:00 local) and TOMORROW has no prepared entry → run the evening prep
+        now, so the admin still gets the approve prompt in time for the 6:30 broadcast.
+      • Morning (>=6:30, <12:00 local) and TODAY's entry is APPROVED but not yet sent →
+        run the morning broadcast now (a restart around 6:30 shouldn't drop an already
+        approved send).
+    Both underlying jobs are idempotent (evening prep skips if tomorrow is already
+    prepared/approved; the broadcast sends only a pinned, unsent entry), so re-running is
+    safe. Manual approval is preserved — this NEVER auto-approves."""
+    try:
+        now = _get_quiz_schedule_now()
+    except Exception:
+        return
+    from backend.database import get_world_news_for_date
+    # Evening catch-up: a missed 20:00 prep would leave tomorrow empty.
+    if now.hour >= 20:
+        target = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            existing = await asyncio.to_thread(get_world_news_for_date, target)
+        except Exception:
+            existing = None
+        if not existing:
+            logging.info("world_news catch-up: %s not prepared at startup (evening) — running evening prep", target)
+            try:
+                await run_world_news_evening_prep(context)
+            except Exception:
+                logging.warning("world_news catch-up: evening prep failed", exc_info=True)
+        return
+    # Morning catch-up: a restart around 6:30 shouldn't drop an already-approved send.
+    if (now.hour, now.minute) >= (6, 30) and now.hour < 12:
+        today = now.strftime("%Y-%m-%d")
+        try:
+            entry = await asyncio.to_thread(get_world_news_for_date, today)
+        except Exception:
+            entry = None
+        if entry and entry.get("is_pinned") and str(entry.get("status") or "") != "sent":
+            logging.info("world_news catch-up: %s approved but unsent at startup (morning) — broadcasting now", today)
+            try:
+                await run_world_news_morning_broadcast(context)
+            except Exception:
+                logging.warning("world_news catch-up: morning broadcast failed", exc_info=True)
 
 
 def _world_news_morning_card_text(entry: dict) -> str:
@@ -33302,10 +33364,16 @@ def main():
         print("📌 Добавляем задачу в scheduler...")
         # Prepare «Начни день с коротких новостей» before the morning send (heavy work
         # once/day; the 5:05 broadcast only reads the prepared row).
-        scheduler.add_job(lambda: submit_async(run_world_news_evening_prep,CallbackContext(application=application)),"cron", hour=20, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME)
-        scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME)
-        scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
-        scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
+        scheduler.add_job(lambda: submit_async(run_world_news_evening_prep,CallbackContext(application=application)),"cron", hour=20, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Startup catch-up: if a restart/redeploy straddled either slot (this is what ate
+        # 2026-07-04's news), prepare tomorrow / send today's approved-but-unsent entry now.
+        scheduler.add_job(lambda: submit_async(run_world_news_startup_catchup,CallbackContext(application=application)),"date", run_date=_get_quiz_schedule_now() + timedelta(seconds=45))
+        # ⛔️ Отключено: скучное текстовое утреннее/дневное напоминание заменено на
+        # утреннюю рассылку новостей «Начни день с коротких новостей» (красивая плашка +
+        # разбор слов + тесты, run_world_news_morning_broadcast в 6:30). НЕ отправляем.
+        # scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=5, minute=5)
+        # scheduler.add_job(lambda: submit_async(send_morning_reminder,CallbackContext(application=application)),"cron", hour=15, minute=30)
         scheduler.add_job(
             lambda: submit_async(backfill_group_enrollment_prompts, CallbackContext(application=application)),
             "cron",

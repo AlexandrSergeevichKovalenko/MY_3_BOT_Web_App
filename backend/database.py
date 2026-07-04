@@ -16954,28 +16954,48 @@ def upsert_user_streak(user_id: int, *, current: int, longest: int, last_active,
 def get_users_active_on_date(play_date) -> set:
     """User ids with any learning activity on play_date — drives the daily streak.
 
-    "Active" must match the promise shown to users: *answered at least one task OR
-    translated a phrase*. Interactive answers live in bt_3_challenge_results (anagram,
-    aufgabe, rebus, crossword, sprint, …) and bt_3_article_quiz_answers — NOT in
-    bt_3_translations/bt_3_messages, so leaving them out silently broke streaks for
-    anyone who plays the games but doesn't translate every day."""
+    "Active" must match what the user experiences as *studying* — otherwise the streak
+    resets on a day they clearly worked. So this mirrors the FULL «Итоги дня» activity
+    set (get_daily_interactive_activity): every per-type answer table (both the Mini-App
+    AND the Telegram-group channel feed these directly, not only bt_3_challenge_results),
+    every Sprint/Battle result table, listening — PLUS FSRS/SRS card reviews
+    (bt_3_card_review_log) and the base translate/message activity.
+
+    Previously only 4 tables were checked (translations, messages, challenge_results,
+    article_quiz), so a user who only did flashcards, listening, group-play games, or the
+    Sprint/Battle games had their streak silently broken. Keep this list in sync with
+    get_daily_interactive_activity's sources."""
+    # (table, timestamp column). One genuine action in ANY of these = an active day.
+    sources = [
+        ("bt_3_translations",            "timestamp"),
+        ("bt_3_messages",                "timestamp"),
+        ("bt_3_challenge_results",       "created_at"),
+        ("bt_3_article_quiz_answers",    "answered_at"),
+        ("bt_3_telegram_quiz_attempts",  "answered_at"),
+        ("bt_3_image_quiz_answers",      "answered_at"),
+        ("bt_3_visual_riddle_answers",   "answered_at"),
+        ("bt_3_rebus_answers",           "answered_at"),
+        ("bt_3_crossword_answers",       "answered_at"),
+        ("bt_3_anagram_answers",         "answered_at"),
+        ("bt_3_aufgabe_answers",         "answered_at"),
+        ("bt_3_numdict_answers",         "submitted_at"),
+        ("bt_3_quiz_freeform_answers",   "answered_at"),
+        ("bt_3_listening_answers",       "submitted_at"),
+        ("bt_3_sprint_results",          "answered_at"),
+        ("bt_3_article_sprint_results",  "created_at"),
+        ("bt_3_adjektiv_sprint_results", "created_at"),
+        ("bt_3_wofrage_sprint_results",  "created_at"),
+        ("bt_3_card_review_log",         "reviewed_at"),
+    ]
+    union_sql = "\n                    UNION\n                    ".join(
+        f"SELECT DISTINCT user_id FROM {t} WHERE {ts}::date = %s AND user_id IS NOT NULL"
+        for (t, ts) in sources
+    )
     out: set = set()
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT DISTINCT user_id FROM bt_3_translations
-                    WHERE timestamp::date = %s AND user_id IS NOT NULL
-                    UNION
-                    SELECT DISTINCT user_id FROM bt_3_messages
-                    WHERE timestamp::date = %s AND user_id IS NOT NULL
-                    UNION
-                    SELECT DISTINCT user_id FROM bt_3_challenge_results
-                    WHERE created_at::date = %s AND user_id IS NOT NULL
-                    UNION
-                    SELECT DISTINCT user_id FROM bt_3_article_quiz_answers
-                    WHERE answered_at::date = %s AND user_id IS NOT NULL;
-                """, (play_date, play_date, play_date, play_date))
+                cur.execute(union_sql + ";", tuple(play_date for _ in sources))
                 for r in cur.fetchall() or []:
                     if r and r[0]:
                         out.add(int(r[0]))
