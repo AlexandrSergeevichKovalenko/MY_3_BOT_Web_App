@@ -19399,6 +19399,21 @@ def get_sendable_world_news(news_date) -> dict | None:
     return None
 
 
+def get_recent_world_news_video_ids(days: int = 14) -> set[str]:
+    """Video IDs used by the world-news rubric within the last `days` days. The generator
+    excludes these when auto-picking so it stops re-selecting the same freshest video every
+    day (rotation), with a graceful fallback if the exclusion empties the pool."""
+    d = max(1, int(days or 0))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT video_id FROM bt_3_world_news_daily "
+                "WHERE news_date >= (CURRENT_DATE - %s::int) AND video_id IS NOT NULL;",
+                (d,),
+            )
+            return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
+
+
 def upsert_world_news_daily(
     *,
     news_date,

@@ -40,12 +40,17 @@ def _search_queries() -> list[str]:
     raw = (os.getenv("WORLD_NEWS_SEARCH_QUERIES") or "").strip()
     if raw:
         return [q.strip() for q in raw.split("|") if q.strip()]
-    # STRICTLY news, learner-oriented, reliable German subtitles, newest-first.
+    # STRICTLY news, learner-oriented, reliable German subtitles, newest-first. Kept broad so
+    # the candidate pool doesn't collapse to the same 1–2 videos every day.
     return [
         "Langsam gesprochene Nachrichten",      # DW — slow news for learners
         "tagesschau in Einfacher Sprache",      # ARD — simple-language news
         "nachrichtenleicht",                    # Deutschlandfunk — easy news
         "DW Nachrichten",
+        "tagesschau in 100 Sekunden",           # ARD — daily 100-second bulletin
+        "ZDF heute Nachrichten",                # ZDF — daily news
+        "Deutschlandfunk Nachrichten",          # DLF — hourly news
+        "DW Deutsch lernen Nachrichten",        # DW learner-news variants
     ]
 
 
@@ -492,12 +497,37 @@ def prepare_world_news(
 ) -> dict:
     """Pick a video, build the pack, persist to bt_3_world_news_daily. Returns the stored
     entry dict. Raises on any failure so callers can degrade cleanly. `exclude_video_ids`
-    forces a DIFFERENT video (used by «переформировать»)."""
-    from backend.database import upsert_world_news_daily, get_world_news_for_date
+    forces a DIFFERENT video (used by «переформировать»).
+
+    Auto-pick (no manual_url) also excludes videos used by the rubric in the last
+    WORLD_NEWS_ROTATE_DAYS days (default 14) so it stops re-selecting the same freshest video
+    every day. If that rotation exclusion leaves nothing pickable, it retries WITHOUT it —
+    variety is preferred, but never at the cost of having no news at all."""
+    from backend.database import (
+        upsert_world_news_daily, get_world_news_for_date, get_recent_world_news_video_ids,
+    )
 
     date_str = (news_date or _today_str()).strip()
+    base_exclude = {str(v).strip() for v in (exclude_video_ids or set()) if str(v).strip()}
 
-    picked, diag = _pick_video_with_transcript(manual_url=manual_url, exclude_video_ids=exclude_video_ids)
+    picked, diag = None, {}
+    if not manual_url:
+        rotate_days = _env_int("WORLD_NEWS_ROTATE_DAYS", 14)
+        try:
+            recent = get_recent_world_news_video_ids(rotate_days)
+        except Exception:
+            logger.warning("world_news: recent-video lookup failed — skipping rotation exclude", exc_info=True)
+            recent = set()
+        rotated_exclude = base_exclude | recent
+        if rotated_exclude:
+            picked, diag = _pick_video_with_transcript(exclude_video_ids=rotated_exclude)
+            if not picked:
+                logger.info(
+                    "world_news: rotation exclude (%d recent) left nothing pickable — retrying without it (diag=%s)",
+                    len(recent), diag,
+                )
+    if not picked:
+        picked, diag = _pick_video_with_transcript(manual_url=manual_url, exclude_video_ids=base_exclude)
     if not picked:
         raise RuntimeError(f"world_news: no suitable video with transcript found — diag={diag}")
 
