@@ -7483,10 +7483,17 @@ async def admin_world_news_command(update: Update, context: CallbackContext):
         entry = await asyncio.to_thread(prepare_world_news, None, manual_url=manual_url)
     except Exception as exc:
         logging.exception("admin worldnews prep failed user_id=%s", int(sender.id))
-        await status.edit_text(
-            f"❌ Не удалось подготовить новость дня: {exc}\n"
-            "Попробуй ещё раз или задай ссылку: /worldnews <youtube_url>"
-        )
+        if "quota" in str(exc).lower():
+            await status.edit_text(
+                "⏳ Дневная квота YouTube API исчерпана — свежий ролик сейчас не подобрать. "
+                "Квота сбрасывается раз в сутки (≈утром по Киеву).\n"
+                "Можно задать ролик вручную: /worldnews <youtube_url>."
+            )
+        else:
+            await status.edit_text(
+                f"❌ Не удалось подготовить новость дня: {exc}\n"
+                "Попробуй ещё раз или задай ссылку: /worldnews <youtube_url>"
+            )
         return
     text = _world_news_preview_text(entry, header="✅ <b>Новость дня готова</b>")
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
@@ -7969,10 +7976,18 @@ async def admin_world_news_tomorrow_command(update: Update, context: CallbackCon
         )
     except Exception as exc:
         logging.exception("admin worldnews_tomorrow prep failed user_id=%s", int(sender.id))
-        await status.edit_text(
-            f"❌ Не удалось подготовить новость на завтра ({target}): {exc}\n"
-            "Попробуй ещё раз или задай ссылку: /worldnews_tomorrow <youtube_url>"
-        )
+        if "quota" in str(exc).lower():
+            await status.edit_text(
+                f"⏳ Дневная квота YouTube API исчерпана — новость на завтра ({target}) сейчас "
+                "не подобрать. Квота сбрасывается раз в сутки (≈утром по Киеву).\n"
+                "Уже сохранённую тему можно посмотреть/одобрить: /worldnews_show tomorrow, "
+                "или задать ролик вручную: /worldnews_tomorrow <youtube_url>."
+            )
+        else:
+            await status.edit_text(
+                f"❌ Не удалось подготовить новость на завтра ({target}): {exc}\n"
+                "Попробуй ещё раз или задай ссылку: /worldnews_tomorrow <youtube_url>"
+            )
         return
     text = _world_news_preview_text(
         entry, header="🌙 <b>Новость на завтра переформирована — проверь и одобри</b>"

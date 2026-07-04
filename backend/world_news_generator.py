@@ -21,11 +21,18 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# YouTube search.list costs 100 quota units/call (10k/day default). Two guards keep us from
+# burning it: a short-lived candidate cache so repeated «переформировать» clicks reuse one
+# search sweep, and a quota flag so a 429/403 surfaces as a clear reason instead of "no videos".
+_QUOTA_EXCEEDED = False
+_CAND_CACHE: dict = {"ts": 0.0, "items": []}
 
 # ── Config (env-overridable) ────────────────────────────────────────────────────
 
@@ -40,17 +47,14 @@ def _search_queries() -> list[str]:
     raw = (os.getenv("WORLD_NEWS_SEARCH_QUERIES") or "").strip()
     if raw:
         return [q.strip() for q in raw.split("|") if q.strip()]
-    # STRICTLY news, learner-oriented, reliable German subtitles, newest-first. Kept broad so
-    # the candidate pool doesn't collapse to the same 1–2 videos every day.
+    # STRICTLY news, learner-oriented, reliable German subtitles, newest-first. Kept LEAN on
+    # purpose: search.list costs 100 quota units/call, so every extra query 100×-multiplies the
+    # daily burn. These 4 cover the only sources whose German subtitles reliably fetch.
     return [
         "Langsam gesprochene Nachrichten",      # DW — slow news for learners
         "tagesschau in Einfacher Sprache",      # ARD — simple-language news
         "nachrichtenleicht",                    # Deutschlandfunk — easy news
         "DW Nachrichten",
-        "tagesschau in 100 Sekunden",           # ARD — daily 100-second bulletin
-        "ZDF heute Nachrichten",                # ZDF — daily news
-        "Deutschlandfunk Nachrichten",          # DLF — hourly news
-        "DW Deutsch lernen Nachrichten",        # DW learner-news variants
     ]
 
 
@@ -137,7 +141,12 @@ def _yt_api_search_recent(query: str, *, channel_id: str | None = None, max_resu
     try:
         resp = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=12)
         if resp.status_code >= 400:
-            logger.info("world_news: YT search HTTP %s for query=%r", resp.status_code, query)
+            if resp.status_code in (429, 403):
+                global _QUOTA_EXCEEDED
+                _QUOTA_EXCEEDED = True
+                logger.warning("world_news: YT search quota/rate-limited (HTTP %s) query=%r", resp.status_code, query)
+            else:
+                logger.info("world_news: YT search HTTP %s for query=%r", resp.status_code, query)
             return []
         out = []
         for item in (resp.json().get("items") or []):
@@ -233,7 +242,19 @@ def _transcript_to_text(items: list) -> str:
 # ── Candidate selection ─────────────────────────────────────────────────────────
 
 def _gather_candidates() -> list[dict]:
-    """Newest-first, de-duplicated candidate videos across configured queries/channels."""
+    """Newest-first, de-duplicated candidate videos across configured queries/channels.
+
+    Cached for WORLD_NEWS_CANDIDATE_TTL_SEC (default 6h) so repeated «переформировать» clicks
+    re-pick from ONE search sweep instead of spending 100 quota units per query every time —
+    the exact spam that exhausted the daily quota. Rotation/exclusion still runs on the cached
+    pool, so re-forms still yield a different video without re-searching."""
+    global _QUOTA_EXCEEDED
+    ttl = _env_int("WORLD_NEWS_CANDIDATE_TTL_SEC", 6 * 3600)
+    now = time.time()
+    if _CAND_CACHE["items"] and (now - _CAND_CACHE["ts"]) < ttl:
+        return list(_CAND_CACHE["items"])
+
+    _QUOTA_EXCEEDED = False
     seen: set[str] = set()
     candidates: list[dict] = []
     channels = _channel_ids() or [None]
@@ -247,7 +268,11 @@ def _gather_candidates() -> list[dict]:
                 candidates.append(row)
     # Sort newest-first by published_at (ISO 8601 sorts lexicographically).
     candidates.sort(key=lambda r: r.get("published_at") or "", reverse=True)
-    return candidates[: max(1, WORLD_NEWS_CANDIDATES)]
+    candidates = candidates[: max(1, WORLD_NEWS_CANDIDATES)]
+    if candidates:  # only cache a real sweep — never cache an empty (quota-exhausted) result
+        _CAND_CACHE["items"] = candidates
+        _CAND_CACHE["ts"] = now
+    return candidates
 
 
 def _pick_video_with_transcript(*, manual_url: str | None = None,
@@ -288,8 +313,12 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
 
     candidates = _gather_candidates()
     diag["candidates"] = len(candidates)
+    diag["quota_exceeded"] = _QUOTA_EXCEEDED
     if not candidates:
-        diag["reason"] = "no_candidates" if diag["has_yt_key"] else "no_youtube_api_key"
+        if _QUOTA_EXCEEDED:
+            diag["reason"] = "youtube_quota_exceeded"
+        else:
+            diag["reason"] = "no_candidates" if diag["has_yt_key"] else "no_youtube_api_key"
         logger.warning("world_news: no candidates from YouTube search (diag=%s)", diag)
         return None, diag
     details_map = _yt_api_video_details([c["video_id"] for c in candidates])
