@@ -158,7 +158,14 @@ ply==3.11
 prometheus-client==0.14.1
 prompt-toolkit==3.0.43
 proto-plus==1.26.0
-protobuf==5.27.2
+# Was pinned ==5.27.2, which is TOO OLD for the current livekit stack: livekit's
+# generated protobuf code (gencode 5.29.3) requires protobuf runtime >=5.29.3, so a
+# fresh build of the generic Dockerfile (which installs THIS root file) crashed at
+# `import livekit.api` with a protobuf VersionError. backend/requirements.txt leaves
+# protobuf unpinned and resolves fine — this range mirrors that while staying
+# deterministic. <6 keeps every other pin happy (tensorflow 2.18, grpcio-status 1.70,
+# google-* , streamlit 1.40 all require protobuf <6.0). Verified: resolves to 5.29.6.
+protobuf>=5.29.3,<6
 psutil==5.9.0
 psycopg2-binary==2.9.10
 ptyprocess==0.7.0
