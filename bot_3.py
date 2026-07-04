@@ -7931,6 +7931,56 @@ async def admin_world_news_approve_command(update: Update, context: CallbackCont
     )
 
 
+async def admin_world_news_tomorrow_command(update: Update, context: CallbackContext):
+    """Force (re)prepare TOMORROW's news right now, even if it's already approved. The 20:00
+    evening prep SKIPS an already-pinned tomorrow, so this is the only command-line way to
+    re-roll it (e.g. after a prompt change). Overwrites tomorrow's entry with a fresh video —
+    excluding the currently-selected one — and resets approval (is_pinned=False), then DMs the
+    preview with the «✅ Одобрить»/«🔄 Переформировать» keyboard.
+    /worldnews_tomorrow            — auto-pick a different fresh DW learner-news video
+    /worldnews_tomorrow <youtube>  — build tomorrow from a specific video. Admin only."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    manual_url = (context.args[0].strip() if context.args else None)
+    target = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    status = await message.reply_text(
+        f"📰 Переформировываю новость на завтра ({target})… "
+        "(ищу свежий ролик с субтитрами и делаю разбор)"
+    )
+    # Exclude the currently-selected tomorrow video so an auto-pick genuinely re-rolls.
+    exclude: set[str] = set()
+    if not manual_url:
+        try:
+            from backend.database import get_world_news_for_date
+            cur = await asyncio.to_thread(get_world_news_for_date, target)
+            if cur and cur.get("video_id"):
+                exclude = {str(cur["video_id"])}
+        except Exception:
+            exclude = set()
+    try:
+        from backend.world_news_generator import prepare_world_news
+        entry = await asyncio.to_thread(
+            prepare_world_news, target, manual_url=manual_url, exclude_video_ids=exclude
+        )
+    except Exception as exc:
+        logging.exception("admin worldnews_tomorrow prep failed user_id=%s", int(sender.id))
+        await status.edit_text(
+            f"❌ Не удалось подготовить новость на завтра ({target}): {exc}\n"
+            "Попробуй ещё раз или задай ссылку: /worldnews_tomorrow <youtube_url>"
+        )
+        return
+    text = _world_news_preview_text(
+        entry, header="🌙 <b>Новость на завтра переформирована — проверь и одобри</b>"
+    )
+    kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
+    await status.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
 async def admin_world_news_image_command(update: Update, context: CallbackContext):
     """Generate the Smurf-reading-the-newspaper background for the world-news card via
     gpt-image-1 and store it in R2. Run once; the morning card then uses it (blue morning
@@ -33341,6 +33391,7 @@ def main():
     application.add_handler(CommandHandler("worldnews_card", admin_world_news_card_command))
     application.add_handler(CommandHandler("admin_worldnews_image", admin_world_news_image_command))
     application.add_handler(CommandHandler("worldnews_approve", admin_world_news_approve_command))
+    application.add_handler(CommandHandler("worldnews_tomorrow", admin_world_news_tomorrow_command))
     application.add_handler(CommandHandler("describe_new", admin_describe_new_command))
     application.add_handler(CommandHandler("worldnews_send_now", admin_world_news_send_now_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
