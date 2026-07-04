@@ -118,6 +118,9 @@ from backend.admin_economics import (
 )
 from backend.admin_command_catalog import (
     ADMIN_COMMAND_TOPICS,
+    all_topics as _all_admin_command_topics,
+    catalog_command_names as _catalog_command_names,
+    register_discovered_topic as _register_discovered_admin_topic,
     render_topic,
     render_topics_overview,
     split_for_telegram as _split_admin_catalog_text,
@@ -4601,7 +4604,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
 def _build_admin_commands_topics_keyboard() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
-    for tid, title, cmds in ADMIN_COMMAND_TOPICS:
+    for tid, title, cmds in _all_admin_command_topics():
         row.append(InlineKeyboardButton(f"{title} · {len(cmds)}", callback_data=f"admincmd:t:{tid}"))
         if len(row) == 2:
             rows.append(row)
@@ -4609,6 +4612,77 @@ def _build_admin_commands_topics_keyboard() -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     return InlineKeyboardMarkup(rows)
+
+
+def sync_discovered_admin_commands(application) -> None:
+    """Auto-surface admin commands missing from admin_command_catalog.py in the palette.
+
+    Introspects every registered CommandHandler; a command counts as *admin* if its
+    callback guards with `_is_admin_user`. Any such command not already curated in
+    ADMIN_COMMAND_TOPICS is collected into a synthetic «🆕 Новые» topic (description =
+    the handler's docstring first line) so it shows up in the «🛠 Команды админа» button
+    IMMEDIATELY — no manual catalog edit needed — and a warning is logged listing them so
+    a proper RU description can be curated later. Best-effort: never blocks startup."""
+    import inspect
+    try:
+        cataloged = _catalog_command_names()
+    except Exception:
+        cataloged = set()
+    discovered: list[dict] = []
+    seen: set[str] = set()
+    try:
+        handler_groups = list((getattr(application, "handlers", {}) or {}).values())
+    except Exception:
+        handler_groups = []
+    for handlers in handler_groups:
+        for h in handlers or []:
+            if not isinstance(h, CommandHandler):
+                continue
+            cb = getattr(h, "callback", None)
+            try:
+                names = [str(c) for c in (h.commands or [])]
+            except Exception:
+                names = []
+            if not names:
+                continue
+            src = ""
+            doc = ""
+            try:
+                src = inspect.getsource(cb)
+            except Exception:
+                src = ""
+            try:
+                doc = (inspect.getdoc(cb) or "").strip()
+            except Exception:
+                doc = ""
+            is_admin = "_is_admin_user" in src
+            for nm in names:
+                key = nm.lstrip("/").strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if key in cataloged or not is_admin:
+                    continue
+                first_line = (doc.splitlines()[0].strip() if doc else "")
+                discovered.append({
+                    "cmd": f"/{key}",
+                    "desc": first_line[:400] or "Описание не задано — добавьте в backend/admin_command_catalog.py.",
+                    "args": "см. описание команды (docstring)",
+                    "example": f"/{key}",
+                })
+    discovered.sort(key=lambda d: d["cmd"])
+    try:
+        _register_discovered_admin_topic("autodiscovered", "🆕 Новые (без описания)", discovered)
+    except Exception:
+        logging.warning("admin palette: failed to register discovered topic", exc_info=True)
+        return
+    if discovered:
+        logging.warning(
+            "admin palette: %d admin command(s) NOT in admin_command_catalog.py — shown under «🆕 Новые», curate them: %s",
+            len(discovered), ", ".join(d["cmd"] for d in discovered),
+        )
+    else:
+        logging.info("admin palette: catalog is in sync — no uncatalogued admin commands")
 
 
 async def _send_admin_commands_overview(update: Update, context: CallbackContext) -> None:
@@ -34104,6 +34178,13 @@ def main():
             required_before_first_request=False,
             skipped=True,
         )
+    # Keep the «🛠 Команды админа» palette honest: after ALL handlers are registered,
+    # auto-surface any admin command missing from admin_command_catalog.py so it can never
+    # silently disappear from the list (and log which ones still need a curated RU desc).
+    try:
+        sync_discovered_admin_commands(application)
+    except Exception:
+        logging.warning("sync_discovered_admin_commands failed", exc_info=True)
     print("🚀 Бот запущен! Ожидаем сообщения...")
     bot_startup_completed_successfully = True
     _emit_bot_startup_total(success=bot_startup_completed_successfully)

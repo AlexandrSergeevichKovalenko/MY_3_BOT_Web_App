@@ -750,8 +750,39 @@ def _e(s: str) -> str:
     return html.escape(str(s or ""))
 
 
+# Runtime-discovered admin commands that are NOT (yet) hand-curated in a topic above.
+# Populated at bot startup by introspecting the registered CommandHandlers (see
+# sync_discovered_admin_commands in bot_3.py) so a newly added admin command shows up in
+# the «🛠 Команды админа» palette automatically — with its docstring as a provisional
+# description — instead of silently missing until someone edits this file.
+_EXTRA_TOPICS: list[tuple[str, str, list[dict]]] = []
+
+
+def register_discovered_topic(tid: str, title: str, cmds: list[dict]) -> None:
+    """Add/replace the synthetic topic that holds auto-discovered (uncatalogued) commands.
+    Idempotent by topic id, so re-running discovery just refreshes it."""
+    global _EXTRA_TOPICS
+    _EXTRA_TOPICS = [t for t in _EXTRA_TOPICS if t[0] != tid]
+    if cmds:
+        _EXTRA_TOPICS.append((tid, title, list(cmds)))
+
+
+def all_topics() -> list[tuple[str, str, list[dict]]]:
+    """Curated topics + any runtime-discovered ones — the full palette to render."""
+    return list(ADMIN_COMMAND_TOPICS) + list(_EXTRA_TOPICS)
+
+
+def catalog_command_names() -> set[str]:
+    """Every command slug already curated in ADMIN_COMMAND_TOPICS (no leading slash)."""
+    out: set[str] = set()
+    for _tid, _title, cmds in ADMIN_COMMAND_TOPICS:
+        for c in cmds:
+            out.add(str(c.get("cmd") or "").lstrip("/").strip())
+    return out
+
+
 def topic_by_id(topic_id: str):
-    for tid, title, cmds in ADMIN_COMMAND_TOPICS:
+    for tid, title, cmds in all_topics():
         if tid == topic_id:
             return tid, title, cmds
     return None
@@ -759,10 +790,11 @@ def topic_by_id(topic_id: str):
 
 def render_topics_overview() -> str:
     """Intro text shown above the topic buttons."""
-    total = sum(len(cmds) for _, _, cmds in ADMIN_COMMAND_TOPICS)
+    topics = all_topics()
+    total = sum(len(cmds) for _, _, cmds in topics)
     return (
         "🛠 <b>Команды администратора</b>\n"
-        f"Всего команд: <b>{total}</b> в {len(ADMIN_COMMAND_TOPICS)} темах.\n\n"
+        f"Всего команд: <b>{total}</b> в {len(topics)} темах.\n\n"
         "Выберите тему — пришлю список команд с описанием и параметрами."
     )
 
