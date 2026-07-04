@@ -59,8 +59,29 @@ def _search_queries() -> list[str]:
 
 
 def _channel_ids() -> list[str]:
+    """Curated German-news channels we pull recent uploads from (via their uploads playlist,
+    1 quota unit/call — vs 100 for search.list). Env-overridable with WORLD_NEWS_CHANNEL_IDS
+    (comma-separated UC… ids)."""
     raw = (os.getenv("WORLD_NEWS_CHANNEL_IDS") or "").strip()
-    return [c.strip() for c in raw.split(",") if c.strip()]
+    if raw:
+        return [c.strip() for c in raw.split(",") if c.strip()]
+    return [
+        "UC5NOEUbkLheQcaaRldYW5GA",  # tagesschau
+        "UCeqKIgPQfNInOswGRWt48kQ",  # ZDFheute Nachrichten
+        "UCMIgOXM2JEQ2Pv2d0_PVfcg",  # DW Deutsch
+        "UCxUWIEL-USsiPak0Qy6_vVg",  # Deutsch lernen mit der DW (learner-oriented)
+        "UCkCab7liRnZSZsN8YqzhuuA",  # Deutschlandfunk
+    ]
+
+
+def _uploads_playlist_id(channel_id: str) -> str:
+    """A channel's 'uploads' playlist is its channel id with the UC prefix swapped to UU."""
+    cid = str(channel_id or "").strip()
+    if cid.startswith("UU"):
+        return cid
+    if cid.startswith("UC") and len(cid) > 2:
+        return "UU" + cid[2:]
+    return ""
 
 
 def _news_channel_allow() -> list[str]:
@@ -72,6 +93,7 @@ def _news_channel_allow() -> list[str]:
         return [c.strip().lower() for c in raw.split("|") if c.strip()]
     return [
         "deutsche welle", "dw deutsch", "dw nachrichten", "learn german with dw",
+        "deutsch lernen mit der dw",
         "tagesschau", "zdfheute", "zdf heute", "heute journal",
         "nachrichtenleicht", "deutschlandfunk",
     ]
@@ -91,7 +113,7 @@ WORLD_NEWS_MAX_SECONDS = _env_int("WORLD_NEWS_MAX_SECONDS", 900)   # ≤ 15 min 
 # gesprochene Nachrichten» — the most reliable learner-news source with real German subtitles —
 # runs ~9–10 min, so a 6-min cap silently excluded it. Env-overridable if you want it shorter.
 WORLD_NEWS_MIN_SECONDS = _env_int("WORLD_NEWS_MIN_SECONDS", 40)
-WORLD_NEWS_CANDIDATES = _env_int("WORLD_NEWS_CANDIDATES", 12)
+WORLD_NEWS_CANDIDATES = _env_int("WORLD_NEWS_CANDIDATES", 20)
 WORLD_NEWS_MIN_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MIN_TRANSCRIPT_CHARS", 300)
 WORLD_NEWS_MAX_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MAX_TRANSCRIPT_CHARS", 8000)
 
@@ -163,6 +185,48 @@ def _yt_api_search_recent(query: str, *, channel_id: str | None = None, max_resu
         return out
     except Exception:
         logger.warning("world_news: YT search failed for query=%r", query, exc_info=True)
+        return []
+
+
+def _yt_api_playlist_recent(playlist_id: str, *, max_results: int = 10) -> list[dict]:
+    """Recent uploads from a channel's uploads playlist. Costs 1 quota unit/call (vs 100 for
+    search.list). Candidates are marked trusted (curated channel) so they bypass the channel
+    allow-filter downstream."""
+    api_key = _youtube_api_key()
+    if not api_key or not playlist_id:
+        return []
+    params = {
+        "part": "snippet",
+        "playlistId": playlist_id,
+        "maxResults": max_results,
+        "key": api_key,
+    }
+    try:
+        resp = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", params=params, timeout=12)
+        if resp.status_code >= 400:
+            if resp.status_code in (429, 403):
+                global _QUOTA_EXCEEDED
+                _QUOTA_EXCEEDED = True
+                logger.warning("world_news: YT playlistItems quota/rate-limited (HTTP %s) pl=%s", resp.status_code, playlist_id)
+            else:
+                logger.info("world_news: YT playlistItems HTTP %s for pl=%s", resp.status_code, playlist_id)
+            return []
+        out = []
+        for item in (resp.json().get("items") or []):
+            snip = item.get("snippet") or {}
+            vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
+            if not vid:
+                continue
+            out.append({
+                "video_id": vid,
+                "title": (snip.get("title") or "").strip(),
+                "channel_title": (snip.get("videoOwnerChannelTitle") or snip.get("channelTitle") or "").strip(),
+                "published_at": (snip.get("publishedAt") or "").strip(),
+                "trusted": True,
+            })
+        return out
+    except Exception:
+        logger.warning("world_news: YT playlistItems failed for pl=%s", playlist_id, exc_info=True)
         return []
 
 
@@ -242,12 +306,17 @@ def _transcript_to_text(items: list) -> str:
 # ── Candidate selection ─────────────────────────────────────────────────────────
 
 def _gather_candidates() -> list[dict]:
-    """Newest-first, de-duplicated candidate videos across configured queries/channels.
+    """Newest-first, de-duplicated candidate videos.
+
+    PRIMARY: recent uploads from curated German-news channels via their uploads playlists
+    (playlistItems.list = 1 quota unit/call). This is both ~100× cheaper than search.list and
+    a cleaner pool (no English DW News / re-uploaders to filter out).
+    FALLBACK: keyword search (search.list = 100 units) only if the playlists yield nothing and
+    we weren't rate-limited — keeps the rubric alive if the channel set is misconfigured.
 
     Cached for WORLD_NEWS_CANDIDATE_TTL_SEC (default 6h) so repeated «переформировать» clicks
-    re-pick from ONE search sweep instead of spending 100 quota units per query every time —
-    the exact spam that exhausted the daily quota. Rotation/exclusion still runs on the cached
-    pool, so re-forms still yield a different video without re-searching."""
+    re-pick from ONE sweep instead of re-hitting the API. Rotation/exclusion still runs on the
+    cached pool, so re-forms still yield a different video without re-fetching."""
     global _QUOTA_EXCEEDED
     ttl = _env_int("WORLD_NEWS_CANDIDATE_TTL_SEC", 6 * 3600)
     now = time.time()
@@ -257,15 +326,30 @@ def _gather_candidates() -> list[dict]:
     _QUOTA_EXCEEDED = False
     seen: set[str] = set()
     candidates: list[dict] = []
-    channels = _channel_ids() or [None]
-    for query in _search_queries():
-        for channel_id in channels:
-            for row in _yt_api_search_recent(query, channel_id=channel_id, max_results=10):
+    per_channel = _env_int("WORLD_NEWS_PER_CHANNEL", 8)
+    for cid in _channel_ids():
+        pl = _uploads_playlist_id(cid)
+        if not pl:
+            continue
+        for row in _yt_api_playlist_recent(pl, max_results=per_channel):
+            vid = row["video_id"]
+            if vid in seen:
+                continue
+            seen.add(vid)
+            candidates.append(row)
+
+    # Fallback to keyword search only if the cheap path produced nothing (and not because we
+    # were rate-limited — in that case searching would just burn 100-unit calls for nothing).
+    if not candidates and not _QUOTA_EXCEEDED:
+        logger.info("world_news: no playlist candidates — falling back to keyword search")
+        for query in _search_queries():
+            for row in _yt_api_search_recent(query, max_results=10):
                 vid = row["video_id"]
                 if vid in seen:
                     continue
                 seen.add(vid)
                 candidates.append(row)
+
     # Sort newest-first by published_at (ISO 8601 sorts lexicographically).
     candidates.sort(key=lambda r: r.get("published_at") or "", reverse=True)
     candidates = candidates[: max(1, WORLD_NEWS_CANDIDATES)]
@@ -329,8 +413,9 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
             continue
         det = details_map.get(vid, {})
         # STRICT news filter: only accept real news channels (reject entertainment/docs/vlogs).
+        # Playlist candidates are pre-trusted (curated channel) and skip this check.
         channel_title = det.get("channel_title") or cand.get("channel_title") or ""
-        if not _is_allowed_news_channel(channel_title):
+        if not cand.get("trusted") and not _is_allowed_news_channel(channel_title):
             diag["channel_rejected"] += 1
             continue
         dur = det.get("duration_seconds") or 0
