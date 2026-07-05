@@ -31,34 +31,36 @@ _GENUS_TO_ARTICLE = {"m": "der", "f": "die", "n": "das"}
 # German section header, e.g. "== Börsenwert ({{Sprache|Deutsch}}) =="
 _DE_HEADER = re.compile(r"==\s*[^=]*\(\{\{Sprache\|Deutsch\}\}\)\s*==")
 _NEXT_LANG = re.compile(r"\n==\s*[^=].*\(\{\{Sprache\|")
-_IS_NOUN = re.compile(r"\{\{Wortart\|Substantiv\|Deutsch\}\}")
-_GENUS = re.compile(r"\bGenus[^=\n]*=\s*([mfn])\b")
+# Noun overview templates carry the canonical grammatical gender(s). Reading genus
+# only from these (not stray page text) avoids picking up unrelated mentions.
+_OVERVIEW = re.compile(r"\{\{Deutsch[- ]Substantiv[- ]Übersicht[^}]*\}\}", re.DOTALL)
+_GENUS = re.compile(r"\bGenus\s*\d*\s*=\s*([mfn])\b")
 
 
-def article_from_genus(genus: str | None) -> str | None:
-    return _GENUS_TO_ARTICLE.get(str(genus or ""))
-
-
-def _german_block(wikitext: str) -> str | None:
+def _genera_from_wikitext(wikitext: str) -> str:
+    """Sorted genus letters documented for the German noun, e.g. 'm', 'fm', 'fn';
+    '-' if none. A word with several documented genera (regional/rare variants or
+    genuinely two-gender) yields more than one letter — the audit treats a stored
+    article as correct if it's among them."""
     m = _DE_HEADER.search(wikitext)
-    if not m:
-        return None
-    start = m.end()
-    nxt = _NEXT_LANG.search(wikitext[start:])
-    return wikitext[start: start + nxt.start()] if nxt else wikitext[start:]
-
-
-def _genus_from_wikitext(wikitext: str) -> str:
-    """'m'/'f'/'n' for a single genus, 'x' for two-gender, '-' otherwise."""
-    blk = _german_block(wikitext)
+    blk = wikitext[m.end():] if m else None
+    if blk is not None:
+        nxt = _NEXT_LANG.search(blk)
+        if nxt:
+            blk = blk[:nxt.start()]
     if blk is None:
         return "-"
-    if not _IS_NOUN.search(blk) and "Substantiv Übersicht" not in blk:
-        return "-"
-    genera = set(_GENUS.findall(blk))
+    genera: set[str] = set()
+    for tmpl in _OVERVIEW.findall(blk):
+        genera.update(_GENUS.findall(tmpl))
     if not genera:
         return "-"
-    return "x" if len(genera) > 1 else genera.pop()
+    return "".join(sorted(genera))
+
+
+def genera_to_articles(code: str | None) -> set:
+    """'fm' → {'die','der'}; '-'/'' → set()."""
+    return {_GENUS_TO_ARTICLE[c] for c in str(code or "") if c in _GENUS_TO_ARTICLE}
 
 
 def _api_fetch(titles: list[str]) -> dict[str, str]:
@@ -91,14 +93,14 @@ def _api_fetch(titles: list[str]) -> dict[str, str]:
         except (KeyError, IndexError, TypeError):
             out[title] = "-"
             continue
-        out[title] = _genus_from_wikitext(content)
+        out[title] = _genera_from_wikitext(content)
     return out
 
 
 def genus_for_titles(titles: list[str]) -> dict[str, str]:
     """Cache-aware genus lookup for a set of exact page titles.
-    Returns {title: 'm'|'f'|'n'|'x'|'-'} for every title we could resolve (cached
-    or freshly fetched). Titles whose network fetch failed are simply omitted."""
+    Returns {title: genus-code} — sorted genus letters ('m','fm',…) or '-' — for
+    every title we could resolve (cached or fetched). Failed fetches are omitted."""
     from backend.database import (
         ensure_wiktionary_genus_cache_schema, get_cached_genus, upsert_genus_cache,
     )
@@ -127,25 +129,22 @@ def genus_for_titles(titles: list[str]) -> dict[str, str]:
 
 def reference_articles(words: list[str]) -> dict[str, dict]:
     """Authoritative verdict per word from the word's OWN Wiktionary page.
-    Returns {word: {"article": der/die/das|None, "genus": code, "basis": str}}.
-      basis ∈ {"direct", "none"}; genus 'x' means two-gender (ambiguous).
+    Returns {word: {"articles": set[str], "code": str, "basis": str}} where
+    `articles` is the SET of documented genders (empty if the page has none) and
+    `basis` ∈ {"direct", "none"}. The audit accepts a stored article that is among
+    `articles`, and only proposes a fix when a single gender is documented.
 
     Deliberately NO compound-head decomposition: naive suffix matching grabs
     garbage substrings (Betriebs‑kosten→"Osten", Kassen‑bereich→"Reich") and can't
     handle plurale-tantum, producing FALSE corrections. Words with no direct entry
-    are returned article=None and left to the curated deterministic guard (in the
-    audit layer) or reported as 'unknown' — never auto-fixed on a guess."""
+    fall to the curated deterministic guard (audit layer) or 'unknown'."""
     words = [str(w).strip() for w in words if str(w).strip()]
     titles = {w: (w[:1].upper() + w[1:]) for w in words}
     genus = genus_for_titles(list(set(titles.values())))
 
     out: dict[str, dict] = {}
     for w in words:
-        g = genus.get(titles[w], "-")
-        if g in _GENUS_TO_ARTICLE:
-            out[w] = {"article": _GENUS_TO_ARTICLE[g], "genus": g, "basis": "direct"}
-        elif g == "x":
-            out[w] = {"article": None, "genus": "x", "basis": "direct"}
-        else:
-            out[w] = {"article": None, "genus": "-", "basis": "none"}
+        code = genus.get(titles[w], "-")
+        arts = genera_to_articles(code)
+        out[w] = {"articles": arts, "code": code, "basis": "direct" if arts else "none"}
     return out

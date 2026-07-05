@@ -21,14 +21,19 @@ _CHUNK = 150  # words per reference batch (for progress + bounded memory)
 
 
 def _iter_rows(theme_keys: list[str] | None) -> list[dict]:
-    from backend.database import list_all_article_sprint_rows, list_article_sprint_rows
-    if not theme_keys:
-        return list_all_article_sprint_rows()
-    rows: list[dict] = []
-    for key in theme_keys:
-        for r in list_article_sprint_rows(key):
-            rows.append({"id": r["id"], "theme_key": key, "word": r["word"], "article": r["article"]})
+    from backend.database import list_all_article_sprint_rows
+    rows = list_all_article_sprint_rows()
+    if theme_keys:
+        keep = set(theme_keys)
+        rows = [r for r in rows if r["theme_key"] in keep]
     return rows
+
+
+def _rec(r: dict, **extra) -> dict:
+    base = {"id": r["id"], "theme": r["theme_key"], "word": r["word"],
+            "stored": str(r["article"]).lower(), "meaning_ru": r.get("meaning_ru", "")}
+    base.update(extra)
+    return base
 
 
 def _classify(rows: list[dict], progress_cb=None) -> dict:
@@ -39,7 +44,7 @@ def _classify(rows: list[dict], progress_cb=None) -> dict:
 
     report = {
         "checked": len(rows), "ok": 0,
-        "mismatch": [], "conflict": [], "ambiguous": [], "unknown": [],
+        "mismatch": [], "review": [], "ambiguous": [], "unknown": [],
     }
     done = 0
     for i in range(0, len(rows), _CHUNK):
@@ -48,41 +53,37 @@ def _classify(rows: list[dict], progress_cb=None) -> dict:
         for r in chunk:
             w, stored = r["word"], str(r["article"]).lower()
             ref = refs.get(w, {})
-            wik_art = ref.get("article")
-            wik_genus = ref.get("genus")
-            basis = ref.get("basis", "none")
+            wik = ref.get("articles") or set()  # documented genders
 
-            # 1) inherently ambiguous — two-gender roots or person-adjective nouns.
-            if is_ambiguous_noun(w) or wik_genus == "x":
-                why = ("person-adj" if is_nominalized_person_adjective(w)
-                       else ("two-gender/wiktionary" if wik_genus == "x" else "two-gender/list"))
-                report["ambiguous"].append(
-                    {"id": r["id"], "theme": r["theme_key"], "word": w, "stored": stored, "why": why})
+            # 1) curated meaning-dependent two-gender / person-adjective nouns — the
+            # article depends on the intended sense. Keep them; flag only so the game
+            # shows the Russian meaning. NOT derived from Wiktionary's noisy multi-genus.
+            if is_ambiguous_noun(w):
+                why = "person-adj" if is_nominalized_person_adjective(w) else "meaning-dependent"
+                report["ambiguous"].append(_rec(r, why=why))
                 continue
 
+            # 2) Wiktionary is authoritative when it documents gender(s).
+            if wik:
+                if stored in wik:
+                    report["ok"] += 1              # stored article is a documented gender
+                elif len(wik) == 1:
+                    ref_art = next(iter(wik))       # single documented gender, stored differs → fix
+                    report["mismatch"].append(_rec(r, ref=ref_art, basis="wiktionary"))
+                else:
+                    # several documented genders, none matches stored → can't auto-pick.
+                    report["review"].append(_rec(r, options=sorted(wik)))
+                continue
+
+            # 3) no Wiktionary genus → deterministic guard, else unknown.
             guard = strong_gender(w)
-            # 2) resolve the reference article.
-            if wik_art and guard and wik_art != guard:
-                report["conflict"].append(
-                    {"id": r["id"], "theme": r["theme_key"], "word": w,
-                     "stored": stored, "wiktionary": wik_art, "guard": guard, "basis": basis})
-                continue
-            ref_art = wik_art or guard
-            ref_basis = basis if wik_art else ("guard" if guard else "none")
-            if wik_art and guard:
-                ref_basis = "wiktionary+guard"
-
-            if not ref_art:
-                report["unknown"].append(
-                    {"id": r["id"], "theme": r["theme_key"], "word": w, "stored": stored})
-                continue
-
-            if ref_art == stored:
-                report["ok"] += 1
+            if guard:
+                if guard == stored:
+                    report["ok"] += 1
+                else:
+                    report["mismatch"].append(_rec(r, ref=guard, basis="guard"))
             else:
-                report["mismatch"].append(
-                    {"id": r["id"], "theme": r["theme_key"], "word": w,
-                     "stored": stored, "ref": ref_art, "basis": ref_basis})
+                report["unknown"].append(_rec(r))
         done += len(chunk)
         if progress_cb:
             try:
@@ -99,7 +100,7 @@ def audit_all(theme_keys: list[str] | None = None, progress_cb=None) -> dict:
     report = _classify(rows, progress_cb=progress_cb)
     report["counts"] = {
         "checked": report["checked"], "ok": report["ok"],
-        "mismatch": len(report["mismatch"]), "conflict": len(report["conflict"]),
+        "mismatch": len(report["mismatch"]), "review": len(report["review"]),
         "ambiguous": len(report["ambiguous"]), "unknown": len(report["unknown"]),
     }
     return report
@@ -107,7 +108,7 @@ def audit_all(theme_keys: list[str] | None = None, progress_cb=None) -> dict:
 
 def apply_fixes(theme_keys: list[str] | None = None, progress_cb=None) -> dict:
     """Apply the confirmed corrections (mismatch bucket only) to the article bank.
-    Ambiguous / conflict / unknown rows are left untouched for manual review.
+    Review / ambiguous / unknown rows are left untouched for manual decision.
     Re-derives from the (now cached) reference, so it fixes exactly what a fresh
     audit reports."""
     report = audit_all(theme_keys, progress_cb=progress_cb)
@@ -123,5 +124,5 @@ def apply_fixes(theme_keys: list[str] | None = None, progress_cb=None) -> dict:
         except Exception:
             logging.warning("apply_fixes: update failed id=%s word=%s", m["id"], m["word"], exc_info=True)
     return {"fixed": fixed, "attempted": len(report["mismatch"]),
-            "conflict": len(report["conflict"]), "ambiguous": len(report["ambiguous"]),
+            "review": len(report["review"]), "ambiguous": len(report["ambiguous"]),
             "unknown": len(report["unknown"]), "examples": examples}

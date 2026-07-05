@@ -61,7 +61,9 @@ _HEAD_GENDER.update({
 
 # Only LOW-EXCEPTION derivational suffixes (dropped the risky -ur/-ik/-chen/-lein
 # which have native root counter-examples: Flur, Kuchen, Knochen, …).
-_DIE_SUFFIXES = ("ung", "heit", "keit", "schaft", "ion", "tät", "ität", "ie", "enz", "anz")
+# NB: use -tion/-sion, NOT bare -ion — the latter wrongly claims die for Greek
+# neuters (das Stadion, das Ganglion) and anglicisms (der Champion, der Spion).
+_DIE_SUFFIXES = ("ung", "heit", "keit", "schaft", "tion", "sion", "tät", "ität", "ie", "enz", "anz")
 _DER_SUFFIXES = ("ling", "ismus")
 # Words that match a suffix pattern but DON'T follow the rule (root nouns).
 _SUFFIX_EXCEPTIONS = {"sprung", "schwung", "dung", "schwung"}

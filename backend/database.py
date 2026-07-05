@@ -40894,16 +40894,17 @@ def retire_article_sprint_noun(row_id: int) -> None:
 
 
 def list_all_article_sprint_rows() -> list[dict]:
-    """Every non-retired row across ALL themes as {id, theme_key, word, article}.
+    """Every non-retired row across ALL themes as {id, theme_key, word, article, meaning_ru}.
     Used by the Wiktionary correctness audit."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT id, theme_key, word, article FROM bt_3_article_sprint_nouns "
+                "SELECT id, theme_key, word, article, meaning_ru FROM bt_3_article_sprint_nouns "
                 "WHERE NOT retired ORDER BY theme_key, id;"
             )
             rows = cursor.fetchall() or []
-    return [{"id": int(r[0]), "theme_key": str(r[1]), "word": str(r[2]), "article": str(r[3])}
+    return [{"id": int(r[0]), "theme_key": str(r[1]), "word": str(r[2]),
+             "article": str(r[3]), "meaning_ru": str(r[4] or "")}
             for r in rows]
 
 

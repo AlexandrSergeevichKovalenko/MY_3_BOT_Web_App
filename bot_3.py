@@ -24323,27 +24323,29 @@ def _artikel_audit_resolve_themes(arg: str) -> list[str] | None:
 
 
 def _artikel_audit_document(report: dict) -> bytes:
-    """Full audit findings as a plain-text attachment."""
+    """Full audit findings as a plain-text attachment (word + Russian meaning)."""
+    def mr(m):
+        return f"= {m.get('meaning_ru') or '—'}"
     lines = ["ARTIKEL SPRINT — AUDIT (Wiktionary reference)", ""]
     c = report["counts"]
     lines.append(f"checked={c['checked']} ok={c['ok']} mismatch={c['mismatch']} "
-                 f"conflict={c['conflict']} ambiguous={c['ambiguous']} unknown={c['unknown']}")
+                 f"review={c['review']} ambiguous={c['ambiguous']} unknown={c['unknown']}")
     lines.append("")
-    lines.append("=== MISMATCH (stored -> reference) ===")
+    lines.append("=== MISMATCH (stored -> reference; apply with /artikel_fixarticles) ===")
     for m in report["mismatch"]:
-        lines.append(f"  {m['stored']} -> {m['ref']}  {m['word']}  [{m['basis']}]  ({m['theme']})")
+        lines.append(f"  {m['stored']} -> {m['ref']}  {m['word']:<24} {mr(m):<26} [{m['basis']}]  ({m['theme']})")
     lines.append("")
-    lines.append("=== CONFLICT (Wiktionary vs guard disagree — review) ===")
-    for m in report["conflict"]:
-        lines.append(f"  {m['word']}: stored={m['stored']} wiktionary={m['wiktionary']} guard={m['guard']} ({m['theme']})")
+    lines.append("=== REVIEW (several genders documented, stored matches none — decide) ===")
+    for m in report["review"]:
+        lines.append(f"  {m['stored']}  {m['word']:<24} {mr(m):<26} options={m.get('options')}  ({m['theme']})")
     lines.append("")
-    lines.append("=== AMBIGUOUS (two-gender / person-adj — should not be in bank) ===")
+    lines.append("=== MEANING-DEPENDENT / PERSON (kept — article depends on the sense) ===")
     for m in report["ambiguous"]:
-        lines.append(f"  {m['stored']} {m['word']}  [{m['why']}]  ({m['theme']})")
+        lines.append(f"  {m['stored']}  {m['word']:<24} {mr(m):<26} [{m['why']}]  ({m['theme']})")
     lines.append("")
-    lines.append("=== UNKNOWN (no reference — verify manually) ===")
+    lines.append("=== UNKNOWN (no Wiktionary entry + no rule — verify manually) ===")
     for m in report["unknown"]:
-        lines.append(f"  {m['stored']} {m['word']}  ({m['theme']})")
+        lines.append(f"  {m['stored']}  {m['word']:<24} {mr(m):<26} ({m['theme']})")
     return ("\n".join(lines)).encode("utf-8")
 
 
@@ -24375,7 +24377,7 @@ async def admin_artikel_audit_command(update: Update, context: CallbackContext) 
     )
 
     from backend.article_audit import audit_all
-    agg = {"checked": 0, "ok": 0, "mismatch": [], "conflict": [], "ambiguous": [], "unknown": []}
+    agg = {"checked": 0, "ok": 0, "mismatch": [], "review": [], "ambiguous": [], "unknown": []}
     for i, key in enumerate(theme_keys, 1):
         try:
             rep = await asyncio.to_thread(audit_all, [key])
@@ -24384,35 +24386,37 @@ async def admin_artikel_audit_command(update: Update, context: CallbackContext) 
             continue
         agg["checked"] += rep["checked"]
         agg["ok"] += rep["ok"]
-        for b in ("mismatch", "conflict", "ambiguous", "unknown"):
+        for b in ("mismatch", "review", "ambiguous", "unknown"):
             agg[b].extend(rep[b])
         if i % 3 == 0 or i == len(theme_keys):
             try:
                 await status_msg.edit_text(
                     f"🔎 Аудит… {i}/{len(theme_keys)} тем · "
-                    f"ошибок: {len(agg['mismatch'])} · спорных: {len(agg['conflict'])}",
+                    f"ошибок: {len(agg['mismatch'])} · на решение: {len(agg['review'])}",
                 )
             except Exception:
                 pass
     agg["counts"] = {
         "checked": agg["checked"], "ok": agg["ok"], "mismatch": len(agg["mismatch"]),
-        "conflict": len(agg["conflict"]), "ambiguous": len(agg["ambiguous"]),
+        "review": len(agg["review"]), "ambiguous": len(agg["ambiguous"]),
         "unknown": len(agg["unknown"]),
     }
 
     c = agg["counts"]
     head = (f"✅ <b>Аудит завершён</b> · проверено {c['checked']}\n"
             f"🟢 верно: {c['ok']} · 🔴 ошибок: {c['mismatch']} · "
-            f"⚠️ спорных: {c['conflict']} · ⊘ двуродовых: {c['ambiguous']} · "
+            f"🤔 на решение: {c['review']} · 🔀 смысло-завис.: {c['ambiguous']} · "
             f"❔ без эталона: {c['unknown']}")
     preview = []
     for m in agg["mismatch"][:25]:
-        preview.append(f"• <code>{m['stored']}→{m['ref']}</code> {html.escape(m['word'])} <i>[{m['basis']}]</i>")
+        mru = html.escape(m.get("meaning_ru") or "—")
+        preview.append(f"• <code>{m['stored']}→{m['ref']}</code> {html.escape(m['word'])} — {mru}")
     body = head
     if preview:
         body += "\n\n<b>Ошибки (первые 25):</b>\n" + "\n".join(preview)
     if c["mismatch"]:
         body += f"\n\n▶️ Применить: <code>/artikel_fixarticles {arg or 'all'}</code>"
+    body += "\n📄 Полный список (с русскими значениями) — в приложенном файле."
     try:
         await status_msg.edit_text("✅ Аудит завершён.")
     except Exception:
@@ -24424,7 +24428,7 @@ async def admin_artikel_audit_command(update: Update, context: CallbackContext) 
         logging.warning("artikel_audit: summary send failed", exc_info=True)
 
     # Full findings as an attachment when there's anything to review.
-    if c["mismatch"] + c["conflict"] + c["ambiguous"] + c["unknown"] > 0:
+    if c["mismatch"] + c["review"] + c["ambiguous"] + c["unknown"] > 0:
         doc = _artikel_audit_document(agg)
         try:
             await message.reply_document(
