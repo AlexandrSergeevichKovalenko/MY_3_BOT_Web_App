@@ -16746,8 +16746,71 @@ def _ensure_dau_schema() -> None:
                     PRIMARY KEY (user_id, feature_key)
                 );
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_user_onboarding (
+                    user_id      BIGINT PRIMARY KEY,
+                    completed    BOOLEAN NOT NULL DEFAULT FALSE,
+                    current_step INT NOT NULL DEFAULT 0,
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
         conn.commit()
     _dau_schema_ready = True
+
+
+def get_onboarding_state(user_id: int) -> dict:
+    """{'completed': bool, 'current_step': int}. Absent row = never started."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT completed, current_step FROM bt_3_user_onboarding "
+                            "WHERE user_id=%s;", (int(user_id),))
+                r = cur.fetchone()
+        if not r:
+            return {"completed": False, "current_step": 0}
+        return {"completed": bool(r[0]), "current_step": int(r[1] or 0)}
+    except Exception:
+        # Fail OPEN as "completed" so a DB blip never traps a user on onboarding.
+        return {"completed": True, "current_step": 0}
+
+
+def set_onboarding_step(user_id: int, step: int) -> bool:
+    """Persist the resume point (which step the user is on)."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bt_3_user_onboarding (user_id, current_step, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                        SET current_step = EXCLUDED.current_step, updated_at = NOW();
+                """, (int(user_id), int(step)))
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("set_onboarding_step failed user=%s", user_id, exc_info=True)
+        return False
+
+
+def mark_onboarding_completed(user_id: int) -> bool:
+    """Flag onboarding done (idempotent)."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bt_3_user_onboarding (user_id, completed, updated_at)
+                    VALUES (%s, TRUE, NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                        SET completed = TRUE, updated_at = NOW();
+                """, (int(user_id),))
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("mark_onboarding_completed failed user=%s", user_id, exc_info=True)
+        return False
 
 
 def was_announcement_sent(user_id: int, feature_key: str) -> bool:

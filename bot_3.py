@@ -333,6 +333,7 @@ from backend.database import (
     count_referrals,
     was_announcement_sent,
     mark_announcement_sent,
+    get_onboarding_state,
     get_user_streak,
     upsert_user_streak,
     get_users_active_on_date,
@@ -8913,6 +8914,24 @@ async def check_translation_from_text(update: Update, context: CallbackContext):
 
     
 
+def _onboarding_enabled() -> bool:
+    return (os.getenv("ONBOARDING_ENABLED") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _send_onboarding_prompt(update: Update, context: CallbackContext) -> None:
+    """Welcome + one prominent deeplink button into the Mini-App onboarding."""
+    if not update.effective_message:
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🚀 Пройти настройку", url=get_webapp_deeplink("onboarding"))]])
+    await update.effective_message.reply_text(
+        "👋 <b>Willkommen!</b>\n\n"
+        "Давай за пару минут настроим бота под тебя — язык, словарь, темп заданий. "
+        "Потом покажу, как всё работает.\n\n"
+        "Нажми кнопку ниже 👇",
+        parse_mode="HTML", reply_markup=kb)
+
+
 async def start(update: Update, context: CallbackContext):
     """Запуск бота и отправка главного меню."""
     user = update.effective_user
@@ -8946,6 +8965,16 @@ async def start(update: Update, context: CallbackContext):
 
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
     if update.effective_chat and update.effective_chat.type == "private":
+        # First-run onboarding gate (behind ONBOARDING_ENABLED): un-onboarded users
+        # get the «Пройти настройку» deeplink instead of the full menu.
+        if _onboarding_enabled() and user:
+            try:
+                _ob = await asyncio.to_thread(get_onboarding_state, int(user.id))
+            except Exception:
+                _ob = {"completed": True}
+            if not _ob.get("completed"):
+                await _send_onboarding_prompt(update, context)
+                return
         await send_main_menu(update, context)
 
 async def log_message(update: Update, context: CallbackContext):
