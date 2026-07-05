@@ -34,15 +34,39 @@ const STEPS = [
   { id: 'finale',     title: 'Готово! ✅',                kind: 'finale' },
 ];
 
-// Placeholder body per step — Stage 1 replaces each case with the real control.
-function StepBody({ step, isPro, confirmed, onConfirm }) {
-  switch (step.kind) {
+// Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
+function StepBody({ step, isPro, confirmed, busy, stepErr, onConfirm }) {
+  switch (step.id === 'language' ? 'language' : step.kind) {
     case 'welcome':
       return (
         <p className="ob-lead">
           Давай за пару минут настроим бота под тебя — язык, словарь, темп заданий.
           Потом покажу, как всё работает. Всё это потом легко изменить в «🎬 Как пользоваться».
         </p>
+      );
+    case 'language':
+      // German-only mode → the pair is fixed (Немецкий ← Русский); the step just
+      // confirms it and upserts the profile row.
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            Ты учишь <b>немецкий</b>, а объяснять будем на <b>русском</b>. Подтверди — и поехали.
+          </p>
+          <div className="ob-pair">
+            <span className="ob-pair-item"><b>🇩🇪 Немецкий</b><small>учишь</small></span>
+            <span className="ob-pair-arrow">↔</span>
+            <span className="ob-pair-item"><b>🗣 Русский</b><small>объясняем</small></span>
+          </div>
+          <button
+            type="button"
+            className={`ob-confirm ${confirmed ? 'is-done' : ''}`}
+            onClick={onConfirm}
+            disabled={busy || confirmed}
+          >
+            {confirmed ? '✅ Подтверждено' : busy ? 'Сохраняю…' : '✓ Подтвердить'}
+          </button>
+          {stepErr ? <p className="ob-err">{stepErr}</p> : null}
+        </div>
       );
     case 'core':
       return (
@@ -52,6 +76,7 @@ function StepBody({ step, isPro, confirmed, onConfirm }) {
             type="button"
             className={`ob-confirm ${confirmed ? 'is-done' : ''}`}
             onClick={onConfirm}
+            disabled={confirmed}
           >
             {confirmed ? '✅ Подтверждено' : '✓ Подтвердить (заглушка)'}
           </button>
@@ -92,6 +117,8 @@ export default function OnboardingWizard() {
   const [loading, setLoading] = useState(true);
   const [finishing, setFinishing] = useState(false);
   const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);      // per-step async action in flight
+  const [stepErr, setStepErr] = useState('');
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
@@ -121,6 +148,8 @@ export default function OnboardingWizard() {
   // Persist the resume point when the step changes (fire-and-forget).
   useEffect(() => {
     if (loading) return;
+    setStepErr('');
+    setBusy(false);
     api('/api/webapp/onboarding/step', { step: idx }).catch(() => {});
   }, [idx, loading]);
 
@@ -148,7 +177,21 @@ export default function OnboardingWizard() {
     setIdx((i) => Math.max(i - 1, 0));
   }, []);
 
-  const confirmStep = useCallback(() => {
+  const confirmStep = useCallback(async () => {
+    setStepErr('');
+    // Steps that persist something confirm asynchronously (save → then unlock).
+    if (step.id === 'language') {
+      setBusy(true);
+      try {
+        // German-only mode → fixed pair; this upserts the profile row.
+        await api('/api/user/language-profile', { native_language: 'ru', learning_language: 'de' });
+      } catch (_e) {
+        setStepErr('Не удалось сохранить. Попробуй ещё раз.');
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+    }
     setConfirmed((c) => ({ ...c, [step.id]: true }));
     try { tg?.HapticFeedback?.impactOccurred?.('medium'); } catch (_e) { /* noop */ }
   }, [step.id]);
@@ -175,6 +218,8 @@ export default function OnboardingWizard() {
             step={step}
             isPro={isPro}
             confirmed={!!confirmed[step.id]}
+            busy={busy}
+            stepErr={stepErr}
             onConfirm={confirmStep}
           />
         </main>
