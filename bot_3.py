@@ -24375,31 +24375,21 @@ async def admin_artikel_audit_command(update: Update, context: CallbackContext) 
         parse_mode="HTML",
     )
 
+    # Single pass over the whole bank (or one theme): one table load + cache-hot
+    # Wiktionary reads. Much faster than 21 per-theme passes and completes in one
+    # await, so a mid-run status edit can't strand the report.
     from backend.article_audit import audit_all
-    agg = {"checked": 0, "ok": 0, "mismatch": [], "review": [], "ambiguous": [], "unknown": []}
-    for i, key in enumerate(theme_keys, 1):
+    # themes is None → audit_all(None) covers every theme in one pass.
+    scope = None if themes is None else theme_keys
+    try:
+        agg = await asyncio.to_thread(audit_all, scope)
+    except Exception as exc:
+        logging.warning("artikel_audit failed", exc_info=True)
         try:
-            rep = await asyncio.to_thread(audit_all, [key])
-        except Exception as exc:
-            logging.warning("artikel_audit theme=%s failed", key, exc_info=True)
-            continue
-        agg["checked"] += rep["checked"]
-        agg["ok"] += rep["ok"]
-        for b in ("mismatch", "review", "ambiguous", "unknown"):
-            agg[b].extend(rep[b])
-        if i % 3 == 0 or i == len(theme_keys):
-            try:
-                await status_msg.edit_text(
-                    f"🔎 Аудит… {i}/{len(theme_keys)} тем · "
-                    f"ошибок: {len(agg['mismatch'])} · на решение: {len(agg['review'])}",
-                )
-            except Exception:
-                pass
-    agg["counts"] = {
-        "checked": agg["checked"], "ok": agg["ok"], "mismatch": len(agg["mismatch"]),
-        "review": len(agg["review"]), "ambiguous": len(agg["ambiguous"]),
-        "unknown": len(agg["unknown"]),
-    }
+            await status_msg.edit_text(f"Аудит упал: {exc}")
+        except Exception:
+            pass
+        return
 
     c = agg["counts"]
     head = (f"✅ <b>Аудит завершён</b> · проверено {c['checked']}\n"

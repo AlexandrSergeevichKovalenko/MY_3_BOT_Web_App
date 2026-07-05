@@ -55,6 +55,13 @@ def _classify(rows: list[dict], progress_cb=None) -> dict:
             ref = refs.get(w, {})
             wik = ref.get("articles") or set()  # documented genders
 
+            # 0) curated two-gender rows (der See/die See) are authoritative by design
+            # and one sense may decline adjectivally (das Junge) so Wiktionary's noun
+            # overview under-documents it — never second-guess these.
+            if r.get("two_gender"):
+                report["ambiguous"].append(_rec(r, why="two-gender"))
+                continue
+
             # 1) curated meaning-dependent two-gender / person-adjective nouns — the
             # article depends on the intended sense. Keep them; flag only so the game
             # shows the Russian meaning. NOT derived from Wiktionary's noisy multi-genus.

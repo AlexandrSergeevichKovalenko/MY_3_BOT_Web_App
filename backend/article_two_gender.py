@@ -51,6 +51,37 @@ TWO_GENDER_NOUNS: list[dict] = [
     {"word": "Hut", "theme_key": "kleidung_mode", "senses": [
         {"article": "der", "meaning_ru": "шляпа"},
         {"article": "die", "meaning_ru": "осторожность (auf der Hut sein)"}]},
+    # High-frequency additions (all confirmed two-gender on de.wiktionary).
+    {"word": "Junge", "theme_key": "familie_menschen", "senses": [
+        {"article": "der", "meaning_ru": "мальчик"},
+        {"article": "das", "meaning_ru": "детёныш животного"}]},
+    {"word": "Teil", "theme_key": "technik_computer", "senses": [
+        {"article": "der", "meaning_ru": "часть (целого)"},
+        {"article": "das", "meaning_ru": "деталь; штуковина"}]},
+    {"word": "Kunde", "theme_key": "wirtschaft_geld", "senses": [
+        {"article": "der", "meaning_ru": "клиент, покупатель"},
+        {"article": "die", "meaning_ru": "весть; учение (напр. Erdkunde)"}]},
+    {"word": "Laster", "theme_key": "verkehr_reisen", "senses": [
+        {"article": "der", "meaning_ru": "грузовик"},
+        {"article": "das", "meaning_ru": "порок"}]},
+    {"word": "Heide", "theme_key": "natur_landschaft", "senses": [
+        {"article": "die", "meaning_ru": "пустошь; вереск"},
+        {"article": "der", "meaning_ru": "язычник"}]},
+    {"word": "Flur", "theme_key": "haus_wohnen", "senses": [
+        {"article": "der", "meaning_ru": "коридор; прихожая"},
+        {"article": "die", "meaning_ru": "поле; нива"}]},
+    {"word": "Pony", "theme_key": "tiere", "senses": [
+        {"article": "das", "meaning_ru": "пони"},
+        {"article": "der", "meaning_ru": "чёлка"}]},
+    {"word": "Bund", "theme_key": "essen_trinken", "senses": [
+        {"article": "der", "meaning_ru": "союз; федерация"},
+        {"article": "das", "meaning_ru": "связка, пучок (напр. Bund Radieschen)"}]},
+    {"word": "Moment", "theme_key": "gefuehle_charakter", "senses": [
+        {"article": "der", "meaning_ru": "миг, мгновение"},
+        {"article": "das", "meaning_ru": "фактор; момент (силы)"}]},
+    {"word": "Mangel", "theme_key": "haus_wohnen", "senses": [
+        {"article": "der", "meaning_ru": "недостаток, нехватка"},
+        {"article": "die", "meaning_ru": "каток для белья"}]},
 ]
 
 
