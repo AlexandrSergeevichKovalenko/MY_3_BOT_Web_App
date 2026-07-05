@@ -24413,7 +24413,15 @@ async def admin_artikel_audit_command(update: Update, context: CallbackContext) 
         body += "\n\n<b>Ошибки (первые 25):</b>\n" + "\n".join(preview)
     if c["mismatch"]:
         body += f"\n\n▶️ Применить: <code>/artikel_fixarticles {arg or 'all'}</code>"
-    await status_msg.edit_text(body[:4000], parse_mode="HTML")
+    try:
+        await status_msg.edit_text("✅ Аудит завершён.")
+    except Exception:
+        pass
+    # Fresh message so the summary reliably lands even if the status edit fails.
+    try:
+        await message.reply_text(body[:4000], parse_mode="HTML")
+    except Exception:
+        logging.warning("artikel_audit: summary send failed", exc_info=True)
 
     # Full findings as an attachment when there's anything to review.
     if c["mismatch"] + c["conflict"] + c["ambiguous"] + c["unknown"] > 0:
@@ -24474,7 +24482,16 @@ async def admin_artikel_fixarticles_command(update: Update, context: CallbackCon
     text = f"✅ Исправлено {total_fixed}/{total_attempted} артиклей."
     if examples:
         text += "\n\n" + "\n".join(f"• {html.escape(e)}" for e in examples)
-    await status_msg.edit_text(text[:4000])
+    try:
+        await status_msg.edit_text("✅ Готово.")
+    except Exception:
+        pass
+    # Deliver the result as a FRESH message — a stale/edited status message (or a
+    # mid-run bot restart from a deploy) must not swallow the final report.
+    try:
+        await message.reply_text(text[:4000])
+    except Exception:
+        logging.warning("artikel_fixarticles: final report send failed", exc_info=True)
 
 
 async def admin_artikel_play_command(update: Update, context: CallbackContext) -> None:
