@@ -24302,6 +24302,170 @@ async def admin_artikel_recheck_command(update: Update, context: CallbackContext
     await status_msg.edit_text(text[:4000])
 
 
+def _artikel_audit_resolve_themes(arg: str) -> list[str] | None:
+    """Resolve the command arg to a list of theme keys, or None for ALL themes.
+    Accepts an exact theme_key or 'all'/'' → all themes."""
+    a = (arg or "").strip().lower()
+    if a in ("", "all", "все"):
+        return None
+    return [a]
+
+
+def _artikel_audit_document(report: dict) -> bytes:
+    """Full audit findings as a plain-text attachment."""
+    lines = ["ARTIKEL SPRINT — AUDIT (Wiktionary reference)", ""]
+    c = report["counts"]
+    lines.append(f"checked={c['checked']} ok={c['ok']} mismatch={c['mismatch']} "
+                 f"conflict={c['conflict']} ambiguous={c['ambiguous']} unknown={c['unknown']}")
+    lines.append("")
+    lines.append("=== MISMATCH (stored -> reference) ===")
+    for m in report["mismatch"]:
+        lines.append(f"  {m['stored']} -> {m['ref']}  {m['word']}  [{m['basis']}]  ({m['theme']})")
+    lines.append("")
+    lines.append("=== CONFLICT (Wiktionary vs guard disagree — review) ===")
+    for m in report["conflict"]:
+        lines.append(f"  {m['word']}: stored={m['stored']} wiktionary={m['wiktionary']} guard={m['guard']} ({m['theme']})")
+    lines.append("")
+    lines.append("=== AMBIGUOUS (two-gender / person-adj — should not be in bank) ===")
+    for m in report["ambiguous"]:
+        lines.append(f"  {m['stored']} {m['word']}  [{m['why']}]  ({m['theme']})")
+    lines.append("")
+    lines.append("=== UNKNOWN (no reference — verify manually) ===")
+    for m in report["unknown"]:
+        lines.append(f"  {m['stored']} {m['word']}  ({m['theme']})")
+    return ("\n".join(lines)).encode("utf-8")
+
+
+async def admin_artikel_audit_command(update: Update, context: CallbackContext) -> None:
+    """Audit stored der/die/das against Wiktionary (+ deterministic guard). READ-ONLY —
+    reports mismatches; apply with /artikel_fixarticles. /artikel_audit [all|theme_key]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    arg = (context.args or [""])[0] if context.args else ""
+    themes = _artikel_audit_resolve_themes(arg)
+    if themes is None:
+        rows = await asyncio.to_thread(list_article_sprint_themes)
+        theme_keys = [str(r["theme_key"]) for r in (rows or [])]
+    else:
+        theme_keys = themes
+    if not theme_keys:
+        await message.reply_text("Нет тем для аудита.")
+        return
+
+    status_msg = await message.reply_text(
+        f"🔎 Аудит артиклей против Wiktionary · тем: {len(theme_keys)}…\n"
+        "<i>Первый прогон качает и кеширует род — может занять пару минут.</i>",
+        parse_mode="HTML",
+    )
+
+    from backend.article_audit import audit_all
+    agg = {"checked": 0, "ok": 0, "mismatch": [], "conflict": [], "ambiguous": [], "unknown": []}
+    for i, key in enumerate(theme_keys, 1):
+        try:
+            rep = await asyncio.to_thread(audit_all, [key])
+        except Exception as exc:
+            logging.warning("artikel_audit theme=%s failed", key, exc_info=True)
+            continue
+        agg["checked"] += rep["checked"]
+        agg["ok"] += rep["ok"]
+        for b in ("mismatch", "conflict", "ambiguous", "unknown"):
+            agg[b].extend(rep[b])
+        if i % 3 == 0 or i == len(theme_keys):
+            try:
+                await status_msg.edit_text(
+                    f"🔎 Аудит… {i}/{len(theme_keys)} тем · "
+                    f"ошибок: {len(agg['mismatch'])} · спорных: {len(agg['conflict'])}",
+                )
+            except Exception:
+                pass
+    agg["counts"] = {
+        "checked": agg["checked"], "ok": agg["ok"], "mismatch": len(agg["mismatch"]),
+        "conflict": len(agg["conflict"]), "ambiguous": len(agg["ambiguous"]),
+        "unknown": len(agg["unknown"]),
+    }
+
+    c = agg["counts"]
+    head = (f"✅ <b>Аудит завершён</b> · проверено {c['checked']}\n"
+            f"🟢 верно: {c['ok']} · 🔴 ошибок: {c['mismatch']} · "
+            f"⚠️ спорных: {c['conflict']} · ⊘ двуродовых: {c['ambiguous']} · "
+            f"❔ без эталона: {c['unknown']}")
+    preview = []
+    for m in agg["mismatch"][:25]:
+        preview.append(f"• <code>{m['stored']}→{m['ref']}</code> {html.escape(m['word'])} <i>[{m['basis']}]</i>")
+    body = head
+    if preview:
+        body += "\n\n<b>Ошибки (первые 25):</b>\n" + "\n".join(preview)
+    if c["mismatch"]:
+        body += f"\n\n▶️ Применить: <code>/artikel_fixarticles {arg or 'all'}</code>"
+    await status_msg.edit_text(body[:4000], parse_mode="HTML")
+
+    # Full findings as an attachment when there's anything to review.
+    if c["mismatch"] + c["conflict"] + c["ambiguous"] + c["unknown"] > 0:
+        doc = _artikel_audit_document(agg)
+        try:
+            await message.reply_document(
+                document=io.BytesIO(doc),
+                filename=f"artikel_audit_{arg or 'all'}.txt",
+                caption="Полный список находок аудита.",
+            )
+        except Exception:
+            logging.warning("artikel_audit: document send failed", exc_info=True)
+
+
+async def admin_artikel_fixarticles_command(update: Update, context: CallbackContext) -> None:
+    """Apply the audit's confirmed corrections (mismatch bucket) to the article bank.
+    Conflict/ambiguous/unknown are left for manual review. /artikel_fixarticles [all|theme_key]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    arg = (context.args or [""])[0] if context.args else ""
+    themes = _artikel_audit_resolve_themes(arg)
+    if themes is None:
+        rows = await asyncio.to_thread(list_article_sprint_themes)
+        theme_keys = [str(r["theme_key"]) for r in (rows or [])]
+    else:
+        theme_keys = themes
+    if not theme_keys:
+        await message.reply_text("Нет тем.")
+        return
+
+    status_msg = await message.reply_text(f"🛠 Применяю исправления · тем: {len(theme_keys)}…")
+    from backend.article_audit import apply_fixes
+    total_fixed = 0
+    total_attempted = 0
+    examples: list[str] = []
+    for i, key in enumerate(theme_keys, 1):
+        try:
+            res = await asyncio.to_thread(apply_fixes, [key])
+        except Exception:
+            logging.warning("artikel_fixarticles theme=%s failed", key, exc_info=True)
+            continue
+        total_fixed += int(res.get("fixed") or 0)
+        total_attempted += int(res.get("attempted") or 0)
+        for e in (res.get("examples") or []):
+            if len(examples) < 30:
+                examples.append(e)
+        if i % 3 == 0 or i == len(theme_keys):
+            try:
+                await status_msg.edit_text(f"🛠 Исправляю… {i}/{len(theme_keys)} тем · починено: {total_fixed}")
+            except Exception:
+                pass
+
+    text = f"✅ Исправлено {total_fixed}/{total_attempted} артиклей."
+    if examples:
+        text += "\n\n" + "\n".join(f"• {html.escape(e)}" for e in examples)
+    await status_msg.edit_text(text[:4000])
+
+
 async def admin_artikel_play_command(update: Update, context: CallbackContext) -> None:
     """DM a button to play today's Artikel Sprint daily set (for testing).
     /artikel_play"""
@@ -33676,6 +33840,8 @@ def main():
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
     application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
+    application.add_handler(CommandHandler("artikel_audit", admin_artikel_audit_command))
+    application.add_handler(CommandHandler("artikel_fixarticles", admin_artikel_fixarticles_command))
     application.add_handler(CommandHandler("artikel_play", admin_artikel_play_command))
     application.add_handler(CommandHandler("battle", artikel_battle_command))
     application.add_handler(CommandHandler("mybattles", artikel_mybattles_command))

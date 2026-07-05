@@ -40893,6 +40893,74 @@ def retire_article_sprint_noun(row_id: int) -> None:
         conn.commit()
 
 
+def list_all_article_sprint_rows() -> list[dict]:
+    """Every non-retired row across ALL themes as {id, theme_key, word, article}.
+    Used by the Wiktionary correctness audit."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, theme_key, word, article FROM bt_3_article_sprint_nouns "
+                "WHERE NOT retired ORDER BY theme_key, id;"
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "theme_key": str(r[1]), "word": str(r[2]), "article": str(r[3])}
+            for r in rows]
+
+
+# ── Wiktionary genus cache ────────────────────────────────────────────────────
+# Persist looked-up German noun genus per title so the article audit + fix don't
+# re-hit the Wiktionary API. Value is one of 'm'/'f'/'n' (single genus),
+# 'x' (two-gender / ambiguous), '-' (page exists but no noun genus / missing page).
+def ensure_wiktionary_genus_cache_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_wiktionary_genus_cache (
+                    title      TEXT PRIMARY KEY,
+                    genus      TEXT NOT NULL,
+                    checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+
+
+def get_cached_genus(titles: list[str]) -> dict[str, str]:
+    """Return {title: genus} for the subset of titles present in the cache."""
+    clean = [str(t) for t in titles if t]
+    if not clean:
+        return {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT title, genus FROM bt_3_wiktionary_genus_cache WHERE title = ANY(%s);",
+                (clean,),
+            )
+            rows = cursor.fetchall() or []
+    return {str(r[0]): str(r[1]) for r in rows}
+
+
+def upsert_genus_cache(entries: dict[str, str]) -> int:
+    """Store {title: genus} rows. Returns number of rows written."""
+    items = [(str(t), str(g)) for t, g in (entries or {}).items() if t and g]
+    if not items:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO bt_3_wiktionary_genus_cache (title, genus, checked_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (title) DO UPDATE
+                  SET genus = EXCLUDED.genus, checked_at = NOW();
+                """,
+                items,
+            )
+        conn.commit()
+    return len(items)
+
+
 def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
     """Bulk-insert verified nouns for a theme (idempotent: skip dup theme+word).
     Each row: {word, article, meaning_ru, plural?, difficulty?, freq_rank?, subtopic?, source?, verified?}.
