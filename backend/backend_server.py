@@ -109,6 +109,9 @@ from backend.database import (
     summarize_db_acquire_events,
     _emit_db_pool_runtime_audit,
     ensure_shortcut_tables,
+    get_onboarding_state,
+    set_onboarding_step,
+    mark_onboarding_completed,
     SHORTCUT_PAIRING_CODE_TTL_SECONDS,
 )
 from backend.hotpath_cache import HotPathCacheManager
@@ -41033,6 +41036,49 @@ def webapp_shortcut_pairing_code():
             return jsonify({"error": "Shortcut processing is temporarily unavailable"}), 503
         raise
     return jsonify(_build_shortcut_pairing_code_response(result)), 200
+
+
+@app.route("/api/webapp/onboarding/status", methods=["POST"])
+def webapp_onboarding_status():
+    """First-run onboarding state + tier for the Mini-App onboarding screen (initData auth)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    state = get_onboarding_state(int(user_id))
+    try:
+        ent = resolve_entitlement(int(user_id))
+        is_pro = str(ent.get("effective_mode") or "free") in ("pro", "trial")
+    except Exception:
+        is_pro = False
+    return jsonify({
+        "ok": True,
+        "completed": bool(state.get("completed")),
+        "current_step": int(state.get("current_step") or 0),
+        "is_pro": is_pro,
+    })
+
+
+@app.route("/api/webapp/onboarding/step", methods=["POST"])
+def webapp_onboarding_step():
+    """Persist the onboarding resume point (current step index)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    body = request.get_json(silent=True) or {}
+    try:
+        step = max(0, int(body.get("step") or 0))
+    except Exception:
+        step = 0
+    return jsonify({"ok": bool(set_onboarding_step(int(user_id), step))})
+
+
+@app.route("/api/webapp/onboarding/complete", methods=["POST"])
+def webapp_onboarding_complete():
+    """Mark onboarding done (final step of the wizard)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    return jsonify({"ok": bool(mark_onboarding_completed(int(user_id)))})
 
 
 @app.route("/api/shortcut/pairing-code", methods=["POST"])

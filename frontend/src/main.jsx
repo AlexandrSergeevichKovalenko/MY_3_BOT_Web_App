@@ -244,6 +244,16 @@ async function bootstrapShortcutGuide() {
   );
 }
 
+async function bootstrapOnboarding() {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: OnboardingWizard } = await import('./onboarding/OnboardingWizard.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <OnboardingWizard />
+    </React.StrictMode>,
+  );
+}
+
 async function bootstrapDictionary() {
   try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
   const { default: DictionaryOverlay } = await import('./dictionary/DictionaryOverlay.jsx');
@@ -282,6 +292,10 @@ async function bootstrapApp() {
   }
   if (/^shortcut$/i.test(answerStartParam)) {
     await bootstrapShortcutGuide();
+    return;
+  }
+  if (/^onboarding$/i.test(answerStartParam)) {
+    await bootstrapOnboarding();
     return;
   }
   if (/^razbor_/i.test(answerStartParam) || /^share_/i.test(answerStartParam)) {

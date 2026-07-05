@@ -1,0 +1,155 @@
+/* First-run onboarding — always LIGHT theme, interactive/hero styling.
+   Stage 0 scaffold styles; extended as real step controls land. */
+
+:root {
+  --ob-accent: #3a7bd5;
+  --ob-accent-2: #5ddcff;
+  --ob-ink: #1c2536;
+  --ob-muted: #5d6b82;
+  --ob-card: #ffffff;
+  --ob-line: #e6ecf5;
+}
+
+.ob-root {
+  min-height: 100vh;
+  margin: 0;
+  padding: 20px 16px calc(20px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(1200px 600px at 12% -10%, #eaf4ff 0%, rgba(234, 244, 255, 0) 55%),
+    radial-gradient(1000px 500px at 110% 10%, #e9fbff 0%, rgba(233, 251, 255, 0) 50%),
+    linear-gradient(180deg, #f6f9ff 0%, #eef3fb 100%);
+  color: var(--ob-ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.ob-card {
+  width: 100%;
+  max-width: 480px;
+  background: var(--ob-card);
+  border: 1px solid var(--ob-line);
+  border-radius: 22px;
+  box-shadow: 0 20px 50px rgba(28, 55, 110, 0.12);
+  padding: 22px 20px 18px;
+  display: flex;
+  flex-direction: column;
+  min-height: 60vh;
+  box-sizing: border-box;
+}
+
+.ob-loading {
+  color: var(--ob-muted);
+  font-size: 15px;
+  padding: 40px;
+}
+
+/* Header + progress */
+.ob-head { margin-bottom: 8px; }
+.ob-progress { margin-bottom: 14px; }
+.ob-step-label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ob-muted);
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+.ob-bar {
+  height: 7px;
+  border-radius: 999px;
+  background: #eef2f8;
+  overflow: hidden;
+}
+.ob-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--ob-accent-2), var(--ob-accent));
+  transition: width 0.35s ease;
+}
+.ob-title {
+  margin: 6px 0 2px;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* Body */
+.ob-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 2px;
+}
+.ob-lead {
+  font-size: 16px;
+  line-height: 1.5;
+  color: #2b3550;
+  margin: 0;
+}
+.ob-stub, .ob-teaser { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+
+.ob-confirm {
+  appearance: none;
+  border: 1.5px solid var(--ob-accent);
+  background: #eef5ff;
+  color: var(--ob-accent);
+  font-weight: 700;
+  font-size: 15px;
+  padding: 11px 18px;
+  border-radius: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ob-confirm.is-done {
+  background: #e7f9ee;
+  border-color: #34c47a;
+  color: #1f9e5c;
+}
+
+.ob-lock {
+  align-self: flex-start;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ob-accent);
+  background: #eef5ff;
+  border-radius: 999px;
+  padding: 5px 11px;
+}
+
+/* Footer nav */
+.ob-nav {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ob-line);
+}
+.ob-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  padding: 13px 16px;
+  cursor: pointer;
+  transition: transform 0.08s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+}
+.ob-btn:active { transform: translateY(1px); }
+.ob-btn:disabled { opacity: 0.45; cursor: default; }
+.ob-back {
+  flex: 0 0 auto;
+  background: #f1f4fa;
+  color: var(--ob-muted);
+}
+.ob-next {
+  flex: 1;
+  color: #fff;
+  background: linear-gradient(135deg, var(--ob-accent), #2c63b8);
+  box-shadow: 0 10px 22px rgba(44, 99, 184, 0.28);
+}
+.ob-next:disabled { box-shadow: none; }
