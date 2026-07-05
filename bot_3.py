@@ -3636,38 +3636,18 @@ async def _release_windowed_inbox_job(context: CallbackContext) -> None:
 
 
 async def _send_howto_guide_chapter(update: Update, context: CallbackContext) -> None:
-    """«🎬 Как пользоваться» — глава с видео о работе бота и приложения."""
+    """«🎬 Как пользоваться» — opens the in-app hub (the onboarding wizard: settings +
+    how-to) instead of dumping a pile of videos into the chat."""
     if not update.effective_message:
         return
-    chat_id = int(update.effective_chat.id) if update.effective_chat else int(update.effective_user.id)
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=(
-            "🎬 <b>Как пользоваться — короткие видео</b>\n\n"
-            "Ниже несколько роликов: как работает Shortcut, как учить слова и что ещё умеет приложение."
-        ),
-        parse_mode="HTML",
-    )
-    await _send_onboarding_video(context, chat_id, "howto_shortcut", caption="🎬 <b>Как работает Shortcut</b>")
-    await _send_onboarding_video(context, chat_id, "howto_learn_words", caption="📚 <b>Как учить слова</b>")
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="➕ <b>Дополнительно</b>",
-        parse_mode="HTML",
-    )
-    await _send_onboarding_video(context, chat_id, "howto_tests_quizzes", caption="🧩 <b>Тесты, квизы и другие функции бота</b>")
-    await _send_onboarding_video(context, chat_id, "howto_translate_sentences", caption="🔤 <b>Как переводить предложения</b>")
-    await _send_onboarding_video(context, chat_id, "howto_youtube_subs", caption="▶️ <b>Как смотреть YouTube с субтитрами</b>")
-
-    guide_url = get_webapp_deeplink("guide", bot_username=context.bot.username)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"📱 <b>Открыть приложение:</b> {guide_url}",
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🎬 Открыть", url=get_webapp_deeplink("onboarding"))]])
+    await update.effective_message.reply_text(
+        "🎬 <b>Как пользоваться</b>\n\n"
+        "Всё в приложении: как учить слова, как работает захват слов, и твои настройки "
+        "(темп заданий, время доставки, батлы) — меняй в любой момент.\n\n"
+        "Нажми кнопку ниже 👇",
+        parse_mode="HTML", reply_markup=kb)
 
 
 async def _deliver_shortcut_connect_flow(user_id: int, reply_text: Callable[[str], Any]) -> None:
@@ -24517,6 +24497,34 @@ async def admin_artikel_fixarticles_command(update: Update, context: CallbackCon
         logging.warning("artikel_fixarticles: final report send failed", exc_info=True)
 
 
+async def admin_artikel_seed_twogender_command(update: Update, context: CallbackContext) -> None:
+    """Seed the curated meaning-dependent two-gender nouns (der See/die See …) into
+    the Artikel bank, each sense as its own row with a Russian meaning. Idempotent.
+    The game shows the meaning for these so the article is decidable. /artikel_seed_twogender"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("🌱 Засеваю двуродовые слова…")
+
+    def _seed() -> dict:
+        from backend.article_two_gender import seed
+        return seed()
+
+    try:
+        res = await asyncio.to_thread(_seed)
+    except Exception as exc:
+        await status_msg.edit_text(f"seed failed: {exc}")
+        return
+    await status_msg.edit_text(
+        f"✅ Двуродовые засеяны: слов {res.get('words')}, значений {res.get('senses_written')}.\n"
+        "В игре у них показывается русское значение (der See = озеро / die See = море)."
+    )
+
+
 async def admin_artikel_play_command(update: Update, context: CallbackContext) -> None:
     """DM a button to play today's Artikel Sprint daily set (for testing).
     /artikel_play"""
@@ -33894,6 +33902,7 @@ def main():
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
     application.add_handler(CommandHandler("artikel_audit", admin_artikel_audit_command))
     application.add_handler(CommandHandler("artikel_fixarticles", admin_artikel_fixarticles_command))
+    application.add_handler(CommandHandler("artikel_seed_twogender", admin_artikel_seed_twogender_command))
     application.add_handler(CommandHandler("artikel_play", admin_artikel_play_command))
     application.add_handler(CommandHandler("battle", artikel_battle_command))
     application.add_handler(CommandHandler("mybattles", artikel_mybattles_command))
