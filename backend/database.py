@@ -21378,6 +21378,40 @@ def count_card_review_response_seconds_today(
             return _count(own_cursor)
 
 
+def cap_srs_interval(max_interval_days: int, cursor=None) -> int:
+    """Clamp already-scheduled SRS cards whose due date sits further than
+    max_interval_days in the future back to (last_review_at + max_interval_days).
+
+    FSRS's maximum_interval only takes effect on the *next* review, so cards that
+    the old (uncapped) scheduler pushed 300-600 days out keep their far-future
+    due date until touched. This one-shot backfill pulls them in so well-known
+    words resurface within the cap. interval_days is realigned to match.
+    Returns the number of rows updated.
+    """
+    cap = max(1, int(max_interval_days))
+
+    def _apply(cur):
+        cur.execute(
+            """
+            UPDATE bt_3_card_srs_state
+            SET due_at = COALESCE(last_review_at, NOW()) + (%s * INTERVAL '1 day'),
+                interval_days = LEAST(interval_days, %s),
+                updated_at = NOW()
+            WHERE status IN ('review', 'relearning')
+              AND due_at > COALESCE(last_review_at, NOW()) + (%s * INTERVAL '1 day')
+            """,
+            [cap, cap, cap],
+        )
+        return cur.rowcount
+
+    if cursor is not None:
+        return _apply(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            result = _apply(own_cursor)
+        return result
+
+
 def reschedule_overdue_srs_cards(
     user_id: int,
     source_lang: str | None = None,

@@ -29069,6 +29069,40 @@ async def admin_clear_aufgabe_command(update: Update, context: CallbackContext) 
     )
 
 
+async def admin_srs_cap_command(update: Update, context: CallbackContext) -> None:
+    """One-shot backfill: pull already-scheduled SRS cards whose due date sits
+    further than the interval cap (default 180d) back to last_review + cap.
+    The live scheduler already caps NEW reviews; this fixes cards scheduled by
+    the old uncapped algorithm. /admin_srs_cap [days]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    try:
+        cap_days = int(args[0]) if args else 180
+    except (ValueError, TypeError):
+        await message.reply_text("Использование: /admin_srs_cap [дней]  (по умолчанию 180)")
+        return
+    if cap_days < 1 or cap_days > 36500:
+        await message.reply_text("Диапазон 1…36500 дней.")
+        return
+    status_msg = await message.reply_text(f"Подтягиваю карточки с интервалом > {cap_days} дн…")
+    try:
+        from backend.database import cap_srs_interval
+        n = await asyncio.to_thread(cap_srs_interval, cap_days)
+    except Exception as exc:
+        await status_msg.edit_text(f"backfill упал: {exc}")
+        return
+    await status_msg.edit_text(
+        f"✅ Готово: {n} карточек подтянуто к ≤{cap_days} дн. "
+        "Новые ревью и так капаются планировщиком."
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SYNONYM / ANTONYM SPRINT (60s, type as many as you can; winner = most correct)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -33646,6 +33680,7 @@ def main():
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
     application.add_handler(CommandHandler("admin_clearaufgabe", admin_clear_aufgabe_command))
+    application.add_handler(CommandHandler("admin_srs_cap", admin_srs_cap_command))
     application.add_handler(CommandHandler("admin_sprint", admin_sprint_command))
     application.add_handler(CommandHandler("admin_clearsprint", admin_clearsprint_command))
     application.add_handler(CommandHandler("plan", admin_plan_command))

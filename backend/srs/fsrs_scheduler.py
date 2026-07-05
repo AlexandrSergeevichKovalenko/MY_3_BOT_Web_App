@@ -11,6 +11,12 @@ _LEARNING_STEPS = [timedelta(minutes=1), timedelta(days=1)]
 
 MATURE_INTERVAL_DAYS = 21
 
+# Cap the longest scheduled interval so well-known words still resurface twice a
+# year (FSRS default is 36500 days = effectively no cap). Product choice, not the
+# algorithm's: keeps cards from disappearing for ~2 years and preserves daily
+# review volume.
+MAX_INTERVAL_DAYS = 180
+
 
 @dataclass
 class ScheduledResult:
@@ -116,7 +122,10 @@ def schedule_review(
         reviewed_at = reviewed_at.replace(tzinfo=timezone.utc)
 
     rating_enum, rating_value = normalize_rating(rating)
-    scheduler = Scheduler(learning_steps=_LEARNING_STEPS)
+    scheduler = Scheduler(
+        learning_steps=_LEARNING_STEPS,
+        maximum_interval=MAX_INTERVAL_DAYS,
+    )
     card = _build_fsrs_card(current_state, reviewed_at)
 
     # FSRS official scheduler computes due/state/stability/difficulty.
