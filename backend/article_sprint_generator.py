@@ -44,6 +44,21 @@ _HEAD_GENDER.pop("band", None)
 # add a few der-heads that are also -ung exceptions, so compounds resolve correctly
 _HEAD_GENDER.update({"sprung": "der", "schwung": "der"})
 
+# Wirtschaft & Geld compound heads (near-zero exceptions). These fix misses like
+# "die Börsenwert" — der Wert compounds are masculine. Head-suffix match only, so a
+# bare head word never triggers; the theme is full of these (Marktwert, Zinssatz…).
+_HEAD_GENDER.update({
+    # der
+    "wert": "der", "preis": "der", "markt": "der", "kurs": "der", "zins": "der",
+    "satz": "der", "betrag": "der", "gewinn": "der", "verlust": "der", "umsatz": "der",
+    "kredit": "der", "haushalt": "der", "fonds": "der", "vertrag": "der",
+    # das
+    "geld": "das", "konto": "das", "kapital": "das", "vermögen": "das",
+    "einkommen": "das", "darlehen": "das", "guthaben": "das", "wachstum": "das",
+    # die
+    "bank": "die", "aktie": "die", "rente": "die", "steuer": "die", "bilanz": "die",
+})
+
 # Only LOW-EXCEPTION derivational suffixes (dropped the risky -ur/-ik/-chen/-lein
 # which have native root counter-examples: Flur, Kuchen, Knochen, …).
 _DIE_SUFFIXES = ("ung", "heit", "keit", "schaft", "ion", "tät", "ität", "ie", "enz", "anz")
