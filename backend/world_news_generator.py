@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime
@@ -584,6 +585,14 @@ def _validate_and_normalize_pack(data: dict) -> dict:
             raise ValueError("bad correct_index")
         if not (0 <= ci <= 3):
             raise ValueError("correct_index out of range")
+        # The model reliably emits the correct answer at index 0 (its worked example
+        # shows correct_index: 0), so without shuffling the right option is always on
+        # top. Shuffle the options and recompute the index via the permutation so
+        # duplicate option texts can't misplace it.
+        order = list(range(4))
+        random.shuffle(order)
+        options = [options[j] for j in order]
+        ci = order.index(ci)
         quiz.append({
             "question_de": question,
             "options": options,

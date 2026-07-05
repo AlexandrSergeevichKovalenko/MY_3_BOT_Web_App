@@ -49551,9 +49551,10 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         display = (username or "").strip()
         if display:
             daily_names[user_id] = display
-        correct = _extract_correct_translation(feedback, _unique_id)
+        # Never voice the learner's own (wrong) text — every item here is a graded
+        # mistake, so if we can't recover the verified correct German, skip it.
+        de_correct = (_extract_correct_translation(feedback, _unique_id) or "").strip()
         ru_original = (_sentence or "").strip()
-        de_correct = (correct or user_translation or "").strip()
         if not ru_original or not de_correct:
             continue
         daily_by_user_pair.setdefault(daily_key, []).append(
@@ -49593,16 +49594,41 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         (user_id, session_id, target_date),
                     )
                     rows = cursor.fetchall()
-                    for uid, username, _translation_id, feedback, user_translation, audio_grammar_opt_in, _sentence, _unique_id, source_lang, target_lang in rows:
+                    # Authoritative correct German lives in the structured story-explanation
+                    # JSON (bt_3_story_sessions.feedback → sentences[].correct), keyed by the
+                    # 1-based position when ordered by unique_id (same ordering as `rows`).
+                    # Prefer it; the per-row feedback text ("✅ …") is the fallback. We must
+                    # NEVER voice the learner's own (possibly wrong) translation — the card
+                    # promises "правильные варианты осядут в памяти".
+                    cursor.execute(
+                        "SELECT feedback FROM bt_3_story_sessions WHERE user_id = %s AND session_id = %s;",
+                        (user_id, str(session_id)),
+                    )
+                    frow = cursor.fetchone()
+                    correct_by_pos: dict[int, str] = {}
+                    if frow and frow[0]:
+                        try:
+                            parsed = json.loads(frow[0])
+                            for s in (parsed.get("sentences") or []):
+                                idx = int(s.get("index") or 0)
+                                candidate = str(s.get("correct") or "").strip()
+                                if idx and candidate:
+                                    correct_by_pos[idx] = candidate
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            correct_by_pos = {}
+                    for pos, (uid, username, _translation_id, feedback, user_translation, audio_grammar_opt_in, _sentence, _unique_id, source_lang, target_lang) in enumerate(rows, start=1):
                         uid = int(uid)
                         src = str(source_lang or "ru").strip().lower() or "ru"
                         tgt = str(target_lang or "de").strip().lower() or "de"
                         display = (username or "").strip()
                         if display:
                             story_names[uid] = display
-                        correct = _extract_correct_translation(feedback, _unique_id)
+                        de_correct = (
+                            correct_by_pos.get(pos)
+                            or _extract_correct_translation(feedback, _unique_id)
+                            or ""
+                        ).strip()
                         ru_original = (_sentence or "").strip()
-                        de_correct = (correct or user_translation or "").strip()
                         if not de_correct:
                             continue
                         story_by_user_pair.setdefault((uid, src, tgt), []).append(

@@ -6687,6 +6687,11 @@ def _extract_correct_translation(feedback: str | None, sentence_number: int | No
                         return candidate
 
     generic_patterns = [
+        # New two-call story flow: per-row feedback is rendered by
+        # _format_story_sentence_feedback as a line "✅ <full correct German>".
+        # This is the authoritative correct sentence and must be matched first,
+        # otherwise the audio builder falls back to the learner's own (wrong) text.
+        r"(?m)^✅\s*(.+?)\s*$",
         r"Correct Translation:\*?\s*(.+?)(?:\n|\Z)",
         r"Korrigierte Version:\*?\s*(.+?)(?:\n|\Z)",
         r"Исправленный вариант:\*?\s*(.+?)(?:\n|\Z)",
