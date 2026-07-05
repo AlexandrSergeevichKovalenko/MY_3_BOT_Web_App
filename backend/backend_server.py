@@ -112,6 +112,8 @@ from backend.database import (
     get_onboarding_state,
     set_onboarding_step,
     mark_onboarding_completed,
+    set_user_preset,
+    set_user_schedule,
     SHORTCUT_PAIRING_CODE_TTL_SECONDS,
 )
 from backend.hotpath_cache import HotPathCacheManager
@@ -41079,6 +41081,43 @@ def webapp_onboarding_complete():
     if user_id is None:
         return err
     return jsonify({"ok": bool(mark_onboarding_completed(int(user_id)))})
+
+
+# Delivery preset + active-window presets — mirror bot_3.py _PRESET_PICKER /
+# _WINDOW_PRESETS so the Mini-App onboarding can set the schedule (was bot-only).
+_ONBOARDING_PRESETS = {"intensive", "normal", "rare", "silent"}
+_ONBOARDING_WINDOWS = {
+    "allday": None,
+    "morning": [[6 * 60, 12 * 60]],
+    "evening": [[17 * 60 + 30, 22 * 60 + 30]],
+    "morneve": [[6 * 60, 9 * 60], [18 * 60, 22 * 60 + 30]],
+}
+
+
+@app.route("/api/webapp/onboarding/preset", methods=["POST"])
+def webapp_onboarding_preset():
+    """Set the delivery intensity preset (intensive/normal/rare/silent)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    preset = str((request.get_json(silent=True) or {}).get("preset") or "").strip().lower()
+    if preset not in _ONBOARDING_PRESETS:
+        return jsonify({"error": "unknown preset"}), 400
+    return jsonify({"ok": bool(set_user_preset(int(user_id), preset))})
+
+
+@app.route("/api/webapp/onboarding/window", methods=["POST"])
+def webapp_onboarding_window():
+    """Set the active-hours window (allday/morning/evening/morneve)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    key = str((request.get_json(silent=True) or {}).get("window") or "").strip().lower()
+    if key not in _ONBOARDING_WINDOWS:
+        return jsonify({"error": "unknown window"}), 400
+    wins = _ONBOARDING_WINDOWS[key]
+    schedule = None if wins is None else {"weekday": wins, "weekend": wins}
+    return jsonify({"ok": bool(set_user_schedule(int(user_id), schedule))})
 
 
 @app.route("/api/shortcut/pairing-code", methods=["POST"])

@@ -173,6 +173,29 @@
 .ob-skip:disabled { opacity: 0.5; cursor: default; }
 .ob-ok { background: #e7f9ee; color: #1f9e5c; }
 
+/* Option pickers (intensity / windows) */
+.ob-options { display: flex; flex-direction: column; gap: 9px; width: 100%; }
+.ob-option {
+  appearance: none;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #f4f8ff;
+  border: 1.5px solid var(--ob-line);
+  border-radius: 14px;
+  padding: 12px 15px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+.ob-option.is-sel {
+  border-color: var(--ob-accent);
+  background: #eaf2ff;
+  box-shadow: 0 6px 16px rgba(58, 123, 213, 0.15);
+}
+.ob-option-label { font-size: 16px; font-weight: 700; color: var(--ob-ink); }
+.ob-option-sub { font-size: 12.5px; color: var(--ob-muted); font-weight: 500; }
+
 /* Footer nav */
 .ob-nav {
   display: flex;

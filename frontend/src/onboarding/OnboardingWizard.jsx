@@ -34,9 +34,54 @@ const STEPS = [
   { id: 'finale',     title: 'Готово! ✅',                kind: 'finale' },
 ];
 
+// Pro delivery presets + active-hours windows (mirror the bot picker).
+const PRESETS = [
+  ['intensive', '🔥 Интенсивно', '~20 заданий в день'],
+  ['normal',    '🙂 Обычно',     '~12 в день (по умолчанию)'],
+  ['rare',      '🌙 Редко',      '~8 в день'],
+  ['silent',    '🔕 Тишина',     'не присылать автоматически'],
+];
+const WINDOWS = [
+  ['allday',  '🌗 Весь день',    'в любое время'],
+  ['morning', '🌅 Утро',         '06–12'],
+  ['evening', '🌆 Вечер',        '17:30–22:30'],
+  ['morneve', '🌅🌆 Утро+вечер',  '06–09 · 18–22:30'],
+];
+
+function OptionList({ options, selected, onPick }) {
+  return (
+    <div className="ob-options">
+      {options.map(([code, label, sub]) => (
+        <button
+          key={code}
+          type="button"
+          className={`ob-option ${selected === code ? 'is-sel' : ''}`}
+          onClick={() => onPick(code)}
+        >
+          <span className="ob-option-label">{label}</span>
+          <span className="ob-option-sub">{sub}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const PRO_TEASER = (
+  <div className="ob-teaser">
+    <p className="ob-lead">
+      На бесплатном — подборка заданий в день. В <b>Pro</b> можно настроить количество
+      и время доставки.
+    </p>
+    <span className="ob-lock">🔓 перк Pro</span>
+  </div>
+);
+
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
-function StepBody({ step, isPro, confirmed, busy, stepErr, onConfirm, dictOffer, onDictAction }) {
-  const bodyKey = (step.id === 'language' || step.id === 'dictionary') ? step.id : step.kind;
+const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows']);
+function StepBody(props) {
+  const { step, isPro, confirmed, busy, stepErr, onConfirm, dictOffer, onDictAction,
+    selPreset, selWindow, onPickPreset, onPickWindow } = props;
+  const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
     case 'welcome':
       return (
@@ -104,6 +149,20 @@ function StepBody({ step, isPro, confirmed, busy, stepErr, onConfirm, dictOffer,
         </div>
       );
     }
+    case 'intensity':
+      return isPro ? (
+        <div className="ob-stub">
+          <p className="ob-lead">Выбери темп — можно поменять когда угодно.</p>
+          <OptionList options={PRESETS} selected={selPreset} onPick={onPickPreset} />
+        </div>
+      ) : PRO_TEASER;
+    case 'windows':
+      return isPro ? (
+        <div className="ob-stub">
+          <p className="ob-lead">В какие часы присылать задания? Они придут равномерно внутри окна.</p>
+          <OptionList options={WINDOWS} selected={selWindow} onPick={onPickWindow} />
+        </div>
+      ) : PRO_TEASER;
     case 'core':
       return (
         <div className="ob-stub">
@@ -156,6 +215,8 @@ export default function OnboardingWizard() {
   const [busy, setBusy] = useState(false);      // per-step async action in flight
   const [stepErr, setStepErr] = useState('');
   const [dictOffer, setDictOffer] = useState(null);  // starter-dictionary offer
+  const [selPreset, setSelPreset] = useState('normal');   // intensity (visual default)
+  const [selWindow, setSelWindow] = useState('allday');   // active window (visual default)
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
@@ -246,6 +307,18 @@ export default function OnboardingWizard() {
     return () => { off = true; };
   }, [step.id, loading, dictOffer]);
 
+  // Intensity/window are [R] (optional, default-accept): pick = optimistic + save.
+  const pickPreset = useCallback((code) => {
+    setSelPreset(code);
+    api('/api/webapp/onboarding/preset', { preset: code }).catch(() => {});
+    try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
+  }, []);
+  const pickWindow = useCallback((key) => {
+    setSelWindow(key);
+    api('/api/webapp/onboarding/window', { window: key }).catch(() => {});
+    try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
+  }, []);
+
   // Connect / skip the base dictionary (accept starts a background import job).
   const dictAction = useCallback(async (action) => {
     setStepErr('');
@@ -288,6 +361,10 @@ export default function OnboardingWizard() {
             onConfirm={confirmStep}
             dictOffer={dictOffer}
             onDictAction={dictAction}
+            selPreset={selPreset}
+            selWindow={selWindow}
+            onPickPreset={pickPreset}
+            onPickWindow={pickWindow}
           />
         </main>
 
