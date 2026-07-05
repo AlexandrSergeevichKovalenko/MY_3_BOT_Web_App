@@ -334,6 +334,7 @@ from backend.database import (
     was_announcement_sent,
     mark_announcement_sent,
     get_onboarding_state,
+    reset_onboarding_state,
     get_user_streak,
     upsert_user_streak,
     get_users_active_on_date,
@@ -2199,8 +2200,8 @@ async def send_main_menu(update: Update, context: CallbackContext):
             bot_username = bot_info.username
         guide_url = get_webapp_deeplink("guide", bot_username=bot_username)
         await update.message.reply_text(
-            _build_private_start_onboarding_text() + "\n\n"
-            f"📱 <b>Что умеет приложение:</b> {guide_url}",
+            "👋 <b>С возвращением!</b>\n"
+            f"Меню ниже — задания, тренажёры, словарь. Как всё устроено: {guide_url}",
             parse_mode="HTML",
             disable_web_page_preview=True,
             reply_markup=_build_private_language_tutor_reply_keyboard(
@@ -8913,6 +8914,24 @@ async def check_translation_from_text(update: Update, context: CallbackContext):
     await check_user_translation(update, context, translation_text)
 
     
+
+async def _admin_reset_onboarding_command(update: Update, context: CallbackContext) -> None:
+    """/admin_reset_onboarding [uid] — wipe the onboarding flag (defaults to self) so
+    the wizard shows again on the next /start (needs ONBOARDING_ENABLED=1)."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    try:
+        uid = int(args[0]) if args else int(user.id)
+    except Exception:
+        uid = int(user.id)
+    ok = await asyncio.to_thread(reset_onboarding_state, uid)
+    await message.reply_text(
+        f"{'✅' if ok else '❌'} Онбординг сброшен для {uid}. Жми /start.")
+
 
 def _onboarding_enabled() -> bool:
     return (os.getenv("ONBOARDING_ENABLED") or "0").strip().lower() in ("1", "true", "yes", "on")
@@ -33724,6 +33743,7 @@ def main():
     application.add_handler(CommandHandler("streak", _streak_command))
     application.add_handler(CommandHandler("invite", _invite_command))
     application.add_handler(CommandHandler("announce_schedule", _announce_schedule_command))
+    application.add_handler(CommandHandler("admin_reset_onboarding", _admin_reset_onboarding_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("dau", _dau_command))

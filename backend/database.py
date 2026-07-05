@@ -16813,6 +16813,20 @@ def mark_onboarding_completed(user_id: int) -> bool:
         return False
 
 
+def reset_onboarding_state(user_id: int) -> bool:
+    """Wipe the onboarding row so the wizard shows again (testing / redo)."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM bt_3_user_onboarding WHERE user_id=%s;", (int(user_id),))
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("reset_onboarding_state failed user=%s", user_id, exc_info=True)
+        return False
+
+
 def was_announcement_sent(user_id: int, feature_key: str) -> bool:
     """True if this user already got the one-time announcement for `feature_key`."""
     try:
