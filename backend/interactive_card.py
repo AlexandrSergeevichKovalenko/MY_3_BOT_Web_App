@@ -489,6 +489,13 @@ def render_next_task_card(*, level: str = "") -> bytes | None:
                  accent=(96, 165, 250), motif=_motif_next_arrow, cta="Открой и реши")
 
 
+def render_welcome_card() -> bytes | None:
+    """Branded hero plaque for the first-run onboarding prompt (/start). Same brand
+    language as the task cards so the welcome feels like part of the product."""
+    return _card(badge="WILLKOMMEN", title="Willkommen!", subtitle="Настроим бота под тебя",
+                 accent=(52, 211, 153), motif=_motif_next_arrow, cta="Пара минут — и поехали")
+
+
 def render_quiz_card(*, level: str = "") -> bytes | None:
     sub = "Wähle die richtige Antwort" + (f"  ·  {level}" if level else "")
     return _card(badge="QUIZ", title="Quiz", subtitle=sub,
