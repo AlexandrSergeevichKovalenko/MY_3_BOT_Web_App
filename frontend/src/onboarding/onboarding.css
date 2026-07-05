@@ -196,6 +196,33 @@
 .ob-option-label { font-size: 16px; font-weight: 700; color: var(--ob-ink); }
 .ob-option-sub { font-size: 12.5px; color: var(--ob-muted); font-weight: 500; }
 
+/* Info lists (how-to / keyboard explainer) */
+.ob-list {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ob-list li {
+  font-size: 15px;
+  line-height: 1.45;
+  color: #2b3550;
+  padding-left: 14px;
+  position: relative;
+}
+.ob-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ob-accent-2);
+}
+
 /* Footer nav */
 .ob-nav {
   display: flex;

@@ -39969,13 +39969,18 @@ def ensure_article_sprint_schema() -> None:
                 );
                 """
             )
-            # One row per (theme, word) — dedup case-insensitively.
+            # One row per (theme, word, article). Article is part of the key so a
+            # genuinely two-gender noun can hold BOTH senses (der See=озеро / die
+            # See=море) as separate rows. Single-gender words are unaffected (they
+            # only ever have one article). Create the new key BEFORE dropping the old
+            # one so there is never a window without a uniqueness guarantee.
             cursor.execute(
                 """
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_article_sprint_nouns_theme_word
-                ON bt_3_article_sprint_nouns (theme_key, lower(word));
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_article_sprint_nouns_theme_word_art
+                ON bt_3_article_sprint_nouns (theme_key, lower(word), article);
                 """
             )
+            cursor.execute("DROP INDEX IF EXISTS uq_bt_3_article_sprint_nouns_theme_word;")
             cursor.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_bt_3_article_sprint_nouns_theme_ready
@@ -40006,6 +40011,12 @@ def ensure_article_sprint_schema() -> None:
             cursor.execute(
                 "ALTER TABLE bt_3_article_sprint_nouns "
                 "ADD COLUMN IF NOT EXISTS image_object_key TEXT NOT NULL DEFAULT '';"
+            )
+            # Genuinely two-gender noun (der See/die See): the game must show the
+            # Russian meaning so the asked article is decidable.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS two_gender BOOLEAN NOT NULL DEFAULT FALSE;"
             )
             cursor.execute(
                 "ALTER TABLE bt_3_article_sprint_nouns "
@@ -40435,6 +40446,30 @@ def toggle_article_battle_available(user_id: int, user_name: str = "") -> bool:
             row = cursor.fetchone()
         conn.commit()
     return bool(row[0]) if row else True
+
+
+def set_article_battle_available(user_id: int, opted_in: bool, user_name: str = "") -> bool:
+    """Set the battle-invite opt-in to an EXPLICIT value (onboarding uses this, not
+    the toggle). Returns the stored state."""
+    ensure_article_battle_available_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_battle_available (user_id, opted_in, user_name, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET opted_in = EXCLUDED.opted_in,
+                    user_name = CASE WHEN EXCLUDED.user_name <> '' THEN EXCLUDED.user_name
+                                     ELSE bt_3_article_battle_available.user_name END,
+                    updated_at = NOW()
+                RETURNING opted_in;
+                """,
+                (int(user_id), bool(opted_in), str(user_name or "")[:80]),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return bool(row[0]) if row else bool(opted_in)
 
 
 def is_article_battle_available(user_id: int) -> bool:
@@ -40998,9 +41033,9 @@ def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
                     """
                     INSERT INTO bt_3_article_sprint_nouns
                         (theme_key, word, article, meaning_ru, plural, difficulty,
-                         freq_rank, subtopic, source, verified)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (theme_key, lower(word)) DO NOTHING;
+                         freq_rank, subtopic, source, verified, two_gender)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (theme_key, lower(word), article) DO NOTHING;
                     """,
                     (
                         str(theme_key), word, article,
@@ -41008,7 +41043,7 @@ def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
                         str(row.get("difficulty") or "B"),
                         int(row["freq_rank"]) if row.get("freq_rank") is not None else None,
                         str(row.get("subtopic") or ""), str(row.get("source") or "gpt"),
-                        bool(row.get("verified", True)),
+                        bool(row.get("verified", True)), bool(row.get("two_gender", False)),
                     ),
                 )
                 if cursor.rowcount and cursor.rowcount > 0:
@@ -41019,9 +41054,57 @@ def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
     return {"inserted": inserted, "skipped": skipped}
 
 
+def seed_two_gender_senses(entries: list[dict]) -> dict:
+    """Insert curated meaning-dependent two-gender nouns, one row per sense.
+    Each entry: {word, theme_key, senses: [{article, meaning_ru}, ...]}.
+    Idempotent: retires any prior single-gender row for that (theme, word) so the
+    stale sense-less entry can't linger, then upserts each sense with two_gender=TRUE.
+    Returns {"words": n, "senses_written": m}."""
+    ensure_article_sprint_schema()
+    words_done = 0
+    senses_written = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for e in entries or []:
+                word = str(e.get("word") or "").strip()
+                theme = str(e.get("theme_key") or "").strip()
+                senses = e.get("senses") or []
+                if not word or not theme or not senses:
+                    continue
+                # Retire any pre-existing non-two-gender row for this word (a stale
+                # single-sense entry with no disambiguating meaning).
+                cursor.execute(
+                    "UPDATE bt_3_article_sprint_nouns SET retired = TRUE, updated_at = NOW() "
+                    "WHERE theme_key = %s AND lower(word) = lower(%s) AND NOT two_gender;",
+                    (theme, word),
+                )
+                for s in senses:
+                    article = str(s.get("article") or "").strip().lower()
+                    meaning = str(s.get("meaning_ru") or "").strip()
+                    if article not in ("der", "die", "das") or not meaning:
+                        continue
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_article_sprint_nouns
+                            (theme_key, word, article, meaning_ru, difficulty,
+                             subtopic, source, verified, two_gender, retired)
+                        VALUES (%s, %s, %s, %s, 'B', 'two_gender', 'curated', TRUE, TRUE, FALSE)
+                        ON CONFLICT (theme_key, lower(word), article) DO UPDATE
+                          SET meaning_ru = EXCLUDED.meaning_ru, two_gender = TRUE,
+                              verified = TRUE, retired = FALSE, source = 'curated',
+                              updated_at = NOW();
+                        """,
+                        (theme, word, article, meaning),
+                    )
+                    senses_written += 1
+                words_done += 1
+        conn.commit()
+    return {"words": words_done, "senses_written": senses_written}
+
+
 def get_article_sprint_verified_sample(theme_key: str | None, n: int, *, exclude_words: list[str] | None = None) -> list[dict]:
     """Random n verified, non-retired nouns. theme_key=None → from any theme (mix).
-    Returns [{"w":word, "a":article, "ru":meaning_ru}]."""
+    Returns [{"w":word, "a":article, "ru":meaning_ru, "tg":two_gender}]."""
     excl = [str(w).strip().lower() for w in (exclude_words or []) if str(w).strip()]
     where = ["verified", "NOT retired"]
     params: list = []
@@ -41036,7 +41119,7 @@ def get_article_sprint_verified_sample(theme_key: str | None, n: int, *, exclude
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT word, article, meaning_ru
+                SELECT word, article, meaning_ru, two_gender
                 FROM bt_3_article_sprint_nouns
                 WHERE {' AND '.join(where)}
                 ORDER BY random()
@@ -41045,7 +41128,7 @@ def get_article_sprint_verified_sample(theme_key: str | None, n: int, *, exclude
                 tuple(params),
             )
             rows = cursor.fetchall() or []
-    return [{"w": r[0], "a": r[1], "ru": r[2] or ""} for r in rows]
+    return [{"w": r[0], "a": r[1], "ru": r[2] or "", "tg": bool(r[3])} for r in rows]
 
 
 def get_article_theme_words_slice(theme_key: str, offset: int, limit: int) -> list[dict]:

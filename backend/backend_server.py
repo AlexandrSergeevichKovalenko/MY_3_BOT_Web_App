@@ -114,6 +114,7 @@ from backend.database import (
     mark_onboarding_completed,
     set_user_preset,
     set_user_schedule,
+    set_article_battle_available,
     SHORTCUT_PAIRING_CODE_TTL_SECONDS,
 )
 from backend.hotpath_cache import HotPathCacheManager
@@ -41118,6 +41119,17 @@ def webapp_onboarding_window():
     wins = _ONBOARDING_WINDOWS[key]
     schedule = None if wins is None else {"weekday": wins, "weekend": wins}
     return jsonify({"ok": bool(set_user_schedule(int(user_id), schedule))})
+
+
+@app.route("/api/webapp/onboarding/battles", methods=["POST"])
+def webapp_onboarding_battles():
+    """Set battle-invite readiness (opt-in) during onboarding."""
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    opt_in = bool((request.get_json(silent=True) or {}).get("opt_in"))
+    stored = set_article_battle_available(int(user_id), opt_in, str(user_name or ""))
+    return jsonify({"ok": True, "opted_in": bool(stored)})
 
 
 @app.route("/api/shortcut/pairing-code", methods=["POST"])

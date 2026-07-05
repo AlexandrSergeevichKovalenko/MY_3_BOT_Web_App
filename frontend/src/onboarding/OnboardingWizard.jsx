@@ -77,10 +77,11 @@ const PRO_TEASER = (
 );
 
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
-const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows']);
+const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows',
+  'battles', 'shortcut', 'howto', 'keyboard']);
 function StepBody(props) {
   const { step, isPro, confirmed, busy, stepErr, onConfirm, dictOffer, onDictAction,
-    selPreset, selWindow, onPickPreset, onPickWindow } = props;
+    selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle } = props;
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
     case 'welcome':
@@ -163,6 +164,68 @@ function StepBody(props) {
           <OptionList options={WINDOWS} selected={selWindow} onPick={onPickWindow} />
         </div>
       ) : PRO_TEASER;
+    case 'battles':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            Дуэли на артикли, прилагательные и W-вопросы с другими учениками. Хочешь
+            получать приглашения?
+          </p>
+          <div className="ob-options">
+            <button
+              type="button"
+              className={`ob-option ${selBattle === 'yes' ? 'is-sel' : ''}`}
+              onClick={() => onPickBattle(true)}
+            >
+              <span className="ob-option-label">⚔️ Да, зовите меня</span>
+              <span className="ob-option-sub">буду в списке приглашаемых</span>
+            </button>
+            <button
+              type="button"
+              className={`ob-option ${selBattle === 'no' ? 'is-sel' : ''}`}
+              onClick={() => onPickBattle(false)}
+            >
+              <span className="ob-option-label">Пока нет</span>
+              <span className="ob-option-sub">можно включить позже</span>
+            </button>
+          </div>
+        </div>
+      );
+    case 'shortcut':
+      return (
+        <div className="ob-teaser">
+          <p className="ob-lead">
+            Только на iPhone: сохраняй незнакомые слова из любого приложения. Два
+            способа — <b>моментальный</b> (скрин → перевод в чат) или <b>ночная пачка</b>
+            (не отрывает от дел). Детальную установку пройдём в разделе «Захват слов».
+          </p>
+          <span className="ob-lock">📲 только iPhone</span>
+        </div>
+      );
+    case 'howto':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">Коротко о главном — подробнее всегда в «🎬 Как пользоваться»:</p>
+          <ul className="ob-list">
+            <li><b>📋 Задания дня</b> — жми «Следующее задание», решай прямо в приложении.</li>
+            <li><b>🗂 Словарь</b> — сохраняй слова, повторяй по интервальной системе.</li>
+            <li><b>🧩 Тренажёры и ⚔️ батлы</b> — артикли, прилагательные, числа.</li>
+            <li><b>🤖 AI-учитель</b> — спрашивай про грамматику в любой момент.</li>
+          </ul>
+        </div>
+      );
+    case 'keyboard':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">Внизу — меню-клавиатура. Коротко, что где:</p>
+          <ul className="ob-list">
+            <li><b>▶️ Следующее задание</b> — твои невыполненные на сегодня.</li>
+            <li><b>Тренажёры и батлы</b> — быстрые игры на грамматику.</li>
+            <li><b>Быстрый словарь · AI-учитель</b> — перевод и вопросы.</li>
+            <li><b>🎬 Как пользоваться</b> — настройки и обучение в любой момент.</li>
+          </ul>
+        </div>
+      );
     case 'core':
       return (
         <div className="ob-stub">
@@ -217,6 +280,7 @@ export default function OnboardingWizard() {
   const [dictOffer, setDictOffer] = useState(null);  // starter-dictionary offer
   const [selPreset, setSelPreset] = useState('normal');   // intensity (visual default)
   const [selWindow, setSelWindow] = useState('allday');   // active window (visual default)
+  const [selBattle, setSelBattle] = useState(null);       // battle readiness: null|'yes'|'no'
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
@@ -307,6 +371,13 @@ export default function OnboardingWizard() {
     return () => { off = true; };
   }, [step.id, loading, dictOffer]);
 
+  // Battle readiness defaults ON: opt the user in the first time they reach the step.
+  useEffect(() => {
+    if (loading || step.id !== 'battles' || selBattle !== null) return;
+    setSelBattle('yes');
+    api('/api/webapp/onboarding/battles', { opt_in: true }).catch(() => {});
+  }, [step.id, loading, selBattle]);
+
   // Intensity/window are [R] (optional, default-accept): pick = optimistic + save.
   const pickPreset = useCallback((code) => {
     setSelPreset(code);
@@ -316,6 +387,11 @@ export default function OnboardingWizard() {
   const pickWindow = useCallback((key) => {
     setSelWindow(key);
     api('/api/webapp/onboarding/window', { window: key }).catch(() => {});
+    try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
+  }, []);
+  const pickBattle = useCallback((optIn) => {
+    setSelBattle(optIn ? 'yes' : 'no');
+    api('/api/webapp/onboarding/battles', { opt_in: !!optIn }).catch(() => {});
     try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
   }, []);
 
@@ -365,6 +441,8 @@ export default function OnboardingWizard() {
             selWindow={selWindow}
             onPickPreset={pickPreset}
             onPickWindow={pickWindow}
+            selBattle={selBattle}
+            onPickBattle={pickBattle}
           />
         </main>
 
