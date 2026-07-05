@@ -1101,6 +1101,19 @@ SHORTCUT_COLLECTOR_INSTALL_BUTTON_TEXT = "📲 1. Шорткат для скри
 SHORTCUT_PROCESSOR_INSTALL_BUTTON_TEXT = "📲 2. Шорткат ночного перевода"
 DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
 HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
+# ── Category color-chips ─────────────────────────────────────────────
+# Telegram can't color inline buttons, so ONE leading emoji per task family
+# acts as the "color": a card's category reads at a glance in chat. Only
+# task-launch buttons carry a chip; answer/accept/snooze buttons keep their
+# functional emoji. Change a chip here → every launch button in that family
+# updates (see also _INBOX_KIND_DISPLAY / _DIGEST_CATEGORIES below).
+CAT_AUDIO  = "🎧"   # на слух: аудирование, числа-диктант, числа на слух
+CAT_BATTLE = "⚔️"   # батлы: Artikel / Adjektiv / Wo-Frage
+CAT_SPEED  = "⚡"   # на скорость: спринты, WortTurm
+CAT_QUIZ   = "🧩"   # квизы/тренажёры: aufgabe, ребус, кроссворд, анаграмма, работа над ошибками
+CAT_WORDS  = "📖"   # слова: словарь, разборы, SRS-повторение
+CAT_LEARN  = "📚"   # учёба: обучающие колоды (учить артикли/окончания/Wo-Fragen)
+
 NEXT_TASK_BUTTON_TEXT = "▶️ Следующее задание"
 SCHEDULE_BUTTON_TEXT = "🗓 Расписание"
 SCHEDULE_BUTTON_PREFIX = "🗓"  # stable routing prefix; the live button also shows the user's current preset·window
@@ -2404,10 +2417,10 @@ def _next_task_card_bytes() -> bytes | None:
 
 # Inbox kind codes → display label (button text + «Выбрать тип» chooser).
 _INBOX_KIND_DISPLAY = {
-    "rb": "🧩 Ребус", "cw": "🔤 Кроссворд", "ag": "🔀 Анаграмма",
-    "au": "✏️ Aufgabe", "ls": "🎧 Аудирование", "as": "⚡ Artikel Sprint",
-    "ad": "🟦 Adjektiv Sprint", "mc": "🇩🇪 Квиз", "rv": "🛠 Работа над ошибками",
-    "artikel": "⚡ Artikel-батл", "adjektiv": "⚔️ Adjektiv-батл",
+    "rb": f"{CAT_QUIZ} Ребус", "cw": f"{CAT_QUIZ} Кроссворд", "ag": f"{CAT_QUIZ} Анаграмма",
+    "au": f"{CAT_QUIZ} Aufgabe", "ls": f"{CAT_AUDIO} Аудирование", "as": f"{CAT_SPEED} Artikel Sprint",
+    "ad": f"{CAT_SPEED} Adjektiv Sprint", "mc": f"{CAT_QUIZ} Квиз", "rv": f"{CAT_QUIZ} Работа над ошибками",
+    "artikel": f"{CAT_BATTLE} Artikel-батл", "adjektiv": f"{CAT_BATTLE} Adjektiv-батл",
 }
 
 
@@ -3482,7 +3495,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         if did is None:
             return False
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔠 Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
+            [InlineKeyboardButton("⚡ Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
             [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
         ])
         caption = ("🔠 *Adjektiv Sprint*\n\n15 ситуаций · по 5 секунд на каждую — выбери правильное "
@@ -3506,7 +3519,7 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         if did is None:
             return False
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❓ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
+            [InlineKeyboardButton("⚡ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
             [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
         ])
         caption = ("❓ *Wo-Frage Sprint*\n\n10 вопросов · по 8 секунд — выбери правильное вопросительное "
@@ -7360,7 +7373,7 @@ async def admin_review_card_command(update: Update, context: CallbackContext):
         png = await asyncio.to_thread(render_review_reminder_card, due_count=due, streak_days=streak_days)
         bot_username = context.bot.username or (await context.bot.get_me()).username
         review_url = get_webapp_deeplink("review", bot_username=bot_username)
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔁 Открыть карточки", url=review_url)]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📖 Открыть карточки", url=review_url)]])
         caption = (
             f"🔁 <b>Пора повторить!</b> Тебя ждут <b>{due}</b> {plural_words_ru(due)}.\n"
             "5 минут сейчас — и они закрепятся 💪\n\n"
@@ -8671,7 +8684,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await _start_battle_wizard(update, context)
     elif text == ADJEKTIV_SPRINT_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔠 Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
+            [InlineKeyboardButton("⚡ Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
             [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
             [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
         ])
@@ -8680,7 +8693,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
             parse_mode="HTML", reply_markup=kb)
     elif text == WOFRAGE_SPRINT_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❓ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
+            [InlineKeyboardButton("⚡ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
             [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
             [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
         ])
@@ -9107,7 +9120,7 @@ async def send_flashcard_reminder(context: CallbackContext):
         bot_username = bot_info.username
     review_url = get_webapp_deeplink("review", bot_username=bot_username)
     # Prominent tappable CTA (replaces the thin inline text link that got lost).
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔁 Открыть карточки", url=review_url)]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📖 Открыть карточки", url=review_url)]])
     # Fallback text nudge — used for GROUPS (can't be personalized) and if the card
     # render ever fails.
     fallback_text = (
@@ -10922,7 +10935,7 @@ def _build_dictionary_mode_keyboard(request_key: str, source_lang: str, target_l
         [InlineKeyboardButton("⚡ Быстрый перевод", callback_data=f"dictmode:{request_key}:{pair}:quick")],
         # «Расширенный» opens the Mini-App directly (razbor_req_<key>); the app runs the
         # full lookup on open. One tap = mode choice + open, nothing sent to chat.
-        [InlineKeyboardButton("🧠 Расширенный перевод", url=get_webapp_deeplink(f"razbor_req_{request_key}"))],
+        [InlineKeyboardButton("📖 Расширенный перевод", url=get_webapp_deeplink(f"razbor_req_{request_key}"))],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -12214,7 +12227,7 @@ def _build_dictionary_save_keyboard_for_payload(
     # the chat bottom). Legacy callback buttons stay only as a fallback.
     deepdive_card_id = payload.get("deepdive_card_id")
     if deepdive_card_id:
-        rows.append([InlineKeyboardButton("🔍 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}"))])
+        rows.append([InlineKeyboardButton("📖 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}"))])
     else:
         if speak_card_key:
             rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"dictspeak:{speak_card_key}")])
@@ -13112,7 +13125,7 @@ async def _send_dictionary_lookup_result(
         rows = list(keyboard.inline_keyboard)
         rows.insert(
             0,
-            [InlineKeyboardButton("🔎 Полный разбор", url=get_webapp_deeplink(f"razbor_{deep_id}"))],
+            [InlineKeyboardButton("📖 Полный разбор", url=get_webapp_deeplink(f"razbor_{deep_id}"))],
         )
         keyboard = InlineKeyboardMarkup(rows)
     msg = await message.reply_text(
@@ -19633,7 +19646,7 @@ def _build_followup_answer_keyboard(
     # In-place deep-dive: one Mini-App button instead of the 🔊/📌 callbacks (which
     # sent messages to the chat bottom). Legacy buttons stay as a fallback.
     if deepdive_card_id:
-        rows.append([InlineKeyboardButton("🔍 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}"))])
+        rows.append([InlineKeyboardButton("📖 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}"))])
     else:
         if speak_key:
             rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"quizspeak:{speak_key}")])
@@ -19677,7 +19690,7 @@ def _build_quiz_deepdive_keyboard(card_id: int) -> InlineKeyboardMarkup:
     feel / collocation / ask actions happen over the chat instead of dumping a
     new message at the bottom that the user has to scroll down to find."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(card_id)}"))]
+        [InlineKeyboardButton("📖 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(card_id)}"))]
     ])
 
 
@@ -22632,7 +22645,7 @@ def _build_rebus_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
     # (no DM switch, no scroll). The rb:start callback + free-text handler stay
     # wired (via the shared answer_eval) as an under-the-hood fallback.
     btn = InlineKeyboardButton(
-        text="✏️ Antworten",
+        text="🧩 Antworten",
         url=get_webapp_deeplink(f"ans_rb_{dispatch_id}"),
     )
     return InlineKeyboardMarkup([[btn]])
@@ -24828,7 +24841,7 @@ async def _create_and_broadcast_artikel_wizard(context: CallbackContext, *, crea
         logging.warning("artikel wizard invites broadcast failed bid=%s", battle_id, exc_info=True)
         sent = 0
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Artikel-батл #{battle_id} в бою!</b>\n"
@@ -24895,7 +24908,7 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
                             battle_id=battle_id, user_id=int(user.id), user_name=creator_name)
     # Reply INSTANTLY; the invite broadcast (N sends) runs in the background.
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
     instant_cap = (f"⚔️ <b>Твой Artikel-батл #{battle_id} брошен!</b>\n"
@@ -24958,7 +24971,7 @@ async def _broadcast_artikel_cmd_invites(context: CallbackContext, *, battle_id:
         except Exception:
             pass
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Artikel-батл #{battle_id} в бою!</b>\n"
@@ -24988,7 +25001,7 @@ async def artikel_battle_join_callback(update: Update, context: CallbackContext)
                             battle_id=battle_id, user_id=int(q.from_user.id), user_name=name)
     await q.answer("Ты в батле! Играй когда удобно до 23:59.", show_alert=True)
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("⚔️ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
     try:
@@ -25261,7 +25274,7 @@ async def artikel_battle_accept_callback(update: Update, context: CallbackContex
     # Release the accepter instantly: update their invite message now, then ping
     # the creator OFF the critical path (the card send is a network call).
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("⚔️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("⏰ Напомнить позже", callback_data=f"asb_later:{battle_id}")],
     ])
     await _edit_battle_invite(q, "✅ Вызов принят! Играй сейчас или запланируй на потом 👇", kb)
@@ -25342,7 +25355,7 @@ async def artikel_battle_remind_callback(update: Update, context: CallbackContex
     hhmm = remind_at.strftime("%H:%M")
     await q.answer(f"⏰ Напомню в {hhmm}")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "▶️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))]])
+        "⚔️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))]])
     await _edit_battle_invite(q, f"⏰ Напомню в <b>{hhmm}</b>. До встречи на батле! ⚔️", kb)
 
 
@@ -26219,7 +26232,7 @@ def _build_crossword_keyboard(dispatch_id: int, words_json: list) -> InlineKeybo
     answer_eval) as an under-the-hood fallback.
     """
     btn = InlineKeyboardButton(
-        text="✏️ Antworten",
+        text="🧩 Antworten",
         url=get_webapp_deeplink(f"ans_cw_{dispatch_id}"),
     )
     return InlineKeyboardMarkup([[btn]])
@@ -26675,7 +26688,7 @@ async def admin_crossword_resend_command(update: Update, context: CallbackContex
             pass
     await status.edit_text(
         f"✅ Удалено старых: {deleted}. Отправлено новых: {sent}.\n"
-        f"Открой «✏️ Antworten» — проверь сетку (буквы/цифры).")
+        f"Открой «🧩 Antworten» — проверь сетку (буквы/цифры).")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -27727,7 +27740,7 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
         logging.warning("mistake reminders: list failed", exc_info=True)
         return
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🔁 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
+        "🧩 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
     # Branded hero card (same for everyone) so the nudge stands out like other tasks.
     poster = None
     try:
@@ -27783,7 +27796,7 @@ async def review_mistakes_command(update: Update, context: CallbackContext) -> N
     except Exception:
         n = 0
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🔁 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
+        "🧩 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
     if n > 0:
         caption = (f"🔁 <b>Работа над ошибками</b>\n\nУ тебя <b>{n}</b> на повтор — "
                    "разбери их, пока не закрепились неправильно 👇")
@@ -27808,7 +27821,7 @@ async def admin_review_makedue_command(update: Update, context: CallbackContext)
     """TEST: make YOUR review mistakes due right now (skip the 1-day SR wait).
     /review_makedue            → only your `artikel` mistakes
     /review_makedue all        → every format
-    Then open «🔁 Разобрать ошибки» (/review) to drill them immediately."""
+    Then open «🧩 Разобрать ошибки» (/review) to drill them immediately."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -27822,7 +27835,7 @@ async def admin_review_makedue_command(update: Update, context: CallbackContext)
     n = await asyncio.to_thread(force_due_mistakes, int(user.id), fmt=fmt)
     scope = "все форматы" if fmt is None else "формат «artikel»"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🔁 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
+        "🧩 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
     await message.reply_text(
         f"✅ Готово: {n} ошибок ({scope}) созрели сейчас. Открой повторение 👇",
         reply_markup=kb,
@@ -28112,7 +28125,7 @@ def _build_aufgabe_caption(entry: dict) -> str:
 
 
 def _build_aufgabe_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
-    btn = InlineKeyboardButton(text="✏️ Lösen", url=get_webapp_deeplink(f"ans_au_{dispatch_id}"))
+    btn = InlineKeyboardButton(text="🧩 Lösen", url=get_webapp_deeplink(f"ans_au_{dispatch_id}"))
     return InlineKeyboardMarkup([[btn]])
 
 
@@ -29399,7 +29412,7 @@ async def _send_scheduled_adjektiv_sprint(context: CallbackContext) -> None:
     except Exception:
         logging.warning("adjektiv_sprint: card render failed", exc_info=True)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔠 Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
+        [InlineKeyboardButton("⚡ Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
         [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
     ])
     caption = (
@@ -29503,7 +29516,7 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
     # the card + send invites to every user) runs in the background so the button
     # never makes the creator wait.
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
+        [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
     ])
     instant_cap = (f"⚔️ <b>Твой Adjektiv-батл #{bid} брошен!</b>\n"
@@ -29565,7 +29578,7 @@ async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle
         except Exception:
             pass
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{battle_id}"))],
+        [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Adjektiv-батл #{battle_id} в бою!</b>\n"
@@ -29638,7 +29651,7 @@ async def adjektiv_battle_join_callback(update: Update, context: CallbackContext
     # Release the accepter instantly: offer play-now / remind-later, then ping the
     # creator OFF the critical path (same pattern as the Artikel battle).
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
+        [InlineKeyboardButton("⚔️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
         [InlineKeyboardButton("⏰ Напомнить позже", callback_data=f"adb_later:{bid}")],
     ])
     await _edit_battle_invite(q, "✅ Вызов принят! Играй сейчас или запланируй на потом 👇", kb)
@@ -29714,7 +29727,7 @@ async def adjektiv_battle_remind_callback(update: Update, context: CallbackConte
     hhmm = remind_at.strftime("%H:%M")
     await q.answer(f"⏰ Напомню в {hhmm}")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "▶️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_adb_{bid}"))]])
+        "⚔️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_adb_{bid}"))]])
     await _edit_battle_invite(q, f"⏰ Напомню в <b>{hhmm}</b>. До встречи на батле! ⚔️", kb)
 
 
@@ -29765,7 +29778,7 @@ async def _send_scheduled_wofrage_sprint(context: CallbackContext) -> None:
     except Exception:
         logging.warning("wofrage_sprint: card render failed", exc_info=True)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("❓ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
+        [InlineKeyboardButton("⚡ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
         [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
     ])
     caption = (
@@ -29853,7 +29866,7 @@ async def admin_wofrage_test_command(update: Update, context: CallbackContext) -
     except Exception:
         logging.warning("wofragetest: card render failed", exc_info=True)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("❓ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
+        [InlineKeyboardButton("⚡ Играть (10 × 8 сек)", url=get_webapp_deeplink("ans_wf_0"))],
         [InlineKeyboardButton("📚 Тренировать Wo-Fragen", url=get_webapp_deeplink("ans_wfl_0"))],
     ])
     caption = (
@@ -29929,7 +29942,7 @@ async def wofrage_battle_command(update: Update, context: CallbackContext) -> No
     await asyncio.to_thread(add_wofrage_sprint_battle_member,
                             battle_id=bid, user_id=int(user.id), user_name=creator_name)
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_wfb_{bid}"))],
+        [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_wfb_{bid}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
     ])
     instant_cap = (f"⚔️ <b>Твой Wo-Frage-батл #{bid} брошен!</b>\n"
@@ -29988,7 +30001,7 @@ async def _broadcast_wofrage_battle_invites(context: CallbackContext, *, battle_
         except Exception:
             pass
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_wfb_{battle_id}"))],
+        [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_wfb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Wo-Frage-батл #{battle_id} в бою!</b>\n"
@@ -30057,7 +30070,7 @@ async def wofrage_battle_join_callback(update: Update, context: CallbackContext)
                             battle_id=bid, user_id=int(q.from_user.id), user_name=name)
     await q.answer("Ты в батле! ⚔️")
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_wfb_{bid}"))],
+        [InlineKeyboardButton("⚔️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_wfb_{bid}"))],
         [InlineKeyboardButton("⏰ Напомнить позже", callback_data=f"wfb_later:{bid}")],
     ])
     await _edit_battle_invite(q, "✅ Вызов принят! Играй сейчас или запланируй на потом 👇", kb)
@@ -30132,7 +30145,7 @@ async def wofrage_battle_remind_callback(update: Update, context: CallbackContex
     hhmm = remind_at.strftime("%H:%M")
     await q.answer(f"⏰ Напомню в {hhmm}")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "▶️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_wfb_{bid}"))]])
+        "⚔️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_wfb_{bid}"))]])
     await _edit_battle_invite(q, f"⏰ Напомню в <b>{hhmm}</b>. До встречи на батле! ⚔️", kb)
 
 
@@ -30789,7 +30802,7 @@ async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation
     )
     caption = _append_free_pro_teaser(caption, chat_id)
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "▶️ Играть (60 секунд)", url=get_webapp_deeplink(f"ans_sp_{dispatch_id}"))]])
+        "⚡ Играть (60 секунд)", url=get_webapp_deeplink(f"ans_sp_{dispatch_id}"))]])
     poster = None
     try:
         from backend.interactive_card import render_sprint_relation_card
@@ -31640,7 +31653,7 @@ def _build_listening_group_message(entry: dict, dispatch_id: int) -> tuple[str, 
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(
-            "✏️ Fragen beantworten",
+            "🎧 Fragen beantworten",
             callback_data=f"ls:start:{dispatch_id}",
         )
     ]])
@@ -32213,7 +32226,7 @@ def _build_numdict_card_caption(chat_id: int) -> str:
 
 def _build_numdict_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
     btn = InlineKeyboardButton(
-        text="🔢 Üben",
+        text="🎧 Üben",
         url=get_webapp_deeplink(f"ans_nd_{dispatch_id}"),
     )
     return InlineKeyboardMarkup([[btn]])
@@ -32879,7 +32892,7 @@ async def _send_poll_quiz_for_target(
         "Antworte in der Mini-App 👇"
     )
     quiz_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🎯 Quiz lösen", url=get_webapp_deeplink(f"ans_mc_{dispatch_id}"),
+        "🧩 Quiz lösen", url=get_webapp_deeplink(f"ans_mc_{dispatch_id}"),
     )]])
     poster = None
     try:
