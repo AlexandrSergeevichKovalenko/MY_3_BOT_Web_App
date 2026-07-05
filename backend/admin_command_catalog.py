@@ -335,6 +335,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "example": '/artikel_fixarticles all',
         },
         {
+            "cmd": '/artikel_seed_twogender',
+            "desc": 'Засевает курируемые смысло-зависимые двуродовые существительные (der See=озеро / die See=море, Band, Leiter, Kiefer, Steuer, Tor, Erbe, Gehalt, Schild, Otter, Verdienst, Hut) — каждое значение отдельной строкой с русским переводом. Идемпотентно. В игре у таких слов показывается русское значение, чтобы артикль был однозначен.',
+            "args": 'нет аргументов',
+            "example": '/artikel_seed_twogender',
+        },
+        {
             "cmd": '/addartikel',
             "desc": 'Добавляет слово в очередь квиза по артиклям как отрисованную грамматическую карточку.',
             "args": '<der|die|das> <Wort> [| значение [| пояснение]] — обязательны артикль и слово, части разделяются символом |.',

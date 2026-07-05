@@ -220,6 +220,9 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       <div className={`as-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
         <span className="fit-line" ref={wordFit}>{w ? w.w : '…'}</span>
       </div>
+      {/* Two-gender nouns (der See / die See) are only answerable if we show which
+          sense we mean — reveal the Russian meaning for these, and only these. */}
+      {w && w.tg && w.ru ? <div className="as-sense">({w.ru})</div> : null}
       <div className="as-buttons">
         {ARTICLES.map((art) => (
           <button key={art} type="button" className={`as-btn-art art-${art}`} onClick={() => answer(art)}>

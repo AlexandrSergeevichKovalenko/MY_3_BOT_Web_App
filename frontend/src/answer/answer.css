@@ -777,6 +777,11 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 }
 .as-word.ok { animation: as-flash-ok .25s ease-out; }
 .as-word.bad { animation: as-flash-bad .25s ease-out; }
+/* Russian sense hint for two-gender nouns (der See / die See). */
+.as-sense {
+  margin-top: 8px; font-size: 17px; font-weight: 700; text-align: center;
+  color: var(--tg-theme-hint-color, #64748b);
+}
 @keyframes as-flash-ok { from { background: rgba(34,197,94,.45); } to { background: rgba(148,163,184,.12); } }
 @keyframes as-flash-bad { from { background: rgba(239,68,68,.45); } to { background: rgba(148,163,184,.12); } }
 .as-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }

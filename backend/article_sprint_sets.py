@@ -14,6 +14,22 @@ DEFAULT_SET_SIZE = 140      # plenty for a 2-min game even for fast players
 MIN_PLAYABLE = 60           # below this we won't ship a daily set
 
 
+def _dedup_words(words: list[dict]) -> list[dict]:
+    """Dedup by (word, article) — NOT word alone — so a two-gender noun keeps both
+    senses (der See / die See). Carries the Russian meaning (`ru`) and the
+    two-gender flag (`tg`) the game needs to show the sense for those words."""
+    seen: set = set()
+    uniq: list[dict] = []
+    for w in words:
+        wd = str(w.get("w") or "").strip()
+        a = str(w.get("a") or "").lower()
+        k = (wd.lower(), a)
+        if wd and a and k not in seen:
+            seen.add(k)
+            uniq.append({"w": wd, "a": a, "ru": w.get("ru") or "", "tg": bool(w.get("tg"))})
+    return uniq
+
+
 def _pick_fallback_theme(play_date, min_have: int) -> str | None:
     """Deterministic theme rotation among themes that have enough verified words."""
     from backend.database import list_article_sprint_themes
@@ -57,14 +73,8 @@ def build_daily_set(play_date, *, size: int = DEFAULT_SET_SIZE) -> dict:
         # words is plenty for a 2-min game and a learning deck).
         words = get_article_sprint_verified_sample(theme_key, size)
 
-    # dedup (case-insensitive) + shuffle
-    seen: set[str] = set()
-    uniq: list[dict] = []
-    for w in words:
-        k = str(w.get("w") or "").lower()
-        if k and k not in seen:
-            seen.add(k)
-            uniq.append({"w": w["w"], "a": str(w["a"]).lower(), "ru": w.get("ru") or ""})
+    # dedup (by word+article) + shuffle
+    uniq = _dedup_words(words)
     random.shuffle(uniq)
 
     if len(uniq) < MIN_PLAYABLE:
@@ -91,13 +101,7 @@ def build_practice_set(theme_key: str, user_id: int, play_date, *, size: int = P
     import time
     from backend.database import get_article_sprint_verified_sample, upsert_article_sprint_set
     words = get_article_sprint_verified_sample(theme_key, size)
-    seen: set[str] = set()
-    uniq: list[dict] = []
-    for w in words:
-        k = str(w.get("w") or "").lower()
-        if k and k not in seen:
-            seen.add(k)
-            uniq.append({"w": w["w"], "a": str(w["a"]).lower(), "ru": w.get("ru") or ""})
+    uniq = _dedup_words(words)
     random.shuffle(uniq)
     if len(uniq) < PRACTICE_MIN:
         return {"status": "insufficient", "theme_key": theme_key, "available": len(uniq)}
@@ -135,13 +139,7 @@ def build_battle_set_mixed(theme_keys, battle_id: int, play_date, *, size: int =
                 for w in get_article_sprint_verified_sample(tk, size - len(words), exclude_words=have):
                     words.append(w)
                     have.append(str(w["w"]))
-    seen: set[str] = set()
-    uniq: list[dict] = []
-    for w in words:
-        k = str(w.get("w") or "").lower()
-        if k and k not in seen:
-            seen.add(k)
-            uniq.append({"w": w["w"], "a": str(w["a"]).lower(), "ru": w.get("ru") or ""})
+    uniq = _dedup_words(words)
     random.shuffle(uniq)
     uniq = uniq[:size]
     if len(uniq) < PRACTICE_MIN:
@@ -163,13 +161,7 @@ def build_battle_set(theme_key: str, battle_id: int, play_date, *, size: int = D
     if len(words) < size:
         have = {str(w["w"]).lower() for w in words}
         words.extend(get_article_sprint_verified_sample(None, size - len(words), exclude_words=list(have)))
-    seen: set[str] = set()
-    uniq: list[dict] = []
-    for w in words:
-        k = str(w.get("w") or "").lower()
-        if k and k not in seen:
-            seen.add(k)
-            uniq.append({"w": w["w"], "a": str(w["a"]).lower(), "ru": w.get("ru") or ""})
+    uniq = _dedup_words(words)
     random.shuffle(uniq)
     if len(uniq) < PRACTICE_MIN:
         return {"status": "insufficient", "theme_key": theme_key, "available": len(uniq)}
