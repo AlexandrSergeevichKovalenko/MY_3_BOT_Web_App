@@ -50280,6 +50280,26 @@ def _persist_weekly_global_ranking_snapshot(start_date: date, end_date: date, ro
                 )
 
 
+def _weekly_global_ranking_delivered_user_ids(week_start: date) -> set[int]:
+    """User ids already marked 'sent' for this week — so a re-run of the dispatch
+    (dramatiq redelivery / worker restart) never DMs the same card twice."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT user_id
+                    FROM bt_3_weekly_global_ranking_snapshots
+                    WHERE week_start = %s AND delivery_status = 'sent';
+                    """,
+                    (week_start,),
+                )
+                return {int(r[0]) for r in cursor.fetchall()}
+    except Exception:
+        logging.warning("weekly_global_ranking delivered-lookup failed", exc_info=True)
+        return set()
+
+
 def _mark_weekly_global_ranking_delivery(
     *,
     week_start: date,
@@ -50483,11 +50503,16 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
 
     limit = max(1, int((os.getenv("WEEKLY_GLOBAL_RANKING_SEND_LIMIT") or "5000").strip() or "5000"))
     top_rows = rows[:3]
+    already_delivered = _weekly_global_ranking_delivered_user_ids(start_date)
     sent = 0
+    skipped_delivered = 0
     errors: list[str] = []
     for row in rows[:limit]:
         user_id = int(row.get("user_id") or 0)
         if user_id <= 0 or not is_telegram_user_allowed(user_id):
+            continue
+        if user_id in already_delivered:
+            skipped_delivered += 1
             continue
         try:
             image_bytes = _render_weekly_global_ranking_card_png(row, start_date=start_date, end_date=end_date, top_rows=top_rows)
@@ -50501,6 +50526,7 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
                 caption=caption,
             )
             _mark_weekly_global_ranking_delivery(week_start=start_date, user_id=user_id, status="sent")
+            already_delivered.add(user_id)
             sent += 1
         except Exception as exc:
             errors.append(f"user {user_id}: {exc}")
@@ -50518,6 +50544,7 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
         "end_date": end_date.isoformat(),
         "users": len(rows),
         "sent": sent,
+        "skipped_delivered": skipped_delivered,
         "errors": errors[:20],
         "duration_ms": _elapsed_ms_since(started_perf),
     }
