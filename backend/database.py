@@ -40943,8 +40943,11 @@ def get_cached_genus(titles: list[str]) -> dict[str, str]:
 
 
 def upsert_genus_cache(entries: dict[str, str]) -> int:
-    """Store {title: genus} rows. Returns number of rows written."""
-    items = [(str(t), str(g)) for t, g in (entries or {}).items() if t and g]
+    """Store {title: genus} rows. Returns number of rows written.
+    Insert in sorted title order so two concurrent writers acquire row locks in the
+    same order and can't deadlock on overlapping keys."""
+    items = sorted(((str(t), str(g)) for t, g in (entries or {}).items() if t and g),
+                   key=lambda kv: kv[0])
     if not items:
         return 0
     with get_db_connection_context() as conn:
