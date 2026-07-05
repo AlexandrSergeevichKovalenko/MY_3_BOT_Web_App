@@ -35,8 +35,9 @@ const STEPS = [
 ];
 
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
-function StepBody({ step, isPro, confirmed, busy, stepErr, onConfirm }) {
-  switch (step.id === 'language' ? 'language' : step.kind) {
+function StepBody({ step, isPro, confirmed, busy, stepErr, onConfirm, dictOffer, onDictAction }) {
+  const bodyKey = (step.id === 'language' || step.id === 'dictionary') ? step.id : step.kind;
+  switch (bodyKey) {
     case 'welcome':
       return (
         <p className="ob-lead">
@@ -68,6 +69,41 @@ function StepBody({ step, isPro, confirmed, busy, stepErr, onConfirm }) {
           {stepErr ? <p className="ob-err">{stepErr}</p> : null}
         </div>
       );
+    case 'dictionary': {
+      const connected = confirmed || (dictOffer && Number(dictOffer.starter_pair_total || 0) > 0);
+      const n = Number(dictOffer?.suggested_count || dictOffer?.import_limit || 0);
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            Подключим стартовый набор слов{n ? <> — <b>~{n}</b></> : ''} под твой старт: с них
+            начнём тренировки и повторения.
+          </p>
+          {connected ? (
+            <span className="ob-lock ob-ok">✅ Базовый словарь подключён</span>
+          ) : (
+            <div className="ob-actions">
+              <button
+                type="button"
+                className="ob-confirm"
+                onClick={() => onDictAction('accept')}
+                disabled={busy}
+              >
+                {busy ? 'Подключаю…' : '📚 Подключить'}
+              </button>
+              <button
+                type="button"
+                className="ob-skip"
+                onClick={() => onDictAction('decline')}
+                disabled={busy}
+              >
+                Пропустить
+              </button>
+            </div>
+          )}
+          {stepErr ? <p className="ob-err">{stepErr}</p> : null}
+        </div>
+      );
+    }
     case 'core':
       return (
         <div className="ob-stub">
@@ -119,6 +155,7 @@ export default function OnboardingWizard() {
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);      // per-step async action in flight
   const [stepErr, setStepErr] = useState('');
+  const [dictOffer, setDictOffer] = useState(null);  // starter-dictionary offer
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
@@ -196,6 +233,34 @@ export default function OnboardingWizard() {
     try { tg?.HapticFeedback?.impactOccurred?.('medium'); } catch (_e) { /* noop */ }
   }, [step.id]);
 
+  // Load the starter-dictionary offer when the user reaches that step.
+  useEffect(() => {
+    if (loading || step.id !== 'dictionary' || dictOffer) return;
+    let off = false;
+    (async () => {
+      try {
+        const d = await api('/api/webapp/starter-dictionary/status');
+        if (!off) setDictOffer(d.offer || {});
+      } catch (_e) { /* offer optional — connect/skip still work */ }
+    })();
+    return () => { off = true; };
+  }, [step.id, loading, dictOffer]);
+
+  // Connect / skip the base dictionary (accept starts a background import job).
+  const dictAction = useCallback(async (action) => {
+    setStepErr('');
+    setBusy(true);
+    try {
+      await api('/api/webapp/starter-dictionary/apply', { action });
+      setConfirmed((c) => ({ ...c, dictionary: true }));
+      try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
+    } catch (_e) {
+      setStepErr('Не удалось. Попробуй ещё раз.');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   const pct = useMemo(() => Math.round(((idx + 1) / STEPS.length) * 100), [idx]);
 
   if (loading) {
@@ -221,6 +286,8 @@ export default function OnboardingWizard() {
             busy={busy}
             stepErr={stepErr}
             onConfirm={confirmStep}
+            dictOffer={dictOffer}
+            onDictAction={dictAction}
           />
         </main>
 

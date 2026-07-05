@@ -156,6 +156,23 @@
   font-weight: 600;
 }
 
+/* Multi-action rows (e.g. dictionary connect / skip) */
+.ob-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ob-skip {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ob-muted);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 11px 8px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ob-skip:disabled { opacity: 0.5; cursor: default; }
+.ob-ok { background: #e7f9ee; color: #1f9e5c; }
+
 /* Footer nav */
 .ob-nav {
   display: flex;
