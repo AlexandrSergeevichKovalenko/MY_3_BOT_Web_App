@@ -1469,48 +1469,72 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
 _REVIEW_FORMATS = {"cloze", "wortbildung", "wortgruppe", "transform", "error", "satzbau", "adjektiv"}
 
 
-def load_review_next(*, user_id: int) -> dict:
-    """Next due mistake for this user as a renderable task (reuses Aufgabe UI)."""
+def review_overview(*, user_id: int) -> dict:
+    """Sections of работа над ошибками with their due-counts, so the client can show a
+    dedicated 'Artikel' block separate from the grammar drills. Empty sections are omitted."""
+    from backend.database import count_due_mistakes_by_family
+    c = count_due_mistakes_by_family(int(user_id))
+    sections = []
+    if int(c.get("artikel", 0)) > 0:
+        sections.append({"family": "artikel", "emoji": "⚡",
+                         "title_de": "Artikel", "title_ru": "Артикли",
+                         "subtitle_de": "der / die / das", "count": int(c["artikel"])})
+    if int(c.get("grammar", 0)) > 0:
+        sections.append({"family": "grammar", "emoji": "🧩",
+                         "title_de": "Grammatik", "title_ru": "Грамматика",
+                         "subtitle_de": "Sätze, Lücken, Wortgruppen", "count": int(c["grammar"])})
+    return {"kind": "review", "sections": sections, "total": int(c.get("total", 0))}
+
+
+def load_review_next(*, user_id: int, family: str | None = None) -> dict:
+    """Next due mistake for this user as a renderable task (reuses Aufgabe UI). `family`
+    scopes the session to one section ('artikel' | 'grammar'); None = all mistakes."""
     from backend.database import get_next_due_mistake, count_due_mistakes
-    remaining = count_due_mistakes(int(user_id))
+    fam = (str(family).strip().lower() or None) if family else None
+    if fam not in ("artikel", "grammar", None):
+        fam = None
+    remaining = count_due_mistakes(int(user_id), family=fam)
     if remaining <= 0:
-        return {"kind": "review", "done": True, "remaining": 0}
-    m = get_next_due_mistake(int(user_id))
+        return {"kind": "review", "done": True, "remaining": 0, "family": fam}
+    m = get_next_due_mistake(int(user_id), family=fam)
     if not m:
-        return {"kind": "review", "done": True, "remaining": 0}
+        return {"kind": "review", "done": True, "remaining": 0, "family": fam}
     return {
         "kind": "review",
         "done": False,
+        "family": fam,
         "remaining": int(remaining),
         "mistake_id": int(m["id"]),
         "task": aufgabe_client_meta(str(m["format"]), m["payload"] or {}),
     }
 
 
-def evaluate_review(*, user_id: int, mistake_id: int, answer: str) -> dict:
+def evaluate_review(*, user_id: int, mistake_id: int, answer: str,
+                    family: str | None = None) -> dict:
     """Grade a review answer, advance/reset its spaced-repetition schedule, and
-    return the same rich result (rule + tip) the live task shows."""
+    return the same rich result (rule + tip) the live task shows. `family` keeps the
+    'remaining' count scoped to the section the learner is drilling."""
     from backend.database import get_aufgabe_mistake, reschedule_mistake, count_due_mistakes
+    fam = str(family).strip().lower() if family else None
+    if fam not in ("artikel", "grammar"):
+        fam = None
     m = get_aufgabe_mistake(int(user_id), int(mistake_id))
     if not m:
         return {"kind": "review", "error": "not_found"}
     fmt = str(m["format"])
     payload = m["payload"] or {}
-    wrong_reason = ""
-    if fmt == "error":
-        # Same tolerance as the live task: accept ANY genuinely-wrong word the learner
-        # tapped + correctly fixed, not only the one "intended" tap (a re-drilled sentence
-        # can carry a second latent error, so a valid alternative fix must not be failed).
-        is_correct, wrong_reason = _grade_error(payload, str(answer or ""))
-    else:
-        is_correct = _check_aufgabe(fmt, payload, str(answer or ""))
+    # Grade with the EXACT same logic (incl. LLM-judge fallbacks) as the live task, so a
+    # valid answer isn't rejected here — otherwise the item would never advance to
+    # "mastered" and would reappear forever ("I answered correctly but it keeps coming back").
+    is_correct, wrong_reason = _grade_aufgabe(fmt, payload, str(answer or ""))
     reschedule_mistake(mistake_id=int(mistake_id), user_id=int(user_id), is_correct=bool(is_correct))
     result = _aufgabe_result_payload(
         {"payload": payload, "format": fmt},
         is_correct=is_correct, already_answered=False, user_answer=str(answer or ""),
         wrong_reason=wrong_reason,
     )
-    return {"kind": "review", "result": result, "remaining": count_due_mistakes(int(user_id))}
+    return {"kind": "review", "result": result,
+            "remaining": count_due_mistakes(int(user_id), family=fam)}
 
 
 def _norm_sentence(s: str) -> str:
@@ -1665,6 +1689,87 @@ def _grade_error(payload: dict, raw_input: str) -> tuple:
     return False, str(judged.get("reason_ru") or "")
 
 
+def _wortgruppe_judge_full(satz: str, correct: str, user: str) -> dict:
+    """Bounded LLM judge for a Wortgruppe miss: {'match': bool, 'reason_ru': str}. The
+    solution is a connected word group (usually preposition/conjunction + noun phrase)
+    that fills the single "_____" gap, so it has the SAME shape as a cloze — we reuse the
+    cloze judge (grammatical + same meaning + correct case/government), with the length
+    limits relaxed for a multi-word group. Catches valid equivalent spellings/forms the
+    pool's `accepted` list misses, so a learner who typed a correct variant isn't failed."""
+    s, c, u = str(satz or "").strip(), str(correct or "").strip(), str(user or "").strip()
+    if not s or not c or not u or "_" not in s or len(u) > 120 or len(u.split()) > 8:
+        return {"match": False, "reason_ru": ""}
+    try:
+        import asyncio
+        from backend.openai_manager import run_check_cloze
+        res = asyncio.run(asyncio.wait_for(
+            run_check_cloze(satz=s, correct=c, user=u), timeout=7.0,
+        ))
+        return {
+            "match": bool((res or {}).get("match")),
+            "reason_ru": str((res or {}).get("reason_ru") or "").strip(),
+        }
+    except Exception:
+        return {"match": False, "reason_ru": ""}
+
+
+def _grade_aufgabe(fmt: str, payload: dict, raw_input: str) -> tuple:
+    """Single source of truth for grading a submitted aufgabe answer — used by BOTH the
+    live task path (evaluate_aufgabe) and the mistakes-review path (evaluate_review), so a
+    valid answer is judged IDENTICALLY in both. Deterministic/accepted-list hot path first;
+    on a miss, one bounded LLM judge credits genuine equivalents German allows in this exact
+    slot (so a correct answer isn't failed → it can actually clear the review queue).
+    Returns (is_correct, wrong_reason)."""
+    payload = payload or {}
+    answer = str(raw_input or "").strip()
+    wrong_reason = ""
+    if fmt in ("synonym", "antonym"):
+        accepted = accepted_de(payload.get("accepted"))
+        is_correct = bool(answer) and any(
+            check_quiz_freeform_deterministic(user_text=answer, correct_text=c)
+            for c in accepted if str(c).strip()
+        )
+        if not is_correct and answer:
+            judged = _synonym_judge_full(str(payload.get("wort") or ""), answer, fmt)
+            is_correct = bool(judged.get("match"))
+            if not is_correct:
+                wrong_reason = str(judged.get("reason_ru") or "")
+        return is_correct, wrong_reason
+    if fmt == "satzbau":
+        is_correct = _check_aufgabe(fmt, payload, raw_input)
+        if not is_correct and answer and _satzbau_same_words(payload, answer):
+            accepted = payload.get("accepted") or []
+            reference = str(payload.get("satz") or (accepted[0] if accepted else ""))
+            judged = _satzbau_judge_full(reference, answer)
+            is_correct = bool(judged.get("match"))
+            if not is_correct:
+                wrong_reason = str(judged.get("reason_ru") or "")
+        return is_correct, wrong_reason
+    if fmt == "cloze":
+        is_correct = _check_aufgabe(fmt, payload, raw_input)
+        if not is_correct and answer:
+            judged = _cloze_judge_full(
+                str(payload.get("satz") or ""), str(payload.get("correct") or ""), answer,
+            )
+            is_correct = bool(judged.get("match"))
+            if not is_correct:
+                wrong_reason = str(judged.get("reason_ru") or "")
+        return is_correct, wrong_reason
+    if fmt == "wortgruppe":
+        is_correct = _check_aufgabe(fmt, payload, raw_input)
+        if not is_correct and answer:
+            judged = _wortgruppe_judge_full(
+                str(payload.get("satz") or ""), str(payload.get("correct") or ""), answer,
+            )
+            is_correct = bool(judged.get("match"))
+            if not is_correct:
+                wrong_reason = str(judged.get("reason_ru") or "")
+        return is_correct, wrong_reason
+    if fmt == "error":
+        return _grade_error(payload, raw_input)
+    return _check_aufgabe(fmt, payload, raw_input), ""
+
+
 def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     answer = str(raw_input or "").strip()
     if not answer:
@@ -1763,55 +1868,11 @@ def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict 
     fmt = str(dispatch.get("format") or "")
     payload = dispatch.get("payload") or {}
     answer = str(raw_input or "").strip()
-    wrong_reason = ""
-    if fmt in ("synonym", "antonym"):
-        # Deterministic accepted-list first; then ONE judge call that also returns
-        # WHY a wrong answer is wrong (so a plausible near-miss gets explained).
-        accepted = accepted_de(payload.get("accepted"))
-        is_correct = bool(answer) and any(
-            check_quiz_freeform_deterministic(user_text=answer, correct_text=c)
-            for c in accepted if str(c).strip()
-        )
-        if not is_correct and answer:
-            judged = _synonym_judge_full(str(payload.get("wort") or ""), answer, fmt)
-            is_correct = bool(judged.get("match"))
-            if not is_correct:
-                wrong_reason = str(judged.get("reason_ru") or "")
-    elif fmt == "satzbau":
-        # Exact-match against the accepted orderings first (hot path). On a miss, if the
-        # learner used the SAME word cards (a genuine re-ordering, e.g. fronting the
-        # subordinate clause), one bounded LLM judge decides if it's a valid alternative
-        # order — German allows several, and the pool's `accepted` rarely lists them all.
-        is_correct = _check_aufgabe(fmt, payload, raw_input)
-        if not is_correct and answer and _satzbau_same_words(payload, answer):
-            accepted = payload.get("accepted") or []
-            reference = str(payload.get("satz") or (accepted[0] if accepted else ""))
-            judged = _satzbau_judge_full(reference, answer)
-            is_correct = bool(judged.get("match"))
-            if not is_correct:
-                wrong_reason = str(judged.get("reason_ru") or "")
-    elif fmt == "cloze":
-        # Exact-match against correct + aliases first (hot path). On a miss, one bounded
-        # LLM judge decides if the typed word is ALSO valid in THIS gap — an open cloze
-        # often admits genuine equivalents (causal weil ≡ da) the pool's key doesn't list.
-        is_correct = _check_aufgabe(fmt, payload, raw_input)
-        if not is_correct and answer:
-            judged = _cloze_judge_full(
-                str(payload.get("satz") or ""),
-                str(payload.get("correct") or ""),
-                answer,
-            )
-            is_correct = bool(judged.get("match"))
-            if not is_correct:
-                wrong_reason = str(judged.get("reason_ru") or "")
-    elif fmt == "error":
-        # Deterministic exact match (tapped index + correction) first; on a miss, ONE
-        # bounded judge credits a learner who tapped a GENUINELY wrong word and fixed it.
-        # Generated sentences can carry a second latent error, so the single "intended"
-        # tap must not be the only accepted answer.
-        is_correct, wrong_reason = _grade_error(payload, raw_input)
-    else:
-        is_correct = _check_aufgabe(fmt, payload, raw_input)
+    # One grader for every surface: deterministic/accepted-list hot path, then a bounded
+    # LLM judge for the formats that admit genuine equivalents (synonym/antonym, satzbau,
+    # cloze, wortgruppe, error). The SAME call runs in the review path so a correct answer
+    # is judged identically and can actually clear the "работа над ошибками" queue.
+    is_correct, wrong_reason = _grade_aufgabe(fmt, payload, raw_input)
     record_aufgabe_answer(
         dispatch_id=int(dispatch_id), user_id=int(user_id),
         answer=answer, is_correct=bool(is_correct),

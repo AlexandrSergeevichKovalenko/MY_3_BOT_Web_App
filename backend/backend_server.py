@@ -23522,14 +23522,27 @@ def deepdive_save():
     return jsonify({"ok": True, "entry_id": entry_id})
 
 
-@app.route("/api/answer/review/next", methods=["POST"])
-def answer_review_next():
-    """Mistakes review ("работа над ошибками"): next due item for this user."""
+@app.route("/api/answer/review/overview", methods=["POST"])
+def answer_review_overview():
+    """Mistakes review sections + due-counts (Artikel vs Grammatik) for the section picker."""
     user_id, _user_name, err = _answer_auth_user_id()
     if user_id is None:
         return err
+    from backend.answer_eval import review_overview
+    return jsonify({"ok": True, **review_overview(user_id=int(user_id))})
+
+
+@app.route("/api/answer/review/next", methods=["POST"])
+def answer_review_next():
+    """Mistakes review ("работа над ошибками"): next due item for this user. An optional
+    `family` ('artikel' | 'grammar') scopes the session to one section."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    family = str(payload.get("family") or "").strip().lower() or None
     from backend.answer_eval import load_review_next
-    return jsonify({"ok": True, **load_review_next(user_id=int(user_id))})
+    return jsonify({"ok": True, **load_review_next(user_id=int(user_id), family=family)})
 
 
 @app.route("/api/answer/review/submit", methods=["POST"])
@@ -23544,9 +23557,11 @@ def answer_review_submit():
     except (TypeError, ValueError):
         return jsonify({"error": "mistake_id обязателен"}), 400
     answer = str(payload.get("answer") or "")
+    family = str(payload.get("family") or "").strip().lower() or None
     from backend.answer_eval import evaluate_review
     try:
-        result = evaluate_review(user_id=int(user_id), mistake_id=mistake_id, answer=answer)
+        result = evaluate_review(user_id=int(user_id), mistake_id=mistake_id,
+                                 answer=answer, family=family)
     except Exception:
         logging.exception("review submit failed id=%s user=%s", mistake_id, user_id)
         return jsonify({"error": "Ошибка проверки"}), 500

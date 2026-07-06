@@ -1537,19 +1537,54 @@ def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
         logging.warning("record_aufgabe_mistake failed user_id=%s fmt=%s", user_id, fmt, exc_info=True)
 
 
-def count_due_mistakes(user_id: int) -> int:
+# Grouping of review formats into user-facing "families" (sections of работа над ошибками).
+# `artikel` gets its own section (der/die/das); everything else is grammar drills.
+def _mistake_family_clause(family: str | None) -> str:
+    fam = str(family or "").strip().lower()
+    if fam == "artikel":
+        return "AND format = 'artikel'"
+    if fam == "grammar":
+        return "AND format <> 'artikel'"
+    return ""  # all families
+
+
+def count_due_mistakes(user_id: int, *, family: str | None = None) -> int:
     try:
         ensure_aufgabe_mistakes_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT COUNT(*) FROM bt_3_aufgabe_mistakes "
-                    "WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW();",
+                    "WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() "
+                    f"{_mistake_family_clause(family)};",
                     (int(user_id),),
                 )
                 return int((cur.fetchone() or [0])[0])
     except Exception:
         return 0
+
+
+def count_due_mistakes_by_family(user_id: int) -> dict:
+    """Due-mistake counts split into user-facing sections for работа над ошибками:
+    {'artikel': n, 'grammar': m, 'total': t}. Powers the review overview/section picker."""
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT "
+                    "  COUNT(*) FILTER (WHERE format = 'artikel'), "
+                    "  COUNT(*) FILTER (WHERE format <> 'artikel'), "
+                    "  COUNT(*) "
+                    "FROM bt_3_aufgabe_mistakes "
+                    "WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW();",
+                    (int(user_id),),
+                )
+                row = cur.fetchone() or [0, 0, 0]
+                return {"artikel": int(row[0] or 0), "grammar": int(row[1] or 0),
+                        "total": int(row[2] or 0)}
+    except Exception:
+        return {"artikel": 0, "grammar": 0, "total": 0}
 
 
 def force_due_mistakes(user_id: int, *, fmt: str | None = None) -> int:
@@ -1580,7 +1615,7 @@ def force_due_mistakes(user_id: int, *, fmt: str | None = None) -> int:
         return 0
 
 
-def get_next_due_mistake(user_id: int) -> dict | None:
+def get_next_due_mistake(user_id: int, *, family: str | None = None) -> dict | None:
     try:
         ensure_aufgabe_mistakes_schema()
         with get_db_connection_context() as conn:
@@ -1588,8 +1623,9 @@ def get_next_due_mistake(user_id: int) -> dict | None:
                 cur.execute(
                     """SELECT id, format, payload, correct_answer
                        FROM bt_3_aufgabe_mistakes
-                       WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW()
-                       ORDER BY due_at ASC, id ASC LIMIT 1;""",
+                       WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() """
+                    + _mistake_family_clause(family) +
+                    """ ORDER BY due_at ASC, id ASC LIMIT 1;""",
                     (int(user_id),),
                 )
                 row = cur.fetchone()

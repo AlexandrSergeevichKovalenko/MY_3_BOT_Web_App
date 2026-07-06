@@ -3,9 +3,11 @@ import AufgabeGame from './AufgabeGame.jsx';
 
 /**
  * "Работа над ошибками" — spaced-repetition review of the user's past mistakes.
- * Loops: GET next due mistake → render it with the SAME AufgabeGame inputs →
- * grade via /review/submit → show rule + tip → next. In-app UI stays German to
- * match the task screens; the result reuses the rich explanation (rule + tip).
+ * Starts on a SECTION PICKER (overview): a dedicated "Artikel" block (der/die/das)
+ * separate from the grammar drills, each with its due-count. Picking a section drills
+ * ONLY that family; "Alle" drills everything in due order. Inside a section it loops:
+ * GET next due mistake → render it with the SAME AufgabeGame inputs → grade via
+ * /review/submit (identical grading to the live task) → show rule + tip → next.
  */
 
 function Root({ children }) {
@@ -13,7 +15,9 @@ function Root({ children }) {
 }
 
 export default function ReviewSession({ api, haptic, onClose }) {
-  const [phase, setPhase] = useState('loading'); // loading|task|result|done|error
+  const [phase, setPhase] = useState('overview'); // overview|loading|task|result|done|error
+  const [overview, setOverview] = useState(null);  // { sections, total }
+  const [family, setFamily] = useState(null);      // active section: 'artikel'|'grammar'|null(all)
   const [mistakeId, setMistakeId] = useState(null);
   const [task, setTask] = useState(null);
   const [remaining, setRemaining] = useState(0);
@@ -22,27 +26,51 @@ export default function ReviewSession({ api, haptic, onClose }) {
   const [submitting, setSubmitting] = useState(false);
   const [reviewed, setReviewed] = useState(0);
 
-  const loadNext = useCallback(async () => {
+  const loadOverview = useCallback(async () => {
+    setPhase('overview');
+    setOverview(null);
+    setResult(null);
+    setFamily(null);
+    try {
+      const data = await api('/api/answer/review/overview', {});
+      if (!data.ok) { setError(data.error || 'Fehler'); setPhase('error'); return; }
+      const ov = { sections: data.sections || [], total: data.total || 0 };
+      setOverview(ov);
+      if (ov.total <= 0) { setPhase('done'); return; }
+      setPhase('overview');
+    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+  }, [api]);
+
+  useEffect(() => { loadOverview(); }, [loadOverview]);
+
+  // Fetch the next due item for the currently-selected section (fam === null → all).
+  const loadNext = useCallback(async (fam) => {
     setPhase('loading');
     setResult(null);
     try {
-      const data = await api('/api/answer/review/next', {});
+      const data = await api('/api/answer/review/next', fam ? { family: fam } : {});
       if (!data.ok) { setError(data.error || 'Fehler'); setPhase('error'); return; }
-      if (data.done) { setPhase('done'); return; }
+      if (data.done) { await loadOverview(); return; }
       setMistakeId(data.mistake_id);
       setTask(data.task);
       setRemaining(data.remaining || 0);
       setPhase('task');
     } catch (e) { setError(String(e.message || e)); setPhase('error'); }
-  }, [api]);
+  }, [api, loadOverview]);
 
-  useEffect(() => { loadNext(); }, [loadNext]);
+  const startSection = useCallback((fam) => {
+    setFamily(fam || null);
+    loadNext(fam || null);
+  }, [loadNext]);
 
   const submit = useCallback(async (answer) => {
     if (submitting || mistakeId == null) return;
     setSubmitting(true);
     try {
-      const data = await api('/api/answer/review/submit', { mistake_id: mistakeId, answer: String(answer) });
+      const data = await api('/api/answer/review/submit', {
+        mistake_id: mistakeId, answer: String(answer),
+        ...(family ? { family } : {}),
+      });
       if (!data.ok || !data.result) { setError(data.error || 'Fehler'); setPhase('error'); return; }
       setResult(data.result);
       setRemaining(data.remaining || 0);
@@ -55,8 +83,44 @@ export default function ReviewSession({ api, haptic, onClose }) {
     } finally {
       setSubmitting(false);
     }
-  }, [api, mistakeId, submitting, haptic]);
+  }, [api, mistakeId, submitting, haptic, family]);
 
+  if (phase === 'overview' && !overview) {
+    return <Root><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></Root>;
+  }
+  if (phase === 'overview' && overview) {
+    const many = (overview.sections || []).length > 1;
+    return (
+      <Root>
+        <div className="ans-head">
+          <span className="ans-eyebrow">🔁 Wiederholung</span>
+          <h1 className="ans-title">Fehler wiederholen</h1>
+          <p className="ans-sub">Wähle einen Bereich — {overview.total} zu wiederholen</p>
+        </div>
+        <div className="ans-sections">
+          {(overview.sections || []).map((s) => (
+            <button
+              key={s.family}
+              type="button"
+              className="ans-section-card"
+              onClick={() => startSection(s.family)}
+            >
+              <span className="ans-section-emoji">{s.emoji || '📚'}</span>
+              <span className="ans-section-body">
+                <span className="ans-section-title">{s.title_de}</span>
+                {s.subtitle_de ? <span className="ans-section-sub">{s.subtitle_de}</span> : null}
+              </span>
+              <span className="ans-section-count">{s.count}</span>
+            </button>
+          ))}
+        </div>
+        {many ? (
+          <button className="ans-btn" onClick={() => startSection(null)}>Alle wiederholen ({overview.total}) →</button>
+        ) : null}
+        <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
+      </Root>
+    );
+  }
   if (phase === 'loading') {
     return <Root><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></Root>;
   }
@@ -98,7 +162,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
           {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
           {result.tip ? <div className="ans-tip">💡 {result.tip}</div> : null}
         </div>
-        <button className="ans-btn" onClick={loadNext}>
+        <button className="ans-btn" onClick={() => (remaining > 0 ? loadNext(family) : loadOverview())}>
           {remaining > 0 ? `Weiter (${remaining}) →` : 'Fertig →'}
         </button>
         <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
