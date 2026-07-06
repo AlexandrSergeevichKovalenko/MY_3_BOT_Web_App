@@ -14898,16 +14898,21 @@ body.worldnews-active .webapp-topbar {
   display: none !important;
 }
 
-/* Whiten the player card + subtitles panel (were cream) to the interactive look. */
-.youtube-player-first.is-worldnews .youtube-player-card,
-.youtube-player-first.is-worldnews .youtube-subtitles-card,
-.youtube-player-first.is-worldnews .youtube-subtitles-panel {
+/* Player (video) card stays white; the subtitle panel is a dark "cinema caption"
+   surface so DE (white) / RU (yellow) lines read with high contrast in every app theme. */
+.youtube-player-first.is-worldnews .youtube-player-card {
   background: #ffffff !important;
   border: 1px solid #dfe4ec !important;
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10) !important;
 }
+.youtube-player-first.is-worldnews .youtube-subtitles-card,
+.youtube-player-first.is-worldnews .youtube-subtitles-panel {
+  background: #0f1729 !important;
+  border: 1px solid #223049 !important;
+  box-shadow: 0 12px 30px rgba(3, 7, 18, 0.28) !important;
+}
 .youtube-player-first.is-worldnews .youtube-subtitles-panel-head strong {
-  color: #0f172a;
+  color: #f8fafc;
 }
 /* Tighten vertical rhythm in news mode: video sits high, more subtitles fit on screen. */
 .youtube-player-first.is-worldnews {
@@ -14933,12 +14938,27 @@ body.worldnews-active .webapp-topbar {
   font-size: 18.5px;
   font-weight: 500;
   line-height: 1.55;
-  color: #1e2733;
   letter-spacing: 0.1px;
 }
-.youtube-player-first.is-worldnews .webapp-subtitles-list p.is-active {
-  background: rgba(37, 99, 235, 0.10) !important;
-  color: #0f172a !important;
+/* Force readable caption colors on the dark panel in EVERY theme — the generic
+   block-de/-ru and is-theme-light rules assume a light card, so beat them with !important. */
+.youtube-player-first.is-worldnews .youtube-subtitles-block-de .webapp-subtitles-list p {
+  color: #f8fafc !important;
+  font-weight: 600;
+}
+.youtube-player-first.is-worldnews .youtube-subtitles-block-ru .webapp-subtitles-list p {
+  color: #facc15 !important;
+}
+/* Active (currently-spoken) line: brighter text + a subtle tinted highlight so it POPS
+   instead of vanishing into the dark panel (the old #0f172a text was invisible here). */
+.youtube-player-first.is-worldnews .youtube-subtitles-block-de .webapp-subtitles-list p.is-active {
+  background: rgba(96, 165, 250, 0.18) !important;
+  color: #ffffff !important;
+  border-radius: 10px;
+}
+.youtube-player-first.is-worldnews .youtube-subtitles-block-ru .webapp-subtitles-list p.is-active {
+  background: rgba(250, 204, 21, 0.18) !important;
+  color: #fde68a !important;
   border-radius: 10px;
 }
 
