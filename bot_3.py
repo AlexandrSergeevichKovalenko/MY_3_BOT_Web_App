@@ -7112,6 +7112,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("_mastery_rotation_weekly_report_job", "Отчёт ротации (Пн 10:10)", 192, True, "guard"),
     ("send_weekly_summary", "Недельные итоги (Вс 20:55)", 192, True, "guard"),
     ("send_me_analytics_and_recommend_me", "Аналитика+совет (Пт 15:15)", 192, True, "guard"),
+    ("_video_pool_biweekly_report_job", "Отчёт по видео-пулу (Сб, раз в 2 нед.)", 384, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
     ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
     ("flashcard_feel_cleanup", "Чистка flashcard-feel (мес.)", 800, True, "guard"),
@@ -29052,6 +29053,156 @@ async def _mastery_rotation_weekly_report_job(context: CallbackContext) -> None:
             logging.warning("rotation weekly report: DM failed admin=%s", admin_id, exc_info=True)
 
 
+# ── Video-pool state report (bi-weekly admin DM) ──────────────────────────────
+def _fmt_pool_delta(value: int) -> str:
+    """▲ +N / ▼ −N / ±0 — compact delta marker for the report."""
+    value = int(value or 0)
+    if value > 0:
+        return f"▲ +{value}"
+    if value < 0:
+        return f"▼ −{abs(value)}"
+    return "±0"
+
+
+def _collect_video_pool_report(source_lang: str = "ru", target_lang: str = "de") -> dict:
+    """Gather the current pool state (runs in a worker thread)."""
+    from backend.database import (
+        get_weekly_video_pool_stats,
+        get_video_cooldown_counts,
+        get_previous_video_pool_snapshot,
+    )
+
+    topic_keys = list(grammar_video_catalog.GRAMMAR_VIDEO_TOPICS.keys())
+    stats = get_weekly_video_pool_stats(topic_keys, source_lang=source_lang, target_lang=target_lang)
+    cooldown = get_video_cooldown_counts()
+    prev = get_previous_video_pool_snapshot()
+    return {"stats": stats, "cooldown": cooldown, "prev": prev}
+
+
+def _build_video_pool_report_text(report: dict) -> str:
+    """Render the short, dynamics-focused pool report (HTML)."""
+    stats = report.get("stats") or {}
+    cooldown = report.get("cooldown") or {}
+    prev = report.get("prev") or None
+
+    total_topics = int(stats.get("total_topics") or 0)
+    filled = int(stats.get("filled_topics") or 0)
+    total_videos = int(stats.get("total_videos") or 0)
+    empty = max(0, total_topics - filled)
+    pct = round((filled / total_topics) * 100) if total_topics else 0
+    active = int(cooldown.get("active") or 0)
+    frozen = int(cooldown.get("frozen") or 0)
+
+    lines = ["📊 <b>Пул видео — динамика</b>", "<i>Раз в две недели</i>", ""]
+
+    if prev:
+        d_filled = filled - int(prev.get("filled_topics") or 0)
+        d_videos = total_videos - int(prev.get("total_videos") or 0)
+        # How long since the previous report, in days.
+        span = ""
+        captured = prev.get("captured_at")
+        if captured:
+            try:
+                from datetime import datetime, timezone
+                prev_dt = datetime.fromisoformat(str(captured))
+                if prev_dt.tzinfo is None:
+                    prev_dt = prev_dt.replace(tzinfo=timezone.utc)
+                days = max(0, (datetime.now(timezone.utc) - prev_dt).days)
+                span = f" за {days} дн." if days else " с прошлого отчёта"
+            except Exception:
+                span = ""
+        lines.append(f"🗂 <b>Темы:</b> заполнено {filled} из {total_topics} ({pct}%)")
+        lines.append(f"   {_fmt_pool_delta(d_filled)}{span} · осталось {empty}")
+        lines.append(f"🎬 <b>Видео в пуле:</b> {total_videos}  ({_fmt_pool_delta(d_videos)})")
+        footer_delta = d_filled + d_videos
+    else:
+        lines.append(f"🗂 <b>Темы:</b> заполнено {filled} из {total_topics} ({pct}%)")
+        lines.append(f"   осталось {empty} · <i>первый отчёт</i>")
+        lines.append(f"🎬 <b>Видео в пуле:</b> {total_videos}")
+        footer_delta = filled + total_videos
+
+    lines.append("")
+    lines.append(f"😴 <b>На кулдауне сейчас:</b> {active} показ(ов)")
+    lines.append(f"❄️ <b>Заморожено</b> (4+ показов одному): {frozen}")
+    lines.append("")
+
+    if total_topics and filled >= total_topics:
+        lines.append("✅ Пул полностью заполнен по всем темам.")
+    elif footer_delta > 0:
+        lines.append("🟢 Пул наполняется — процесс идёт.")
+    elif prev:
+        lines.append("🟡 За период без изменений (темы уже покрыты либо мало новых поисков).")
+
+    return "\n".join(lines)
+
+
+async def _video_pool_biweekly_report_job(context: CallbackContext, *, force: bool = False) -> None:
+    """Every other Saturday: DM admins a short video-pool state report.
+
+    The bi-weekly cadence is enforced by the snapshot itself — if a snapshot was
+    taken within the last ~13 days the job silently skips, so it is safe to
+    register on a plain weekly Saturday cron. ``force`` (from /videopoolreport)
+    bypasses the cadence gate.
+    """
+    from backend.database import (
+        video_pool_snapshot_exists_within,
+        insert_video_pool_snapshot,
+        get_admin_telegram_ids,
+    )
+
+    if not force:
+        try:
+            if await asyncio.to_thread(video_pool_snapshot_exists_within, 13):
+                return  # already reported this fortnight
+        except Exception:
+            pass
+
+    report = await asyncio.to_thread(_collect_video_pool_report)
+    text = _build_video_pool_report_text(report)
+
+    try:
+        admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    except Exception:
+        admin_ids = []
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+        except Exception:
+            logging.warning("video pool report: DM failed admin=%s", admin_id, exc_info=True)
+
+    # Persist the snapshot AFTER attempting delivery so the next fortnight can
+    # show the delta (and so a failed run retries next Saturday instead of being
+    # silently skipped).
+    stats = report.get("stats") or {}
+    cooldown = report.get("cooldown") or {}
+    try:
+        await asyncio.to_thread(
+            insert_video_pool_snapshot,
+            total_topics=int(stats.get("total_topics") or 0),
+            filled_topics=int(stats.get("filled_topics") or 0),
+            total_videos=int(stats.get("total_videos") or 0),
+            cooldown_active=int(cooldown.get("active") or 0),
+            cooldown_frozen=int(cooldown.get("frozen") or 0),
+        )
+    except Exception:
+        logging.warning("video pool report: snapshot insert failed", exc_info=True)
+
+
+async def admin_video_pool_report_command(update: Update, context: CallbackContext):
+    """On-demand admin preview of the video-pool report (does not affect cadence
+    beyond writing a snapshot like the scheduled run)."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    report = await asyncio.to_thread(_collect_video_pool_report)
+    text = _build_video_pool_report_text(report)
+    await message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
+
 # ── Personal achievement certificate (грамота) ────────────────────────────────
 def _build_cert_rows(cur: dict, prev: dict) -> list[dict]:
     """Build the certificate rows (skip metrics that are zero in BOTH periods so
@@ -33955,6 +34106,7 @@ def main():
     application.add_handler(CommandHandler("economics", admin_economics_command))
     application.add_handler(CommandHandler("costs", admin_costs_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
+    application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
     application.add_handler(CommandHandler("reviewcard", admin_review_card_command))
@@ -34816,6 +34968,16 @@ def main():
             day_of_week="mon",
             hour=10,
             minute=10,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Video-pool state report → admin DM (Sat 11:00, every other week) --
+        # Fires weekly; the job self-gates to a ~14-day cadence via its snapshot.
+        scheduler.add_job(
+            lambda: submit_async(_video_pool_biweekly_report_job, CallbackContext(application=application)),
+            "cron",
+            day_of_week="sat",
+            hour=11,
+            minute=0,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Personal weekly achievement certificate → active users (Sun 17:00) --

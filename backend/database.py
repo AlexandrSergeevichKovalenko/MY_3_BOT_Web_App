@@ -8403,6 +8403,24 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_video_user_sends_user_recent
                 ON bt_3_video_user_sends (user_id, last_sent_at DESC);
             """)
+            # Bi-weekly admin snapshot of the video pool, so the report can show
+            # deltas ("filled X -> +Y over two weeks -> Z%") without the admin
+            # having to remember the previous figures.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_video_pool_report_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    total_topics INTEGER NOT NULL DEFAULT 0,
+                    filled_topics INTEGER NOT NULL DEFAULT 0,
+                    total_videos INTEGER NOT NULL DEFAULT 0,
+                    cooldown_active INTEGER NOT NULL DEFAULT 0,
+                    cooldown_frozen INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_video_pool_report_snapshots_time
+                ON bt_3_video_pool_report_snapshots (captured_at DESC);
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_today_reminder_settings (
                     user_id BIGINT PRIMARY KEY,
@@ -28018,6 +28036,190 @@ def record_video_send(*, user_id: int, video_id: str, topic_key: str | None = No
                 )
     except Exception:
         logging.debug("record_video_send failed user_id=%s video_id=%s", user_id, resolved_video_id, exc_info=True)
+
+
+def get_weekly_video_pool_stats(
+    topic_keys,
+    *,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict:
+    """Coverage of the weekly-recommendation pool across the catalog topics.
+
+    ``topic_keys`` is the list of canonical grammar topic_keys. Returns how many
+    of them already have at least one active video in the shared pool, plus the
+    total number of active videos across those topics. Scoped to the weekly
+    focus_keys (skill_id=topic_key, no main/sub) so the Today-screen rows do not
+    skew the count.
+    """
+    keys = [str(k).strip() for k in (topic_keys or []) if str(k or "").strip()]
+    result = {"total_topics": len(keys), "filled_topics": 0, "total_videos": 0}
+    if not keys:
+        return result
+    focus_key_to_topic = {
+        _build_video_focus_key(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            skill_id=key,
+            main_category=None,
+            sub_category=None,
+        ): key
+        for key in keys
+    }
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT focus_key, COUNT(*) AS video_count
+                    FROM bt_3_video_recommendations
+                    WHERE is_active = TRUE
+                      AND focus_key = ANY(%s)
+                    GROUP BY focus_key;
+                    """,
+                    (list(focus_key_to_topic.keys()),),
+                )
+                rows = cursor.fetchall() or []
+    except Exception:
+        return result
+    filled = 0
+    total_videos = 0
+    for row in rows:
+        if not row:
+            continue
+        count = int(row[1] or 0)
+        if count > 0:
+            filled += 1
+            total_videos += count
+    result["filled_topics"] = filled
+    result["total_videos"] = total_videos
+    return result
+
+
+def get_video_cooldown_counts(
+    *,
+    recent_days: int = 30,
+    frozen_sends: int = 4,
+    frozen_days: int = 90,
+) -> dict:
+    """Global cooldown activity across all users: how many deliveries are still
+    resting (a video on cooldown for some user) and how many are in the longer
+    freeze (sent 4+ times). Shows the delivery/cooldown machinery is working."""
+    try:
+        recent_days = max(1, int(recent_days))
+        frozen_sends = max(1, int(frozen_sends))
+        frozen_days = max(recent_days, int(frozen_days))
+    except Exception:
+        recent_days, frozen_sends, frozen_days = 30, 4, 90
+    counts = {"active": 0, "frozen": 0}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (
+                            WHERE (send_count >= %s AND last_sent_at >= NOW() - (%s::text || ' days')::interval)
+                               OR (send_count <  %s AND last_sent_at >= NOW() - (%s::text || ' days')::interval)
+                        ) AS active,
+                        COUNT(*) FILTER (
+                            WHERE send_count >= %s AND last_sent_at >= NOW() - (%s::text || ' days')::interval
+                        ) AS frozen
+                    FROM bt_3_video_user_sends;
+                    """,
+                    (frozen_sends, frozen_days, frozen_sends, recent_days, frozen_sends, frozen_days),
+                )
+                row = cursor.fetchone()
+    except Exception:
+        return counts
+    if row:
+        counts["active"] = int(row[0] or 0)
+        counts["frozen"] = int(row[1] or 0)
+    return counts
+
+
+def get_previous_video_pool_snapshot() -> dict | None:
+    """Most recent stored pool snapshot (for computing report deltas)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT captured_at, total_topics, filled_topics, total_videos,
+                           cooldown_active, cooldown_frozen
+                    FROM bt_3_video_pool_report_snapshots
+                    ORDER BY captured_at DESC
+                    LIMIT 1;
+                    """
+                )
+                row = cursor.fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return {
+        "captured_at": row[0].isoformat() if row[0] else None,
+        "total_topics": int(row[1] or 0),
+        "filled_topics": int(row[2] or 0),
+        "total_videos": int(row[3] or 0),
+        "cooldown_active": int(row[4] or 0),
+        "cooldown_frozen": int(row[5] or 0),
+    }
+
+
+def video_pool_snapshot_exists_within(days: int = 13) -> bool:
+    """True if a snapshot was captured in the last ``days`` — used to keep the
+    report on a ~bi-weekly cadence even if the Saturday job fires every week."""
+    try:
+        days = max(1, int(days))
+    except Exception:
+        days = 13
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM bt_3_video_pool_report_snapshots
+                        WHERE captured_at >= NOW() - (%s::text || ' days')::interval
+                    );
+                    """,
+                    (days,),
+                )
+                row = cursor.fetchone()
+    except Exception:
+        return False
+    return bool(row and row[0])
+
+
+def insert_video_pool_snapshot(
+    *,
+    total_topics: int,
+    filled_topics: int,
+    total_videos: int,
+    cooldown_active: int,
+    cooldown_frozen: int,
+) -> None:
+    """Persist a pool snapshot so the next report can show the delta."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_video_pool_report_snapshots
+                        (total_topics, filled_topics, total_videos, cooldown_active, cooldown_frozen)
+                    VALUES (%s, %s, %s, %s, %s);
+                    """,
+                    (
+                        int(total_topics or 0),
+                        int(filled_topics or 0),
+                        int(total_videos or 0),
+                        int(cooldown_active or 0),
+                        int(cooldown_frozen or 0),
+                    ),
+                )
+    except Exception:
+        logging.debug("insert_video_pool_snapshot failed", exc_info=True)
 
 
 def vote_video_recommendation(
