@@ -238,6 +238,10 @@ from backend.database import (
     record_image_quiz_answer,
     mark_image_quiz_answer_feedback_sent,
     list_top_weak_topics,
+    list_active_video_recommendations_for_focus,
+    upsert_video_recommendation,
+    get_user_video_cooldown_ids,
+    record_video_send,
     claim_next_ready_visual_riddle_template,
     create_visual_riddle_dispatch,
     mark_visual_riddle_dispatch_sent,
@@ -410,6 +414,7 @@ from users_comparison_analytics import create_comparison_report_async
 from dateutil.relativedelta import relativedelta 
 from datetime import date, timedelta
 from backend.config_mistakes_data import VALID_CATEGORIES, VALID_SUBCATEGORIES, VALID_CATEGORIES_lower, VALID_SUBCATEGORIES_lower
+from backend import grammar_video_catalog
 
 application = None
 
@@ -7106,7 +7111,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("_send_weekly_champion_job", "Чемпион недели (Вс 20:00)", 192, True, "guard"),
     ("_mastery_rotation_weekly_report_job", "Отчёт ротации (Пн 10:10)", 192, True, "guard"),
     ("send_weekly_summary", "Недельные итоги (Вс 20:55)", 192, True, "guard"),
-    ("send_me_analytics_and_recommend_me", "Аналитика+совет (Пт/Пн)", 192, True, "guard"),
+    ("send_me_analytics_and_recommend_me", "Аналитика+совет (Пт 15:15)", 192, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
     ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
     ("flashcard_feel_cleanup", "Чистка flashcard-feel (мес.)", 800, True, "guard"),
@@ -17057,39 +17062,63 @@ PREFERRED_CHANNELS = [
     "UCE2vOZZIluHMtt2sAXhRhcw"
 ]
 
-def search_youtube_videous(
+def search_youtube_videos_structured(
     topic,
     max_results=5,
     *,
     main_category=None,
     sub_category=None,
     target_lang="de",
+    preferred_queries=None,
+    limit=2,
 ):
+    """Search YouTube and return structured, language-verified video dicts.
+
+    Returns a list of ``{"video_id", "title", "url", "views", "query"}`` ordered
+    by view count. ``preferred_queries`` (e.g. the curated German query from the
+    grammar catalog) are tried first so the search stays on-topic and in German.
+
+    Two deliberate anti-drift choices vs. the old behaviour:
+      * no bare, language-unqualified ``skill_title`` query stage — that stage was
+        the main source of English-grammar hits (e.g. "if clauses");
+      * when the target-language filter removes every result for a query we drop
+        that query entirely instead of falling back to raw provider results, so
+        non-German videos never slip through.
+    """
     skill_title = str(topic or "").strip()
     main_category, sub_category = _sanitize_focus_topic(main_category, sub_category)
 
-    query_stages = [
-        _build_video_search_queries(
-            main_category,
-            sub_category,
-            skill_title=skill_title,
-            target_lang=target_lang,
-        ),
-        _build_video_search_queries(
-            main_category,
-            None,
-            skill_title=skill_title,
-            target_lang=target_lang,
-        ),
-        _build_video_search_queries(
-            None,
-            sub_category,
-            skill_title=skill_title,
-            target_lang=target_lang,
-        ),
-    ]
-    if skill_title:
-        query_stages.append([skill_title])
+    query_stages = []
+    if preferred_queries:
+        cleaned_preferred = []
+        for pref in preferred_queries:
+            text = " ".join(str(pref or "").strip().split())
+            if text:
+                cleaned_preferred.append(text)
+        if cleaned_preferred:
+            query_stages.append(cleaned_preferred)
+    query_stages.extend(
+        [
+            _build_video_search_queries(
+                main_category,
+                sub_category,
+                skill_title=skill_title,
+                target_lang=target_lang,
+            ),
+            _build_video_search_queries(
+                main_category,
+                None,
+                skill_title=skill_title,
+                target_lang=target_lang,
+            ),
+            _build_video_search_queries(
+                None,
+                sub_category,
+                skill_title=skill_title,
+                target_lang=target_lang,
+            ),
+        ]
+    )
 
     queries = []
     seen_queries = set()
@@ -17136,24 +17165,28 @@ def search_youtube_videous(
                 continue
             videos = _youtube_fill_view_counts(videos, billing_target_lang=target_lang)
             filtered_videos = _filter_weekly_recommendation_videos(videos)
-            if filtered_videos:
-                videos = filtered_videos
-            else:
+            if not filtered_videos:
+                # Language filter removed everything → skip this query rather than
+                # showing wrong-language videos. No dumb raw-result fallback.
                 print(
-                    f"ℹ️ Weekly YouTube search fallback keeps raw provider results: "
+                    f"ℹ️ Weekly YouTube search dropped all results as off-language: "
                     f"query='{query}' provider='{provider_name}' raw={len(videos)}"
                 )
-            for video in videos:
+                continue
+            for video in filtered_videos:
                 video_id = str(video.get("video_id") or "").strip()
                 if not video_id:
                     continue
+                video_url = str(video.get("video_url") or "").strip() or (
+                    "https://www.youtube.com/watch?v=" + video_id
+                )
                 existing = collected_videos.get(video_id)
                 candidate = {
                     "video_id": video_id,
                     "title": str(video.get("title") or "").strip(),
+                    "url": video_url,
                     "views": int(video.get("views") or 0),
                     "query": query,
-                    "provider": provider_name,
                 }
                 if not existing or candidate["views"] > int(existing.get("views") or 0):
                     collected_videos[video_id] = candidate
@@ -17163,17 +17196,49 @@ def search_youtube_videous(
     if not collected_videos:
         return []
 
-    top_videos = sorted(
+    limit = max(1, int(limit or 2))
+    return sorted(
         collected_videos.values(),
         key=lambda item: int(item.get("views") or 0),
         reverse=True,
-    )[:2]
+    )[:limit]
 
-    preferred_videos = [
-        f'<a href="{html.escape("https://www.youtube.com/watch?v=" + video["video_id"])}">▶️ {escape_html_with_bold(video["title"])}</a>'
-        for video in top_videos
-    ]
 
+def _format_video_links(videos):
+    """Render structured video dicts as HTML anchor links for a Telegram message."""
+    links = []
+    for video in videos or []:
+        url = str(video.get("url") or "").strip()
+        if not url:
+            video_id = str(video.get("video_id") or "").strip()
+            if not video_id:
+                continue
+            url = "https://www.youtube.com/watch?v=" + video_id
+        title = str(video.get("title") or "").strip() or url
+        links.append(f'<a href="{html.escape(url)}">▶️ {escape_html_with_bold(title)}</a>')
+    return links
+
+
+def search_youtube_videous(
+    topic,
+    max_results=5,
+    *,
+    main_category=None,
+    sub_category=None,
+    target_lang="de",
+    preferred_queries=None,
+):
+    """Backward-compatible wrapper returning HTML anchor links (top 2)."""
+    videos = search_youtube_videos_structured(
+        topic,
+        max_results=max_results,
+        main_category=main_category,
+        sub_category=sub_category,
+        target_lang=target_lang,
+        preferred_queries=preferred_queries,
+        limit=2,
+    )
+    preferred_videos = _format_video_links(videos)
     print(f"preferred_videos after escape_html_with_bold: {preferred_videos}")
     return preferred_videos
 
@@ -17632,6 +17697,160 @@ async def _send_analytics_message_with_fallback(
         )
 
 
+# How many videos we try to serve straight from the shared pool before spending
+# a YouTube search. If the per-user cooldown leaves fewer than this, we search.
+_WEEKLY_VIDEO_TARGET = 2
+
+
+def _select_weekly_video_for_user(
+    user_id,
+    *,
+    ranked_topics,
+    top_mistake_category,
+    top_mistake_subcategory,
+    target_lang="de",
+    source_lang="ru",
+):
+    """Pick up to 2 German grammar videos for the weekly recommendation.
+
+    Pool-first: reuse videos already stored for the topic (keyed by canonical
+    topic_key = focus_key) and only hit YouTube when the per-user cooldown leaves
+    too few. Newly found videos are persisted so other users reuse them without
+    spending quota. The topic is derived from the SAME "biggest mistakes" the
+    header shows, so the video topic and the header can no longer disagree.
+
+    Returns ``{videos: [{video_id,title,url}], topic_key, topic_display, source}``
+    or ``None`` when nothing could be produced.
+    """
+    # Ordered (main, sub) candidates — header's top category first for consistency.
+    candidates: list[tuple[str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    def _add_pair(main_value, sub_value):
+        main = str(main_value or "").strip()
+        sub = str(sub_value or "").strip()
+        if not main and not sub:
+            return
+        identity = (main.lower(), sub.lower())
+        if identity in seen_pairs:
+            return
+        seen_pairs.add(identity)
+        candidates.append((main, sub))
+
+    _add_pair(top_mistake_category, top_mistake_subcategory)
+    for row in ranked_topics or []:
+        if isinstance(row, dict):
+            _add_pair(row.get("main_category"), row.get("sub_category"))
+
+    # Map to canonical catalog topic_keys (dedup, keep order); generic last.
+    topic_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for main, sub in candidates:
+        topic_key = grammar_video_catalog.match_topic_key(main, sub)
+        if not topic_key or topic_key in seen_keys:
+            continue
+        seen_keys.add(topic_key)
+        topic_keys.append(topic_key)
+    if grammar_video_catalog.FALLBACK_TOPIC_KEY not in seen_keys:
+        topic_keys.append(grammar_video_catalog.FALLBACK_TOPIC_KEY)
+
+    try:
+        blocked_ids = get_user_video_cooldown_ids(user_id=int(user_id))
+    except Exception:
+        blocked_ids = set()
+
+    for topic_key in topic_keys:
+        entry = grammar_video_catalog.get_topic(topic_key)
+        if not entry:
+            continue
+
+        chosen: list[dict] = []
+        chosen_ids: set[str] = set()
+
+        def _take(video_id, title, url):
+            vid = str(video_id or "").strip()
+            if not vid or vid in blocked_ids or vid in chosen_ids:
+                return
+            chosen.append(
+                {
+                    "video_id": vid,
+                    "title": str(title or "").strip(),
+                    "url": str(url or "").strip() or ("https://www.youtube.com/watch?v=" + vid),
+                }
+            )
+            chosen_ids.add(vid)
+
+        # 1) Pool-first — zero YouTube quota.
+        try:
+            pool_rows = list_active_video_recommendations_for_focus(
+                source_lang=source_lang,
+                target_lang=target_lang,
+                skill_id=topic_key,
+                limit=12,
+            )
+        except Exception:
+            pool_rows = []
+        for row in pool_rows:
+            if len(chosen) >= _WEEKLY_VIDEO_TARGET:
+                break
+            _take(row.get("video_id"), row.get("video_title"), row.get("video_url"))
+        served_from_pool = bool(chosen)
+
+        # 2) Not enough fresh videos in the pool → one German YouTube search.
+        if len(chosen) < _WEEKLY_VIDEO_TARGET:
+            try:
+                # Empty skill_title + no main/sub keeps query building deterministic
+                # and German; the curated catalog query drives the search.
+                found = search_youtube_videos_structured(
+                    "",
+                    main_category=None,
+                    sub_category=None,
+                    target_lang=target_lang,
+                    preferred_queries=[entry.get("query")],
+                    limit=6,
+                )
+            except Exception:
+                logging.debug("weekly video search failed topic=%s", topic_key, exc_info=True)
+                found = []
+            for video in found:
+                vid = str(video.get("video_id") or "").strip()
+                if not vid:
+                    continue
+                # Persist every hit into the shared pool so other users reuse it,
+                # even if this particular clip is on cooldown for the current user.
+                try:
+                    upsert_video_recommendation(
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        skill_id=topic_key,
+                        main_category=None,
+                        sub_category=None,
+                        search_query=entry.get("query"),
+                        video_id=vid,
+                        video_url=video.get("url"),
+                        video_title=video.get("title"),
+                    )
+                except Exception:
+                    logging.debug(
+                        "weekly video pool upsert failed topic=%s video=%s",
+                        topic_key,
+                        vid,
+                        exc_info=True,
+                    )
+                if len(chosen) < _WEEKLY_VIDEO_TARGET:
+                    _take(vid, video.get("title"), video.get("url"))
+
+        if chosen:
+            return {
+                "videos": chosen[:_WEEKLY_VIDEO_TARGET],
+                "topic_key": topic_key,
+                "topic_display": grammar_video_catalog.topic_display(topic_key),
+                "source": "pool" if served_from_pool else "youtube",
+            }
+
+    return None
+
+
 # 📌📌📌📌📌
 async def send_me_analytics_and_recommend_me(context: CallbackContext):
     task_name = "send_me_analytics_and_recommend_me"
@@ -17708,56 +17927,34 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                     }
                 ]
 
-            video_data = []
-            selected_video_topic = None
-            for topic_row in ranked_topics:
-                candidate_main_category = str(topic_row.get("main_category") or "").strip()
-                candidate_sub_category = str(topic_row.get("sub_category") or "").strip()
-                user_message = f"""
-                - **Категория ошибки:** {candidate_main_category}
-                - **Первая подкатегория:** {candidate_sub_category}
-                - **Вторая подкатегория:** 
-                """
-                topic = candidate_sub_category or candidate_main_category or "Deutsch Grammatik"
+            # Pool-first selection keyed by canonical grammar topic. Runs in a
+            # worker thread because it may do blocking DB / YouTube I/O.
+            selection = await asyncio.to_thread(
+                _select_weekly_video_for_user,
+                safe_user_id,
+                ranked_topics=ranked_topics,
+                top_mistake_category=top_mistake_category,
+                top_mistake_subcategory=top_mistake_subcategory_1,
+                target_lang="de",
+            )
+            selected_videos = (selection or {}).get("videos") or []
+            selected_topic_display = str((selection or {}).get("topic_display") or "").strip()
+            video_data = _format_video_links(selected_videos)
 
-                for attempt in range(5):
-                    try:
-                        topic = await llm_execute(
-                            task_name=task_name,
-                            system_instruction_key=system_instruction_key,
-                            user_message=user_message,
-                            poll_interval_seconds=1.0,
-                        )
-                        print(f"📌 Определена тема: {topic}")
-                        break
-                    except openai.RateLimitError:
-                        wait_time = (attempt + 1) * 5
-                        print(f"⚠️ OpenAI API перегружен. Ждём {wait_time} сек...")
-                        await asyncio.sleep(wait_time)
-                    except Exception as e:
-                        print(f"⚠️ Ошибка OpenAI: {e}")
-                        continue
-
-                candidate_video_data = search_youtube_videous(
-                    topic,
-                    main_category=candidate_main_category,
-                    sub_category=candidate_sub_category,
-                    target_lang="de",
+            # Log per-user sends so the same clip is not re-sent to this person for
+            # a month (three months after 4 sends); the pool stays reusable for
+            # everyone else.
+            for video in selected_videos:
+                record_video_send(
+                    user_id=safe_user_id,
+                    video_id=video.get("video_id"),
+                    topic_key=(selection or {}).get("topic_key"),
                 )
-                if isinstance(candidate_video_data, list) and candidate_video_data:
-                    video_data = candidate_video_data
-                    selected_video_topic = topic_row
-                    break
 
-            if not isinstance(video_data, list):
-                print(f"❌ ОШИБКА: search_youtube_videous вернула {type(video_data)} вместо списка!")
-                video_data = []
             if not video_data:
                 print("❌ Видео не найдено. Список пуст.")
             else:
-                print(f"✅ Найдено {len(video_data)} видео:")
-                for video in video_data:
-                    print(f"▶️ {video}")
+                print(f"✅ Найдено {len(video_data)} видео для темы '{selected_topic_display}' (source={(selection or {}).get('source')})")
 
             valid_links = video_data or ["❌ Не удалось найти видео на YouTube по этой теме. Попробуйте позже."]
             rounded_value = round(mistakes_week / total_sentences, 2)
@@ -17771,17 +17968,8 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                 recommendations += f"📜 *Основные ошибки в подкатегории:*\n {top_mistake_subcategory_1}\n\n"
             if top_mistake_subcategory_2:
                 recommendations += f"📜 *Вторые по частоте ошибки в подкатегории:*\n {top_mistake_subcategory_2}\n\n"
-            if selected_video_topic:
-                selected_video_main = str(selected_video_topic.get("main_category") or "").strip()
-                selected_video_sub = str(selected_video_topic.get("sub_category") or "").strip()
-                if (
-                    selected_video_main and
-                    (
-                        selected_video_main != str(top_mistake_category or "").strip()
-                        or selected_video_sub != str(top_mistake_subcategory_1 or "").strip()
-                    )
-                ):
-                    recommendations += f"🎯 *Видео подобрано по теме:*\n {selected_video_sub or selected_video_main}\n\n"
+            if selected_topic_display and video_data:
+                recommendations += f"🎯 *Видео подобрано по теме:*\n {selected_topic_display}\n\n"
 
             recommendations += "🟢 *Рекомендую посмотреть:*\n\n"
             recommendations = escape_html_with_bold(recommendations)
@@ -34781,8 +34969,8 @@ def main():
     #     day_of_week = "mon, fri"
     # )
     
+        # Weekly grammar analytics + video recommendation: once a week, Friday only.
         scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="fri", hour=15, minute=15)
-        scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="mon", hour=6, minute=5) 
     #scheduler.add_job(lambda: run_async_job(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="sun", hour=7, minute=7)
     
     # Legacy auto-close disabled.

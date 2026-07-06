@@ -8383,6 +8383,26 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_video_recommendation_votes_rec
                 ON bt_3_video_recommendation_votes (recommendation_id, updated_at DESC);
             """)
+            # Per-user delivery log for recommended videos: lets us reuse the shared
+            # video pool across users while keeping a personal cooldown so the same
+            # person is not shown the same clip again for a month (and, after it has
+            # been sent 4 times, a longer 3-month freeze).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_video_user_sends (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    video_id TEXT NOT NULL,
+                    topic_key TEXT,
+                    send_count INTEGER NOT NULL DEFAULT 1,
+                    first_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, video_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_video_user_sends_user_recent
+                ON bt_3_video_user_sends (user_id, last_sent_at DESC);
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_today_reminder_settings (
                     user_id BIGINT PRIMARY KEY,
@@ -27886,6 +27906,118 @@ def get_video_recommendation_by_id(recommendation_id: int) -> dict | None:
             )
             row = cursor.fetchone()
     return _map_video_recommendation_row(row) if row else None
+
+
+def list_active_video_recommendations_for_focus(
+    *,
+    source_lang: str,
+    target_lang: str,
+    skill_id: str | None,
+    main_category: str | None = None,
+    sub_category: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Return the active pool videos for a focus_key, best first.
+
+    Non-mutating counterpart of ``get_best_video_recommendation_for_focus`` — it
+    does NOT touch ``last_selected_at`` and returns several candidates so a caller
+    can apply per-user cooldown filtering before picking. Ordered by community
+    score first (likes/dislikes from the Today-screen feature carry over here).
+    """
+    resolved_limit = max(1, min(int(limit or 10), 50))
+    focus_key = _build_video_focus_key(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        skill_id=skill_id,
+        main_category=main_category,
+        sub_category=sub_category,
+    )
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        id, source_lang, target_lang, focus_key, skill_id, main_category, sub_category,
+                        search_query, video_id, video_url, video_title, like_count, dislike_count,
+                        score, is_active, updated_at, last_selected_at
+                    FROM bt_3_video_recommendations
+                    WHERE focus_key = %s
+                      AND is_active = TRUE
+                    ORDER BY score DESC, like_count DESC, updated_at DESC
+                    LIMIT %s;
+                    """,
+                    (focus_key, resolved_limit),
+                )
+                rows = cursor.fetchall() or []
+    except Exception:
+        return []
+    return [_map_video_recommendation_row(row) for row in rows if row]
+
+
+def get_user_video_cooldown_ids(
+    *,
+    user_id: int,
+    recent_days: int = 30,
+    frozen_sends: int = 4,
+    frozen_days: int = 90,
+) -> set[str]:
+    """Return the set of video_ids currently on cooldown for this user.
+
+    A clip is blocked if it was sent to this user within ``recent_days`` (default
+    a month). Once it has been sent ``frozen_sends`` times or more, the block
+    extends to ``frozen_days`` (default three months) so heavy-repeat clips rest
+    longer. Other users are unaffected — the pool stays reusable.
+    """
+    try:
+        recent_days = max(1, int(recent_days))
+        frozen_sends = max(1, int(frozen_sends))
+        frozen_days = max(recent_days, int(frozen_days))
+    except Exception:
+        recent_days, frozen_sends, frozen_days = 30, 4, 90
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT video_id
+                    FROM bt_3_video_user_sends
+                    WHERE user_id = %s
+                      AND (
+                            (send_count >= %s AND last_sent_at >= NOW() - (%s::text || ' days')::interval)
+                            OR
+                            (send_count < %s AND last_sent_at >= NOW() - (%s::text || ' days')::interval)
+                          );
+                    """,
+                    (int(user_id), frozen_sends, frozen_days, frozen_sends, recent_days),
+                )
+                rows = cursor.fetchall() or []
+    except Exception:
+        return set()
+    return {str(row[0]).strip() for row in rows if row and row[0]}
+
+
+def record_video_send(*, user_id: int, video_id: str, topic_key: str | None = None) -> None:
+    """Log that a video was delivered to a user (upsert, increments send_count)."""
+    resolved_video_id = str(video_id or "").strip()
+    if not resolved_video_id:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_video_user_sends (user_id, video_id, topic_key)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id, video_id) DO UPDATE
+                    SET send_count = bt_3_video_user_sends.send_count + 1,
+                        last_sent_at = NOW(),
+                        topic_key = COALESCE(EXCLUDED.topic_key, bt_3_video_user_sends.topic_key);
+                    """,
+                    (int(user_id), resolved_video_id, str(topic_key or "").strip() or None),
+                )
+    except Exception:
+        logging.debug("record_video_send failed user_id=%s video_id=%s", user_id, resolved_video_id, exc_info=True)
 
 
 def vote_video_recommendation(
