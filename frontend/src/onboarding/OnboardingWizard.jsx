@@ -7,6 +7,9 @@ import './onboarding.css';
 // frame — progress bar, ←/→ nav, the core-gate (language + dictionary are
 // mandatory), tier-aware placeholders, and the resume/complete wiring.
 const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
+// Opened in a plain browser (shareable «/tour» presentation) — no Telegram, no
+// initData → free navigation, no saving, install-the-bot CTA at the finale.
+const IS_PUBLIC = !(tg && tg.initData);
 
 async function api(path, extra) {
   const initData = tg?.initData || '';
@@ -89,7 +92,12 @@ function StepBody(props) {
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
     case 'welcome':
-      return (
+      return IS_PUBLIC ? (
+        <p className="ob-lead">
+          Это бот для изучения немецкого. Пролистай за пару минут — покажу, что он умеет.
+          В конце сможешь установить его себе.
+        </p>
+      ) : (
         <p className="ob-lead">
           Давай за пару минут настроим бота под тебя — язык, словарь, темп заданий.
           Потом покажу, как всё работает. Всё это потом легко изменить в «🎬 Как пользоваться».
@@ -108,14 +116,16 @@ function StepBody(props) {
             <span className="ob-pair-arrow">↔</span>
             <span className="ob-pair-item"><b>🗣 Русский</b><small>объясняем</small></span>
           </div>
-          <button
-            type="button"
-            className={`ob-confirm ${confirmed ? 'is-done' : ''}`}
-            onClick={onConfirm}
-            disabled={busy || confirmed}
-          >
-            {confirmed ? '✅ Подтверждено' : busy ? 'Сохраняю…' : '✓ Подтвердить'}
-          </button>
+          {!IS_PUBLIC && (
+            <button
+              type="button"
+              className={`ob-confirm ${confirmed ? 'is-done' : ''}`}
+              onClick={onConfirm}
+              disabled={busy || confirmed}
+            >
+              {confirmed ? '✅ Подтверждено' : busy ? 'Сохраняю…' : '✓ Подтвердить'}
+            </button>
+          )}
           {stepErr ? <p className="ob-err">{stepErr}</p> : null}
         </div>
       );
@@ -130,7 +140,7 @@ function StepBody(props) {
           </p>
           {connected ? (
             <span className="ob-lock ob-ok">✅ Базовый словарь подключён</span>
-          ) : (
+          ) : IS_PUBLIC ? null : (
             <div className="ob-actions">
               <button
                 type="button"
@@ -377,7 +387,12 @@ function StepBody(props) {
     case 'info':
       return <p className="ob-lead">Короткое объяснение + медиа. Пока — заглушка каркаса.</p>;
     case 'finale':
-      return (
+      return IS_PUBLIC ? (
+        <p className="ob-lead">
+          Вот и всё, что умеет бот 🎉 Понравилось? Установи его и начни учить немецкий
+          по-настоящему — каждый день. Жми кнопку ниже 👇
+        </p>
+      ) : (
         <p className="ob-lead">
           Всё настроено! Задания уже ждут в чате. Захочешь что-то поменять — всё здесь же,
           под кнопкой <b>🎬 Как пользоваться</b>.
@@ -401,11 +416,26 @@ export default function OnboardingWizard() {
   const [selPreset, setSelPreset] = useState('normal');   // intensity (visual default)
   const [selWindow, setSelWindow] = useState('allday');   // active window (visual default)
   const [selBattle, setSelBattle] = useState(null);       // battle readiness: null|'yes'|'no'
+  const [botUrl, setBotUrl] = useState('');               // install link (public tour only)
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
     try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
     try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* ignore */ }
+  }, []);
+
+  // Public tour: fetch the bot install link for the finale CTA.
+  useEffect(() => {
+    if (!IS_PUBLIC) return;
+    let off = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/public/tour-info');
+        const d = await r.json().catch(() => ({}));
+        if (!off && d.bot_url) setBotUrl(d.bot_url);
+      } catch (_e) { /* CTA falls back to a generic label */ }
+    })();
+    return () => { off = true; };
   }, []);
 
   // Load state (resume point + tier).
@@ -437,13 +467,18 @@ export default function OnboardingWizard() {
 
   const step = STEPS[idx];
   const isLast = idx === STEPS.length - 1;
-  const canNext = step.kind !== 'core' || !!confirmed[step.id];
+  // Public tour: no gating (just click through). Telegram: core steps need confirm.
+  const canNext = IS_PUBLIC || step.kind !== 'core' || !!confirmed[step.id];
 
   const goNext = useCallback(async () => {
     if (!canNext) return;
     try { tg?.HapticFeedback?.impactOccurred?.('light'); } catch (_e) { /* noop */ }
     if (!isLast) { setIdx((i) => Math.min(i + 1, STEPS.length - 1)); return; }
-    // Finale → complete.
+    // Finale. Public tour → send the viewer to install the bot; in Telegram → complete.
+    if (IS_PUBLIC) {
+      if (botUrl) { try { window.location.href = botUrl; } catch (_e) { /* ignore */ } }
+      return;
+    }
     setFinishing(true);
     try {
       await api('/api/webapp/onboarding/complete');
@@ -453,7 +488,7 @@ export default function OnboardingWizard() {
     } catch (_e) {
       setFinishing(false);
     }
-  }, [canNext, isLast]);
+  }, [canNext, isLast, botUrl]);
 
   const goBack = useCallback(() => {
     setIdx((i) => Math.max(i - 1, 0));
@@ -576,7 +611,9 @@ export default function OnboardingWizard() {
             onClick={goNext}
             disabled={!canNext || finishing || done}
           >
-            {done ? '✅ Готово' : isLast ? '🎯 К заданиям' : 'Далее →'}
+            {done ? '✅ Готово'
+              : isLast ? (IS_PUBLIC ? '🚀 Установить бота' : '🎯 К заданиям')
+              : 'Далее →'}
           </button>
         </footer>
       </div>

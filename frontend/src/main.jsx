@@ -191,6 +191,9 @@ function getAnswerStartParam() {
   // path the backend already serves (catch-all → index.html, absolute assets).
   const path = String(window.location?.pathname || '').replace(/\/+$/, '').toLowerCase();
   if (path === '/dict' || path === '/d') return 'dict';
+  // Public shareable tour: /tour (or /onboarding) opens the onboarding wizard as a
+  // presentation — works in a plain browser for people who don't have the bot yet.
+  if (path === '/tour' || path === '/onboarding') return 'onboarding';
   return '';
 }
 

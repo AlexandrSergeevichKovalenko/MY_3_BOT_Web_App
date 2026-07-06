@@ -41147,6 +41147,14 @@ def webapp_onboarding_battles():
     return jsonify({"ok": True, "opted_in": bool(stored)})
 
 
+@app.route("/api/public/tour-info", methods=["GET", "POST"])
+def public_tour_info():
+    """PUBLIC (no-auth) info for the shareable «tour» presentation — the bot install
+    link, so a browser viewer without the bot can install it from the finale."""
+    username = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+    return jsonify({"ok": True, "bot_url": (f"https://t.me/{username}" if username else "")})
+
+
 @app.route("/api/shortcut/pairing-code", methods=["POST"])
 def shortcut_create_pairing_code():
     body = request.get_json(silent=True) or {}
