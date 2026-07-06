@@ -14612,6 +14612,144 @@ def touch_translation_check_session_heartbeat(
             return cursor.rowcount > 0
 
 
+def list_stranded_translation_check_sessions(
+    *,
+    max_age_days: int = 14,
+    min_settled_seconds: int = 120,
+    limit: int = 20,
+) -> list[int]:
+    """Sessions that finished (terminal) but still have a lost item.
+
+    Targets the population NO existing recovery covers: a session that ended
+    ``failed``/``done``/``canceled`` yet still has an item stuck ``pending``/
+    ``running`` — the "user sent 7, only 6 checked" leftover, or a runner that
+    died between finalize batches. The queued-watchdog and stale-cleanup jobs
+    only touch non-terminal sessions, so these stay broken forever otherwise.
+
+    ``min_settled_seconds`` avoids racing a session that JUST finished; the
+    age window avoids churning ancient rows.
+    """
+    try:
+        max_age_days = max(1, int(max_age_days))
+        min_settled_seconds = max(0, int(min_settled_seconds))
+        limit = max(1, min(int(limit or 20), 100))
+    except Exception:
+        max_age_days, min_settled_seconds, limit = 14, 120, 20
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT s.id
+                    FROM bt_3_translation_check_sessions s
+                    WHERE s.status IN ('failed', 'done', 'canceled')
+                      AND s.finished_at IS NOT NULL
+                      AND s.finished_at <= NOW() - (%s::text || ' seconds')::interval
+                      AND s.created_at >= NOW() - (%s::text || ' days')::interval
+                      AND EXISTS (
+                            SELECT 1 FROM bt_3_translation_check_items i
+                            WHERE i.check_session_id = s.id
+                              AND i.status IN ('pending', 'running')
+                          )
+                    ORDER BY s.finished_at ASC
+                    LIMIT %s;
+                    """,
+                    (str(min_settled_seconds), str(max_age_days), limit),
+                )
+                rows = cursor.fetchall() or []
+    except Exception:
+        return []
+    return [int(r[0]) for r in rows if r and r[0] is not None]
+
+
+def revive_stranded_translation_check_session(*, session_id: int) -> dict | None:
+    """Lift a terminal session with a lost item back to a re-dispatchable state.
+
+    Resets only the still-`pending`/`running` items (the already-graded ones are
+    untouched — idempotent, no re-grade of good work), recomputes the counters
+    from reality, and returns the session to ``queued`` with a cleared dispatch
+    (``dispatched_at NULL`` → the worker watchdog picks it up immediately and the
+    runner re-grades exactly the lost sentence). ``send_private_grammar_text`` is
+    forced FALSE to avoid a duplicate grammar DM on the re-drive. Returns the
+    revived row, or ``None`` if it no longer qualifies (raced/healed).
+    """
+    sid = int(session_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            # Lock + re-check the precondition to avoid racing the worker.
+            cursor.execute(
+                """
+                SELECT 1
+                FROM bt_3_translation_check_sessions s
+                WHERE s.id = %s
+                  AND s.status IN ('failed', 'done', 'canceled')
+                  AND EXISTS (
+                        SELECT 1 FROM bt_3_translation_check_items i
+                        WHERE i.check_session_id = s.id
+                          AND i.status IN ('pending', 'running')
+                      )
+                FOR UPDATE;
+                """,
+                (sid,),
+            )
+            if cursor.fetchone() is None:
+                return None
+            # Reset ONLY the lost items so the runner re-grades exactly them.
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_items
+                SET status = 'pending',
+                    result_json = NULL,
+                    result_text = NULL,
+                    error_text = NULL,
+                    started_at = NULL,
+                    finished_at = NULL,
+                    updated_at = NOW()
+                WHERE check_session_id = %s
+                  AND status IN ('pending', 'running');
+                """,
+                (sid,),
+            )
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions s
+                SET status = 'queued',
+                    finished_at = NULL,
+                    heartbeat_at = NULL,
+                    worker_job_id = NULL,
+                    dispatched_job_id = NULL,
+                    dispatched_at = NULL,
+                    last_error = NULL,
+                    send_private_grammar_text = FALSE,
+                    completed_items = (
+                        SELECT COUNT(*) FROM bt_3_translation_check_items i
+                        WHERE i.check_session_id = s.id AND i.status = 'done'
+                    ),
+                    failed_items = (
+                        SELECT COUNT(*) FROM bt_3_translation_check_items i
+                        WHERE i.check_session_id = s.id AND i.status = 'failed'
+                    ),
+                    completion_side_effects_started_at = NULL,
+                    completion_side_effects_done_at = NULL,
+                    updated_at = NOW()
+                WHERE s.id = %s
+                RETURNING id, user_id, status, total_items, completed_items, failed_items;
+                """,
+                (sid,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]) if row[1] is not None else None,
+        "status": str(row[2] or ""),
+        "total_items": int(row[3] or 0),
+        "completed_items": int(row[4] or 0),
+        "failed_items": int(row[5] or 0),
+    }
+
+
 def complete_translation_check_session(
     *,
     session_id: int,

@@ -4054,7 +4054,32 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           : tr('Скрыть этот результат', 'Dieses Ergebnis ausblenden')}
                       </span>
                     </label>
-                    {item.error ? (
+                    {item.incomplete ? (
+                      <div
+                        className="webapp-result-pending"
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: '10px',
+                          background: 'rgba(255, 193, 7, 0.12)',
+                          border: '1px solid rgba(255, 193, 7, 0.35)',
+                          fontSize: '0.92em',
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        <strong>
+                          {tr('Предложение', 'Satz')} {item.sentence_number ?? '—'}
+                        </strong>
+                        {item.original_text ? (
+                          <div style={{ opacity: 0.75, margin: '4px 0' }}>{item.original_text}</div>
+                        ) : null}
+                        <div>
+                          {tr(
+                            '⏳ Это предложение ещё проверяется. Загляните сюда через минуту или обновите страницу — результат появится автоматически.',
+                            '⏳ Dieser Satz wird noch geprüft. Schau in einer Minute wieder vorbei oder aktualisiere die Seite — das Ergebnis erscheint automatisch.'
+                          )}
+                        </div>
+                      </div>
+                    ) : item.error ? (
                       <div className="webapp-error">{item.error}</div>
                     ) : resultCollapsed ? (
                       <div className="translation-collapsed-summary">
@@ -18811,7 +18836,25 @@ function AppInner() {
       };
     }
     const errorText = String(item.error_text || '').trim();
-    if (!errorText) return null;
+    if (!errorText) {
+      // No result and no error yet: the item is still being checked (or was
+      // stranded by a transient backend hiccup). Render a neutral placeholder
+      // instead of silently dropping the sentence, so 7 submitted never looks
+      // like "only 3 checked". The backend self-heals stranded items shortly.
+      const pendingStatus = String(item.status || '').trim().toLowerCase();
+      if (pendingStatus === 'pending' || pendingStatus === 'running' || pendingStatus === 'queued') {
+        return {
+          check_item_id: item.id ?? null,
+          item_order: item.item_order ?? null,
+          sentence_number: item.sentence_number ?? null,
+          sentence_id_for_mistake_table: item.sentence_id_for_mistake_table ?? null,
+          original_text: item.original_text || '',
+          user_translation: item.user_translation || '',
+          incomplete: true,
+        };
+      }
+      return null;
+    }
     return {
       check_item_id: item.id ?? null,
       item_order: item.item_order ?? null,
@@ -18888,6 +18931,12 @@ function AppInner() {
         });
         mappedResults.forEach((item, index) => {
           const key = getTranslationResultIdentityKey(item) || `next:${index}`;
+          // Never let a "still checking" placeholder clobber a real graded result
+          // that's already shown for the same sentence.
+          const existing = nextByKey.get(key);
+          if (item?.incomplete && existing && !existing?.incomplete) {
+            return;
+          }
           nextByKey.set(key, item);
         });
         return Array.from(nextByKey.values()).sort((a, b) => {

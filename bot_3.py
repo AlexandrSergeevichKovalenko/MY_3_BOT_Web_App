@@ -29203,6 +29203,36 @@ async def admin_video_pool_report_command(update: Update, context: CallbackConte
     await message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+async def admin_fix_translation_sessions_command(update: Update, context: CallbackContext):
+    """Heal «Переводы» sessions that finished with a lost sentence (item stuck
+    pending) by reviving them for a re-grade. Same logic the worker runs
+    periodically; this is the on-demand trigger."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    from backend.job_queue import recover_stranded_translation_check_sessions
+
+    await message.reply_text("🔧 Ищу застрявшие сессии проверки переводов…")
+    try:
+        revived = await asyncio.to_thread(recover_stranded_translation_check_sessions, limit=50)
+    except Exception:
+        logging.exception("admin_fix_translation_sessions failed")
+        await message.reply_text("❌ Не удалось запустить восстановление — смотри логи.")
+        return
+    if revived:
+        ids = ", ".join(str(s) for s in revived)
+        await message.reply_text(
+            f"✅ Отправил на перепроверку {len(revived)} сессию(й): {ids}.\n"
+            f"Воркер догрейдит потерянные предложения в течение ~1 минуты."
+        )
+    else:
+        await message.reply_text("✅ Застрявших сессий не найдено — всё чисто.")
+
+
 # ── Personal achievement certificate (грамота) ────────────────────────────────
 def _build_cert_rows(cur: dict, prev: dict) -> list[dict]:
     """Build the certificate rows (skip metrics that are zero in BOTH periods so
@@ -34107,6 +34137,7 @@ def main():
     application.add_handler(CommandHandler("costs", admin_costs_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
+    application.add_handler(CommandHandler("fix_translation_sessions", admin_fix_translation_sessions_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
     application.add_handler(CommandHandler("reviewcard", admin_review_card_command))

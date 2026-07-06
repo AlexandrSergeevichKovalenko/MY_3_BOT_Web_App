@@ -13,6 +13,7 @@ from backend.job_queue import (
     enqueue_translation_check_job,
     get_translation_check_dispatch_state,
     get_dramatiq_broker,
+    recover_stranded_translation_check_sessions,
 )
 
 # Import actors so their queues are declared on the broker before the worker starts.
@@ -36,6 +37,20 @@ _TRANSLATION_CHECK_WATCHDOG_QUEUED_STALE_MS = max(
 _TRANSLATION_CHECK_WATCHDOG_BATCH_LIMIT = max(
     1,
     int((os.getenv("TRANSLATION_CHECK_WATCHDOG_BATCH_LIMIT") or "20").strip() or "20"),
+)
+# Stranded-session recovery: heals sessions that finished with a lost item
+# (terminal 'failed'/'done' but an item still 'pending'/'running'). This is the
+# population the queued-watchdog and stale-cleanup jobs never touch.
+_TRANSLATION_CHECK_STRANDED_RECOVERY_ENABLED = str(
+    os.getenv("TRANSLATION_CHECK_STRANDED_RECOVERY_ENABLED") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+_TRANSLATION_CHECK_STRANDED_RECOVERY_INTERVAL_SEC = max(
+    30,
+    int((os.getenv("TRANSLATION_CHECK_STRANDED_RECOVERY_INTERVAL_SEC") or "180").strip() or "180"),
+)
+_TRANSLATION_CHECK_STRANDED_RECOVERY_LIMIT = max(
+    1,
+    int((os.getenv("TRANSLATION_CHECK_STRANDED_RECOVERY_LIMIT") or "20").strip() or "20"),
 )
 
 
@@ -129,6 +144,36 @@ def _run_translation_check_watchdog(*, should_stop: dict[str, bool], worker_thre
             time.sleep(1.0)
 
 
+def _run_translation_check_stranded_recovery(*, should_stop: dict[str, bool]) -> None:
+    logging.info(
+        "Starting translation-check stranded recovery: interval_sec=%s batch_limit=%s",
+        _TRANSLATION_CHECK_STRANDED_RECOVERY_INTERVAL_SEC,
+        _TRANSLATION_CHECK_STRANDED_RECOVERY_LIMIT,
+    )
+    # Small initial delay so startup / migrations settle before the first scan.
+    for _ in range(15):
+        if should_stop["value"]:
+            return
+        time.sleep(1.0)
+    while not should_stop["value"]:
+        try:
+            revived = recover_stranded_translation_check_sessions(
+                limit=_TRANSLATION_CHECK_STRANDED_RECOVERY_LIMIT
+            )
+            if revived:
+                logging.warning(
+                    "translation-check stranded recovery revived %s session(s) for re-grade: %s",
+                    len(revived),
+                    revived,
+                )
+        except Exception:
+            logging.exception("translation-check stranded recovery scan failed")
+        for _ in range(_TRANSLATION_CHECK_STRANDED_RECOVERY_INTERVAL_SEC):
+            if should_stop["value"]:
+                break
+            time.sleep(1.0)
+
+
 def main() -> int:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
     broker = get_dramatiq_broker()
@@ -184,6 +229,12 @@ def main() -> int:
         threading.Thread(
             target=_run_translation_check_watchdog,
             kwargs={"should_stop": should_stop, "worker_threads": worker_threads},
+            daemon=True,
+        ).start()
+    if _TRANSLATION_CHECK_STRANDED_RECOVERY_ENABLED and translation_check_queue_subscribed:
+        threading.Thread(
+            target=_run_translation_check_stranded_recovery,
+            kwargs={"should_stop": should_stop},
             daemon=True,
         ).start()
     worker.start()

@@ -1102,6 +1102,65 @@ def clear_translation_check_session_state(session_id: int) -> None:
     _delete_json_payload(_translation_check_watchdog_requeue_key(normalized_session_id))
 
 
+def recover_stranded_translation_check_sessions(*, limit: int = 20) -> list[int]:
+    """Heal sessions that finished with a lost (pending/running) item.
+
+    For each stranded session: clear its stale Redis state (so the queued
+    watchdog won't skip it as "already received") and revive the DB row back to
+    ``queued`` with the lost item reset. The worker's queued-watchdog then
+    re-dispatches it and the runner re-grades only the missing sentence, leaving
+    the already-graded ones untouched.
+
+    Pure DB + Redis — safe to call from the worker, the scheduler, or an admin
+    command. Idempotent and self-terminating: once the runner processes the item
+    (grade → done, or genuine failure → failed) the session no longer qualifies.
+    Returns the list of revived session ids.
+    """
+    from backend.database import (
+        list_stranded_translation_check_sessions,
+        revive_stranded_translation_check_session,
+    )
+
+    try:
+        session_ids = list_stranded_translation_check_sessions(limit=int(limit))
+    except Exception:
+        logging.exception("translation_check_stranded_recovery: list failed")
+        return []
+
+    revived: list[int] = []
+    for session_id in session_ids:
+        try:
+            sid = int(session_id)
+        except Exception:
+            continue
+        try:
+            row = revive_stranded_translation_check_session(session_id=sid)
+            if not row:
+                continue
+            # Clear stale Redis AFTER the DB revive so the watchdog sees an empty
+            # dispatch state and re-enqueues instead of skipping as "received".
+            try:
+                clear_translation_check_session_state(sid)
+            except Exception:
+                logging.warning(
+                    "translation_check_stranded_recovery: redis clear failed session_id=%s",
+                    sid,
+                    exc_info=True,
+                )
+            revived.append(sid)
+            logging.warning(
+                "translation_check_stranded_recovery revived session_id=%s -> queued "
+                "(done=%s/%s failed=%s) for re-grade",
+                sid,
+                row.get("completed_items"),
+                row.get("total_items"),
+                row.get("failed_items"),
+            )
+        except Exception:
+            logging.exception("translation_check_stranded_recovery: revive failed session_id=%s", sid)
+    return revived
+
+
 def get_youtube_transcript_job_status(video_id: str, lang: str | None) -> dict | None:
     client = get_redis_client()
     if client is None:
