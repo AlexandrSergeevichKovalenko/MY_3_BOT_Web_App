@@ -25609,6 +25609,24 @@ body.worldnews-active .webapp-topbar {
   font-family: var(--dmps-font-family);
   padding: 18px 18px 20px;
 }
+/* The modal is always dark, but the follow-up answer reuses the translations
+   --tr-* palette, which turns light (cream bg) when the page theme is light —
+   leaving light modal text on a light panel. Pin the palette to dark here so
+   the "Antwort auf deine Frage" panel stays readable in every theme. */
+.explain-modal {
+  --tr-bg-app: #0a1324;
+  --tr-bg-card: #12203a;
+  --tr-bg-card-alt: #101b31;
+  --tr-bg-hover: #1a2740;
+  --tr-border: rgba(148, 163, 184, 0.22);
+  --tr-border-subtle: rgba(148, 163, 184, 0.14);
+  --tr-text-primary: #e6edf6;
+  --tr-text-title: #f8fafc;
+  --tr-text-secondary: #b6c4da;
+  --tr-text-muted: #8fa2bb;
+  --tr-text-subtle: #6b7c95;
+  --tr-primary: #7c8cf8;
+}
 .explain-modal-head {
   display: flex;
   align-items: flex-start;
