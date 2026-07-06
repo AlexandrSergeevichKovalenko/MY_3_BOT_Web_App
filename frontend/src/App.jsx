@@ -184,6 +184,33 @@ function PaidFeatureSpotlight({ children }) {
   );
 }
 
+// World-news quiz answer proof: the backend returns one raw string like
+//   В тексте сказано: '...steht die AfD auf dem ersten Platz mit 27%...'
+// Split it into a short label + a clean quote so we can render a real card
+// instead of dumping the raw string with stray ASCII quotes and ellipses.
+function cleanQuizProofQuote(raw) {
+  let q = String(raw || '').trim();
+  // Drop leading/trailing dots, ellipses and whitespace ("...text..." → "text").
+  q = q.replace(/^[\s.…"'„«»”]+/, '').replace(/[\s.…"'„«»”]+$/, '');
+  // German-style spacing before % (27% → 27 %, non-breaking).
+  q = q.replace(/(\d)\s*%/g, '$1 %');
+  return q.trim();
+}
+
+function parseWorldNewsQuizProof(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  // Pull out the final quoted span (', ", „…", «…»).
+  const match = text.match(/["'„«]([\s\S]+?)["'”»]\s*$/);
+  if (!match) {
+    return { label: '', quote: cleanQuizProofQuote(text) };
+  }
+  const label = text.slice(0, match.index).replace(/[\s:：—–-]+$/, '').trim();
+  const quote = cleanQuizProofQuote(match[1]);
+  if (!quote) return { label: '', quote: cleanQuizProofQuote(text) };
+  return { label, quote };
+}
+
 function normalizeReaderPaginationText(rawText) {
   return String(rawText || '')
     .split(/\n{2,}/)
@@ -32527,9 +32554,21 @@ function AppInner() {
                               );
                             })}
                           </div>
-                          {answered && question.explanation_ru && (
-                            <div className="worldnews-quiz-explain">{question.explanation_ru}</div>
-                          )}
+                          {answered && question.explanation_ru && (() => {
+                            const proof = parseWorldNewsQuizProof(question.explanation_ru);
+                            if (!proof) return null;
+                            return (
+                              <div className="worldnews-quiz-explain">
+                                <div className="worldnews-quiz-explain-head">
+                                  <span className="worldnews-quiz-explain-icon" aria-hidden="true">📄</span>
+                                  <span className="worldnews-quiz-explain-label">
+                                    {proof.label || tr('В тексте сказано', 'Im Text steht')}
+                                  </span>
+                                </div>
+                                <blockquote className="worldnews-quiz-explain-quote">{proof.quote}</blockquote>
+                              </div>
+                            );
+                          })()}
                           {answered && (
                             <button type="button" className="worldnews-next-cta" onClick={() => setWorldNewsQuizIndex((i) => i + 1)}>
                               {isLast ? tr('Посмотреть результат', 'Ergebnis ansehen') : tr('Дальше →', 'Weiter →')}
