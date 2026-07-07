@@ -23522,6 +23522,33 @@ def deepdive_save():
     return jsonify({"ok": True, "entry_id": entry_id})
 
 
+# Single-topic games → the grammar-video catalog topic_key for a remedial video.
+# These sprints emit no error taxonomy, so the topic is fixed per game kind.
+_WEAK_TOPIC_BY_KIND = {"wf": "fragen", "as": "artikel", "ad": "adjektivdeklination"}
+
+
+def _maybe_record_weak_topic(user_id, kind, correct, answered) -> None:
+    """Fast path: if a single-topic game was hard (≤ threshold), log a weak-topic
+    event so the nightly job can offer a theory video next day. Best-effort, never
+    blocks the submit response."""
+    try:
+        topic = _WEAK_TOPIC_BY_KIND.get(str(kind or ""))
+        if not topic:
+            return
+        answered = int(answered or 0)
+        min_answered = int((os.getenv("WEAK_TOPIC_MIN_ANSWERED") or "5").strip() or "5")
+        if answered < min_answered:
+            return
+        pct = round(100 * int(correct or 0) / answered) if answered else 0
+        threshold = int((os.getenv("WEAK_TOPIC_THRESHOLD") or "60").strip() or "60")
+        if pct > threshold:
+            return
+        from backend.database import record_weak_topic_event
+        record_weak_topic_event(user_id=int(user_id), topic_key=topic, kind=str(kind), pct=int(pct))
+    except Exception:
+        logging.debug("record weak topic failed kind=%s user=%s", kind, user_id, exc_info=True)
+
+
 @app.route("/api/answer/review/overview", methods=["POST"])
 def answer_review_overview():
     """Mistakes review sections + due-counts (Artikel vs Grammatik) for the section picker."""
@@ -23920,6 +23947,7 @@ def adjektiv_submit():
     pct = round(100 * correct / answered) if answered else 0
     if recorded:
         _inbox_mark_kind_done(int(user_id), "ad")  # ✅ the Adjektiv Sprint card
+        _maybe_record_weak_topic(int(user_id), "ad", correct, answered)
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total, "pct": pct,
         "items": items, "already_played": not recorded,
@@ -24206,6 +24234,7 @@ def wofrage_submit():
     pct = round(100 * correct / answered) if answered else 0
     if recorded:
         _inbox_mark_kind_done(int(user_id), "wf")  # ✅ the Wo-Frage Sprint card
+        _maybe_record_weak_topic(int(user_id), "wf", correct, answered)
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total, "pct": pct,
         "items": items, "already_played": not recorded,
@@ -24578,6 +24607,8 @@ def artikel_submit():
                if str(s.get("kind") or "") in ("daily", "battle") else None)
     if recorded and _kind == "daily":
         _inbox_mark_kind_done(int(user_id), "as")  # ✅ the daily Artikel Sprint card
+        _maybe_record_weak_topic(
+            int(user_id), "as", correct, answered)
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total,
         "pct": round(100 * correct / answered) if answered else 0,

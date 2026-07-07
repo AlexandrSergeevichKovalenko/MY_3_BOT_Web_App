@@ -6915,6 +6915,123 @@ def _run_admin_economics_report_safe() -> None:
         logging.exception("admin cost breakdown report (bot scheduler) failed")
 
 
+def _run_remedial_video_job_safe() -> None:
+    """Bot-side nightly remedial-video assembly. Reads weak-topic events and drops a
+    theory-video card into «Работа над ошибками» for users who struggled. Runs in a
+    BackgroundScheduler thread → must stay synchronous. Pure DB (no bot token needed)."""
+    try:
+        from backend.remedial_video import run_remedial_video_materialization
+        stats = run_remedial_video_materialization()
+        _record_sched_heartbeat("remedial_video_materialization", "completed", stats)
+    except Exception:
+        logging.exception("remedial video job failed")
+        _record_sched_heartbeat("remedial_video_materialization", "failed")
+
+
+def _parse_youtube_id(raw: str) -> str:
+    """Extract the 11-char video id from any common YouTube URL form
+    (youtu.be/<id>, watch?v=<id>, /live/<id>, /embed/<id>), stripping ?is=… tails."""
+    import re as _re
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    m = _re.search(r"(?:youtu\.be/|/live/|/embed/|[?&]v=)([A-Za-z0-9_-]{11})", s)
+    if m:
+        return m.group(1)
+    if _re.fullmatch(r"[A-Za-z0-9_-]{11}", s):  # a bare id
+        return s
+    return ""
+
+
+async def add_video_command(update: Update, context: CallbackContext):
+    """Admin: /addvideo <topic_key> <url> [url2 …] — curate remedial theory videos
+    into the pool for a grammar topic (e.g. `fragen`, `artikel`, `adjektivdeklination`)."""
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = context.args or []
+    if len(args) < 2:
+        await update.effective_message.reply_text(
+            "Формат: /addvideo <topic_key> <ссылка> [ещё ссылки]\n"
+            "Напр.: /addvideo fragen https://youtu.be/CLXxqDBzvFE\n"
+            "Темы фазы 1: fragen (Wo-Fragen), artikel (der/die/das), adjektivdeklination.")
+        return
+    from backend.grammar_video_catalog import get_topic
+    from backend.database import upsert_video_recommendation
+    topic_key = str(args[0]).strip().lower()
+    topic = get_topic(topic_key)
+    if not topic:
+        await update.effective_message.reply_text(
+            f"❌ Неизвестная тема «{topic_key}». Возьми topic_key из каталога грамматики "
+            f"(напр. fragen, artikel, adjektivdeklination).")
+        return
+    added, skipped = [], []
+    for raw in args[1:]:
+        vid = _parse_youtube_id(raw)
+        if not vid:
+            skipped.append(raw)
+            continue
+        try:
+            await asyncio.to_thread(
+                upsert_video_recommendation,
+                source_lang="ru", target_lang="de", skill_id=topic_key,
+                main_category=None, sub_category=None, search_query=None,
+                video_id=vid, video_url=f"https://youtu.be/{vid}",
+                video_title=str(topic.get("de") or topic_key),
+            )
+            added.append(vid)
+        except Exception:
+            logging.exception("addvideo upsert failed vid=%s", vid)
+            skipped.append(raw)
+    lines = [f"✅ Тема <b>{topic_key}</b> ({topic.get('ru') or ''})"]
+    if added:
+        lines.append(f"Добавлено {len(added)}: " + ", ".join(added))
+    if skipped:
+        lines.append(f"⚠️ Не распознаны: " + ", ".join(skipped))
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def remedial_video_run_command(update: Update, context: CallbackContext):
+    """Admin: /remedialvideo_run — run the nightly remedial-video assembly right now."""
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    from backend.remedial_video import run_remedial_video_materialization
+    stats = await asyncio.to_thread(run_remedial_video_materialization)
+    await update.effective_message.reply_text(
+        f"🎬 Готово: пользователей {stats.get('users', 0)}, "
+        f"карточек создано {stats.get('cards_created', 0)}, событий {stats.get('events', 0)}.")
+
+
+async def remedial_video_test_command(update: Update, context: CallbackContext):
+    """Admin: /remedialtest <topic_key> — force a remedial video card for YOURSELF now
+    (bypasses the weak-topic event), so you can see it in «Работа над ошибками»."""
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    topic_key = str((context.args or ["fragen"])[0]).strip().lower()
+    from backend.remedial_video import materialize_remedial_video_for_user
+    ok = await asyncio.to_thread(materialize_remedial_video_for_user, int(sender.id), topic_key)
+    if ok:
+        await update.effective_message.reply_text(
+            f"✅ Видео-карточка по теме «{topic_key}» добавлена тебе в «Работу над ошибками». "
+            f"Открой раздел — она будет первой.\n"
+            f"(Если не появилась: сработал лимит 1/7дн или 90дн, либо в пуле нет видео по теме.)")
+    else:
+        await update.effective_message.reply_text(
+            f"⚠️ Карточка не создана для «{topic_key}». Причины: нет видео в пуле (сделай /addvideo), "
+            f"либо активен кулдаун (1 видео/7дн, тема/90дн).")
+
+
 def _run_dict_dedup_weekly_report_safe() -> None:
     """Bot-side weekly duplicate-removal report. Runs in a BackgroundScheduler thread
     (must stay synchronous). force=True bypasses the weekly run-guard so a stale claim
@@ -7113,6 +7230,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("send_weekly_summary", "Недельные итоги (Вс 20:55)", 192, True, "guard"),
     ("send_me_analytics_and_recommend_me", "Аналитика+совет (Пт 15:15)", 192, True, "guard"),
     ("_video_pool_biweekly_report_job", "Отчёт по видео-пулу (Сб, раз в 2 нед.)", 384, True, "guard"),
+    ("remedial_video_materialization", "Доучивающее видео (05:30)", 30, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
     ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
     ("flashcard_feel_cleanup", "Чистка flashcard-feel (мес.)", 800, True, "guard"),
@@ -34153,6 +34271,9 @@ def main():
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("review_makedue", admin_review_makedue_command))
+    application.add_handler(CommandHandler("addvideo", add_video_command))
+    application.add_handler(CommandHandler("remedialvideo_run", remedial_video_run_command))
+    application.add_handler(CommandHandler("remedialtest", remedial_video_test_command))
     application.add_handler(CommandHandler("adjsprint", admin_adjektiv_sprint_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("admin_fix_dict_translations", admin_fix_dict_translations_command))
@@ -34587,6 +34708,19 @@ def main():
         # TELEGRAM_Deutsch_BOT_TOKEN. force=True bypasses the daily run-guard so a stale
         # "failed" claim from the broken worker path can't block delivery. Set
         # ADMIN_ECONOMICS_REPORT_ENABLED=0 on the scheduler service to retire that path.
+        # -- Remedial theory video assembly at 05:30 Europe/Vienna (before the 11:00
+        # "повтори ошибки" reminder). Reads weak-topic events from failed sprints and
+        # queues a skippable YouTube-theory card into «Работа над ошибками». Pure DB. --
+        scheduler.add_job(
+            _run_remedial_video_job_safe,
+            "cron",
+            hour=int((os.getenv("REMEDIAL_VIDEO_JOB_HOUR") or "5").strip() or "5"),
+            minute=int((os.getenv("REMEDIAL_VIDEO_JOB_MINUTE") or "30").strip() or "30"),
+            timezone=ZoneInfo(os.getenv("REMEDIAL_VIDEO_JOB_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
         scheduler.add_job(
             _run_admin_economics_report_safe,
             "cron",

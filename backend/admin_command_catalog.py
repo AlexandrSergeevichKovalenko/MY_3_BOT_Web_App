@@ -278,6 +278,24 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "args": 'необязательный первый аргумент: all/все/всё — все форматы; иначе (без аргумента) только формат artikel.',
             "example": '/review_makedue all',
         },
+        {
+            "cmd": '/addvideo',
+            "desc": 'Добавляет кураторские YouTube-ролики теории в пул под тему грамматики (topic_key). Эти видео потом предлагаются как «доучивающая» карточка в «Работе над ошибками» тем, кто набрал ≤60% в игре по этой теме.',
+            "args": '<topic_key> <ссылка> [ещё ссылки]; темы фазы 1: fragen (Wo-Fragen), artikel (der/die/das), adjektivdeklination.',
+            "example": '/addvideo fragen https://youtu.be/CLXxqDBzvFE https://youtu.be/AKCWylPrZTw',
+        },
+        {
+            "cmd": '/remedialvideo_run',
+            "desc": 'Запускает прямо сейчас ночную сборку доучивающих видео: разбирает накопленные события «тема далась тяжело» и вставляет видео-карточки в «Работу над ошибками» (обычно идёт в 05:30).',
+            "args": 'нет аргументов',
+            "example": '/remedialvideo_run',
+        },
+        {
+            "cmd": '/remedialtest',
+            "desc": 'Тест: принудительно добавляет ТЕБЕ видео-карточку по указанной теме в «Работу над ошибками» (в обход события и порога), чтобы сразу увидеть, как она выглядит. Кулдауны 1/7дн и тема/90дн всё ещё действуют.',
+            "args": '<topic_key> (по умолчанию fragen).',
+            "example": '/remedialtest artikel',
+        },
     ]),
     ('artikel_content', '🔤 Artikel — контент и темы', [
         {

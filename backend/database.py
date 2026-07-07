@@ -28176,6 +28176,190 @@ def record_video_send(*, user_id: int, video_id: str, topic_key: str | None = No
         logging.debug("record_video_send failed user_id=%s video_id=%s", user_id, resolved_video_id, exc_info=True)
 
 
+# ── Remedial video ("тебе было сложно"): weak-topic events + review card ─────────
+# When a user scores ≤ threshold on a single-topic game we log a "weak topic" event
+# (fast path). A nightly job reads unprocessed events, picks the user's weakest topic,
+# and — if a pool video exists and cooldowns pass — drops ONE `format='video'` card
+# into bt_3_aufgabe_mistakes so it surfaces first in «Работа над ошибками» next day.
+def ensure_weak_topic_events_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_weak_topic_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    topic_key TEXT NOT NULL,
+                    kind TEXT,
+                    pct INT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    processed_at TIMESTAMPTZ
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt3_weak_topic_pending "
+                "ON bt_3_weak_topic_events (user_id) WHERE processed_at IS NULL;"
+            )
+        conn.commit()
+
+
+def record_weak_topic_event(*, user_id: int, topic_key: str, kind: str, pct: int) -> None:
+    """Fast-path: log that a single-topic game was hard for this user (one INSERT)."""
+    topic = str(topic_key or "").strip()
+    if not topic:
+        return
+    try:
+        ensure_weak_topic_events_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bt_3_weak_topic_events (user_id, topic_key, kind, pct) "
+                    "VALUES (%s, %s, %s, %s);",
+                    (int(user_id), topic, str(kind or "") or None, int(pct)),
+                )
+            conn.commit()
+    except Exception:
+        logging.debug("record_weak_topic_event failed user_id=%s topic=%s", user_id, topic, exc_info=True)
+
+
+def fetch_pending_weak_topic_events(*, limit_rows: int = 20000) -> list[dict]:
+    """All unprocessed weak-topic events (the nightly job groups them per user)."""
+    try:
+        ensure_weak_topic_events_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, user_id, topic_key, pct FROM bt_3_weak_topic_events "
+                    "WHERE processed_at IS NULL ORDER BY user_id, pct ASC LIMIT %s;",
+                    (int(limit_rows),),
+                )
+                rows = cur.fetchall() or []
+        return [{"id": int(r[0]), "user_id": int(r[1]),
+                 "topic_key": str(r[2] or ""), "pct": int(r[3] or 0)} for r in rows]
+    except Exception:
+        logging.warning("fetch_pending_weak_topic_events failed", exc_info=True)
+        return []
+
+
+def mark_weak_topic_events_processed(event_ids) -> int:
+    ids = [int(i) for i in (event_ids or [])]
+    if not ids:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_weak_topic_events SET processed_at=NOW() WHERE id = ANY(%s);",
+                    (ids,),
+                )
+            conn.commit()
+        return len(ids)
+    except Exception:
+        logging.warning("mark_weak_topic_events_processed failed", exc_info=True)
+        return 0
+
+
+def user_has_recent_remedial_video(*, user_id: int, days: int = 7) -> bool:
+    """Global cap: did this user already get a remedial video card in the last N days?
+    Reuses the review store (the card itself is a format='video' row) — no extra table."""
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM bt_3_aufgabe_mistakes "
+                    "WHERE user_id=%s AND format='video' "
+                    "AND created_at >= NOW() - (%s::text || ' days')::interval LIMIT 1;",
+                    (int(user_id), max(1, int(days))),
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def topic_recently_sent_to_user(*, user_id: int, topic_key: str, days: int = 90) -> bool:
+    """Per-topic cap: was ANY video for this topic sent to the user within N days?"""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM bt_3_video_user_sends "
+                    "WHERE user_id=%s AND topic_key=%s "
+                    "AND last_sent_at >= NOW() - (%s::text || ' days')::interval LIMIT 1;",
+                    (int(user_id), str(topic_key or ""), max(1, int(days))),
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def insert_remedial_video_card(*, user_id: int, topic_key: str, video: dict,
+                               topic_ru: str = "", topic_de: str = "") -> int | None:
+    """Drop a `format='video'` card into the review queue. `due_at` is set slightly in
+    the past so it sorts FIRST among the user's due items ('watch the theory, then redo
+    the drills'). Returns the row id, or None on failure."""
+    import json as _json
+    video = video or {}
+    video_id = str(video.get("video_id") or "").strip()
+    if not video_id:
+        return None
+    payload = {
+        "video_id": video_id,
+        "video_url": str(video.get("video_url") or "") or f"https://youtu.be/{video_id}",
+        "video_title": str(video.get("video_title") or ""),
+        "topic_key": str(topic_key or ""),
+        "topic_ru": str(topic_ru or ""),
+        "topic_de": str(topic_de or ""),
+        "hint_ru": str(topic_ru or ""),
+    }
+    content_hash = ("video:" + str(topic_key or "") + ":" + video_id)[:64]
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO bt_3_aufgabe_mistakes
+                      (user_id, content_hash, format, payload, correct_answer, last_wrong_answer,
+                       interval_days, review_count, mastered, due_at, updated_at)
+                    VALUES (%s,%s,'video',%s::jsonb,'','', 1, 0, FALSE, NOW() - INTERVAL '1 hour', NOW())
+                    ON CONFLICT (user_id, content_hash) DO UPDATE SET
+                      payload    = EXCLUDED.payload,
+                      mastered   = FALSE,
+                      due_at     = NOW() - INTERVAL '1 hour',
+                      updated_at = NOW()
+                    RETURNING id;
+                    """,
+                    (int(user_id), content_hash, _json.dumps(payload, ensure_ascii=False)),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return int(row[0]) if row else None
+    except Exception:
+        logging.warning("insert_remedial_video_card failed user_id=%s topic=%s", user_id, topic_key, exc_info=True)
+        return None
+
+
+def consume_video_review(*, user_id: int, mistake_id: int) -> bool:
+    """Mark a video card watched/skipped — mastered so it never resurfaces (no grading)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_aufgabe_mistakes SET mastered=TRUE, "
+                    "review_count=review_count+1, updated_at=NOW() "
+                    "WHERE id=%s AND user_id=%s AND format='video';",
+                    (int(mistake_id), int(user_id)),
+                )
+                affected = cur.rowcount
+            conn.commit()
+        return int(affected or 0) > 0
+    except Exception:
+        logging.warning("consume_video_review failed id=%s", mistake_id, exc_info=True)
+        return False
+
+
 def get_weekly_video_pool_stats(
     topic_keys,
     *,

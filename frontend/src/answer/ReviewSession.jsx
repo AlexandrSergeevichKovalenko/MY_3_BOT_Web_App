@@ -71,6 +71,14 @@ export default function ReviewSession({ api, haptic, onClose }) {
         mistake_id: mistakeId, answer: String(answer),
         ...(family ? { family } : {}),
       });
+      // Video card ("тебе было сложно"): no grade/result screen — consume + go next.
+      if (data.ok && data.video_done) {
+        const rem = data.remaining || 0;
+        setRemaining(rem);
+        setReviewed((n) => n + 1);
+        if (rem > 0) { loadNext(family); } else { loadOverview(); }
+        return;
+      }
       if (!data.ok || !data.result) { setError(data.error || 'Fehler'); setPhase('error'); return; }
       setResult(data.result);
       setRemaining(data.remaining || 0);
@@ -83,7 +91,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
     } finally {
       setSubmitting(false);
     }
-  }, [api, mistakeId, submitting, haptic, family]);
+  }, [api, mistakeId, submitting, haptic, family, loadNext, loadOverview]);
 
   if (phase === 'overview' && !overview) {
     return <Root><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></Root>;

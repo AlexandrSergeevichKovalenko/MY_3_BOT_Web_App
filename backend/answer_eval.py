@@ -1382,6 +1382,16 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
         meta["wort"] = str(payload.get("wort") or "")
         meta["options"] = ["der", "die", "das"]
         meta["hint_ru"] = str(payload.get("ru") or "")
+    elif fmt == "video":
+        # Remedial theory video ("тебе было сложно"): a skippable card in the review
+        # queue, not a gradeable task. Send the YouTube id + topic label; the client
+        # embeds the player and shows «Посмотрел»/«Пропустить».
+        meta["video_id"] = str(payload.get("video_id") or "")
+        meta["video_url"] = str(payload.get("video_url") or "")
+        meta["video_title"] = str(payload.get("video_title") or "")
+        meta["topic_ru"] = str(payload.get("topic_ru") or "")
+        meta["topic_de"] = str(payload.get("topic_de") or "")
+        meta["hint_ru"] = str(payload.get("topic_ru") or payload.get("hint_ru") or "")
     elif fmt == "transform":
         meta["original"] = str(payload.get("original") or "")
         meta["schluesselwort"] = str(payload.get("schluesselwort") or "")
@@ -1466,7 +1476,7 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
 
 
 # ── Mistakes review ("работа над ошибками"): record + spaced-repetition session ─
-_REVIEW_FORMATS = {"cloze", "wortbildung", "wortgruppe", "transform", "error", "satzbau", "adjektiv"}
+_REVIEW_FORMATS = {"cloze", "wortbildung", "wortgruppe", "transform", "error", "satzbau", "adjektiv", "video"}
 
 
 def review_overview(*, user_id: int) -> dict:
@@ -1523,6 +1533,13 @@ def evaluate_review(*, user_id: int, mistake_id: int, answer: str,
         return {"kind": "review", "error": "not_found"}
     fmt = str(m["format"])
     payload = m["payload"] or {}
+    if fmt == "video":
+        # No grading — the learner either watched or skipped. Consume it (mastered) so
+        # it never resurfaces, and hand the client a plain "done, load next" signal.
+        from backend.database import consume_video_review
+        consume_video_review(user_id=int(user_id), mistake_id=int(mistake_id))
+        return {"kind": "review", "video_done": True,
+                "remaining": count_due_mistakes(int(user_id), family=fam)}
     # Grade with the EXACT same logic (incl. LLM-judge fallbacks) as the live task, so a
     # valid answer isn't rejected here — otherwise the item would never advance to
     # "mastered" and would reappear forever ("I answered correctly but it keeps coming back").

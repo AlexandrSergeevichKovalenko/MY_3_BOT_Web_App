@@ -344,8 +344,50 @@ function AufgabeArtikel({ task, onSubmit, submitting }) {
   );
 }
 
+function AufgabeVideo({ task, onSubmit, submitting }) {
+  // Remedial theory video ("тебе было сложно"): a skippable card, not a graded task.
+  // Watching or skipping both just consume it (onSubmit signals the server to mark done).
+  const [chosen, setChosen] = useState(null);
+  const videoId = String(task.video_id || '');
+  const act = (signal) => {
+    if (submitting || chosen) return;
+    setChosen(signal); tapHaptic(); onSubmit(signal);
+  };
+  return (
+    <>
+      <div className="au-video-intro">
+        <p className="au-hint" style={{ textAlign: 'center', marginBottom: 6 }}>
+          Вчера тема <b>{task.topic_ru || task.topic_de || 'этой игры'}</b> далась тяжело —
+          не страшно, она правда неочевидная.
+        </p>
+        <p className="au-hint" style={{ textAlign: 'center' }}>
+          Посмотри короткую теорию 👇 и завтра сделай ещё попытку 💪
+        </p>
+      </div>
+      <div className="webapp-video-frame youtube-player-frame au-video-frame">
+        {videoId ? (
+          <iframe
+            title={task.video_title || 'YouTube'}
+            src={`https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1`}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+          />
+        ) : null}
+      </div>
+      {task.video_title ? <p className="au-hint" style={{ textAlign: 'center' }}>{task.video_title}</p> : null}
+      <button className="ans-btn" disabled={submitting} onClick={() => act('__watched__')}>
+        Посмотрел ✅
+      </button>
+      <button className="ans-btn-ghost" disabled={submitting} onClick={() => act('__skip__')}>
+        Пропустить
+      </button>
+    </>
+  );
+}
+
 export default function AufgabeGame({ task, onSubmit, submitting }) {
   const fmt = task.format || 'cloze';
+  if (fmt === 'video') return <AufgabeVideo task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'error') return <AufgabeError task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'hoerluecke') return <AufgabeHoer task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'pin') return <AufgabePin task={task} onSubmit={onSubmit} submitting={submitting} />;
