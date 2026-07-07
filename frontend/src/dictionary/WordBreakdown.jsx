@@ -15,10 +15,24 @@ import './dict.css';
 
 const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 
+// Persisted initData for the standalone browser dictionary (?startapp=dict opened in
+// Safari / added to the Home Screen). Inside Telegram tg.initData is always present and
+// wins; outside it we take initData from the launch URL and cache it so the home-screen
+// app stays authenticated across relaunches (valid up to 30 days server-side).
+const DQ_INITDATA_LS_KEY = 'dq_initdata_v1';
+
 export function getInitData() {
   if (tg?.initData) return tg.initData;
   if (typeof window !== 'undefined') {
-    return new URLSearchParams(window.location.search).get('initData') || '';
+    const fromUrl = new URLSearchParams(window.location.search).get('initData') || '';
+    if (fromUrl) {
+      try { localStorage.setItem(DQ_INITDATA_LS_KEY, fromUrl); } catch (_e) { /* ignore */ }
+      return fromUrl;
+    }
+    try {
+      const cached = localStorage.getItem(DQ_INITDATA_LS_KEY);
+      if (cached) return cached;
+    } catch (_e) { /* ignore */ }
   }
   return '';
 }

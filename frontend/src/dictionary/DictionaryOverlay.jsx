@@ -30,6 +30,17 @@ function dirToPair(dir) {
   return dir === 'de-ru' ? { source: 'de', target: 'ru' } : { source: 'ru', target: 'de' };
 }
 
+// A cryptic Telegram-auth error (missing/expired initData) → a plain, actionable hint.
+// The standalone browser dictionary authenticates with initData carried in the launch
+// URL; it can be absent (opened directly, not from Telegram) or expired (>30 days).
+function friendlyError(e) {
+  const s = String((e && e.message) || e || '');
+  if ((e && e.status === 401) || /initData|не прошёл проверку/i.test(s)) {
+    return 'Доступ устарел. Открой словарь заново из Telegram (кнопкой в онбординге) — и, если вынес иконку на экран, добавь её ещё раз.';
+  }
+  return s;
+}
+
 // The German side of a quick result when it's a lone noun (single capitalized token)
 // still lacking an article — mirrors the backend's noun-candidate check. When this is
 // non-empty the article is being filled in the background and we should poll for it.
@@ -225,7 +236,7 @@ export default function DictionaryOverlay() {
       }
     } catch (e) {
       if (mySeq !== seqRef.current) return;
-      setError(String(e.message || e)); setPhase('error'); haptic('bad');
+      setError(friendlyError(e)); setPhase('error'); haptic('bad');
     }
   }, [query, phase, tts, forcedDir]);
 
@@ -425,12 +436,12 @@ export default function DictionaryOverlay() {
       } catch (e) {
         if (e && e.name === 'AbortError') throw e;
         if (e && e.status && e.status >= 400 && e.status < 500) {
-          setEnrich('error'); setError(String(e.message || e)); throw e;
+          setEnrich('error'); setError(friendlyError(e)); throw e;
         }
         try {
           return await fetchDeepBreakdown();
         } catch (e2) {
-          setEnrich('error'); setError(String(e2.message || e2)); throw e2;
+          setEnrich('error'); setError(friendlyError(e2)); throw e2;
         }
       }
     })();
@@ -458,7 +469,7 @@ export default function DictionaryOverlay() {
     haptic('ok');
     (async () => {
       try { await persistEntry(); }
-      catch (e) { setSave('idle'); setError(String(e.message || e)); haptic('bad'); }
+      catch (e) { setSave('idle'); setError(friendlyError(e)); haptic('bad'); }
     })();
   }, [save, persistEntry]);
 
@@ -476,7 +487,7 @@ export default function DictionaryOverlay() {
         }
       } catch (e) {
         setCardSave('idle');
-        setError(String(e.message || e)); haptic('bad');
+        setError(friendlyError(e)); haptic('bad');
       }
     })();
   }, [cardSave, persistEntry]);
@@ -525,7 +536,7 @@ export default function DictionaryOverlay() {
         }));
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; });
-        setError(String(e.message || e)); haptic('bad');
+        setError(friendlyError(e)); haptic('bad');
       }
     })();
   }, []);
@@ -551,7 +562,7 @@ export default function DictionaryOverlay() {
       else window.open(shareUrl, '_blank');
       haptic('ok');
     } catch (e) {
-      setError(String(e.message || e)); haptic('bad');
+      setError(friendlyError(e)); haptic('bad');
     } finally {
       setSharing(false);
     }

@@ -71,7 +71,15 @@ function MediaTile({ src, type = 'video', caption }) {
 }
 
 function openDictInBrowser() {
-  const url = `${window.location.origin}/dict`;
+  // Carry the current Telegram initData into the Safari URL so the standalone
+  // browser dictionary (and any "Add to Home Screen" install) is AUTHENTICATED —
+  // without it, breakdown / save / audio all 401 outside Telegram (only the
+  // no-auth quick translate works). initData stays valid for 30 days
+  // (TELEGRAM_WEBAPP_INIT_TTL_SECONDS), and the overlay caches it in localStorage so
+  // the home-screen app keeps working across launches within that window.
+  const initData = tg?.initData || '';
+  const base = `${window.location.origin}/dict`;
+  const url = initData ? `${base}?initData=${encodeURIComponent(initData)}` : base;
   try {
     if (tg?.openLink) tg.openLink(url);
     else window.open(url, '_blank');
