@@ -14924,6 +14924,13 @@ body.worldnews-active .webapp-topbar {
 .youtube-player-first.is-worldnews .webapp-subtitles.is-translation {
   background: transparent !important;
 }
+/* The actual subtitle text box: WHITE in every theme, so dark caption text stays
+   readable. (Was cream #fff8ee via --yt-bg-card-alt in light theme, which killed the
+   pale text set below — the root of the invisible-subtitles bug.) */
+.youtube-player-first.is-worldnews .webapp-subtitles-list {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+}
 .youtube-player-first.is-worldnews .youtube-subtitles-card {
   padding: 12px 14px !important;
 }
@@ -14943,22 +14950,22 @@ body.worldnews-active .webapp-topbar {
 /* Force readable caption colors on the dark panel in EVERY theme — the generic
    block-de/-ru and is-theme-light rules assume a light card, so beat them with !important. */
 .youtube-player-first.is-worldnews .youtube-subtitles-block-de .webapp-subtitles-list p {
-  color: #f8fafc !important;
+  color: #111111 !important;
   font-weight: 600;
 }
 .youtube-player-first.is-worldnews .youtube-subtitles-block-ru .webapp-subtitles-list p {
-  color: #facc15 !important;
+  color: #1e3a8a !important;
 }
 /* Active (currently-spoken) line: brighter text + a subtle tinted highlight so it POPS
    instead of vanishing into the dark panel (the old #0f172a text was invisible here). */
 .youtube-player-first.is-worldnews .youtube-subtitles-block-de .webapp-subtitles-list p.is-active {
-  background: rgba(96, 165, 250, 0.18) !important;
-  color: #ffffff !important;
+  background: rgba(37, 99, 235, 0.12) !important;
+  color: #000000 !important;
   border-radius: 10px;
 }
 .youtube-player-first.is-worldnews .youtube-subtitles-block-ru .webapp-subtitles-list p.is-active {
-  background: rgba(250, 204, 21, 0.18) !important;
-  color: #fde68a !important;
+  background: rgba(30, 58, 138, 0.12) !important;
+  color: #1e3a8a !important;
   border-radius: 10px;
 }
 
