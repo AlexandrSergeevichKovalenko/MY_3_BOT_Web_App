@@ -129,9 +129,9 @@ export default function ShortcutGuide() {
               : <div className="sc-btn disabled">Ссылка загружается…</div>}
             <p className="sc-sub-h">Привяжите её к быстрому запуску:</p>
             <p>🔹 <b>Двойное касание крышки</b> (любой iPhone): Настройки → Универсальный доступ →
-              Касание → Касание задней панели → Двойное касание → выберите команду.</p>
+              Касание → Касание задней панели → Двойное касание → выберите команду «Скриншоты».</p>
             <p>🔹 <b>Кнопка «Действие»</b> (iPhone 15 Pro и новее): Настройки → Кнопка «Действие» →
-              пролистайте до «Быстрая команда» → выберите команду.</p>
+              пролистайте до «Быстрая команда» → выберите команду «Скриншоты».</p>
             <div className="sc-media-row">
               <MediaTile src="/onboarding/shortcut/back_tap.mp4" type="video" caption="Двойное касание крышки" />
               <MediaTile src="/onboarding/shortcut/action_button.mp4" type="video" caption="Кнопка «Действие»" />

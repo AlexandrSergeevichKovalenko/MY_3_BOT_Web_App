@@ -41653,7 +41653,7 @@ def shortcut_install_redirect():
 # hardcoded values are the live links so the Mini-App install screen works even if
 # the web tier hasn't got the env vars set yet.
 _SHORTCUT_COLLECTOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/39a22ce3741f4dc4915c762687e182eb"
-_SHORTCUT_PROCESSOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/20e998527b944a1ebe22ceb875da7ad9"
+_SHORTCUT_PROCESSOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/f24cc5b348934cafa5c5037c7e17f5c1"
 
 
 def _shortcut_collector_public_url() -> str:
@@ -41665,10 +41665,12 @@ def _shortcut_collector_public_url() -> str:
 
 
 def _shortcut_processor_public_url() -> str:
+    # NOTE: intentionally does NOT fall back to _shortcut_public_install_url() — that
+    # is the retired single/instant shortcut, and using it here made the «Ночной
+    # перевод» button hand out the wrong (unstable single) command.
     return (
         (os.getenv("SHORTCUT_PROCESSOR_URL") or "").strip()
         or (os.getenv("SHORTCUT_NIGHTLY_URL") or "").strip()
-        or _shortcut_public_install_url()
         or _SHORTCUT_PROCESSOR_DEFAULT_URL
     )
 
