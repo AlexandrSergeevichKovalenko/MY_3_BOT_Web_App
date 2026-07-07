@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import './shortcut.css';
 
-// Standalone Mini-App screen for installing the two-command screenshot system.
-// Opened from Telegram via startapp=shortcut. Replaces the old pile of chat
-// messages: here the steps are laid out as ordered cards with media slots, the
-// two install buttons, and an in-app "get pairing code" action. Media files are
-// optional — a tile hides itself if the asset isn't uploaded yet.
+// Standalone Mini-App screen for setting up screenshot→vocab word capture.
+// Opened via startapp=shortcut. The user picks ONE method (instant OCR OR nightly
+// batch); we then show only that method's steps + install buttons + pairing. Both
+// methods POST {text, install_token} to /api/shortcut/lookup — same backend, same
+// pairing; only the iOS command differs. Media tiles auto-hide if the asset is
+// not uploaded yet.
 const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 
 async function api(path) {
@@ -52,12 +53,39 @@ function CopyCode({ code }) {
   );
 }
 
+// The "bind to a quick trigger" instructions — shared by both methods.
+function BindStep() {
+  return (
+    <>
+      <p className="sc-sub-h">Привяжите её к быстрому запуску:</p>
+      <p>🔹 <b>Двойное касание крышки</b> (любой iPhone): Настройки → Универсальный доступ →
+        Касание → Касание задней панели → Двойное касание → выберите команду.</p>
+      <p>🔹 <b>Кнопка «Действие»</b> (iPhone 15 Pro и новее): Настройки → Кнопка «Действие» →
+        пролистайте до «Быстрая команда» → выберите команду.</p>
+      <div className="sc-media-row">
+        <MediaTile src="/onboarding/shortcut/back_tap.mp4" type="video" caption="Двойное касание крышки" />
+        <MediaTile src="/onboarding/shortcut/action_button.mp4" type="video" caption="Кнопка «Действие»" />
+      </div>
+    </>
+  );
+}
+
 export default function ShortcutGuide() {
   const [info, setInfo] = useState(null);
   const [error, setError] = useState('');
   const [pairing, setPairing] = useState(null);     // {pairing_code, expires_at}
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingErr, setPairingErr] = useState('');
+  const [path, setPath] = useState(() => {
+    try { return localStorage.getItem('sc_path') || null; } catch (_e) { return null; }
+  });
+
+  const choose = useCallback((p) => {
+    setPath(p);
+    try { p ? localStorage.setItem('sc_path', p) : localStorage.removeItem('sc_path'); } catch (_e) { /* noop */ }
+    try { tg?.HapticFeedback?.impactOccurred?.('light'); } catch (_e) { /* noop */ }
+    try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (_e) { /* noop */ }
+  }, []);
 
   useEffect(() => {
     try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
@@ -91,96 +119,176 @@ export default function ShortcutGuide() {
 
   const collectorUrl = info?.collector_url || '';
   const processorUrl = info?.processor_url || '';
+  const instantUrl = info?.instant_url || '';
+
+  // Pairing step — shared, but the command name differs by method.
+  const pairingStep = (commandName) => (
+    <>
+      <p className="sc-sub-h">Привяжите команду к вашему аккаунту — один раз:</p>
+      <p>1️⃣ Нажмите <b>«Получить код»</b> — он появится прямо здесь.<br />
+        2️⃣ Запустите команду <b>«{commandName}»</b> вручную один раз — она попросит код, вставьте его.</p>
+      <button type="button" className="sc-btn" onClick={getCode} disabled={pairingBusy}>
+        {pairingBusy ? '⏳ Получаю код…' : (pairing ? '🔄 Новый код' : '🔑 Получить код')}
+      </button>
+      {pairing?.pairing_code ? <CopyCode code={pairing.pairing_code} /> : null}
+      {pairingErr ? <div className="sc-error sm">{pairingErr}</div> : null}
+      <p className="sc-note">⚠️ Код одноразовый и действует 24 часа — подключитесь сразу. Дальше код не нужен.</p>
+      <MediaTile src="/onboarding/shortcut/pair.jpg" type="image" caption="Ввод кода при первом запуске" />
+    </>
+  );
 
   return (
     <div className="sc-root">
       <header className="sc-hero">
         <div className="sc-hero-emoji">📲</div>
-        <h1 className="sc-hero-title">Перевод по скриншотам</h1>
+        <h1 className="sc-hero-title">Сохранение слов по скриншотам</h1>
         <p className="sc-hero-sub">
-          Ловите немецкие слова прямо во время рилсов и видео — а утром телефон сам всё переведёт и
-          пришлёт в личку. Настройка один раз, по шагам. Только для iPhone.
+          Лови немецкие слова где угодно на iPhone — а бот переведёт и даст сохранить их в
+          словарь. Настройка один раз, по шагам. Только для iPhone.
         </p>
       </header>
 
       {error ? <div className="sc-error">{error}</div> : null}
 
-      <ol className="sc-steps">
-        <li className="sc-step">
-          <div className="sc-step-no">1</div>
-          <div className="sc-step-body">
-            <h2>Создайте альбом «Deutsch Queue»</h2>
-            <p>Откройте приложение <b>«Фото»</b> → внизу <b>«Альбомы»</b> → <b>＋</b> → <b>«Новый альбом»</b>.
-              Назовите его <b>точно так</b>: <code>Deutsch Queue</code> (с большой буквы, с пробелом).</p>
-            <p className="sc-note">Сюда команда будет складывать скриншоты, а ночная — забирать их для перевода.</p>
-            <MediaTile src="/onboarding/shortcut/album.jpg" type="image" caption="Новый альбом «Deutsch Queue»" />
-          </div>
-        </li>
+      {/* Method chooser */}
+      {!path && (
+        <section className="sc-fork">
+          <h2 className="sc-fork-title">Выбери, как тебе удобнее ловить слова:</h2>
 
-        <li className="sc-step">
-          <div className="sc-step-no">2</div>
-          <div className="sc-step-body">
-            <h2>Команда «Скриншоты»</h2>
-            <p>Нажмите кнопку ниже — откроется «Команды». Пролистайте вниз и нажмите
-              <b> «Добавить команду»</b> (на всех экранах — соглашайтесь).</p>
-            {collectorUrl
-              ? <a className="sc-btn primary" href={collectorUrl} target="_blank" rel="noreferrer">📲 Установить команду «Скриншоты»</a>
-              : <div className="sc-btn disabled">Ссылка загружается…</div>}
-            <p className="sc-sub-h">Привяжите её к быстрому запуску:</p>
-            <p>🔹 <b>Двойное касание крышки</b> (любой iPhone): Настройки → Универсальный доступ →
-              Касание → Касание задней панели → Двойное касание → выберите команду.</p>
-            <p>🔹 <b>Кнопка «Действие»</b> (iPhone 15 Pro и новее): Настройки → Кнопка «Действие» →
-              пролистайте до «Быстрая команда» → выберите команду.</p>
-            <div className="sc-media-row">
-              <MediaTile src="/onboarding/shortcut/back_tap.mp4" type="video" caption="Двойное касание крышки" />
-              <MediaTile src="/onboarding/shortcut/action_button.mp4" type="video" caption="Кнопка «Действие»" />
-            </div>
-          </div>
-        </li>
-
-        <li className="sc-step">
-          <div className="sc-step-no">3</div>
-          <div className="sc-step-body">
-            <h2>Команда «Ночной перевод»</h2>
-            <p>Нажмите кнопку ниже и так же добавьте вторую команду.</p>
-            {processorUrl
-              ? <a className="sc-btn primary" href={processorUrl} target="_blank" rel="noreferrer">📲 Установить команду «Ночной перевод»</a>
-              : <div className="sc-btn disabled">Ссылка загружается…</div>}
-            <p className="sc-sub-h">Привяжите её к вашему аккаунту — один раз:</p>
-            <p>1️⃣ Нажмите <b>«Получить код»</b> — он появится прямо здесь.<br />
-              2️⃣ Запустите команду «Ночной перевод» вручную один раз — она попросит код, вставьте его.</p>
-            <button type="button" className="sc-btn" onClick={getCode} disabled={pairingBusy}>
-              {pairingBusy ? '⏳ Получаю код…' : (pairing ? '🔄 Новый код' : '🔑 Получить код')}
+          <div className="sc-fork-card">
+            <h3>⚡ Мгновенно</h3>
+            <p>Увидел слово → нажал кнопку (или двойное касание крышки) → через пару секунд
+              перевод приходит тебе в личку.</p>
+            <p className="sc-pro">✓ Результат сразу</p>
+            <p className="sc-con">✕ Отвлекаешься на каждое слово</p>
+            <button type="button" className="sc-btn primary" onClick={() => choose('instant')}>
+              Выбрать мгновенный
             </button>
-            {pairing?.pairing_code ? <CopyCode code={pairing.pairing_code} /> : null}
-            {pairingErr ? <div className="sc-error sm">{pairingErr}</div> : null}
-            <p className="sc-note">⚠️ Код одноразовый и действует 24 часа — подключитесь сразу. Дальше код не нужен.</p>
-            <MediaTile src="/onboarding/shortcut/pair.jpg" type="image" caption="Ввод кода при первом запуске" />
           </div>
-        </li>
 
-        <li className="sc-step">
-          <div className="sc-step-no">4</div>
-          <div className="sc-step-body">
-            <h2>Поставьте утренний запуск по времени</h2>
-            <p>В «Командах» откройте вкладку <b>«Автоматизация»</b> → <b>＋</b> →
-              <b> «Создать автоматизацию для себя»</b> → <b>«Время суток»</b>.</p>
-            <p>Поставьте утро — <b>06:30–07:30</b>, повтор <b>ежедневно</b>. Действие — запустить команду
-              <b> «Ночной перевод»</b>. Выключите «Спрашивать до запуска», чтобы команда шла сама.</p>
-            <p className="sc-note">⏰ Утром 06:30–07:30 сервер свободен — перевод проходит быстро и без сбоев.
-              Слова прилетят в личку примерно через полторы минуты после запуска.</p>
-            <MediaTile src="/onboarding/shortcut/automation.jpg" type="image" caption="Автоматизация на 06:30–07:30" />
+          <div className="sc-fork-card recommended">
+            <span className="sc-badge">Рекомендуем</span>
+            <h3>🌙 Ночью пачкой</h3>
+            <p>Увидел слово → скриншот тихо уходит в альбом, не отвлекаясь от видео или чтения.
+              Утром телефон сам всё переведёт и пришлёт в личку.</p>
+            <p className="sc-pro">✓ Не отрывает от дел · копишь слова весь день</p>
+            <p className="sc-con">✕ Слова придут утром, не сразу</p>
+            <button type="button" className="sc-btn primary" onClick={() => choose('nightly')}>
+              Выбрать ночной
+            </button>
           </div>
-        </li>
-      </ol>
+        </section>
+      )}
 
-      <section className="sc-done">
-        <h2>✅ Как это работает каждый день</h2>
-        <p>🎬 Видите немецкое слово в видео или чате → кнопка действия или двойное касание крышки →
-          скриншот тихо уходит в альбом «Deutsch Queue».</p>
-        <p>🌙 Утром команда сама всё переводит → слова приходят вам в личку.</p>
-        <p>💾 Останется нажать сохранить — выбранные слова лягут в словарь.</p>
-      </section>
+      {path && (
+        <button type="button" className="sc-switch" onClick={() => choose(null)}>← Сменить способ</button>
+      )}
+
+      {/* ⚡ Instant OCR */}
+      {path === 'instant' && (
+        <>
+          <ol className="sc-steps">
+            <li className="sc-step">
+              <div className="sc-step-no">1</div>
+              <div className="sc-step-body">
+                <h2>Команда «Быстрый перевод»</h2>
+                <p>Нажмите кнопку ниже — откроется «Команды». Пролистайте вниз и нажмите
+                  <b> «Добавить команду»</b> (на всех экранах — соглашайтесь).</p>
+                {instantUrl
+                  ? <a className="sc-btn primary" href={instantUrl} target="_blank" rel="noreferrer">📲 Установить «Быстрый перевод»</a>
+                  : <div className="sc-btn disabled">Ссылка загружается…</div>}
+              </div>
+            </li>
+            <li className="sc-step">
+              <div className="sc-step-no">2</div>
+              <div className="sc-step-body">
+                <h2>Привяжите к кнопке</h2>
+                <BindStep />
+              </div>
+            </li>
+            <li className="sc-step">
+              <div className="sc-step-no">3</div>
+              <div className="sc-step-body">
+                <h2>Подключите к аккаунту</h2>
+                {pairingStep('Быстрый перевод')}
+              </div>
+            </li>
+          </ol>
+
+          <section className="sc-done">
+            <h2>✅ Как это работает каждый день</h2>
+            <p>🎬 Видите немецкое слово → кнопка действия или двойное касание крышки →
+              телефон делает скриншот и сам его распознаёт.</p>
+            <p>⚡ Через пару секунд перевод приходит вам в личку.</p>
+            <p>💾 Останется нажать сохранить — выбранные слова лягут в словарь.</p>
+          </section>
+        </>
+      )}
+
+      {/* 🌙 Nightly batch */}
+      {path === 'nightly' && (
+        <>
+          <ol className="sc-steps">
+            <li className="sc-step">
+              <div className="sc-step-no">1</div>
+              <div className="sc-step-body">
+                <h2>Создайте альбом «Deutsch Queue»</h2>
+                <p>Откройте приложение <b>«Фото»</b> → внизу <b>«Альбомы»</b> → <b>＋</b> → <b>«Новый альбом»</b>.
+                  Назовите его <b>точно так</b>: <code>Deutsch Queue</code> (с большой буквы, с пробелом).</p>
+                <p className="sc-note">Сюда команда будет складывать скриншоты, а ночная — забирать их для перевода.</p>
+                <MediaTile src="/onboarding/shortcut/album.jpg" type="image" caption="Новый альбом «Deutsch Queue»" />
+              </div>
+            </li>
+
+            <li className="sc-step">
+              <div className="sc-step-no">2</div>
+              <div className="sc-step-body">
+                <h2>Команда «Скриншоты»</h2>
+                <p>Нажмите кнопку ниже — откроется «Команды». Пролистайте вниз и нажмите
+                  <b> «Добавить команду»</b> (на всех экранах — соглашайтесь).</p>
+                {collectorUrl
+                  ? <a className="sc-btn primary" href={collectorUrl} target="_blank" rel="noreferrer">📲 Установить команду «Скриншоты»</a>
+                  : <div className="sc-btn disabled">Ссылка загружается…</div>}
+                <BindStep />
+              </div>
+            </li>
+
+            <li className="sc-step">
+              <div className="sc-step-no">3</div>
+              <div className="sc-step-body">
+                <h2>Команда «Ночной перевод»</h2>
+                <p>Нажмите кнопку ниже и так же добавьте вторую команду.</p>
+                {processorUrl
+                  ? <a className="sc-btn primary" href={processorUrl} target="_blank" rel="noreferrer">📲 Установить команду «Ночной перевод»</a>
+                  : <div className="sc-btn disabled">Ссылка загружается…</div>}
+                {pairingStep('Ночной перевод')}
+              </div>
+            </li>
+
+            <li className="sc-step">
+              <div className="sc-step-no">4</div>
+              <div className="sc-step-body">
+                <h2>Поставьте утренний запуск по времени</h2>
+                <p>В «Командах» откройте вкладку <b>«Автоматизация»</b> → <b>＋</b> →
+                  <b> «Создать автоматизацию для себя»</b> → <b>«Время суток»</b>.</p>
+                <p>Поставьте утро — <b>06:30–07:30</b>, повтор <b>ежедневно</b>. Действие — запустить команду
+                  <b> «Ночной перевод»</b>. Выключите «Спрашивать до запуска», чтобы команда шла сама.</p>
+                <p className="sc-note">⏰ Утром 06:30–07:30 сервер свободен — перевод проходит быстро и без сбоев.
+                  Слова прилетят в личку примерно через полторы минуты после запуска.</p>
+                <MediaTile src="/onboarding/shortcut/automation.jpg" type="image" caption="Автоматизация на 06:30–07:30" />
+              </div>
+            </li>
+          </ol>
+
+          <section className="sc-done">
+            <h2>✅ Как это работает каждый день</h2>
+            <p>🎬 Видите немецкое слово в видео или чате → кнопка действия или двойное касание крышки →
+              скриншот тихо уходит в альбом «Deutsch Queue».</p>
+            <p>🌙 Утром команда сама всё переводит → слова приходят вам в личку.</p>
+            <p>💾 Останется нажать сохранить — выбранные слова лягут в словарь.</p>
+          </section>
+        </>
+      )}
 
       <section className="sc-android">
         <p>📱 <b>Другой телефон (Android и т.п.)?</b> Команды не нужны — пишите боту слово, пересылайте

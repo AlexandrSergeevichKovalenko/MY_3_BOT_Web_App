@@ -41295,6 +41295,10 @@ def shortcut_install_redirect():
 # the web tier hasn't got the env vars set yet.
 _SHORTCUT_COLLECTOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/39a22ce3741f4dc4915c762687e182eb"
 _SHORTCUT_PROCESSOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/20e998527b944a1ebe22ceb875da7ad9"
+# Instant OCR command (screenshot → extract text → POST /api/shortcut/lookup now).
+# Default = the old single-shortcut link (documented rollback); owner overrides with
+# SHORTCUT_INSTANT_URL once the instant command is (re)built against /api/shortcut/lookup.
+_SHORTCUT_INSTANT_DEFAULT_URL = "https://www.icloud.com/shortcuts/832ca219b23c4e298af5712ee473302c"
 
 
 def _shortcut_collector_public_url() -> str:
@@ -41302,6 +41306,14 @@ def _shortcut_collector_public_url() -> str:
         (os.getenv("SHORTCUT_COLLECTOR_URL") or "").strip()
         or (os.getenv("SHORTCUT_SCREENSHOT_URL") or "").strip()
         or _SHORTCUT_COLLECTOR_DEFAULT_URL
+    )
+
+
+def _shortcut_instant_public_url() -> str:
+    return (
+        (os.getenv("SHORTCUT_INSTANT_URL") or "").strip()
+        or (os.getenv("SHORTCUT_OCR_URL") or "").strip()
+        or _SHORTCUT_INSTANT_DEFAULT_URL
     )
 
 
@@ -41324,6 +41336,7 @@ def webapp_shortcut_info():
         "ok": True,
         "collector_url": _shortcut_collector_public_url(),
         "processor_url": _shortcut_processor_public_url(),
+        "instant_url": _shortcut_instant_public_url(),
     })
 
 
