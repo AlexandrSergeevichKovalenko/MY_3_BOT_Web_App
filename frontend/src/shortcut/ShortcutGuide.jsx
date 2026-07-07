@@ -63,8 +63,9 @@ export default function ShortcutGuide() {
 
   useEffect(() => {
     try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
-    const scheme = (tg?.colorScheme === 'light') ? 'light' : 'dark';
-    try { document.documentElement.setAttribute('data-scheme', scheme); } catch (_e) { /* ignore */ }
+    // Force LIGHT — consistent with the onboarding wizard (owner: the whole
+    // onboarding is light, so the Shortcut setup screen must not open dark).
+    try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* ignore */ }
   }, []);
 
   useEffect(() => {

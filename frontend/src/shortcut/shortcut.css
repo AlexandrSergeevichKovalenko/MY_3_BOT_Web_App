@@ -157,3 +157,10 @@ html[data-scheme="light"] .sc-flow-step { background: #fff8e6; border-color: #f0
 /* Per-step "why" line */
 .sc-why { margin: 0 0 8px; font-size: 14px; line-height: 1.4; color: #ffd899; font-weight: 600; }
 html[data-scheme="light"] .sc-why { color: #9a6b00; }
+
+/* Light-scheme contrast fixes (screen is now always light, matching onboarding) */
+html[data-scheme="light"] .sc-code-hint { color: #5a6680; }
+html[data-scheme="light"] .sc-media figcaption { color: #5a6680; }
+html[data-scheme="light"] .sc-error { background: #fdecec; border-color: #f3c0c0; color: #b02a2a; }
+html[data-scheme="light"] .sc-flow-arrow { color: #c9920a; }
+html[data-scheme="light"] .sc-btn { background: #eef2f8; border-color: #cfd8e6; }
