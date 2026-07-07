@@ -6691,7 +6691,11 @@ def _extract_correct_translation(feedback: str | None, sentence_number: int | No
         # _format_story_sentence_feedback as a line "✅ <full correct German>".
         # This is the authoritative correct sentence and must be matched first,
         # otherwise the audio builder falls back to the learner's own (wrong) text.
-        r"(?m)^✅\s*(.+?)\s*$",
+        # BUT the daily-translation feedback reuses the same ✅ marker for its header
+        # line "✅ *Score:* 85/100" — never capture that, or the mistakes-audio voices
+        # "Score" instead of the German. Skip it so daily feedback falls through to the
+        # "🟣 *Correct Translation:*" pattern below.
+        r"(?m)^✅(?![\s*]*Score\b)[\s*]*(.+?)\s*$",
         r"Correct Translation:\*?\s*(.+?)(?:\n|\Z)",
         r"Korrigierte Version:\*?\s*(.+?)(?:\n|\Z)",
         r"Исправленный вариант:\*?\s*(.+?)(?:\n|\Z)",
