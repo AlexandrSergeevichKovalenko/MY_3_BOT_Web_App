@@ -70,16 +70,24 @@ function MediaTile({ src, type = 'video', caption }) {
   );
 }
 
-function openDictInBrowser() {
-  // Carry the current Telegram initData into the Safari URL so the standalone
-  // browser dictionary (and any "Add to Home Screen" install) is AUTHENTICATED —
-  // without it, breakdown / save / audio all 401 outside Telegram (only the
-  // no-auth quick translate works). initData stays valid for 30 days
-  // (TELEGRAM_WEBAPP_INIT_TTL_SECONDS), and the overlay caches it in localStorage so
-  // the home-screen app keeps working across launches within that window.
+async function openDictInBrowser() {
+  // Authenticate the standalone browser dictionary (and its "Add to Home Screen"
+  // install) — without auth, breakdown / save / audio all 401 outside Telegram (only
+  // the no-auth quick translate works). Preferred: mint a DURABLE, revocable token that
+  // never expires (works forever on the home screen). Fallback: carry the current
+  // initData, which the server accepts for 30 days.
   const initData = tg?.initData || '';
   const base = `${window.location.origin}/dict`;
-  const url = initData ? `${base}?initData=${encodeURIComponent(initData)}` : base;
+  let url = initData ? `${base}?initData=${encodeURIComponent(initData)}` : base;
+  try {
+    const res = await fetch('/api/webapp/dict/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-InitData': initData },
+      body: JSON.stringify({ initData }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.token) url = `${base}?dqt=${encodeURIComponent(String(data.token))}`;
+  } catch (_e) { /* keep the initData fallback URL */ }
   try {
     if (tg?.openLink) tg.openLink(url);
     else window.open(url, '_blank');

@@ -329,6 +329,8 @@ from backend.database import (
     resolve_shortcut_install_token,
     get_shortcut_installations_for_user,
     revoke_shortcut_installation,
+    create_dict_browser_token,
+    resolve_dict_browser_token,
     purge_expired_shortcut_pairing_codes,
     get_missing_phase1_shadow_schema_objects,
     claim_skill_state_v2_dirty_keys,
@@ -3807,6 +3809,44 @@ def _extract_request_init_data(payload: dict | None = None) -> str:
         or request.args.get("initData")
         or ""
     ).strip()
+
+
+def _extract_dict_browser_token(payload: dict | None = None) -> str:
+    """The durable browser-dictionary token from header/body/query — used by the
+    standalone Safari / home-screen dictionary, which has no Telegram initData."""
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    return str(
+        request.headers.get("X-Dict-Token")
+        or (body.get("dict_token") if isinstance(body, dict) else "")
+        or (body.get("dqt") if isinstance(body, dict) else "")
+        or request.args.get("dqt")
+        or ""
+    ).strip()
+
+
+def _resolve_webapp_user_id(payload: dict | None = None) -> int | None:
+    """Resolve the acting user's Telegram id from EITHER a valid Telegram initData OR a
+    durable browser-dictionary token. Returns None when neither authenticates. Lets the
+    standalone browser dictionary work past initData's 30-day TTL (deep breakdown / save
+    / TTS) without weakening the in-Telegram initData path."""
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    init_data = _extract_request_init_data(body)
+    if init_data and _telegram_hash_is_valid(init_data):
+        try:
+            uid = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
+            if uid:
+                return int(uid)
+        except Exception:
+            pass
+    token = _extract_dict_browser_token(body)
+    if token:
+        try:
+            rec = resolve_dict_browser_token(token)
+            if rec and int(rec.get("user_id") or 0) > 0:
+                return int(rec["user_id"])
+        except Exception:
+            logging.debug("dict browser token resolve failed", exc_info=True)
+    return None
 
 
 def _extract_webapp_instance_id(payload: dict | None = None) -> str | None:
@@ -17804,16 +17844,11 @@ def _tts_object_cache_key(short_lang: str, voice: str, speed: float, text: str) 
 
 def _read_webapp_tts_request_payload(*, payload: dict | None = None) -> tuple[dict | None, tuple[dict, int] | None]:
     body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
-    init_data = _extract_request_init_data(body)
-    if not init_data:
-        return None, ({"error": "initData обязателен"}, 400)
-    if not _telegram_hash_is_valid(init_data):
-        return None, ({"error": "initData не прошёл проверку"}, 401)
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
+    # initData OR durable browser-dictionary token (standalone Safari / home-screen app),
+    # so pronunciation works outside Telegram past initData's 30-day TTL.
+    user_id = _resolve_webapp_user_id(body)
     if not user_id:
-        return None, ({"error": "user_id отсутствует в initData"}, 400)
+        return None, ({"error": "initData не прошёл проверку"}, 401)
     text_raw = body.get("text")
     if text_raw is None:
         text_raw = request.args.get("text")
@@ -31830,25 +31865,17 @@ def lookup_webapp_dictionary():
 
     payload = request.get_json(silent=True) or {}
     mark("parsed")
-    init_data = payload.get("initData")
     word_ru = (payload.get("word") or "").strip()
     lookup_lang = _normalize_short_lang_code(payload.get("lookup_lang"), fallback="")
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
     if not word_ru:
         return jsonify({"error": "word обязателен"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
+    # initData OR durable browser-dictionary token (standalone Safari / home-screen app).
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
         return jsonify({"error": "initData не прошёл проверку"}), 401
     mark("validated")
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     user_id_for_log = int(user_id)
     source_lang, target_lang, _profile = _get_user_language_pair(user_id_for_log)
@@ -32250,6 +32277,28 @@ def lookup_webapp_dictionary():
     return response
 
 
+@app.route("/api/webapp/dict/token", methods=["POST"])
+def issue_dict_browser_token():
+    """Mint a durable, revocable browser-dictionary token for the authenticated Telegram
+    user, so the standalone Safari / home-screen dictionary keeps working past initData's
+    30-day TTL. Requires a valid initData (the caller is still inside the Mini-App)."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData") or _extract_request_init_data(payload)
+    if not init_data or not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    token = create_dict_browser_token(
+        user_id=int(user_id),
+        user_agent=str(request.headers.get("User-Agent") or "")[:300],
+    )
+    if not token:
+        return jsonify({"error": "Не удалось создать токен"}), 500
+    return jsonify({"ok": True, "token": token})
+
+
 def _sse_pack(event: str, data: dict) -> str:
     """Format one Server-Sent Event frame."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -32272,21 +32321,14 @@ def stream_webapp_dictionary():
         server-side to the atomic core lookup and still emits `done`.
     """
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
     word_ru = (payload.get("word") or "").strip()
     lookup_lang = _normalize_short_lang_code(payload.get("lookup_lang"), fallback="")
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
     if not word_ru:
         return jsonify({"error": "word обязателен"}), 400
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_id = (parsed.get("user") or {}).get("id")
+    user_id = _resolve_webapp_user_id(payload)
     if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
+        return jsonify({"error": "initData не прошёл проверку"}), 401
     user_id = int(user_id)
 
     source_lang, target_lang, _profile = _get_user_language_pair(user_id)
@@ -32449,22 +32491,15 @@ def get_webapp_dictionary_lookup_status():
     request_id = _extract_observability_request_id()
     correlation_id = _build_observability_correlation_id(prefix="dictionary_status")
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
     lookup_id = str(payload.get("lookup_id") or "").strip()
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
     if not lookup_id:
         return jsonify({"error": "lookup_id обязателен"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
+    # initData OR durable browser-dictionary token (standalone Safari / home-screen app).
+    user_id = _resolve_webapp_user_id(payload)
     if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
+        return jsonify({"error": "initData не прошёл проверку"}), 401
 
     job = _get_dictionary_enrichment_job_by_lookup_id(lookup_id)
     if not isinstance(job, dict):
@@ -39160,20 +39195,13 @@ def save_webapp_dictionary_entry():
     response_json = payload.get("response_json") or {}
     folder_id = payload.get("folder_id")
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
     if not word_ru and not word_de and not source_text:
         return jsonify({"error": "word_ru или word_de или source_text обязателен"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-
+    # initData OR durable browser-dictionary token (standalone Safari / home-screen app).
+    user_id = _resolve_webapp_user_id(payload)
     if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
+        return jsonify({"error": "initData не прошёл проверку"}), 401
 
     profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
     source_lang, target_lang = _resolve_dictionary_save_pair(
@@ -42707,18 +42735,13 @@ def add_flashcards_manual_selection():
     """Append cards to the manual training selection (non-destructive). Used by the
     «Учить» button in the quick dictionary to queue a freshly saved word for SRS."""
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
     requested_card_ids = payload.get("card_ids")
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
     if not isinstance(requested_card_ids, list) or not requested_card_ids:
         return jsonify({"error": "card_ids обязателен"}), 400
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-    parsed = _parse_telegram_init_data(init_data)
-    user_id = (parsed.get("user") or {}).get("id")
+    # initData OR durable browser-dictionary token (standalone Safari / home-screen app).
+    user_id = _resolve_webapp_user_id(payload)
     if not user_id:
-        return jsonify({"error": "user_id отсутствует"}), 400
+        return jsonify({"error": "initData не прошёл проверку"}), 401
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
         result = add_cards_to_manual_training_selection(

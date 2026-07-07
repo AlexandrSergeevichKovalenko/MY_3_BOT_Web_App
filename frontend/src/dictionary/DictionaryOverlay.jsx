@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import '../answer/answer.css';
 import './dict.css';
-import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic, getInitData } from './WordBreakdown';
+import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
 
@@ -349,10 +349,13 @@ export default function DictionaryOverlay() {
     const controller = new AbortController();
     streamAbortRef.current = controller;
 
+    const dictToken = getDictToken();
+    const streamHeaders = { 'Content-Type': 'application/json', 'X-Telegram-InitData': getInitData() };
+    if (dictToken) streamHeaders['X-Dict-Token'] = dictToken;
     const resp = await fetch('/api/webapp/dictionary/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Telegram-InitData': getInitData() },
-      body: JSON.stringify({ initData: getInitData(), word: w, lookup_lang: pair.source }),
+      headers: streamHeaders,
+      body: JSON.stringify({ initData: getInitData(), ...(dictToken ? { dqt: dictToken } : {}), word: w, lookup_lang: pair.source }),
       signal: controller.signal,
     });
     if (!resp.ok) {

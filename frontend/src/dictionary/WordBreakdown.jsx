@@ -45,11 +45,33 @@ export function haptic(type) {
   } catch (_e) { /* ignore */ }
 }
 
+// Durable browser-dictionary token (?dqt=… on the standalone Safari / home-screen app).
+// It authenticates deep breakdown / save / audio WITHOUT initData and never expires
+// (revocable server-side), unlike the 30-day initData. Cached from the launch URL so
+// the home-screen app keeps working across relaunches. Empty inside Telegram (initData
+// is used there instead).
+const DQ_TOKEN_LS_KEY = 'dq_browser_token_v1';
+
+export function getDictToken() {
+  if (typeof window === 'undefined') return '';
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get('dqt') || '';
+    if (fromUrl) {
+      try { localStorage.setItem(DQ_TOKEN_LS_KEY, fromUrl); } catch (_e) { /* ignore */ }
+      return fromUrl;
+    }
+    return localStorage.getItem(DQ_TOKEN_LS_KEY) || '';
+  } catch (_e) { return ''; }
+}
+
 export async function api(path, body) {
+  const token = getDictToken();
+  const headers = { 'Content-Type': 'application/json', 'X-Telegram-InitData': getInitData() };
+  if (token) headers['X-Dict-Token'] = token;
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Telegram-InitData': getInitData() },
-    body: JSON.stringify({ initData: getInitData(), ...body }),
+    headers,
+    body: JSON.stringify({ initData: getInitData(), ...(token ? { dqt: token } : {}), ...body }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -828,11 +850,15 @@ export function useTts() {
         throw new Error(gen?.message || 'TTS fehlgeschlagen');
       }
       if (!url) {
+        const dictToken = getDictToken();
         const params = new URLSearchParams({ text: t, language });
+        if (dictToken) params.set('dqt', dictToken);
+        const urlHeaders = { 'X-Telegram-InitData': getInitData() };
+        if (dictToken) urlHeaders['X-Dict-Token'] = dictToken;
         for (let i = 0; i < 30 && !url; i += 1) {
           if (mySeq !== seqRef.current) return;
           const res = await fetch(`/api/webapp/tts/url?${params.toString()}`, {
-            method: 'GET', headers: { 'X-Telegram-InitData': getInitData() },
+            method: 'GET', headers: urlHeaders,
           });
           const data = await res.json().catch(() => ({}));
           if (data.status === 'ready' && data.audio_url) { url = data.audio_url; break; }

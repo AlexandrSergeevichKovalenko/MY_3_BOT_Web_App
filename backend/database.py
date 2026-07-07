@@ -19412,6 +19412,132 @@ def resolve_shortcut_install_token(
     return resolved
 
 
+# ── Durable browser-dictionary tokens ────────────────────────────────────────
+# A long-lived, revocable credential that authenticates the standalone browser /
+# home-screen «Быстрый словарь» to a Telegram user WITHOUT initData (which the server
+# only accepts for 30 days). Minted from an already-authenticated Mini-App request,
+# stored HASHED (never raw), and resolved on every deep-dictionary / save / TTS call.
+# Modeled on the shortcut install token but single-step (no pairing code) and without a
+# resolve cache — an indexed unique-hash SELECT is cheap and keeps revocation instant.
+_DICT_BROWSER_TOKEN_SCHEMA_READY = False
+_DICT_BROWSER_TOKEN_SCHEMA_LOCK = threading.Lock()
+
+
+def _dict_browser_token_hash(raw_token: str) -> str:
+    return hashlib.sha256(str(raw_token or "").strip().encode("utf-8")).hexdigest()
+
+
+def ensure_dict_browser_token_table() -> None:
+    global _DICT_BROWSER_TOKEN_SCHEMA_READY
+    if _DICT_BROWSER_TOKEN_SCHEMA_READY:
+        return
+    with _DICT_BROWSER_TOKEN_SCHEMA_LOCK:
+        if _DICT_BROWSER_TOKEN_SCHEMA_READY:
+            return
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_xact_lock(%s);", (94081099,))
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_dict_browser_tokens (
+                        id BIGSERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        last_used_at TIMESTAMPTZ,
+                        revoked_at TIMESTAMPTZ,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        user_agent TEXT
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_dict_browser_tokens_user_active
+                    ON bt_3_dict_browser_tokens (user_id, is_active, created_at DESC);
+                    """
+                )
+                conn.commit()
+        _DICT_BROWSER_TOKEN_SCHEMA_READY = True
+
+
+def create_dict_browser_token(*, user_id: int, user_agent: str | None = None) -> str | None:
+    """Mint a durable browser-dictionary token for a user; returns the RAW token once
+    (only its hash is stored). None on failure."""
+    ensure_dict_browser_token_table()
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _dict_browser_token_hash(raw_token)
+    ua = str(user_agent or "").strip()[:300] or None
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_dict_browser_tokens (user_id, token_hash, user_agent, created_at, is_active)
+                    VALUES (%s, %s, %s, NOW(), TRUE);
+                    """,
+                    (int(user_id), token_hash, ua),
+                )
+                conn.commit()
+        return raw_token
+    except Exception:
+        logging.warning("create_dict_browser_token failed", exc_info=True)
+        return None
+
+
+def resolve_dict_browser_token(raw_token: str) -> dict | None:
+    """Return {"user_id": int} for a valid, non-revoked token, else None. Touches
+    last_used_at."""
+    token = str(raw_token or "").strip()
+    if not token:
+        return None
+    token_hash = _dict_browser_token_hash(token)
+    ensure_dict_browser_token_table()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_dict_browser_tokens
+                    SET last_used_at = NOW()
+                    WHERE token_hash = %s AND is_active = TRUE AND revoked_at IS NULL
+                    RETURNING user_id;
+                    """,
+                    (token_hash,),
+                )
+                row = cursor.fetchone()
+                conn.commit()
+    except Exception:
+        logging.warning("resolve_dict_browser_token failed", exc_info=True)
+        return None
+    if not row:
+        return None
+    return {"user_id": int(row[0])}
+
+
+def revoke_dict_browser_tokens_for_user(user_id: int) -> int:
+    """Revoke ALL active browser-dictionary tokens for a user (e.g. lost device).
+    Returns how many were revoked."""
+    ensure_dict_browser_token_table()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_dict_browser_tokens
+                    SET is_active = FALSE, revoked_at = NOW()
+                    WHERE user_id = %s AND is_active = TRUE;
+                    """,
+                    (int(user_id),),
+                )
+                revoked = cursor.rowcount
+                conn.commit()
+        return int(revoked or 0)
+    except Exception:
+        logging.warning("revoke_dict_browser_tokens_for_user failed", exc_info=True)
+        return 0
+
+
 def get_shortcut_installations_for_user(user_id: int, *, active_only: bool = True) -> list[dict]:
     ensure_shortcut_tables()
     query = """
