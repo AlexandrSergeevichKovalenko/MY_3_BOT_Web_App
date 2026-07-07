@@ -119,3 +119,41 @@ html[data-scheme="light"] .sc-done p, html[data-scheme="light"] .sc-android p { 
 .sc-error.sm { padding: 8px 12px; font-size: 13px; }
 
 .sc-goapp { width: 100%; margin-top: 16px; }
+
+.sc-note-box {
+  background: rgba(255,209,74,0.10);
+  border: 1px solid rgba(255,209,74,0.35);
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-size: 14.5px;
+  line-height: 1.45;
+  margin: 2px 0 6px;
+}
+html[data-scheme="light"] .sc-note-box { background: #fff8e6; border-color: #f0d089; color: #5a4a10; }
+
+/* Overview flow chain */
+.sc-flow-wrap { margin: 2px 0 10px; }
+.sc-flow-title { font-size: 15px; font-weight: 700; margin: 0 0 10px; }
+.sc-flow { display: flex; flex-direction: column; gap: 5px; }
+.sc-flow-step {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(255,209,74,0.08);
+  border: 1px solid rgba(255,209,74,0.22);
+  border-radius: 12px;
+  padding: 10px 13px;
+  font-size: 14px; font-weight: 600;
+  opacity: 0;
+  animation: scFlowIn 0.45s ease forwards;
+}
+html[data-scheme="light"] .sc-flow-step { background: #fff8e6; border-color: #f0d089; }
+.sc-flow-emoji { font-size: 20px; line-height: 1; }
+.sc-flow-arrow { align-self: center; color: #f0b429; font-size: 15px; opacity: 0.7; line-height: 1; }
+.sc-flow-step:nth-child(1) { animation-delay: 0.05s; }
+.sc-flow-step:nth-child(3) { animation-delay: 0.20s; }
+.sc-flow-step:nth-child(5) { animation-delay: 0.35s; }
+.sc-flow-step:nth-child(7) { animation-delay: 0.50s; }
+@keyframes scFlowIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* Per-step "why" line */
+.sc-why { margin: 0 0 8px; font-size: 14px; line-height: 1.4; color: #ffd899; font-weight: 600; }
+html[data-scheme="light"] .sc-why { color: #9a6b00; }
