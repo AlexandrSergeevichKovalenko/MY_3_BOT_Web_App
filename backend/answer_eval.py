@@ -1400,12 +1400,21 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
         except Exception:
             pass
     elif fmt == "video":
-        # Remedial theory video ("тебе было сложно"): a skippable card in the review
-        # queue, not a gradeable task. Send the YouTube id + topic label; the client
-        # embeds the player and shows «Посмотрел»/«Пропустить».
-        meta["video_id"] = str(payload.get("video_id") or "")
-        meta["video_url"] = str(payload.get("video_url") or "")
-        meta["video_title"] = str(payload.get("video_title") or "")
+        # Remedial theory video ("тебе было сложно"): a skippable PICKER card, not a
+        # gradeable task. Send ALL curated clips for the topic so the learner chooses
+        # whose explanation they like; the client embeds a player + «Посмотрел»/«Пропустить».
+        vids = payload.get("videos")
+        if not isinstance(vids, list) or not vids:  # back-compat: legacy single-video card
+            vids = ([{"video_id": payload.get("video_id"),
+                      "video_url": payload.get("video_url"),
+                      "video_title": payload.get("video_title")}]
+                    if payload.get("video_id") else [])
+        meta["videos"] = [
+            {"video_id": str((v or {}).get("video_id") or ""),
+             "video_url": str((v or {}).get("video_url") or ""),
+             "video_title": str((v or {}).get("video_title") or "")}
+            for v in vids if (v or {}).get("video_id")
+        ]
         meta["topic_ru"] = str(payload.get("topic_ru") or "")
         meta["topic_de"] = str(payload.get("topic_de") or "")
         meta["hint_ru"] = str(payload.get("topic_ru") or payload.get("hint_ru") or "")

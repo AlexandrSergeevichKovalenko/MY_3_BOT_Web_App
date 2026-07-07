@@ -28303,26 +28303,35 @@ def topic_recently_sent_to_user(*, user_id: int, topic_key: str, days: int = 90)
         return False
 
 
-def insert_remedial_video_card(*, user_id: int, topic_key: str, video: dict,
+def insert_remedial_video_card(*, user_id: int, topic_key: str, videos: list[dict],
                                topic_ru: str = "", topic_de: str = "") -> int | None:
-    """Drop a `format='video'` card into the review queue. `due_at` is set slightly in
-    the past so it sorts FIRST among the user's due items ('watch the theory, then redo
-    the drills'). Returns the row id, or None on failure."""
+    """Drop a `format='video'` card into the review queue. The card is a PICKER: it
+    carries ALL curated videos for the topic so the learner chooses whose explanation
+    they like. `due_at` is set slightly in the past so it sorts FIRST among the user's
+    due items ('watch the theory, then redo the drills'). Returns the row id, or None."""
     import json as _json
-    video = video or {}
-    video_id = str(video.get("video_id") or "").strip()
-    if not video_id:
+    clean: list[dict] = []
+    for v in (videos or []):
+        vid = str((v or {}).get("video_id") or "").strip()
+        if not vid:
+            continue
+        clean.append({
+            "video_id": vid,
+            "video_url": str(v.get("video_url") or "") or f"https://youtu.be/{vid}",
+            "video_title": str(v.get("video_title") or ""),
+        })
+    if not clean:
         return None
     payload = {
-        "video_id": video_id,
-        "video_url": str(video.get("video_url") or "") or f"https://youtu.be/{video_id}",
-        "video_title": str(video.get("video_title") or ""),
+        "videos": clean,
+        "video_id": clean[0]["video_id"],  # legacy primary, for any single-video reader
         "topic_key": str(topic_key or ""),
         "topic_ru": str(topic_ru or ""),
         "topic_de": str(topic_de or ""),
         "hint_ru": str(topic_ru or ""),
     }
-    content_hash = ("video:" + str(topic_key or "") + ":" + video_id)[:64]
+    # One card per (user, topic) — a re-offer after the cooldown upserts the same row.
+    content_hash = ("video:" + str(topic_key or ""))[:64]
     try:
         ensure_aufgabe_mistakes_schema()
         with get_db_connection_context() as conn:

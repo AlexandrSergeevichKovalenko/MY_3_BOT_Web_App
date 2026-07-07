@@ -30,7 +30,6 @@ def materialize_remedial_video_for_user(user_id: int, topic_key: str) -> bool:
         user_has_recent_remedial_video,
         topic_recently_sent_to_user,
         list_active_video_recommendations_for_focus,
-        get_user_video_cooldown_ids,
         insert_remedial_video_card,
         record_video_send,
     )
@@ -50,26 +49,25 @@ def materialize_remedial_video_for_user(user_id: int, topic_key: str) -> bool:
     if topic_recently_sent_to_user(user_id=int(user_id), topic_key=topic_key, days=topic_cooldown_days):
         return False
 
+    # A fixed grammar topic has only a handful of curated clips — offer ALL of them as a
+    # choice (different presenters/explanations), no per-video rotation. Empty pool → skip.
     videos = list_active_video_recommendations_for_focus(
-        source_lang="ru", target_lang="de", skill_id=topic_key, limit=12,
+        source_lang="ru", target_lang="de", skill_id=topic_key, limit=8,
     )
     if not videos:
-        return False
-    blocked = get_user_video_cooldown_ids(user_id=int(user_id))
-    pick = next((v for v in videos if str(v.get("video_id") or "") not in blocked), None)
-    if not pick:
         return False
 
     topic = get_topic(topic_key) or {}
     mistake_id = insert_remedial_video_card(
-        user_id=int(user_id), topic_key=topic_key, video=pick,
+        user_id=int(user_id), topic_key=topic_key, videos=videos,
         topic_ru=str(topic.get("ru") or ""), topic_de=str(topic.get("de") or ""),
     )
     if not mistake_id:
         return False
-    record_video_send(user_id=int(user_id), video_id=str(pick.get("video_id") or ""), topic_key=topic_key)
-    logging.info("remedial video queued user_id=%s topic=%s video=%s",
-                 user_id, topic_key, pick.get("video_id"))
+    # Record the topic send (one marker is enough for the 90-day per-topic cap).
+    record_video_send(user_id=int(user_id), video_id=str(videos[0].get("video_id") or ""), topic_key=topic_key)
+    logging.info("remedial video card queued user_id=%s topic=%s videos=%d",
+                 user_id, topic_key, len(videos))
     return True
 
 

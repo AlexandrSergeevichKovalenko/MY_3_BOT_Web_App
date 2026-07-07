@@ -6943,6 +6943,26 @@ def _parse_youtube_id(raw: str) -> str:
     return ""
 
 
+def _fetch_youtube_title(video_id: str) -> str:
+    """Best-effort real title + channel via YouTube oEmbed (keyless). "Title · Channel"
+    so the remedial-video picker shows whose explanation each clip is. '' on failure."""
+    import json as _json
+    import urllib.request as _rq
+    import urllib.parse as _up
+    try:
+        url = "https://www.youtube.com/oembed?format=json&url=" + _up.quote(
+            f"https://youtu.be/{video_id}", safe="")
+        with _rq.urlopen(url, timeout=6) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        title = str(data.get("title") or "").strip()
+        author = str(data.get("author_name") or "").strip()
+        if title and author:
+            return f"{title} · {author}"
+        return title
+    except Exception:
+        return ""
+
+
 async def add_video_command(update: Update, context: CallbackContext):
     """Admin: /addvideo <topic_key> <url> [url2 …] — curate remedial theory videos
     into the pool for a grammar topic (e.g. `fragen`, `artikel`, `adjektivdeklination`)."""
@@ -6975,12 +6995,13 @@ async def add_video_command(update: Update, context: CallbackContext):
             skipped.append(raw)
             continue
         try:
+            real_title = await asyncio.to_thread(_fetch_youtube_title, vid)
             await asyncio.to_thread(
                 upsert_video_recommendation,
                 source_lang="ru", target_lang="de", skill_id=topic_key,
                 main_category=None, sub_category=None, search_query=None,
                 video_id=vid, video_url=f"https://youtu.be/{vid}",
-                video_title=str(topic.get("de") or topic_key),
+                video_title=real_title or str(topic.get("de") or topic_key),
             )
             added.append(vid)
         except Exception:

@@ -353,36 +353,61 @@ function AufgabeArtikel({ task, onSubmit, submitting }) {
 }
 
 function AufgabeVideo({ task, onSubmit, submitting }) {
-  // Remedial theory video ("тебе было сложно"): a skippable card, not a graded task.
-  // Watching or skipping both just consume it (onSubmit signals the server to mark done).
+  // Remedial theory card ("тебе было сложно"): a PICKER of curated clips for the topic.
+  // The learner taps whichever explanation they like (it plays inline), can open several,
+  // then «Посмотрел»/«Пропустить» consumes the card (server marks it done — no grading).
+  const videos = Array.isArray(task.videos) && task.videos.length
+    ? task.videos
+    : (task.video_id ? [{ video_id: task.video_id, video_title: task.video_title }] : []);
+  const [active, setActive] = useState(null);   // video_id currently playing inline
   const [chosen, setChosen] = useState(null);
-  const videoId = String(task.video_id || '');
+  const topic = task.topic_ru || task.topic_de || 'этой игры';
   const act = (signal) => {
     if (submitting || chosen) return;
     setChosen(signal); tapHaptic(); onSubmit(signal);
   };
+  const open = (id) => { tapHaptic(); setActive(id); };
   return (
     <>
       <div className="au-video-intro">
         <p className="au-hint" style={{ textAlign: 'center', marginBottom: 6 }}>
-          Вчера тема <b>{task.topic_ru || task.topic_de || 'этой игры'}</b> далась тяжело —
-          не страшно, она правда неочевидная.
+          Вчера тема <b>{topic}</b> далась тяжело — не страшно, она правда неочевидная.
         </p>
         <p className="au-hint" style={{ textAlign: 'center' }}>
-          Посмотри короткую теорию 👇 и завтра сделай ещё попытку 💪
+          Выбери видео, которое тебе больше зайдёт 👇 Посмотри и завтра сделай ещё попытку 💪
         </p>
       </div>
-      <div className="webapp-video-frame youtube-player-frame au-video-frame">
-        {videoId ? (
-          <iframe
-            title={task.video_title || 'YouTube'}
-            src={`https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1`}
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowFullScreen
-          />
-        ) : null}
+      <div className="au-video-list">
+        {videos.map((v) => {
+          const id = String(v.video_id || '');
+          if (!id) return null;
+          if (active === id) {
+            return (
+              <div className="au-video-frame" key={id}>
+                <iframe
+                  title={v.video_title || 'YouTube'}
+                  src={`https://www.youtube.com/embed/${id}?rel=0&modestbranding=1&playsinline=1&autoplay=1`}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowFullScreen
+                />
+                {v.video_title ? <div className="au-video-caption">{v.video_title}</div> : null}
+              </div>
+            );
+          }
+          return (
+            <button type="button" className="au-video-pick" key={id} onClick={() => open(id)}>
+              <span className="au-video-thumb-wrap">
+                <img
+                  className="au-video-thumb" loading="lazy" alt=""
+                  src={`https://i.ytimg.com/vi/${id}/hqdefault.jpg`}
+                />
+                <span className="au-video-play">▶</span>
+              </span>
+              {v.video_title ? <span className="au-video-pick-title">{v.video_title}</span> : null}
+            </button>
+          );
+        })}
       </div>
-      {task.video_title ? <p className="au-hint" style={{ textAlign: 'center' }}>{task.video_title}</p> : null}
       <button className="ans-btn" disabled={submitting} onClick={() => act('__watched__')}>
         Посмотрел ✅
       </button>
