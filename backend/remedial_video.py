@@ -82,7 +82,10 @@ def run_remedial_video_materialization() -> dict:
         mark_weak_topic_events_processed,
     )
     ensure_weak_topic_events_schema()
-    events = fetch_pending_weak_topic_events()
+    # Only act on events older than N hours so a startup catch-up (after a daytime
+    # restart/redeploy) never hands out a video the same day the user struggled.
+    min_age_hours = _env_int("REMEDIAL_VIDEO_MIN_AGE_HOURS", 8)
+    events = fetch_pending_weak_topic_events(min_age_hours=min_age_hours)
     if not events:
         return {"users": 0, "cards_created": 0, "events": 0}
 

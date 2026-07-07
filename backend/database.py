@@ -28223,16 +28223,25 @@ def record_weak_topic_event(*, user_id: int, topic_key: str, kind: str, pct: int
         logging.debug("record_weak_topic_event failed user_id=%s topic=%s", user_id, topic, exc_info=True)
 
 
-def fetch_pending_weak_topic_events(*, limit_rows: int = 20000) -> list[dict]:
-    """All unprocessed weak-topic events (the nightly job groups them per user)."""
+def fetch_pending_weak_topic_events(*, min_age_hours: int = 0, limit_rows: int = 20000) -> list[dict]:
+    """Unprocessed weak-topic events (the nightly job groups them per user). `min_age_hours`
+    skips events younger than that (so a startup catch-up after a daytime redeploy can't hand
+    out a video the same day the user failed — keeps the 'try again tomorrow' framing)."""
     try:
         ensure_weak_topic_events_schema()
+        age_clause = ""
+        params: list = []
+        if int(min_age_hours or 0) > 0:
+            age_clause = "AND created_at <= NOW() - (%s::text || ' hours')::interval "
+            params.append(int(min_age_hours))
+        params.append(int(limit_rows))
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, user_id, topic_key, pct FROM bt_3_weak_topic_events "
-                    "WHERE processed_at IS NULL ORDER BY user_id, pct ASC LIMIT %s;",
-                    (int(limit_rows),),
+                    "WHERE processed_at IS NULL " + age_clause +
+                    "ORDER BY user_id, pct ASC LIMIT %s;",
+                    tuple(params),
                 )
                 rows = cur.fetchall() or []
         return [{"id": int(r[0]), "user_id": int(r[1]),

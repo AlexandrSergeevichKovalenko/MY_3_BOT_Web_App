@@ -34721,6 +34721,15 @@ def main():
             max_instances=1,
             misfire_grace_time=3600,
         )
+        # Startup catch-up: if a restart/redeploy straddled 05:30 (the failure mode that ate
+        # the 2026-07-04 news), run the assembly ~2 min after boot. Idempotent — it only
+        # touches events older than REMEDIAL_VIDEO_MIN_AGE_HOURS (8h) and the 1-video/7-day
+        # cap prevents duplicates, so a same-day failure still waits for tomorrow.
+        scheduler.add_job(
+            _run_remedial_video_job_safe,
+            "date",
+            run_date=_get_quiz_schedule_now() + timedelta(seconds=120),
+        )
         scheduler.add_job(
             _run_admin_economics_report_safe,
             "cron",
