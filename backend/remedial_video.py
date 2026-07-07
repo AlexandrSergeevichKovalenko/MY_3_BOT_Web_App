@@ -22,10 +22,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def materialize_remedial_video_for_user(user_id: int, topic_key: str) -> bool:
+def materialize_remedial_video_for_user(user_id: int, topic_key: str, *, force: bool = False) -> bool:
     """Try to create one remedial video card for (user, weakest topic). Returns True
-    if a card was created. Honors the global 7-day cap, the per-topic 90-day cap,
-    per-video cooldown, and pool availability."""
+    if a card was created. Honors the global 7-day cap, the per-topic 90-day cap, and
+    pool availability. `force=True` (admin /remedialtest) bypasses the caps so the card
+    can be re-created on demand for testing."""
     from backend.database import (
         user_has_recent_remedial_video,
         topic_recently_sent_to_user,
@@ -42,12 +43,13 @@ def materialize_remedial_video_for_user(user_id: int, topic_key: str) -> bool:
     cooldown_days = _env_int("REMEDIAL_VIDEO_COOLDOWN_DAYS", 7)
     topic_cooldown_days = _env_int("REMEDIAL_VIDEO_TOPIC_COOLDOWN_DAYS", 90)
 
-    # Global cap: at most one remedial video per user per week.
-    if user_has_recent_remedial_video(user_id=int(user_id), days=cooldown_days):
-        return False
-    # Per-topic cap: don't repeat the same topic for a long while.
-    if topic_recently_sent_to_user(user_id=int(user_id), topic_key=topic_key, days=topic_cooldown_days):
-        return False
+    if not force:
+        # Global cap: at most one remedial video per user per week.
+        if user_has_recent_remedial_video(user_id=int(user_id), days=cooldown_days):
+            return False
+        # Per-topic cap: don't repeat the same topic for a long while.
+        if topic_recently_sent_to_user(user_id=int(user_id), topic_key=topic_key, days=topic_cooldown_days):
+            return False
 
     # A fixed grammar topic has only a handful of curated clips — offer ALL of them as a
     # choice (different presenters/explanations), no per-video rotation. Empty pool → skip.

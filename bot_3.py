@@ -7041,16 +7041,16 @@ async def remedial_video_test_command(update: Update, context: CallbackContext):
         return
     topic_key = str((context.args or ["fragen"])[0]).strip().lower()
     from backend.remedial_video import materialize_remedial_video_for_user
-    ok = await asyncio.to_thread(materialize_remedial_video_for_user, int(sender.id), topic_key)
+    # Test command → force=True: bypass the 1/7d + topic/90d caps so it can be re-run.
+    ok = await asyncio.to_thread(materialize_remedial_video_for_user, int(sender.id), topic_key, force=True)
     if ok:
         await update.effective_message.reply_text(
             f"✅ Видео-карточка по теме «{topic_key}» добавлена тебе в «Работу над ошибками». "
-            f"Открой раздел — она будет первой.\n"
-            f"(Если не появилась: сработал лимит 1/7дн или 90дн, либо в пуле нет видео по теме.)")
+            f"Открой раздел «Грамматика» — она будет первой.")
     else:
         await update.effective_message.reply_text(
-            f"⚠️ Карточка не создана для «{topic_key}». Причины: нет видео в пуле (сделай /addvideo), "
-            f"либо активен кулдаун (1 видео/7дн, тема/90дн).")
+            f"⚠️ Карточка не создана для «{topic_key}»: в пуле нет видео по этой теме. "
+            f"Сначала сделай /addvideo {topic_key} <ссылки>.")
 
 
 def _run_dict_dedup_weekly_report_safe() -> None:
