@@ -6964,8 +6964,74 @@ def _fetch_youtube_title(video_id: str) -> str:
 
 
 async def add_video_command(update: Update, context: CallbackContext):
-    """Admin: /addvideo <topic_key> <url> [url2 …] — curate remedial theory videos
-    into the pool for a grammar topic (e.g. `fragen`, `artikel`, `adjektivdeklination`)."""
+    """Admin: /addvideo <topic_key> <url> [url2 …] — curate remedial theory videos into
+    the pool for a grammar topic (`fragen`, `artikel`, `adjektivdeklination`). Accepts
+    SEVERAL "/addvideo <topic> <urls>" lines in one message — each routed to its own topic
+    (so a multi-line paste can't dump every clip under the first topic)."""
+    import re as _re
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    from backend.grammar_video_catalog import get_topic
+    from backend.database import upsert_video_recommendation
+
+    text = update.effective_message.text or ""
+    # Split into per-command segments so a pasted block of several "/addvideo …" lines
+    # each go to their own topic instead of collapsing into args of the first command.
+    segments = [s.strip() for s in _re.split(r"/addvideo(?:@\w+)?", text) if s.strip()]
+    if not segments:
+        await update.effective_message.reply_text(
+            "Формат: /addvideo <topic_key> <ссылка> [ещё ссылки]\n"
+            "Напр.: /addvideo fragen https://youtu.be/CLXxqDBzvFE\n"
+            "Темы фазы 1: fragen (Wo-Fragen), artikel (der/die/das), adjektivdeklination.\n"
+            "Можно несколько тем — каждую с новой строки «/addvideo <тема> <ссылки>».")
+        return
+
+    out_lines: list[str] = []
+    for seg in segments:
+        tokens = seg.split()
+        if len(tokens) < 2:
+            continue
+        topic_key = tokens[0].strip().lower()
+        topic = get_topic(topic_key)
+        if not topic:
+            out_lines.append(f"❌ Неизвестная тема «{topic_key}» — пропущена.")
+            continue
+        added, skipped = [], []
+        for raw in tokens[1:]:
+            vid = _parse_youtube_id(raw)
+            if not vid:
+                skipped.append(raw)
+                continue
+            try:
+                real_title = await asyncio.to_thread(_fetch_youtube_title, vid)
+                await asyncio.to_thread(
+                    upsert_video_recommendation,
+                    source_lang="ru", target_lang="de", skill_id=topic_key,
+                    main_category=None, sub_category=None, search_query=None,
+                    video_id=vid, video_url=f"https://youtu.be/{vid}",
+                    video_title=real_title or str(topic.get("de") or topic_key),
+                )
+                added.append(vid)
+            except Exception:
+                logging.exception("addvideo upsert failed vid=%s", vid)
+                skipped.append(raw)
+        line = f"✅ <b>{topic_key}</b> ({topic.get('ru') or ''}): +{len(added)}"
+        if skipped:
+            line += f" · ⚠️ не распознаны: {len(skipped)}"
+        out_lines.append(line)
+
+    if not out_lines:
+        out_lines.append("Ничего не добавлено — проверь формат.")
+    await update.effective_message.reply_text("\n".join(out_lines), parse_mode="HTML")
+
+
+async def clear_videos_command(update: Update, context: CallbackContext):
+    """Admin: /clearvideos <topic_key> — remove ALL pool videos for a topic (fix a
+    mis-filled topic before re-adding cleanly)."""
     sender = update.effective_user
     if not sender or not update.effective_message:
         return
@@ -6973,46 +7039,18 @@ async def add_video_command(update: Update, context: CallbackContext):
         await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
         return
     args = context.args or []
-    if len(args) < 2:
-        await update.effective_message.reply_text(
-            "Формат: /addvideo <topic_key> <ссылка> [ещё ссылки]\n"
-            "Напр.: /addvideo fragen https://youtu.be/CLXxqDBzvFE\n"
-            "Темы фазы 1: fragen (Wo-Fragen), artikel (der/die/das), adjektivdeklination.")
+    if not args:
+        await update.effective_message.reply_text("Формат: /clearvideos <topic_key> (напр. /clearvideos fragen)")
         return
     from backend.grammar_video_catalog import get_topic
-    from backend.database import upsert_video_recommendation
+    from backend.database import delete_video_recommendations_for_focus
     topic_key = str(args[0]).strip().lower()
-    topic = get_topic(topic_key)
-    if not topic:
-        await update.effective_message.reply_text(
-            f"❌ Неизвестная тема «{topic_key}». Возьми topic_key из каталога грамматики "
-            f"(напр. fragen, artikel, adjektivdeklination).")
+    if not get_topic(topic_key):
+        await update.effective_message.reply_text(f"❌ Неизвестная тема «{topic_key}».")
         return
-    added, skipped = [], []
-    for raw in args[1:]:
-        vid = _parse_youtube_id(raw)
-        if not vid:
-            skipped.append(raw)
-            continue
-        try:
-            real_title = await asyncio.to_thread(_fetch_youtube_title, vid)
-            await asyncio.to_thread(
-                upsert_video_recommendation,
-                source_lang="ru", target_lang="de", skill_id=topic_key,
-                main_category=None, sub_category=None, search_query=None,
-                video_id=vid, video_url=f"https://youtu.be/{vid}",
-                video_title=real_title or str(topic.get("de") or topic_key),
-            )
-            added.append(vid)
-        except Exception:
-            logging.exception("addvideo upsert failed vid=%s", vid)
-            skipped.append(raw)
-    lines = [f"✅ Тема <b>{topic_key}</b> ({topic.get('ru') or ''})"]
-    if added:
-        lines.append(f"Добавлено {len(added)}: " + ", ".join(added))
-    if skipped:
-        lines.append(f"⚠️ Не распознаны: " + ", ".join(skipped))
-    await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+    n = await asyncio.to_thread(delete_video_recommendations_for_focus, skill_id=topic_key)
+    await update.effective_message.reply_text(
+        f"🗑 Тема «{topic_key}»: удалено {n} видео из пула. Теперь добавь заново через /addvideo {topic_key} <ссылки>.")
 
 
 async def remedial_video_run_command(update: Update, context: CallbackContext):
@@ -34293,6 +34331,7 @@ def main():
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("review_makedue", admin_review_makedue_command))
     application.add_handler(CommandHandler("addvideo", add_video_command))
+    application.add_handler(CommandHandler("clearvideos", clear_videos_command))
     application.add_handler(CommandHandler("remedialvideo_run", remedial_video_run_command))
     application.add_handler(CommandHandler("remedialtest", remedial_video_test_command))
     application.add_handler(CommandHandler("adjsprint", admin_adjektiv_sprint_command))

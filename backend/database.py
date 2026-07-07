@@ -28064,6 +28064,30 @@ def get_video_recommendation_by_id(recommendation_id: int) -> dict | None:
     return _map_video_recommendation_row(row) if row else None
 
 
+def delete_video_recommendations_for_focus(
+    *, source_lang: str = "ru", target_lang: str = "de", skill_id: str,
+) -> int:
+    """Remove ALL pool videos for a topic's focus_key (admin /clearvideos). Returns
+    the number deleted. Use to fix a mis-filled topic before re-adding cleanly."""
+    focus_key = _build_video_focus_key(
+        source_lang=source_lang, target_lang=target_lang,
+        skill_id=skill_id, main_category=None, sub_category=None,
+    )
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM bt_3_video_recommendations WHERE focus_key = %s;",
+                    (focus_key,),
+                )
+                n = cursor.rowcount
+            conn.commit()
+        return int(n or 0)
+    except Exception:
+        logging.warning("delete_video_recommendations_for_focus failed skill=%s", skill_id, exc_info=True)
+        return 0
+
+
 def list_active_video_recommendations_for_focus(
     *,
     source_lang: str,
