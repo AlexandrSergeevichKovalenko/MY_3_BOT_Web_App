@@ -22,6 +22,7 @@ import io
 import logging
 import os
 import re
+import threading
 import time
 from uuid import uuid4
 
@@ -41,6 +42,51 @@ from backend.telegram_notify import _send_private_message
 from backend.tts_admin_monitor import _shorten_tts_admin_text
 from backend.tts_runtime_state import _clear_tts_url_poll_attempt
 from backend.utils import prepare_google_creds_for_tts
+
+
+# One shared Google TextToSpeechClient, built lazily and reused. Constructing it per
+# call (the old behaviour at every synthesis site) meant a fresh gRPC channel + TLS
+# handshake + OAuth token exchange EACH time — several seconds of cold latency, the
+# cause of "🔊 waited 15s" on quick-dict pronunciation. One warm client keeps the
+# channel/token alive so synthesis is ~1s. The google client is thread-safe to share.
+_TTS_CLIENT = None
+_TTS_CLIENT_LOCK = threading.Lock()
+
+
+def _get_tts_client():
+    """Return the shared stable TextToSpeechClient, constructing (and warming creds) once."""
+    global _TTS_CLIENT
+    client = _TTS_CLIENT
+    if client is not None:
+        return client
+    with _TTS_CLIENT_LOCK:
+        if _TTS_CLIENT is None:
+            from google.cloud import texttospeech
+            key_path = prepare_google_creds_for_tts()
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+            _TTS_CLIENT = texttospeech.TextToSpeechClient()
+        return _TTS_CLIENT
+
+
+# Reader-page audio needs the v1beta1 client (SSML-mark time-pointing for word timing) —
+# a different class from the stable one, so it gets its own reused instance.
+_TTS_BETA_CLIENT = None
+_TTS_BETA_CLIENT_LOCK = threading.Lock()
+
+
+def _get_tts_beta_client():
+    """Return the shared v1beta1 TextToSpeechClient (time-pointing), constructed once."""
+    global _TTS_BETA_CLIENT
+    client = _TTS_BETA_CLIENT
+    if client is not None:
+        return client
+    with _TTS_BETA_CLIENT_LOCK:
+        if _TTS_BETA_CLIENT is None:
+            from google.cloud import texttospeech_v1beta1 as texttospeech
+            key_path = prepare_google_creds_for_tts()
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+            _TTS_BETA_CLIENT = texttospeech.TextToSpeechClient()
+        return _TTS_BETA_CLIENT
 
 
 # ---------------------------------------------------------------------------
@@ -415,9 +461,7 @@ def _synthesize_mp3(
         raise RuntimeError("Google TTS не получил чанки текста")
     _enforce_google_tts_monthly_budget(sum(len(chunk) for chunk in text_chunks))
 
-    key_path = prepare_google_creds_for_tts()
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
-    tts_client = texttospeech.TextToSpeechClient()
+    tts_client = _get_tts_client()
     voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice_name)
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
@@ -502,9 +546,7 @@ def synthesize_page_with_timings(
 
     _enforce_google_tts_monthly_budget(_estimate_reader_page_tts_budget_chars(page_text))
 
-    key_path = prepare_google_creds_for_tts()
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
-    tts_client = texttospeech.TextToSpeechClient()
+    tts_client = _get_tts_beta_client()
     voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=resolved_voice_name)
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
@@ -697,9 +739,7 @@ def synthesize_numdict_mp3(
     _enforce_google_tts_monthly_budget(len(text))
 
     resolved_voice_name = str(voice_name or _TTS_VOICES["de"]).strip() or _TTS_VOICES["de"]
-    key_path = prepare_google_creds_for_tts()
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
-    tts_client = texttospeech.TextToSpeechClient()
+    tts_client = _get_tts_beta_client()
     voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=resolved_voice_name)
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
