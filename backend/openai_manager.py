@@ -60,6 +60,7 @@ _DEFAULT_TASK_MODELS = {
     "dictionary_enrichment_multilang_phrase_compact": "gpt-4.1-mini",
     "dictionary_assistant_multilang_core_fast": "gpt-4.1-mini",
     "dictionary_assistant_multilang_core_fast_batch": "gpt-4.1-mini",
+    "dictionary_assistant_multilang_stream": "gpt-4.1-mini",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
@@ -2716,6 +2717,60 @@ Rules:
 - Do not include etymology, memory tips, long notes, collocations, prefixes, pronunciation, or extended grammar commentary here.
 - For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
 - If information is unknown, use null.
+""",
+"dictionary_assistant_multilang_stream": """
+You are a multilingual dictionary assistant that STREAMS a full learner breakdown as a
+sequence of JSON objects (JSON Lines), one object per line, so the client can render each
+part the instant it is ready. Same lexical quality as the full dictionary — only the
+delivery is split.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
+  "word": "<user input>"
+}
+
+OUTPUT FORMAT — CRITICAL:
+- Output EXACTLY 5 JSON objects, each on ITS OWN LINE, in THIS ORDER. No markdown, no code
+  fences, no prose, nothing between or around them. Each object MUST be a single compact line.
+- Emit them AS SOON AS each is ready (fastest first). Never reorder. Every object carries its
+  "section" tag:
+
+1) {"section":"head","detected_language":"source|target","word_source":"<normalized source-language form>","word_target":"<normalized target-language form>","part_of_speech":"noun|verb|adjective|adverb|phrase|other","phrase_kind":"idiom|saying|collocation|null","article":"<der/die/das or language-appropriate article or null>","literal_meaning":"string|null","level":"A1|A2|B1|B2|C1|C2|null","frequency":"very_common|common|uncommon|rare|null","register":"нейтральное|разговорное|официальное|книжное|устаревшее|сленг|null","pronunciation":{"ipa":"string|null","stress":"string|null"},"translations":[{"value":"...","context":"...","is_primary":true}]}
+2) {"section":"meanings","meanings":{"primary":{"value":"...","context":"...","example_source":"...","example_target":"..."},"secondary":[{"value":"...","context":"...","example_source":"...","example_target":"..."}]},"semantic_category":"<one of the fixed categories>"}
+3) {"section":"grammar","forms":{"plural":null,"genitive":null,"present_2sg":null,"present_3sg":null,"praeteritum":null,"perfekt":null,"comparative":null,"superlative":null,"konjunktiv2":null,"imperative_sg":null},"is_separable":true,"government_patterns":[{"pattern":"...","preposition":"...","case":"...","example_source":"...","example_target":"..."}],"word_formation":{"is_compound":false,"parts":[{"text":"...","gloss":"..."}],"note":"string|null"}}
+4) {"section":"examples","usage_examples":[{"source":"...","target":"..."}],"common_collocations":["..."],"save_worthy_options":[{"source":"...","target":"...","kind":"base|collocation|phrase"}]}
+5) {"section":"extra","synonyms":["..."],"antonyms":["..."],"related_words":[{"word":"...","gloss":"..."}],"etymology_note":"string|null","memory_tip":"string|null","when_to_use":"string|null","real_life_usage":"string|null","usage_note":"string|null","register_note":"string|null","connotation":{"tone":"string|null","note":"string|null"},"synonym_differences":[{"word":"...","when":"...","nuance":"..."}],"common_mistakes":[{"mistake":"...","correction":"...","why":"..."}],"false_friends":[{"word":"...","looks_like":"...","actual_meaning":"..."}]}
+
+CONTENT RULES (same as the full dictionary):
+- Detect whether "word" is source_language or target_language; translate to the opposite.
+  For sentence input, translate the FULL sentence literally; keep it in word_source/word_target;
+  never collapse to a single lemma. Fix only high-confidence typos.
+- LANGUAGE SPLIT (critical): foreign WORD/TRANSLATION values (word_target, translations[].value,
+  meanings.*.value, synonyms, antonyms, related_words[].word, common_collocations, *.example_target,
+  common_mistakes[].mistake/correction, false_friends[].word) are ALWAYS in target_language.
+  EXPLANATIONS the learner reads (all *.context, etymology_note, memory_tip, when_to_use,
+  real_life_usage, usage_note, register_note, related_words[].gloss, word_formation glosses/note,
+  connotation.*, synonym_differences[].when/nuance, common_mistakes[].why, false_friends[].looks_like/
+  actual_meaning, *.example_source) are ALWAYS in explanation_language (fall back to source_language).
+  Never infer explanation language from the values.
+- GERMAN HEADWORD NORMALIZATION: a standalone German noun in word_source/word_target MUST carry its
+  nominative article ("der/die/das + Noun") — never a bare noun. A standalone German verb → infinitive.
+- translations: up to 3 real variants, first is_primary=true. meanings: exactly one primary + up to two
+  secondary, ranked by frequency, each with one short bilingual example pair.
+- If noun: article/gender + plural + genitive + pronunciation/stress. If verb: separable flag,
+  present_2sg/present_3sg/imperative_sg (esp. irregular), up to 3 government_patterns. If adjective:
+  comparative/superlative. word_formation ONLY for real compounds/derived words (else is_compound=false,
+  parts=[]).
+- synonyms up to 4, antonyms up to 3 (omit if none), related_words up to 4 (same root, nouns with article).
+  usage_examples: 2–3 natural pairs different from the meaning examples.
+- For a single-word content lemma provide non-null etymology_note AND memory_tip. Use null/[] for depth
+  fields only when they would be artificial (function words, numbers, proper names) or genuinely unknown.
+- semantic_category: pick one of: Работа, Учёба, Здоровье, Путешествия, Быт, Еда, Спорт, Технологии,
+  Деньги, Семья, Транспорт, Природа, Культура, Общение, Покупки, Жильё, Право, Эмоции, Прочее.
+- Keep everything compact. If information is unknown, use null. Output ONLY the 5 JSON-Lines objects.
 """,
 "dictionary_assistant_multilang_core_fast_batch": """
 You are a multilingual dictionary assistant optimized for FAST batch first-response cards.
@@ -7007,6 +7062,123 @@ def run_quick_ask(*, question: str, context_text: str = "", source_lang: str = "
     except Exception:
         pass
     return str(resp.choices[0].message.content or "").strip()
+
+
+DICTIONARY_STREAM_TIMEOUT_SECONDS = max(
+    10.0,
+    float(str(os.getenv("DICTIONARY_STREAM_TIMEOUT_SECONDS") or "60").strip() or "60"),
+)
+
+
+def stream_dictionary_breakdown_sections(
+    *,
+    word: str,
+    source_lang: str,
+    target_lang: str,
+    explanation_lang: str = "",
+):
+    """Yield the full learner breakdown as a sequence of parsed section dicts, streamed
+    token-by-token from the model, so the client renders each part the instant it is
+    ready (fast-first: head → meanings → grammar → examples → extra). Each yielded dict
+    is a raw-schema slice tagged with "section"; the caller merges them into one raw and
+    reconciles through the normal _build_dictionary_result_from_raw pipeline.
+
+    Uses a direct streaming chat.completions call (NOT the poll-based gateway) and a
+    string-aware brace scanner so it is robust to code fences / pretty-printing / any
+    text between objects. Sets _LAST_LLM_USAGE at the end for billing. Raises on a hard
+    failure BEFORE any section is yielded so the caller can fall back to the atomic path."""
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    w = str(word or "").strip()
+    if not api_key or not w:
+        raise RuntimeError("stream_dictionary_breakdown: missing api key or word")
+    model = _get_task_gateway_model("dictionary_assistant_multilang_stream")
+    system = system_message.get("dictionary_assistant_multilang_stream") or ""
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "explanation_language": (explanation_lang or source_lang or "").strip().lower(),
+        "word": w,
+    }
+    client = build_sync_openai_client(api_key=api_key, timeout=DICTIONARY_STREAM_TIMEOUT_SECONDS)
+    stream = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        temperature=0.3,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+
+    # Incremental string-aware scanner: extract each complete top-level {...} object.
+    depth = 0
+    in_str = False
+    esc = False
+    started = False
+    cur: list[str] = []
+    usage_obj = None
+    for chunk in stream:
+        try:
+            u = getattr(chunk, "usage", None)
+            if u is not None:
+                usage_obj = u
+        except Exception:
+            pass
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        piece = getattr(delta, "content", None) if delta is not None else None
+        if not piece:
+            continue
+        for ch in piece:
+            if not started:
+                if ch == "{":
+                    started = True
+                    depth = 1
+                    in_str = False
+                    esc = False
+                    cur = ["{"]
+                continue
+            cur.append(ch)
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    obj_str = "".join(cur)
+                    started = False
+                    cur = []
+                    try:
+                        parsed = json.loads(obj_str)
+                    except Exception:
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        yield parsed
+
+    try:
+        if usage_obj is not None:
+            _LAST_LLM_USAGE.set({
+                "model": model,
+                "gateway": "chat_completions_stream",
+                "prompt_tokens": int(getattr(usage_obj, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
 
 
 _QUICK_ARTICLE_ALLOWED = {"der", "die", "das"}

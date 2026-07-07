@@ -1077,6 +1077,9 @@
    shareable breakdown exists. */
 .dq-head-row {
   display: flex;
+  /* .ans-head sets flex-direction:column; force a real row so the eyebrow stays
+     left and the share button sits neatly in the top-right corner (not centered). */
+  flex-direction: row;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1107,3 +1110,51 @@
   animation: dq-share-rot 0.7s linear infinite;
 }
 @keyframes dq-share-rot { to { transform: rotate(360deg); } }
+
+/* ── Streaming breakdown skeleton ─────────────────────────────────────────────
+   Shimmer placeholders shown per not-yet-arrived section while the deep breakdown
+   streams in section by section. */
+.dq-skeleton { display: flex; flex-direction: column; gap: 14px; margin-top: 4px; }
+.dq-sk-block { display: flex; flex-direction: column; gap: 8px; }
+.dq-sk-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.dq-sk-line, .dq-sk-box, .dq-sk-chip, .dq-sk-pill {
+  display: block;
+  border-radius: 8px;
+  background: linear-gradient(
+    100deg,
+    rgba(148, 163, 184, 0.12) 30%,
+    rgba(148, 163, 184, 0.24) 50%,
+    rgba(148, 163, 184, 0.12) 70%
+  );
+  background-size: 220% 100%;
+  animation: dq-sk-shimmer 1.3s ease-in-out infinite;
+}
+.dq-sk-line { height: 13px; }
+.dq-sk-box { height: 96px; border-radius: 12px; }
+.dq-sk-chip { height: 22px; width: 78px; border-radius: 999px; }
+.dq-sk-chip.sm { width: 52px; }
+.dq-sk-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.dq-sk-pill { height: 30px; width: 92px; border-radius: 999px; }
+.dq-sk-hint {
+  font-size: 12.5px;
+  color: var(--dmps-text-muted, #94a3b8);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dq-sk-hint::before {
+  content: '';
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(148, 163, 184, 0.35);
+  border-top-color: #5b9bff;
+  animation: dq-share-rot 0.7s linear infinite;
+}
+@keyframes dq-sk-shimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dq-sk-line, .dq-sk-box, .dq-sk-chip, .dq-sk-pill { animation: none; }
+  .dq-sk-hint::before { animation: none; }
+}

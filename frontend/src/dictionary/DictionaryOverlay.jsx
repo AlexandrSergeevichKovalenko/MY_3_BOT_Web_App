@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import '../answer/answer.css';
 import './dict.css';
-import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic } from './WordBreakdown';
+import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic, getInitData } from './WordBreakdown';
+import BreakdownSkeleton from './BreakdownSkeleton';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
 
 /**
@@ -27,6 +28,18 @@ function effectiveDir(text, forced) {
 }
 function dirToPair(dir) {
   return dir === 'de-ru' ? { source: 'de', target: 'ru' } : { source: 'ru', target: 'de' };
+}
+
+// The German side of a quick result when it's a lone noun (single capitalized token)
+// still lacking an article — mirrors the backend's noun-candidate check. When this is
+// non-empty the article is being filled in the background and we should poll for it.
+function germanNounAwaitingArticle(q) {
+  if (!q || String(q.article || '').trim()) return '';
+  let german = '';
+  if (q.targetLang === 'de') german = String(q.translation || '').trim();
+  else if (q.sourceLang === 'de') german = String(q.source || '').trim();
+  if (!german || /\s/.test(german) || german[0] !== german[0].toUpperCase()) return '';
+  return german;
 }
 
 // Recent lookups persisted locally (most-recent first, max 6).
@@ -60,7 +73,8 @@ export default function DictionaryOverlay() {
   const [phase, setPhase] = useState('idle'); // idle|loading|done|error
   const [quick, setQuick] = useState(null);   // { source, target, translation, sourceLang, targetLang, direction }
   const [item, setItem] = useState(null);     // rich GPT item (for enrich + canonical save)
-  const [enrich, setEnrich] = useState('idle'); // idle|loading|done|error
+  const [enrich, setEnrich] = useState('idle'); // idle|loading|streaming|done|error
+  const [streamSections, setStreamSections] = useState(() => new Set()); // section names arrived
   const [deepLoading, setDeepLoading] = useState(false); // background enrichment poll
   const [deepId, setDeepId] = useState('');   // shareable id (same «Поделиться» as «Полный разбор»)
   const [sharing, setSharing] = useState(false);
@@ -78,6 +92,8 @@ export default function DictionaryOverlay() {
   const chipHintDoneRef = useRef(false); // shown for the current breakdown already
   const seqRef = useRef(0);
   const inputRef = useRef(null);
+  const streamAbortRef = useRef(null); // aborts an in-flight breakdown SSE stream
+  const lookupPromiseRef = useRef(null); // in-flight breakdown promise (shared by tap + save)
   const tts = useTts();
 
   // Surface the "tap a word in Synonyms/Antonyms to save it" hint the first few times
@@ -151,7 +167,10 @@ export default function DictionaryOverlay() {
     const mySeq = ++seqRef.current;
     tts.stop();
     setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
-    setDeepId('');
+    setDeepId(''); setStreamSections(new Set());
+    try { streamAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
+    streamAbortRef.current = null;
+    lookupPromiseRef.current = null;
     chipHintDoneRef.current = false; setChipHint(false);
     haptic('light');
     try {
@@ -167,7 +186,7 @@ export default function DictionaryOverlay() {
       const targetLang = detected === pair.target ? pair.source : pair.target;
       // Keep the language panel in sync with what was actually detected.
       setForcedDir(`${detected}-${targetLang}`);
-      setQuick({
+      const nextQuick = {
         source: text,
         translation: String(data?.translation || '').trim(),
         sourceLang: detected,
@@ -177,9 +196,33 @@ export default function DictionaryOverlay() {
         // Article for a single German noun, resolved instantly from the local
         // Wiktionary table so "die Wortverbindung" shows without the full breakdown.
         article: String(data?.article || '').trim(),
-      });
+      };
+      setQuick(nextQuick);
       setPhase('done'); haptic('ok');
       setRecents(pushRecent(text));
+      // A German noun whose article missed the instant Wiktionary lookup gets its
+      // der/die/das filled by a background LLM job that patches the cache. Poll for it
+      // so it appears on its own — never make the user press «Перевести» a second time.
+      if (germanNounAwaitingArticle(nextQuick)) {
+        (async () => {
+          for (const delay of [900, 1300, 1600, 2000, 2500]) {
+            await new Promise((r) => setTimeout(r, delay));
+            if (mySeq !== seqRef.current) return;
+            let art = '';
+            try {
+              const a = await api('/api/translate/quick/article', {
+                text, source_lang: pair.source, target_lang: pair.target,
+              });
+              art = String(a?.article || '').trim();
+            } catch (_e) { /* keep polling */ }
+            if (mySeq !== seqRef.current) return;
+            if (art) {
+              setQuick((prev) => (prev && !prev.article ? { ...prev, article: art } : prev));
+              return;
+            }
+          }
+        })();
+      }
     } catch (e) {
       if (mySeq !== seqRef.current) return;
       setError(String(e.message || e)); setPhase('error'); haptic('bad');
@@ -193,8 +236,11 @@ export default function DictionaryOverlay() {
     tts.stop();
     setQuick(null); setItem(null); setEnrich('idle'); setPhase('idle');
     setError(''); setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
-    setDeepId('');
+    setDeepId(''); setStreamSections(new Set());
     lastAutoRef.current = '';
+    try { streamAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
+    streamAbortRef.current = null;
+    lookupPromiseRef.current = null;
   }, [tts]);
 
   const clearInput = useCallback(() => {
@@ -250,33 +296,151 @@ export default function DictionaryOverlay() {
     }
   }, []);
 
-  // Full GPT breakdown. Returns the rich item so save can reuse it.
-  const runLookup = useCallback(async () => {
-    if (item) return item;
-    setEnrich('loading'); setError('');
-    try {
-      const pair = guessPair(query.trim());
-      const data = await api('/api/webapp/dictionary', {
-        word: query.trim(), lookup_lang: pair.source,
-      });
-      const rich = data?.item || null;
-      if (rich) {
-        rich.__direction = String(data?.direction || rich.__direction || '').trim();
-        rich.__language_pair = data?.language_pair || null;
-      }
-      setItem(rich);
-      setEnrich(rich ? 'done' : 'error');
-      if (rich && data?.deep_id) setDeepId(String(data.deep_id));
-      if (rich && data?.enrichment_pending && data?.lookup_id) {
-        pollEnrichment(data.lookup_id, rich);
-      }
-      return rich;
-    } catch (e) {
-      setEnrich('error');
-      setError(String(e.message || e));
-      throw e;
+  // Promote a fetched dictionary response into the visible breakdown + start enrichment
+  // polling. Returns the rich item (or null). Shared by the streaming-final and the
+  // non-stream fallback paths so they stay in lock-step.
+  const applyDeep = useCallback((data) => {
+    const rich = data?.item || null;
+    if (!rich) return null;
+    rich.__direction = String(data?.direction || rich.__direction || '').trim();
+    rich.__language_pair = data?.language_pair || null;
+    setItem(rich);
+    setEnrich('done');
+    if (data?.deep_id) setDeepId(String(data.deep_id));
+    if (data?.enrichment_pending && data?.lookup_id) {
+      pollEnrichment(data.lookup_id, rich);
     }
-  }, [item, query, pollEnrichment]);
+    return rich;
+  }, [pollEnrichment]);
+
+  // Non-stream breakdown — the proven, atomic path. Used as the fallback when SSE
+  // streaming is unsupported or fails (see runLookup). Errors surface loudly.
+  const fetchDeepBreakdown = useCallback(async () => {
+    const w = query.trim();
+    const pair = guessPair(w);
+    const data = await api('/api/webapp/dictionary', { word: w, lookup_lang: pair.source });
+    const rich = applyDeep(data);
+    setEnrich(rich ? 'done' : 'error');
+    return rich;
+  }, [query, applyDeep]);
+
+  // Streaming breakdown — opens the SSE endpoint and merges each structured section
+  // into `item` the moment it lands (head → meanings → grammar → examples → extra), so
+  // the card fills progressively behind a skeleton. A `done` event carries the fully
+  // decorated item (reconciled server-side through the same pipeline as the non-stream
+  // path) which replaces the partial. Returns the final rich item, or null if the stream
+  // ended without one (caller then falls back). A 4xx (e.g. daily limit) throws with
+  // .status so the caller surfaces it instead of falling back.
+  const streamLookup = useCallback(async () => {
+    const w = query.trim();
+    const pair = guessPair(w);
+    const mySeq = seqRef.current;
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+
+    const resp = await fetch('/api/webapp/dictionary/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-InitData': getInitData() },
+      body: JSON.stringify({ initData: getInitData(), word: w, lookup_lang: pair.source }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      const err = new Error(data?.error || 'Fehler');
+      err.status = resp.status; err.payload = data;
+      throw err;
+    }
+    // Cached hit / immediate result comes back as plain JSON, not a stream.
+    if ((resp.headers.get('Content-Type') || '').includes('application/json')) {
+      const data = await resp.json().catch(() => ({}));
+      return applyDeep(data);
+    }
+    if (!resp.body || typeof resp.body.getReader !== 'function') {
+      throw new Error('stream unsupported');
+    }
+
+    if (mySeq === seqRef.current) { setEnrich('streaming'); setStreamSections(new Set()); }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sawSection = false;
+    let finalRich = null;
+
+    const handleFrame = (block) => {
+      let ev = 'message';
+      const dataLines = [];
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) ev = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      if (!dataLines.length) return;
+      let payload;
+      try { payload = JSON.parse(dataLines.join('\n')); } catch (_e) { return; }
+      if (ev === 'section') {
+        sawSection = true;
+        const fields = (payload && payload.fields) || {};
+        if (mySeq === seqRef.current) {
+          setItem((prev) => ({ ...(prev || {}), ...fields }));
+          setStreamSections((prev) => new Set(prev).add(String(payload?.name || '')));
+        }
+      } else if (ev === 'done') {
+        finalRich = applyDeep(payload);
+      } else if (ev === 'error') {
+        throw new Error(payload?.error || 'stream error');
+      }
+    };
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (mySeq !== seqRef.current) { try { controller.abort(); } catch (_e) { /* ignore */ } return finalRich; }
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        handleFrame(frame);
+      }
+    }
+    if (buffer.trim()) handleFrame(buffer);
+    if (!finalRich && !sawSection) throw new Error('empty stream');
+    return finalRich;
+  }, [query, applyDeep]);
+
+  // Full GPT breakdown. Streams by default; falls back to the atomic path on any
+  // transport/streaming failure. A real 4xx (limit / bad request) is surfaced, not
+  // retried, to avoid a confusing double request. Returns the FINAL rich item — while a
+  // stream is mid-flight, a Save tap reuses the same promise so it never persists a
+  // half-streamed item.
+  const runLookup = useCallback(async () => {
+    if (item && enrich === 'done') return item;
+    if (lookupPromiseRef.current) return lookupPromiseRef.current;
+    setEnrich('loading'); setError('');
+    const p = (async () => {
+      try {
+        const rich = await streamLookup();
+        if (rich) return rich;
+        return await fetchDeepBreakdown(); // stream ended with no final item
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        if (e && e.status && e.status >= 400 && e.status < 500) {
+          setEnrich('error'); setError(String(e.message || e)); throw e;
+        }
+        try {
+          return await fetchDeepBreakdown();
+        } catch (e2) {
+          setEnrich('error'); setError(String(e2.message || e2)); throw e2;
+        }
+      }
+    })();
+    lookupPromiseRef.current = p;
+    try {
+      return await p;
+    } finally {
+      lookupPromiseRef.current = null;
+    }
+  }, [item, enrich, streamLookup, fetchDeepBreakdown]);
 
   // Canonical save through the lookup→save pipeline; returns the save response
   // (incl. entry_id) so callers can chain (e.g. add to the SRS deck).
@@ -555,11 +719,13 @@ export default function DictionaryOverlay() {
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
             {item && <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} savedChips={savedChips} />}
-            {enrich === 'loading' && <div className="dq-muted">Готовлю полный разбор…</div>}
+            {(enrich === 'loading' || enrich === 'streaming') && (
+              <BreakdownSkeleton arrived={streamSections} />
+            )}
             {deepLoading && <div className="dq-muted dq-deep-loading">Дополняю: этимология, примеры, как запомнить…</div>}
 
             <div className="dq-actions">
-              {!item && enrich !== 'loading' && (
+              {!item && enrich !== 'loading' && enrich !== 'streaming' && (
                 <button type="button" className="dd-action" onClick={() => runLookup().catch(() => {})}>
                   📖 Подробный разбор
                 </button>

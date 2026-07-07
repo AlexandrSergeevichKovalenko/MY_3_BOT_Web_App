@@ -99,7 +99,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
 from urllib.parse import parse_qsl, urlparse, urlencode
-from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect, has_request_context
+from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect, has_request_context, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
@@ -307,6 +307,7 @@ from backend.openai_manager import (
     run_language_learning_private_question_detailed,
     run_quick_ask,
     run_quick_article,
+    stream_dictionary_breakdown_sections,
     run_tts_chunk_de,
     get_last_llm_usage,
 )
@@ -31592,6 +31593,27 @@ def translate_quick():
         _release_quick_translate_inflight_slot(cache_key)
 
 
+@app.route("/api/translate/quick/article", methods=["POST"])
+def translate_quick_article():
+    """Read-only probe for a German noun's article that arrived AFTER the quick
+    translate returned. A Wiktionary miss schedules a background LLM article fill
+    that patches the quick-translate cache (see _schedule_quick_translate_article_fill);
+    without a manual re-press the client would never see it. The client polls this a
+    couple of times and merges the article in-place. NO compute on this path — it only
+    reads the cache the background job patches, so it stays instant and free."""
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text") or "").strip()
+    target_lang = _normalize_short_lang_code(payload.get("target_lang"), fallback="")
+    source_lang_raw = payload.get("source_lang")
+    source_lang = _normalize_short_lang_code(source_lang_raw, fallback="") if source_lang_raw else None
+    if not text or not target_lang:
+        return jsonify({"article": ""})
+    cache_key = _build_quick_translate_cache_key(text=text, source_lang=source_lang, target_lang=target_lang)
+    cached = _get_cached_quick_translate(cache_key)
+    article = str((cached or {}).get("article") or "").strip() if isinstance(cached, dict) else ""
+    return jsonify({"article": article})
+
+
 def _with_grammar_tables(item):
     """Attach deterministic POS-aware grammar tables (noun declension / verb
     conjugation / adjective comparison) to a dictionary item for the deep card.
@@ -32082,6 +32104,199 @@ def lookup_webapp_dictionary():
     )
     _log_dictionary_profile()
     return response
+
+
+def _sse_pack(event: str, data: dict) -> str:
+    """Format one Server-Sent Event frame."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.route("/api/webapp/dictionary/stream", methods=["POST"])
+def stream_webapp_dictionary():
+    """Streaming sibling of /api/webapp/dictionary: the full breakdown is generated
+    token-by-token and pushed as Server-Sent Events, one structured section at a time
+    (head → meanings → grammar → examples → extra), so the card fills progressively
+    instead of after one atomic 2–5s wait. Only runs when the user actually opens the
+    breakdown (~on demand), so it is cheaper than prefetching every translation.
+
+    Response is either:
+      • application/json — a cached hit, a limit refusal, or an auth error (frontend
+        applies/handles it directly, no streaming), OR
+      • text/event-stream — `section` events then a final `done` (with the fully
+        decorated item + deep_id) reconciled through the SAME _build_dictionary_result_
+        from_raw pipeline as the non-stream path. On any streaming failure it falls back
+        server-side to the atomic core lookup and still emits `done`.
+    """
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    word_ru = (payload.get("word") or "").strip()
+    lookup_lang = _normalize_short_lang_code(payload.get("lookup_lang"), fallback="")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not word_ru:
+        return jsonify({"error": "word обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id = int(user_id)
+
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id)
+    query_source_lang, query_target_lang = _resolve_dictionary_query_languages(
+        word=word_ru, source_lang=source_lang, target_lang=target_lang, lookup_lang=lookup_lang,
+    )
+    normalized_word = _normalize_dictionary_lookup_word(word_ru)
+    cache_key = _build_dictionary_lookup_cache_key(
+        user_id=user_id, source_lang=source_lang, target_lang=target_lang,
+        query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+        lookup_lang=lookup_lang, word=word_ru,
+    )
+    cache_key_shared = _build_dictionary_lookup_cache_key(
+        user_id=None, source_lang=source_lang, target_lang=target_lang,
+        query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+        lookup_lang=lookup_lang, word=word_ru,
+    )
+
+    # Cache hit → return the full item as JSON immediately (no stream, no LLM spend).
+    cached_payload, _tier = _get_cached_dictionary_lookup_with_tier(cache_key)
+    if not cached_payload and DICTIONARY_SHARED_CACHE_ENABLED:
+        cached_payload, _tier = _get_cached_dictionary_lookup_with_tier(cache_key_shared)
+    if isinstance(cached_payload, dict) and isinstance(cached_payload.get("item"), dict):
+        _cached_deep = _quick_dict_deep_id(user_id, word_ru, source_lang, target_lang)
+        return jsonify({
+            "ok": True,
+            "item": _with_grammar_tables(cached_payload.get("item")),
+            "direction": str(cached_payload.get("direction") or "").strip().lower(),
+            "lookup_status": "ready",
+            "enrichment_pending": False,
+            "save_locked": False,
+            "deep_id": _cached_deep if _get_deep_analysis_record(_cached_deep) else None,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        })
+
+    # Free-tier save-limit precheck — mirror /api/webapp/dictionary so we don't spend the
+    # LLM on a lookup that could never be saved.
+    try:
+        _dict_save_feature = "dictionary_lookup_save_daily"
+        _ent = resolve_entitlement(user_id=user_id, tz="Europe/Vienna")
+        if str(_ent.get("effective_mode") or "free").strip().lower() == "free":
+            _limit_meta = get_free_feature_limit_metadata(_dict_save_feature) or {}
+            _limit_value = float(_limit_meta.get("free_limit") or 0)
+            _used_today = get_free_feature_usage_today(
+                user_id=user_id, feature_key=_dict_save_feature, tz="Europe/Vienna",
+            )
+            if _limit_value >= 0 and _used_today + 1.0 > _limit_value:
+                return jsonify(build_free_limit_error(
+                    _dict_save_feature, used=_used_today, limit=_limit_value, tz="Europe/Vienna",
+                )), 429
+    except Exception:
+        logging.debug("dictionary stream save-limit precheck failed", exc_info=True)
+
+    lookup_id = f"dictstream_{int(time.time() * 1000)}_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()[:10]}"
+    limit_error = _reserve_dictionary_lookup_execution(
+        user_id=user_id, origin="webapp_dictionary_stream", lookup_id=lookup_id,
+        word=word_ru, source_lang=source_lang, target_lang=target_lang,
+    )
+    if limit_error:
+        return jsonify(limit_error), 429
+
+    def _finalize_and_store(raw: dict, usage) -> dict:
+        """Build the decorated item from a merged raw, persist deep-record + cache +
+        billing (once), and return the `done` payload."""
+        item, direction, _detected, _src, _tgt = _build_dictionary_result_from_raw(
+            raw=raw if isinstance(raw, dict) else {},
+            query_word=word_ru, source_lang=source_lang, target_lang=target_lang,
+            query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+            lookup_lang=lookup_lang,
+        )
+        deep_id = _store_quick_dict_deep_record(
+            user_id=user_id, word=word_ru, source_lang=source_lang, target_lang=target_lang,
+            direction=direction, raw=raw if isinstance(raw, dict) else {},
+        )
+        cache_payload = {"item": item, "direction": direction, "lookup_status": "ready", "enrichment_pending": False}
+        try:
+            _set_cached_dictionary_lookup_all(
+                cache_key=cache_key, payload=cache_payload, source_lang=source_lang, target_lang=target_lang,
+                query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+                lookup_lang=lookup_lang, normalized_word=normalized_word,
+            )
+            if DICTIONARY_SHARED_CACHE_ENABLED and cache_key_shared:
+                _set_cached_dictionary_lookup_all(
+                    cache_key=cache_key_shared, payload=cache_payload, source_lang=source_lang, target_lang=target_lang,
+                    query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+                    lookup_lang=lookup_lang, normalized_word=normalized_word,
+                )
+        except Exception:
+            logging.debug("dictionary stream cache store failed", exc_info=True)
+        _billing_log_event_safe(
+            user_id=user_id, action_type="dictionary_lookup", provider="openai", units_type="requests",
+            units_value=1.0, source_lang=source_lang, target_lang=target_lang,
+            idempotency_seed=f"dict_lookup_stream:{user_id}:{source_lang}:{target_lang}:{word_ru.lower()}:{direction}:{time.time_ns()}",
+            status="estimated", metadata={"word": word_ru, "direction": direction, "lookup_status": "stream"},
+        )
+        _billing_log_openai_usage(
+            user_id=user_id, action_type="dictionary_lookup", source_lang=source_lang, target_lang=target_lang,
+            usage=usage, seed=f"dict_lookup_stream_tokens:{user_id}:{word_ru}:{direction}:{time.time_ns()}",
+            metadata={"word": word_ru, "direction": direction, "lookup_status": "stream"},
+        )
+        return {
+            "ok": True,
+            "item": _with_grammar_tables(item),
+            "direction": direction,
+            "lookup_status": "ready",
+            "enrichment_pending": False,
+            "save_locked": False,
+            "deep_id": deep_id or None,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+
+    def _generate():
+        merged_raw: dict[str, Any] = {}
+        sections_seen = 0
+        try:
+            for section in stream_dictionary_breakdown_sections(
+                word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
+                explanation_lang=source_lang,
+            ):
+                if not isinstance(section, dict):
+                    continue
+                slice_data = {k: v for k, v in section.items() if k != "section"}
+                for k, v in slice_data.items():
+                    merged_raw[k] = v
+                sections_seen += 1
+                yield _sse_pack("section", {
+                    "name": str(section.get("section") or ""),
+                    "fields": slice_data,
+                })
+        except Exception:
+            logging.warning("dictionary stream generation failed, falling back", exc_info=True)
+
+        # Reconcile. If streaming produced nothing usable, fall back to the atomic core
+        # lookup so the user always gets a real breakdown (never worse than before).
+        try:
+            if sections_seen == 0 or not merged_raw:
+                core = _run_dictionary_core_lookup_sync(
+                    word=word_ru, source_lang=source_lang, target_lang=target_lang,
+                    query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+                    lookup_lang=lookup_lang,
+                )
+                done = _finalize_and_store(core.get("raw") if isinstance(core.get("raw"), dict) else {}, core.get("usage"))
+            else:
+                done = _finalize_and_store(merged_raw, get_last_llm_usage(reset=True))
+            yield _sse_pack("done", done)
+        except Exception as exc:
+            logging.warning("dictionary stream finalize failed", exc_info=True)
+            yield _sse_pack("error", {"error": f"Ошибка запроса словаря: {exc}"})
+
+    return Response(
+        stream_with_context(_generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.route("/api/webapp/dictionary/status", methods=["POST"])
