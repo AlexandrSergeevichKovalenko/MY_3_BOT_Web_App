@@ -88,7 +88,7 @@ import html
 import multiprocessing
 import inspect
 from typing import Any
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed, wait as futures_wait, FIRST_COMPLETED
 from zoneinfo import ZoneInfo
 from datetime import timedelta, date
 from calendar import monthrange
@@ -1063,7 +1063,16 @@ LANGUAGE_PAIR_CACHE_TTL_SEC = max(30, int((os.getenv("LANGUAGE_PAIR_CACHE_TTL_SE
 DICTIONARY_LOOKUP_CACHE_TTL_SEC = max(30, int((os.getenv("DICTIONARY_LOOKUP_CACHE_TTL_SEC") or "7200").strip()))
 DICTIONARY_LOOKUP_CACHE_MAX_ITEMS = max(100, min(10000, int((os.getenv("DICTIONARY_LOOKUP_CACHE_MAX_ITEMS") or "2000").strip())))
 DICTIONARY_PERSISTENT_CACHE_ENABLED = str(os.getenv("DICTIONARY_PERSISTENT_CACHE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
-DICTIONARY_PERSISTENT_CACHE_TTL_SEC = max(60, int((os.getenv("DICTIONARY_PERSISTENT_CACHE_TTL_SEC") or "604800").strip() or "604800"))
+# A dictionary breakdown for a given (word, direction) is stable knowledge, and the
+# enrichment job persists the FULL merged item into this shared DB cache — so the
+# second lookup of any word by ANY user should be instant, forever. Default = ~10
+# years (effectively permanent). Bump the env down to force periodic refresh, or bump
+# DICTIONARY_CACHE_SCHEMA_VERSION to invalidate en masse after a prompt/schema change.
+DICTIONARY_PERSISTENT_CACHE_TTL_SEC = max(60, int((os.getenv("DICTIONARY_PERSISTENT_CACHE_TTL_SEC") or "315360000").strip() or "315360000"))
+# Bump this (env or default) to invalidate every cached breakdown at once after a
+# prompt/model/schema change — it is folded into the cache key, so old entries simply
+# stop matching and get regenerated. "v2" == the gpt-4.1-mini breakdown generation.
+DICTIONARY_CACHE_SCHEMA_VERSION = (os.getenv("DICTIONARY_CACHE_SCHEMA_VERSION") or "v2").strip() or "v2"
 DICTIONARY_COALESCE_ENABLED = str(os.getenv("DICTIONARY_COALESCE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 DICTIONARY_COALESCE_WAIT_TIMEOUT_SEC = max(
     1.0,
@@ -5731,6 +5740,7 @@ def _build_dictionary_lookup_cache_key(
     owner = str(int(user_id)) if user_id is not None else "shared"
     return "|".join(
         [
+            DICTIONARY_CACHE_SCHEMA_VERSION,
             owner,
             str(source_lang or "").strip().lower(),
             str(target_lang or "").strip().lower(),
@@ -31152,42 +31162,81 @@ def sync_economics_price_snapshots_from_env():
     return jsonify({"ok": True, "result": result})
 
 
-def _attach_quick_translate_article(result, text, source_lang, target_lang, *, user_id_for_billing=None):
-    """For a single German noun, attach its definite article (der/die/das) to the
-    instant-translate result so the compact card shows "die Wortverbindung" right
-    away — without the user having to open the full breakdown. A noun without its
-    article is effectively an incomplete translation (you can't build a sentence),
-    so we resolve it eagerly: the local Wiktionary table first (free, instant), and
-    on a miss ONE fast LLM resolver (`run_quick_article`). Both fail → leave the
-    result as-is and let the full GPT breakdown fill the article a moment later.
-    """
+# Small pool for off-hot-path LLM article resolution. The quick-translate response
+# must NOT block on a GPT call, so a Wiktionary miss schedules the article fill in
+# the background: it updates the cached entry so the NEXT identical lookup is complete.
+_QUICK_ARTICLE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="quick-article")
+
+# Shared pool for racing the free MT providers concurrently. Module-level (not
+# per-request) so a burst of lookups doesn't churn threads; bounded so it can't run
+# away. Abandoned stragglers just finish and get GC'd — we never shut it down.
+_QUICK_TRANSLATE_PROVIDER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(4, min(64, int((os.getenv("QUICK_TRANSLATE_PROVIDER_MAX_WORKERS") or "24").strip() or "24"))),
+    thread_name_prefix="qtrans",
+)
+
+
+def _quick_translate_german_noun_candidate(result, text, source_lang, target_lang):
+    """Return the single German noun in a quick-translate result whose article we
+    could resolve (der/die/das), or "" when the result isn't a lone German noun.
+    German nouns are capitalized single tokens; picks the German side by direction."""
+    if not isinstance(result, dict):
+        return ""
+    detected = str(result.get("detected_source_lang") or source_lang or "").strip().lower()
+    if str(target_lang or "").strip().lower() == "de":
+        german = str(result.get("translation") or "").strip()
+    elif detected == "de":
+        german = str(text or "").strip()
+    else:
+        return ""
+    if not german or " " in german or not german[:1].isupper():
+        return ""
+    return german.strip(".,!?;:")
+
+
+def _attach_quick_translate_article(result, text, source_lang, target_lang):
+    """For a single German noun, attach its definite article (der/die/das) from the
+    local Wiktionary table (free, instant) so the compact card shows "die
+    Wortverbindung" right away. INSTANT ONLY — no LLM on the hot path; a Wiktionary
+    miss is filled asynchronously by `_schedule_quick_translate_article_fill` and the
+    full breakdown a moment later. Returns the (possibly enriched) result dict."""
     if not isinstance(result, dict):
         return result
     try:
-        detected = str(result.get("detected_source_lang") or source_lang or "").strip().lower()
-        # Pick whichever side is German: the translation (→de) or the input (de→).
-        if str(target_lang or "").strip().lower() == "de":
-            german = str(result.get("translation") or "").strip()
-        elif detected == "de":
-            german = str(text or "").strip()
-        else:
+        clean = _quick_translate_german_noun_candidate(result, text, source_lang, target_lang)
+        if not clean:
             return result
-        # Nouns only: a single, capitalized token (German nouns are capitalized).
-        if not german or " " in german or not german[:1].isupper():
-            return result
-        clean = german.strip(".,!?;:")
         entry = lookup_wiktionary_entry(clean, "de")
         if entry and str(entry.get("article") or "").strip():
             result["article"] = str(entry["article"]).strip()
             result["part_of_speech"] = "noun"
-            return result
-        # Wiktionary miss → one fast LLM call so the noun still shows der/die/das now,
-        # not only after the heavy breakdown. Cached with the result (called once/word).
-        article = run_quick_article(word=clean)
-        if article:
-            result["article"] = article
-            result["part_of_speech"] = "noun"
-            result["article_source"] = "llm"
+    except Exception:
+        logging.debug("quick-translate article enrichment failed", exc_info=True)
+    return result
+
+
+def _schedule_quick_translate_article_fill(cache_key, result, text, source_lang, target_lang, *, user_id_for_billing=None):
+    """Off the hot path: if a lone German noun still lacks its article after the
+    instant Wiktionary lookup, resolve it with ONE fast LLM call in the background and
+    patch the cached quick-translate entry, so the next identical lookup shows der/die/
+    das without anyone ever waiting on GPT. No-op when the article is already known."""
+    if not isinstance(result, dict) or str(result.get("article") or "").strip():
+        return
+    clean = _quick_translate_german_noun_candidate(result, text, source_lang, target_lang)
+    if not clean:
+        return
+
+    def _job():
+        try:
+            article = run_quick_article(word=clean)
+            if not article:
+                return
+            cached = _get_cached_quick_translate(cache_key)
+            base = dict(cached) if isinstance(cached, dict) else dict(result)
+            base["article"] = article
+            base["part_of_speech"] = "noun"
+            base["article_source"] = "llm"
+            _set_cached_quick_translate(cache_key, base)
             if user_id_for_billing is not None:
                 try:
                     _billing_log_openai_usage(
@@ -31195,13 +31244,17 @@ def _attach_quick_translate_article(result, text, source_lang, target_lang, *, u
                         source_lang=source_lang or "", target_lang=target_lang or "",
                         usage=get_last_llm_usage(reset=True),
                         seed=f"quick_article:{user_id_for_billing}:{time.time_ns()}",
-                        metadata={"origin": "quick_translate_article", "word": clean[:64]},
+                        metadata={"origin": "quick_translate_article_bg", "word": clean[:64]},
                     )
                 except Exception:
                     logging.debug("quick_article billing log failed", exc_info=True)
+        except Exception:
+            logging.debug("background quick-translate article fill failed", exc_info=True)
+
+    try:
+        _QUICK_ARTICLE_EXECUTOR.submit(_job)
     except Exception:
-        logging.debug("quick-translate article enrichment failed", exc_info=True)
-    return result
+        logging.debug("failed to schedule quick-translate article fill", exc_info=True)
 
 
 @app.route("/api/translate/quick", methods=["POST"])
@@ -31317,86 +31370,156 @@ def translate_quick():
 
     attempts: list[dict] = []
     provider_timings_ms: dict[str, int] = {}
-    providers = []
+    # Two tiers. The FREE providers (DeepL Free, LibreTranslate, offline Argos,
+    # MyMemory) are raced CONCURRENTLY so a slow/throttled DeepL no longer stalls the
+    # whole request behind a 3.5s timeout before the fallback even starts — we now
+    # keep the highest-priority successful result and return the moment nothing still
+    # running can outrank it. Paid providers (Azure/Google) stay a SEQUENTIAL last
+    # resort so we don't spend per-char money on every lookup when a free one answers.
+    free_providers = []
     if DEEPL_AUTH_KEY:
-        providers.append(("deepl_free", _quick_translate_deepl))
+        free_providers.append(("deepl_free", _quick_translate_deepl))
     if LIBRETRANSLATE_URL:
-        providers.append(("libretranslate", _quick_translate_libretranslate))
-    if AZURE_TRANSLATOR_KEY:
-        providers.append(("azure_translator", _quick_translate_azure))
-    if GOOGLE_TRANSLATE_API_KEY:
-        providers.append(("google_translate", _quick_translate_google))
+        free_providers.append(("libretranslate", _quick_translate_libretranslate))
     if ARGOS_TRANSLATE_ENABLED:
-        providers.append(("argos_offline", _quick_translate_argos))
-    providers.append(("mymemory", _quick_translate_mymemory))
+        free_providers.append(("argos_offline", _quick_translate_argos))
+    free_providers.append(("mymemory", _quick_translate_mymemory))
+    paid_providers = []
+    if AZURE_TRANSLATOR_KEY:
+        paid_providers.append(("azure_translator", _quick_translate_azure))
+    if GOOGLE_TRANSLATE_API_KEY:
+        paid_providers.append(("google_translate", _quick_translate_google))
+
+    def _has_translation(res) -> bool:
+        return isinstance(res, dict) and bool(str(res.get("translation") or "").strip())
+
+    chosen_name: str | None = None
+    chosen_result: dict | None = None
 
     try:
-        for provider_name, translate_func in providers:
-            provider_started_perf = time.perf_counter()
-            try:
-                if provider_name == "google_translate":
-                    _enforce_google_translate_monthly_budget(len(text))
-                result = translate_func(text, source_lang, target_lang)
-                provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
-                result["provider"] = provider_name
-                if not result.get("detected_source_lang") and source_lang:
-                    result["detected_source_lang"] = source_lang
-                _attach_quick_translate_article(result, text, source_lang, target_lang,
-                                                user_id_for_billing=user_id_for_billing)
-                if user_id_for_billing is not None and provider_name in {"google_translate", "deepl_free", "azure_translator"}:
-                    provider_billing_map = {
-                        "google_translate": ("google_translate", "google_translate_chars"),
-                        "deepl_free": ("deepl_free", "deepl_chars"),
-                        "azure_translator": ("azure_translator", "azure_translate_chars"),
-                    }
-                    billing_provider, billing_sku = provider_billing_map[provider_name]
-                    _billing_log_event_safe(
-                        user_id=int(user_id_for_billing),
-                        action_type="quick_translate_chars",
-                        provider=billing_provider,
-                        units_type="chars",
-                        units_value=float(len(text)),
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        idempotency_seed=(
-                            "quick-translate:"
-                            f"{provider_name}:{source_lang}:{target_lang}:"
-                            f"{hashlib.sha1(text.encode('utf-8', 'ignore')).hexdigest()}:{time.time_ns()}"
-                        ),
-                        status="estimated",
-                        metadata={"cached": False, "price_sku": billing_sku},
-                    )
-                _set_cached_quick_translate(cache_key, result)
-                _log_flow_observation(
-                    "quick_translate",
-                    "quick_translate_completed",
-                    request_id=request_id,
-                    correlation_id=correlation_id,
-                    user_id=user_id_for_billing,
+        # --- Tier 1: race the free providers, decide by priority ---
+        if free_providers:
+            rank = {name: idx for idx, (name, _fn) in enumerate(free_providers)}
+            results_by_name: dict[str, dict] = {}
+            future_started: dict = {}
+            future_name: dict = {}
+            for name, fn in free_providers:
+                fut = _QUICK_TRANSLATE_PROVIDER_EXECUTOR.submit(fn, text, source_lang, target_lang)
+                future_started[fut] = time.perf_counter()
+                future_name[fut] = name
+            pending = set(future_name.keys())
+            deadline = time.perf_counter() + QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC
+            while pending:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0:
+                    break
+                done, pending = futures_wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+                if not done:
+                    break
+                for fut in done:
+                    name = future_name[fut]
+                    provider_timings_ms[name] = _elapsed_ms_since(future_started[fut])
+                    try:
+                        res = fut.result()
+                    except Exception as exc:
+                        attempts.append({"provider": name, "error": str(exc)})
+                        continue
+                    if _has_translation(res):
+                        results_by_name[name] = res
+                    else:
+                        attempts.append({"provider": name, "error": "empty"})
+                # Return as soon as the best result so far can't be beaten by
+                # anything still running (no pending provider outranks it). Abandoned
+                # stragglers finish on the shared pool and are discarded.
+                if results_by_name:
+                    best_rank = min(rank[n] for n in results_by_name)
+                    if not any(rank[future_name[f]] < best_rank for f in pending):
+                        break
+            if results_by_name:
+                chosen_name = min(results_by_name, key=lambda n: rank[n])
+                chosen_result = results_by_name[chosen_name]
+
+        # --- Tier 2: paid providers, sequential, only if the free tier came up empty ---
+        if chosen_result is None:
+            for provider_name, translate_func in paid_providers:
+                provider_started_perf = time.perf_counter()
+                try:
+                    if provider_name == "google_translate":
+                        _enforce_google_translate_monthly_budget(len(text))
+                    res = translate_func(text, source_lang, target_lang)
+                    provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
+                    if _has_translation(res):
+                        chosen_name, chosen_result = provider_name, res
+                        break
+                    attempts.append({"provider": provider_name, "error": "empty"})
+                except GoogleTranslateBudgetExceededError as exc:
+                    provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
+                    attempts.append({"provider": provider_name, "error": str(exc), "error_code": "MONTHLY_LIMIT_REACHED"})
+                except requests.Timeout:
+                    provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
+                    attempts.append({"provider": provider_name, "error": "timeout"})
+                except Exception as exc:
+                    provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
+                    attempts.append({"provider": provider_name, "error": str(exc)})
+
+        if chosen_result is not None:
+            result = chosen_result
+            result["provider"] = chosen_name
+            if not result.get("detected_source_lang") and source_lang:
+                result["detected_source_lang"] = source_lang
+            # Instant article (Wiktionary only); LLM fill happens in the background.
+            _attach_quick_translate_article(result, text, source_lang, target_lang)
+            if user_id_for_billing is not None and chosen_name in {"google_translate", "deepl_free", "azure_translator"}:
+                provider_billing_map = {
+                    "google_translate": ("google_translate", "google_translate_chars"),
+                    "deepl_free": ("deepl_free", "deepl_chars"),
+                    "azure_translator": ("azure_translator", "azure_translate_chars"),
+                }
+                billing_provider, billing_sku = provider_billing_map[chosen_name]
+                _billing_log_event_safe(
+                    user_id=int(user_id_for_billing),
+                    action_type="quick_translate_chars",
+                    provider=billing_provider,
+                    units_type="chars",
+                    units_value=float(len(text)),
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    text_chars=len(text),
-                    provider=provider_name,
-                    provider_duration_ms=provider_timings_ms.get(provider_name),
-                    provider_attempt_count=len(provider_timings_ms),
-                    provider_timings_ms=provider_timings_ms,
-                    cache_hit=False,
-                    cache_tier="miss",
-                    coalesced_wait_ms=coalesced_wait_ms,
-                    final_status="success",
-                    duration_ms=_elapsed_ms_since(started_perf),
-                    http_status=200,
+                    idempotency_seed=(
+                        "quick-translate:"
+                        f"{chosen_name}:{source_lang}:{target_lang}:"
+                        f"{hashlib.sha1(text.encode('utf-8', 'ignore')).hexdigest()}:{time.time_ns()}"
+                    ),
+                    status="estimated",
+                    metadata={"cached": False, "price_sku": billing_sku},
                 )
-                return jsonify(result)
-            except GoogleTranslateBudgetExceededError as exc:
-                provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
-                attempts.append({"provider": provider_name, "error": str(exc), "error_code": "MONTHLY_LIMIT_REACHED"})
-            except requests.Timeout:
-                provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
-                attempts.append({"provider": provider_name, "error": "timeout"})
-            except Exception as exc:
-                provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
-                attempts.append({"provider": provider_name, "error": str(exc)})
+            _set_cached_quick_translate(cache_key, result)
+            # Background: fill a missing noun article (der/die/das) via one LLM call and
+            # patch the cache, so the next identical lookup is complete — off hot path.
+            _schedule_quick_translate_article_fill(
+                cache_key, result, text, source_lang, target_lang,
+                user_id_for_billing=user_id_for_billing,
+            )
+            _log_flow_observation(
+                "quick_translate",
+                "quick_translate_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_for_billing,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                text_chars=len(text),
+                provider=chosen_name,
+                provider_duration_ms=provider_timings_ms.get(chosen_name),
+                provider_attempt_count=len(provider_timings_ms),
+                provider_timings_ms=provider_timings_ms,
+                cache_hit=False,
+                cache_tier="miss",
+                coalesced_wait_ms=coalesced_wait_ms,
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+            )
+            return jsonify(result)
 
         _log_flow_observation(
             "quick_translate",

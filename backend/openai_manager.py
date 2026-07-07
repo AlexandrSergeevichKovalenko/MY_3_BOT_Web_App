@@ -49,6 +49,17 @@ _DEFAULT_TASK_MODELS = {
     # runs at pool-build time. gpt-4.1-mini reliably catches the clear failure modes
     # (fake case error / a second unflagged error). Override via LLM_TASK_MODEL_VERIFY_AUFGABE_ERROR.
     "verify_aufgabe_error": "gpt-4.1-mini",
+    # Quick-dictionary breakdown. This is the user-facing "полный разбор" latency line:
+    # a big JSON generation whose wall-clock scales with output tokens, so it was the
+    # slowest thing in the quick dictionary on gpt-4.1. Dictionary content (translation,
+    # examples, POS, register) is largely deterministic and mini holds it well at a
+    # fraction of the latency/cost. The instant "core" item (translation + article) is
+    # even simpler. Override any of these per-task via LLM_TASK_MODEL_<TASK> if a
+    # quality regression shows up on a specific block.
+    "dictionary_enrichment_multilang_word_compact": "gpt-4.1-mini",
+    "dictionary_enrichment_multilang_phrase_compact": "gpt-4.1-mini",
+    "dictionary_assistant_multilang_core_fast": "gpt-4.1-mini",
+    "dictionary_assistant_multilang_core_fast_batch": "gpt-4.1-mini",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",

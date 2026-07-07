@@ -488,7 +488,7 @@ function GrammarTables({ tables }) {
   if (decl && Array.isArray(decl.rows) && decl.rows.length > 0) {
     const gc = genderClassFromKey(decl.gender);
     return (
-      <details className="dq-gt" open>
+      <details className="dq-gt">
         <summary>Склонение{decl.plural ? ` · мн. ${decl.plural}` : ''}</summary>
         <table className="dq-decl" lang="de">
           <thead>
@@ -512,7 +512,7 @@ function GrammarTables({ tables }) {
     const stamm = [conj.infinitive, conj.praeteritum?.['er/sie/es'], conj.partizip2]
       .filter(Boolean);
     return (
-      <details className="dq-gt" open>
+      <details className="dq-gt">
         <summary>Спряжение{conj.auxiliary ? ` · ${conj.auxiliary}` : ''}</summary>
         {stamm.length === 3 && (
           <div className="dq-stamm">{stamm.join(' – ')}</div>
@@ -537,7 +537,7 @@ function GrammarTables({ tables }) {
 
   if (comp && comp.positive) {
     return (
-      <details className="dq-gt" open>
+      <details className="dq-gt">
         <summary>Степени сравнения</summary>
         <div className="dq-deg">
           <span className="dq-deg-item"><em>Positiv</em>{comp.positive}</span>

@@ -229,8 +229,10 @@ export default function DictionaryOverlay() {
     const mySeq = seqRef.current; // bumped by translate(); abort if a new lookup starts
     setDeepLoading(true);
     try {
-      for (let i = 0; i < 15; i += 1) {
-        await new Promise((r) => setTimeout(r, i === 0 ? 1500 : 3000));
+      for (let i = 0; i < 24; i += 1) {
+        // Fast first check (the mini breakdown often lands in ~1–2s), then a tight
+        // cadence so a ready result shows almost immediately instead of after a 3s gap.
+        await new Promise((r) => setTimeout(r, i === 0 ? 500 : 1200));
         if (mySeq !== seqRef.current) return;
         let data;
         try { data = await api('/api/webapp/dictionary/status', { lookup_id: lookupId }); }
