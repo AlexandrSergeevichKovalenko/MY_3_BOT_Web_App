@@ -31,12 +31,12 @@ const STEPS = [
   { id: 'intensity',  title: 'Сколько заданий в день 🔥', kind: 'pro' },
   { id: 'windows',    title: 'Когда присылать задания ⏰', kind: 'pro' },
   { id: 'battles',    title: 'Игры с другими учениками ⚔️', kind: 'opt' },
-  { id: 'shortcut',   title: 'Сохраняй слова в словарь 📲', kind: 'opt' },
   { id: 'howto_words',        title: 'Твой словарь пополняется сам 📖', kind: 'info' },
   { id: 'howto_interactives', title: 'Игры-тренировки приходят сами 🎮', kind: 'info' },
   { id: 'howto_translations', title: 'Переводы с разбором ✍️',          kind: 'info' },
   { id: 'howto_tools',        title: 'Ещё инструменты 🧰',              kind: 'info' },
   { id: 'keyboard',   title: 'Меню бота — где нажимать ⌨️', kind: 'info' },
+  { id: 'shortcut',   title: 'Захват слов со скриншотов (iPhone) 📲', kind: 'opt' },
   { id: 'finale',     title: 'Готово! ✅',                kind: 'finale' },
 ];
 
@@ -114,7 +114,8 @@ const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows',
   'howto_tools', 'keyboard']);
 function StepBody(props) {
   const { step, isPro, confirmed, busy, stepErr, onConfirm, dictOffer, onDictAction,
-    selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle } = props;
+    selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
+    onShortcutSetup } = props;
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
     case 'welcome':
@@ -234,17 +235,17 @@ function StepBody(props) {
       );
     case 'shortcut':
       return (
-        <div className="ob-teaser">
+        <div className="ob-stub">
           <p className="ob-lead">
-            Встретил незнакомое немецкое слово — в статье, переписке или на видео?
-            Сохрани его в свой словарь, чтобы потом выучить. Бот сам переведёт и добавит —
-            это удобно, не нужно переписывать вручную.
+            На <b>iPhone</b> одним движением делаешь скриншот немецкого слова из любого
+            приложения — а утром телефон сам всё переводит и присылает слова в личку.
+            Останется сохранить.
           </p>
-          <p className="ob-lead">
-            Работает на <b>iPhone</b> через маленького помощника (команда «Быстрые
-            команды»). Установим его позже — по шагам, это просто.
-          </p>
-          <span className="ob-lock">📲 только iPhone</span>
+          <p className="ob-lead">Необязательно, настраивается один раз. Можно сейчас или позже.</p>
+          <button type="button" className="ob-confirm" onClick={onShortcutSetup}>
+            📲 Настроить сейчас
+          </button>
+          <span className="ob-muted-note">Пропустишь — откроешь потом через «🎬 Как пользоваться».</span>
         </div>
       );
     case 'howto_words':
@@ -467,9 +468,8 @@ export default function OnboardingWizard() {
     try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* ignore */ }
   }, []);
 
-  // Public tour: fetch the bot install link for the finale CTA.
+  // Bot link — for the public-tour install CTA and the «open Shortcut setup» deeplink.
   useEffect(() => {
-    if (!IS_PUBLIC) return;
     let off = false;
     (async () => {
       try {
@@ -536,6 +536,17 @@ export default function OnboardingWizard() {
   const goBack = useCallback(() => {
     setIdx((i) => Math.max(i - 1, 0));
   }, []);
+
+  // «Настроить сейчас» on the Shortcut step (the last content step): complete
+  // onboarding and hand off to the full Shortcut setup screen.
+  const openShortcutSetup = useCallback(async () => {
+    try { await api('/api/webapp/onboarding/complete'); } catch (_e) { /* noop */ }
+    const url = botUrl ? `${botUrl}?startapp=shortcut` : '';
+    try {
+      if (url && tg?.openTelegramLink) tg.openTelegramLink(url);
+      else if (url) window.location.href = url;
+    } catch (_e) { /* noop */ }
+  }, [botUrl]);
 
   const confirmStep = useCallback(async () => {
     setStepErr('');
@@ -641,6 +652,7 @@ export default function OnboardingWizard() {
             onPickWindow={pickWindow}
             selBattle={selBattle}
             onPickBattle={pickBattle}
+            onShortcutSetup={openShortcutSetup}
           />
         </main>
 

@@ -59,6 +59,7 @@ export default function ShortcutGuide() {
   const [pairing, setPairing] = useState(null);     // {pairing_code, expires_at}
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingErr, setPairingErr] = useState('');
+  const [botUrl, setBotUrl] = useState('');
 
   useEffect(() => {
     try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
@@ -76,6 +77,28 @@ export default function ShortcutGuide() {
     })();
     return () => { off = true; };
   }, []);
+
+  // Bot link — for the «перейти в приложение» button at the end.
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/public/tour-info');
+        const d = await r.json().catch(() => ({}));
+        if (!off && d.bot_url) setBotUrl(d.bot_url);
+      } catch (_e) { /* button falls back to closing the screen */ }
+    })();
+    return () => { off = true; };
+  }, []);
+
+  const openApp = useCallback(() => {
+    const url = botUrl ? `${botUrl}?startapp=webapp` : '';
+    try {
+      if (url && tg?.openTelegramLink) tg.openTelegramLink(url);
+      else if (url) window.location.href = url;
+      else tg?.close?.();
+    } catch (_e) { try { tg?.close?.(); } catch (_e2) { /* noop */ } }
+  }, [botUrl]);
 
   const getCode = useCallback(async () => {
     if (pairingBusy) return;
@@ -187,6 +210,10 @@ export default function ShortcutGuide() {
         <p>📱 <b>Другой телефон (Android и т.п.)?</b> Команды не нужны — пишите боту слово, пересылайте
           немецкий текст или вставляйте целый кусок текста: бот сам выберет слова под ваш уровень.</p>
       </section>
+
+      <button type="button" className="sc-btn primary sc-goapp" onClick={openApp}>
+        🎯 Перейти в приложение
+      </button>
     </div>
   );
 }

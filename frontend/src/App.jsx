@@ -1975,8 +1975,8 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Wo du die Befehle und Hilfe bekommst',
             items: [
-              'Öffne den Bot im Privat-Chat und tippe «📲 Shortcut installieren» — er schickt beide Befehle und führt Schritt für Schritt.',
-              'Video-Anleitungen — die Taste «Wie man es benutzt».',
+              'Die Einrichtung ist in der App: «🎬 Wie man es benutzt» → Schritt «Wörter aus Screenshots» → «Jetzt einrichten». Dort sind die Installations-Tasten für beide Befehle und der Verbindungscode.',
+              'Alles Schritt für Schritt mit anschaulichen Hinweisen — auch beim ersten Mal.',
               'Anderes Handy (Android)? Keine Befehle nötig — schreib dem Bot ein Wort, leite Text weiter oder füg ganze Textstücke ein.',
             ],
           },
@@ -2634,8 +2634,8 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Где взять команды и помощь',
           items: [
-            'Откройте бота в личке и нажмите «📲 Установить Shortcut» — он пришлёт обе команды и проведёт по шагам.',
-            'Видео-инструкции — кнопка «Как пользоваться».',
+            'Настройка — прямо в приложении: «🎬 Как пользоваться» → шаг «Захват слов» → «Настроить сейчас». Там кнопки установки обеих команд и код привязки.',
+            'Всё по шагам, с наглядными подсказками — справишься, даже если делаешь впервые.',
             'Другой телефон (Android)? Команды не нужны — пишите боту слово, пересылайте текст или вставляйте целые куски.',
           ],
         },

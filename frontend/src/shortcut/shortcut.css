@@ -117,3 +117,5 @@ html[data-scheme="light"] .sc-done p, html[data-scheme="light"] .sc-android p { 
 /* Errors */
 .sc-error { background: rgba(239,68,68,0.14); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; padding: 12px 14px; border-radius: 12px; font-size: 14px; margin: 8px 0; }
 .sc-error.sm { padding: 8px 12px; font-size: 13px; }
+
+.sc-goapp { width: 100%; margin-top: 16px; }

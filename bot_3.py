@@ -4576,8 +4576,8 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     # 4) Слова и помощь.
     rows.append([DICTIONARY_BATCH_FAST_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT])
 
-    # 5) Захват слов (Shortcut + ночной автосейв).
-    rows.append([SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT])
+    # 5) Захват слов: установка Shortcut переехала в онбординг («🎬 Как пользоваться»
+    #    → шаг захвата слов); на клавиатуре остаётся только ночной автосейв.
     rows.append([_autosave_button_text(user_id)])
 
     # 6) Справка.
