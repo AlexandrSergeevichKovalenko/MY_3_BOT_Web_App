@@ -1331,6 +1331,57 @@ def _deep_request_cache_id(user_id: int, word: str, source_lang: str, target_lan
     request reuses the computed lookup instead of re-running the LLM."""
     seed = f"{int(user_id)}|{str(word or '').strip()}|{source_lang}|{target_lang}"
     return "reqc_" + hashlib.sha1(seed.encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def _quick_dict_deep_id(user_id: int, word: str, source_lang: str, target_lang: str) -> str:
+    """Deterministic dict:deep id for a quick-dictionary result so the same
+    (user, word, pair) reuses ONE shareable record instead of leaking a new one
+    per lookup — mirrors _deep_request_cache_id for the quick-dict overlay."""
+    seed = (
+        f"qd|{int(user_id)}|{str(word or '').strip().lower()}"
+        f"|{str(source_lang or '').strip().lower()}|{str(target_lang or '').strip().lower()}"
+    )
+    return "qd_" + hashlib.sha1(seed.encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def _store_quick_dict_deep_record(
+    *,
+    user_id: int,
+    word: str,
+    source_lang: str,
+    target_lang: str,
+    direction: str,
+    raw: dict | None,
+) -> str:
+    """Persist the RAW quick-dict lookup under a deterministic dict:deep id so the
+    Mini-App can offer the SAME instant «Поделиться» as the «Полный разбор» screen
+    (share/link → guest view). Best-effort — returns "" if there is nothing to store
+    (no Redis / empty raw), in which case the overlay simply hides the share button."""
+    client = get_redis_client()
+    if client is None or not isinstance(raw, dict) or not raw:
+        return ""
+    deep_id = _quick_dict_deep_id(int(user_id), word, source_lang, target_lang)
+    try:
+        client.setex(
+            _deep_analysis_redis_key(deep_id),
+            _DEEP_ANALYSIS_STORE_TTL_SEC,
+            json.dumps(
+                {
+                    "user_id": int(user_id),
+                    "lookup": raw,
+                    "query_word": str(word or "").strip(),
+                    "source_lang": str(source_lang or "").strip().lower(),
+                    "target_lang": str(target_lang or "").strip().lower(),
+                    "direction": str(direction or "").strip().lower(),
+                    "created_at": int(time.time()),
+                    "origin": "quick_dict",
+                }
+            ),
+        )
+        return deep_id
+    except Exception:
+        logging.debug("quick-dict deep record store failed", exc_info=True)
+        return ""
 HOTPATH_FRONT_CACHE_MAX_ENTRIES = max(
     1000,
     min(200000, int((os.getenv("HOTPATH_FRONT_CACHE_MAX_ENTRIES") or "20000").strip() or "20000")),
@@ -15655,6 +15706,20 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
             direction=final_direction,
             error="",
         )
+        # Persist the RICH merged raw under a deterministic dict:deep id so the
+        # quick-dict overlay can offer the same instant «Поделиться» as «Полный разбор».
+        try:
+            if int(job.get("user_id") or 0) > 0:
+                _store_quick_dict_deep_record(
+                    user_id=int(job.get("user_id") or 0),
+                    word=str(job.get("word") or ""),
+                    source_lang=str(job.get("source_lang") or ""),
+                    target_lang=str(job.get("target_lang") or ""),
+                    direction=final_direction,
+                    raw=merged_raw,
+                )
+        except Exception:
+            logging.debug("quick-dict share record store (enrichment) failed", exc_info=True)
         user_id = int(job.get("user_id") or 0) if job.get("user_id") is not None else 0
         logging.info(
             "Dictionary enrichment ready: lookup_id=%s user_id=%s word=%r direction=%s duration_ms=%s",
@@ -31574,6 +31639,9 @@ def lookup_webapp_dictionary():
                     },
                 )
                 _log_dictionary_profile()
+                # Offer «Поделиться» only if a prior fresh lookup by this user already
+                # persisted the shareable raw (cache-hits carry no raw of their own).
+                _cached_deep = _quick_dict_deep_id(int(user_id), word_ru, source_lang, target_lang)
                 return jsonify(
                     {
                         "ok": True,
@@ -31582,6 +31650,7 @@ def lookup_webapp_dictionary():
                         "lookup_status": "ready",
                         "enrichment_pending": False,
                         "save_locked": False,
+                        "deep_id": _cached_deep if _get_deep_analysis_record(_cached_deep) else None,
                         "language_pair": _build_language_pair_payload(source_lang, target_lang),
                     }
                 )
@@ -31605,6 +31674,7 @@ def lookup_webapp_dictionary():
                     },
                 )
                 _log_dictionary_profile()
+                _active_deep = _quick_dict_deep_id(int(user_id), word_ru, source_lang, target_lang)
                 return jsonify(
                     {
                         "ok": True,
@@ -31614,6 +31684,7 @@ def lookup_webapp_dictionary():
                         "lookup_status": "ready",
                         "enrichment_pending": False,
                         "save_locked": False,
+                        "deep_id": _active_deep if _get_deep_analysis_record(_active_deep) else None,
                         "language_pair": _build_language_pair_payload(source_lang, target_lang),
                     }
                 )
@@ -31687,6 +31758,14 @@ def lookup_webapp_dictionary():
                 core_item=result,
                 core_raw=core_payload.get("raw") if isinstance(core_payload.get("raw"), dict) else {},
             )
+            # Store the core raw right away so «Поделиться» is available the moment the
+            # breakdown appears (enrichment later overwrites it with the richer merged raw).
+            deep_id = _store_quick_dict_deep_record(
+                user_id=int(user_id), word=word_ru,
+                source_lang=source_lang, target_lang=target_lang,
+                direction=direction,
+                raw=core_payload.get("raw") if isinstance(core_payload.get("raw"), dict) else {},
+            )
             mark("decorate")
             _start_dictionary_enrichment_runner(lookup_id=lookup_id)
             _billing_log_event_safe(
@@ -31729,6 +31808,7 @@ def lookup_webapp_dictionary():
                     "lookup_status": "enriching",
                     "enrichment_pending": True,
                     "save_locked": True,
+                    "deep_id": deep_id or None,
                     "language_pair": _build_language_pair_payload(source_lang, target_lang),
                 }
             )
@@ -31751,6 +31831,12 @@ def lookup_webapp_dictionary():
             usage_main = full_payload.get("usage")
             result = full_payload.get("item") if isinstance(full_payload.get("item"), dict) else {}
             direction = str(full_payload.get("direction") or "").strip().lower()
+            deep_id = _store_quick_dict_deep_record(
+                user_id=int(user_id), word=word_ru,
+                source_lang=source_lang, target_lang=target_lang,
+                direction=direction,
+                raw=full_payload.get("raw") if isinstance(full_payload.get("raw"), dict) else {},
+            )
             mark("llm_main")
             if fallback_reverse_used:
                 mark("llm_fallback")
@@ -31826,6 +31912,7 @@ def lookup_webapp_dictionary():
             "lookup_status": "ready",
             "enrichment_pending": False,
             "save_locked": False,
+            "deep_id": locals().get("deep_id") or None,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -31871,6 +31958,13 @@ def get_webapp_dictionary_lookup_status():
     elif isinstance(job.get("core_item"), dict):
         item = job.get("core_item")
 
+    # Surface the shareable id (mirrors «Полный разбор») once a record exists for this
+    # (user, word, pair) — stored at core-lookup time and refreshed on enrichment.
+    deep_id_out = None
+    _deep_candidate = _quick_dict_deep_id(int(user_id), str(job.get("word") or ""), source_lang, target_lang)
+    if _deep_candidate and _get_deep_analysis_record(_deep_candidate):
+        deep_id_out = _deep_candidate
+
     response_payload = {
         "ok": True,
         "lookup_id": lookup_id,
@@ -31880,6 +31974,7 @@ def get_webapp_dictionary_lookup_status():
         "error": str(job.get("error") or "").strip() or None,
         "enrichment_pending": status == "enriching",
         "save_locked": status != "ready",
+        "deep_id": deep_id_out,
         "language_pair": _build_language_pair_payload(source_lang, target_lang),
     }
     _log_flow_observation(

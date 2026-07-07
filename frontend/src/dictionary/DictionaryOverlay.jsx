@@ -62,6 +62,8 @@ export default function DictionaryOverlay() {
   const [item, setItem] = useState(null);     // rich GPT item (for enrich + canonical save)
   const [enrich, setEnrich] = useState('idle'); // idle|loading|done|error
   const [deepLoading, setDeepLoading] = useState(false); // background enrichment poll
+  const [deepId, setDeepId] = useState('');   // shareable id (same «Поделиться» as «Полный разбор»)
+  const [sharing, setSharing] = useState(false);
   const [save, setSave] = useState('idle');   // idle|saving|done
   const [cardSave, setCardSave] = useState('idle'); // idle|done — «Учить» (SRS)
   const [savedChips, setSavedChips] = useState(() => new Set()); // synonyms/collocations tapped to save
@@ -149,6 +151,7 @@ export default function DictionaryOverlay() {
     const mySeq = ++seqRef.current;
     tts.stop();
     setPhase('loading'); setError(''); setItem(null); setEnrich('idle'); setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
+    setDeepId('');
     chipHintDoneRef.current = false; setChipHint(false);
     haptic('light');
     try {
@@ -190,6 +193,7 @@ export default function DictionaryOverlay() {
     tts.stop();
     setQuick(null); setItem(null); setEnrich('idle'); setPhase('idle');
     setError(''); setSave('idle'); setCardSave('idle'); setSavedChips(new Set());
+    setDeepId('');
     lastAutoRef.current = '';
   }, [tts]);
 
@@ -236,6 +240,7 @@ export default function DictionaryOverlay() {
           const merged = { ...data.item, __direction: base?.__direction, __language_pair: base?.__language_pair };
           setItem(merged);
         }
+        if (data?.deep_id) setDeepId(String(data.deep_id));
         if (String(data?.status || '') === 'ready' || data?.enrichment_pending === false) break;
       }
     } finally {
@@ -259,6 +264,7 @@ export default function DictionaryOverlay() {
       }
       setItem(rich);
       setEnrich(rich ? 'done' : 'error');
+      if (rich && data?.deep_id) setDeepId(String(data.deep_id));
       if (rich && data?.enrichment_pending && data?.lookup_id) {
         pollEnrichment(data.lookup_id, rich);
       }
@@ -362,6 +368,29 @@ export default function DictionaryOverlay() {
     try { window.location.assign('/webapp?startapp=dictionary'); } catch (_e) { /* ignore */ }
   }, []);
 
+  // Share this breakdown — SAME pattern as «Полный разбор»: one fast call mints a
+  // durable share token, then open Telegram's native share sheet with the deep-link.
+  // Recipient (even without the bot) taps it → a read-only guest view of the same
+  // breakdown + "request access" CTA, showcasing what the bot can do.
+  const doShare = useCallback(async () => {
+    if (!deepId || sharing) return;
+    setSharing(true); haptic('light');
+    try {
+      const data = await api('/api/webapp/dictionary/share/link', { deep_id: deepId });
+      const link = String(data?.deeplink || '').trim();
+      if (!link) throw new Error('Не удалось создать ссылку');
+      const text = 'Полный разбор немецкого слова — в боте «Deutsche Sprache» 🇩🇪';
+      const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`;
+      if (typeof tg?.openTelegramLink === 'function') tg.openTelegramLink(shareUrl);
+      else window.open(shareUrl, '_blank');
+      haptic('ok');
+    } catch (e) {
+      setError(String(e.message || e)); haptic('bad');
+    } finally {
+      setSharing(false);
+    }
+  }, [deepId, sharing]);
+
   // Paste from clipboard (fires inside the tap gesture) and translate immediately.
   const onPaste = useCallback(async () => {
     try {
@@ -387,8 +416,29 @@ export default function DictionaryOverlay() {
   return (
     <div className="ans-root dq-scroll">
       <div className="ans-card dq-card">
-        <div className="ans-head">
+        <div className="ans-head dq-head-row">
           <span className="ans-eyebrow">📖 Быстрый словарь</span>
+          {deepId && item && (
+            <button
+              type="button"
+              className={`dq-share-btn${sharing ? ' is-busy' : ''}`}
+              onClick={doShare}
+              disabled={sharing}
+              aria-label="Поделиться разбором"
+              title="Поделиться"
+            >
+              {sharing ? (
+                <span className="dq-share-spin" />
+              ) : (
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+                     stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3v13" />
+                  <path d="M8 7l4-4 4 4" />
+                  <path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
+                </svg>
+              )}
+            </button>
+          )}
         </div>
 
         {(() => {

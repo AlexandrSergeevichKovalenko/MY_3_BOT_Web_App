@@ -1071,3 +1071,39 @@
   80%  { opacity: 1; transform: translate(-50%, 0) scale(1); }
   100% { opacity: 0; transform: translate(-50%, -8px) scale(0.98); }
 }
+
+/* «Поделиться» in the quick-dictionary header — same round-icon pattern as the
+   «Полный разбор» screen (see .deep-share-btn in deep.css). Shows only once a
+   shareable breakdown exists. */
+.dq-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dq-share-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--dmps-border, #334155);
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--dmps-text-title, #f1f5f9);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.dq-share-btn:hover { background: rgba(91, 155, 255, 0.22); }
+.dq-share-btn:active { transform: scale(0.92); }
+.dq-share-btn:disabled { opacity: 0.6; cursor: default; }
+.dq-share-spin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(148, 163, 184, 0.4);
+  border-top-color: #5b9bff;
+  animation: dq-share-rot 0.7s linear infinite;
+}
+@keyframes dq-share-rot { to { transform: rotate(360deg); } }
