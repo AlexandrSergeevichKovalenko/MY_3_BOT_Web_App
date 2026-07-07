@@ -230,6 +230,41 @@
   background: var(--ob-accent-2);
 }
 
+/* Step-by-step "how to" box (e.g. home-screen icon install) */
+.ob-howbox {
+  background: #f4f8ff;
+  border: 1px solid var(--ob-line);
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ob-howbox-title { margin: 0; font-size: 15px; font-weight: 800; color: var(--ob-ink); }
+.ob-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ob-steps li { font-size: 14.5px; line-height: 1.4; color: #2b3550; }
+
+/* Media tile (auto-hides if the asset isn't present yet) */
+.ob-media { margin: 0; width: 100%; }
+.ob-media video, .ob-media img {
+  width: 100%;
+  border-radius: 12px;
+  display: block;
+  background: #000;
+}
+.ob-media figcaption {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--ob-muted);
+  text-align: center;
+}
+
 /* Footer nav */
 .ob-nav {
   display: flex;

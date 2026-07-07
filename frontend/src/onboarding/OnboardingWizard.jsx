@@ -54,6 +54,32 @@ const WINDOWS = [
   ['morneve', '🌅🌆 Утро+вечер',  '06–09 · 18–22:30'],
 ];
 
+// Media slot that hides itself if the asset isn't there yet (drop the file later).
+function MediaTile({ src, type = 'video', caption }) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  return (
+    <figure className="ob-media">
+      {type === 'video' ? (
+        <video src={src} controls playsInline preload="metadata" onError={() => setHidden(true)} />
+      ) : (
+        <img src={src} alt={caption || ''} loading="lazy" onError={() => setHidden(true)} />
+      )}
+      {caption ? <figcaption>{caption}</figcaption> : null}
+    </figure>
+  );
+}
+
+function openDictInBrowser() {
+  const url = `${window.location.origin}/dict`;
+  try {
+    if (tg?.openLink) tg.openLink(url);
+    else window.open(url, '_blank');
+  } catch (_e) {
+    try { window.open(url, '_blank'); } catch (_e2) { /* ignore */ }
+  }
+}
+
 function OptionList({ options, selected, onPick }) {
   return (
     <div className="ob-options">
@@ -252,6 +278,20 @@ function StepBody(props) {
               в свой словарь — чтобы потом выучить. <i>(как поставить иконку — покажем отдельно)</i>
             </li>
           </ul>
+          <div className="ob-howbox">
+            <p className="ob-howbox-title">📌 Как вынести иконку переводчика на экран (iPhone)</p>
+            <ol className="ob-steps">
+              <li>Открой словарь в браузере Safari — кнопкой ниже.</li>
+              <li>Внизу нажми «Поделиться» (квадрат со стрелкой вверх).</li>
+              <li>Пролистай список и выбери «На экран „Домой"».</li>
+              <li>Нажми «Добавить» — иконка появится на рабочем столе.</li>
+              <li>Готово! Теперь открывай словарь как обычное приложение.</li>
+            </ol>
+            <button type="button" className="ob-confirm" onClick={openDictInBrowser}>
+              🌐 Открыть словарь в Safari
+            </button>
+            <MediaTile src="/onboarding/words/translator_icon.mp4" caption="🎥 Как вынести иконку на экран" />
+          </div>
           <p className="ob-lead ob-muted-note">
             Всё, что читаешь и сохраняешь, само копится в твоём словаре — заходишь и учишь,
             когда захочешь.
