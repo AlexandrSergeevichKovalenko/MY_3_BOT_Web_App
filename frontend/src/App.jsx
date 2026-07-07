@@ -1332,7 +1332,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'RU / DE schaltet nur die Sprache der Oberfläche um.',
               'DARK / LIGHT schaltet das Farbschema der App um.',
-              'Die Taste mit dem Sprachpaar öffnet dein Lernprofil: Lernsprache und Muttersprache.',
+              'Die Taste mit dem Sprachpaar öffnet dein Lernprofil (aktuell: Deutsch ← Russisch).',
               'Das ? öffnet diesen Guide jederzeit erneut.',
             ],
           },
@@ -1868,6 +1868,116 @@ function buildGuideStepItems(uiLang = 'ru') {
               'Ins Ranking gehen nur bestätigte Teilnehmer ein.',
               'Quizze wechseln zwischen neuen und schwachen Wiederholungsinhalten, statt immer nur neue Dinge zu schicken.',
               'Die Gruppe ist für Motivation, Vergleich und Rhythmus gedacht; die tiefere Arbeit passiert weiter in der Mini-App und im Privat-Chat.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'daily_games',
+        title: 'Spiele-Trainings und Battles im Chat',
+        summary: 'Kurze Grammatik- und Wortspiele kommen im Laufe des Tages von selbst zu dir — du musst nichts aufrufen. Jedes deckt ein wichtiges Thema ab.',
+        sections: [
+          {
+            title: 'Was kommt und wofür',
+            items: [
+              'Artikel der/die/das — du rätst das Geschlecht des Wortes. Die Basis, die man immer halten muss.',
+              'Adjektivendungen — der häufigste Fehler im Deutschen.',
+              'Zahlendiktat — Zahlen nach Gehör: du hörst und tippst sie.',
+              'Wo-Fragen (wo, wohin, woher…): du lernst, richtig zu fragen.',
+              'Kreuzworträtsel, Rebus, Anagramme — erweitern spielerisch den Wortschatz.',
+              'Hörverständnis — du hörst zu und ziehst das Wichtigste heraus (Daten, Uhrzeit, Fakten).',
+            ],
+          },
+          {
+            title: 'Training und Battle (Duell)',
+            items: [
+              'Wichtige Spiele haben zwei Modi. Training — in Ruhe, allein, ohne Eile.',
+              'Battle — ein kurzes Duell mit einem anderen Lernenden: wer schneller und fehlerfrei ist. Einen Gegner rufst du über das Bot-Menü.',
+              'Willst du Duell-Einladungen bekommen — das stellst du in den Einstellungen ein (jederzeit änderbar).',
+            ],
+          },
+          {
+            title: 'Nachrichten des Tages und Fehlerarbeit',
+            items: [
+              'Nachrichten des Tages — jeden Morgen frische echte News als kurzes Video mit doppelten anklickbaren Untertiteln: schauen, Wörter speichern und Hörverständnis-Tests beantworten.',
+              'Analyse deiner Fehler von gestern — der Bot sammelt, wo du dich geirrt hast, und lässt dich wiederholen, damit sich Fehler nicht festsetzen.',
+            ],
+          },
+          {
+            title: 'Taste «Nächste Aufgabe»',
+            items: [
+              'Willst du nicht auf den Zeitplan warten — tippe «Nächste Aufgabe» im Bot-Menü: es zeigt, was du heute noch nicht gemacht hast.',
+              'Du löst direkt in der App, eine Aufgabe nach der anderen.',
+              'Alles Gelöste zählt in deine Statistik und ins Ranking.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'rhythm',
+        title: 'Dein Rhythmus: Zeitplan und Streak',
+        summary: 'Stell ein, wie viele Aufgaben pro Tag und zu welchen Zeiten sie kommen. Und eine Serie von Tagen in Folge bringt kostenlose Pro-Tage.',
+        sections: [
+          {
+            title: 'Aufgaben-Zeitplan (Pro)',
+            items: [
+              'Wähle das Tempo: intensiv (~20/Tag), normal (~12), selten (~8) oder Stille (nichts automatisch).',
+              'Und das Zeitfenster: ganzer Tag, morgens, abends oder morgens+abends — die Aufgaben kommen gleichmäßig innerhalb des Fensters.',
+              'Die Einstellung ist in der App, Taste «🎬 Wie man es benutzt», jederzeit änderbar. Im kostenlosen Tarif — eine Auswahl von ein paar Aufgaben pro Tag.',
+            ],
+          },
+          {
+            title: 'Streak — Serie von Tagen in Folge',
+            items: [
+              'Jeder Tag, an dem du lernst, verlängert deine Serie 🔥. Sie ist in der Morgennachricht und in den Tagesergebnissen sichtbar.',
+              'Mehrere Tage in Folge — und der Bot schenkt dir einen kostenlosen Pro-Tag. Unterbrich die Serie nicht.',
+              'Es gibt ein «Einfrieren»: ein verpasster Tag setzt die Serie nicht zurück, wenn du ein Einfrieren hast.',
+            ],
+          },
+          {
+            title: 'Lade einen Freund ein',
+            items: [
+              'Der Befehl /invite im Privat-Chat mit dem Bot gibt dir deinen persönlichen Einladungslink.',
+              'Sobald der Freund dranbleibt (mehrere Tage in Folge) — bekommt ihr beide kostenlose Pro-Tage.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'ios_shortcut',
+        title: 'Wörter aus Screenshots (iPhone)',
+        summary: 'Fang deutsche Wörter direkt während Reels und Videos ein — und morgens übersetzt das Handy alles von selbst und schickt es dir privat.',
+        sections: [
+          {
+            title: 'Wie es funktioniert',
+            items: [
+              'Das ist für iPhone. Zwei Befehle arbeiten im Paar, einmal eingerichtet.',
+              'Tagsüber: mit einer Bewegung (Aktionstaste oder doppeltes Tippen auf die Rückseite) macht das Handy einen Screenshot und legt ihn in dein Album «Deutsch Queue».',
+              'Morgens: der zweite Befehl nimmt die gesammelten Screenshots, erkennt den Text und schickt die Wörter privat — du musst nur mit einer Taste speichern.',
+            ],
+          },
+          {
+            title: 'Was du einmal machst',
+            items: [
+              'Erstelle in der App «Fotos» ein Album mit dem exakten Namen «Deutsch Queue».',
+              'Installiere beide Befehle — der Bot im Privat-Chat gibt die Tasten und führt Schritt für Schritt.',
+              'Den ersten Befehl legst du auf die Aktionstaste oder das doppelte Tippen, den zweiten verbindest du mit deinem Konto per Code.',
+            ],
+          },
+          {
+            title: 'Wann übersetzt wird',
+            items: [
+              'Beim zweiten Befehl stellst du einen automatischen Start am Morgen ein — 06:30–07:30.',
+              'Zu dieser Zeit ist der Server frei, die Übersetzung läuft schnell und ohne Störungen.',
+              'Die Wörter kommen etwa anderthalb Minuten nach dem Start privat an.',
+            ],
+          },
+          {
+            title: 'Wo du die Befehle und Hilfe bekommst',
+            items: [
+              'Öffne den Bot im Privat-Chat und tippe «📲 Shortcut installieren» — er schickt beide Befehle und führt Schritt für Schritt.',
+              'Video-Anleitungen — die Taste «Wie man es benutzt».',
+              'Anderes Handy (Android)? Keine Befehle nötig — schreib dem Bot ein Wort, leite Text weiter oder füg ganze Textstücke ein.',
             ],
           },
         ],
