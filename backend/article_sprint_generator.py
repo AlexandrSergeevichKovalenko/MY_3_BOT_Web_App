@@ -126,6 +126,24 @@ def strong_gender(word: str) -> str | None:
     return None
 
 
+def resolve_article(word: str, stored: str) -> str:
+    """Authoritative der/die/das for a noun, used at SERVE/GRADE time.
+
+    A high-confidence deterministic signal (compound head like -wert/-preis, or a
+    decisive suffix) OVERRIDES the stored article, so a bad bank row — the classic
+    «die Börsenwert» (der Wert → der Börsenwert) — is corrected on the fly without a
+    migration. `strong_gender` is conservative (never fires on ambiguous/exception
+    roots), so this only flips genuine, near-certain mistakes; otherwise the stored
+    article is trusted. Returns lowercased der/die/das (or the best available)."""
+    st = str(stored or "").strip().lower()
+    sg = strong_gender(word)
+    if sg and st in ("der", "die", "das") and sg != st:
+        return sg
+    if st in ("der", "die", "das"):
+        return st
+    return sg or st
+
+
 def recheck_theme(theme_key: str) -> dict:
     """Apply the deterministic gender guard to already-stored rows; fix mismatches.
     Returns {"checked": n, "fixed": m, "examples": [...]}."""

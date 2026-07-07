@@ -315,9 +315,12 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
     # the next pass through this theme shows the real mnemonic. Usually a no-op anyway
     # because the morning pre-warm filled them.
 
+    from backend.article_sprint_generator import resolve_article
+
     def _card(w: dict, review: bool) -> dict:
         word = str(w.get("w") or "")
-        art = str(w.get("a") or "").strip().lower()
+        # Correct a bad bank article (die Börsenwert → der) before teaching it.
+        art = resolve_article(word, w.get("a"))
         tip = mnem.get(word.lower()) or gender_tip(word, art)
         akey = audio_keys.get(word.lower())
         ikey = image_keys.get(word.lower())

@@ -40942,6 +40942,59 @@ def mark_article_noun_image(*, word: str, article: str, image_object_key: str = 
     return updated > 0
 
 
+def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
+    """A whole PAGE of due `artikel` review mistakes in ONE query, each joined to its
+    noun-bank row for the precomputed image/audio/mnemonic — so работа над ошибками can
+    prefetch the batch and grade locally (no per-card round-trip). Returns dicts with
+    id, word, ru, correct(stored article), image_object_key, audio_object_key, mnemonic_ru."""
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT m.id,
+                           m.payload->>'wort'    AS wort,
+                           m.payload->>'ru'      AS ru,
+                           m.payload->>'correct' AS correct,
+                           n.image_object_key,
+                           n.audio_object_key,
+                           n.mnemonic_ru
+                    FROM bt_3_aufgabe_mistakes m
+                    LEFT JOIN bt_3_article_sprint_nouns n
+                           ON lower(n.word) = lower(m.payload->>'wort')
+                          AND COALESCE(n.retired, FALSE) = FALSE
+                    WHERE m.user_id = %s AND m.format = 'artikel'
+                      AND m.mastered = FALSE AND m.due_at <= NOW()
+                    ORDER BY m.due_at ASC, m.id ASC
+                    LIMIT %s;
+                    """,
+                    (int(user_id), int(limit)),
+                )
+                rows = cur.fetchall() or []
+        # A word can have several noun-bank rows (theme dupes) → keep the first non-null media.
+        best: dict[int, dict] = {}
+        for r in rows:
+            mid = int(r[0])
+            cur_row = best.get(mid)
+            cand = {
+                "id": mid, "word": str(r[1] or ""), "ru": str(r[2] or ""),
+                "correct": str(r[3] or ""), "image_object_key": str(r[4] or ""),
+                "audio_object_key": str(r[5] or ""), "mnemonic_ru": str(r[6] or ""),
+            }
+            if cur_row is None:
+                best[mid] = cand
+            else:
+                for k in ("image_object_key", "audio_object_key", "mnemonic_ru"):
+                    if not cur_row.get(k) and cand.get(k):
+                        cur_row[k] = cand[k]
+        # Preserve due order (dict of Python 3.7+ keeps insertion order).
+        return list(best.values())
+    except Exception:
+        logging.warning("get_due_artikel_mistakes_batch failed user_id=%s", user_id, exc_info=True)
+        return []
+
+
 def get_article_noun_images(words: list[str]) -> dict:
     """Map lower(word) → image_object_key for words that have an image (deck lookup)."""
     cleaned = [str(w).strip() for w in (words or []) if str(w).strip()]

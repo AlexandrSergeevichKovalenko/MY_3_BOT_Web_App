@@ -23673,6 +23673,44 @@ def answer_review_submit():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/answer/review/artikel/batch", methods=["POST"])
+def answer_review_artikel_batch():
+    """FAST Artikel section of работа над ошибками: a whole page of due der/die/das cards
+    (with photo/audio/tip) in one shot, so the client prefetches + grades locally."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        limit = max(1, min(40, int(payload.get("limit") or 20)))
+    except (TypeError, ValueError):
+        limit = 20
+    from backend.answer_eval import load_artikel_review_batch
+    return jsonify({"ok": True, **load_artikel_review_batch(user_id=int(user_id), limit=limit)})
+
+
+@app.route("/api/answer/review/artikel/answer", methods=["POST"])
+def answer_review_artikel_answer():
+    """Advance ONE artikel review card's SR schedule (fire-and-forget; graded locally)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        mistake_id = int(payload.get("mistake_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "mistake_id обязателен"}), 400
+    is_correct = bool(payload.get("is_correct"))
+    from backend.answer_eval import answer_artikel_review
+    try:
+        result = answer_artikel_review(user_id=int(user_id), mistake_id=mistake_id, is_correct=is_correct)
+    except Exception:
+        logging.exception("artikel review answer failed id=%s user=%s", mistake_id, user_id)
+        return jsonify({"error": "Ошибка"}), 500
+    _inbox_mark_kind_done(int(user_id), "rv")  # ✅ the "Работа над ошибками" card
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/answer/numdict/session", methods=["POST"])
 def answer_numdict_session():
     """Zahlen-Diktat: the 3-item session bundle (audio + prompt per item)."""
@@ -24562,10 +24600,13 @@ def artikel_submit():
         return jsonify({"error": "Набор не найден"}), 404
     amap: dict[str, str] = {}
     rumap: dict[str, str] = {}
+    from backend.article_sprint_generator import resolve_article
     for w in s["words"]:
         k = str(w.get("w") or "").strip().lower()
         if k:
-            amap[k] = str(w.get("a") or "").strip().lower()
+            # Correct a bad frozen article on the fly (e.g. «die Börsenwert» → der) so a
+            # right answer isn't marked wrong and never enters работа над ошибками mislabelled.
+            amap[k] = resolve_article(w.get("w"), w.get("a"))
             rumap[k] = w.get("ru") or ""
     items = []
     correct = 0

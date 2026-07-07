@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import AufgabeGame from './AufgabeGame.jsx';
+import ArtikelReviewGame from './ArtikelReviewGame.jsx';
 
 /**
  * "Работа над ошибками" — spaced-repetition review of the user's past mistakes.
@@ -60,6 +61,8 @@ export default function ReviewSession({ api, haptic, onClose }) {
 
   const startSection = useCallback((fam) => {
     setFamily(fam || null);
+    // Artikel → the fast, template-styled colour-card flow (prefetch + local grade).
+    if (fam === 'artikel') { setPhase('artikel'); return; }
     loadNext(fam || null);
   }, [loadNext]);
 
@@ -128,6 +131,9 @@ export default function ReviewSession({ api, haptic, onClose }) {
         <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
       </Root>
     );
+  }
+  if (phase === 'artikel') {
+    return <ArtikelReviewGame api={api} haptic={haptic} onClose={onClose} onBack={loadOverview} />;
   }
   if (phase === 'loading') {
     return <Root><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></Root>;

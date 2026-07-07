@@ -18,11 +18,14 @@ def _dedup_words(words: list[dict]) -> list[dict]:
     """Dedup by (word, article) — NOT word alone — so a two-gender noun keeps both
     senses (der See / die See). Carries the Russian meaning (`ru`) and the
     two-gender flag (`tg`) the game needs to show the sense for those words."""
+    from backend.article_sprint_generator import resolve_article
     seen: set = set()
     uniq: list[dict] = []
     for w in words:
         wd = str(w.get("w") or "").strip()
-        a = str(w.get("a") or "").lower()
+        # Deterministic guard: correct a wrong bank article (die Börsenwert → der)
+        # before it's frozen into the served set, so grading is right from the start.
+        a = resolve_article(wd, w.get("a")) if wd else str(w.get("a") or "").lower()
         k = (wd.lower(), a)
         if wd and a and k not in seen:
             seen.add(k)

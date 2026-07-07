@@ -319,8 +319,11 @@ function AufgabeAdjektiv({ task, onSubmit, submitting }) {
   );
 }
 
+const ART_CLASS = { der: 'art-der', die: 'art-die', das: 'art-das' };
+
 function AufgabeArtikel({ task, onSubmit, submitting }) {
-  // der/die/das review (mirrors Artikel Sprint): one tap = instant answer.
+  // der/die/das review — the Artikel Trainer template: photo of the word + colour-coded
+  // der(blue)/die(red)/das(green). One tap = instant answer.
   const options = task.options && task.options.length ? task.options : ['der', 'die', 'das'];
   const [pick, setPick] = useState(null);
   const choose = (a) => {
@@ -329,14 +332,19 @@ function AufgabeArtikel({ task, onSubmit, submitting }) {
   };
   return (
     <>
-      <div className="au-artikel-word">{task.wort}</div>
+      {task.image ? (
+        <div className="al-img"><img src={task.image} alt="" loading="eager" /></div>
+      ) : null}
+      <div className={`as-word ${pick ? pick : ''}`}>
+        <span className="al-word-text">{task.wort}</span>
+      </div>
       {task.hint_ru ? <p className="au-hint" style={{ textAlign: 'center' }}>{task.hint_ru}</p> : null}
-      <div className="au-adj-opts">
+      <div className="as-buttons">
         {options.map((a) => (
           <button
             key={a} type="button"
-            className={`au-adj-key au-artikel-key${pick === a ? ' on' : ''}`}
-            onClick={() => choose(a)} disabled={submitting}
+            className={`as-btn-art ${ART_CLASS[a] || ''}${pick === a ? ' on' : ''}`}
+            onClick={() => choose(a)} disabled={submitting || !!pick}
           >{a}</button>
         ))}
       </div>

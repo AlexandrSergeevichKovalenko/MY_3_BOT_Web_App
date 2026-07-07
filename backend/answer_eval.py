@@ -1259,6 +1259,8 @@ def _aufgabe_correct_answer(payload: dict) -> str:
     """The canonical answer to show after answering (per format)."""
     art = str(payload.get("correct") or "").strip().lower()
     if art in ("der", "die", "das") and payload.get("wort") and not payload.get("satz"):  # artikel
+        from backend.article_sprint_generator import resolve_article
+        art = resolve_article(payload.get("wort"), art)  # correct a mislabelled row before revealing
         return f"{art} {payload.get('wort')}".strip()
     if payload.get("before") is not None and payload.get("after") is not None:  # adjektiv
         full = str(payload.get("full") or "").strip()
@@ -1324,9 +1326,14 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
     # Synonym/antonym: every accepted word is tappable to save to the dictionary
     # (German in our save format + its own Russian translation).
     saveable = accepted_pairs(payload.get("accepted")) if fmt in ("synonym", "antonym") else []
-    # Artikel review: no stored tip — derive a deterministic gender-signal mnemonic.
-    tip = (artikel_review_hint(str(payload.get("wort") or ""), str(payload.get("correct") or ""))
-           if fmt == "artikel" else str(payload.get("tip") or ""))
+    # Artikel review: no stored tip — derive a deterministic gender-signal mnemonic
+    # from the TRUE (guard-resolved) article so the hint never contradicts the answer.
+    if fmt == "artikel":
+        from backend.article_sprint_generator import resolve_article
+        tip = artikel_review_hint(str(payload.get("wort") or ""),
+                                  resolve_article(payload.get("wort"), payload.get("correct")))
+    else:
+        tip = str(payload.get("tip") or "")
     return {
         "kind": "aufgabe",
         "format": fmt,
@@ -1378,10 +1385,20 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
     elif fmt == "artikel":
         # der/die/das review card (mirrors Artikel Sprint). Send the noun + the three
         # options; NEVER the correct article. The RU meaning is not the answer, so it
-        # may be shown as a subtitle to identify the word.
-        meta["wort"] = str(payload.get("wort") or "")
+        # may be shown as a subtitle to identify the word. A photo of the word (from the
+        # noun bank, precomputed) makes the card match the Artikel Trainer template.
+        wort = str(payload.get("wort") or "")
+        meta["wort"] = wort
         meta["options"] = ["der", "die", "das"]
         meta["hint_ru"] = str(payload.get("ru") or "")
+        try:
+            from backend.database import get_article_noun_images
+            from backend.r2_storage import r2_public_url
+            ikey = get_article_noun_images([wort]).get(wort.lower(), "") if wort else ""
+            if ikey:
+                meta["image"] = r2_public_url(ikey)
+        except Exception:
+            pass
     elif fmt == "video":
         # Remedial theory video ("тебе было сложно"): a skippable card in the review
         # queue, not a gradeable task. Send the YouTube id + topic label; the client
@@ -1517,6 +1534,46 @@ def load_review_next(*, user_id: int, family: str | None = None) -> dict:
         "mistake_id": int(m["id"]),
         "task": aufgabe_client_meta(str(m["format"]), m["payload"] or {}),
     }
+
+
+def load_artikel_review_batch(*, user_id: int, limit: int = 20) -> dict:
+    """FAST path for the Artikel section of работа над ошибками: return a whole page of
+    due der/die/das mistakes as ready-to-render cards (noun + true article + photo +
+    audio + tip) in ONE query, so the client prefetches the batch, grades locally, and
+    advances spaced-repetition in the background — no per-card server round-trip. The
+    true article is guard-resolved (die Börsenwert → der) so mislabelled mistakes are
+    fixed on the fly. `a` is sent because review is personal study, not a scored test."""
+    from backend.database import get_due_artikel_mistakes_batch, count_due_mistakes
+    from backend.article_sprint_generator import resolve_article
+    from backend.r2_storage import r2_public_url
+    rows = get_due_artikel_mistakes_batch(int(user_id), int(limit))
+    cards = []
+    for r in rows:
+        wort = str(r.get("word") or "")
+        if not wort:
+            continue
+        a = resolve_article(wort, r.get("correct"))
+        ikey = str(r.get("image_object_key") or "")
+        akey = str(r.get("audio_object_key") or "")
+        tip = str(r.get("mnemonic_ru") or "") or artikel_review_hint(wort, a)
+        cards.append({
+            "id": int(r["id"]), "w": wort, "ru": str(r.get("ru") or ""), "a": a,
+            "image": r2_public_url(ikey) if ikey else "",
+            "audio": r2_public_url(akey) if akey else "",
+            "tip": tip,
+        })
+    return {"kind": "artikel_review", "cards": cards,
+            "remaining": count_due_mistakes(int(user_id), family="artikel")}
+
+
+def answer_artikel_review(*, user_id: int, mistake_id: int, is_correct: bool) -> dict:
+    """Advance ONE artikel review card's spaced-repetition schedule (fire-and-forget from
+    the batch client). Grading already happened locally on the deterministic article, so
+    this only reschedules — off the user's critical path."""
+    from backend.database import reschedule_mistake, count_due_mistakes
+    reschedule_mistake(mistake_id=int(mistake_id), user_id=int(user_id), is_correct=bool(is_correct))
+    return {"kind": "artikel_review", "ok": True,
+            "remaining": count_due_mistakes(int(user_id), family="artikel")}
 
 
 def evaluate_review(*, user_id: int, mistake_id: int, answer: str,
@@ -1793,8 +1850,11 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
         return False
     if fmt == "artikel":
         # raw_input = the chosen article ("der"/"die"/"das"). The correct one is
-        # carried in payload["correct"] (never sent to the client).
-        correct = str(payload.get("correct") or "").strip().lower()
+        # carried in payload["correct"] (never sent to the client) — but re-resolved
+        # through the deterministic guard so a mislabelled mistake (die Börsenwert,
+        # recorded before the fix) grades against the TRUE article (der).
+        from backend.article_sprint_generator import resolve_article
+        correct = resolve_article(payload.get("wort"), payload.get("correct"))
         return bool(correct) and answer.strip().lower() == correct
     if fmt in ("synonym", "antonym"):
         accepted = accepted_de(payload.get("accepted"))
