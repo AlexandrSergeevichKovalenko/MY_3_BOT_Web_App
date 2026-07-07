@@ -227,6 +227,13 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     PdfReader = None
 try:
+    # PyMuPDF (fitz) reconstructs words far better than pypdf on typeset books:
+    # pypdf inserts spurious spaces between glyphs on character-positioned fonts
+    # ("D r. m e d. C h r i s t i a n"), fitz does not. Preferred extractor.
+    import fitz as _pymupdf  # PyMuPDF
+except Exception:  # pragma: no cover - optional dependency
+    _pymupdf = None
+try:
     from ebooklib import epub as _ebooklib_epub, ITEM_DOCUMENT as _EPUB_ITEM_DOCUMENT
 except Exception:  # pragma: no cover - optional dependency
     _ebooklib_epub = None
@@ -13996,8 +14003,56 @@ def _reflow_pdf_body_lines(lines: list[str]) -> str:
     return "\n\n".join(paragraph for paragraph in paragraphs if paragraph)
 
 
+_PDF_SINGLE_GLYPH_RE = re.compile(r"[^\W\d_]\.?", re.UNICODE)
+
+
+def _despace_pdf_letter_runs(text: str) -> str:
+    """Repair typeset letter-spacing artifacts ("C h r i s t i a n" -> "Christian").
+
+    pypdf (our fallback extractor) emits a space between every glyph on
+    character-positioned fonts. PyMuPDF avoids this, but we normalize defensively
+    so neither path leaks "D r. m e d." into the reader. A "run" is 3+ consecutive
+    single-letter tokens; we glue their glyphs back together while preserving a
+    space after tokens that carry sentence punctuation, so "D r. m e d." becomes
+    "Dr. med." rather than "Dr.med.".
+    """
+
+    def fix_line(line: str) -> str:
+        tokens = line.split(" ")
+        out: list[str] = []
+        i = 0
+        n = len(tokens)
+        while i < n:
+            j = i
+            while j < n and tokens[j] and _PDF_SINGLE_GLYPH_RE.fullmatch(tokens[j]):
+                j += 1
+            if j - i >= 3:
+                merged = ""
+                prev_letter = ""
+                for tok in tokens[i:j]:
+                    head = tok[:1]
+                    # A lower->upper transition inside the run marks a word boundary
+                    # ("...Christian" + "VELTMANN..."); single spacing alone can't show it.
+                    if prev_letter and prev_letter.islower() and head.isupper():
+                        merged += " "
+                    merged += tok
+                    if tok.endswith((".", ",", ";", ":", "!", "?")):
+                        merged += " "
+                    letter = tok.rstrip(".,;:!?")
+                    prev_letter = letter[-1:] if letter else prev_letter
+                out.append(re.sub(r" {2,}", " ", merged).strip())
+                i = j
+            else:
+                out.append(tokens[i])
+                i += 1
+        return " ".join(part for part in out if part != "")
+
+    return "\n".join(fix_line(line) for line in str(text or "").split("\n"))
+
+
 def _normalize_pdf_extracted_page_text(raw_text: str, max_chars: int = 50000) -> str:
     text = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = _despace_pdf_letter_runs(text)
     raw_lines = text.split("\n")
     if not raw_lines:
         return ""
@@ -14038,27 +14093,116 @@ def _extract_text_from_pdf_bytes(data: bytes) -> str:
     return text
 
 
-def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
-    if not data:
-        return "", []
+# Reader book limits. The whole book is kept (up to a safety ceiling) instead of
+# the old 250-page / 150k-char truncation, and repaginated into fixed pages so the
+# page count is computed ONCE on the server and never drifts on the client.
+_READER_PDF_MAX_SOURCE_PAGES = 4000  # hard ceiling on physical PDF pages we read
+_READER_BOOK_MAX_TOTAL_CHARS = 3_000_000  # keep in sync with EPUB (_EPUB_MAX_TOTAL_TEXT_CHARS)
+_READER_FIXED_PAGE_CHARS = 1100  # target chars per fixed reader page (~one phone screen)
+
+
+def _extract_pdf_source_page_texts(data: bytes) -> list[str]:
+    """Extract normalized text for every physical PDF page, cleanest engine first.
+
+    PyMuPDF (fitz) reconstructs words correctly on typeset books; pypdf is only a
+    fallback when PyMuPDF is unavailable in the runtime.
+    """
+    source_texts: list[str] = []
+    if _pymupdf is not None:
+        try:
+            with _pymupdf.open(stream=data, filetype="pdf") as doc:
+                for idx, page in enumerate(doc):
+                    if idx >= _READER_PDF_MAX_SOURCE_PAGES:
+                        break
+                    try:
+                        page_text = page.get_text("text") or ""
+                    except Exception:
+                        page_text = ""
+                    normalized = _normalize_pdf_extracted_page_text(page_text, max_chars=50000)
+                    source_texts.append(normalized)
+            return source_texts
+        except Exception:
+            logging.exception("reader PDF extraction via PyMuPDF failed; falling back to pypdf")
+            source_texts = []
     if PdfReader is None:
-        raise RuntimeError("PDF extraction is unavailable: install pypdf")
+        raise RuntimeError("PDF extraction is unavailable: install PyMuPDF or pypdf")
     reader = PdfReader(BytesIO(data))
-    chunks: list[str] = []
-    pages: list[dict] = []
     for idx, page in enumerate(reader.pages):
-        if idx >= 250:
+        if idx >= _READER_PDF_MAX_SOURCE_PAGES:
             break
         try:
             page_text = page.extract_text() or ""
         except Exception:
             page_text = ""
-        normalized = _normalize_pdf_extracted_page_text(page_text, max_chars=50000)
-        if not normalized:
+        source_texts.append(_normalize_pdf_extracted_page_text(page_text, max_chars=50000))
+    return source_texts
+
+
+def _split_long_reader_paragraph(paragraph: str, target_chars: int) -> list[str]:
+    """Split an over-long paragraph into ~target_chars chunks at sentence boundaries."""
+    sentences = re.split(r"(?<=[.!?…])\s+", paragraph.strip())
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
             continue
-        chunks.append(normalized)
-        pages.append({"page_number": idx + 1, "text": normalized})
-    return _normalize_reader_text("\n\n".join(chunks)), pages
+        if current and len(current) + len(sentence) + 1 > target_chars:
+            chunks.append(current.strip())
+            current = sentence
+        else:
+            current = f"{current} {sentence}".strip() if current else sentence
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks or [paragraph.strip()]
+
+
+def _repaginate_reader_text_fixed(full_text: str, target_chars: int = _READER_FIXED_PAGE_CHARS) -> list[dict]:
+    """Repaginate the whole document into fixed ~target_chars pages at paragraph
+    boundaries. Computed once at ingest so the page count is stable everywhere."""
+    text = str(full_text or "").strip()
+    if not text:
+        return []
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    pages: list[dict] = []
+    current: list[str] = []
+    current_len = 0
+
+    def flush() -> None:
+        nonlocal current, current_len
+        if current:
+            pages.append({"page_number": len(pages) + 1, "text": "\n\n".join(current)})
+            current = []
+            current_len = 0
+
+    for paragraph in paragraphs:
+        # A paragraph much larger than the target (e.g. a wall-of-text page) is split
+        # by sentence so a single "page" never dwarfs the rest.
+        if len(paragraph) > target_chars * 1.6:
+            flush()
+            for chunk in _split_long_reader_paragraph(paragraph, target_chars):
+                pages.append({"page_number": len(pages) + 1, "text": chunk})
+            continue
+        if current_len > 0 and current_len + len(paragraph) + 2 > target_chars:
+            flush()
+        current.append(paragraph)
+        current_len += len(paragraph) + 2
+    flush()
+    return pages
+
+
+def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
+    if not data:
+        return "", []
+    source_texts = _extract_pdf_source_page_texts(data)
+    full_text = _normalize_reader_text(
+        "\n\n".join(chunk for chunk in source_texts if chunk),
+        max_chars=_READER_BOOK_MAX_TOTAL_CHARS,
+    )
+    if not full_text:
+        return "", []
+    pages = _repaginate_reader_text_fixed(full_text)
+    return full_text, pages
 
 
 def _load_ebooklib_runtime() -> tuple[Any, Any]:
@@ -41510,10 +41654,6 @@ def shortcut_install_redirect():
 # the web tier hasn't got the env vars set yet.
 _SHORTCUT_COLLECTOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/39a22ce3741f4dc4915c762687e182eb"
 _SHORTCUT_PROCESSOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/20e998527b944a1ebe22ceb875da7ad9"
-# Instant OCR command (screenshot → extract text → POST /api/shortcut/lookup now).
-# Default = the old single-shortcut link (documented rollback); owner overrides with
-# SHORTCUT_INSTANT_URL once the instant command is (re)built against /api/shortcut/lookup.
-_SHORTCUT_INSTANT_DEFAULT_URL = "https://www.icloud.com/shortcuts/832ca219b23c4e298af5712ee473302c"
 
 
 def _shortcut_collector_public_url() -> str:
@@ -41521,14 +41661,6 @@ def _shortcut_collector_public_url() -> str:
         (os.getenv("SHORTCUT_COLLECTOR_URL") or "").strip()
         or (os.getenv("SHORTCUT_SCREENSHOT_URL") or "").strip()
         or _SHORTCUT_COLLECTOR_DEFAULT_URL
-    )
-
-
-def _shortcut_instant_public_url() -> str:
-    return (
-        (os.getenv("SHORTCUT_INSTANT_URL") or "").strip()
-        or (os.getenv("SHORTCUT_OCR_URL") or "").strip()
-        or _SHORTCUT_INSTANT_DEFAULT_URL
     )
 
 
@@ -41551,7 +41683,6 @@ def webapp_shortcut_info():
         "ok": True,
         "collector_url": _shortcut_collector_public_url(),
         "processor_url": _shortcut_processor_public_url(),
-        "instant_url": _shortcut_instant_public_url(),
     })
 
 
