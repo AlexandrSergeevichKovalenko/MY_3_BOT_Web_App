@@ -21,8 +21,13 @@ _WORD_RE = re.compile(
     r"Ø-öø-ˁˆ-ˑˠ-ˤ'-]+"
 )
 
-# Google TTS SSML hard limit; leave generous buffer for XML overhead.
-_SSML_CHUNK_MAX_CHARS = 4500
+# Google TTS SSML hard limit is 5000 bytes, but that is NOT the binding
+# constraint here: Google also rejects a request whose single *sentence* would
+# synthesize to too much audio ("This request contains sentences that are too
+# long…"). Dense pages with sparse sentence punctuation (glossaries, abbreviation
+# lists) can produce one very long "sentence", so we keep the per-chunk budget
+# well below the byte limit and additionally bisect-on-failure at synthesis time.
+_SSML_CHUNK_MAX_CHARS = 2200
 
 # Per-word SSML mark overhead estimate: <mark name="wNNNNN"/>  (~22 chars)
 _MARK_OVERHEAD = 22

@@ -556,6 +556,75 @@ def synthesize_page_with_timings(
     # Split at natural boundaries while keeping SSML under the provider limit.
     text_chunks = chunk_text_with_words(page_text, words)
 
+    def _looks_like_sentence_too_long(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "too long" in msg
+            or "sentences that are too long" in msg
+            or ("invalid" in msg and "argument" in msg)
+        )
+
+    def _synthesize_chunk(chunk_text, chunk_words, char_offset, mark_offset, time_offset_ms, depth=0):
+        """Synthesize one chunk and return (AudioSegment, timings, marks_used).
+
+        Google occasionally rejects a chunk whose single sentence would produce
+        too much audio ("sentences that are too long"). Dense, sparsely-punctuated
+        pages hit this. We bisect the chunk at a word boundary and retry each half
+        through the SAME span/mark machinery, so word timings stay correct no
+        matter how deep we recurse."""
+        if not chunk_words:
+            return AudioSegment.silent(duration=0), [], 0
+
+        timing_spans = segment_timing_spans(chunk_text, chunk_words, text_char_offset=char_offset)
+        if not timing_spans:
+            return AudioSegment.silent(duration=0), [], 0
+
+        ssml_text, mark_index = _build_ssml_from_spans(
+            chunk_text, timing_spans, text_char_offset=char_offset, mark_offset=mark_offset,
+        )
+        tts_request = texttospeech.SynthesizeSpeechRequest(
+            input=texttospeech.SynthesisInput(ssml=ssml_text),
+            voice=voice_params,
+            audio_config=audio_config,
+            enable_time_pointing=[texttospeech.SynthesizeSpeechRequest.TimepointType.SSML_MARK],
+        )
+        try:
+            response = tts_client.synthesize_speech(request=tts_request)
+        except Exception as exc:
+            if depth < 8 and len(chunk_words) > 1 and _looks_like_sentence_too_long(exc):
+                mid = len(chunk_words) // 2
+                left_words = chunk_words[:mid]
+                right_words = chunk_words[mid:]
+                split_char = int(right_words[0]["char_start"])
+                rel_split = max(0, split_char - char_offset)
+                left_text = chunk_text[:rel_split]
+                right_text = chunk_text[rel_split:]
+                logging.warning(
+                    "[READER_AUDIO] chunk too long (depth=%s, %s words) — bisecting and retrying",
+                    depth, len(chunk_words),
+                )
+                seg_l, tim_l, marks_l = _synthesize_chunk(
+                    left_text, left_words, char_offset, mark_offset, time_offset_ms, depth + 1,
+                )
+                seg_r, tim_r, marks_r = _synthesize_chunk(
+                    right_text, right_words, split_char, mark_offset + marks_l,
+                    time_offset_ms + len(seg_l), depth + 1,
+                )
+                return seg_l + seg_r, tim_l + tim_r, marks_l + marks_r
+            raise
+
+        if not response.audio_content:
+            return AudioSegment.silent(duration=0), [], 0
+
+        segment = AudioSegment.from_file(io.BytesIO(response.audio_content), format="mp3")
+        chunk_timings = parse_timepoints_for_spans(
+            list(response.timepoints),
+            mark_index,
+            chunk_duration_ms=len(segment),
+            time_offset_ms=time_offset_ms,
+        )
+        return segment, chunk_timings, len(mark_index)
+
     combined = AudioSegment.silent(duration=0)
     all_timings: list[dict] = []
     mark_offset = 0
@@ -565,47 +634,12 @@ def synthesize_page_with_timings(
         if not chunk_words:
             char_offset += len(chunk_text)
             continue
-
-        timing_spans = segment_timing_spans(
-            chunk_text,
-            chunk_words,
-            text_char_offset=char_offset,
-        )
-        if not timing_spans:
-            char_offset += len(chunk_text)
-            continue
-
-        ssml_text, mark_index = _build_ssml_from_spans(
-            chunk_text,
-            timing_spans,
-            text_char_offset=char_offset,
-            mark_offset=mark_offset,
-        )
-        tts_request = texttospeech.SynthesizeSpeechRequest(
-            input=texttospeech.SynthesisInput(ssml=ssml_text),
-            voice=voice_params,
-            audio_config=audio_config,
-            enable_time_pointing=[
-                texttospeech.SynthesizeSpeechRequest.TimepointType.SSML_MARK
-            ],
-        )
-        response = tts_client.synthesize_speech(request=tts_request)
-        if not response.audio_content:
-            char_offset += len(chunk_text)
-            continue
-
-        segment = AudioSegment.from_file(io.BytesIO(response.audio_content), format="mp3")
-        chunk_duration_ms = len(segment)
-        time_offset_ms = len(combined)
-        chunk_timings = parse_timepoints_for_spans(
-            list(response.timepoints),
-            mark_index,
-            chunk_duration_ms=chunk_duration_ms,
-            time_offset_ms=time_offset_ms,
+        segment, chunk_timings, marks_used = _synthesize_chunk(
+            chunk_text, chunk_words, char_offset, mark_offset, time_offset_ms=len(combined),
         )
         all_timings.extend(chunk_timings)
         combined += segment
-        mark_offset += len(mark_index)
+        mark_offset += marks_used
         char_offset += len(chunk_text)
 
     if len(combined) == 0:
