@@ -156,6 +156,28 @@ export default function ReaderSection(props) {
     switchReaderLayoutMode = () => {},
   } = props;
 
+  // Local UI-only state: the top-right "···" overflow menu that holds the
+  // less-used chrome controls (scroll direction, original/text layout, timer,
+  // collapse). Pure presentation — no business logic lives here.
+  const [readerOverflowOpen, setReaderOverflowOpen] = React.useState(false);
+  React.useEffect(() => {
+    if (!readerOverflowOpen) return undefined;
+    // Dismiss on any tap outside the menu (a fixed-position scrim can't be used:
+    // the topbar's backdrop-filter traps position:fixed to the bar itself).
+    const onDown = (event) => {
+      const t = event.target;
+      if (t && t.closest && (t.closest('.reader-overflow-menu') || t.closest('.reader-topbar-more'))) return;
+      setReaderOverflowOpen(false);
+    };
+    const close = () => setReaderOverflowOpen(false);
+    document.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [readerOverflowOpen]);
+
   const sectionClass = [
     'webapp-section',
     'webapp-reader',
@@ -582,252 +604,171 @@ export default function ReaderSection(props) {
         // ════════════════════════════════════════════════════════════════
         return (
           <>
-            {/* ── Topbar peek (when chrome collapsed) ──────────────── */}
+            {/* ── Topbar peek (collapsed): compact title pill → expand.
+                 TOC / bookmark / audio now live in the bottom dock. ─────── */}
             {readerImmersive && readerTopbarCollapsed && (
-              <div className="reader-topbar-peek">
+              <div className="reader-topbar-peek reader-topbar-peek-flag">
                 <button
                   type="button"
-                  className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerShowToc ? 'is-active' : ''}`}
-                  onClick={() => {
-                    if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
-                    setReaderShowToc((v) => !v);
-                  }}
-                  disabled={!readerContent}
-                  title={tr('Оглавление', 'Inhaltsverzeichnis')}
-                  aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
-                >
-                  <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                    <svg viewBox="0 0 18 18" fill="none">
-                      <path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                    </svg>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className={`reader-bookmark-btn reader-toolbar-btn reader-toolbar-btn-icon-only ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
-                  onClick={() => {
-                    const mark = computeReaderProgressPercent();
-                    setReaderBookmarkPercent(mark);
-                    persistReaderExactBookmark(readerCurrentPage);
-                    if (readerDocumentId) {
-                      syncReaderState({ bookmark_percent: Number(mark.toFixed(2)) });
-                    }
-                  }}
-                  disabled={!readerContent || !readerDocumentId}
-                  aria-label={tr('Поставить закладку', 'Lesezeichen setzen')}
-                  title={tr('Поставить закладку', 'Lesezeichen setzen')}
-                >
-                  <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                    <svg viewBox="0 0 18 18" fill="none">
-                      <path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                    </svg>
-                  </span>
-                </button>
-                {/* ── Audio play button (peek bar) ── */}
-                <button
-                  type="button"
-                  className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only reader-audio-play-btn${readerAudioPlayActive ? ' is-playing' : ''}${readerAudioAwaitingWordTap ? ' is-awaiting' : ''}`}
-                  onClick={readerAudioPremiumLocked ? onReaderAudioUpgrade : onReaderAudioPlayBtn}
-                  disabled={!readerHasContent || readerAudioPlayLoading || billingActionLoading}
-                  title={readerAudioPremiumLocked
-                    ? readerAudioPremiumHint
-                    : (readerAudioPlayActive
-                      ? (readerAudioPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause'))
-                      : (readerAudioAwaitingWordTap ? tr('Нажми слово…', 'Wort antippen…') : tr('Аудио', 'Audio')))}
-                  aria-label={tr('Аудиовоспроизведение', 'Audio')}
-                >
-                  <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                    {readerAudioPlayLoading ? (
-                      <svg viewBox="0 0 18 18" fill="none">
-                        <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.6" strokeDasharray="28" strokeDashoffset="10" strokeLinecap="round">
-                          <animateTransform attributeName="transform" type="rotate" from="0 9 9" to="360 9 9" dur="0.9s" repeatCount="indefinite"/>
-                        </circle>
-                      </svg>
-                    ) : readerAudioPlayActive && !readerAudioPaused ? (
-                      <svg viewBox="0 0 18 18" fill="none">
-                        <rect x="5" y="4.5" width="2.8" height="9" rx="1" fill="currentColor"/>
-                        <rect x="10.2" y="4.5" width="2.8" height="9" rx="1" fill="currentColor"/>
-                      </svg>
-                    ) : (
-                      <svg viewBox="0 0 18 18" fill="none">
-                        <path d="M6 4.5l8 4.5-8 4.5V4.5z" fill="currentColor"/>
-                      </svg>
-                    )}
-                  </span>
-                </button>
-                <div className="reader-topbar-peek-spacer" />
-                <button
-                  type="button"
-                  className="secondary-button reader-topbar-toggle-chip reader-toolbar-btn"
+                  className="reader-peek-pill"
                   onClick={() => setReaderTopbarCollapsed(false)}
                   title={tr('Развернуть панель', 'Leiste aufklappen')}
+                  aria-label={tr('Развернуть панель', 'Leiste aufklappen')}
                 >
-                  <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                    <svg viewBox="0 0 18 18" fill="none">
-                      <path d="M4.5 6.75 9 11.25l4.5-4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                  <span className="reader-peek-title">{readerTitle || tr('Читалка', 'Leser')}</span>
+                  <span className="reader-peek-meta">
+                    {!readerUsesOriginalEpubLayout && readerPageCount > 0
+                      ? `${readerCurrentPage} / ${readerPageCount}`
+                      : `${Math.round(readerProgressPercent)}%`}
                   </span>
-                  <span className="reader-toolbar-btn-label">{tr('Развернуть', 'Aufklappen')}</span>
+                  <svg className="reader-peek-chevron" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                    <path d="M4.5 6.75 9 11.25l4.5-4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </button>
               </div>
             )}
 
-            {/* ── Topbar (expanded) ───────────────────────────────── */}
+            {/* ── Topbar (expanded, redesigned: back · title · ···) ─ */}
             {!readerTopbarCollapsed && (
-              <div className="reader-topbar reader-immersive-topbar">
-                <div className="reader-immersive-head">
-                  <div className="reader-immersive-title-wrap">
-                    <div className="reader-topbar-title">
-                      {readerTitle || tr('Читалка', 'Leser')}
-                    </div>
-                    <div className="webapp-muted reader-topbar-meta">
-                      {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
-                      {!readerUsesOriginalEpubLayout && readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
-                      {readerUsesOriginalEpubLayout ? ` • EPUB Original` : ''}
-                    </div>
-                    {readerUsesOriginalEpubLayout && readerResolvedOriginalTocTitle && (
-                      <div className="webapp-muted reader-topbar-meta reader-topbar-meta-chapter">
-                        {readerResolvedOriginalTocTitle}
-                      </div>
-                    )}
-                  </div>
+              <div className="reader-topbar reader-immersive-topbar reader-topbar-flag">
+                <div className="reader-topbar-row">
                   <button
                     type="button"
-                    className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
-                    onClick={toggleReaderTimerPause}
-                    disabled={!readerHasContent}
-                  >
-                    {readerTimerPaused
-                      ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}`
-                      : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
-                  </button>
-                </div>
-                <div className="reader-immersive-dock">
-                  <button
-                    type="button"
-                    className="section-home-back reader-toolbar-btn reader-toolbar-btn-back"
+                    className="reader-topbar-icbtn reader-topbar-back"
                     onClick={() => {
                       setReaderArchiveOpen(true);
                       setReaderImmersive(false);
                       setReaderTopbarCollapsed(false);
                       setReaderSettingsOpen(false);
                     }}
+                    title={tr('К библиотеке', 'Zur Bibliothek')}
+                    aria-label={tr('К библиотеке', 'Zur Bibliothek')}
                   >
-                    <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                      <svg viewBox="0 0 18 18" fill="none">
-                        <path
-                          d="M10.75 4.25 6 9l4.75 4.75M6.6 9h6.15"
-                          stroke="currentColor"
-                          strokeWidth="1.75"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </span>
-                    <span className="reader-toolbar-btn-label">
-                      {tr('Архив', 'Archiv')}
-                    </span>
+                    <svg viewBox="0 0 18 18" fill="none">
+                      <path d="M10.75 4.25 6 9l4.75 4.75" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
                   </button>
+                  <div className="reader-topbar-center">
+                    <div className="reader-topbar-title">
+                      {readerTitle || tr('Читалка', 'Leser')}
+                    </div>
+                    <div className="reader-topbar-meta">
+                      {readerUsesOriginalEpubLayout
+                        ? `EPUB Original · ${Math.round(readerProgressPercent)}%`
+                        : (readerPageCount > 0
+                          ? `${tr('Стр.', 'S.')} ${readerCurrentPage} / ${readerPageCount} · ${Math.round(readerProgressPercent)}%`
+                          : `${Math.round(readerProgressPercent)}%`)}
+                      {readerUsesOriginalEpubLayout && readerResolvedOriginalTocTitle
+                        ? ` · ${readerResolvedOriginalTocTitle}`
+                        : ''}
+                    </div>
+                  </div>
                   <button
                     type="button"
-                    className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
-                    onClick={() => {
-                      const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
-                      setReaderReadingMode(nextMode);
-                      if (readerDocumentId) {
-                        syncReaderState({ reading_mode: nextMode });
-                      }
-                    }}
-                    disabled={!readerContent}
-                    title={tr('Направление прокрутки', 'Scroll-Richtung')}
-                    aria-label={tr('Направление прокрутки', 'Scroll-Richtung')}
+                    className={`reader-topbar-icbtn reader-topbar-more ${readerOverflowOpen ? 'is-active' : ''}`}
+                    onClick={() => setReaderOverflowOpen((v) => !v)}
+                    title={tr('Ещё', 'Mehr')}
+                    aria-label={tr('Ещё', 'Mehr')}
+                    aria-expanded={readerOverflowOpen}
                   >
-                    <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                      {readerReadingMode === 'vertical' ? (
-                        <svg viewBox="0 0 18 18" fill="none">
-                          <path
-                            d="M9 3.5v11M9 3.5 6.9 5.6M9 3.5l2.1 2.1M9 14.5l-2.1-2.1M9 14.5l2.1-2.1"
-                            stroke="currentColor"
-                            strokeWidth="1.7"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      ) : (
-                        <svg viewBox="0 0 18 18" fill="none">
-                          <path
-                            d="M3.5 9h11M3.5 9l2.1-2.1M3.5 9l2.1 2.1M14.5 9l-2.1-2.1M14.5 9l-2.1 2.1"
-                            stroke="currentColor"
-                            strokeWidth="1.7"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
+                    <svg viewBox="0 0 18 18" fill="none">
+                      <circle cx="9" cy="4.5" r="1.35" fill="currentColor" />
+                      <circle cx="9" cy="9" r="1.35" fill="currentColor" />
+                      <circle cx="9" cy="13.5" r="1.35" fill="currentColor" />
+                    </svg>
+                  </button>
+                </div>
+
+                {readerOverflowOpen && (
+                  <>
+                    <div className="reader-overflow-menu" role="menu">
+                      <button
+                        type="button"
+                        className="reader-overflow-item"
+                        role="menuitem"
+                        onClick={() => {
+                          const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
+                          setReaderReadingMode(nextMode);
+                          if (readerDocumentId) syncReaderState({ reading_mode: nextMode });
+                          setReaderOverflowOpen(false);
+                        }}
+                        disabled={!readerContent}
+                      >
+                        <span className="reader-overflow-ic" aria-hidden="true">
+                          {readerReadingMode === 'vertical' ? (
+                            <svg viewBox="0 0 18 18" fill="none"><path d="M9 3.5v11M9 3.5 6.9 5.6M9 3.5l2.1 2.1M9 14.5l-2.1-2.1M9 14.5l2.1-2.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                          ) : (
+                            <svg viewBox="0 0 18 18" fill="none"><path d="M3.5 9h11M3.5 9l2.1-2.1M3.5 9l2.1 2.1M14.5 9l-2.1-2.1M14.5 9l-2.1 2.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                          )}
+                        </span>
+                        <span className="reader-overflow-label">{tr('Прокрутка', 'Scrollen')}</span>
+                        <span className="reader-overflow-value">
+                          {readerReadingMode === 'vertical' ? tr('вертикаль', 'vertikal') : tr('горизонталь', 'horizontal')}
+                        </span>
+                      </button>
+
+                      {readerCanUseOriginalLayout && (
+                        <button
+                          type="button"
+                          className="reader-overflow-item"
+                          role="menuitem"
+                          onClick={() => {
+                            switchReaderLayoutMode(readerLayoutMode === 'original' ? 'custom' : 'original', { resetTypography: readerLayoutMode !== 'original' });
+                            setReaderOverflowOpen(false);
+                          }}
+                        >
+                          <span className="reader-overflow-ic" aria-hidden="true">
+                            <svg viewBox="0 0 18 18" fill="none"><rect x="3.5" y="3.5" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.4" /><path d="M3.5 7h11" stroke="currentColor" strokeWidth="1.4" /></svg>
+                          </span>
+                          <span className="reader-overflow-label">
+                            {readerLayoutMode === 'original'
+                              ? tr('Текстовый режим', 'Textmodus')
+                              : tr('Оригинальная вёрстка', 'Originallayout')}
+                          </span>
+                        </button>
                       )}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only"
-                    onClick={() => setReaderSettingsOpen(true)}
-                    title={tr('Настройки чтения', 'Leseeinstellungen')}
-                    aria-label={tr('Настройки чтения', 'Leseeinstellungen')}
-                  >
-                    <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                      <svg viewBox="0 0 18 18" fill="none">
-                        <path
-                          d="M4.25 5.25h9.5M6.5 5.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.5 3.75h-8M10.75 9a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm3 3.75h-9.5M8.75 12.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z"
-                          stroke="currentColor"
-                          strokeWidth="1.55"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </span>
-                  </button>
-                  {readerCanUseOriginalLayout && (
-                    <button
-                      type="button"
-                      className={`secondary-button reader-toolbar-btn ${readerLayoutMode === 'original' ? 'is-active' : ''}`}
-                      onClick={() => switchReaderLayoutMode(readerLayoutMode === 'original' ? 'custom' : 'original', { resetTypography: readerLayoutMode !== 'original' })}
-                      title={readerLayoutMode === 'original'
-                        ? tr('Переключить в текстовый режим', 'In Textmodus wechseln')
-                        : tr('Переключить в оригинальную вёрстку', 'Zum Originallayout wechseln')}
-                    >
-                      <span className="reader-toolbar-btn-label">
-                        {readerLayoutMode === 'original'
-                          ? tr('Textmodus', 'Textmodus')
-                          : tr('Original', 'Original')}
-                      </span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="secondary-button reader-topbar-collapse-btn reader-topbar-toggle-chip reader-toolbar-btn"
-                    onClick={() => {
-                      const next = !readerTopbarCollapsed;
-                      setReaderTopbarCollapsed(next);
-                      if (next) setReaderSettingsOpen(false);
-                    }}
-                    title={readerTopbarCollapsed
-                      ? tr('Развернуть панель', 'Leiste aufklappen')
-                      : tr('Свернуть панель', 'Leiste einklappen')}
-                  >
-                    <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                      <svg viewBox="0 0 18 18" fill="none">
-                        <path
-                          d="M4.5 11.25 9 6.75l4.5 4.5"
-                          stroke="currentColor"
-                          strokeWidth="1.7"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </span>
-                    <span className="reader-toolbar-btn-label">
-                      {tr('Свернуть', 'Einklappen')}
-                    </span>
-                  </button>
+
+                      <button
+                        type="button"
+                        className={`reader-overflow-item ${readerTimerPaused ? 'is-paused' : ''}`}
+                        role="menuitem"
+                        onClick={toggleReaderTimerPause}
+                        disabled={!readerHasContent}
+                      >
+                        <span className="reader-overflow-ic" aria-hidden="true">
+                          <svg viewBox="0 0 18 18" fill="none"><circle cx="9" cy="10" r="5.5" stroke="currentColor" strokeWidth="1.4" /><path d="M9 7.2V10M7 2.5h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+                        </span>
+                        <span className="reader-overflow-label">
+                          {readerTimerPaused ? tr('Таймер на паузе', 'Timer pausiert') : tr('Таймер чтения', 'Lese-Timer')}
+                        </span>
+                        <span className="reader-overflow-value reader-overflow-timer">
+                          {formatReaderTimer(readerElapsedTotalSeconds)}
+                        </span>
+                      </button>
+
+                      <div className="reader-overflow-sep" />
+
+                      <button
+                        type="button"
+                        className="reader-overflow-item"
+                        role="menuitem"
+                        onClick={() => {
+                          setReaderTopbarCollapsed(true);
+                          setReaderSettingsOpen(false);
+                          setReaderOverflowOpen(false);
+                        }}
+                      >
+                        <span className="reader-overflow-ic" aria-hidden="true">
+                          <svg viewBox="0 0 18 18" fill="none"><path d="M4.5 11.25 9 6.75l4.5 4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                        </span>
+                        <span className="reader-overflow-label">{tr('Свернуть панель', 'Leiste einklappen')}</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                <div className="reader-progline" aria-hidden="true">
+                  <i style={{ width: `${Math.max(0, Math.min(100, readerProgressPercent))}%` }} />
                 </div>
               </div>
             )}
@@ -933,63 +874,124 @@ export default function ReaderSection(props) {
               </article>
             )}
 
-            {/* ── Scrubber bar — hidden while audio player is active ── */}
-            {(readerUsesOriginalEpubLayout || readerPageCount > 0) && !readerAudioPlayActive && (
-              <div className="reader-scrubber-bar">
-                <button
-                  type="button"
-                  className="reader-scrubber-page-btn"
-                  onClick={() => {
-                    if (readerUsesOriginalEpubLayout) return;
-                    setReaderPageJumpInput(String(readerCurrentPage));
-                    setReaderShowPageJump(true);
-                  }}
-                  title={readerUsesOriginalEpubLayout
-                    ? tr('В оригинальном EPUB число страниц не фиксировано и зависит от движка рендера.', 'Im originalen EPUB ist die Seitenzahl nicht fest und hängt vom Rendering ab.')
-                    : tr('Перейти к странице', 'Zur Seite springen')}
-                >
-                  {readerUsesOriginalEpubLayout
-                    ? `${Math.round(readerProgressPercent)}%`
-                    : `${readerCurrentPage} / ${readerPageCount}`}
-                </button>
-                <div className="reader-scrubber-track-wrap">
-                  <input
-                    type="range"
-                    className="reader-scrubber-input"
-                    min={readerUsesOriginalEpubLayout ? 0 : 1}
-                    max={readerUsesOriginalEpubLayout ? 100 : readerPageCount}
-                    value={readerUsesOriginalEpubLayout ? Math.round(readerProgressPercent) : readerCurrentPage}
-                    onChange={(e) => {
-                      if (readerUsesOriginalEpubLayout) {
-                        applyReaderProgressPercent(Number(e.target.value));
-                        return;
-                      }
-                      const page = Math.max(1, Math.min(readerPageCount, Number(e.target.value)));
-                      setReaderCurrentPage(page);
-                    }}
-                  />
-                </div>
-                {readerBookmarkPercent > 0 && !isCurrentReaderPageBookmarked ? (
+            {/* ── Bottom dock: action cluster + scrubber (Apple-Books style) ─ */}
+            {readerContent && !readerAudioPlayActive && (
+              <div className="reader-bottom-dock">
+                <div className="reader-dock-actions">
+                  <div className="reader-dock-group">
+                    <button
+                      type="button"
+                      className="reader-dock-btn reader-dock-aa"
+                      onClick={() => setReaderSettingsOpen(true)}
+                      disabled={!readerContent}
+                      title={tr('Шрифт и тема', 'Schrift & Thema')}
+                      aria-label={tr('Шрифт и тема', 'Schrift & Thema')}
+                    >Aa</button>
+                    <button
+                      type="button"
+                      className={`reader-dock-btn ${readerShowToc ? 'is-active' : ''}`}
+                      onClick={() => {
+                        if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
+                        setReaderShowToc((v) => !v);
+                      }}
+                      disabled={!readerContent}
+                      title={tr('Оглавление', 'Inhaltsverzeichnis')}
+                      aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none"><path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+                    </button>
+                    <button
+                      type="button"
+                      className={`reader-dock-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
+                      onClick={() => {
+                        const mark = computeReaderProgressPercent();
+                        setReaderBookmarkPercent(mark);
+                        persistReaderExactBookmark(readerCurrentPage);
+                        if (readerDocumentId) syncReaderState({ bookmark_percent: Number(mark.toFixed(2)) });
+                      }}
+                      disabled={!readerContent || !readerDocumentId}
+                      title={tr('Поставить закладку', 'Lesezeichen setzen')}
+                      aria-label={tr('Поставить закладку', 'Lesezeichen setzen')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none"><path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
+                    </button>
+                  </div>
                   <button
                     type="button"
-                    className="reader-scrubber-bookmark-btn"
-                    onClick={() => {
-                      if (readerUsesOriginalEpubLayout) {
-                        applyReaderProgressPercent(readerBookmarkPercent);
-                        return;
-                      }
-                      setReaderCurrentPage(readerBookmarkPage);
-                    }}
-                    title={readerUsesOriginalEpubLayout
-                      ? tr('Перейти к сохранённому прогрессу', 'Zum gespeicherten Fortschritt springen')
-                      : tr('Перейти к закладке', 'Zur Lesezeiche springen')}
+                    className={`reader-dock-play${readerAudioPlayActive ? ' is-playing' : ''}${readerAudioAwaitingWordTap ? ' is-awaiting' : ''}`}
+                    onClick={readerAudioPremiumLocked ? onReaderAudioUpgrade : onReaderAudioPlayBtn}
+                    disabled={!readerHasContent || readerAudioPlayLoading || billingActionLoading}
+                    title={readerAudioPremiumLocked
+                      ? readerAudioPremiumHint
+                      : (readerAudioAwaitingWordTap ? tr('Нажми слово…', 'Wort antippen…') : tr('Слушать', 'Hören'))}
+                    aria-label={tr('Слушать книгу', 'Buch hören')}
                   >
-                    <svg viewBox="0 0 18 18" fill="none" width="16" height="16">
-                      <path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                    </svg>
+                    {readerAudioPlayLoading ? (
+                      <svg viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.7" strokeDasharray="28" strokeDashoffset="10" strokeLinecap="round"><animateTransform attributeName="transform" type="rotate" from="0 9 9" to="360 9 9" dur="0.9s" repeatCount="indefinite"/></circle></svg>
+                    ) : (
+                      <svg viewBox="0 0 18 18" fill="none"><path d="M6 4.5l8 4.5-8 4.5V4.5z" fill="currentColor"/></svg>
+                    )}
                   </button>
-                ) : (
-                  <div className="reader-scrubber-pct webapp-muted">{Math.round(readerProgressPercent)}%</div>
+                </div>
+
+                {(readerUsesOriginalEpubLayout || readerPageCount > 0) && (
+                  <div className="reader-scrubber-bar">
+                    <button
+                      type="button"
+                      className="reader-scrubber-page-btn"
+                      onClick={() => {
+                        if (readerUsesOriginalEpubLayout) return;
+                        setReaderPageJumpInput(String(readerCurrentPage));
+                        setReaderShowPageJump(true);
+                      }}
+                      title={readerUsesOriginalEpubLayout
+                        ? tr('В оригинальном EPUB число страниц не фиксировано и зависит от движка рендера.', 'Im originalen EPUB ist die Seitenzahl nicht fest und hängt vom Rendering ab.')
+                        : tr('Перейти к странице', 'Zur Seite springen')}
+                    >
+                      {readerUsesOriginalEpubLayout
+                        ? `${Math.round(readerProgressPercent)}%`
+                        : `${readerCurrentPage} / ${readerPageCount}`}
+                    </button>
+                    <div className="reader-scrubber-track-wrap">
+                      <input
+                        type="range"
+                        className="reader-scrubber-input"
+                        min={readerUsesOriginalEpubLayout ? 0 : 1}
+                        max={readerUsesOriginalEpubLayout ? 100 : readerPageCount}
+                        value={readerUsesOriginalEpubLayout ? Math.round(readerProgressPercent) : readerCurrentPage}
+                        onChange={(e) => {
+                          if (readerUsesOriginalEpubLayout) {
+                            applyReaderProgressPercent(Number(e.target.value));
+                            return;
+                          }
+                          const page = Math.max(1, Math.min(readerPageCount, Number(e.target.value)));
+                          setReaderCurrentPage(page);
+                        }}
+                      />
+                    </div>
+                    {readerBookmarkPercent > 0 && !isCurrentReaderPageBookmarked ? (
+                      <button
+                        type="button"
+                        className="reader-scrubber-bookmark-btn"
+                        onClick={() => {
+                          if (readerUsesOriginalEpubLayout) {
+                            applyReaderProgressPercent(readerBookmarkPercent);
+                            return;
+                          }
+                          setReaderCurrentPage(readerBookmarkPage);
+                        }}
+                        title={readerUsesOriginalEpubLayout
+                          ? tr('Перейти к сохранённому прогрессу', 'Zum gespeicherten Fortschritt springen')
+                          : tr('Перейти к закладке', 'Zur Lesezeiche springen')}
+                      >
+                        <svg viewBox="0 0 18 18" fill="none" width="16" height="16">
+                          <path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+                    ) : (
+                      <div className="reader-scrubber-pct webapp-muted">{Math.round(readerProgressPercent)}%</div>
+                    )}
+                  </div>
                 )}
               </div>
             )}

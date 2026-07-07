@@ -3220,3 +3220,316 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-reader[data-reader-theme="cream"] .reader-page-bookmark-indicator {
   filter: drop-shadow(0 3px 6px rgba(0,0,0,0.16));
 }
+
+
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  FLAGSHIP READING CHROME (2026-07 redesign)                            │
+   │  Quiet 3-zone topbar (back · title · ···), slim progress line, bottom  │
+   │  action dock (Aa · TOC · bookmark · play) over the scrubber, compact   │
+   │  peek pill. Reuses --rd-* (dark + light Telegram) and --rd-paper-*     │
+   │  (sepia / cream) tokens so every theme adapts.                          │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+
+/* ── Topbar: 3-zone row ─────────────────────────────────────── */
+.webapp-reader .reader-topbar-flag {
+  position: relative;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.webapp-reader .reader-topbar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.webapp-reader .reader-topbar-icbtn {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  border: 1px solid var(--rd-border);
+  background: var(--rd-bg-elev);
+  color: var(--rd-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.webapp-reader .reader-topbar-icbtn:hover { background: var(--rd-bg-elev-2); border-color: var(--rd-border-hi); }
+.webapp-reader .reader-topbar-icbtn svg { width: 19px; height: 19px; }
+.webapp-reader .reader-topbar-more.is-active { background: var(--rd-accent-soft); border-color: transparent; color: var(--rd-accent); }
+.webapp-reader .reader-topbar-center {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+.webapp-reader .reader-topbar-flag .reader-topbar-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.webapp-reader .reader-topbar-flag .reader-topbar-meta {
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Slim progress line under the topbar ────────────────────── */
+.webapp-reader .reader-progline {
+  height: 2px;
+  margin: 2px 2px 0;
+  border-radius: 2px;
+  background: var(--rd-border);
+  position: relative;
+  overflow: hidden;
+}
+.webapp-reader .reader-progline i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--rd-accent);
+  transition: width .35s ease;
+}
+
+/* ── Overflow menu (···) ────────────────────────────────────── */
+.webapp-reader .reader-overflow-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+.webapp-reader .reader-overflow-menu {
+  position: absolute;
+  right: 8px;
+  top: 50px;
+  z-index: 41;
+  width: 232px;
+  padding: 6px;
+  border-radius: 16px;
+  border: 1px solid var(--rd-border-hi);
+  background: rgba(14,18,32,0.97);
+  backdrop-filter: blur(var(--rd-blur));
+  -webkit-backdrop-filter: blur(var(--rd-blur));
+  box-shadow: 0 18px 44px -10px rgba(0,0,0,0.5);
+  animation: rd-fade-in .16s ease;
+}
+.webapp-reader .reader-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--rd-text);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 10px 11px;
+  border-radius: 11px;
+  cursor: pointer;
+  text-align: left;
+}
+.webapp-reader .reader-overflow-item:hover { background: var(--rd-bg-elev); }
+.webapp-reader .reader-overflow-item:disabled { opacity: .45; cursor: default; }
+.webapp-reader .reader-overflow-ic { display: inline-flex; width: 18px; height: 18px; color: var(--rd-text-muted); flex-shrink: 0; }
+.webapp-reader .reader-overflow-ic svg { width: 18px; height: 18px; }
+.webapp-reader .reader-overflow-label { flex: 1; min-width: 0; }
+.webapp-reader .reader-overflow-value {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--rd-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.webapp-reader .reader-overflow-timer { color: var(--rd-accent); }
+.webapp-reader .reader-overflow-item.is-paused .reader-overflow-timer { color: var(--rd-warn); }
+.webapp-reader .reader-overflow-sep { height: 1px; background: var(--rd-border); margin: 5px 8px; }
+
+/* ── Compact peek pill (chrome collapsed) ───────────────────── */
+.webapp-reader .reader-topbar-peek-flag {
+  justify-content: center;
+  padding: 8px 12px;
+}
+.webapp-reader .reader-peek-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  height: 34px;
+  padding: 0 8px 0 14px;
+  border-radius: 99px;
+  border: 1px solid var(--rd-border);
+  background: var(--rd-bg-elev);
+  color: var(--rd-text);
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.webapp-reader .reader-peek-pill:hover { background: var(--rd-bg-elev-2); border-color: var(--rd-border-hi); }
+.webapp-reader .reader-peek-title {
+  font-family: var(--rd-font-serif);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 46vw;
+}
+.webapp-reader .reader-peek-meta {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--rd-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.webapp-reader .reader-peek-chevron { width: 18px; height: 18px; color: var(--rd-text-muted); flex-shrink: 0; }
+
+/* ── Bottom dock: actions + scrubber ────────────────────────── */
+.webapp-reader .reader-bottom-dock {
+  position: relative;
+  flex-shrink: 0;
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: linear-gradient(0deg, rgba(8,12,26,0.96) 55%, rgba(8,12,26,0));
+  backdrop-filter: blur(var(--rd-blur));
+  -webkit-backdrop-filter: blur(var(--rd-blur));
+}
+.webapp-reader .reader-dock-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 16px 4px;
+}
+.webapp-reader .reader-dock-group { display: flex; align-items: center; gap: 6px; }
+.webapp-reader .reader-dock-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--rd-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.webapp-reader .reader-dock-btn:hover { background: var(--rd-bg-elev); }
+.webapp-reader .reader-dock-btn:disabled { opacity: .4; cursor: default; }
+.webapp-reader .reader-dock-btn.is-active { background: var(--rd-accent-soft); color: var(--rd-accent); }
+.webapp-reader .reader-dock-btn svg { width: 20px; height: 20px; }
+.webapp-reader .reader-dock-aa {
+  font-family: var(--rd-font-serif);
+  font-weight: 600;
+  font-size: 20px;
+  letter-spacing: -.02em;
+}
+.webapp-reader .reader-dock-play {
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  border: 0;
+  background: var(--rd-accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 18px -4px var(--rd-accent-glow);
+  transition: transform .12s ease, filter .15s;
+}
+.webapp-reader .reader-dock-play:hover { filter: brightness(1.06); }
+.webapp-reader .reader-dock-play:active { transform: scale(.94); }
+.webapp-reader .reader-dock-play:disabled { opacity: .5; box-shadow: none; }
+.webapp-reader .reader-dock-play svg { width: 22px; height: 22px; }
+.webapp-reader .reader-dock-play.is-awaiting { animation: rd-pulse 1.3s ease-in-out infinite; }
+@keyframes rd-pulse { 0%,100% { box-shadow: 0 6px 18px -4px var(--rd-accent-glow); } 50% { box-shadow: 0 6px 26px 0 var(--rd-accent-glow); } }
+
+/* Scrubber sits inside the dock now — drop its own chrome to avoid doubling */
+.webapp-reader .reader-bottom-dock .reader-scrubber-bar {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-top: none;
+  padding: 2px 16px 10px;
+}
+
+/* ── Book typography: never clip a fixed page — scroll it ───── */
+.webapp-reader.is-immersive .reader-page-sheet-inner {
+  overflow-y: auto;
+  overflow-x: hidden;
+  hyphens: auto;
+  -webkit-hyphens: auto;
+  text-align: justify;
+  text-justify: inter-word;
+  scrollbar-width: none;
+}
+.webapp-reader.is-immersive .reader-page-sheet-inner::-webkit-scrollbar { width: 0; height: 0; }
+/* The hidden measure node must still clip so pagination math is unaffected */
+.webapp-reader .reader-page-sheet-measure .reader-page-sheet-inner { overflow: hidden; text-align: left; }
+
+/* ── Sepia / cream overrides for the new chrome ─────────────── */
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar-icbtn,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar-icbtn,
+.webapp-reader[data-reader-theme="sepia"] .reader-peek-pill,
+.webapp-reader[data-reader-theme="cream"] .reader-peek-pill {
+  background: var(--rd-paper-soft);
+  border-color: var(--rd-paper-border);
+  color: var(--rd-paper-text);
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar-icbtn:hover,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar-icbtn:hover,
+.webapp-reader[data-reader-theme="sepia"] .reader-peek-pill:hover,
+.webapp-reader[data-reader-theme="cream"] .reader-peek-pill:hover { background: rgba(0,0,0,0.07); }
+.webapp-reader[data-reader-theme="sepia"] .reader-peek-title,
+.webapp-reader[data-reader-theme="cream"] .reader-peek-title { color: var(--rd-paper-text); }
+.webapp-reader[data-reader-theme="sepia"] .reader-progline,
+.webapp-reader[data-reader-theme="cream"] .reader-progline { background: var(--rd-paper-border); }
+.webapp-reader[data-reader-theme="sepia"] .reader-progline i,
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar-more.is-active,
+.webapp-reader[data-reader-theme="sepia"] .reader-dock-btn.is-active,
+.webapp-reader[data-reader-theme="sepia"] .reader-overflow-timer { color: var(--rd-paper-accent); }
+.webapp-reader[data-reader-theme="sepia"] .reader-progline i { background: var(--rd-paper-accent); color: var(--rd-paper-accent); }
+.webapp-reader[data-reader-theme="cream"] .reader-progline i { background: #0d9488; }
+.webapp-reader.is-immersive[data-reader-theme="sepia"] .reader-bottom-dock,
+.webapp-reader.is-immersive[data-reader-theme="cream"] .reader-bottom-dock {
+  background: linear-gradient(0deg, var(--rd-paper-bg) 60%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-dock-btn,
+.webapp-reader[data-reader-theme="cream"] .reader-dock-btn { color: var(--rd-paper-text); }
+.webapp-reader[data-reader-theme="sepia"] .reader-dock-btn:hover,
+.webapp-reader[data-reader-theme="cream"] .reader-dock-btn:hover { background: rgba(0,0,0,0.06); }
+.webapp-reader[data-reader-theme="sepia"] .reader-dock-play { background: var(--rd-paper-accent); box-shadow: 0 6px 18px -4px rgba(178,93,44,0.4); }
+.webapp-reader[data-reader-theme="cream"] .reader-dock-play { background: #0d9488; box-shadow: 0 6px 18px -4px rgba(13,148,136,0.4); }
+.webapp-reader[data-reader-theme="sepia"] .reader-overflow-menu,
+.webapp-reader[data-reader-theme="cream"] .reader-overflow-menu {
+  background: var(--rd-paper-glass);
+  border-color: var(--rd-paper-border);
+  box-shadow: 0 18px 44px -12px rgba(90,68,40,0.3);
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-overflow-item,
+.webapp-reader[data-reader-theme="cream"] .reader-overflow-item { color: var(--rd-paper-text); }
+.webapp-reader[data-reader-theme="sepia"] .reader-overflow-item:hover,
+.webapp-reader[data-reader-theme="cream"] .reader-overflow-item:hover { background: rgba(0,0,0,0.06); }
+.webapp-reader[data-reader-theme="sepia"] .reader-overflow-ic,
+.webapp-reader[data-reader-theme="cream"] .reader-overflow-ic,
+.webapp-reader[data-reader-theme="sepia"] .reader-peek-meta,
+.webapp-reader[data-reader-theme="cream"] .reader-peek-meta { color: var(--rd-paper-muted); }
+.webapp-reader[data-reader-theme="sepia"] .reader-overflow-sep,
+.webapp-reader[data-reader-theme="cream"] .reader-overflow-sep { background: var(--rd-paper-border); }
+
+@media (prefers-reduced-motion: reduce) {
+  .webapp-reader .reader-progline i,
+  .webapp-reader .reader-dock-play { transition: none; }
+  .webapp-reader .reader-dock-play.is-awaiting { animation: none; }
+}
