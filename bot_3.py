@@ -3142,6 +3142,52 @@ async def _admin_run_streaks_command(update: Update, context: CallbackContext) -
         await message.reply_text(f"❌ Ошибка: {exc}")
 
 
+async def _admin_shortcut_runs_command(update: Update, context: CallbackContext) -> None:
+    """/shortcut_runs [days=7] — «Ночной Переводчик» run-check monitoring: recent
+    attempts (time/user/decision/window/grace/installs) + summary + anomalies."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    try:
+        days = int(args[0]) if args else 7
+    except Exception:
+        days = 7
+    days = max(1, min(60, days))
+    from backend.database import get_shortcut_runs_report
+    rep = await asyncio.to_thread(get_shortcut_runs_report, days)
+    s = rep.get("summary") or {}
+    lines = [
+        f"\U0001F4F2 <b>\u041d\u043e\u0447\u043d\u043e\u0439 \u041f\u0435\u0440\u0435\u0432\u043e\u0434\u0447\u0438\u043a \u2014 \u0437\u0430\u043f\u0443\u0441\u043a\u0438 \u0437\u0430 {days}\u0434</b>",
+        f"\u041f\u0440\u043e\u0432\u0435\u0440\u043e\u043a: {s.get('total_checks',0)} \u00b7 \u2705 {s.get('allowed',0)} \u00b7 \u26d4 \u043e\u043a\u043d\u043e {s.get('blocked_window',0)} \u00b7 \u26d4 \u043b\u0438\u043c\u0438\u0442 {s.get('blocked_quota',0)}",
+        f"\u042e\u0437\u0435\u0440\u043e\u0432: {s.get('unique_users',0)} \u00b7 \u26a0\ufe0f \u0430\u043d\u043e\u043c\u0430\u043b\u0438\u0439: {s.get('anomalies',0)}",
+        "",
+    ]
+    rows = rep.get("rows") or []
+    if not rows:
+        lines.append("\u041f\u043e\u043a\u0430 \u0437\u0430\u043f\u0443\u0441\u043a\u043e\u0432 \u043d\u0435\u0442.")
+    else:
+        for p in rows[:25]:
+            mark = "\u2705" if p.get("allowed") else "\u26d4"
+            win = "\u0432 \u043e\u043a\u043d\u0435" if p.get("in_window") else "\u0432\u043d\u0435 \u043e\u043a\u043d\u0430"
+            reason = p.get("reason") or ""
+            pro = "Pro" if p.get("is_pro") else "Free"
+            inst = p.get("install_count")
+            li = p.get("last_installed_at") or "?"
+            lines.append(
+                f"{mark} {p.get('local_ts')} \u00b7 id{p.get('user_id')} \u00b7 {pro} \u00b7 {win} \u00b7 {reason} \u00b7 \u0443\u0441\u0442.{inst} ({li})"
+            )
+    anomalies = rep.get("anomalies") or []
+    if anomalies:
+        lines.append("")
+        lines.append("\u26a0\ufe0f <b>\u0410\u043d\u043e\u043c\u0430\u043b\u0438\u0438 (\u043f\u0440\u043e\u0448\u043b\u0438 \u0432\u043d\u0435 \u043e\u043a\u043d\u0430):</b>")
+        for p in anomalies[:10]:
+            lines.append(f"\u2022 {p.get('local_ts')} \u00b7 id{p.get('user_id')} \u00b7 \u0443\u0441\u0442.{p.get('install_count')} ({p.get('last_installed_at')})")
+    await message.reply_text("\n".join(lines)[:4000], parse_mode="HTML")
+
+
 async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> None:
     """/admin_grant_pro <user_id> [days] — grant earned Pro now + show is_user_pro
     flip (verifies the grant AND the denylist bypass)."""
@@ -34302,6 +34348,7 @@ def main():
     application.add_handler(CommandHandler("announce_schedule", _announce_schedule_command))
     application.add_handler(CommandHandler("admin_reset_onboarding", _admin_reset_onboarding_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
+    application.add_handler(CommandHandler("shortcut_runs", _admin_shortcut_runs_command))
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))

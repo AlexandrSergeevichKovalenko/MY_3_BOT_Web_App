@@ -22757,21 +22757,31 @@ def _ensure_shortcut_runs_schema() -> None:
                     ran_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            # Enforcement/reporting columns (guarded — existing rows are ALLOWED runs).
+            cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS allowed BOOLEAN NOT NULL DEFAULT TRUE;")
+            cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS reason TEXT;")
+            cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS is_pro BOOLEAN;")
+            cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS in_window BOOLEAN;")
+            cur.execute("ALTER TABLE bt_3_shortcut_runs ADD COLUMN IF NOT EXISTS run_index INTEGER;")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_shortcut_runs_user "
                         "ON bt_3_shortcut_runs (user_id, ran_at);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_shortcut_runs_ranat "
+                        "ON bt_3_shortcut_runs (ran_at);")
         conn.commit()
     _shortcut_runs_schema_ready = True
 
 
 def count_shortcut_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> int:
-    """«Ночной Переводчик» runs on the current CALENDAR day in the given tz (Pro cap)."""
+    """APPROVED «Ночной Переводчик» runs on the current CALENDAR day in tz (Pro cap).
+    Only allowed runs count — blocked attempts don't consume the daily quota."""
     try:
         _ensure_shortcut_runs_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT COUNT(*) FROM bt_3_shortcut_runs "
-                    "WHERE user_id=%s AND (ran_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date;",
+                    "WHERE user_id=%s AND allowed IS NOT FALSE "
+                    "AND (ran_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date;",
                     (int(user_id), str(tz_name), str(tz_name)),
                 )
                 r = cur.fetchone()
@@ -22781,30 +22791,128 @@ def count_shortcut_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> i
 
 
 def count_shortcut_runs_total(user_id: int) -> int:
-    """Lifetime «Ночной Переводчик» runs (Free trial cap)."""
+    """Lifetime APPROVED «Ночной Переводчик» runs (Free trial cap + grace index)."""
     try:
         _ensure_shortcut_runs_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM bt_3_shortcut_runs WHERE user_id=%s;", (int(user_id),))
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_shortcut_runs WHERE user_id=%s AND allowed IS NOT FALSE;",
+                    (int(user_id),),
+                )
                 r = cur.fetchone()
         return int(r[0] or 0) if r else 0
     except Exception:
         return 0
 
 
-def record_shortcut_run(user_id: int) -> bool:
-    """Append a run row (call only when the run is APPROVED)."""
+def record_shortcut_run_check(
+    user_id: int,
+    *,
+    allowed: bool,
+    reason: str | None = None,
+    is_pro: bool | None = None,
+    in_window: bool | None = None,
+    run_index: int | None = None,
+) -> bool:
+    """Log a run-check decision (both approvals AND blocks) for enforcement + the admin
+    report. Only allowed=True rows count toward the quotas (see count_* above)."""
     try:
         _ensure_shortcut_runs_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO bt_3_shortcut_runs (user_id) VALUES (%s);", (int(user_id),))
+                cur.execute(
+                    "INSERT INTO bt_3_shortcut_runs (user_id, allowed, reason, is_pro, in_window, run_index) "
+                    "VALUES (%s, %s, %s, %s, %s, %s);",
+                    (
+                        int(user_id), bool(allowed),
+                        (str(reason) if reason else None),
+                        (None if is_pro is None else bool(is_pro)),
+                        (None if in_window is None else bool(in_window)),
+                        (None if run_index is None else int(run_index)),
+                    ),
+                )
             conn.commit()
         return True
     except Exception:
-        logging.warning("record_shortcut_run failed user=%s", user_id, exc_info=True)
+        logging.warning("record_shortcut_run_check failed user=%s", user_id, exc_info=True)
         return False
+
+
+def record_shortcut_run(user_id: int) -> bool:
+    """Backward-compat: append an APPROVED run row."""
+    return record_shortcut_run_check(int(user_id), allowed=True)
+
+
+def get_shortcut_installation_stats(user_id: int) -> dict:
+    """How many times this user has paired a shortcut (≈ (re)installs — each pairing is
+    a row in bt_3_shortcut_installations) and WHEN the latest pairing happened. Used for
+    the first-day window grace (grace resets on re-pairing) + the admin report."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*), MAX(created_at) FROM bt_3_shortcut_installations WHERE user_id=%s;",
+                    (int(user_id),),
+                )
+                r = cur.fetchone()
+        return {"install_count": int((r or [0])[0] or 0), "last_installed_at": (r[1] if r and len(r) > 1 else None)}
+    except Exception:
+        return {"install_count": 0, "last_installed_at": None}
+
+
+def get_shortcut_runs_report(days: int = 7, tz_name: str = "Europe/Vienna") -> dict:
+    """Admin monitoring for «Ночной Переводчик»: recent attempts with LOCAL time,
+    decision, window/grace status + a summary + anomaly list (an ALLOWED run that was
+    OUT of window and BEYOND grace ⇒ the block failed — likely an old/edited shortcut
+    that skipped run-check)."""
+    out: dict = {"rows": [], "summary": {}, "anomalies": [], "days": int(days)}
+    try:
+        _ensure_shortcut_runs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id,
+                           to_char(ran_at AT TIME ZONE %s, 'YYYY-MM-DD HH24:MI') AS local_ts,
+                           allowed, reason, is_pro, in_window, run_index
+                    FROM bt_3_shortcut_runs
+                    WHERE ran_at >= NOW() - (%s || ' days')::interval
+                    ORDER BY ran_at DESC
+                    LIMIT 500;
+                    """,
+                    (str(tz_name), int(days)),
+                )
+                rows = cur.fetchall() or []
+        parsed = [{
+            "user_id": int(r[0]), "local_ts": r[1], "allowed": bool(r[2]),
+            "reason": r[3], "is_pro": r[4], "in_window": r[5], "run_index": r[6],
+        } for r in rows]
+        # Enrich each row with the user's (re)install stats so the admin can tell a
+        # brand-new-today user from an old one whose out-of-window run should be blocked.
+        install_by_user = {uid: get_shortcut_installation_stats(uid) for uid in {p["user_id"] for p in parsed}}
+        for p in parsed:
+            info = install_by_user.get(p["user_id"], {})
+            p["install_count"] = info.get("install_count")
+            li = info.get("last_installed_at")
+            p["last_installed_at"] = (li.strftime("%Y-%m-%d %H:%M") if hasattr(li, "strftime") else None)
+        # Anomaly: an ALLOWED run OUT of window whose reason is neither grace nor admin
+        # ⇒ the block failed (e.g. an old/edited shortcut that skipped run-check).
+        anomalies = [p for p in parsed if p["allowed"] and p["in_window"] is False
+                     and str(p.get("reason") or "") not in ("grace", "admin")]
+        out["rows"] = parsed
+        out["anomalies"] = anomalies
+        out["summary"] = {
+            "total_checks": len(parsed),
+            "allowed": sum(1 for p in parsed if p["allowed"]),
+            "blocked_window": sum(1 for p in parsed if (not p["allowed"]) and p["reason"] == "time_window"),
+            "blocked_quota": sum(1 for p in parsed if (not p["allowed"]) and p["reason"] in ("pro_daily", "free_total")),
+            "unique_users": len({p["user_id"] for p in parsed}),
+            "anomalies": len(anomalies),
+        }
+    except Exception:
+        logging.warning("get_shortcut_runs_report failed", exc_info=True)
+    return out
 
 
 def get_shortcut_autosave_enabled(user_id: int) -> bool:

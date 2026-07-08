@@ -330,6 +330,9 @@ from backend.database import (
     count_shortcut_runs_today,
     count_shortcut_runs_total,
     record_shortcut_run,
+    record_shortcut_run_check,
+    get_shortcut_installation_stats,
+    get_shortcut_runs_report,
     get_shortcut_installations_for_user,
     revoke_shortcut_installation,
     create_dict_browser_token,
@@ -42146,13 +42149,69 @@ def shortcut_link_installation():
 
 _SHORTCUT_RUN_PRO_DAILY = max(1, int((os.getenv("SHORTCUT_RUN_PRO_DAILY") or "2").strip() or "2"))
 _SHORTCUT_RUN_FREE_TOTAL = max(0, int((os.getenv("SHORTCUT_RUN_FREE_TOTAL") or "3").strip() or "3"))
+# Off-peak send window: «Ночной Переводчик» may only send outside the first-setup grace
+# during these hours (server is free). Configurable; fail-open if the clock/tz breaks.
+_SHORTCUT_RUN_WINDOW_START = (os.getenv("SHORTCUT_RUN_WINDOW_START") or "05:00").strip()
+_SHORTCUT_RUN_WINDOW_END = (os.getenv("SHORTCUT_RUN_WINDOW_END") or "09:00").strip()
+_SHORTCUT_RUN_WINDOW_TZ = (os.getenv("SHORTCUT_RUN_WINDOW_TZ") or "Europe/Vienna").strip()
+# First-day grace: within this many hours of the user's most recent (re)install the
+# window is NOT enforced (setup / retries / after reinstall work at any hour). Grace
+# resets on re-pairing. `_SHORTCUT_RUN_WINDOW_GRACE` (run count) is a fallback when the
+# install time is unknown.
+_SHORTCUT_RUN_WINDOW_GRACE_HOURS = max(0, int((os.getenv("SHORTCUT_RUN_WINDOW_GRACE_HOURS") or "24").strip() or "24"))
+_SHORTCUT_RUN_WINDOW_GRACE = max(0, int((os.getenv("SHORTCUT_RUN_WINDOW_GRACE") or "3").strip() or "3"))
+
+
+def _hhmm_to_minutes(value: str, fallback: int) -> int:
+    try:
+        hh, mm = str(value).split(":")
+        return max(0, min(24 * 60, int(hh) * 60 + int(mm)))
+    except Exception:
+        return fallback
+
+
+def _shortcut_within_send_window() -> tuple[bool, str]:
+    """(in_window, local_HH:MM). Fail-open (True) if the clock/tz is unavailable — we
+    never want a clock glitch to block a legitimate morning run."""
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo(_SHORTCUT_RUN_WINDOW_TZ))
+        now_min = now_local.hour * 60 + now_local.minute
+        start_min = _hhmm_to_minutes(_SHORTCUT_RUN_WINDOW_START, 300)
+        end_min = _hhmm_to_minutes(_SHORTCUT_RUN_WINDOW_END, 540)
+        return (start_min <= now_min < end_min), now_local.strftime("%H:%M")
+    except Exception:
+        return True, ""
+
+
+def _shortcut_setup_grace_active(user_id: int, total_runs: int) -> bool:
+    """First-day grace: within GRACE_HOURS of the user's most recent (re)install the
+    time window is not enforced — so setup, retries and after-reinstall work at any
+    hour. Grace resets each time the user re-pairs. Falls back to the first-N-runs
+    grace when the install time is unknown."""
+    try:
+        if _SHORTCUT_RUN_WINDOW_GRACE_HOURS > 0:
+            info = get_shortcut_installation_stats(int(user_id))
+            li = info.get("last_installed_at")
+            if li is not None:
+                from datetime import timedelta, timezone as _tz
+                now = datetime.now(_tz.utc)
+                if getattr(li, "tzinfo", None) is None:
+                    li = li.replace(tzinfo=_tz.utc)
+                if (now - li) <= timedelta(hours=_SHORTCUT_RUN_WINDOW_GRACE_HOURS):
+                    return True
+    except Exception:
+        pass
+    return int(total_runs) < _SHORTCUT_RUN_WINDOW_GRACE
 
 
 @app.route("/api/shortcut/run-check", methods=["POST"])
 def shortcut_run_check():
     """Per-RUN gate for «Ночной Переводчик». The shortcut MUST call this FIRST and,
-    on allowed=false, STOP without deleting the album photos. Pro ≤ N runs/day, Free
-    ≤ N trial runs total (persistent — anti-cheat via the stable telegram user_id)."""
+    on allowed=false, STOP without deleting the album photos.
+    Rules: Pro ≤ N runs/day, Free ≤ N trial runs total (persistent — anti-cheat via
+    the stable user_id); sends only within the off-peak window EXCEPT the first N
+    setup runs (grace) and admins. Every decision is logged for the admin report."""
     body = request.get_json(silent=True) or {}
     _text, install_token = _shortcut_lookup_request_payload(body)
     if not install_token:
@@ -42176,18 +42235,40 @@ def shortcut_run_check():
         is_pro = str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
     except Exception:
         is_pro = False
+    try:
+        is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
+    except Exception:
+        is_admin = False
+
+    total_runs = count_shortcut_runs_total(int(user_id))
+    in_window, local_hhmm = _shortcut_within_send_window()
+
+    # 1) quota (count) limits — only approved runs count; admins are exempt
     if is_pro:
-        used = count_shortcut_runs_today(int(user_id))
-        if used >= _SHORTCUT_RUN_PRO_DAILY:
-            return jsonify({"allowed": False, "reason": "pro_daily", "used": used, "limit": _SHORTCUT_RUN_PRO_DAILY,
+        used_today = count_shortcut_runs_today(int(user_id))
+        if used_today >= _SHORTCUT_RUN_PRO_DAILY and not is_admin:
+            record_shortcut_run_check(user_id, allowed=False, reason="pro_daily", is_pro=is_pro, in_window=in_window, run_index=total_runs)
+            return jsonify({"allowed": False, "reason": "pro_daily", "used": used_today, "limit": _SHORTCUT_RUN_PRO_DAILY,
                             "message": f"На сегодня лимит запусков исчерпан ({_SHORTCUT_RUN_PRO_DAILY} в день). Попробуйте завтра."}), 200
     else:
-        used = count_shortcut_runs_total(int(user_id))
-        if used >= _SHORTCUT_RUN_FREE_TOTAL:
-            return jsonify({"allowed": False, "reason": "free_total", "used": used, "limit": _SHORTCUT_RUN_FREE_TOTAL,
+        if total_runs >= _SHORTCUT_RUN_FREE_TOTAL and not is_admin:
+            record_shortcut_run_check(user_id, allowed=False, reason="free_total", is_pro=is_pro, in_window=in_window, run_index=total_runs)
+            return jsonify({"allowed": False, "reason": "free_total", "used": total_runs, "limit": _SHORTCUT_RUN_FREE_TOTAL,
                             "message": f"Бесплатные пробные запуски ({_SHORTCUT_RUN_FREE_TOTAL}) закончились. Оформите Pro, чтобы пользоваться дальше."}), 200
-    record_shortcut_run(int(user_id))
-    return jsonify({"allowed": True, "used": used + 1, "is_pro": is_pro}), 200
+
+    # 2) time window — skipped during the first-day setup grace and for admins
+    grace_active = _shortcut_setup_grace_active(int(user_id), total_runs)
+    window_enforced = (not grace_active) and (not is_admin)
+    if window_enforced and not in_window:
+        record_shortcut_run_check(user_id, allowed=False, reason="time_window", is_pro=is_pro, in_window=False, run_index=total_runs)
+        return jsonify({"allowed": False, "reason": "time_window",
+                        "window": f"{_SHORTCUT_RUN_WINDOW_START}–{_SHORTCUT_RUN_WINDOW_END}",
+                        "message": f"Отправка доступна утром ({_SHORTCUT_RUN_WINDOW_START}–{_SHORTCUT_RUN_WINDOW_END}). Поставь автозапуск на это время — всё пойдёт само."}), 200
+
+    # 3) approved
+    approve_reason = "grace" if grace_active else ("admin" if is_admin else "ok")
+    record_shortcut_run_check(user_id, allowed=True, reason=approve_reason, is_pro=is_pro, in_window=in_window, run_index=total_runs)
+    return jsonify({"allowed": True, "used": total_runs + 1, "is_pro": is_pro, "in_window": in_window}), 200
 
 
 @app.route("/api/shortcut/lookup", methods=["POST"])
