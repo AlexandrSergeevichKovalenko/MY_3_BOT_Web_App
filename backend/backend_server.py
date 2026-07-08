@@ -3657,7 +3657,7 @@ def webapp_starter_dictionary_apply():
         # «Весь словарь» (full=true) → import up to the whole template (capped 5000);
         # otherwise the curated ~1000 starter.
         _want_full = bool(payload.get("full"))
-        _import_limit = min(int(template_total), 5000) if _want_full else int(STARTER_DICTIONARY_IMPORT_LIMIT)
+        _import_limit = min(int(template_total), 50000) if _want_full else int(STARTER_DICTIONARY_IMPORT_LIMIT)
         _start_starter_dictionary_import_runner(
             job_id=job_id,
             user_id=int(user_id),
@@ -5683,7 +5683,7 @@ def _run_starter_dictionary_import_job(
     import_limit: int | None = None,
 ) -> None:
     started_at = datetime.now(timezone.utc)
-    effective_limit = max(1, min(5000, int(import_limit or STARTER_DICTIONARY_IMPORT_LIMIT)))
+    effective_limit = max(1, min(50000, int(import_limit or STARTER_DICTIONARY_IMPORT_LIMIT)))
     try:
         import_result = import_starter_dictionary_snapshot(
             source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),

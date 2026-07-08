@@ -15774,7 +15774,7 @@ def import_starter_dictionary_snapshot(
     target_user = int(target_user_id)
     pair_source = _normalize_lang_code(source_lang) or DEFAULT_NATIVE_LANGUAGE
     pair_target = _normalize_lang_code(target_lang) or DEFAULT_LEARNING_LANGUAGE
-    safe_limit = max(1, min(int(import_limit or 1000), 5000))
+    safe_limit = max(1, min(int(import_limit or 1000), 50000))
     resolved_folder_name = str(folder_name or "Базовый словарь").strip() or "Базовый словарь"
     resolved_folder_color = str(folder_color or "#5ddcff").strip() or "#5ddcff"
     resolved_folder_icon = str(folder_icon or "book").strip() or "book"
