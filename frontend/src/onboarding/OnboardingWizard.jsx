@@ -11,6 +11,13 @@ const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 // initData → free navigation, no saving, install-the-bot CTA at the finale.
 const IS_PUBLIC = !(tg && tg.initData);
 
+// UI language — same source of truth as the main app (localStorage 'ui_lang').
+const LANG = (() => {
+  try { return (localStorage.getItem('ui_lang') || '').toLowerCase() === 'de' ? 'de' : 'ru'; }
+  catch (_e) { return 'ru'; }
+})();
+const t = (ru, de) => (LANG === 'de' ? de : ru);
+
 async function api(path, extra) {
   const initData = tg?.initData || '';
   const res = await fetch(path, {
@@ -25,33 +32,33 @@ async function api(path, extra) {
 
 // kind: 'welcome' | 'core' (mandatory) | 'pro' (teaser for Free) | 'opt' | 'info' | 'finale'
 const STEPS = [
-  { id: 'welcome',    title: 'Willkommen! 👋',            kind: 'welcome' },
-  { id: 'language',   title: 'Твоя языковая пара 🌍',     kind: 'core' },
-  { id: 'dictionary', title: 'Базовый словарь 📚',        kind: 'core' },
-  { id: 'intensity',  title: 'Сколько заданий в день 🔥', kind: 'pro' },
-  { id: 'windows',    title: 'Когда присылать задания ⏰', kind: 'pro' },
-  { id: 'battles',    title: 'Игры с другими учениками ⚔️', kind: 'opt' },
-  { id: 'howto_words',        title: 'Твой словарь пополняется сам 📖', kind: 'info' },
-  { id: 'howto_interactives', title: 'Игры-тренировки приходят сами 🎮', kind: 'info' },
-  { id: 'howto_translations', title: 'Переводы с разбором ✍️',          kind: 'info' },
-  { id: 'howto_tools',        title: 'Ещё инструменты 🧰',              kind: 'info' },
-  { id: 'keyboard',   title: 'Меню бота — где нажимать ⌨️', kind: 'info' },
-  { id: 'shortcut',   title: 'Захват слов со скриншотов (iPhone) 📲', kind: 'opt' },
-  { id: 'finale',     title: 'Готово! ✅',                kind: 'finale' },
+  { id: 'welcome',    title: t('Willkommen! 👋', 'Willkommen! 👋'),            kind: 'welcome' },
+  { id: 'language',   title: t('Твоя языковая пара 🌍', 'Dein Sprachpaar 🌍'),     kind: 'core' },
+  { id: 'dictionary', title: t('Базовый словарь 📚', 'Basis-Wörterbuch 📚'),        kind: 'core' },
+  { id: 'intensity',  title: t('Сколько заданий в день 🔥', 'Wie viele Aufgaben pro Tag 🔥'), kind: 'pro' },
+  { id: 'windows',    title: t('Когда присылать задания ⏰', 'Wann Aufgaben kommen ⏰'), kind: 'pro' },
+  { id: 'battles',    title: t('Игры с другими учениками ⚔️', 'Spiele mit anderen Lernenden ⚔️'), kind: 'opt' },
+  { id: 'howto_words',        title: t('Твой словарь пополняется сам 📖', 'Dein Wörterbuch füllt sich von selbst 📖'), kind: 'info' },
+  { id: 'howto_interactives', title: t('Игры-тренировки приходят сами 🎮', 'Übungsspiele kommen von selbst 🎮'), kind: 'info' },
+  { id: 'howto_translations', title: t('Переводы с разбором ✍️', 'Übersetzungen mit Analyse ✍️'),          kind: 'info' },
+  { id: 'howto_tools',        title: t('Ещё инструменты 🧰', 'Weitere Werkzeuge 🧰'),              kind: 'info' },
+  { id: 'keyboard',   title: t('Меню бота — где нажимать ⌨️', 'Bot-Menü — wo man tippt ⌨️'), kind: 'info' },
+  { id: 'shortcut',   title: t('Захват слов со скриншотов (iPhone) 📲', 'Wörter aus Screenshots (iPhone) 📲'), kind: 'opt' },
+  { id: 'finale',     title: t('Готово! ✅', 'Fertig! ✅'),                kind: 'finale' },
 ];
 
 // Pro delivery presets + active-hours windows (mirror the bot picker).
 const PRESETS = [
-  ['intensive', '🔥 Интенсивно', '~20 заданий в день'],
-  ['normal',    '🙂 Обычно',     '~12 в день (по умолчанию)'],
-  ['rare',      '🌙 Редко',      '~8 в день'],
-  ['silent',    '🔕 Тишина',     'не присылать автоматически'],
+  ['intensive', t('🔥 Интенсивно', '🔥 Intensiv'), t('~20 заданий в день', '~20 Aufgaben/Tag')],
+  ['normal',    t('🙂 Обычно', '🙂 Normal'),       t('~12 в день (по умолчанию)', '~12/Tag (Standard)')],
+  ['rare',      t('🌙 Редко', '🌙 Selten'),        t('~8 в день', '~8/Tag')],
+  ['silent',    t('🔕 Тишина', '🔕 Stille'),       t('не присылать автоматически', 'nichts automatisch')],
 ];
 const WINDOWS = [
-  ['allday',  '🌗 Весь день',    'в любое время'],
-  ['morning', '🌅 Утро',         '06–12'],
-  ['evening', '🌆 Вечер',        '17:30–22:30'],
-  ['morneve', '🌅🌆 Утро+вечер',  '06–09 · 18–22:30'],
+  ['allday',  t('🌗 Весь день', '🌗 Ganzer Tag'), t('в любое время', 'jederzeit')],
+  ['morning', t('🌅 Утро', '🌅 Morgens'),         '06–12'],
+  ['evening', t('🌆 Вечер', '🌆 Abends'),         '17:30–22:30'],
+  ['morneve', t('🌅🌆 Утро+вечер', '🌅🌆 Morgens+abends'), '06–09 · 18–22:30'],
 ];
 
 // Media slot that hides itself if the asset isn't there yet (drop the file later).
@@ -117,10 +124,13 @@ function OptionList({ options, selected, onPick }) {
 const PRO_TEASER = (
   <div className="ob-teaser">
     <p className="ob-lead">
-      На бесплатном — подборка заданий в день. В <b>Pro</b> можно настроить количество
-      и время доставки.
+      {t('На бесплатном — подборка заданий в день. В ',
+         'Kostenlos — eine Auswahl an Aufgaben pro Tag. In ')}
+      <b>Pro</b>
+      {t(' можно настроить количество и время доставки.',
+         ' kannst du Menge und Uhrzeit einstellen.')}
     </p>
-    <span className="ob-lock">🔓 перк Pro</span>
+    <span className="ob-lock">{t('🔓 перк Pro', '🔓 Pro-Vorteil')}</span>
   </div>
 );
 
@@ -137,13 +147,13 @@ function StepBody(props) {
     case 'welcome':
       return IS_PUBLIC ? (
         <p className="ob-lead">
-          Это бот для изучения немецкого. Пролистай за пару минут — покажу, что он умеет.
-          В конце сможешь установить его себе.
+          {t('Это бот для изучения немецкого. Пролистай за пару минут — покажу, что он умеет. В конце сможешь установить его себе.',
+             'Das ist ein Bot zum Deutschlernen. Blättere in ein paar Minuten durch — ich zeige, was er kann. Am Ende kannst du ihn installieren.')}
         </p>
       ) : (
         <p className="ob-lead">
-          Давай за пару минут настроим бота под тебя — язык, словарь, темп заданий.
-          Потом покажу, как всё работает. Всё это потом легко изменить в «🎬 Как пользоваться».
+          {t('Давай за пару минут настроим бота под тебя — язык, словарь, темп заданий. Потом покажу, как всё работает. Всё это потом легко изменить в «🎬 Как пользоваться».',
+             'Lass uns den Bot in ein paar Minuten einrichten — Sprache, Wörterbuch, Aufgaben-Tempo. Danach zeige ich, wie alles funktioniert. Alles lässt sich später in «🎬 Wie man es benutzt» ändern.')}
         </p>
       );
     case 'language':
@@ -152,12 +162,14 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            Ты учишь <b>немецкий</b>, а объяснять будем на <b>русском</b>. Подтверди — и поехали.
+            {t('Ты учишь ', 'Du lernst ')}<b>{t('немецкий', 'Deutsch')}</b>
+            {t(', а объяснять будем на ', ', erklärt wird auf ')}<b>{t('русском', 'Russisch')}</b>
+            {t('. Подтверди — и поехали.', '. Bestätige — und los.')}
           </p>
           <div className="ob-pair">
-            <span className="ob-pair-item"><b>🇩🇪 Немецкий</b><small>учишь</small></span>
+            <span className="ob-pair-item"><b>🇩🇪 {t('Немецкий', 'Deutsch')}</b><small>{t('учишь', 'du lernst')}</small></span>
             <span className="ob-pair-arrow">↔</span>
-            <span className="ob-pair-item"><b>🗣 Русский</b><small>объясняем</small></span>
+            <span className="ob-pair-item"><b>🗣 {t('Русский', 'Russisch')}</b><small>{t('объясняем', 'wir erklären')}</small></span>
           </div>
           {!IS_PUBLIC && (
             <button
@@ -166,7 +178,7 @@ function StepBody(props) {
               onClick={onConfirm}
               disabled={busy || confirmed}
             >
-              {confirmed ? '✅ Подтверждено' : busy ? 'Сохраняю…' : '✓ Подтвердить'}
+              {confirmed ? t('✅ Подтверждено', '✅ Bestätigt') : busy ? t('Сохраняю…', 'Speichere…') : t('✓ Подтвердить', '✓ Bestätigen')}
             </button>
           )}
           {stepErr ? <p className="ob-err">{stepErr}</p> : null}
@@ -179,10 +191,11 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            Подключим слова, с которых начнём тренировки и повторения. Выбери, сколько:
+            {t('Подключим слова, с которых начнём тренировки и повторения. Выбери, сколько:',
+               'Verbinden wir Wörter, mit denen Training und Wiederholungen starten. Wähle, wie viele:')}
           </p>
           {connected ? (
-            <span className="ob-lock ob-ok">✅ Словарь подключён</span>
+            <span className="ob-lock ob-ok">{t('✅ Словарь подключён', '✅ Wörterbuch verbunden')}</span>
           ) : IS_PUBLIC ? null : (
             <div className="ob-actions ob-actions-col">
               <button
@@ -191,7 +204,7 @@ function StepBody(props) {
                 onClick={() => onDictAction('accept', false)}
                 disabled={busy}
               >
-                {busy ? 'Подключаю…' : `📚 Быстрый старт${n ? ` — ~${n} слов` : ''}`}
+                {busy ? t('Подключаю…', 'Verbinde…') : `${t('📚 Быстрый старт', '📚 Schnellstart')}${n ? ` — ~${n} ${t('слов', 'Wörter')}` : ''}`}
               </button>
               {total > n ? (
                 <button
@@ -200,7 +213,7 @@ function StepBody(props) {
                   onClick={() => onDictAction('accept', true)}
                   disabled={busy}
                 >
-                  {busy ? 'Подключаю…' : `🔓 Весь словарь — ~${total} слов`}
+                  {busy ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Весь словарь', '🔓 Ganzes Wörterbuch')} — ~${total} ${t('слов', 'Wörter')}`}
                 </button>
               ) : null}
               <button
@@ -209,11 +222,11 @@ function StepBody(props) {
                 onClick={() => onDictAction('decline')}
                 disabled={busy}
               >
-                Пропустить
+                {t('Пропустить', 'Überspringen')}
               </button>
             </div>
           )}
-          <p className="ob-muted-note">Быстрый старт — меньше слов, проще начать. Весь словарь — сразу весь набор. Поменять можно потом.</p>
+          <p className="ob-muted-note">{t('Быстрый старт — меньше слов, проще начать. Весь словарь — сразу весь набор. Поменять можно потом.', 'Schnellstart — weniger Wörter, leichter Einstieg. Ganzes Wörterbuch — gleich der volle Satz. Später änderbar.')}</p>
           {stepErr ? <p className="ob-err">{stepErr}</p> : null}
         </div>
       );
@@ -221,14 +234,14 @@ function StepBody(props) {
     case 'intensity':
       return isPro ? (
         <div className="ob-stub">
-          <p className="ob-lead">Выбери темп — можно поменять когда угодно.</p>
+          <p className="ob-lead">{t('Выбери темп — можно поменять когда угодно.', 'Wähle das Tempo — jederzeit änderbar.')}</p>
           <OptionList options={PRESETS} selected={selPreset} onPick={onPickPreset} />
         </div>
       ) : PRO_TEASER;
     case 'windows':
       return isPro ? (
         <div className="ob-stub">
-          <p className="ob-lead">В какие часы присылать задания? Они придут равномерно внутри окна.</p>
+          <p className="ob-lead">{t('В какие часы присылать задания? Они придут равномерно внутри окна.', 'Zu welchen Zeiten sollen die Aufgaben kommen? Sie kommen gleichmäßig im Fenster.')}</p>
           <OptionList options={WINDOWS} selected={selWindow} onPick={onPickWindow} />
         </div>
       ) : PRO_TEASER;
@@ -236,9 +249,8 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            Дуэль — это короткое соревнование с другим учеником: кто быстрее и без ошибок
-            пройдёт задания на грамматику (артикли, окончания прилагательных, вопросы).
-            Вызвать соперника можно из меню бота. Хочешь получать приглашения на дуэли?
+            {t('Дуэль — это короткое соревнование с другим учеником: кто быстрее и без ошибок пройдёт задания на грамматику (артикли, окончания прилагательных, вопросы). Вызвать соперника можно из меню бота. Хочешь получать приглашения на дуэли?',
+               'Ein Duell ist ein kurzer Wettkampf mit einem anderen Lernenden: wer schneller und fehlerfrei Grammatik-Aufgaben löst (Artikel, Adjektivendungen, Fragen). Einen Gegner rufst du über das Bot-Menü. Möchtest du Duell-Einladungen bekommen?')}
           </p>
           <div className="ob-options">
             <button
@@ -246,16 +258,16 @@ function StepBody(props) {
               className={`ob-option ${selBattle === 'yes' ? 'is-sel' : ''}`}
               onClick={() => onPickBattle(true)}
             >
-              <span className="ob-option-label">⚔️ Да, зовите меня</span>
-              <span className="ob-option-sub">буду в списке приглашаемых</span>
+              <span className="ob-option-label">{t('⚔️ Да, зовите меня', '⚔️ Ja, ladet mich ein')}</span>
+              <span className="ob-option-sub">{t('буду в списке приглашаемых', 'ich bin in der Einladungsliste')}</span>
             </button>
             <button
               type="button"
               className={`ob-option ${selBattle === 'no' ? 'is-sel' : ''}`}
               onClick={() => onPickBattle(false)}
             >
-              <span className="ob-option-label">Пока нет</span>
-              <span className="ob-option-sub">можно включить позже</span>
+              <span className="ob-option-label">{t('Пока нет', 'Noch nicht')}</span>
+              <span className="ob-option-sub">{t('можно включить позже', 'später aktivierbar')}</span>
             </button>
           </div>
         </div>
@@ -264,65 +276,65 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            На <b>iPhone</b> одним движением делаешь скриншот немецкого слова из любого
-            приложения — а утром телефон сам всё переводит и присылает слова в личку.
-            Останется сохранить.
+            {t('На ', 'Auf dem ')}<b>iPhone</b>
+            {t(' одним движением делаешь скриншот немецкого слова из любого приложения — а утром телефон сам всё переводит и присылает слова в личку. Останется сохранить.',
+               ' machst du mit einer Bewegung einen Screenshot eines deutschen Wortes aus jeder App — und morgens übersetzt das Handy alles selbst und schickt die Wörter privat. Nur noch speichern.')}
           </p>
-          <p className="ob-lead">Необязательно, настраивается один раз. Можно сейчас или позже.</p>
+          <p className="ob-lead">{t('Необязательно, настраивается один раз. Можно сейчас или позже.', 'Optional, wird einmal eingerichtet. Jetzt oder später.')}</p>
           <button type="button" className="ob-confirm" onClick={onShortcutSetup}>
-            📲 Настроить сейчас
+            {t('📲 Настроить сейчас', '📲 Jetzt einrichten')}
           </button>
-          <span className="ob-muted-note">Пропустишь — откроешь потом через «🎬 Как пользоваться».</span>
+          <span className="ob-muted-note">{t('Пропустишь — откроешь потом через «🎬 Как пользоваться».', 'Überspringst du — öffnest du es später über «🎬 Wie man es benutzt».')}</span>
         </div>
       );
     case 'howto_words':
       return (
         <div className="ob-stub">
-          <p className="ob-lead">Слова можно сохранять как удобно — бот сам переведёт и добавит в твой словарь:</p>
+          <p className="ob-lead">{t('Слова можно сохранять как удобно — бот сам переведёт и добавит в твой словарь:', 'Wörter kannst du speichern, wie es dir passt — der Bot übersetzt und legt sie in dein Wörterbuch:')}</p>
           <ul className="ob-list">
             <li>
-              <b>✍️ Напиши боту</b> слово или фразу (по-русски или по-немецки) — получишь
-              быстрый перевод с вариантами на сохранение или полный разбор слова (подробнее,
-              чем в обычном словаре).
+              <b>{t('✍️ Напиши боту', '✍️ Schreib dem Bot')}</b>
+              {t(' слово или фразу (по-русски или по-немецки) — получишь быстрый перевод с вариантами на сохранение или полный разбор слова (подробнее, чем в обычном словаре).',
+                 ' ein Wort oder einen Satz (auf Russisch oder Deutsch) — du bekommst eine schnelle Übersetzung mit Speicheroptionen oder eine ausführliche Wort-Analyse (genauer als ein normales Wörterbuch).')}
             </li>
             <li>
-              <b>📩 Перешли боту</b> любое сообщение с немецким текстом — из Telegram,
-              WhatsApp, откуда угодно. Он достанет оттуда слова и фразы для сохранения.
+              <b>{t('📩 Перешли боту', '📩 Leite dem Bot')}</b>
+              {t(' любое сообщение с немецким текстом — из Telegram, WhatsApp, откуда угодно. Он достанет оттуда слова и фразы для сохранения.',
+                 ' jede Nachricht mit deutschem Text weiter — aus Telegram, WhatsApp, egal woher. Er holt daraus Wörter und Sätze zum Speichern.')}
             </li>
             <li>
-              <b>📋 Вставь большой текст</b> — бот разберёт его и предложит слова на сохранение.
+              <b>{t('📋 Вставь большой текст', '📋 Füge einen langen Text ein')}</b>
+              {t(' — бот разберёт его и предложит слова на сохранение.', ' — der Bot analysiert ihn und schlägt Wörter zum Speichern vor.')}
             </li>
             <li>
-              <b>🔗 Выделил текст</b> в браузере или книге → «Поделиться» → выбери бота.
-              Текст улетит ему, а ты потом спокойно посмотришь перевод с разбором и сохранишь,
-              что нужно.
+              <b>{t('🔗 Выделил текст', '🔗 Text markiert')}</b>
+              {t(' в браузере или книге → «Поделиться» → выбери бота. Текст улетит ему, а ты потом спокойно посмотришь перевод с разбором и сохранишь, что нужно.',
+                 ' im Browser oder Buch → «Teilen» → wähle den Bot. Der Text geht an ihn, und du siehst später in Ruhe die Übersetzung mit Analyse und speicherst, was du brauchst.')}
             </li>
             <li>
-              <b>⭐ Быстрый словарь-переводчик — прямо на рабочем столе.</b> Его иконку можно
-              вынести на экран телефона и открывать как обычное приложение-переводчик, когда
-              нужно посмотреть слово или перевести фразу. Только информации в разы больше:
-              перевод, артикль, синонимы, антонимы, примеры и частые словосочетания. И одной
-              кнопкой сохраняешь всё это (не только слово, но и словосочетания с синонимами)
-              в свой словарь — чтобы потом выучить. <i>(как поставить иконку — покажем отдельно)</i>
+              <b>{t('⭐ Быстрый словарь-переводчик — прямо на рабочем столе.', '⭐ Schneller Wörterbuch-Übersetzer — direkt auf dem Startbildschirm.')}</b>
+              {t(' Его иконку можно вынести на экран телефона и открывать как обычное приложение-переводчик, когда нужно посмотреть слово или перевести фразу. Только информации в разы больше: перевод, артикль, синонимы, антонимы, примеры и частые словосочетания. И одной кнопкой сохраняешь всё это (не только слово, но и словосочетания с синонимами) в свой словарь — чтобы потом выучить. ',
+                 ' Sein Symbol kannst du auf den Startbildschirm legen und wie eine normale Übersetzer-App öffnen, wenn du ein Wort nachschlagen oder einen Satz übersetzen willst. Nur mit viel mehr Infos: Übersetzung, Artikel, Synonyme, Antonyme, Beispiele und häufige Wortverbindungen. Und mit einem Knopf speicherst du all das (nicht nur das Wort, auch Wortverbindungen und Synonyme) in dein Wörterbuch — zum späteren Lernen. ')}
+              <i>{t('(как поставить иконку — покажем отдельно)', '(wie man das Symbol anlegt — zeigen wir separat)')}</i>
             </li>
           </ul>
           <div className="ob-howbox">
-            <p className="ob-howbox-title">📌 Как вынести иконку переводчика на экран (iPhone)</p>
+            <p className="ob-howbox-title">{t('📌 Как вынести иконку переводчика на экран (iPhone)', '📌 Wie du das Übersetzer-Symbol auf den Bildschirm legst (iPhone)')}</p>
             <ol className="ob-steps">
-              <li>Открой словарь в браузере Safari — кнопкой ниже.</li>
-              <li>Внизу нажми «Поделиться» (квадрат со стрелкой вверх).</li>
-              <li>Пролистай список и выбери «На экран „Домой"».</li>
-              <li>Нажми «Добавить» — иконка появится на рабочем столе.</li>
-              <li>Готово! Теперь открывай словарь как обычное приложение.</li>
+              <li>{t('Открой словарь в браузере Safari — кнопкой ниже.', 'Öffne das Wörterbuch im Safari-Browser — mit dem Knopf unten.')}</li>
+              <li>{t('Внизу нажми «Поделиться» (квадрат со стрелкой вверх).', 'Tippe unten auf «Teilen» (Quadrat mit Pfeil nach oben).')}</li>
+              <li>{t('Пролистай список и выбери «На экран „Домой"».', 'Scrolle die Liste und wähle «Zum Home-Bildschirm».')}</li>
+              <li>{t('Нажми «Добавить» — иконка появится на рабочем столе.', 'Tippe «Hinzufügen» — das Symbol erscheint auf dem Startbildschirm.')}</li>
+              <li>{t('Готово! Теперь открывай словарь как обычное приложение.', 'Fertig! Öffne das Wörterbuch jetzt wie eine normale App.')}</li>
             </ol>
             <button type="button" className="ob-confirm" onClick={openDictInBrowser}>
-              🌐 Открыть словарь в Safari
+              {t('🌐 Открыть словарь в Safari', '🌐 Wörterbuch in Safari öffnen')}
             </button>
-            <MediaTile src="/onboarding/words/translator_icon.mp4" caption="🎥 Как вынести иконку на экран" />
+            <MediaTile src="/onboarding/words/translator_icon.mp4" caption={t('🎥 Как вынести иконку на экран', '🎥 Wie man das Symbol anlegt')} />
           </div>
           <p className="ob-lead ob-muted-note">
-            Всё, что читаешь и сохраняешь, само копится в твоём словаре — заходишь и учишь,
-            когда захочешь.
+            {t('Всё, что читаешь и сохраняешь, само копится в твоём словаре — заходишь и учишь, когда захочешь.',
+               'Alles, was du liest und speicherst, sammelt sich von selbst in deinem Wörterbuch — du gehst rein und lernst, wann du willst.')}
           </p>
         </div>
       );
@@ -330,40 +342,46 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            Ничего вызывать не нужно — бот сам присылает тебе в личку короткие задания по
-            твоему расписанию. Каждое тренирует важную тему:
+            {t('Ничего вызывать не нужно — бот сам присылает тебе в личку короткие задания по твоему расписанию. Каждое тренирует важную тему:',
+               'Du musst nichts aufrufen — der Bot schickt dir kurze Aufgaben privat nach deinem Zeitplan. Jede trainiert ein wichtiges Thema:')}
           </p>
           <ul className="ob-list">
             <li>
-              <b>🗞 Начни день с новостей</b> — каждое утро свежие настоящие новости коротким
-              видео. Смотришь с двойными кликабельными субтитрами (любое слово — перевёл и
-              сохранил), а потом отвечаешь на тесты по услышанному. Тренирует понимание живой
-              речи — навык, который нужен каждый день в реальной жизни.
+              <b>{t('🗞 Начни день с новостей', '🗞 Starte den Tag mit Nachrichten')}</b>
+              {t(' — каждое утро свежие настоящие новости коротким видео. Смотришь с двойными кликабельными субтитрами (любое слово — перевёл и сохранил), а потом отвечаешь на тесты по услышанному. Тренирует понимание живой речи — навык, который нужен каждый день в реальной жизни.',
+                 ' — jeden Morgen frische echte News als kurzes Video. Du schaust mit doppelten anklickbaren Untertiteln (jedes Wort — übersetzt und gespeichert) und beantwortest dann Tests zum Gehörten. Trainiert das Verstehen echter Sprache — eine Fähigkeit, die man im Alltag jeden Tag braucht.')}
             </li>
             <li>
-              <b>🔵 Артикли der/die/das</b> — угадываешь род слова. Спокойная тренировка или
-              дуэль на скорость с другим учеником. База, которую надо держать всегда.
+              <b>{t('🔵 Артикли der/die/das', '🔵 Artikel der/die/das')}</b>
+              {t(' — угадываешь род слова. Спокойная тренировка или дуэль на скорость с другим учеником. База, которую надо держать всегда.',
+                 ' — du errätst das Geschlecht des Wortes. Ruhiges Training oder ein Duell auf Zeit mit einem anderen Lernenden. Die Basis, die man immer halten muss.')}
             </li>
             <li>
-              <b>🟢 Окончания прилагательных</b> — самая частая ошибка в немецком. Тренировка и дуэль.
+              <b>{t('🟢 Окончания прилагательных', '🟢 Adjektivendungen')}</b>
+              {t(' — самая частая ошибка в немецком. Тренировка и дуэль.', ' — der häufigste Fehler im Deutschen. Training und Duell.')}
             </li>
             <li>
-              <b>🔢 Zahlendiktat</b> — числа на слух: слышишь и записываешь. Тренировка и дуэль.
+              <b>🔢 Zahlendiktat</b>
+              {t(' — числа на слух: слышишь и записываешь. Тренировка и дуэль.', ' — Zahlen nach Gehör: du hörst und tippst. Training und Duell.')}
             </li>
             <li>
-              <b>❓ Wo-Fragen</b> — вопросы (wo / wohin / woher…): учишься правильно спрашивать.
-              Тренировка и дуэль.
+              <b>❓ Wo-Fragen</b>
+              {t(' — вопросы (wo / wohin / woher…): учишься правильно спрашивать. Тренировка и дуэль.',
+                 ' — Fragen (wo / wohin / woher…): du lernst richtig zu fragen. Training und Duell.')}
             </li>
             <li>
-              <b>🧩 Кроссворды</b> — расширяют словарный запас в игровой форме.
+              <b>{t('🧩 Кроссворды', '🧩 Kreuzworträtsel')}</b>
+              {t(' — расширяют словарный запас в игровой форме.', ' — erweitern spielerisch den Wortschatz.')}
             </li>
             <li>
-              <b>🎧 Hörverständnis</b> — понимание на слух: слушаешь и вытаскиваешь ключевое
-              (даты, время, факты). Учит ориентироваться в живой речи.
+              <b>🎧 Hörverständnis</b>
+              {t(' — понимание на слух: слушаешь и вытаскиваешь ключевое (даты, время, факты). Учит ориентироваться в живой речи.',
+                 ' — Hörverstehen: du hörst zu und ziehst das Wichtigste heraus (Daten, Uhrzeit, Fakten). Übt, sich in echter Sprache zu orientieren.')}
             </li>
             <li>
-              <b>🔁 Разбор твоих ошибок за вчера</b> — бот собирает, где ты ошибся, и даёт
-              повторить. Чтобы ошибки не превращались в привычку.
+              <b>{t('🔁 Разбор твоих ошибок за вчера', '🔁 Analyse deiner Fehler von gestern')}</b>
+              {t(' — бот собирает, где ты ошибся, и даёт повторить. Чтобы ошибки не превращались в привычку.',
+                 ' — der Bot sammelt, wo du dich geirrt hast, und lässt dich wiederholen. Damit Fehler nicht zur Gewohnheit werden.')}
             </li>
           </ul>
         </div>
@@ -372,30 +390,35 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            Бот даёт тебе предложение, ты переводишь на немецкий — а он не просто ставит
-            оценку, а <b>объясняет грамматику</b>: что верно, что нет и почему.
+            {t('Бот даёт тебе предложение, ты переводишь на немецкий — а он не просто ставит оценку, а ',
+               'Der Bot gibt dir einen Satz, du übersetzt ins Deutsche — und er gibt nicht nur eine Note, sondern ')}
+            <b>{t('объясняет грамматику', 'erklärt die Grammatik')}</b>
+            {t(': что верно, что нет и почему.', ': was richtig ist, was nicht und warum.')}
           </p>
           <p className="ob-lead">
-            Есть режимы и уровни сложности — от простого к продвинутому. Незнакомые слова
-            из перевода тоже сохраняешь в словарь одной кнопкой.
+            {t('Есть режимы и уровни сложности — от простого к продвинутому. Незнакомые слова из перевода тоже сохраняешь в словарь одной кнопкой.',
+               'Es gibt Modi und Schwierigkeitsstufen — von einfach bis fortgeschritten. Unbekannte Wörter aus der Übersetzung speicherst du auch mit einem Knopf ins Wörterbuch.')}
           </p>
         </div>
       );
     case 'howto_tools':
       return (
         <div className="ob-stub">
-          <p className="ob-lead">И ещё несколько удобных вещей:</p>
+          <p className="ob-lead">{t('И ещё несколько удобных вещей:', 'Und noch ein paar praktische Dinge:')}</p>
           <ul className="ob-list">
             <li>
-              <b>🃏 Карточки</b> — повторяешь сохранённые слова по умной системе, пока не запомнишь.
+              <b>{t('🃏 Карточки', '🃏 Karten')}</b>
+              {t(' — повторяешь сохранённые слова по умной системе, пока не запомнишь.', ' — du wiederholst gespeicherte Wörter nach einem klugen System, bis du sie kannst.')}
             </li>
             <li>
-              <b>▶️ YouTube с двойными субтитрами</b> — смотришь видео с субтитрами на двух
-              языках сразу, а любое слово сохраняешь в словарь в один тап.
+              <b>{t('▶️ YouTube с двойными субтитрами', '▶️ YouTube mit doppelten Untertiteln')}</b>
+              {t(' — смотришь видео с субтитрами на двух языках сразу, а любое слово сохраняешь в словарь в один тап.',
+                 ' — du schaust Videos mit Untertiteln in zwei Sprachen gleichzeitig und speicherst jedes Wort mit einem Tipp ins Wörterbuch.')}
             </li>
             <li>
-              <b>📖 Читалка</b> — загружаешь книгу и читаешь прямо в приложении. Каждое слово
-              кликабельно: нажал — перевод и разбор, сохранил.
+              <b>{t('📖 Читалка', '📖 Reader')}</b>
+              {t(' — загружаешь книгу и читаешь прямо в приложении. Каждое слово кликабельно: нажал — перевод и разбор, сохранил.',
+                 ' — du lädst ein Buch und liest direkt in der App. Jedes Wort ist anklickbar: getippt — Übersetzung und Analyse, gespeichert.')}
             </li>
           </ul>
         </div>
@@ -404,43 +427,47 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            В чате с ботом под полем ввода есть кнопки-меню. Если их не видно — нажми
-            значок с квадратиками справа от строки сообщения. Вот главные:
+            {t('В чате с ботом под полем ввода есть кнопки-меню. Если их не видно — нажми значок с квадратиками справа от строки сообщения. Вот главные:',
+               'Im Chat mit dem Bot gibt es unter dem Eingabefeld Menü-Tasten. Siehst du sie nicht — tippe auf das Kästchen-Symbol rechts neben der Nachrichtenzeile. Die wichtigsten:')}
           </p>
           <ul className="ob-list">
             <li>
-              <b>▶️ «Следующее задание»</b> — показывает, что ты ещё не сделал сегодня.
-              Нажал — и решаешь.
+              <b>{t('▶️ «Следующее задание»', '▶️ «Nächste Aufgabe»')}</b>
+              {t(' — показывает, что ты ещё не сделал сегодня. Нажал — и решаешь.', ' — zeigt, was du heute noch nicht gemacht hast. Getippt — und du löst.')}
             </li>
             <li>
-              <b>🎮 Кнопки тренировок и дуэлей</b> — запускают короткие игры на грамматику
-              (одному или против другого ученика).
+              <b>{t('🎮 Кнопки тренировок и дуэлей', '🎮 Tasten für Übungen und Duelle')}</b>
+              {t(' — запускают короткие игры на грамматику (одному или против другого ученика).', ' — starten kurze Grammatik-Spiele (allein oder gegen einen anderen Lernenden).')}
             </li>
             <li>
-              <b>🗓 Расписание (Pro)</b> — эта кнопка выглядит как «🔥 Интенсивно · 🌅🌆 Утро+вечер»
-              и легко принять её за надпись. На самом деле это <b>кнопка</b>: показывает твой
-              текущий темп и часы заданий, нажми — поменяешь. Рядом «🎯 Тема на завтра» — выбрать
-              тему для персональных заданий.
+              <b>{t('🗓 Расписание (Pro)', '🗓 Zeitplan (Pro)')}</b>
+              {t(' — эта кнопка выглядит как «🔥 Интенсивно · 🌅🌆 Утро+вечер» и легко принять её за надпись. На самом деле это ',
+                 ' — diese Taste sieht aus wie «🔥 Intensiv · 🌅🌆 Morgens+abends» und wirkt wie eine Beschriftung. In Wahrheit ist es eine ')}
+              <b>{t('кнопка', 'Taste')}</b>
+              {t(': показывает твой текущий темп и часы заданий, нажми — поменяешь. Рядом «🎯 Тема на завтра» — выбрать тему для персональных заданий.',
+                 ': sie zeigt dein aktuelles Tempo und die Uhrzeiten, tippe — und ändere es. Daneben «🎯 Thema für morgen» — ein Thema für persönliche Aufgaben wählen.')}
             </li>
             <li>
-              <b>📖 Словарь и 🤖 учитель</b> — быстро перевести слово или задать вопрос
-              по немецкому.
+              <b>{t('📖 Словарь и 🤖 учитель', '📖 Wörterbuch und 🤖 Lehrer')}</b>
+              {t(' — быстро перевести слово или задать вопрос по немецкому.', ' — schnell ein Wort übersetzen oder eine Frage zum Deutschen stellen.')}
             </li>
             <li>
-              <b>🎬 «Как пользоваться»</b> — сюда возвращаешься за настройками и
-              обучающими видео в любой момент.
+              <b>{t('🎬 «Как пользоваться»', '🎬 «Wie man es benutzt»')}</b>
+              {t(' — сюда возвращаешься за настройками и обучающими видео в любой момент.', ' — hierher kommst du jederzeit für Einstellungen und Lern-Videos zurück.')}
             </li>
           </ul>
-          <p className="ob-lead"><b>Кнопки-переключатели</b> — нажатие меняет режим, а подпись на самой кнопке показывает текущее состояние:</p>
+          <p className="ob-lead"><b>{t('Кнопки-переключатели', 'Umschalt-Tasten')}</b>{t(' — нажатие меняет режим, а подпись на самой кнопке показывает текущее состояние:', ' — ein Tippen ändert den Modus, die Beschriftung auf der Taste zeigt den aktuellen Zustand:')}</p>
           <ul className="ob-list">
             <li>
-              <b>⚔️ Готовность к дуэлям</b> — зовут ли тебя на батлы. Нажал — включил или
-              выключил; на кнопке видно, как сейчас.
+              <b>{t('⚔️ Готовность к дуэлям', '⚔️ Bereit für Duelle')}</b>
+              {t(' — зовут ли тебя на батлы. Нажал — включил или выключил; на кнопке видно, как сейчас.', ' — ob du zu Duellen eingeladen wirst. Getippt — an oder aus; auf der Taste siehst du, wie es gerade ist.')}
             </li>
             <li>
-              <b>💾 Автосейв</b> — режим захвата слов со скриншотов. По умолчанию <b>ВКЛ</b>:
-              слова копятся за день и приходят утром одним списком. Выключишь — будут приходить
-              по мере поступления. Подпись показывает ВКЛ/ВЫКЛ.
+              <b>{t('💾 Автосейв', '💾 Auto-Speichern')}</b>
+              {t(' — режим захвата слов со скриншотов. По умолчанию ', ' — Modus zum Sammeln von Wörtern aus Screenshots. Standardmäßig ')}
+              <b>{t('ВКЛ', 'AN')}</b>
+              {t(': слова копятся за день и приходят утром одним списком. Выключишь — будут приходить по мере поступления. Подпись показывает ВКЛ/ВЫКЛ.',
+                 ': Wörter sammeln sich über den Tag und kommen morgens als eine Liste. Schaltest du aus — kommen sie einzeln, sobald sie da sind. Die Beschriftung zeigt AN/AUS.')}
             </li>
           </ul>
         </div>
@@ -478,13 +505,14 @@ function StepBody(props) {
     case 'finale':
       return IS_PUBLIC ? (
         <p className="ob-lead">
-          Вот и всё, что умеет бот 🎉 Понравилось? Установи его и начни учить немецкий
-          по-настоящему — каждый день. Жми кнопку ниже 👇
+          {t('Вот и всё, что умеет бот 🎉 Понравилось? Установи его и начни учить немецкий по-настоящему — каждый день. Жми кнопку ниже 👇',
+             'Das war alles, was der Bot kann 🎉 Gefällt es dir? Installiere ihn und lerne Deutsch richtig — jeden Tag. Tippe auf die Taste unten 👇')}
         </p>
       ) : (
         <p className="ob-lead">
-          Всё настроено! Задания уже ждут в чате. Захочешь что-то поменять — всё здесь же,
-          под кнопкой <b>🎬 Как пользоваться</b>.
+          {t('Всё настроено! Задания уже ждут в чате. Захочешь что-то поменять — всё здесь же, под кнопкой ',
+             'Alles eingerichtet! Die Aufgaben warten schon im Chat. Willst du etwas ändern — alles ist hier, unter der Taste ')}
+          <b>{t('🎬 Как пользоваться', '🎬 Wie man es benutzt')}</b>.
         </p>
       );
     default:
@@ -667,7 +695,7 @@ export default function OnboardingWizard() {
   const pct = useMemo(() => Math.round(((idx + 1) / STEPS.length) * 100), [idx]);
 
   if (loading) {
-    return <div className="ob-root"><div className="ob-loading">Загрузка…</div></div>;
+    return <div className="ob-root"><div className="ob-loading">{t('Загрузка…', 'Lädt…')}</div></div>;
   }
 
   return (
@@ -675,7 +703,7 @@ export default function OnboardingWizard() {
       <div className="ob-card">
         <header className="ob-head">
           <div className="ob-progress">
-            <span className="ob-step-label">Шаг {idx + 1} из {STEPS.length}</span>
+            <span className="ob-step-label">{t('Шаг', 'Schritt')} {idx + 1} {t('из', 'von')} {STEPS.length}</span>
             <div className="ob-bar"><div className="ob-bar-fill" style={{ width: `${pct}%` }} /></div>
           </div>
           <h1 className="ob-title">{step.title}</h1>
@@ -703,7 +731,7 @@ export default function OnboardingWizard() {
 
         <footer className="ob-nav">
           <button type="button" className="ob-btn ob-back" onClick={goBack} disabled={idx === 0 || finishing}>
-            ← Назад
+            ← {t('Назад', 'Zurück')}
           </button>
           <button
             type="button"
@@ -711,9 +739,9 @@ export default function OnboardingWizard() {
             onClick={goNext}
             disabled={!canNext || finishing || done}
           >
-            {done ? '✅ Готово'
-              : isLast ? (IS_PUBLIC ? '🚀 Установить бота' : '🎯 К заданиям')
-              : 'Далее →'}
+            {done ? t('✅ Готово', '✅ Fertig')
+              : isLast ? (IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 К заданиям', '🎯 Zu den Aufgaben'))
+              : t('Далее →', 'Weiter →')}
           </button>
         </footer>
       </div>
