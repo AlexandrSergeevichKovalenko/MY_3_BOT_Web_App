@@ -21184,30 +21184,10 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
                 )
             return result
 
-        chart_started_perf = time.perf_counter()
-        chart_png = _build_translation_focus_pool_admin_report_png(
-            rows=rows,
-            summary=summary,
-            snapshot_date=snapshot_date,
-            tz_name=tz_name,
-        )
-        _log_translation_focus_pool_admin_report_stage(
-            "chart_ready",
-            snapshot_date=run_period,
-            duration_ms=int((time.perf_counter() - chart_started_perf) * 1000),
-            chart_available=bool(chart_png),
-            chart_bytes=len(chart_png) if chart_png else 0,
-        )
-        if chart_png is None:
-            logging.warning(
-                "translation_focus_pool_admin_report: chart_png is None — matplotlib unavailable or rows empty. "
-                "Falling back to text-only report."
-            )
-            _log_translation_focus_pool_admin_report_stage(
-                "chart_missing",
-                snapshot_date=run_period,
-                reason="png_builder_returned_none",
-            )
+        # Text-only report by request: the bar chart is not informative for the
+        # admin, so we skip building/sending the PNG and deliver the caption text
+        # as a plain message.
+        chart_png = None
         caption_started_perf = time.perf_counter()
         caption = _build_translation_focus_pool_admin_report_caption(
             rows=rows,
