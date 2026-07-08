@@ -3654,6 +3654,10 @@ def webapp_starter_dictionary_apply():
             target_lang=target_lang,
             profile=profile,
         )
+        # «Весь словарь» (full=true) → import up to the whole template (capped 5000);
+        # otherwise the curated ~1000 starter.
+        _want_full = bool(payload.get("full"))
+        _import_limit = min(int(template_total), 5000) if _want_full else int(STARTER_DICTIONARY_IMPORT_LIMIT)
         _start_starter_dictionary_import_runner(
             job_id=job_id,
             user_id=int(user_id),
@@ -3662,6 +3666,7 @@ def webapp_starter_dictionary_apply():
             decided_at=decided_at,
             previous_imported_count=previous_imported_count,
             previous_imported_at=previous_imported_at,
+            import_limit=_import_limit,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка импорта базового словаря: {exc}"}), 500
@@ -5675,15 +5680,17 @@ def _run_starter_dictionary_import_job(
     decided_at: datetime,
     previous_imported_count: int,
     previous_imported_at: datetime | None,
+    import_limit: int | None = None,
 ) -> None:
     started_at = datetime.now(timezone.utc)
+    effective_limit = max(1, min(5000, int(import_limit or STARTER_DICTIONARY_IMPORT_LIMIT)))
     try:
         import_result = import_starter_dictionary_snapshot(
             source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
             target_user_id=int(user_id),
             source_lang=source_lang,
             target_lang=target_lang,
-            import_limit=int(STARTER_DICTIONARY_IMPORT_LIMIT),
+            import_limit=effective_limit,
             folder_name=STARTER_DICTIONARY_FOLDER_NAME,
             template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
         )
@@ -5751,6 +5758,7 @@ def _start_starter_dictionary_import_runner(
     decided_at: datetime,
     previous_imported_count: int,
     previous_imported_at: datetime | None,
+    import_limit: int | None = None,
 ) -> None:
     worker = threading.Thread(
         target=_run_starter_dictionary_import_job,
@@ -5762,6 +5770,7 @@ def _start_starter_dictionary_import_runner(
             "decided_at": decided_at,
             "previous_imported_count": max(0, int(previous_imported_count or 0)),
             "previous_imported_at": previous_imported_at,
+            "import_limit": import_limit,
         },
         daemon=True,
         name=f"starter-dictionary-{int(user_id)}",

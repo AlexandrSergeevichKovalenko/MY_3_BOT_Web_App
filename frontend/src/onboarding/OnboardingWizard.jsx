@@ -175,24 +175,34 @@ function StepBody(props) {
     case 'dictionary': {
       const connected = confirmed || (dictOffer && Number(dictOffer.starter_pair_total || 0) > 0);
       const n = Number(dictOffer?.suggested_count || dictOffer?.import_limit || 0);
+      const total = Number(dictOffer?.template_total || 0);
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            Подключим стартовый набор слов{n ? <> — <b>~{n}</b></> : ''} под твой старт: с них
-            начнём тренировки и повторения.
+            Подключим слова, с которых начнём тренировки и повторения. Выбери, сколько:
           </p>
           {connected ? (
-            <span className="ob-lock ob-ok">✅ Базовый словарь подключён</span>
+            <span className="ob-lock ob-ok">✅ Словарь подключён</span>
           ) : IS_PUBLIC ? null : (
-            <div className="ob-actions">
+            <div className="ob-actions ob-actions-col">
               <button
                 type="button"
                 className="ob-confirm"
-                onClick={() => onDictAction('accept')}
+                onClick={() => onDictAction('accept', false)}
                 disabled={busy}
               >
-                {busy ? 'Подключаю…' : '📚 Подключить'}
+                {busy ? 'Подключаю…' : `📚 Быстрый старт${n ? ` — ~${n} слов` : ''}`}
               </button>
+              {total > n ? (
+                <button
+                  type="button"
+                  className="ob-confirm ob-alt"
+                  onClick={() => onDictAction('accept', true)}
+                  disabled={busy}
+                >
+                  {busy ? 'Подключаю…' : `🔓 Весь словарь — ~${total} слов`}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="ob-skip"
@@ -203,6 +213,7 @@ function StepBody(props) {
               </button>
             </div>
           )}
+          <p className="ob-muted-note">Быстрый старт — меньше слов, проще начать. Весь словарь — сразу весь набор. Поменять можно потом.</p>
           {stepErr ? <p className="ob-err">{stepErr}</p> : null}
         </div>
       );
@@ -633,11 +644,11 @@ export default function OnboardingWizard() {
   }, []);
 
   // Connect / skip the base dictionary (accept starts a background import job).
-  const dictAction = useCallback(async (action) => {
+  const dictAction = useCallback(async (action, full = false) => {
     setStepErr('');
     setBusy(true);
     try {
-      await api('/api/webapp/starter-dictionary/apply', { action });
+      await api('/api/webapp/starter-dictionary/apply', { action, full: !!full });
       setConfirmed((c) => ({ ...c, dictionary: true }));
       try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
     } catch (_e) {

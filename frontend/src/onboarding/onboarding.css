@@ -297,3 +297,7 @@
   box-shadow: 0 10px 22px rgba(44, 99, 184, 0.28);
 }
 .ob-next:disabled { box-shadow: none; }
+
+/* Dictionary: stacked options + «весь словарь» accent */
+.ob-actions-col { flex-direction: column; align-items: stretch; }
+.ob-confirm.ob-alt { background: #fff8e6; border-color: #e0b84a; color: #8a5a00; }
