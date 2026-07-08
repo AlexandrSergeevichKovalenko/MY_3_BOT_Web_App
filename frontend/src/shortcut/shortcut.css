@@ -169,3 +169,15 @@ html[data-scheme="light"] .sc-btn { background: #eef2f8; border-color: #cfd8e6; 
 .sc-sublist { margin: 4px 0 8px; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
 .sc-sublist li { font-size: 14px; line-height: 1.5; color: #cdd6e6; }
 html[data-scheme="light"] .sc-sublist li { color: #2a3650; }
+
+/* Prominent red warning box (fixed send hours) */
+.sc-danger {
+  background: #fdecec;
+  border: 1.5px solid #e5484d;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin: 6px 0 12px;
+}
+.sc-danger p { margin: 0 0 8px; font-size: 14.5px; line-height: 1.5; color: #b02a2a !important; }
+.sc-danger p:last-child { margin-bottom: 0; }
+.sc-danger b { color: #8a1f22 !important; }

@@ -3142,9 +3142,77 @@ async def _admin_run_streaks_command(update: Update, context: CallbackContext) -
         await message.reply_text(f"❌ Ошибка: {exc}")
 
 
+def _build_shortcut_runs_report_text(days: int = 7) -> str:
+    """Shared SYNC formatter for the «Ночной Переводчик» run-check report — used by the
+    /shortcut_runs command AND the weekly Friday auto-report."""
+    from backend.database import get_shortcut_runs_report
+    rep = get_shortcut_runs_report(int(days))
+    s = rep.get("summary") or {}
+    lines = [
+        f"📲 <b>Ночной Переводчик — запуски за {days}д</b>",
+        f"Проверок: {s.get('total_checks',0)} · ✅ {s.get('allowed',0)} · ⛔ окно {s.get('blocked_window',0)} · ⛔ лимит {s.get('blocked_quota',0)}",
+        f"Юзеров: {s.get('unique_users',0)} · ⚠️ аномалий: {s.get('anomalies',0)}",
+        "",
+    ]
+    rows = rep.get("rows") or []
+    if not rows:
+        lines.append("Пока запусков нет.")
+    else:
+        for p in rows[:30]:
+            mark = "✅" if p.get("allowed") else "⛔"
+            win = "в окне" if p.get("in_window") else "вне окна"
+            pro = "Pro" if p.get("is_pro") else "Free"
+            lines.append(
+                f"{mark} {p.get('local_ts')} · id{p.get('user_id')} · {pro} · {win} · {p.get('reason') or ''} · уст.{p.get('install_count')} ({p.get('last_installed_at') or '?'})"
+            )
+    anomalies = rep.get("anomalies") or []
+    if anomalies:
+        lines.append("")
+        lines.append("⚠️ <b>Аномалии (прошли вне окна — возможный косяк):</b>")
+        for p in anomalies[:10]:
+            lines.append(f"• {p.get('local_ts')} · id{p.get('user_id')} · уст.{p.get('install_count')} ({p.get('last_installed_at')})")
+    return "\n".join(lines)
+
+
+def _send_shortcut_runs_report(days: int = 7) -> dict:
+    """DM the run-check report to all admins. SYNC (bot BackgroundScheduler thread),
+    mirrors _send_scheduler_health_report's delivery."""
+    import requests as _requests
+    from backend.database import get_admin_telegram_ids
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    if not token or not admin_ids:
+        return {"ok": False, "sent": 0, "reason": "no_token_or_admins"}
+    text = _build_shortcut_runs_report_text(days)
+    sent = 0
+    for uid in admin_ids:
+        for part in _split_telegram_text(text):
+            try:
+                _requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": uid, "text": part, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=20,
+                )
+            except Exception:
+                logging.warning("shortcut runs report DM failed uid=%s", uid, exc_info=True)
+        sent += 1
+    return {"ok": True, "sent": sent, "days": days}
+
+
+def _run_shortcut_runs_weekly_report_safe() -> None:
+    """Bot-side WEEKLY (Fri 19:00) «Ночной Переводчик» report to admins. Runs in a
+    BackgroundScheduler thread → must stay synchronous."""
+    try:
+        result = _send_shortcut_runs_report(7)
+        logging.info("shortcut runs weekly report (bot scheduler) result=%s", result)
+    except Exception:
+        logging.exception("shortcut runs weekly report failed")
+
+
 async def _admin_shortcut_runs_command(update: Update, context: CallbackContext) -> None:
-    """/shortcut_runs [days=7] — «Ночной Переводчик» run-check monitoring: recent
-    attempts (time/user/decision/window/grace/installs) + summary + anomalies."""
+    """/shortcut_runs [days=7] — «Ночной Переводчик» run-check monitoring on demand
+    (recent attempts, summary, anomalies). Same report auto-sends Fri 19:00."""
     user = update.effective_user; message = update.effective_message
     if not user or not message:
         return
@@ -3156,36 +3224,9 @@ async def _admin_shortcut_runs_command(update: Update, context: CallbackContext)
     except Exception:
         days = 7
     days = max(1, min(60, days))
-    from backend.database import get_shortcut_runs_report
-    rep = await asyncio.to_thread(get_shortcut_runs_report, days)
-    s = rep.get("summary") or {}
-    lines = [
-        f"\U0001F4F2 <b>\u041d\u043e\u0447\u043d\u043e\u0439 \u041f\u0435\u0440\u0435\u0432\u043e\u0434\u0447\u0438\u043a \u2014 \u0437\u0430\u043f\u0443\u0441\u043a\u0438 \u0437\u0430 {days}\u0434</b>",
-        f"\u041f\u0440\u043e\u0432\u0435\u0440\u043e\u043a: {s.get('total_checks',0)} \u00b7 \u2705 {s.get('allowed',0)} \u00b7 \u26d4 \u043e\u043a\u043d\u043e {s.get('blocked_window',0)} \u00b7 \u26d4 \u043b\u0438\u043c\u0438\u0442 {s.get('blocked_quota',0)}",
-        f"\u042e\u0437\u0435\u0440\u043e\u0432: {s.get('unique_users',0)} \u00b7 \u26a0\ufe0f \u0430\u043d\u043e\u043c\u0430\u043b\u0438\u0439: {s.get('anomalies',0)}",
-        "",
-    ]
-    rows = rep.get("rows") or []
-    if not rows:
-        lines.append("\u041f\u043e\u043a\u0430 \u0437\u0430\u043f\u0443\u0441\u043a\u043e\u0432 \u043d\u0435\u0442.")
-    else:
-        for p in rows[:25]:
-            mark = "\u2705" if p.get("allowed") else "\u26d4"
-            win = "\u0432 \u043e\u043a\u043d\u0435" if p.get("in_window") else "\u0432\u043d\u0435 \u043e\u043a\u043d\u0430"
-            reason = p.get("reason") or ""
-            pro = "Pro" if p.get("is_pro") else "Free"
-            inst = p.get("install_count")
-            li = p.get("last_installed_at") or "?"
-            lines.append(
-                f"{mark} {p.get('local_ts')} \u00b7 id{p.get('user_id')} \u00b7 {pro} \u00b7 {win} \u00b7 {reason} \u00b7 \u0443\u0441\u0442.{inst} ({li})"
-            )
-    anomalies = rep.get("anomalies") or []
-    if anomalies:
-        lines.append("")
-        lines.append("\u26a0\ufe0f <b>\u0410\u043d\u043e\u043c\u0430\u043b\u0438\u0438 (\u043f\u0440\u043e\u0448\u043b\u0438 \u0432\u043d\u0435 \u043e\u043a\u043d\u0430):</b>")
-        for p in anomalies[:10]:
-            lines.append(f"\u2022 {p.get('local_ts')} \u00b7 id{p.get('user_id')} \u00b7 \u0443\u0441\u0442.{p.get('install_count')} ({p.get('last_installed_at')})")
-    await message.reply_text("\n".join(lines)[:4000], parse_mode="HTML")
+    text = await asyncio.to_thread(_build_shortcut_runs_report_text, days)
+    for part in _split_telegram_text(text):
+        await message.reply_text(part, parse_mode="HTML")
 
 
 async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> None:
@@ -34858,6 +34899,18 @@ def main():
             hour=int((os.getenv("DICT_DEDUP_REPORT_HOUR") or "10").strip() or "10"),
             minute=int((os.getenv("DICT_DEDUP_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("DICT_DEDUP_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=1800,
+        )
+        # -- Weekly «Ночной Переводчик» run-check report (Fri 19:00 Europe/Vienna) --
+        scheduler.add_job(
+            _run_shortcut_runs_weekly_report_safe,
+            "cron",
+            day_of_week=os.getenv("SHORTCUT_RUNS_REPORT_DOW") or "fri",
+            hour=int((os.getenv("SHORTCUT_RUNS_REPORT_HOUR") or "19").strip() or "19"),
+            minute=int((os.getenv("SHORTCUT_RUNS_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("SHORTCUT_RUNS_REPORT_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=1800,
