@@ -327,6 +327,9 @@ from backend.database import (
     create_shortcut_pairing_code,
     link_shortcut_installation,
     resolve_shortcut_install_token,
+    count_shortcut_runs_today,
+    count_shortcut_runs_total,
+    record_shortcut_run,
     get_shortcut_installations_for_user,
     revoke_shortcut_installation,
     create_dict_browser_token,
@@ -40905,13 +40908,9 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
     if not can_enqueue_background_jobs():
         return {"error": "Shortcut processing is temporarily unavailable"}, 503
 
-    limit_error = _shortcut_forwarded_message_limit_error(
-        user_id=user_id,
-        origin="shortcut",
-        request_id=request_id,
-    )
-    if limit_error:
-        return limit_error, 429
+    # Per-word Free limit superseded by the per-RUN model (/api/shortcut/run-check):
+    # the shortcut asks permission once per run, so words inside an approved run flow
+    # freely — Free = 3 trial runs total, Pro = 2 runs/day, enforced at run-check.
 
     # Write raw text to Redis immediately so bot_3.py can find it even before
     # BACKGROUND_JOBS processes the Dramatiq job (avoids the "no pending" race condition).
@@ -42095,6 +42094,52 @@ def shortcut_link_installation():
         duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
     )
     return response, 200
+
+
+_SHORTCUT_RUN_PRO_DAILY = max(1, int((os.getenv("SHORTCUT_RUN_PRO_DAILY") or "2").strip() or "2"))
+_SHORTCUT_RUN_FREE_TOTAL = max(0, int((os.getenv("SHORTCUT_RUN_FREE_TOTAL") or "3").strip() or "3"))
+
+
+@app.route("/api/shortcut/run-check", methods=["POST"])
+def shortcut_run_check():
+    """Per-RUN gate for «Ночной Переводчик». The shortcut MUST call this FIRST and,
+    on allowed=false, STOP without deleting the album photos. Pro ≤ N runs/day, Free
+    ≤ N trial runs total (persistent — anti-cheat via the stable telegram user_id)."""
+    body = request.get_json(silent=True) or {}
+    _text, install_token = _shortcut_lookup_request_payload(body)
+    if not install_token:
+        return jsonify({"allowed": False, "error": "install_token обязателен"}), 400
+    request_id = _build_observability_correlation_id(payload=body, prefix="shortcut_run_check")
+    remote_ip = _shortcut_request_ip()
+    installation = resolve_shortcut_install_token(
+        install_token=install_token, request_id=request_id, remote_ip=remote_ip,
+    )
+    if isinstance(installation, dict) and str(installation.get("status") or "").strip().lower() == "schema_unavailable":
+        return jsonify({"allowed": False, "error": "temporarily_unavailable"}), 503
+    if not installation:
+        return jsonify({"allowed": False, "error": "invalid_install_token"}), 401
+    user_id = int(installation.get("user_id") or 0)
+    if user_id <= 0:
+        return jsonify({"allowed": False, "error": "invalid_install_token"}), 401
+    if not is_telegram_user_allowed(user_id):
+        return jsonify({"allowed": False, "reason": "no_access", "message": "Доступ закрыт."}), 403
+    try:
+        ent = resolve_entitlement(user_id=user_id, tz="Europe/Vienna")
+        is_pro = str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
+    except Exception:
+        is_pro = False
+    if is_pro:
+        used = count_shortcut_runs_today(int(user_id))
+        if used >= _SHORTCUT_RUN_PRO_DAILY:
+            return jsonify({"allowed": False, "reason": "pro_daily", "used": used, "limit": _SHORTCUT_RUN_PRO_DAILY,
+                            "message": f"На сегодня лимит запусков исчерпан ({_SHORTCUT_RUN_PRO_DAILY} в день). Попробуйте завтра."}), 200
+    else:
+        used = count_shortcut_runs_total(int(user_id))
+        if used >= _SHORTCUT_RUN_FREE_TOTAL:
+            return jsonify({"allowed": False, "reason": "free_total", "used": used, "limit": _SHORTCUT_RUN_FREE_TOTAL,
+                            "message": f"Бесплатные пробные запуски ({_SHORTCUT_RUN_FREE_TOTAL}) закончились. Оформите Pro, чтобы пользоваться дальше."}), 200
+    record_shortcut_run(int(user_id))
+    return jsonify({"allowed": True, "used": used + 1, "is_pro": is_pro}), 200
 
 
 @app.route("/api/shortcut/lookup", methods=["POST"])

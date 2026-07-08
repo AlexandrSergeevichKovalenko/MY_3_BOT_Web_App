@@ -22694,6 +22694,75 @@ def get_entries_without_semantic_tag(
             ]
 
 
+_shortcut_runs_schema_ready = False
+
+
+def _ensure_shortcut_runs_schema() -> None:
+    """One row per «Ночной Переводчик» run — NEVER deleted (anti-cheat: the counter
+    survives deleting/re-adding the bot because it is keyed by the stable telegram
+    user_id and rows are kept)."""
+    global _shortcut_runs_schema_ready
+    if _shortcut_runs_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_shortcut_runs (
+                    id      BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    ran_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_shortcut_runs_user "
+                        "ON bt_3_shortcut_runs (user_id, ran_at);")
+        conn.commit()
+    _shortcut_runs_schema_ready = True
+
+
+def count_shortcut_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> int:
+    """«Ночной Переводчик» runs on the current CALENDAR day in the given tz (Pro cap)."""
+    try:
+        _ensure_shortcut_runs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_shortcut_runs "
+                    "WHERE user_id=%s AND (ran_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date;",
+                    (int(user_id), str(tz_name), str(tz_name)),
+                )
+                r = cur.fetchone()
+        return int(r[0] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def count_shortcut_runs_total(user_id: int) -> int:
+    """Lifetime «Ночной Переводчик» runs (Free trial cap)."""
+    try:
+        _ensure_shortcut_runs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM bt_3_shortcut_runs WHERE user_id=%s;", (int(user_id),))
+                r = cur.fetchone()
+        return int(r[0] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def record_shortcut_run(user_id: int) -> bool:
+    """Append a run row (call only when the run is APPROVED)."""
+    try:
+        _ensure_shortcut_runs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO bt_3_shortcut_runs (user_id) VALUES (%s);", (int(user_id),))
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("record_shortcut_run failed user=%s", user_id, exc_info=True)
+        return False
+
+
 def get_shortcut_autosave_enabled(user_id: int) -> bool:
     """Whether the user has the Shortcut nightly auto-save (staging + digest) mode ON."""
     try:
