@@ -14980,6 +14980,42 @@ body.worldnews-active .webapp-topbar {
 }
 .worldnews-sub-btn.is-on { background: #2563eb; color: #ffffff; }
 .youtube-subtitles-card-head-spacer { display: flex; justify-content: flex-end; }
+/* Free-user plaque shown for ~5s where the Pro RU subtitles would sit. */
+.worldnews-ru-locked {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: worldnews-ru-locked-in 0.22s ease;
+}
+.worldnews-ru-locked-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  padding: 18px 16px;
+  border-radius: 14px;
+  border: 1.5px dashed rgba(37, 99, 235, 0.45);
+  background: #ffffff;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+}
+.worldnews-ru-locked-icon { font-size: 24px; line-height: 1; }
+.worldnews-ru-locked-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #2563eb;
+  line-height: 1.25;
+}
+.worldnews-ru-locked-text {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: #475569;
+  max-width: 260px;
+}
+@keyframes worldnews-ru-locked-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 /* When original subtitles are toggled off, hide the DE lines but keep the control row. */
 .youtube-subtitles-panel.wn-hide-de .youtube-subtitles-block-de .webapp-subtitles {
   display: none;

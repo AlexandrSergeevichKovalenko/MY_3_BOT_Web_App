@@ -5564,6 +5564,8 @@ function AppInner() {
   const [worldNewsQuizIndex, setWorldNewsQuizIndex] = useState(0); // current quiz question
   const [worldNewsVideoEnded, setWorldNewsVideoEnded] = useState(false); // reveals the quiz CTA
   const [worldNewsShowOriginal, setWorldNewsShowOriginal] = useState(true); // DE subtitles toggle (news mode)
+  const [worldNewsRuLockedNotice, setWorldNewsRuLockedNotice] = useState(false); // free users: "RU sub = Pro" plaque (5s)
+  const worldNewsRuLockedTimerRef = useRef(null);
   const [youtubeError, setYoutubeError] = useState('');
   const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
@@ -20578,6 +20580,28 @@ function AppInner() {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
     return String(pair.source_lang || languageProfile?.native_language || 'ru').toUpperCase();
   };
+  // News mode «Русский» button. RU subtitles synced to the video are a Pro feature:
+  // free users see a soft 5-second plaque instead of the translation column, and keep
+  // watching with the German subtitles they already have.
+  const handleWorldNewsRuToggle = () => {
+    if (isKnownFreePaidSurfaceMode) {
+      if (worldNewsRuLockedTimerRef.current) {
+        clearTimeout(worldNewsRuLockedTimerRef.current);
+      }
+      setWorldNewsRuLockedNotice(true);
+      worldNewsRuLockedTimerRef.current = setTimeout(() => {
+        setWorldNewsRuLockedNotice(false);
+        worldNewsRuLockedTimerRef.current = null;
+      }, 5000);
+      return;
+    }
+    setYoutubeTranslationEnabled((v) => !v);
+  };
+  useEffect(() => () => {
+    if (worldNewsRuLockedTimerRef.current) {
+      clearTimeout(worldNewsRuLockedTimerRef.current);
+    }
+  }, []);
   const movieLanguageOptions = useMemo(() => {
     const set = new Set();
     movies.forEach((item) => set.add(getMovieLanguageCode(item)));
@@ -32899,7 +32923,7 @@ function AppInner() {
                             </div>
                           </div>
                         )}
-                        <div className={`youtube-subtitles-panel-content ${youtubeTranslationEnabled ? 'is-dual' : 'is-single'}`}>
+                        <div className={`youtube-subtitles-panel-content ${(youtubeTranslationEnabled || worldNewsRuLockedNotice) ? 'is-dual' : 'is-single'}`}>
                           <div className="youtube-subtitles-block youtube-subtitles-block-de">
                             <div className="youtube-subtitles-card-head youtube-subtitles-card-head-with-nav">
                               <div className="youtube-subtitles-card-badge">
@@ -32923,7 +32947,7 @@ function AppInner() {
                                   <button
                                     type="button"
                                     className={`worldnews-sub-btn ${youtubeTranslationEnabled ? 'is-on' : ''}`}
-                                    onClick={() => setYoutubeTranslationEnabled((v) => !v)}
+                                    onClick={handleWorldNewsRuToggle}
                                   >
                                     {tr('Русский', 'Russisch')}
                                   </button>
@@ -32980,6 +33004,22 @@ function AppInner() {
                                     });
                                   })()}
                                 </div>
+                              </div>
+                            </div>
+                          )}
+                          {worldNewsRuLockedNotice && !youtubeTranslationEnabled && (
+                            <div className="youtube-subtitles-block youtube-subtitles-block-ru worldnews-ru-locked" role="status">
+                              <div className="worldnews-ru-locked-card">
+                                <span className="worldnews-ru-locked-icon" aria-hidden="true">🔒</span>
+                                <strong className="worldnews-ru-locked-title">
+                                  {tr('Синхронные русские субтитры — в Pro', 'Synchrone russische Untertitel — nur mit Pro')}
+                                </strong>
+                                <span className="worldnews-ru-locked-text">
+                                  {tr(
+                                    'Немецкие субтитры остаются с вами — можно смотреть и нажимать на слова как обычно.',
+                                    'Die deutschen Untertitel bleiben — du kannst weiterschauen und Wörter wie gewohnt antippen.',
+                                  )}
+                                </span>
                               </div>
                             </div>
                           )}
