@@ -67,6 +67,31 @@ function EmbeddedWordCard({ item, hideMeanings }) {
       origin_process: 'webapp_related',
     }).catch(() => { setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; }); });
   }, []);
+  // Tap an example SENTENCE → save it as a full sentence (de→ru) with its already-shown
+  // Russian gloss. Same canonical /save endpoint as chips; backend classifies it as a
+  // sentence (no article normalisation). Falls back to a quick-translate if no gloss.
+  const saveExample = useCallback((de, ru) => {
+    const src = String(de || '').trim();
+    if (!src) return;
+    setSavedChips((prev) => { if (prev.has(src)) return prev; const n = new Set(prev); n.add(src); return n; });
+    dictHaptic('ok');
+    (async () => {
+      try {
+        let translation = String(ru || '').trim();
+        if (!translation) {
+          const q = await dictApi('/api/translate/quick', { text: src, source_lang: 'de', target_lang: 'ru' }).catch(() => null);
+          translation = String(q?.translation || '').trim();
+        }
+        await dictApi('/api/webapp/dictionary/save', {
+          source_text: src, target_text: translation, translation_ru: translation,
+          source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
+          origin_process: 'webapp_example',
+        });
+      } catch (_e) {
+        setSavedChips((prev) => { const n = new Set(prev); n.delete(src); return n; });
+      }
+    })();
+  }, []);
   // Don't render an empty card for a bare quick-translate (no breakdown yet).
   const hasContent = item && typeof item === 'object' && (
     item.part_of_speech || item.meanings || item.grammar_tables || item.forms
@@ -78,7 +103,7 @@ function EmbeddedWordCard({ item, hideMeanings }) {
   if (!hasContent) return null;
   return (
     <div className="dq-card vocab-rich-card">
-      <WordBreakdown item={item} tts={tts} hideMeanings={hideMeanings} onSaveChip={saveChip} savedChips={savedChips} />
+      <WordBreakdown item={item} tts={tts} hideMeanings={hideMeanings} onSaveChip={saveChip} onSaveExample={saveExample} savedChips={savedChips} />
     </div>
   );
 }

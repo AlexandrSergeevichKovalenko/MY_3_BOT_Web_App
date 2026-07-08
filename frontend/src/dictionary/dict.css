@@ -888,6 +888,23 @@
   line-height: 1.4;
   color: var(--dmps-text-title, #f1f5f9) !important;
 }
+/* Tap-to-save example sentence: reads as plain text but is a real button. Left-aligned,
+   wraps naturally, subtle press feedback; green ✓ + tint once saved (mirrors .dq-savechip). */
+.dq-ex-save {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: opacity 0.12s;
+}
+.dq-ex-save:active { opacity: 0.6; }
+.dq-ex-save.is-saved span { color: #4ad08a !important; }
 .dq-ex-ru,
 .dq-ex-reveal {
   align-self: flex-start;

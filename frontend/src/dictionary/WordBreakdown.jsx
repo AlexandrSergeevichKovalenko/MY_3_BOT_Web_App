@@ -167,22 +167,39 @@ export function SpeakButton({ text, tts, sm }) {
 }
 
 // Example sentences: German + 🔊, with the Russian translation always shown below
-// (no reveal toggle — simpler and nothing hidden).
-function ExamplesBlock({ examples, tts }) {
+// (no reveal toggle — simpler and nothing hidden). Tapping the German sentence saves it
+// to the dictionary as a full sentence (same canonical pipeline as chips) — de→ru, with
+// the shown Russian gloss, so the whole example lands as one card. The 🔊 button keeps
+// its own tap target so listening never triggers a save.
+function ExamplesBlock({ examples, tts, onSaveExample, savedChips }) {
   if (!examples || examples.length === 0) return null;
   return (
     <div className="dq-block">
       <strong>Примеры</strong>
       <div className="dq-ex-list">
-        {examples.map((ex, i) => (
-          <div key={`${ex.de}-${i}`} className="dq-ex">
-            <div className="dq-ex-de">
-              <SpeakButton text={ex.de} tts={tts} sm />
-              <span>{ex.de}</span>
+        {examples.map((ex, i) => {
+          const isSaved = !!(savedChips && savedChips.has(clean(ex.de)));
+          return (
+            <div key={`${ex.de}-${i}`} className="dq-ex">
+              <div className="dq-ex-de">
+                <SpeakButton text={ex.de} tts={tts} sm />
+                {onSaveExample ? (
+                  <button
+                    type="button"
+                    className={`dq-ex-save${isSaved ? ' is-saved' : ''}`}
+                    onClick={() => onSaveExample(ex.de, ex.ru)}
+                    title={isSaved ? 'Сохранено в словарь' : 'Нажмите, чтобы сохранить пример в словарь'}
+                  >
+                    <span>{ex.de}</span>{isSaved ? ' ✓' : ''}
+                  </button>
+                ) : (
+                  <span>{ex.de}</span>
+                )}
+              </div>
+              {ex.ru && <div className="dq-ex-ru-static">{ex.ru}</div>}
             </div>
-            {ex.ru && <div className="dq-ex-ru-static">{ex.ru}</div>}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -592,7 +609,7 @@ function GrammarTables({ tables }) {
 // The full POS-aware breakdown of an item (fresh lookup OR saved response_json).
 // `tts` enables audio; `onSaveChip`/`savedChips` enable tap-to-save chips (both
 // optional — when omitted the chips are inert text and audio buttons hide).
-export function WordBreakdown({ item, tts, onSaveChip, savedChips, hideMeanings }) {
+export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips, hideMeanings }) {
   if (!item) return null;
   const pos = clean(item.part_of_speech).toLowerCase();
   const phraseKind = clean(item.phrase_kind).toLowerCase();
@@ -737,7 +754,7 @@ export function WordBreakdown({ item, tts, onSaveChip, savedChips, hideMeanings 
         </div>
       )}
 
-      <ExamplesBlock examples={examples} tts={tts} />
+      <ExamplesBlock examples={examples} tts={tts} onSaveExample={onSaveExample} savedChips={savedChips} />
 
       {usage.length > 0 && (
         <div className="dq-block">

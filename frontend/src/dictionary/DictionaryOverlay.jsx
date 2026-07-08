@@ -544,6 +544,51 @@ export default function DictionaryOverlay() {
     })();
   }, []);
 
+  // Tap an example SENTENCE → save it through the SAME canonical pipeline as chips,
+  // but as a full sentence (not a noun lookup): we already have its German text + the
+  // shown Russian translation, so skip the GPT/word breakdown entirely and hand the
+  // pair straight to /save. The backend classifies it as a sentence (no article
+  // normalisation) and stores the de→ru direction. If the Russian gloss is missing we
+  // fall back to a deterministic quick-translate so nothing is ever saved German-only.
+  const saveExample = useCallback((de, ru) => {
+    const src = String(de || '').trim();
+    if (!src) return;
+    setSavedChips((prev) => {
+      if (prev.has(src)) return prev;
+      const next = new Set(prev);
+      next.add(src);
+      return next;
+    });
+    haptic('ok');
+    (async () => {
+      try {
+        let translation = String(ru || '').trim();
+        if (!translation) {
+          const q = await api('/api/translate/quick', {
+            text: src, source_lang: 'de', target_lang: 'ru',
+          }).catch(() => null);
+          translation = String(q?.translation || '').trim();
+        }
+        if (!translation) throw new Error('Не удалось перевести пример');
+        await api('/api/webapp/dictionary/save', buildDictionarySavePayload({
+          rich: null,
+          sourceText: src,
+          quick: {
+            source: src,
+            translation,
+            sourceLang: 'de',
+            targetLang: 'ru',
+            direction: 'de-ru',
+          },
+          origin: 'webapp_quick_dictionary_example',
+        }));
+      } catch (e) {
+        setSavedChips((prev) => { const n = new Set(prev); n.delete(src); return n; });
+        setError(friendlyError(e)); haptic('bad');
+      }
+    })();
+  }, []);
+
   const openFull = useCallback(() => {
     try { window.location.assign('/webapp?startapp=dictionary'); } catch (_e) { /* ignore */ }
   }, []);
@@ -732,7 +777,7 @@ export default function DictionaryOverlay() {
               {headTranslation}
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
-            {item && <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} savedChips={savedChips} />}
+            {item && <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} onSaveExample={saveExample} savedChips={savedChips} />}
             {(enrich === 'loading' || enrich === 'streaming') && (
               <BreakdownSkeleton arrived={streamSections} />
             )}

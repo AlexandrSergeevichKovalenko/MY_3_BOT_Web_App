@@ -693,6 +693,7 @@ from backend.tts_generation import (
     _enforce_google_tts_monthly_budget,
     _synthesize_mp3,
     _run_tts_generation_core,
+    _get_tts_client,
 )
 from backend.tts_runtime_state import (
     _claim_tts_generation_in_flight,
@@ -1029,10 +1030,14 @@ TRANSLATION_FOCUS_POOL_DEFICIT_REFILL_COOLDOWN_SEC = max(
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "350").strip() or "350"))
-# Short interactive text (quick-dict word / short phrase) is synthesised INLINE in the
-# request instead of the distributed worker broker, so pronunciation is ready in ~1s
-# instead of 10s+. Longer text (reader pages) still goes async. 0 disables the fast lane.
-TTS_INLINE_MAX_CHARS = max(0, int((os.getenv("TTS_INLINE_MAX_CHARS") or "64").strip() or "64"))
+# Short interactive text (quick-dict word / short phrase / example SENTENCE) is
+# synthesised INLINE in the request instead of the distributed worker broker, so
+# pronunciation is ready in ~1s instead of 10s+. The threshold covers full example
+# sentences (typically 40-160 chars) — the 64-char cap sent those to the cross-service
+# worker, which is why tapping 🔊 on an example waited 9-15s. Longer text (reader pages)
+# still goes async. 0 disables the fast lane. Requires a warm TTS client (see startup
+# prewarm) so the inline synth stays ~1s rather than paying a cold gRPC/OAuth handshake.
+TTS_INLINE_MAX_CHARS = max(0, int((os.getenv("TTS_INLINE_MAX_CHARS") or "200").strip() or "200"))
 # TTS_WEBAPP_DEFAULT_SPEED lives in backend.tts_generation (imported above)
 TTS_GENERATION_WORKERS = max(1, min(32, int((os.getenv("TTS_GENERATION_WORKERS") or "4").strip() or "4")))
 TTS_GENERATION_QUEUE_MAXSIZE = max(
@@ -1918,6 +1923,24 @@ def _should_start_backend_runtime_side_effects() -> bool:
     if __name__ == "__main__":
         return True
     return False
+
+
+def _prewarm_tts_client() -> None:
+    """Build + warm the shared Google TTS client at startup so the FIRST synthesis in this
+    web process doesn't pay the cold gRPC channel + TLS + OAuth handshake (several seconds
+    — the "🔊 waited 15s" latency). A single free metadata RPC (list_voices) forces the
+    channel and OAuth token to be established up front; every later inline synth is ~1s."""
+    def _run() -> None:
+        try:
+            client = _get_tts_client()
+            try:
+                client.list_voices(language_code="de-DE")
+            except Exception:
+                pass  # channel/OAuth are warmed by the attempt even if the RPC errors
+            logging.info("TTS client prewarmed at startup")
+        except Exception as exc:
+            logging.warning("TTS client prewarm at startup failed: %s", exc)
+    threading.Thread(target=_run, daemon=True, name="tts-client-prewarm").start()
 
 
 def _should_coordinate_backend_web_startup_bootstrap() -> bool:
@@ -57587,6 +57610,17 @@ try:
         skipped=not runtime_side_effects_enabled,
     )
     if runtime_side_effects_enabled:
+        try:
+            _run_startup_phase(
+                "prewarm_tts_client",
+                _prewarm_tts_client,
+                enabled=True,
+                category="housekeeping",
+                required_before_first_request=False,
+            )
+        except Exception as exc:
+            logging.warning("TTS client prewarm startup phase failed: %s", exc)
+
         try:
             _run_startup_phase(
                 "resume_translation_check_recovery_thread_spawn",

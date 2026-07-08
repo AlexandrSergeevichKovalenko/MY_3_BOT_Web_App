@@ -233,6 +233,38 @@ export default function DeepAnalysis({ startParam }) {
     })();
   }, [folderId, isGuest]);
 
+  // Tap an example SENTENCE → save it as a full sentence (de→ru) with its already-shown
+  // Russian gloss. Skips the noun-style word lookup (wrong for a sentence) and hands the
+  // pair straight to the canonical /save; backend classifies it as a sentence. Falls back
+  // to a quick-translate if the gloss is missing.
+  const saveExample = useCallback((de, ru) => {
+    if (isGuest) return;
+    const src = clean(de);
+    if (!src) return;
+    setSavedChips((prev) => { if (prev.has(src)) return prev; const n = new Set(prev); n.add(src); return n; });
+    haptic('ok');
+    (async () => {
+      try {
+        let translation = clean(ru);
+        if (!translation) {
+          const q = await api('/api/translate/quick', { text: src, source_lang: 'de', target_lang: 'ru' }).catch(() => null);
+          translation = clean(q?.translation);
+        }
+        if (!translation) throw new Error('Не удалось перевести пример');
+        const base = buildDictionarySavePayload({
+          rich: null,
+          sourceText: src,
+          quick: { source: src, translation, sourceLang: 'de', targetLang: 'ru', direction: 'de-ru' },
+          origin: 'webapp_deep_analysis_example',
+        });
+        await api('/api/webapp/dictionary/save', { ...base, folder_id: folderId ?? undefined });
+      } catch (e) {
+        setSavedChips((prev) => { const n = new Set(prev); n.delete(src); return n; });
+        setError(String(e?.message || e)); haptic('bad');
+      }
+    })();
+  }, [folderId, isGuest]);
+
   // Share this breakdown — INSTANT: one fast call mints a durable share token
   // (no image render / R2 / Telegram round-trip), then we open Telegram's native
   // share sheet with the deep-link. Recipient taps it → the same breakdown in a
@@ -441,7 +473,7 @@ export default function DeepAnalysis({ startParam }) {
           )}
         </div>
 
-        <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} savedChips={savedChips} />
+        <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} onSaveExample={saveExample} savedChips={savedChips} />
 
         {(conTone || conNote) && (
           <section className="deep-sec sec-nuance">
