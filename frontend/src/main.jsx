@@ -257,8 +257,39 @@ async function bootstrapOnboarding() {
   );
 }
 
+// The quick dictionary gets its OWN home-screen identity: a dictionary icon and a
+// dedicated manifest with start_url "/dict", so "Add to Home Screen" opens the
+// dictionary (not the app root → login gate) and shows a dictionary icon, not the
+// app hero. Injected only on the /dict page; the main app keeps its own manifest/icon.
+function applyDictHomeScreenMeta() {
+  try {
+    const head = document.head;
+    const setLink = (rel, href) => {
+      let el = head.querySelector(`link[rel="${rel}"]`);
+      if (!el) { el = document.createElement('link'); el.setAttribute('rel', rel); head.appendChild(el); }
+      el.setAttribute('href', href);
+    };
+    setLink('manifest', '/dict-manifest.webmanifest');
+    setLink('apple-touch-icon', '/icons/dict-apple-touch-icon.png');
+    const lang = (() => {
+      try { return (localStorage.getItem('ui_lang') || '').toLowerCase() === 'de' ? 'de' : 'ru'; }
+      catch (_e) { return 'ru'; }
+    })();
+    const title = lang === 'de' ? 'Wörterbuch' : 'Словарь';
+    const setMeta = (name, content) => {
+      let m = head.querySelector(`meta[name="${name}"]`);
+      if (!m) { m = document.createElement('meta'); m.setAttribute('name', name); head.appendChild(m); }
+      m.setAttribute('content', content);
+    };
+    setMeta('apple-mobile-web-app-capable', 'yes');
+    setMeta('apple-mobile-web-app-title', title);
+    try { document.title = title; } catch (_e) { /* ignore */ }
+  } catch (_e) { /* non-fatal */ }
+}
+
 async function bootstrapDictionary() {
   try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  applyDictHomeScreenMeta();
   const { default: DictionaryOverlay } = await import('./dictionary/DictionaryOverlay.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
