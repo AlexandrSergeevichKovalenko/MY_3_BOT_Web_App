@@ -5420,6 +5420,44 @@ def _build_language_pair_filter(
     clause = f" AND {source_expr} = %s AND {target_expr} = %s"
     return clause, [str(source_lang).lower(), str(target_lang).lower()]
 
+
+def _build_language_pair_filter_both(
+    lang_a: str | None,
+    lang_b: str | None,
+    *,
+    table_alias: str | None = None,
+) -> tuple[str, list]:
+    """Match entries in EITHER direction of the {a,b} pair (a→b OR b→a). For the
+    starter dictionary: both directions are the SAME German↔Russian vocabulary, so a
+    learner wants all of them, not just native→learning."""
+    if not lang_a or not lang_b:
+        return "", []
+    alias_prefix = f"{table_alias}." if table_alias else ""
+    source_expr = (
+        "LOWER(COALESCE("
+        f"NULLIF({alias_prefix}source_lang, ''), "
+        f"NULLIF({alias_prefix}response_json->>'source_lang', ''), "
+        f"NULLIF({alias_prefix}response_json#>>'{{language_pair,source_lang}}', ''), "
+        "'ru'"
+        "))"
+    )
+    target_expr = (
+        "LOWER(COALESCE("
+        f"NULLIF({alias_prefix}target_lang, ''), "
+        f"NULLIF({alias_prefix}response_json->>'target_lang', ''), "
+        f"NULLIF({alias_prefix}response_json#>>'{{language_pair,target_lang}}', ''), "
+        "'de'"
+        "))"
+    )
+    a = str(lang_a).lower()
+    b = str(lang_b).lower()
+    clause = (
+        f" AND (({source_expr} = %s AND {target_expr} = %s)"
+        f" OR ({source_expr} = %s AND {target_expr} = %s))"
+    )
+    return clause, [a, b, b, a]
+
+
 def _ensure_admin_kv(cursor) -> None:
     cursor.execute(
         """
@@ -15635,11 +15673,16 @@ def count_dictionary_entries_for_language_pair(
     source_lang: str | None,
     target_lang: str | None,
     cursor=None,
+    *,
+    both_directions: bool = False,
 ) -> int:
     def _count(cur) -> int:
         where_clause = "WHERE user_id = %s"
         params: list = [int(user_id)]
-        language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
+        if both_directions:
+            language_filter_sql, language_params = _build_language_pair_filter_both(source_lang, target_lang)
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
         if language_filter_sql:
             where_clause += language_filter_sql
             params.extend(language_params)
@@ -15829,7 +15872,8 @@ def import_starter_dictionary_snapshot(
                     "created_at": created_row[4].isoformat() if created_row[4] else None,
                 }
 
-            language_filter_sql, language_params = _build_language_pair_filter(pair_source, pair_target)
+            # Both directions: a ru↔de learner wants ALL the vocab, not just native→learning.
+            language_filter_sql, language_params = _build_language_pair_filter_both(pair_source, pair_target)
             source_where = "WHERE user_id = %s"
             source_params: list = [source_user]
             if language_filter_sql:

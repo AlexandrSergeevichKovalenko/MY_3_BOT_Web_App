@@ -3503,6 +3503,7 @@ def webapp_starter_dictionary_apply():
         int(STARTER_DICTIONARY_SOURCE_USER_ID),
         source_lang,
         target_lang,
+        both_directions=True,
     )
 
     if action == "declined":
@@ -3611,6 +3612,7 @@ def webapp_starter_dictionary_apply():
         int(user_id),
         source_lang,
         target_lang,
+        both_directions=True,
     )
     already_accepted = str(current_state.get("decision_status") or "").strip().lower() == "accepted"
     if already_accepted and user_pair_total > 0 and not force_reimport:
@@ -5629,6 +5631,7 @@ def _build_starter_dictionary_offer(
         safe_user_id,
         pair_source,
         pair_target,
+        both_directions=True,
     )
     starter_pair_total = count_starter_dictionary_entries_for_language_pair(
         safe_user_id,
@@ -5642,6 +5645,7 @@ def _build_starter_dictionary_offer(
             int(STARTER_DICTIONARY_SOURCE_USER_ID),
             pair_source,
             pair_target,
+            both_directions=True,
         )
 
     decision_status = str(state.get("decision_status") or "pending").strip().lower() or "pending"
