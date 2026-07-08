@@ -1635,6 +1635,14 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
+            title: 'Wörterbuch als App-Symbol (iPhone)',
+            items: [
+              'Das Schnell-Wörterbuch kannst du auf den Startbildschirm legen und wie eine normale Übersetzer-App öffnen — mit einem Tipp, ohne Telegram.',
+              'So geht’s: Onboarding → Schritt «Dein Wörterbuch füllt sich von selbst» → «Wörterbuch in Safari öffnen» → «Teilen» → «Zum Home-Bildschirm».',
+              'Auf dem Bildschirm erscheint ein Buch-Symbol «Ая» mit dem Titel «Wörterbuch». Öffnen — und du übersetzt und speicherst Wörter sofort, alles wie gewohnt, nur griffbereit.',
+            ],
+          },
+          {
             title: 'Wörterbuch offline vorbereiten',
             items: [
               'Jede Seite deines Vokabular-Bibliothek, die du online durchgeblattert hast, wird automatisch im Geräte-Cache gespeichert.',
@@ -2303,6 +2311,14 @@ function buildGuideStepItems(uiLang = 'ru') {
             'Сохраняйте слово или фразу сразу в нужную папку.',
             'Заводите папки под темы, поездки, работу, фильмы — под что угодно.',
             'Потом сохранённые слова сами попадают в карточки и другие тренировки.',
+          ],
+        },
+        {
+          title: 'Словарь как иконка на телефоне (iPhone)',
+          items: [
+            'Быстрый словарь можно вынести на рабочий стол и открывать как обычный переводчик — одним касанием, не заходя в Telegram.',
+            'Как поставить: онбординг → шаг «Твой словарь пополняется сам» → «Открыть словарь в Safari» → «Поделиться» → «На экран „Домой“».',
+            'На экране появится иконка-книга «Ая» с подписью «Словарь». Открываешь — и сразу переводишь и сохраняешь слова, всё то же самое, но под рукой.',
           ],
         },
         {
