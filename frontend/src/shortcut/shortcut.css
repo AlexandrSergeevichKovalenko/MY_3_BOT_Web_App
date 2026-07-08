@@ -164,3 +164,8 @@ html[data-scheme="light"] .sc-media figcaption { color: #5a6680; }
 html[data-scheme="light"] .sc-error { background: #fdecec; border-color: #f3c0c0; color: #b02a2a; }
 html[data-scheme="light"] .sc-flow-arrow { color: #c9920a; }
 html[data-scheme="light"] .sc-btn { background: #eef2f8; border-color: #cfd8e6; }
+
+/* Sub-list (detailed navigation inside a step) */
+.sc-sublist { margin: 4px 0 8px; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
+.sc-sublist li { font-size: 14px; line-height: 1.5; color: #cdd6e6; }
+html[data-scheme="light"] .sc-sublist li { color: #2a3650; }
