@@ -1075,10 +1075,12 @@
 /* «Поделиться» in the quick-dictionary header — same round-icon pattern as the
    «Полный разбор» screen (see .deep-share-btn in deep.css). Shows only once a
    shareable breakdown exists. */
-.dq-head-row {
+/* Compound selector (.ans-head.dq-head-row) so this BEATS .ans-head regardless of the
+   bundled CSS source order — a plain .dq-head-row tied on specificity and .ans-head's
+   flex-direction:column kept winning, stacking the share button under the eyebrow
+   (centered) instead of pinning it to the top-right corner. */
+.ans-head.dq-head-row {
   display: flex;
-  /* .ans-head sets flex-direction:column; force a real row so the eyebrow stays
-     left and the share button sits neatly in the top-right corner (not centered). */
   flex-direction: row;
   align-items: center;
   justify-content: space-between;

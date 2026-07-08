@@ -6214,7 +6214,57 @@ def _build_dictionary_result_from_raw(
         target_lang=target_lang,
         direction=direction,
     )
+    # The word-family fields (synonyms / antonyms / related / collocations) are the
+    # FOREIGN words the learner studies — they must be in the learning language
+    # (target_lang), never the native explanation language. The LLM sometimes slips and
+    # returns native-language paraphrases (e.g. Russian «неприятный человек» for a German
+    # phrase). Drop wrong-script entries so we never show native-language "synonyms".
+    _sanitize_learning_language_fields(decorated, target_lang)
     return decorated, direction, detected, source_value, target_value
+
+
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+_LATIN_RE = re.compile(r"[A-Za-zÀ-ÿ]")
+# Learning languages we can script-check. de/en/es/it/fr/nl/pt are Latin-script; ru is Cyrillic.
+_LATIN_LEARNING_LANGS = {"de", "en", "es", "it", "fr", "nl", "pt"}
+
+
+def _entry_wrong_script_for_learning_lang(text: str, learn_lang: str) -> bool:
+    """True when a word-family entry is clearly in the wrong script for the learning
+    language (so it is a native-language paraphrase leaking into a foreign-word list)."""
+    t = str(text or "")
+    if not t.strip():
+        return True
+    ll = str(learn_lang or "").strip().lower()
+    if ll in _LATIN_LEARNING_LANGS:
+        return bool(_CYRILLIC_RE.search(t))  # a German/etc. word must not be Cyrillic
+    if ll == "ru":
+        return bool(_LATIN_RE.search(t)) and not bool(_CYRILLIC_RE.search(t))
+    return False
+
+
+def _sanitize_learning_language_fields(item: dict, learn_lang: str) -> dict:
+    """Strip synonyms / antonyms / collocations / related words that are in the wrong
+    (native) language for the learning language. In-place; returns the item."""
+    if not isinstance(item, dict):
+        return item
+    ll = str(learn_lang or "").strip().lower()
+    if ll not in _LATIN_LEARNING_LANGS and ll != "ru":
+        return item
+    for key in ("synonyms", "antonyms", "common_collocations"):
+        vals = item.get(key)
+        if isinstance(vals, list):
+            item[key] = [
+                v for v in vals
+                if isinstance(v, str) and v.strip() and not _entry_wrong_script_for_learning_lang(v, ll)
+            ]
+    rel = item.get("related_words")
+    if isinstance(rel, list):
+        item["related_words"] = [
+            r for r in rel
+            if isinstance(r, dict) and not _entry_wrong_script_for_learning_lang(r.get("word"), ll)
+        ]
+    return item
 
 
 def _merge_dictionary_raw_payloads(
