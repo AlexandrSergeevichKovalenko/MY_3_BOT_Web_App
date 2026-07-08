@@ -3180,9 +3180,30 @@ def serve_webapp_entry():
     return _apply_webapp_entry_cache_headers(response)
 
 
+def _serve_dict_entry_html():
+    """The quick-dictionary home-screen PWA needs its OWN manifest (start_url "/dict")
+    and a dictionary apple-touch-icon baked into the HTML that Safari parses — a JS
+    swap after load is NOT reliably picked up by iOS "Add to Home Screen" (it reads
+    the manifest/icon links at parse time). So for /dict we rewrite those two links."""
+    try:
+        html = (FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
+        html = html.replace('href="/manifest.webmanifest"', 'href="/dict-manifest.webmanifest"')
+        html = html.replace('href="/icons/apple-touch-icon.png"', 'href="/icons/dict-apple-touch-icon.png"')
+        response = Response(html, mimetype="text/html")
+    except Exception:
+        response = send_from_directory(FRONTEND_DIST, "index.html")
+    return _apply_webapp_entry_cache_headers(response)
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
+    # /dict (and short alias /d): serve index.html with the dictionary manifest+icon
+    # baked in, so "Add to Home Screen" opens the dictionary (start_url "/dict"), not
+    # the app root, and shows a dictionary icon instead of the app hero.
+    if str(path or "").strip("/").lower() in ("dict", "d"):
+        return _serve_dict_entry_html()
+
     # если запросили конкретный файл (например assets/...), отдаём его
     file_path = FRONTEND_DIST / path
     if path != "" and file_path.exists():
