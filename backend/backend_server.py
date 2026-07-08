@@ -41710,8 +41710,8 @@ def shortcut_install_redirect():
 # iCloud links for the two-command system (see bot_3.py). Env overrides win; the
 # hardcoded values are the live links so the Mini-App install screen works even if
 # the web tier hasn't got the env vars set yet.
-_SHORTCUT_COLLECTOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/39a22ce3741f4dc4915c762687e182eb"
-_SHORTCUT_PROCESSOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/f24cc5b348934cafa5c5037c7e17f5c1"
+_SHORTCUT_COLLECTOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/db43160d963c463db7845f318a366069"
+_SHORTCUT_PROCESSOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/f024697a1d754a47a29b56bc8183190c"
 
 
 def _shortcut_collector_public_url() -> str:
