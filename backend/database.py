@@ -22704,10 +22704,11 @@ def get_shortcut_autosave_enabled(user_id: int) -> bool:
                     (int(user_id),),
                 )
                 row = cursor.fetchone()
-        return bool(row[0]) if row else False
+        # Default ON: the nightly batch/digest mode is the intended default flow.
+        return bool(row[0]) if row else True
     except Exception:
         logging.debug("get_shortcut_autosave_enabled failed user_id=%s", user_id, exc_info=True)
-        return False
+        return True
 
 
 def set_shortcut_autosave_enabled(user_id: int, enabled: bool) -> bool:
