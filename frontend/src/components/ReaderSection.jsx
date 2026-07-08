@@ -670,6 +670,21 @@ export default function ReaderSection(props) {
                   </div>
                   <button
                     type="button"
+                    className="reader-topbar-icbtn reader-topbar-collapse"
+                    onClick={() => {
+                      setReaderTopbarCollapsed(true);
+                      setReaderSettingsOpen(false);
+                      setReaderOverflowOpen(false);
+                    }}
+                    title={tr('Свернуть панель', 'Leiste einklappen')}
+                    aria-label={tr('Свернуть панель', 'Leiste einklappen')}
+                  >
+                    <svg viewBox="0 0 18 18" fill="none">
+                      <path d="M4.5 7.25 9 11.75l4.5-4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
                     className={`reader-topbar-icbtn reader-topbar-more ${readerOverflowOpen ? 'is-active' : ''}`}
                     onClick={() => setReaderOverflowOpen((v) => !v)}
                     title={tr('Ещё', 'Mehr')}
@@ -749,24 +764,6 @@ export default function ReaderSection(props) {
                         <span className="reader-overflow-value reader-overflow-timer">
                           {formatReaderTimer(readerElapsedTotalSeconds)}
                         </span>
-                      </button>
-
-                      <div className="reader-overflow-sep" />
-
-                      <button
-                        type="button"
-                        className="reader-overflow-item"
-                        role="menuitem"
-                        onClick={() => {
-                          setReaderTopbarCollapsed(true);
-                          setReaderSettingsOpen(false);
-                          setReaderOverflowOpen(false);
-                        }}
-                      >
-                        <span className="reader-overflow-ic" aria-hidden="true">
-                          <svg viewBox="0 0 18 18" fill="none"><path d="M4.5 11.25 9 6.75l4.5 4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                        </span>
-                        <span className="reader-overflow-label">{tr('Свернуть панель', 'Leiste einklappen')}</span>
                       </button>
                     </div>
                   </>
@@ -879,9 +876,59 @@ export default function ReaderSection(props) {
               </article>
             )}
 
-            {/* ── Bottom dock: action cluster + scrubber (Apple-Books style) ─ */}
-            {readerContent && !readerAudioPlayActive && (
-              <div className="reader-bottom-dock">
+            {/* ── Bottom dock: actions + scrubber, OR the audio player in the
+                 SAME reserved space when audio is active (no overlap, no page
+                 shrink — the dock footprint is already accounted for). ─ */}
+            {readerContent && (
+              <div className={`reader-bottom-dock${readerAudioPlayActive ? ' is-audio' : ''}`}>
+                {readerAudioPlayActive ? (
+                  <div className="reader-dock-audio">
+                    <button
+                      type="button"
+                      className="reader-dock-play reader-dock-audio-toggle"
+                      onClick={readerAudioPaused ? resumeReaderAudioPlay : pauseReaderAudioPlay}
+                      aria-label={readerAudioPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause')}
+                    >
+                      {readerAudioPaused ? (
+                        <svg viewBox="0 0 18 18" fill="none"><path d="M6 4.5l8 4.5-8 4.5V4.5z" fill="currentColor"/></svg>
+                      ) : (
+                        <svg viewBox="0 0 18 18" fill="none"><rect x="5" y="4.5" width="2.8" height="9" rx="1" fill="currentColor"/><rect x="10.2" y="4.5" width="2.8" height="9" rx="1" fill="currentColor"/></svg>
+                      )}
+                    </button>
+                    <div className="reader-dock-audio-progress">
+                      <div
+                        className="reader-dock-audio-fill"
+                        style={{ width: readerAudioPlayData?.duration_ms ? `${Math.min(100, (readerAudioPlayPosition / readerAudioPlayData.duration_ms) * 100)}%` : '0%' }}
+                      />
+                    </div>
+                    <div className="reader-dock-audio-time">
+                      {(() => {
+                        const fmt = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+                        return `${fmt(readerAudioPlayPosition)} / ${fmt(readerAudioPlayData?.duration_ms || 0)}`;
+                      })()}
+                    </div>
+                    <select
+                      className="reader-dock-audio-rate"
+                      value={readerAudioRate}
+                      onChange={(e) => { const newRate = parseFloat(e.target.value); setReaderAudioRate(newRate); if (audioElementRef?.current) audioElementRef.current.playbackRate = newRate; }}
+                      aria-label={tr('Скорость', 'Geschwindigkeit')}
+                    >
+                      <option value="0.75">0.75×</option>
+                      <option value="1">1×</option>
+                      <option value="1.25">1.25×</option>
+                      <option value="1.5">1.5×</option>
+                    </select>
+                    <button
+                      type="button"
+                      className="reader-dock-audio-close"
+                      onClick={stopReaderAudioPlay}
+                      aria-label={tr('Закрыть плеер', 'Player schließen')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none"><path d="M4.5 4.5 13.5 13.5M13.5 4.5 4.5 13.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+                    </button>
+                  </div>
+                ) : (
+                <>
                 <div className="reader-dock-actions">
                   <div className="reader-dock-group">
                     <button
@@ -998,81 +1045,14 @@ export default function ReaderSection(props) {
                     )}
                   </div>
                 )}
+                </>
+                )}
               </div>
             )}
 
             {/* ── Hidden audio element ────────────────────────────── */}
             <audio ref={audioElementRef} preload="metadata" playsInline style={{ display: 'none' }} />
             <audio ref={readerAudioPreloadElementRef} preload="auto" playsInline style={{ display: 'none' }} />
-
-            {/* ── Audio mini-player bar ────────────────────────────── */}
-            {readerAudioPlayActive && (
-              <div className="reader-audio-mini-player">
-                <button
-                  type="button"
-                  className="reader-audio-mini-btn is-primary"
-                  onClick={readerAudioPaused ? resumeReaderAudioPlay : pauseReaderAudioPlay}
-                  aria-label={readerAudioPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause')}
-                >
-                  {readerAudioPaused ? (
-                    <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
-                      <path d="M4 3.5a1 1 0 0 1 1.5-.87l9 5.18a1 1 0 0 1 0 1.74l-9 5.18A1 1 0 0 1 4 13.82V3.5Z" fill="currentColor" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
-                      <rect x="4" y="4" width="3.5" height="10" rx="1" fill="currentColor" />
-                      <rect x="10.5" y="4" width="3.5" height="10" rx="1" fill="currentColor" />
-                    </svg>
-                  )}
-                </button>
-                <div className="reader-audio-mini-progress">
-                  <div
-                    className="reader-audio-mini-fill"
-                    style={{
-                      width: readerAudioPlayData?.duration_ms
-                        ? `${Math.min(100, (readerAudioPlayPosition / readerAudioPlayData.duration_ms) * 100)}%`
-                        : '0%',
-                    }}
-                  />
-                </div>
-                <div className="reader-audio-mini-time webapp-muted">
-                  {(() => {
-                    const fmt = (ms) => {
-                      const s = Math.floor(ms / 1000);
-                      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-                    };
-                    return `${fmt(readerAudioPlayPosition)} / ${fmt(readerAudioPlayData?.duration_ms || 0)}`;
-                  })()}
-                </div>
-                <select
-                  className="reader-audio-mini-rate"
-                  value={readerAudioRate}
-                  onChange={(e) => {
-                    const newRate = parseFloat(e.target.value);
-                    setReaderAudioRate(newRate);
-                    if (audioElementRef?.current) {
-                      audioElementRef.current.playbackRate = newRate;
-                    }
-                  }}
-                  aria-label={tr('Скорость', 'Geschwindigkeit')}
-                >
-                  <option value="0.75">0.75×</option>
-                  <option value="1">1×</option>
-                  <option value="1.25">1.25×</option>
-                  <option value="1.5">1.5×</option>
-                </select>
-                <button
-                  type="button"
-                  className="reader-audio-mini-btn reader-audio-mini-close"
-                  onClick={stopReaderAudioPlay}
-                  aria-label={tr('Закрыть плеер', 'Player schließen')}
-                >
-                  <svg viewBox="0 0 18 18" fill="none" width="16" height="16">
-                    <path d="M4.5 4.5 13.5 13.5M13.5 4.5 4.5 13.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-                  </svg>
-                </button>
-              </div>
-            )}
 
             {/* ── Audio error (shown even when player not yet active) ── */}
             {readerAudioPlayError && !readerAudioPlayActive && (

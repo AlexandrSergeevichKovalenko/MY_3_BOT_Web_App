@@ -662,16 +662,11 @@ body {
   display: none;
 }
 
+/* Collapsed reader: keep the app topbar (🏠 Startseite bar) hidden too — the
+   reader's own thin peek pill is the sole collapsed chrome, so there's no double
+   bar and the page reclaims the freed vertical space. */
 .webapp-page.is-reader-immersive.is-reader-peek .webapp-topbar {
-  display: flex;
-  flex-shrink: 0;
-  border-radius: 0;
-  border-left: none;
-  border-right: none;
-  border-top: none;
-  background: rgba(8,12,26,0.97);
-  border-bottom-color: rgba(255,255,255,0.07);
-  box-shadow: none;
+  display: none;
 }
 
 .webapp-page[data-reader-theme="sepia"].is-reader-immersive.is-reader-peek .webapp-topbar {
