@@ -301,3 +301,11 @@
 /* Dictionary: stacked options + «весь словарь» accent */
 .ob-actions-col { flex-direction: column; align-items: stretch; }
 .ob-confirm.ob-alt { background: #fff8e6; border-color: #e0b84a; color: #8a5a00; }
+
+/* Language toggle (in-wizard RU/DE switch) */
+.ob-topbar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.ob-lang {
+  appearance: none; border: 1px solid var(--ob-line); background: #f4f8ff;
+  color: var(--ob-accent); font-size: 13px; font-weight: 700;
+  padding: 4px 12px; border-radius: 999px; cursor: pointer;
+}

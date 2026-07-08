@@ -12,11 +12,26 @@ const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 const IS_PUBLIC = !(tg && tg.initData);
 
 // UI language — same source of truth as the main app (localStorage 'ui_lang').
+// Fresh users (never opened the main app) have nothing stored → fall back to the
+// Telegram interface language, else Russian. Switchable in-wizard (see LangToggle).
 const LANG = (() => {
-  try { return (localStorage.getItem('ui_lang') || '').toLowerCase() === 'de' ? 'de' : 'ru'; }
-  catch (_e) { return 'ru'; }
+  try {
+    const stored = (localStorage.getItem('ui_lang') || '').toLowerCase();
+    if (stored === 'de' || stored === 'ru') return stored;
+  } catch (_e) { /* noop */ }
+  try {
+    const tgLang = String(tg?.initDataUnsafe?.user?.language_code || '').toLowerCase();
+    if (tgLang.startsWith('de')) return 'de';
+  } catch (_e) { /* noop */ }
+  return 'ru';
 })();
 const t = (ru, de) => (LANG === 'de' ? de : ru);
+
+// Switch the whole wizard language (reload so the module-level strings re-read).
+function switchLang() {
+  try { localStorage.setItem('ui_lang', LANG === 'de' ? 'ru' : 'de'); } catch (_e) { /* noop */ }
+  try { window.location.reload(); } catch (_e) { /* noop */ }
+}
 
 async function api(path, extra) {
   const initData = tg?.initData || '';
@@ -185,17 +200,34 @@ function StepBody(props) {
         </div>
       );
     case 'dictionary': {
-      const connected = confirmed || (dictOffer && Number(dictOffer.starter_pair_total || 0) > 0);
+      const have = Number(dictOffer?.starter_pair_total || 0);
       const n = Number(dictOffer?.suggested_count || dictOffer?.import_limit || 0);
       const total = Number(dictOffer?.template_total || 0);
+      const hasFull = total > 0 && have >= total;
+      const partial = have > 0 && !hasFull;          // small starter connected, full still available
+      const done = (confirmed && !partial) || hasFull;
       return (
         <div className="ob-stub">
           <p className="ob-lead">
             {t('Подключим слова, с которых начнём тренировки и повторения. Выбери, сколько:',
                'Verbinden wir Wörter, mit denen Training und Wiederholungen starten. Wähle, wie viele:')}
           </p>
-          {connected ? (
-            <span className="ob-lock ob-ok">{t('✅ Словарь подключён', '✅ Wörterbuch verbunden')}</span>
+          {done ? (
+            <span className="ob-lock ob-ok">{hasFull ? t('✅ Весь словарь подключён', '✅ Ganzes Wörterbuch verbunden') : t('✅ Словарь подключён', '✅ Wörterbuch verbunden')}</span>
+          ) : partial ? (
+            <div className="ob-actions ob-actions-col">
+              <span className="ob-lock ob-ok">{t('✅ Базовый словарь подключён', '✅ Basis-Wörterbuch verbunden')}</span>
+              {total > have ? (
+                <button
+                  type="button"
+                  className="ob-confirm ob-alt"
+                  onClick={() => onDictAction('accept', true)}
+                  disabled={busy}
+                >
+                  {busy ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Догрузить весь словарь', '🔓 Ganzes Wörterbuch laden')} — ~${total} ${t('слов', 'Wörter')}`}
+                </button>
+              ) : null}
+            </div>
           ) : IS_PUBLIC ? null : (
             <div className="ob-actions ob-actions-col">
               <button
@@ -702,6 +734,11 @@ export default function OnboardingWizard() {
     <div className="ob-root">
       <div className="ob-card">
         <header className="ob-head">
+          <div className="ob-topbar">
+            <button type="button" className="ob-lang" onClick={switchLang}>
+              {LANG === 'de' ? '🌐 RU' : '🌐 DE'}
+            </button>
+          </div>
           <div className="ob-progress">
             <span className="ob-step-label">{t('Шаг', 'Schritt')} {idx + 1} {t('из', 'von')} {STEPS.length}</span>
             <div className="ob-bar"><div className="ob-bar-fill" style={{ width: `${pct}%` }} /></div>
