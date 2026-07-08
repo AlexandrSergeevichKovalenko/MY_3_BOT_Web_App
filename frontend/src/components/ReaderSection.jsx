@@ -59,6 +59,7 @@ export default function ReaderSection(props) {
     persistReaderExactBookmark = () => {},
     isCurrentReaderPageBookmarked,
     readerCanUseOriginalLayout,
+    readerUsesCustomLayout: readerUsesCustomLayoutProp,
     readerUsesOriginalEpubLayout = false,
     readerOriginalTocHref = '',
     readerResolvedOriginalTocTitle = '',
@@ -186,7 +187,11 @@ export default function ReaderSection(props) {
   ].filter(Boolean).join(' ');
   const showLibraryMode = !readerHasContent || readerArchiveOpen || !readerImmersive;
   const effectiveReaderTheme = showLibraryMode ? 'dark' : readerColorTheme;
-  const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
+  // Prefer the authoritative value computed in App.jsx (which forces server-paged
+  // PDFs to never reflow); fall back to the local derivation only if not passed.
+  const readerUsesCustomLayout = typeof readerUsesCustomLayoutProp === 'boolean'
+    ? readerUsesCustomLayoutProp
+    : (!readerCanUseOriginalLayout || readerLayoutMode === 'custom');
   const readerShowsLazyOriginalPage = !readerUsesCustomLayout
     && Array.isArray(readerPages)
     && readerPages[readerCurrentPage - 1] === null;

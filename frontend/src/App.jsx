@@ -13832,9 +13832,17 @@ function AppInner() {
     [readerContent]
   );
   const readerUsesOriginalEpubLayout = readerSourceType === 'epub' && readerLayoutMode === 'original';
-  const readerCanUseOriginalLayout = readerSourceType === 'epub'
-    || (readerSourceType === 'pdf' && Array.isArray(readerPages) && readerPages.length > 0);
-  const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
+  // A PDF that carries server-side fixed pages is ALWAYS rendered from those pages.
+  // The client-side viewport reflow (paginateReaderText) is what made the page
+  // count drift on every open (345→330→325…) and reflow a partial page window
+  // into a wrong total, so we never let a server-paginated PDF fall into custom
+  // reflow regardless of the layout toggle. Stable "N / total" by construction.
+  const readerPdfHasServerPages = readerSourceType === 'pdf'
+    && Array.isArray(readerPages) && readerPages.length > 0;
+  const readerCanUseOriginalLayout = readerSourceType === 'epub' || readerPdfHasServerPages;
+  const readerUsesCustomLayout = readerPdfHasServerPages
+    ? false
+    : (!readerCanUseOriginalLayout || readerLayoutMode === 'custom');
   const readerDisplayPages = useMemo(() => {
     if (readerUsesOriginalEpubLayout) {
       return [];
@@ -34773,6 +34781,7 @@ function AppInner() {
                   persistReaderExactBookmark={persistReaderExactBookmark}
                   isCurrentReaderPageBookmarked={isCurrentReaderPageBookmarked}
                   readerCanUseOriginalLayout={readerCanUseOriginalLayout}
+                  readerUsesCustomLayout={readerUsesCustomLayout}
                   readerUsesOriginalEpubLayout={readerUsesOriginalEpubLayout}
                   readerOriginalTocHref={readerOriginalTocHref}
                   readerResolvedOriginalTocTitle={readerResolvedOriginalTocTitle}

@@ -81,6 +81,15 @@ export default defineConfig(async () => {
         injectRegister: false,
         manifest: false,
         workbox: {
+          // Take over as soon as a new build is deployed instead of waiting for
+          // every Telegram webview to close first. Without this the Mini-App keeps
+          // serving the previously cached bundle for a long time after a deploy
+          // (users see the OLD version). skipWaiting + clientsClaim activate the
+          // new service worker immediately on the next open; cleanupOutdatedCaches
+          // drops stale precaches so the fresh bundle wins.
+          skipWaiting: true,
+          clientsClaim: true,
+          cleanupOutdatedCaches: true,
           // Main bundle is currently slightly above 2 MiB, so keep precache build stable.
           maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
           navigateFallbackDenylist: [/^\/api\//],
