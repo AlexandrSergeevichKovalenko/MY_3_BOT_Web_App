@@ -1435,7 +1435,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'Wochenplan und Nachrichten',
             items: [
               'Die Wochenplan-Karte zeigt Fortschritt bei deinen Wochenzielen: Übersetzungen, gelernte Wörter, Sprechminuten und Lesezeit.',
-              'Nach den aktuellen Standardzeiten kommt der Tagesplan morgens etwa um 07:00, abends gegen 18:00 ein Erinnerungs- oder Glückwunsch-Push.',
+              'Morgens kommt privat eine Begrüßung mit deiner Serie 🔥, danach Aufgaben nach deinem Zeitplan (einstellbar unter «Dein Rhythmus»).',
               'Diese Statusmeldungen sind mit dem Heute-Bildschirm synchron.',
             ],
           },
@@ -1468,6 +1468,77 @@ function buildGuideStepItems(uiLang = 'ru') {
               'Du siehst Score, Referenz, textuelle Erklärung und kannst den korrekten Satz direkt anhören.',
               'Für einzelne Ergebnisse kannst du zusätzliche Erklärungen nachladen.',
               'Dein Satzsatz mischt persönliche Fehlersätze und neue Sätze: schwächere Stellen kommen wieder, aber es bleibt nicht beim Endlos-Wiederholen derselben Sachen.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'daily_games',
+        title: 'Spiele-Trainings und Battles im Chat',
+        summary: 'Kurze Grammatik- und Wortspiele kommen im Laufe des Tages von selbst zu dir — du musst nichts aufrufen. Jedes deckt ein wichtiges Thema ab.',
+        sections: [
+          {
+            title: 'Was kommt und wofür',
+            items: [
+              'Artikel der/die/das — du rätst das Geschlecht des Wortes. Die Basis, die man immer halten muss.',
+              'Adjektivendungen — der häufigste Fehler im Deutschen.',
+              'Zahlendiktat — Zahlen nach Gehör: du hörst und tippst sie.',
+              'Wo-Fragen (wo, wohin, woher…): du lernst, richtig zu fragen.',
+              'Kreuzworträtsel, Rebus, Anagramme — erweitern spielerisch den Wortschatz.',
+              'Hörverständnis — du hörst zu und ziehst das Wichtigste heraus (Daten, Uhrzeit, Fakten).',
+            ],
+          },
+          {
+            title: 'Training und Battle (Duell)',
+            items: [
+              'Wichtige Spiele haben zwei Modi. Training — in Ruhe, allein, ohne Eile.',
+              'Battle — ein kurzes Duell mit einem anderen Lernenden: wer schneller und fehlerfrei ist. Einen Gegner rufst du über das Bot-Menü.',
+              'Willst du Duell-Einladungen bekommen — das stellst du in den Einstellungen ein (jederzeit änderbar).',
+            ],
+          },
+          {
+            title: 'Nachrichten des Tages und Fehlerarbeit',
+            items: [
+              'Nachrichten des Tages — jeden Morgen frische echte News als kurzes Video mit doppelten anklickbaren Untertiteln: schauen, Wörter speichern und Hörverständnis-Tests beantworten.',
+              'Analyse deiner Fehler von gestern — der Bot sammelt, wo du dich geirrt hast, und lässt dich wiederholen, damit sich Fehler nicht festsetzen.',
+            ],
+          },
+          {
+            title: 'Taste «Nächste Aufgabe»',
+            items: [
+              'Willst du nicht auf den Zeitplan warten — tippe «Nächste Aufgabe» im Bot-Menü: es zeigt, was du heute noch nicht gemacht hast.',
+              'Du löst direkt in der App, eine Aufgabe nach der anderen.',
+              'Alles Gelöste zählt in deine Statistik und ins Ranking.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'rhythm',
+        title: 'Dein Rhythmus: Zeitplan und Streak',
+        summary: 'Stell ein, wie viele Aufgaben pro Tag und zu welchen Zeiten sie kommen. Und eine Serie von Tagen in Folge bringt kostenlose Pro-Tage.',
+        sections: [
+          {
+            title: 'Aufgaben-Zeitplan (Pro)',
+            items: [
+              'Wähle das Tempo: intensiv (~20/Tag), normal (~12), selten (~8) oder Stille (nichts automatisch).',
+              'Und das Zeitfenster: ganzer Tag, morgens, abends oder morgens+abends — die Aufgaben kommen gleichmäßig innerhalb des Fensters.',
+              'Die Einstellung ist in der App, Taste «🎬 Wie man es benutzt», jederzeit änderbar. Im kostenlosen Tarif — eine Auswahl von ein paar Aufgaben pro Tag.',
+            ],
+          },
+          {
+            title: 'Streak — Serie von Tagen in Folge',
+            items: [
+              'Jeder Tag, an dem du lernst, verlängert deine Serie 🔥. Sie ist in der Morgennachricht und in den Tagesergebnissen sichtbar.',
+              'Mehrere Tage in Folge — und der Bot schenkt dir einen kostenlosen Pro-Tag. Unterbrich die Serie nicht.',
+              'Es gibt ein «Einfrieren»: ein verpasster Tag setzt die Serie nicht zurück, wenn du ein Einfrieren hast.',
+            ],
+          },
+          {
+            title: 'Lade einen Freund ein',
+            items: [
+              'Der Befehl /invite im Privat-Chat mit dem Bot gibt dir deinen persönlichen Einladungslink.',
+              'Sobald der Freund dranbleibt (mehrere Tage in Folge) — bekommt ihr beide kostenlose Pro-Tage.',
             ],
           },
         ],
@@ -1859,7 +1930,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Welche Nachrichten privat ankommen können',
             items: [
-              'Nach den aktuellen Standardzeiten: Tagesplan morgens, Erinnerungen im Tagesverlauf und Abend-Erinnerung.',
+              'Morgens eine Begrüßung mit deiner Serie 🔥, Aufgaben nach deinem Zeitplan im Tagesverlauf und Abend-Ergebnisse.',
               'Audio-Fehlererklärungen kommen typischerweise tagsüber und beziehen sich meist auf den letzten Lerntag.',
               'Private Analytik und Charts kommen regelmäßig, während die Mini-App die volle Detailansicht liefert.',
             ],
@@ -1882,7 +1953,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Was in der Gruppe erscheinen kann',
             items: [
-              'Quiz-Polls über den Tag verteilt. Nach den aktuellen Legacy-Standardslots meist zwischen 06:00 und 22:30 im 30-Minuten-Rhythmus.',
+              'Aufgaben und Quiz über den Tag verteilt — in den aktiven Stunden (etwa 07:30 bis 22:00). Nachts ist Ruhe.',
               'Tageszusammenfassungen am Abend und Wochenzusammenfassungen am Sonntag spät am Abend.',
               'Je nach Routing auch Gruppenplan-Hinweise, Abschlussmeldungen und Audio für Fehler oder Story-Sessions.',
             ],
@@ -1893,77 +1964,6 @@ function buildGuideStepItems(uiLang = 'ru') {
               'Ins Ranking gehen nur bestätigte Teilnehmer ein.',
               'Quizze wechseln zwischen neuen und schwachen Wiederholungsinhalten, statt immer nur neue Dinge zu schicken.',
               'Die Gruppe ist für Motivation, Vergleich und Rhythmus gedacht; die tiefere Arbeit passiert weiter in der Mini-App und im Privat-Chat.',
-            ],
-          },
-        ],
-      },
-      {
-        key: 'daily_games',
-        title: 'Spiele-Trainings und Battles im Chat',
-        summary: 'Kurze Grammatik- und Wortspiele kommen im Laufe des Tages von selbst zu dir — du musst nichts aufrufen. Jedes deckt ein wichtiges Thema ab.',
-        sections: [
-          {
-            title: 'Was kommt und wofür',
-            items: [
-              'Artikel der/die/das — du rätst das Geschlecht des Wortes. Die Basis, die man immer halten muss.',
-              'Adjektivendungen — der häufigste Fehler im Deutschen.',
-              'Zahlendiktat — Zahlen nach Gehör: du hörst und tippst sie.',
-              'Wo-Fragen (wo, wohin, woher…): du lernst, richtig zu fragen.',
-              'Kreuzworträtsel, Rebus, Anagramme — erweitern spielerisch den Wortschatz.',
-              'Hörverständnis — du hörst zu und ziehst das Wichtigste heraus (Daten, Uhrzeit, Fakten).',
-            ],
-          },
-          {
-            title: 'Training und Battle (Duell)',
-            items: [
-              'Wichtige Spiele haben zwei Modi. Training — in Ruhe, allein, ohne Eile.',
-              'Battle — ein kurzes Duell mit einem anderen Lernenden: wer schneller und fehlerfrei ist. Einen Gegner rufst du über das Bot-Menü.',
-              'Willst du Duell-Einladungen bekommen — das stellst du in den Einstellungen ein (jederzeit änderbar).',
-            ],
-          },
-          {
-            title: 'Nachrichten des Tages und Fehlerarbeit',
-            items: [
-              'Nachrichten des Tages — jeden Morgen frische echte News als kurzes Video mit doppelten anklickbaren Untertiteln: schauen, Wörter speichern und Hörverständnis-Tests beantworten.',
-              'Analyse deiner Fehler von gestern — der Bot sammelt, wo du dich geirrt hast, und lässt dich wiederholen, damit sich Fehler nicht festsetzen.',
-            ],
-          },
-          {
-            title: 'Taste «Nächste Aufgabe»',
-            items: [
-              'Willst du nicht auf den Zeitplan warten — tippe «Nächste Aufgabe» im Bot-Menü: es zeigt, was du heute noch nicht gemacht hast.',
-              'Du löst direkt in der App, eine Aufgabe nach der anderen.',
-              'Alles Gelöste zählt in deine Statistik und ins Ranking.',
-            ],
-          },
-        ],
-      },
-      {
-        key: 'rhythm',
-        title: 'Dein Rhythmus: Zeitplan und Streak',
-        summary: 'Stell ein, wie viele Aufgaben pro Tag und zu welchen Zeiten sie kommen. Und eine Serie von Tagen in Folge bringt kostenlose Pro-Tage.',
-        sections: [
-          {
-            title: 'Aufgaben-Zeitplan (Pro)',
-            items: [
-              'Wähle das Tempo: intensiv (~20/Tag), normal (~12), selten (~8) oder Stille (nichts automatisch).',
-              'Und das Zeitfenster: ganzer Tag, morgens, abends oder morgens+abends — die Aufgaben kommen gleichmäßig innerhalb des Fensters.',
-              'Die Einstellung ist in der App, Taste «🎬 Wie man es benutzt», jederzeit änderbar. Im kostenlosen Tarif — eine Auswahl von ein paar Aufgaben pro Tag.',
-            ],
-          },
-          {
-            title: 'Streak — Serie von Tagen in Folge',
-            items: [
-              'Jeder Tag, an dem du lernst, verlängert deine Serie 🔥. Sie ist in der Morgennachricht und in den Tagesergebnissen sichtbar.',
-              'Mehrere Tage in Folge — und der Bot schenkt dir einen kostenlosen Pro-Tag. Unterbrich die Serie nicht.',
-              'Es gibt ein «Einfrieren»: ein verpasster Tag setzt die Serie nicht zurück, wenn du ein Einfrieren hast.',
-            ],
-          },
-          {
-            title: 'Lade einen Freund ein',
-            items: [
-              'Der Befehl /invite im Privat-Chat mit dem Bot gibt dir deinen persönlichen Einladungslink.',
-              'Sobald der Freund dranbleibt (mehrere Tage in Folge) — bekommt ihr beide kostenlose Pro-Tage.',
             ],
           },
         ],
@@ -2106,8 +2106,8 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Цели недели',
           items: [
             'Прогресс по четырём целям: переводы, выученные слова, минуты разговора, время чтения.',
-            'По стандартным настройкам план приходит в личку утром (~07:00), напоминание вечером (~18:00).',
-            'Экран «Сегодня» и Telegram-уведомления синхронизированы.',
+            'Утром в личку приходит приветствие с твоей серией дней 🔥, дальше — задания по твоему расписанию (настраивается в разделе «Твой ритм»).',
+            'Экран «Сегодня» и уведомления в Telegram синхронизированы.',
           ],
         },
       ],
@@ -2139,6 +2139,77 @@ function buildGuideStepItems(uiLang = 'ru') {
             'Оценка, правильный вариант, разбор ошибок и кнопка «Спросить у GPT» для подробного объяснения.',
             '«Спросить у GPT» подробно объяснит: формы, примеры, нюансы и как запомнить.',
             'Ошибки сохраняются и вернутся в следующих заданиях по этой теме — слабые места точно закроются.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'daily_games',
+      title: 'Игры-тренировки и батлы в чате',
+      summary: 'Короткие игры на грамматику и слова приходят тебе сами в течение дня — вызывать ничего не нужно. Каждая закрывает важную тему.',
+      sections: [
+        {
+          title: 'Что приходит и зачем',
+          items: [
+            'Артикли der/die/das — угадываешь род слова. База, которую надо держать всегда.',
+            'Окончания прилагательных — самая частая ошибка в немецком.',
+            'Zahlendiktat — числа на слух: слышишь и записываешь.',
+            'Wo-Fragen — вопросы (wo, wohin, woher…): учишься правильно спрашивать.',
+            'Кроссворды, ребусы, анаграммы — расширяют словарный запас в игровой форме.',
+            'Hörverständnis — понимание на слух: вытаскиваешь из речи ключевое (даты, время, факты).',
+          ],
+        },
+        {
+          title: 'Тренировка и батл (дуэль)',
+          items: [
+            'У ключевых игр два режима. Тренировка — спокойно, сам, без спешки.',
+            'Батл — короткая дуэль с другим учеником: кто быстрее и без ошибок. Вызвать соперника можно из меню бота.',
+            'Хочешь получать приглашения на дуэли — это включается в настройке (и меняется в любой момент).',
+          ],
+        },
+        {
+          title: 'Новости дня и работа над ошибками',
+          items: [
+            'Новости дня — каждое утро свежие настоящие новости коротким видео, с двойными кликабельными субтитрами: смотришь, сохраняешь слова и отвечаешь на тесты на слух.',
+            'Разбор твоих ошибок за вчера — бот собирает, где ты ошибся, и даёт повторить, чтобы ошибки не закреплялись.',
+          ],
+        },
+        {
+          title: 'Кнопка «Следующее задание»',
+          items: [
+            'Не хочешь ждать по расписанию — нажми «Следующее задание» в меню бота: покажет, что ты ещё не сделал сегодня.',
+            'Решаешь прямо в приложении, одно задание за другим.',
+            'Всё решённое идёт в твою статистику и рейтинг.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'rhythm',
+      title: 'Твой ритм: расписание и стрик',
+      summary: 'Настрой, сколько заданий в день и в какие часы их присылать. А серия дней подряд приносит бесплатные дни Pro.',
+      sections: [
+        {
+          title: 'Расписание заданий (Pro)',
+          items: [
+            'Выбери темп: интенсивно (~20 в день), обычно (~12), редко (~8) или тишина (не присылать автоматически).',
+            'И окно времени: весь день, утро, вечер или утро+вечер — задания придут равномерно внутри окна.',
+            'Настройка — в приложении, кнопка «🎬 Как пользоваться», меняется когда угодно. На бесплатном тарифе — подборка из нескольких заданий в день.',
+          ],
+        },
+        {
+          title: 'Стрик — серия дней подряд',
+          items: [
+            'Каждый день, когда ты занимаешься, продлевает твою серию 🔥. Она видна в утреннем сообщении и в итогах дня.',
+            'Несколько дней подряд — и бот дарит бесплатный день Pro. Не прерывай серию.',
+            'Есть «заморозка»: один пропущенный день не обнулит серию, если заморозка у тебя есть.',
+          ],
+        },
+        {
+          title: 'Позови друга',
+          items: [
+            'Команда /invite в личке с ботом даёт твою личную ссылку-приглашение.',
+            'Как только друг втянётся (несколько дней подряд) — вы оба получаете бесплатные дни Pro.',
           ],
         },
       ],
@@ -2518,7 +2589,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что туда приходит само',
           items: [
-            'Обычно: план на день утром, напоминания в течение дня и вечернее подведение итогов.',
+            'Утреннее приветствие с твоей серией дней 🔥, задания по твоему расписанию в течение дня и вечерние итоги.',
             'Объяснения грамматики после проверки переводов — если вы включили эту галочку.',
             'Разбор ошибок голосом и личная сводка с графиками.',
           ],
@@ -2541,7 +2612,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что приходит в группу',
           items: [
-            'Задания и викторины в течение дня — обычно с 06:00 до 22:30, примерно каждые полчаса.',
+            'Задания и викторины в течение дня — в активные часы (примерно с 07:30 до 22:00). Ночью — тишина.',
             'Итоги дня вечером и итоги недели в воскресенье поздно вечером.',
             'Иногда — групповые планы, разбор ошибок голосом и сообщения о выполненных заданиях.',
           ],
@@ -2552,77 +2623,6 @@ function buildGuideStepItems(uiLang = 'ru') {
             'В рейтинг попадают только подтверждённые участники.',
             'Задания чередуют новое и повторение того, что даётся хуже, — не только новое.',
             'Группа — для мотивации, сравнения и ритма. Серьёзная работа всё равно в приложении и в личном чате.',
-          ],
-        },
-      ],
-    },
-    {
-      key: 'daily_games',
-      title: 'Игры-тренировки и батлы в чате',
-      summary: 'Короткие игры на грамматику и слова приходят тебе сами в течение дня — вызывать ничего не нужно. Каждая закрывает важную тему.',
-      sections: [
-        {
-          title: 'Что приходит и зачем',
-          items: [
-            'Артикли der/die/das — угадываешь род слова. База, которую надо держать всегда.',
-            'Окончания прилагательных — самая частая ошибка в немецком.',
-            'Zahlendiktat — числа на слух: слышишь и записываешь.',
-            'Wo-Fragen — вопросы (wo, wohin, woher…): учишься правильно спрашивать.',
-            'Кроссворды, ребусы, анаграммы — расширяют словарный запас в игровой форме.',
-            'Hörverständnis — понимание на слух: вытаскиваешь из речи ключевое (даты, время, факты).',
-          ],
-        },
-        {
-          title: 'Тренировка и батл (дуэль)',
-          items: [
-            'У ключевых игр два режима. Тренировка — спокойно, сам, без спешки.',
-            'Батл — короткая дуэль с другим учеником: кто быстрее и без ошибок. Вызвать соперника можно из меню бота.',
-            'Хочешь получать приглашения на дуэли — это включается в настройке (и меняется в любой момент).',
-          ],
-        },
-        {
-          title: 'Новости дня и работа над ошибками',
-          items: [
-            'Новости дня — каждое утро свежие настоящие новости коротким видео, с двойными кликабельными субтитрами: смотришь, сохраняешь слова и отвечаешь на тесты на слух.',
-            'Разбор твоих ошибок за вчера — бот собирает, где ты ошибся, и даёт повторить, чтобы ошибки не закреплялись.',
-          ],
-        },
-        {
-          title: 'Кнопка «Следующее задание»',
-          items: [
-            'Не хочешь ждать по расписанию — нажми «Следующее задание» в меню бота: покажет, что ты ещё не сделал сегодня.',
-            'Решаешь прямо в приложении, одно задание за другим.',
-            'Всё решённое идёт в твою статистику и рейтинг.',
-          ],
-        },
-      ],
-    },
-    {
-      key: 'rhythm',
-      title: 'Твой ритм: расписание и стрик',
-      summary: 'Настрой, сколько заданий в день и в какие часы их присылать. А серия дней подряд приносит бесплатные дни Pro.',
-      sections: [
-        {
-          title: 'Расписание заданий (Pro)',
-          items: [
-            'Выбери темп: интенсивно (~20 в день), обычно (~12), редко (~8) или тишина (не присылать автоматически).',
-            'И окно времени: весь день, утро, вечер или утро+вечер — задания придут равномерно внутри окна.',
-            'Настройка — в приложении, кнопка «🎬 Как пользоваться», меняется когда угодно. На бесплатном тарифе — подборка из нескольких заданий в день.',
-          ],
-        },
-        {
-          title: 'Стрик — серия дней подряд',
-          items: [
-            'Каждый день, когда ты занимаешься, продлевает твою серию 🔥. Она видна в утреннем сообщении и в итогах дня.',
-            'Несколько дней подряд — и бот дарит бесплатный день Pro. Не прерывай серию.',
-            'Есть «заморозка»: один пропущенный день не обнулит серию, если заморозка у тебя есть.',
-          ],
-        },
-        {
-          title: 'Позови друга',
-          items: [
-            'Команда /invite в личке с ботом даёт твою личную ссылку-приглашение.',
-            'Как только друг втянётся (несколько дней подряд) — вы оба получаете бесплатные дни Pro.',
           ],
         },
       ],
