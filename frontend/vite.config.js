@@ -92,7 +92,13 @@ export default defineConfig(async () => {
           cleanupOutdatedCaches: true,
           // Main bundle is currently slightly above 2 MiB, so keep precache build stable.
           maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
-          navigateFallbackDenylist: [/^\/api\//],
+          // /dict (+ short /d) must ALWAYS hit the server, never the cached index.html:
+          // the server bakes the auth token into the <link rel="manifest"> (…?dqt=…) so
+          // iOS "Add to Home Screen" captures a start_url that carries it. If the SW
+          // serves its precached index.html instead, that link is the tokenless hero
+          // manifest and the installed icon cold-launches unauthenticated (only the
+          // no-auth quick translate works — audio / breakdown / save all 401).
+          navigateFallbackDenylist: [/^\/api\//, /^\/dict(\/|$|\?)/, /^\/d(\/|$|\?)/],
           runtimeCaching: [
             {
               urlPattern: ({ url, request }) => {
