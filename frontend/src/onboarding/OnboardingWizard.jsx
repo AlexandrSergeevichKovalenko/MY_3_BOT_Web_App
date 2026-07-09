@@ -99,8 +99,12 @@ async function openDictInBrowser() {
   // never expires (works forever on the home screen). Fallback: carry the current
   // initData, which the server accepts for 30 days.
   const initData = tg?.initData || '';
-  const base = `${window.location.origin}/dict`;
-  let url = initData ? `${base}?initData=${encodeURIComponent(initData)}` : base;
+  const origin = window.location.origin;
+  // Token goes in the PATH (/dict/t/<token>), NOT a ?query — iOS drops query strings from
+  // a home-screen start_url, which left the installed icon unauthenticated. A path segment
+  // is preserved, so the cold-launched icon carries the token. initData stays a ?query
+  // fallback (only used in-Safari, where query is honored).
+  let url = initData ? `${origin}/dict?initData=${encodeURIComponent(initData)}` : `${origin}/dict`;
   try {
     const res = await fetch('/api/webapp/dict/token', {
       method: 'POST',
@@ -108,7 +112,7 @@ async function openDictInBrowser() {
       body: JSON.stringify({ initData }),
     });
     const data = await res.json().catch(() => ({}));
-    if (res.ok && data?.token) url = `${base}?dqt=${encodeURIComponent(String(data.token))}`;
+    if (res.ok && data?.token) url = `${origin}/dict/t/${encodeURIComponent(String(data.token))}`;
   } catch (_e) { /* keep the initData fallback URL */ }
   try {
     if (tg?.openLink) tg.openLink(url);

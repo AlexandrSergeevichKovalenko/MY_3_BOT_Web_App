@@ -190,7 +190,8 @@ function getAnswerStartParam() {
   // long Railway domain leaves no room for ?startapp=dict, so we expose a short
   // path the backend already serves (catch-all → index.html, absolute assets).
   const path = String(window.location?.pathname || '').replace(/\/+$/, '').toLowerCase();
-  if (path === '/dict' || path === '/d') return 'dict';
+  // /dict, short /d, and the path-token form /dict/t/<token> (iOS-safe home-screen launch).
+  if (path === '/dict' || path === '/d' || path.startsWith('/dict/t/')) return 'dict';
   if (path === '/settings') return 'settings';
   if (path === '/interactive') return 'interactive';
   // Public shareable tour: /tour (or /onboarding) opens the onboarding wizard as a
@@ -279,8 +280,11 @@ function applyDictHomeScreenMeta() {
     // fall back to the cached one so re-installing from any /dict page stays authed.
     let dqt = '';
     try {
+      const pm = String(window.location.pathname || '').match(/^\/dict\/t\/([^/]+)/);
       const p = new URLSearchParams(window.location.search || '');
-      dqt = String(p.get('dqt') || '').trim() || String(localStorage.getItem('dq_browser_token_v1') || '').trim();
+      dqt = (pm && pm[1] ? decodeURIComponent(pm[1]) : '')
+        || String(p.get('dqt') || '').trim()
+        || String(localStorage.getItem('dq_browser_token_v1') || '').trim();
     } catch (_e) { /* ignore */ }
     const manifestHref = dqt
       ? `/dict-manifest.webmanifest?dqt=${encodeURIComponent(dqt)}`
@@ -361,17 +365,22 @@ function installDictTokenAuthShim() {
   if (typeof window === 'undefined' || typeof window.fetch !== 'function') return;
   if (window.__dictAuthShimInstalled) return;
   window.__dictAuthShimInstalled = true;
+  const tokenFromLaunch = () => {
+    try {
+      const pm = String(window.location.pathname || '').match(/^\/dict\/t\/([^/]+)/);
+      if (pm && pm[1]) return decodeURIComponent(pm[1]);
+      return String(new URLSearchParams(window.location.search || '').get('dqt') || '').trim();
+    } catch (_e) { return ''; }
+  };
   try {
-    const p = new URLSearchParams(window.location.search || '');
-    const urlTok = String(p.get('dqt') || '').trim();
+    const urlTok = tokenFromLaunch();
     if (urlTok) { try { localStorage.setItem('dq_browser_token_v1', urlTok); } catch (_e) { /* ignore */ } }
-    const urlInit = String(p.get('initData') || '').trim();
+    const urlInit = String(new URLSearchParams(window.location.search || '').get('initData') || '').trim();
     if (urlInit) { try { localStorage.setItem('dq_initdata_v1', urlInit); } catch (_e) { /* ignore */ } }
   } catch (_e) { /* ignore */ }
   const getToken = () => {
     try {
-      const p = new URLSearchParams(window.location.search || '');
-      return String(p.get('dqt') || '').trim() || String(localStorage.getItem('dq_browser_token_v1') || '').trim();
+      return tokenFromLaunch() || String(localStorage.getItem('dq_browser_token_v1') || '').trim();
     } catch (_e) { return ''; }
   };
   const inTelegram = () => { try { return Boolean(window.Telegram?.WebApp?.initData); } catch (_e) { return false; } };

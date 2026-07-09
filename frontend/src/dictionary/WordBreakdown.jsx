@@ -55,6 +55,14 @@ const DQ_TOKEN_LS_KEY = 'dq_browser_token_v1';
 export function getDictToken() {
   if (typeof window === 'undefined') return '';
   try {
+    // Path form: /dict/t/<token>. iOS keeps a path segment in a home-screen start_url
+    // (it drops ?query=), so this is what a cold-launched installed icon actually carries.
+    const pathMatch = String(window.location.pathname || '').match(/^\/dict\/t\/([^/]+)/);
+    if (pathMatch && pathMatch[1]) {
+      const tok = decodeURIComponent(pathMatch[1]);
+      try { localStorage.setItem(DQ_TOKEN_LS_KEY, tok); } catch (_e) { /* ignore */ }
+      return tok;
+    }
     const fromUrl = new URLSearchParams(window.location.search).get('dqt') || '';
     if (fromUrl) {
       try { localStorage.setItem(DQ_TOKEN_LS_KEY, fromUrl); } catch (_e) { /* ignore */ }

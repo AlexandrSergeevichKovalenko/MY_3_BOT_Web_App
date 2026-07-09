@@ -3186,23 +3186,22 @@ def serve_webapp_entry():
     return _apply_webapp_entry_cache_headers(response)
 
 
-def _serve_dict_entry_html():
-    """The quick-dictionary home-screen PWA needs its OWN manifest (start_url "/dict")
-    and a dictionary apple-touch-icon baked into the HTML that Safari parses — a JS
-    swap after load is NOT reliably picked up by iOS "Add to Home Screen" (it reads
-    the manifest/icon links at parse time). So for /dict we rewrite those two links.
+def _serve_dict_entry_html(token: str = ""):
+    """The quick-dictionary home-screen PWA needs its OWN manifest and a dictionary
+    apple-touch-icon baked into the HTML that Safari parses at load time. So for /dict
+    we rewrite those two links.
 
-    We ALSO forward the launch auth token (?dqt=, or ?initData= fallback) into the
-    manifest link, so the dynamic manifest can bake it into start_url. Without this the
-    installed icon cold-launches a bare "/dict": iOS uses the MANIFEST's start_url for
-    the icon (not the address-bar URL), and a standalone PWA gets its own storage
-    partition — so the Safari-cached token is invisible and every authed call (audio /
-    breakdown / save) 401s, leaving only the no-auth quick translate working."""
-    token = str(request.args.get("dqt") or "").strip()
+    The launch auth token arrives via the PATH (/dict/t/<token>) — iOS RELIABLY keeps a
+    path segment in a home-screen start_url, whereas it DROPS query strings (?dqt=) from
+    start_url, which left the installed icon unauthenticated (only the no-auth quick
+    translate worked). We forward the token to the manifest link as ?dqt= (that's a
+    normal resource fetch, where the query IS honored) so the dynamic manifest can bake
+    it into a PATH-based start_url. The ?dqt= query is still accepted for Safari use."""
+    tok = str(token or request.args.get("dqt") or "").strip()
     launch_init = str(request.args.get("initData") or "").strip()
     manifest_href = "/dict-manifest.webmanifest"
-    if token:
-        manifest_href += f"?dqt={quote(token, safe='')}"
+    if tok:
+        manifest_href += f"?dqt={quote(tok, safe='')}"
     elif launch_init:
         manifest_href += f"?initData={quote(launch_init, safe='')}"
     try:
@@ -3215,13 +3214,22 @@ def _serve_dict_entry_html():
     return _apply_webapp_entry_cache_headers(response)
 
 
+@app.route("/dict/t/<token>")
+def serve_dict_entry_with_token(token):
+    """Path-token entry for the home-screen dictionary: /dict/t/<token>. iOS preserves a
+    PATH segment in a home-screen start_url (unlike a ?query=), so the installed icon
+    cold-launches authenticated. Serves the same dict HTML, token folded into the
+    manifest link."""
+    return _serve_dict_entry_html(token=str(token or "").strip())
+
+
 @app.route("/dict-manifest.webmanifest")
 def serve_dict_manifest():
-    """Quick-dict PWA manifest. When launched with an auth token (?dqt=) or ?initData=,
-    bake it into start_url so the installed home-screen icon cold-launches AUTHENTICATED
-    (iOS uses the manifest's start_url for the icon, and a standalone PWA can't see the
-    token Safari cached). Without a token, serve the static manifest unchanged. The
-    scope stays "/dict" — a query string doesn't affect scope matching."""
+    """Quick-dict PWA manifest. When fetched with an auth token (?dqt=) or ?initData=,
+    bake it into a PATH-based start_url ("/dict/t/<token>") so the installed home-screen
+    icon cold-launches AUTHENTICATED — iOS uses the manifest's start_url for the icon and
+    DROPS query strings from it, so the token must live in the path. Without a token,
+    serve the static manifest unchanged. Scope stays "/dict" (a path prefix)."""
     token = str(request.args.get("dqt") or "").strip()
     launch_init = str(request.args.get("initData") or "").strip()
     try:
@@ -3229,7 +3237,7 @@ def serve_dict_manifest():
     except Exception:
         return send_from_directory(FRONTEND_DIST, "dict-manifest.webmanifest")
     if token:
-        manifest["start_url"] = f"/dict?dqt={quote(token, safe='')}"
+        manifest["start_url"] = f"/dict/t/{quote(token, safe='')}"
     elif launch_init:
         manifest["start_url"] = f"/dict?initData={quote(launch_init, safe='')}"
     response = Response(json.dumps(manifest, ensure_ascii=False), mimetype="application/manifest+json")
