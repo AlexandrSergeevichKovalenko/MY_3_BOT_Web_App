@@ -100,10 +100,12 @@ async function openDictInBrowser() {
   // initData, which the server accepts for 30 days.
   const initData = tg?.initData || '';
   const origin = window.location.origin;
-  // Token goes in the PATH (/dict/t/<token>), NOT a ?query — iOS drops query strings from
-  // a home-screen start_url, which left the installed icon unauthenticated. A path segment
-  // is preserved, so the cold-launched icon carries the token. initData stays a ?query
-  // fallback (only used in-Safari, where query is honored).
+  // Open the QUERY form /dict?dqt=<token> in Safari: it is routed by EVERY bundle version
+  // (old and new), so a stale cached bundle still opens the dictionary here — unlike the
+  // path form /dict/t/<token>, which only the newest bundle knows and which broke Safari
+  // for anyone on a cached older build. The path form is used ONLY for the installed
+  // icon's start_url (baked by the manifest), because iOS drops the ?query from a
+  // home-screen start_url. So: Safari → ?query (universal), installed icon → path (iOS-safe).
   let url = initData ? `${origin}/dict?initData=${encodeURIComponent(initData)}` : `${origin}/dict`;
   try {
     const res = await fetch('/api/webapp/dict/token', {
@@ -112,7 +114,7 @@ async function openDictInBrowser() {
       body: JSON.stringify({ initData }),
     });
     const data = await res.json().catch(() => ({}));
-    if (res.ok && data?.token) url = `${origin}/dict/t/${encodeURIComponent(String(data.token))}`;
+    if (res.ok && data?.token) url = `${origin}/dict?dqt=${encodeURIComponent(String(data.token))}`;
   } catch (_e) { /* keep the initData fallback URL */ }
   try {
     if (tg?.openLink) tg.openLink(url);
