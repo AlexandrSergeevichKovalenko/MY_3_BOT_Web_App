@@ -3626,3 +3626,23 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 }
 .webapp-reader .reader-dock-audio-close:hover { background: var(--rd-bg-elev); }
 .webapp-reader .reader-dock-audio-close svg { width: 18px; height: 18px; }
+
+
+/* ── Phase 0 fix: dark theme showed a LIGHT reader-topbar strip with white
+   (invisible) title. Force the topbar dark + readable text in dark theme. ── */
+.webapp-reader.is-immersive[data-reader-theme="dark"] .reader-topbar {
+  background: rgba(8,12,26,0.92) !important;
+  border-bottom-color: rgba(255,255,255,0.08) !important;
+  backdrop-filter: blur(var(--rd-blur));
+  -webkit-backdrop-filter: blur(var(--rd-blur));
+}
+.webapp-reader.is-immersive[data-reader-theme="dark"] .reader-topbar-title {
+  color: var(--rd-text) !important;
+}
+.webapp-reader.is-immersive[data-reader-theme="dark"] .reader-topbar-meta,
+.webapp-reader.is-immersive[data-reader-theme="dark"] .reader-peek-title {
+  color: var(--rd-text-muted) !important;
+}
+.webapp-reader.is-immersive[data-reader-theme="dark"] .reader-topbar-peek {
+  background: rgba(8,12,26,0.92) !important;
+}

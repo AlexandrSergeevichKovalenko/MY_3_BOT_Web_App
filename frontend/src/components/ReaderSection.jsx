@@ -658,14 +658,12 @@ export default function ReaderSection(props) {
                       {readerTitle || tr('Читалка', 'Leser')}
                     </div>
                     <div className="reader-topbar-meta">
-                      {readerUsesOriginalEpubLayout
-                        ? `EPUB Original · ${Math.round(readerProgressPercent)}%`
-                        : (readerPageCount > 0
-                          ? `${tr('Стр.', 'S.')} ${readerCurrentPage} / ${readerPageCount} · ${Math.round(readerProgressPercent)}%`
-                          : `${Math.round(readerProgressPercent)}%`)}
+                      {/* Page number lives ONLY at the bottom now (single source of
+                          truth, Apple-Books position). Here we keep just progress %
+                          and, for EPUB, the chapter title. */}
                       {readerUsesOriginalEpubLayout && readerResolvedOriginalTocTitle
-                        ? ` · ${readerResolvedOriginalTocTitle}`
-                        : ''}
+                        ? readerResolvedOriginalTocTitle
+                        : `${Math.round(readerProgressPercent)}%`}
                     </div>
                   </div>
                   <button
