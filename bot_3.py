@@ -1134,6 +1134,7 @@ NUMDICT_PRACTICE_FEATURE_KEY = "numdict_practice_daily"
 ADJEKTIV_BATTLE_BUTTON_TEXT = "⚔️ Adjektiv-батл"
 WOFRAGE_BATTLE_BUTTON_TEXT = "⚔️ Wo-Frage-батл"
 BATTLE_HISTORY_BUTTON_TEXT = "📜 История батлов"
+SETTINGS_BUTTON_TEXT = "⚙️ Настройки"
 ADMIN_BROADCAST_BUTTON_TEXT = "📣 Рассылка всем"
 ADMIN_COMMANDS_BUTTON_TEXT = "🛠 Команды админа"
 SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
@@ -1213,6 +1214,7 @@ def _is_known_reply_menu_button(text: str) -> bool:
         ADMIN_BROADCAST_BUTTON_TEXT, ADMIN_COMMANDS_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT, SHORTCUT_AUTOSAVE_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT,
+        SETTINGS_BUTTON_TEXT,
     }
     if t in static_labels:
         return True
@@ -4641,10 +4643,8 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
 
     # 1) Ежедневные задания — главное действие.
     rows.append([NEXT_TASK_BUTTON_TEXT])
-    # Стрик больше НЕ кнопка — статус едет в сообщениях (утро / итоги дня /
-    # карточка «Следующее задание»). Расписание — только Pro.
-    if is_pro:
-        rows.append([_schedule_button_text(user_id)])
+    # Стрик и Расписание больше НЕ кнопки: стрик едет в сообщениях, а расписание
+    # (и другие настройки) переехали в «⚙️ Настройки» (Mini-App).
 
     # 2) Тренажёры + батлы, сгруппированные ПО ТЕМЕ — по строке на тему
     #    [тренировка · батл]. Ровно 2 кнопки в ряд → читаемо на узких экранах.
@@ -4655,17 +4655,17 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
     rows.append([WOFRAGE_SPRINT_BUTTON_TEXT, WOFRAGE_BATTLE_BUTTON_TEXT])
     # Прочие тренажёры без батла: числа на слух + (Pro) персональная тема на завтра.
-    rows.append([NUMDICT_PRACTICE_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
+    rows.append([NUMDICT_PRACTICE_BUTTON_TEXT])
 
     # 3) Общее по батлам — доступно всем (быть в списке приглашаемых + история).
-    rows.append([_battle_available_button_text(user_id), BATTLE_HISTORY_BUTTON_TEXT])
+    rows.append([BATTLE_HISTORY_BUTTON_TEXT])
 
     # 4) Слова и помощь.
     rows.append([DICTIONARY_BATCH_FAST_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT])
 
-    # 5) Захват слов: установка Shortcut переехала в онбординг («🎬 Как пользоваться»
-    #    → шаг захвата слов); на клавиатуре остаётся только ночной автосейв.
-    rows.append([_autosave_button_text(user_id)])
+    # 5) Настройки: автосейв, готовность к батлам, расписание и тема — на одной
+    #    Mini-App странице (раньше были отдельными кнопками).
+    rows.append([SETTINGS_BUTTON_TEXT])
 
     # 6) Справка.
     rows.append([HOWTO_GUIDE_BUTTON_TEXT])
@@ -8923,6 +8923,12 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await _send_schedule_picker(update, context)
     elif text == STREAK_BUTTON_TEXT:
         await _streak_command(update, context)
+    elif text == SETTINGS_BUTTON_TEXT:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "⚙️ Открыть настройки", url=get_webapp_deeplink("settings"))]])
+        await update.message.reply_text(
+            "⚙️ <b>Настройки</b> — автосейв, готовность к батлам и расписание в одном месте 👇",
+            parse_mode="HTML", reply_markup=kb)
     elif text == ARTIKEL_LEARN_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "📚 Открыть тренажёр", url=get_webapp_deeplink("ans_al_0"))]])

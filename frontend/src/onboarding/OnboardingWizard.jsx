@@ -472,12 +472,9 @@ function StepBody(props) {
               {t(' — запускают короткие игры на грамматику (одному или против другого ученика).', ' — starten kurze Grammatik-Spiele (allein oder gegen einen anderen Lernenden).')}
             </li>
             <li>
-              <b>{t('🗓 Расписание (Pro)', '🗓 Zeitplan (Pro)')}</b>
-              {t(' — эта кнопка выглядит как «🔥 Интенсивно · 🌅🌆 Утро+вечер» и легко принять её за надпись. На самом деле это ',
-                 ' — diese Taste sieht aus wie «🔥 Intensiv · 🌅🌆 Morgens+abends» und wirkt wie eine Beschriftung. In Wahrheit ist es eine ')}
-              <b>{t('кнопка', 'Taste')}</b>
-              {t(': показывает твой текущий темп и часы заданий, нажми — поменяешь. Рядом «🎯 Тема на завтра» — выбрать тему для персональных заданий.',
-                 ': sie zeigt dein aktuelles Tempo und die Uhrzeiten, tippe — und ändere es. Daneben «🎯 Thema für morgen» — ein Thema für persönliche Aufgaben wählen.')}
+              <b>{t('⚙️ «Настройки»', '⚙️ «Einstellungen»')}</b>
+              {t(' — одна кнопка открывает страницу настроек: автосейв, готовность к батлам и расписание (Pro). Всё в одном месте, меняется в любой момент.',
+                 ' — eine Taste öffnet die Einstellungsseite: Auto-Speichern, Duell-Bereitschaft und Zeitplan (Pro). Alles an einem Ort, jederzeit änderbar.')}
             </li>
             <li>
               <b>{t('📖 Словарь и 🤖 учитель', '📖 Wörterbuch und 🤖 Lehrer')}</b>
@@ -488,18 +485,20 @@ function StepBody(props) {
               {t(' — сюда возвращаешься за настройками и обучающими видео в любой момент.', ' — hierher kommst du jederzeit für Einstellungen und Lern-Videos zurück.')}
             </li>
           </ul>
-          <p className="ob-lead"><b>{t('Кнопки-переключатели', 'Umschalt-Tasten')}</b>{t(' — нажатие меняет режим, а подпись на самой кнопке показывает текущее состояние:', ' — ein Tippen ändert den Modus, die Beschriftung auf der Taste zeigt den aktuellen Zustand:')}</p>
+          <p className="ob-lead"><b>{t('Что внутри «⚙️ Настройки»', 'Was in «⚙️ Einstellungen» steckt')}</b>{t(' — одна страница, всё переключается сразу:', ' — eine Seite, alles sofort umschaltbar:')}</p>
           <ul className="ob-list">
             <li>
-              <b>{t('⚔️ Готовность к дуэлям', '⚔️ Bereit für Duelle')}</b>
-              {t(' — зовут ли тебя на батлы. Нажал — включил или выключил; на кнопке видно, как сейчас.', ' — ob du zu Duellen eingeladen wirst. Getippt — an oder aus; auf der Taste siehst du, wie es gerade ist.')}
+              <b>{t('🌙 Автосейв', '🌙 Auto-Speichern')}</b>
+              {t(' — как приходят слова, пойманные за день (через Shortcut или пересланные боту). ВКЛ (по умолчанию): копятся и приходят одним вечерним списком с галочками — не дёргают весь день. ВЫКЛ: каждое слово приходит сразу.',
+                 ' — wie die tagsüber gefangenen Wörter ankommen (per Shortcut oder an den Bot weitergeleitet). AN (Standard): sie sammeln sich und kommen abends als eine Liste mit Häkchen — kein Stören den ganzen Tag. AUS: jedes Wort kommt sofort.')}
             </li>
             <li>
-              <b>{t('💾 Автосейв', '💾 Auto-Speichern')}</b>
-              {t(' — режим захвата слов со скриншотов. По умолчанию ', ' — Modus zum Sammeln von Wörtern aus Screenshots. Standardmäßig ')}
-              <b>{t('ВКЛ', 'AN')}</b>
-              {t(': слова копятся за день и приходят утром одним списком. Выключишь — будут приходить по мере поступления. Подпись показывает ВКЛ/ВЫКЛ.',
-                 ': Wörter sammeln sich über den Tag und kommen morgens als eine Liste. Schaltest du aus — kommen sie einzeln, sobald sie da sind. Die Beschriftung zeigt AN/AUS.')}
+              <b>{t('🛡 Готовность к батлам', '🛡 Bereit für Duelle')}</b>
+              {t(' — зовут ли тебя другие ученики на дуэли по грамматике.', ' — ob dich andere Lernende zu Grammatik-Duellen einladen.')}
+            </li>
+            <li>
+              <b>{t('🗓 Расписание (Pro)', '🗓 Zeitplan (Pro)')}</b>
+              {t(' — сколько заданий в день (темп) и в какие часы их присылать.', ' — wie viele Aufgaben pro Tag (Tempo) und zu welchen Zeiten sie kommen.')}
             </li>
           </ul>
         </div>
