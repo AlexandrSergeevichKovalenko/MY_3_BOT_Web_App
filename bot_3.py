@@ -8928,15 +8928,35 @@ async def handle_button_click(update: Update, context: CallbackContext):
     elif text == SETTINGS_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "⚙️ Открыть настройки", url=get_webapp_deeplink("settings"))]])
-        await update.message.reply_text(
-            "⚙️ <b>Настройки</b> — автосейв, готовность к батлам и расписание в одном месте 👇",
-            parse_mode="HTML", reply_markup=kb)
+        caption = ("⚙️ <b>Настройки</b> — всё в одном месте:\n"
+                   "🌙 Автосейв   ·   🛡 Готовность к батлам   ·   🗓 Расписание (Pro)")
+        poster = None
+        try:
+            from backend.interactive_card import render_settings_card
+            poster = await asyncio.to_thread(render_settings_card)
+        except Exception:
+            logging.warning("settings: card render failed", exc_info=True)
+        if poster:
+            await update.message.reply_photo(photo=io.BytesIO(poster), caption=caption,
+                                             parse_mode="HTML", reply_markup=kb)
+        else:
+            await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     elif text == INTERACTIVE_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "📚 Открыть интерактив", url=get_webapp_deeplink("interactive"))]])
-        await update.message.reply_text(
-            "📚 <b>Интерактив</b> — короткие игры на грамматику и слова в одном месте 👇",
-            parse_mode="HTML", reply_markup=kb)
+        caption = ("📚 <b>Интерактив</b> — короткие игры на грамматику и слова:\n"
+                   "🔵 Артикли   ·   🟢 Прилагательные   ·   ❓ Wo-Fragen   ·   🔢 Числа на слух")
+        poster = None
+        try:
+            from backend.interactive_card import render_interactive_card
+            poster = await asyncio.to_thread(render_interactive_card)
+        except Exception:
+            logging.warning("interactive: card render failed", exc_info=True)
+        if poster:
+            await update.message.reply_photo(photo=io.BytesIO(poster), caption=caption,
+                                             parse_mode="HTML", reply_markup=kb)
+        else:
+            await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     elif text == ARTIKEL_LEARN_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "📚 Открыть тренажёр", url=get_webapp_deeplink("ans_al_0"))]])

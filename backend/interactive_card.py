@@ -496,6 +496,20 @@ def render_welcome_card() -> bytes | None:
                  accent=(52, 211, 153), motif=_motif_next_arrow, cta="Пара минут — и поехали")
 
 
+def render_settings_card() -> bytes | None:
+    """Branded hero plaque for the «⚙️ Настройки» reply button."""
+    return _card(badge="НАСТРОЙКИ", title="Настройки",
+                 subtitle="Автосейв · Готовность к батлам · Расписание",
+                 accent=(96, 165, 250), motif=_motif_next_arrow, cta="Открой и настрой под себя")
+
+
+def render_interactive_card() -> bytes | None:
+    """Branded hero plaque for the «📚 Интерактив» reply button."""
+    return _card(badge="ИНТЕРАКТИВ", title="Интерактив",
+                 subtitle="Артикли · Прилагательные · Wo-Fragen · Числа",
+                 accent=(129, 140, 248), motif=_motif_quiz, cta="Выбери тренажёр и играй")
+
+
 def render_quiz_card(*, level: str = "") -> bytes | None:
     sub = "Wähle die richtige Antwort" + (f"  ·  {level}" if level else "")
     return _card(badge="QUIZ", title="Quiz", subtitle=sub,

@@ -34,6 +34,8 @@ export default function InteractiveHub() {
 
   useEffect(() => {
     try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* noop */ }
+    // Stop the Mini-App sheet from collapsing on any downward swipe/scroll.
+    try { tg?.disableVerticalSwipes?.(); } catch (_e) { /* noop */ }
     try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* noop */ }
   }, []);
 
