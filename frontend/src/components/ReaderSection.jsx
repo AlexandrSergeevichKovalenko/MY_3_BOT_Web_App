@@ -179,11 +179,27 @@ export default function ReaderSection(props) {
     };
   }, [readerOverflowOpen]);
 
+  // ── Phase 1: Apple-Books book-page engine (state/refs) ───────────────
+  // The current server page is laid out in CSS columns so it always fills the
+  // screen with NO vertical scroll; horizontal swipe turns columns and, at the
+  // last column, advances to the next server page. Tap a word → translate;
+  // tap centre → toggle chrome. Local UI state only.
+  const readerColViewportRef = React.useRef(null);
+  const readerColTrackRef = React.useRef(null);
+  const [readerColIndex, setReaderColIndex] = React.useState(0);
+  const [readerColCount, setReaderColCount] = React.useState(1);
+  const [readerChromeHidden, setReaderChromeHidden] = React.useState(false);
+  const readerColIndexRef = React.useRef(0);
+  const readerColCountRef = React.useRef(1);
+  const readerColGoLastRef = React.useRef(false);
+  const readerGestureRef = React.useRef({ down: false, x: 0, y: 0, moved: false, base: 0 });
+
   const sectionClass = [
     'webapp-section',
     'webapp-reader',
     readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : '',
     readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : '',
+    readerChromeHidden ? 'is-chrome-hidden' : '',
   ].filter(Boolean).join(' ');
   const showLibraryMode = !readerHasContent || readerArchiveOpen || !readerImmersive;
   const effectiveReaderTheme = showLibraryMode ? 'dark' : readerColorTheme;
@@ -200,6 +216,151 @@ export default function ReaderSection(props) {
     'Аудио в книге доступно только по премиум подписке.',
     'Audio im Reader ist nur mit Premium verfügbar.'
   );
+
+  // Engine runs only for server-paged content (PDF / EPUB text mode), never for
+  // client-reflow text sources or the original-EPUB renderer.
+  const readerColUsesEngine = readerPageCount > 0 && !readerUsesOriginalEpubLayout && !readerUsesCustomLayout;
+  React.useEffect(() => { readerColIndexRef.current = readerColIndex; }, [readerColIndex]);
+  React.useEffect(() => { readerColCountRef.current = readerColCount; }, [readerColCount]);
+
+  const readerColStep = () => (readerColViewportRef.current?.clientWidth || 1);
+  const applyReaderColTransform = (px, animate) => {
+    const track = readerColTrackRef.current;
+    if (!track) return;
+    track.style.transition = animate ? 'transform .3s cubic-bezier(.4,0,.2,1)' : 'none';
+    track.style.transform = `translateX(${px}px)`;
+  };
+
+  // Measure how many screen-columns the current page produced, then land on the
+  // first (or last, when we arrived by turning backwards) column.
+  React.useLayoutEffect(() => {
+    if (!readerColUsesEngine) return undefined;
+    const vp = readerColViewportRef.current;
+    const track = readerColTrackRef.current;
+    if (!vp || !track) return undefined;
+    const M = 22;
+    const raf = window.requestAnimationFrame(() => {
+      const w = vp.clientWidth, h = vp.clientHeight;
+      if (w <= 0 || h <= 0) return;
+      // Bounded height + fixed column width ⇒ text flows into side-by-side columns
+      // that overflow to the right; each column is exactly one screen.
+      track.style.height = `${h}px`;
+      track.style.columnWidth = `${Math.max(1, w - 2 * M)}px`;
+      track.style.columnGap = `${2 * M}px`;
+      track.style.marginLeft = `${M}px`;
+      const n = Math.max(1, Math.round((track.scrollWidth + 2 * M) / w));
+      const target = readerColGoLastRef.current ? n - 1 : 0;
+      readerColGoLastRef.current = false;
+      setReaderColCount(n);
+      setReaderColIndex(target);
+      readerColIndexRef.current = target;
+      readerColCountRef.current = n;
+      applyReaderColTransform(-target * w, false);
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [readerColUsesEngine, readerCurrentPage, readerFontSize, readerFontWeight, readerShowsLazyOriginalPage]);
+
+  // Keep the transform in sync when the column index changes (animated turn).
+  React.useEffect(() => {
+    if (!readerColUsesEngine) return;
+    applyReaderColTransform(-readerColIndex * readerColStep(), true);
+  }, [readerColIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-measure on viewport resize (rotation / chrome toggle / keyboard).
+  React.useEffect(() => {
+    if (!readerColUsesEngine) return undefined;
+    const vp = readerColViewportRef.current;
+    if (!vp || typeof ResizeObserver === 'undefined') return undefined;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      window.cancelAnimationFrame(raf);
+      raf = window.requestAnimationFrame(() => {
+        const track = readerColTrackRef.current;
+        const w = vp.clientWidth, h = vp.clientHeight;
+        if (!track || w <= 0 || h <= 0) return;
+        const M = 22;
+        track.style.height = `${h}px`;
+        track.style.columnWidth = `${Math.max(1, w - 2 * M)}px`;
+        track.style.columnGap = `${2 * M}px`;
+        track.style.marginLeft = `${M}px`;
+        const n = Math.max(1, Math.round((track.scrollWidth + 2 * M) / w));
+        readerColCountRef.current = n;
+        setReaderColCount(n);
+        const i = Math.min(readerColIndexRef.current, n - 1);
+        readerColIndexRef.current = i;
+        setReaderColIndex(i);
+        applyReaderColTransform(-i * w, false);
+      });
+    });
+    ro.observe(vp);
+    return () => { ro.disconnect(); window.cancelAnimationFrame(raf); };
+  }, [readerColUsesEngine]);
+
+  const readerTurnNext = () => {
+    if (readerColIndexRef.current < readerColCountRef.current - 1) {
+      setReaderColIndex((i) => i + 1);
+    } else if (readerCurrentPage < readerPageCount) {
+      readerColGoLastRef.current = false;
+      setReaderCurrentPage(readerCurrentPage + 1);
+    } else {
+      applyReaderColTransform(-readerColIndexRef.current * readerColStep(), true);
+    }
+  };
+  const readerTurnPrev = () => {
+    if (readerColIndexRef.current > 0) {
+      setReaderColIndex((i) => i - 1);
+    } else if (readerCurrentPage > 1) {
+      readerColGoLastRef.current = true;
+      setReaderCurrentPage(readerCurrentPage - 1);
+    } else {
+      applyReaderColTransform(0, true);
+    }
+  };
+
+  const onReaderColPointerDown = (e) => {
+    if (!readerColUsesEngine) return;
+    const g = readerGestureRef.current;
+    g.down = true; g.x = e.clientX; g.y = e.clientY; g.moved = false;
+    g.base = -readerColIndexRef.current * readerColStep();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_err) { /* ignore */ }
+    applyReaderColTransform(g.base, false);
+  };
+  const onReaderColPointerMove = (e) => {
+    const g = readerGestureRef.current;
+    if (!g.down) return;
+    const dx = e.clientX - g.x, dy = e.clientY - g.y;
+    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) g.moved = true;
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      const atStart = readerColIndexRef.current === 0 && readerCurrentPage <= 1;
+      const atEnd = readerColIndexRef.current >= readerColCountRef.current - 1 && readerCurrentPage >= readerPageCount;
+      let d = dx;
+      if ((atStart && dx > 0) || (atEnd && dx < 0)) d = dx * 0.3;
+      applyReaderColTransform(g.base + d, false);
+    }
+  };
+  const onReaderColPointerEnd = (e) => {
+    const g = readerGestureRef.current;
+    if (!g.down) return;
+    g.down = false;
+    const dx = e.clientX - g.x, dy = e.clientY - g.y;
+    if (!g.moved) { handleReaderColTap(e); return; }
+    if (Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) > 40) {
+      if (dx < 0) readerTurnNext(); else readerTurnPrev();
+    } else {
+      applyReaderColTransform(-readerColIndexRef.current * readerColStep(), true);
+    }
+  };
+  const handleReaderColTap = (e) => {
+    const wordEl = e.target && e.target.closest ? e.target.closest('[data-wid]') : null;
+    if (wordEl) { handleReaderStructuredClick(e); return; }
+    const vp = readerColViewportRef.current;
+    if (!vp) { setReaderChromeHidden((v) => !v); return; }
+    const rect = vp.getBoundingClientRect();
+    const rx = e.clientX - rect.left;
+    if (rx < rect.width * 0.22) readerTurnPrev();
+    else if (rx > rect.width * 0.78) readerTurnNext();
+    else setReaderChromeHidden((v) => !v);
+  };
 
   return (
     <section
@@ -784,14 +945,14 @@ export default function ReaderSection(props) {
             {readerContent && (
               <article
                 ref={readerArticleRef}
-                className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}${readerUsesOriginalEpubLayout ? ' is-epub-original' : ''}`}
-                onClick={readerUsesOriginalEpubLayout ? undefined : handleReaderStructuredClick}
-                onMouseUp={readerUsesOriginalEpubLayout ? undefined : handleReaderArticleMouseUp}
-                onWheel={readerUsesOriginalEpubLayout ? undefined : handleReaderPageWheel}
-                onTouchStart={readerUsesOriginalEpubLayout ? undefined : handleReaderPageTouchStart}
-                onTouchMove={readerUsesOriginalEpubLayout ? undefined : handleReaderArticleTouchMove}
-                onTouchEnd={readerUsesOriginalEpubLayout ? undefined : handleReaderArticleTouchEnd}
-                onTouchCancel={readerUsesOriginalEpubLayout ? undefined : handleReaderArticleTouchCancel}
+                className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}${readerUsesOriginalEpubLayout ? ' is-epub-original' : ''}${readerColUsesEngine ? ' is-book-engine' : ''}`}
+                onClick={(readerUsesOriginalEpubLayout || readerColUsesEngine) ? undefined : handleReaderStructuredClick}
+                onMouseUp={(readerUsesOriginalEpubLayout || readerColUsesEngine) ? undefined : handleReaderArticleMouseUp}
+                onWheel={(readerUsesOriginalEpubLayout || readerColUsesEngine) ? undefined : handleReaderPageWheel}
+                onTouchStart={(readerUsesOriginalEpubLayout || readerColUsesEngine) ? undefined : handleReaderPageTouchStart}
+                onTouchMove={(readerUsesOriginalEpubLayout || readerColUsesEngine) ? undefined : handleReaderArticleTouchMove}
+                onTouchEnd={(readerUsesOriginalEpubLayout || readerColUsesEngine) ? undefined : handleReaderArticleTouchEnd}
+                onTouchCancel={(readerUsesOriginalEpubLayout || readerColUsesEngine) ? undefined : handleReaderArticleTouchCancel}
               >
                 {readerUsesOriginalEpubLayout ? (
                   <div className="reader-epub-original-shell">
@@ -826,6 +987,35 @@ export default function ReaderSection(props) {
                       </button>
                     )}
                     <div ref={readerEpubViewportRef} className="reader-epub-original-viewport" />
+                  </div>
+                ) : readerColUsesEngine ? (
+                  <div
+                    className="reader-col-viewport"
+                    ref={readerColViewportRef}
+                    onPointerDown={onReaderColPointerDown}
+                    onPointerMove={onReaderColPointerMove}
+                    onPointerUp={onReaderColPointerEnd}
+                    onPointerCancel={onReaderColPointerEnd}
+                    style={{
+                      '--reader-font-size': `${readerFontSize}px`,
+                      '--reader-font-weight': readerFontWeight,
+                    }}
+                  >
+                    {isCurrentReaderPageBookmarked && (
+                      <span className="reader-page-bookmark-indicator" aria-hidden="true" />
+                    )}
+                    <div ref={readerColTrackRef} className="reader-col-track">
+                      {readerShowsLazyOriginalPage
+                        ? (
+                          <div className="reader-page-loading">
+                            <svg className="reader-lib-spinner" viewBox="0 0 24 24" fill="none" style={{ width: 36, height: 36, color: 'rgba(148,163,184,0.6)' }}>
+                              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="42 14" />
+                            </svg>
+                          </div>
+                        )
+                        : renderReaderStructuredText()
+                      }
+                    </div>
                   </div>
                 ) : readerPageCount > 0 ? (
                   <div className="reader-pages-layout">

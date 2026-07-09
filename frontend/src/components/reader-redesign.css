@@ -3646,3 +3646,62 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-reader.is-immersive[data-reader-theme="dark"] .reader-topbar-peek {
   background: rgba(8,12,26,0.92) !important;
 }
+
+
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  PHASE 1 — Apple-Books book-page engine (CSS columns)                  │
+   │  The current server page is laid out in fixed-height columns that      │
+   │  overflow horizontally; each column is exactly one screen. The track   │
+   │  is translated by one screen width to turn the page. No vertical       │
+   │  scroll, no half-empty pages (except a page's last column).            │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+.webapp-reader .reader-article.is-book-engine {
+  position: relative;
+  padding: 0 !important;
+  overflow: hidden;
+  display: block;
+}
+.webapp-reader .reader-col-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;               /* the pointer engine owns all gestures */
+  font-size: var(--reader-font-size, 18px);
+  font-weight: var(--reader-font-weight, 400);
+}
+.webapp-reader .reader-col-track {
+  column-fill: auto;
+  height: 100%;
+  padding-top: 6px;
+  box-sizing: border-box;
+  font-family: var(--rd-font-serif);
+  color: var(--rd-text) !important;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  -webkit-hyphens: auto;
+  hyphens: auto;
+  will-change: transform;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.webapp-reader .reader-col-track .reader-container { display: block; }
+.webapp-reader .reader-col-track .reader-word { cursor: pointer; }
+.webapp-reader .reader-col-track .reader-word.is-selected {
+  background: var(--rd-accent-soft);
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px var(--rd-accent-soft);
+}
+/* keep the audio word/sentence highlight visible in the engine too */
+.webapp-reader .reader-col-track .reader-word.is-playing-word { background: var(--rd-accent-soft); border-radius: 4px; }
+
+/* Immersive: tap-centre hides ALL chrome so the page is full-screen. */
+.webapp-reader.is-chrome-hidden .reader-topbar,
+.webapp-reader.is-chrome-hidden .reader-topbar-peek,
+.webapp-reader.is-chrome-hidden .reader-progline,
+.webapp-reader.is-chrome-hidden .reader-bottom-dock {
+  display: none !important;
+}
