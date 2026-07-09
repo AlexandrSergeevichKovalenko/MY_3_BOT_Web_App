@@ -659,7 +659,11 @@ body {
 
 .webapp-page.is-reader-immersive .webapp-sidebar,
 .webapp-page.is-reader-immersive .webapp-topbar {
-  display: none;
+  /* Reader only: hide the app top bar (🏠 Startseite/Archiv) so the book gets the
+     space. !important defeats the phone-media-query `.webapp-topbar { display:grid }`
+     and any theme rule. Does NOT touch other sections — the app bar stays pinned
+     everywhere else. */
+  display: none !important;
 }
 
 /* Collapsed reader: keep the app topbar (🏠 Startseite bar) hidden too — the
