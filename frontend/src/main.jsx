@@ -192,6 +192,7 @@ function getAnswerStartParam() {
   const path = String(window.location?.pathname || '').replace(/\/+$/, '').toLowerCase();
   if (path === '/dict' || path === '/d') return 'dict';
   if (path === '/settings') return 'settings';
+  if (path === '/interactive') return 'interactive';
   // Public shareable tour: /tour (or /onboarding) opens the onboarding wizard as a
   // presentation — works in a plain browser for people who don't have the bot yet.
   if (path === '/tour' || path === '/onboarding') return 'onboarding';
@@ -325,6 +326,18 @@ async function bootstrapSettings() {
   );
 }
 
+// Standalone «📚 Интерактив» hub — opened from the reply-keyboard button
+// (startapp=interactive). A light card page linking to the existing ans_* games.
+async function bootstrapInteractive() {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: InteractiveHub } = await import('./interactive/InteractiveHub.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <InteractiveHub />
+    </React.StrictMode>,
+  );
+}
+
 // Full "Полный разбор" card: launched from a DM chat button via startapp=razbor_<id>.
 // Reads the pre-computed lookup by id and mounts the rich WOW breakdown only.
 async function bootstrapDeepAnalysis(startParam) {
@@ -431,6 +444,10 @@ async function bootstrapApp() {
   }
   if (/^settings$/i.test(answerStartParam)) {
     await bootstrapSettings();
+    return;
+  }
+  if (/^interactive$/i.test(answerStartParam)) {
+    await bootstrapInteractive();
     return;
   }
   if (/^lb/i.test(answerStartParam)) {

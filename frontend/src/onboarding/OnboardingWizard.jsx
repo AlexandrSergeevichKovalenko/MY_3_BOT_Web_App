@@ -468,8 +468,9 @@ function StepBody(props) {
               {t(' — показывает, что ты ещё не сделал сегодня. Нажал — и решаешь.', ' — zeigt, was du heute noch nicht gemacht hast. Getippt — und du löst.')}
             </li>
             <li>
-              <b>{t('🎮 Кнопки тренировок и дуэлей', '🎮 Tasten für Übungen und Duelle')}</b>
-              {t(' — запускают короткие игры на грамматику (одному или против другого ученика).', ' — starten kurze Grammatik-Spiele (allein oder gegen einen anderen Lernenden).')}
+              <b>{t('📚 «Интерактив»', '📚 «Interaktiv»')}</b>
+              {t(' — одна кнопка открывает все тренажёры: артикли, окончания прилагательных, Wo-Fragen и числа на слух. Рядом — кнопки дуэлей (батлов) с другими учениками.',
+                 ' — eine Taste öffnet alle Übungen: Artikel, Adjektivendungen, Wo-Fragen und Zahlen nach Gehör. Daneben — Tasten für Duelle mit anderen Lernenden.')}
             </li>
             <li>
               <b>{t('⚙️ «Настройки»', '⚙️ «Einstellungen»')}</b>

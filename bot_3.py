@@ -1135,6 +1135,7 @@ ADJEKTIV_BATTLE_BUTTON_TEXT = "⚔️ Adjektiv-батл"
 WOFRAGE_BATTLE_BUTTON_TEXT = "⚔️ Wo-Frage-батл"
 BATTLE_HISTORY_BUTTON_TEXT = "📜 История батлов"
 SETTINGS_BUTTON_TEXT = "⚙️ Настройки"
+INTERACTIVE_BUTTON_TEXT = "📚 Интерактив"
 ADMIN_BROADCAST_BUTTON_TEXT = "📣 Рассылка всем"
 ADMIN_COMMANDS_BUTTON_TEXT = "🛠 Команды админа"
 SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
@@ -1214,7 +1215,7 @@ def _is_known_reply_menu_button(text: str) -> bool:
         ADMIN_BROADCAST_BUTTON_TEXT, ADMIN_COMMANDS_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT, SHORTCUT_AUTOSAVE_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT,
-        SETTINGS_BUTTON_TEXT,
+        SETTINGS_BUTTON_TEXT, INTERACTIVE_BUTTON_TEXT,
     }
     if t in static_labels:
         return True
@@ -4651,14 +4652,13 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     #    ОДНА клавиатура для всех: батл-кнопки видны и Free тоже; при нажатии Free
     #    получает аккуратную подсказку, что создавать батл может только Pro, а
     #    участвовать (по приглашению) может каждый (гейт — в _start_battle_wizard).
-    rows.append([ARTIKEL_LEARN_BUTTON_TEXT, ARTIKEL_BATTLE_CALL_BUTTON_TEXT])
-    rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
-    rows.append([WOFRAGE_SPRINT_BUTTON_TEXT, WOFRAGE_BATTLE_BUTTON_TEXT])
-    # Прочие тренажёры без батла: числа на слух + (Pro) персональная тема на завтра.
-    rows.append([NUMDICT_PRACTICE_BUTTON_TEXT])
+    # Учёба-игры (артикли, прилагательные, wo-fragen, числа на слух) собраны на одной
+    # Mini-App странице «📚 Интерактив» (раньше — кнопка на каждую тему).
+    rows.append([INTERACTIVE_BUTTON_TEXT])
 
-    # 3) Общее по батлам — доступно всем (быть в списке приглашаемых + история).
-    rows.append([BATTLE_HISTORY_BUTTON_TEXT])
+    # 3) Батлы пока остаются кнопками (Фаза B — отдельный хаб). Сгруппированы 2 в ряд.
+    rows.append([ARTIKEL_BATTLE_CALL_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
+    rows.append([WOFRAGE_BATTLE_BUTTON_TEXT, BATTLE_HISTORY_BUTTON_TEXT])
 
     # 4) Слова и помощь.
     rows.append([DICTIONARY_BATCH_FAST_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT])
@@ -8928,6 +8928,12 @@ async def handle_button_click(update: Update, context: CallbackContext):
             "⚙️ Открыть настройки", url=get_webapp_deeplink("settings"))]])
         await update.message.reply_text(
             "⚙️ <b>Настройки</b> — автосейв, готовность к батлам и расписание в одном месте 👇",
+            parse_mode="HTML", reply_markup=kb)
+    elif text == INTERACTIVE_BUTTON_TEXT:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "📚 Открыть интерактив", url=get_webapp_deeplink("interactive"))]])
+        await update.message.reply_text(
+            "📚 <b>Интерактив</b> — короткие игры на грамматику и слова в одном месте 👇",
             parse_mode="HTML", reply_markup=kb)
     elif text == ARTIKEL_LEARN_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
