@@ -98,7 +98,7 @@ from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConf
 from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
-from urllib.parse import parse_qsl, urlparse, urlencode
+from urllib.parse import parse_qsl, urlparse, urlencode, quote
 from flask import Flask, request, jsonify, send_from_directory, send_file, g, redirect, has_request_context, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -114,7 +114,9 @@ from backend.database import (
     mark_onboarding_completed,
     set_user_preset,
     set_user_schedule,
+    get_user_prefs,
     set_article_battle_available,
+    is_article_battle_available,
     SHORTCUT_PAIRING_CODE_TTL_SECONDS,
 )
 from backend.hotpath_cache import HotPathCacheManager
@@ -355,6 +357,7 @@ from backend.database import (
     save_webapp_dictionary_query_returning_id_with_inserted,
     get_existing_user_dictionary_entry_id_for_save,
     get_shortcut_autosave_enabled,
+    set_shortcut_autosave_enabled,
     save_webapp_translation,
     get_dictionary_cache,
     upsert_dictionary_cache,
@@ -3187,15 +3190,52 @@ def _serve_dict_entry_html():
     """The quick-dictionary home-screen PWA needs its OWN manifest (start_url "/dict")
     and a dictionary apple-touch-icon baked into the HTML that Safari parses — a JS
     swap after load is NOT reliably picked up by iOS "Add to Home Screen" (it reads
-    the manifest/icon links at parse time). So for /dict we rewrite those two links."""
+    the manifest/icon links at parse time). So for /dict we rewrite those two links.
+
+    We ALSO forward the launch auth token (?dqt=, or ?initData= fallback) into the
+    manifest link, so the dynamic manifest can bake it into start_url. Without this the
+    installed icon cold-launches a bare "/dict": iOS uses the MANIFEST's start_url for
+    the icon (not the address-bar URL), and a standalone PWA gets its own storage
+    partition — so the Safari-cached token is invisible and every authed call (audio /
+    breakdown / save) 401s, leaving only the no-auth quick translate working."""
+    token = str(request.args.get("dqt") or "").strip()
+    launch_init = str(request.args.get("initData") or "").strip()
+    manifest_href = "/dict-manifest.webmanifest"
+    if token:
+        manifest_href += f"?dqt={quote(token, safe='')}"
+    elif launch_init:
+        manifest_href += f"?initData={quote(launch_init, safe='')}"
     try:
         html = (FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
-        html = html.replace('href="/manifest.webmanifest"', 'href="/dict-manifest.webmanifest"')
+        html = html.replace('href="/manifest.webmanifest"', f'href="{manifest_href}"')
         html = html.replace('href="/icons/apple-touch-icon.png"', 'href="/icons/dict-apple-touch-icon.png"')
         response = Response(html, mimetype="text/html")
     except Exception:
         response = send_from_directory(FRONTEND_DIST, "index.html")
     return _apply_webapp_entry_cache_headers(response)
+
+
+@app.route("/dict-manifest.webmanifest")
+def serve_dict_manifest():
+    """Quick-dict PWA manifest. When launched with an auth token (?dqt=) or ?initData=,
+    bake it into start_url so the installed home-screen icon cold-launches AUTHENTICATED
+    (iOS uses the manifest's start_url for the icon, and a standalone PWA can't see the
+    token Safari cached). Without a token, serve the static manifest unchanged. The
+    scope stays "/dict" — a query string doesn't affect scope matching."""
+    token = str(request.args.get("dqt") or "").strip()
+    launch_init = str(request.args.get("initData") or "").strip()
+    try:
+        manifest = json.loads((FRONTEND_DIST / "dict-manifest.webmanifest").read_text(encoding="utf-8"))
+    except Exception:
+        return send_from_directory(FRONTEND_DIST, "dict-manifest.webmanifest")
+    if token:
+        manifest["start_url"] = f"/dict?dqt={quote(token, safe='')}"
+    elif launch_init:
+        manifest["start_url"] = f"/dict?initData={quote(launch_init, safe='')}"
+    response = Response(json.dumps(manifest, ensure_ascii=False), mimetype="application/manifest+json")
+    # A per-user start_url must never be shared/cached across users or launches.
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 @app.route("/", defaults={"path": ""})
@@ -41913,6 +41953,94 @@ def webapp_onboarding_battles():
     opt_in = bool((request.get_json(silent=True) or {}).get("opt_in"))
     stored = set_article_battle_available(int(user_id), opt_in, str(user_name or ""))
     return jsonify({"ok": True, "opted_in": bool(stored)})
+
+
+def _settings_current_window_key(prefs) -> str:
+    """Map the user's stored schedule back to a window key for the settings slider."""
+    sched = (prefs or {}).get("schedule")
+    if not sched:
+        return "allday"
+    wd = sched.get("weekday") if isinstance(sched, dict) else None
+    for key, wins in _ONBOARDING_WINDOWS.items():
+        if wins is not None and wd == wins:
+            return key
+    return "allday"
+
+
+@app.route("/api/webapp/settings", methods=["POST"])
+def webapp_settings_state():
+    """Current values for the Mini-App settings page (autosave, battle-readiness,
+    schedule preset+window) + is_pro / is_admin for gating."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    try:
+        prefs = get_user_prefs(int(user_id)) or {}
+    except Exception:
+        prefs = {}
+    try:
+        ent = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+        is_pro = str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
+    except Exception:
+        is_pro = False
+    try:
+        is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
+    except Exception:
+        is_admin = False
+    return jsonify({
+        "ok": True,
+        "autosave": bool(get_shortcut_autosave_enabled(int(user_id))),
+        "battle_ready": bool(is_article_battle_available(int(user_id))),
+        "preset": str(prefs.get("preset") or "normal"),
+        "window": _settings_current_window_key(prefs),
+        "is_pro": is_pro,
+        "is_admin": is_admin,
+    })
+
+
+@app.route("/api/webapp/settings/autosave", methods=["POST"])
+def webapp_settings_autosave():
+    user_id, _n, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    enabled = bool((request.get_json(silent=True) or {}).get("enabled"))
+    return jsonify({"ok": bool(set_shortcut_autosave_enabled(int(user_id), enabled)), "enabled": enabled})
+
+
+@app.route("/api/webapp/settings/battle-ready", methods=["POST"])
+def webapp_settings_battle_ready():
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    enabled = bool((request.get_json(silent=True) or {}).get("enabled"))
+    stored = set_article_battle_available(int(user_id), enabled, str(user_name or ""))
+    return jsonify({"ok": True, "enabled": bool(stored)})
+
+
+@app.route("/api/webapp/settings/preset", methods=["POST"])
+def webapp_settings_preset():
+    """Schedule intensity (Pro). Reuses the same store as onboarding."""
+    user_id, _n, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    preset = str((request.get_json(silent=True) or {}).get("preset") or "").strip().lower()
+    if preset not in _ONBOARDING_PRESETS:
+        return jsonify({"error": "unknown preset"}), 400
+    return jsonify({"ok": bool(set_user_preset(int(user_id), preset)), "preset": preset})
+
+
+@app.route("/api/webapp/settings/window", methods=["POST"])
+def webapp_settings_window():
+    """Schedule active-hours window (Pro). Reuses the same store as onboarding."""
+    user_id, _n, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    key = str((request.get_json(silent=True) or {}).get("window") or "").strip().lower()
+    if key not in _ONBOARDING_WINDOWS:
+        return jsonify({"error": "unknown window"}), 400
+    wins = _ONBOARDING_WINDOWS[key]
+    schedule = None if wins is None else {"weekday": wins, "weekend": wins}
+    return jsonify({"ok": bool(set_user_schedule(int(user_id), schedule)), "window": key})
 
 
 @app.route("/api/public/tour-info", methods=["GET", "POST"])

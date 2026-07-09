@@ -460,11 +460,28 @@ export default function DictionaryOverlay() {
   // (incl. entry_id) so callers can chain (e.g. add to the SRS deck).
   const persistEntry = useCallback(async () => {
     const typed = query.trim();
-    const rich = await runLookup();
+    // Save straight from the quick translation — do NOT trigger the full GPT breakdown
+    // just to save. The user asked to save the simple translation without generating or
+    // showing the whole explanation (no LLM cost, no card). If they already opened
+    // «Подробный разбор» (item ready), save that richer item instead. We fold in the
+    // article we already resolved cheaply so a saved noun keeps its der/die/das
+    // ("die Rotznase") — the deeper grammar table is built by the engine on view.
+    const rich = (item && enrich === 'done') ? item : null;
+    const art = String(quick?.article || '').trim();
+    const hasArticle = (s) => /^(der|die|das)\s/i.test(String(s || ''));
+    let sourceText = typed;
+    let quickForSave = quick;
+    if (!rich && art && quick) {
+      if (quick.targetLang === 'de' && !hasArticle(quick.translation)) {
+        quickForSave = { ...quick, translation: `${art} ${quick.translation}` };
+      } else if (quick.sourceLang === 'de' && !hasArticle(typed)) {
+        sourceText = `${art} ${typed}`;
+      }
+    }
     return api('/api/webapp/dictionary/save', buildDictionarySavePayload({
-      rich, sourceText: typed, quick, origin: 'webapp_quick_dictionary',
+      rich, sourceText, quick: quickForSave, origin: 'webapp_quick_dictionary',
     }));
-  }, [runLookup, quick, query]);
+  }, [item, enrich, quick, query]);
 
   const onSave = useCallback(() => {
     if (save !== 'idle') return;
@@ -590,7 +607,20 @@ export default function DictionaryOverlay() {
   }, []);
 
   const openFull = useCallback(() => {
-    try { window.location.assign('/webapp?startapp=dictionary'); } catch (_e) { /* ignore */ }
+    // Carry our auth into the full dictionary so it works outside Telegram too (home-screen
+    // PWA / standalone Safari). The full app authenticates via the durable dict token OR a
+    // cached initData — pass whichever we have so «Открыть полный словарь» no longer dead-ends
+    // on "initData nicht gefunden".
+    try {
+      const token = getDictToken();
+      const init = getInitData();
+      const params = new URLSearchParams({ startapp: 'dictionary' });
+      if (token) params.set('dqt', token);
+      else if (init) params.set('initData', init);
+      window.location.assign(`/webapp?${params.toString()}`);
+    } catch (_e) {
+      try { window.location.assign('/webapp?startapp=dictionary'); } catch (_e2) { /* ignore */ }
+    }
   }, []);
 
   // Share this breakdown — SAME pattern as «Полный разбор»: one fast call mints a

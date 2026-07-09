@@ -191,6 +191,7 @@ function getAnswerStartParam() {
   // path the backend already serves (catch-all → index.html, absolute assets).
   const path = String(window.location?.pathname || '').replace(/\/+$/, '').toLowerCase();
   if (path === '/dict' || path === '/d') return 'dict';
+  if (path === '/settings') return 'settings';
   // Public shareable tour: /tour (or /onboarding) opens the onboarding wizard as a
   // presentation — works in a plain browser for people who don't have the bot yet.
   if (path === '/tour' || path === '/onboarding') return 'onboarding';
@@ -269,7 +270,21 @@ function applyDictHomeScreenMeta() {
       if (!el) { el = document.createElement('link'); el.setAttribute('rel', rel); head.appendChild(el); }
       el.setAttribute('href', href);
     };
-    setLink('manifest', '/dict-manifest.webmanifest');
+    // Carry the durable auth token into the manifest link so iOS "Add to Home Screen"
+    // captures a start_url that includes it (the runtime href wins over the server-baked
+    // one, since iOS reads the manifest when the user taps install — after JS ran). A
+    // standalone PWA has its own storage partition, so a tokenless start_url cold-launches
+    // unauthenticated and audio / breakdown / save all 401. Prefer the launch-URL token,
+    // fall back to the cached one so re-installing from any /dict page stays authed.
+    let dqt = '';
+    try {
+      const p = new URLSearchParams(window.location.search || '');
+      dqt = String(p.get('dqt') || '').trim() || String(localStorage.getItem('dq_browser_token_v1') || '').trim();
+    } catch (_e) { /* ignore */ }
+    const manifestHref = dqt
+      ? `/dict-manifest.webmanifest?dqt=${encodeURIComponent(dqt)}`
+      : '/dict-manifest.webmanifest';
+    setLink('manifest', manifestHref);
     setLink('apple-touch-icon', '/icons/dict-apple-touch-icon.png');
     const lang = (() => {
       try { return (localStorage.getItem('ui_lang') || '').toLowerCase() === 'de' ? 'de' : 'ru'; }
@@ -298,6 +313,18 @@ async function bootstrapDictionary() {
   );
 }
 
+// Standalone settings page — opened from the reply-keyboard «⚙️ Настройки» button
+// (startapp=settings). Bot-native prefs (autosave, battle-readiness, schedule, theme).
+async function bootstrapSettings() {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: SettingsScreen } = await import('./settings/SettingsScreen.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <SettingsScreen />
+    </React.StrictMode>,
+  );
+}
+
 // Full "Полный разбор" card: launched from a DM chat button via startapp=razbor_<id>.
 // Reads the pre-computed lookup by id and mounts the rich WOW breakdown only.
 async function bootstrapDeepAnalysis(startParam) {
@@ -310,7 +337,69 @@ async function bootstrapDeepAnalysis(startParam) {
   );
 }
 
+// Standalone / home-screen auth bridge. The full app and its sub-views authenticate via
+// Telegram initData, but a home-screen quick-dict PWA (or standalone Safari) has only a
+// durable dict token. Capture it from the launch URL and transparently attach it to
+// same-origin API calls so token-accepting endpoints (dictionary, audio, save) work
+// outside Telegram — this is what makes «Открыть полный словарь» work from the home-screen
+// icon instead of dead-ending on "initData nicht gefunden". Completely inert inside
+// Telegram (initData is the auth of record there) and for non-API / non-string requests.
+function installDictTokenAuthShim() {
+  if (typeof window === 'undefined' || typeof window.fetch !== 'function') return;
+  if (window.__dictAuthShimInstalled) return;
+  window.__dictAuthShimInstalled = true;
+  try {
+    const p = new URLSearchParams(window.location.search || '');
+    const urlTok = String(p.get('dqt') || '').trim();
+    if (urlTok) { try { localStorage.setItem('dq_browser_token_v1', urlTok); } catch (_e) { /* ignore */ } }
+    const urlInit = String(p.get('initData') || '').trim();
+    if (urlInit) { try { localStorage.setItem('dq_initdata_v1', urlInit); } catch (_e) { /* ignore */ } }
+  } catch (_e) { /* ignore */ }
+  const getToken = () => {
+    try {
+      const p = new URLSearchParams(window.location.search || '');
+      return String(p.get('dqt') || '').trim() || String(localStorage.getItem('dq_browser_token_v1') || '').trim();
+    } catch (_e) { return ''; }
+  };
+  const inTelegram = () => { try { return Boolean(window.Telegram?.WebApp?.initData); } catch (_e) { return false; } };
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      if (typeof input !== 'string') return origFetch(input, init);
+      const token = getToken();
+      if (!token || inTelegram()) return origFetch(input, init);
+      let u;
+      try { u = new URL(input, window.location.origin); } catch (_e) { return origFetch(input, init); }
+      if (u.origin !== window.location.origin || !u.pathname.startsWith('/api/')) return origFetch(input, init);
+      const opts = { ...(init || {}) };
+      const method = String(opts.method || 'GET').toUpperCase();
+      const headers = new Headers(opts.headers || {});
+      if (!headers.has('X-Dict-Token')) headers.set('X-Dict-Token', token);
+      opts.headers = headers;
+      // JSON POST bodies: add dqt so body-based resolvers see it (never overwrite an existing one).
+      if (method !== 'GET' && method !== 'HEAD' && typeof opts.body === 'string' && opts.body.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(opts.body);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && !('dqt' in parsed)) {
+            parsed.dqt = token;
+            opts.body = JSON.stringify(parsed);
+          }
+        } catch (_e) { /* leave body untouched */ }
+      }
+      // GET (e.g. tts/url): add dqt as a query param if absent.
+      if ((method === 'GET' || method === 'HEAD') && !u.searchParams.has('dqt')) {
+        u.searchParams.set('dqt', token);
+        return origFetch(u.toString(), opts);
+      }
+      return origFetch(input, opts);
+    } catch (_e) {
+      return origFetch(input, init);
+    }
+  };
+}
+
 async function bootstrapApp() {
+  installDictTokenAuthShim();
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
     await bootstrapAnswerOverlay(answerStartParam);
@@ -338,6 +427,10 @@ async function bootstrapApp() {
   }
   if (/^dict$/i.test(answerStartParam)) {
     await bootstrapDictionary();
+    return;
+  }
+  if (/^settings$/i.test(answerStartParam)) {
+    await bootstrapSettings();
     return;
   }
   if (/^lb/i.test(answerStartParam)) {
