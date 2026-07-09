@@ -3705,3 +3705,62 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-reader.is-chrome-hidden .reader-bottom-dock {
   display: none !important;
 }
+
+
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  SLIM CHROME (2026-07-09) — halve top bar & bottom dock, drop slider,   │
+   │  flat-wide Play, small thin neat buttons, one-line title.              │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+/* Top bar — thin, one line */
+.webapp-reader .reader-topbar-flag { gap: 4px; padding: 5px 10px 5px; }
+.webapp-reader .reader-topbar-row { gap: 8px; }
+.webapp-reader .reader-topbar-icbtn { width: 30px; height: 30px; border-radius: 9px; }
+.webapp-reader .reader-topbar-icbtn svg { width: 16px; height: 16px; }
+.webapp-reader .reader-topbar-center {
+  display: flex; align-items: baseline; justify-content: center; gap: 7px; min-width: 0;
+}
+.webapp-reader .reader-topbar-center .reader-topbar-title {
+  font-size: 13.5px; font-weight: 600; max-width: 60vw;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.webapp-reader .reader-topbar-pct {
+  font-size: 11px; font-weight: 700; color: var(--rd-text-faint);
+  font-variant-numeric: tabular-nums; flex-shrink: 0;
+}
+.webapp-reader .reader-progline { margin-top: 3px; height: 2px; }
+.webapp-reader .reader-topbar-peek-flag { padding: 5px 10px; }
+.webapp-reader .reader-peek-pill { height: 30px; }
+
+/* Bottom dock — ONE slim row, no slider */
+.webapp-reader .reader-dock-slim {
+  display: flex; align-items: center; gap: 7px; padding: 6px 12px 7px;
+}
+.webapp-reader .reader-dock-slim .reader-dock-btn { width: 34px; height: 34px; border-radius: 10px; }
+.webapp-reader .reader-dock-slim .reader-dock-btn svg { width: 18px; height: 18px; }
+.webapp-reader .reader-dock-slim .reader-dock-aa { font-size: 17px; }
+.webapp-reader .reader-dock-bmjump { color: var(--rd-warn); }
+/* flat, wide, half-height Play */
+.webapp-reader .reader-dock-play-flat {
+  flex: 1; min-width: 0; height: 34px; border-radius: 11px; border: 0;
+  background: var(--rd-accent); color: #fff; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  font-size: 13px; font-weight: 700; padding: 0 12px;
+  box-shadow: 0 4px 12px -4px var(--rd-accent-glow);
+  transition: filter .15s, transform .1s;
+}
+.webapp-reader .reader-dock-play-flat:hover { filter: brightness(1.06); }
+.webapp-reader .reader-dock-play-flat:active { transform: scale(.98); }
+.webapp-reader .reader-dock-play-flat:disabled { opacity: .5; box-shadow: none; }
+.webapp-reader .reader-dock-play-flat svg { width: 16px; height: 16px; }
+.webapp-reader .reader-dock-play-flat.is-awaiting { animation: rd-pulse 1.3s ease-in-out infinite; }
+.webapp-reader .reader-dock-play-label { white-space: nowrap; }
+/* page chip → page-jump */
+.webapp-reader .reader-dock-page {
+  height: 34px; padding: 0 11px; border-radius: 10px; border: 1px solid var(--rd-border);
+  background: var(--rd-bg-elev); color: var(--rd-text); font-size: 12px; font-weight: 700;
+  font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer; flex-shrink: 0;
+}
+.webapp-reader .reader-dock-page:hover { background: var(--rd-bg-elev-2); }
+/* sepia/cream: play + chip follow the paper accent */
+.webapp-reader.is-immersive[data-reader-theme="sepia"] .reader-dock-play-flat { background: var(--rd-paper-accent); }
+.webapp-reader.is-immersive[data-reader-theme="cream"] .reader-dock-play-flat { background: #0d9488; }

@@ -351,14 +351,16 @@ export default function ReaderSection(props) {
     }
   };
   const handleReaderColTap = (e) => {
+    // Tap ON a word → translate (our core feature). Tap on any NON-text area
+    // (margins, gaps, blank) → toggle chrome; only the thin outer edges turn.
     const wordEl = e.target && e.target.closest ? e.target.closest('[data-wid]') : null;
     if (wordEl) { handleReaderStructuredClick(e); return; }
     const vp = readerColViewportRef.current;
     if (!vp) { setReaderChromeHidden((v) => !v); return; }
     const rect = vp.getBoundingClientRect();
     const rx = e.clientX - rect.left;
-    if (rx < rect.width * 0.22) readerTurnPrev();
-    else if (rx > rect.width * 0.78) readerTurnNext();
+    if (rx < rect.width * 0.14) readerTurnPrev();
+    else if (rx > rect.width * 0.86) readerTurnNext();
     else setReaderChromeHidden((v) => !v);
   };
 
@@ -815,17 +817,14 @@ export default function ReaderSection(props) {
                     </svg>
                   </button>
                   <div className="reader-topbar-center">
-                    <div className="reader-topbar-title">
-                      {readerTitle || tr('Читалка', 'Leser')}
-                    </div>
-                    <div className="reader-topbar-meta">
-                      {/* Page number lives ONLY at the bottom now (single source of
-                          truth, Apple-Books position). Here we keep just progress %
-                          and, for EPUB, the chapter title. */}
+                    {/* Title + progress on ONE thin line (page number lives at the
+                        bottom). Chapter title for EPUB instead of %. */}
+                    <span className="reader-topbar-title">{readerTitle || tr('Читалка', 'Leser')}</span>
+                    <span className="reader-topbar-pct">
                       {readerUsesOriginalEpubLayout && readerResolvedOriginalTocTitle
                         ? readerResolvedOriginalTocTitle
                         : `${Math.round(readerProgressPercent)}%`}
-                    </div>
+                    </span>
                   </div>
                   <button
                     type="button"
@@ -838,8 +837,9 @@ export default function ReaderSection(props) {
                     title={tr('Свернуть панель', 'Leiste einklappen')}
                     aria-label={tr('Свернуть панель', 'Leiste einklappen')}
                   >
+                    {/* Expanded → chevron points UP (collapse upward). */}
                     <svg viewBox="0 0 18 18" fill="none">
-                      <path d="M4.5 7.25 9 11.75l4.5-4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M4.5 11.25 9 6.75l4.5 4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </button>
                   <button
@@ -1117,48 +1117,60 @@ export default function ReaderSection(props) {
                   </div>
                 ) : (
                 <>
-                <div className="reader-dock-actions">
-                  <div className="reader-dock-group">
-                    <button
-                      type="button"
-                      className="reader-dock-btn reader-dock-aa"
-                      onClick={() => setReaderSettingsOpen(true)}
-                      disabled={!readerContent}
-                      title={tr('Шрифт и тема', 'Schrift & Thema')}
-                      aria-label={tr('Шрифт и тема', 'Schrift & Thema')}
-                    >Aa</button>
-                    <button
-                      type="button"
-                      className={`reader-dock-btn ${readerShowToc ? 'is-active' : ''}`}
-                      onClick={() => {
-                        if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
-                        setReaderShowToc((v) => !v);
-                      }}
-                      disabled={!readerContent}
-                      title={tr('Оглавление', 'Inhaltsverzeichnis')}
-                      aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
-                    >
-                      <svg viewBox="0 0 18 18" fill="none"><path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-                    </button>
-                    <button
-                      type="button"
-                      className={`reader-dock-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
-                      onClick={() => {
-                        const mark = computeReaderProgressPercent();
-                        setReaderBookmarkPercent(mark);
-                        persistReaderExactBookmark(readerCurrentPage);
-                        if (readerDocumentId) syncReaderState({ bookmark_percent: Number(mark.toFixed(2)) });
-                      }}
-                      disabled={!readerContent || !readerDocumentId}
-                      title={tr('Поставить закладку', 'Lesezeichen setzen')}
-                      aria-label={tr('Поставить закладку', 'Lesezeichen setzen')}
-                    >
-                      <svg viewBox="0 0 18 18" fill="none"><path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
-                    </button>
-                  </div>
+                <div className="reader-dock-slim">
                   <button
                     type="button"
-                    className={`reader-dock-play${readerAudioPlayActive ? ' is-playing' : ''}${readerAudioAwaitingWordTap ? ' is-awaiting' : ''}`}
+                    className="reader-dock-btn reader-dock-aa"
+                    onClick={() => setReaderSettingsOpen(true)}
+                    disabled={!readerContent}
+                    title={tr('Шрифт и тема', 'Schrift & Thema')}
+                    aria-label={tr('Шрифт и тема', 'Schrift & Thema')}
+                  >Aa</button>
+                  <button
+                    type="button"
+                    className={`reader-dock-btn ${readerShowToc ? 'is-active' : ''}`}
+                    onClick={() => {
+                      if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
+                      setReaderShowToc((v) => !v);
+                    }}
+                    disabled={!readerContent}
+                    title={tr('Оглавление', 'Inhaltsverzeichnis')}
+                    aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
+                  >
+                    <svg viewBox="0 0 18 18" fill="none"><path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`reader-dock-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
+                    onClick={() => {
+                      const mark = computeReaderProgressPercent();
+                      setReaderBookmarkPercent(mark);
+                      persistReaderExactBookmark(readerCurrentPage);
+                      if (readerDocumentId) syncReaderState({ bookmark_percent: Number(mark.toFixed(2)) });
+                    }}
+                    disabled={!readerContent || !readerDocumentId}
+                    title={tr('Поставить закладку', 'Lesezeichen setzen')}
+                    aria-label={tr('Поставить закладку', 'Lesezeichen setzen')}
+                  >
+                    <svg viewBox="0 0 18 18" fill="none"><path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
+                  </button>
+                  {readerBookmarkPercent > 0 && !isCurrentReaderPageBookmarked && (
+                    <button
+                      type="button"
+                      className="reader-dock-btn reader-dock-bmjump"
+                      onClick={() => {
+                        if (readerUsesOriginalEpubLayout) { applyReaderProgressPercent(readerBookmarkPercent); return; }
+                        setReaderCurrentPage(readerBookmarkPage);
+                      }}
+                      title={tr('Перейти к закладке', 'Zur Lesezeiche springen')}
+                      aria-label={tr('Перейти к закладке', 'Zur Lesezeiche springen')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none"><path d="M9 3.5v8M9 11.5 6.4 8.9M9 11.5l2.6-2.6M4.5 14h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={`reader-dock-play-flat${readerAudioAwaitingWordTap ? ' is-awaiting' : ''}`}
                     onClick={readerAudioPremiumLocked ? onReaderAudioUpgrade : onReaderAudioPlayBtn}
                     disabled={!readerHasContent || readerAudioPlayLoading || billingActionLoading}
                     title={readerAudioPremiumLocked
@@ -1169,70 +1181,29 @@ export default function ReaderSection(props) {
                     {readerAudioPlayLoading ? (
                       <svg viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.7" strokeDasharray="28" strokeDashoffset="10" strokeLinecap="round"><animateTransform attributeName="transform" type="rotate" from="0 9 9" to="360 9 9" dur="0.9s" repeatCount="indefinite"/></circle></svg>
                     ) : (
-                      <svg viewBox="0 0 18 18" fill="none"><path d="M6 4.5l8 4.5-8 4.5V4.5z" fill="currentColor"/></svg>
+                      <>
+                        <svg viewBox="0 0 18 18" fill="none"><path d="M6 4.5l8 4.5-8 4.5V4.5z" fill="currentColor"/></svg>
+                        <span className="reader-dock-play-label">{tr('Слушать', 'Hören')}</span>
+                      </>
                     )}
                   </button>
-                </div>
-
-                {(readerUsesOriginalEpubLayout || readerPageCount > 0) && (
-                  <div className="reader-scrubber-bar">
+                  {(readerUsesOriginalEpubLayout || readerPageCount > 0) && (
                     <button
                       type="button"
-                      className="reader-scrubber-page-btn"
+                      className="reader-dock-page"
                       onClick={() => {
                         if (readerUsesOriginalEpubLayout) return;
                         setReaderPageJumpInput(String(readerCurrentPage));
                         setReaderShowPageJump(true);
                       }}
-                      title={readerUsesOriginalEpubLayout
-                        ? tr('В оригинальном EPUB число страниц не фиксировано и зависит от движка рендера.', 'Im originalen EPUB ist die Seitenzahl nicht fest und hängt vom Rendering ab.')
-                        : tr('Перейти к странице', 'Zur Seite springen')}
+                      title={tr('Перейти к странице', 'Zur Seite springen')}
                     >
                       {readerUsesOriginalEpubLayout
                         ? `${Math.round(readerProgressPercent)}%`
                         : `${readerCurrentPage} / ${readerPageCount}`}
                     </button>
-                    <div className="reader-scrubber-track-wrap">
-                      <input
-                        type="range"
-                        className="reader-scrubber-input"
-                        min={readerUsesOriginalEpubLayout ? 0 : 1}
-                        max={readerUsesOriginalEpubLayout ? 100 : readerPageCount}
-                        value={readerUsesOriginalEpubLayout ? Math.round(readerProgressPercent) : readerCurrentPage}
-                        onChange={(e) => {
-                          if (readerUsesOriginalEpubLayout) {
-                            applyReaderProgressPercent(Number(e.target.value));
-                            return;
-                          }
-                          const page = Math.max(1, Math.min(readerPageCount, Number(e.target.value)));
-                          setReaderCurrentPage(page);
-                        }}
-                      />
-                    </div>
-                    {readerBookmarkPercent > 0 && !isCurrentReaderPageBookmarked ? (
-                      <button
-                        type="button"
-                        className="reader-scrubber-bookmark-btn"
-                        onClick={() => {
-                          if (readerUsesOriginalEpubLayout) {
-                            applyReaderProgressPercent(readerBookmarkPercent);
-                            return;
-                          }
-                          setReaderCurrentPage(readerBookmarkPage);
-                        }}
-                        title={readerUsesOriginalEpubLayout
-                          ? tr('Перейти к сохранённому прогрессу', 'Zum gespeicherten Fortschritt springen')
-                          : tr('Перейти к закладке', 'Zur Lesezeiche springen')}
-                      >
-                        <svg viewBox="0 0 18 18" fill="none" width="16" height="16">
-                          <path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                        </svg>
-                      </button>
-                    ) : (
-                      <div className="reader-scrubber-pct webapp-muted">{Math.round(readerProgressPercent)}%</div>
-                    )}
-                  </div>
-                )}
+                  )}
+                </div>
                 </>
                 )}
               </div>
