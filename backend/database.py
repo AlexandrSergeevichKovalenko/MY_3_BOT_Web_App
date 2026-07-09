@@ -22844,6 +22844,110 @@ def record_shortcut_run(user_id: int) -> bool:
     return record_shortcut_run_check(int(user_id), allowed=True)
 
 
+# ── Battle-create queue (Mini-App «⚔️ Battles» hub) ──────────────────────────
+# The Mini-App create endpoint ENQUEUES a battle-create request (instant response);
+# the bot drains this queue and runs the EXISTING _create_and_broadcast_* logic, so
+# nothing about invites/images/nudges/digest changes. Scalable: fan-out off the web
+# critical path, done by the bot with retry semantics.
+_battle_create_queue_ready = False
+
+
+def _ensure_battle_create_queue_schema() -> None:
+    global _battle_create_queue_ready
+    if _battle_create_queue_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_battle_create_queue (
+                    id           BIGSERIAL PRIMARY KEY,
+                    user_id      BIGINT NOT NULL,
+                    user_name    TEXT,
+                    kind         TEXT NOT NULL,
+                    mode         TEXT NOT NULL,
+                    targets      JSONB,
+                    themes       JSONB,
+                    status       TEXT NOT NULL DEFAULT 'pending',
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    processed_at TIMESTAMPTZ
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_battle_create_queue_pending "
+                        "ON bt_3_battle_create_queue (status, created_at);")
+        conn.commit()
+    _battle_create_queue_ready = True
+
+
+def enqueue_battle_create(user_id: int, user_name: str, kind: str, mode: str,
+                          targets: list | None, themes: list | None) -> int:
+    """Queue a battle-create request; returns the row id (0 on failure)."""
+    try:
+        _ensure_battle_create_queue_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bt_3_battle_create_queue (user_id, user_name, kind, mode, targets, themes) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id;",
+                    (int(user_id), str(user_name or ""), str(kind), str(mode),
+                     json.dumps(list(targets or [])), json.dumps(list(themes or []))),
+                )
+                rid = cur.fetchone()[0]
+            conn.commit()
+        return int(rid)
+    except Exception:
+        logging.warning("enqueue_battle_create failed user=%s", user_id, exc_info=True)
+        return 0
+
+
+def claim_pending_battle_creates(limit: int = 10) -> list[dict]:
+    """Atomically claim up to `limit` pending requests (status pending→claimed)."""
+    try:
+        _ensure_battle_create_queue_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE bt_3_battle_create_queue SET status='claimed'
+                    WHERE id IN (
+                        SELECT id FROM bt_3_battle_create_queue
+                        WHERE status='pending' ORDER BY created_at ASC
+                        LIMIT %s FOR UPDATE SKIP LOCKED
+                    )
+                    RETURNING id, user_id, user_name, kind, mode, targets, themes;
+                    """,
+                    (int(limit),),
+                )
+                rows = cur.fetchall() or []
+            conn.commit()
+        out = []
+        for r in rows:
+            out.append({
+                "id": int(r[0]), "user_id": int(r[1]), "user_name": r[2],
+                "kind": r[3], "mode": r[4],
+                "targets": r[5] if isinstance(r[5], list) else (json.loads(r[5]) if r[5] else []),
+                "themes": r[6] if isinstance(r[6], list) else (json.loads(r[6]) if r[6] else []),
+            })
+        return out
+    except Exception:
+        logging.warning("claim_pending_battle_creates failed", exc_info=True)
+        return []
+
+
+def mark_battle_create_done(row_id: int, status: str = "done") -> bool:
+    try:
+        _ensure_battle_create_queue_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_battle_create_queue SET status=%s, processed_at=NOW() WHERE id=%s;",
+                    (str(status), int(row_id)),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
 def get_shortcut_installation_stats(user_id: int) -> dict:
     """How many times this user has paired a shortcut (≈ (re)installs — each pairing is
     a row in bt_3_shortcut_installations) and WHEN the latest pairing happened. Used for

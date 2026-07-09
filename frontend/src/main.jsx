@@ -194,6 +194,7 @@ function getAnswerStartParam() {
   if (path === '/dict' || path === '/d' || path.startsWith('/dict/t/')) return 'dict';
   if (path === '/settings') return 'settings';
   if (path === '/interactive') return 'interactive';
+  if (path === '/battles') return 'battles';
   // Public shareable tour: /tour (or /onboarding) opens the onboarding wizard as a
   // presentation — works in a plain browser for people who don't have the bot yet.
   if (path === '/tour' || path === '/onboarding') return 'onboarding';
@@ -342,6 +343,17 @@ async function bootstrapInteractive() {
   );
 }
 
+// Standalone «⚔️ Battles» hub — opened from the reply-keyboard button (startapp=battles).
+async function bootstrapBattles() {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: BattlesHub } = await import('./battles/BattlesHub.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <BattlesHub />
+    </React.StrictMode>,
+  );
+}
+
 // Full "Полный разбор" card: launched from a DM chat button via startapp=razbor_<id>.
 // Reads the pre-computed lookup by id and mounts the rich WOW breakdown only.
 async function bootstrapDeepAnalysis(startParam) {
@@ -457,6 +469,10 @@ async function bootstrapApp() {
   }
   if (/^interactive$/i.test(answerStartParam)) {
     await bootstrapInteractive();
+    return;
+  }
+  if (/^battles$/i.test(answerStartParam)) {
+    await bootstrapBattles();
     return;
   }
   if (/^lb/i.test(answerStartParam)) {

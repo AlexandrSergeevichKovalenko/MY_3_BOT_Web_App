@@ -510,6 +510,13 @@ def render_interactive_card() -> bytes | None:
                  accent=(129, 140, 248), motif=_motif_quiz, cta="Выбери тренажёр и играй")
 
 
+def render_battles_card() -> bytes | None:
+    """Branded hero plaque for the «⚔️ Battles» reply button."""
+    return _card(badge="БАТЛЫ", title="Battles",
+                 subtitle="Создай дуэль · Пригласи · История",
+                 accent=(248, 113, 113), motif=_motif_stopwatch, cta="Вызови другого ученика")
+
+
 def render_quiz_card(*, level: str = "") -> bytes | None:
     sub = "Wähle die richtige Antwort" + (f"  ·  {level}" if level else "")
     return _card(badge="QUIZ", title="Quiz", subtitle=sub,

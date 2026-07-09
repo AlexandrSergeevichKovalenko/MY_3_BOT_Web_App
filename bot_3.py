@@ -1136,6 +1136,7 @@ WOFRAGE_BATTLE_BUTTON_TEXT = "⚔️ Wo-Frage-батл"
 BATTLE_HISTORY_BUTTON_TEXT = "📜 История батлов"
 SETTINGS_BUTTON_TEXT = "⚙️ Настройки"
 INTERACTIVE_BUTTON_TEXT = "📚 Интерактив"
+BATTLES_BUTTON_TEXT = "⚔️ Battles"
 ADMIN_BROADCAST_BUTTON_TEXT = "📣 Рассылка всем"
 ADMIN_COMMANDS_BUTTON_TEXT = "🛠 Команды админа"
 SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
@@ -1215,7 +1216,7 @@ def _is_known_reply_menu_button(text: str) -> bool:
         ADMIN_BROADCAST_BUTTON_TEXT, ADMIN_COMMANDS_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, STREAK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT, SHORTCUT_AUTOSAVE_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT,
-        SETTINGS_BUTTON_TEXT, INTERACTIVE_BUTTON_TEXT,
+        SETTINGS_BUTTON_TEXT, INTERACTIVE_BUTTON_TEXT, BATTLES_BUTTON_TEXT,
     }
     if t in static_labels:
         return True
@@ -4655,6 +4656,8 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     # Учёба-игры (артикли, прилагательные, wo-fragen, числа на слух) собраны на одной
     # Mini-App странице «📚 Интерактив» (раньше — кнопка на каждую тему).
     rows.append([INTERACTIVE_BUTTON_TEXT])
+    # Все батлы + история — на Mini-App странице «⚔️ Battles».
+    rows.append([BATTLES_BUTTON_TEXT])
 
     # 3) Батлы пока остаются кнопками (Фаза B — отдельный хаб). Сгруппированы 2 в ряд.
     rows.append([ARTIKEL_BATTLE_CALL_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
@@ -8865,6 +8868,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         STREAK_BUTTON_TEXT,
         SETTINGS_BUTTON_TEXT,
         INTERACTIVE_BUTTON_TEXT,
+        BATTLES_BUTTON_TEXT,
     }
     _msg_text = (update.message.text or "").strip() if update.message else ""
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
@@ -8952,6 +8956,22 @@ async def handle_button_click(update: Update, context: CallbackContext):
             poster = await asyncio.to_thread(render_interactive_card)
         except Exception:
             logging.warning("interactive: card render failed", exc_info=True)
+        if poster:
+            await update.message.reply_photo(photo=io.BytesIO(poster), caption=caption,
+                                             parse_mode="HTML", reply_markup=kb)
+        else:
+            await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
+    elif text == BATTLES_BUTTON_TEXT:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "⚔️ Открыть Battles", url=get_webapp_deeplink("battles"))]])
+        caption = ("⚔️ <b>Battles</b> — дуэли с другими учениками:\n"
+                   "создай батл (артикли · окончания · Wo-Fragen), пригласи игроков и смотри историю")
+        poster = None
+        try:
+            from backend.interactive_card import render_battles_card
+            poster = await asyncio.to_thread(render_battles_card)
+        except Exception:
+            logging.warning("battles: card render failed", exc_info=True)
         if poster:
             await update.message.reply_photo(photo=io.BytesIO(poster), caption=caption,
                                              parse_mode="HTML", reply_markup=kb)
@@ -10721,6 +10741,7 @@ def _is_menu_button_text(text: str) -> bool:
         LANGUAGE_TUTOR_BUTTON_TEXT,
         SETTINGS_BUTTON_TEXT,
         INTERACTIVE_BUTTON_TEXT,
+        BATTLES_BUTTON_TEXT,
     }
 
 
@@ -10748,6 +10769,7 @@ def _is_quiz_freeform_navigation_text(text: str) -> bool:
         LANGUAGE_TUTOR_BUTTON_TEXT,
         SETTINGS_BUTTON_TEXT,
         INTERACTIVE_BUTTON_TEXT,
+        BATTLES_BUTTON_TEXT,
         "📌 Выбрать тему",
         "🚀 Начать перевод",
         "✅ Завершить перевод",
@@ -25300,6 +25322,55 @@ async def _battle_wizard_send(q, context: CallbackContext, draft: dict) -> None:
         status_chat_id=int(q.message.chat.id), status_msg_id=int(q.message.message_id)))
 
 
+async def _drain_battle_create_queue_job(context: CallbackContext) -> None:
+    """Bot-side drain of Mini-App «⚔️ Battles» create requests → runs the EXISTING
+    _create_and_broadcast_* logic (invites / smurf images / nudges / digest unchanged).
+    Short interval; instant web response, fan-out here off the critical path."""
+    try:
+        from backend.database import claim_pending_battle_creates, mark_battle_create_done
+        rows = await asyncio.to_thread(claim_pending_battle_creates, 10)
+    except Exception:
+        return
+    for r in rows:
+        rid = int(r.get("id") or 0)
+        kind = str(r.get("kind") or "artikel")
+        creator_id = int(r.get("user_id") or 0)
+        creator_name = str(r.get("user_name") or "")
+        mode = str(r.get("mode") or "all")
+        targets = r.get("targets") or []
+        themes = r.get("themes") or []
+        ind_targets = sorted(int(t) for t in targets) if (mode == "ind" and targets) else None
+        if creator_id <= 0:
+            await asyncio.to_thread(mark_battle_create_done, rid, "error")
+            continue
+        try:
+            status = await context.bot.send_message(
+                chat_id=creator_id, text="\u2694\ufe0f \u0421\u043e\u0431\u0438\u0440\u0430\u044e \u0431\u0430\u0442\u043b \u0438 \u0440\u0430\u0441\u0441\u044b\u043b\u0430\u044e \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u044f\u2026 \U0001F4E8")
+            smid = int(status.message_id)
+            if kind == "adjektiv":
+                await _create_and_broadcast_adjektiv_wizard(
+                    context, creator_id=creator_id, creator_name=creator_name,
+                    ind_targets=ind_targets, status_chat_id=creator_id, status_msg_id=smid)
+            elif kind == "wofrage":
+                await _create_and_broadcast_wofrage_wizard(
+                    context, creator_id=creator_id, creator_name=creator_name,
+                    ind_targets=ind_targets, status_chat_id=creator_id, status_msg_id=smid)
+            else:
+                themes_l = [str(x) for x in themes]
+                themes_txt = "\u043c\u0438\u043a\u0441 \u043f\u043e \u0432\u0441\u0435\u043c \u0442\u0435\u043c\u0430\u043c" if not themes_l else ", ".join(themes_l)
+                await _create_and_broadcast_artikel_wizard(
+                    context, creator_id=creator_id, creator_name=creator_name,
+                    themes=themes_l, ind_targets=ind_targets, themes_txt=themes_txt,
+                    status_chat_id=creator_id, status_msg_id=smid)
+            await asyncio.to_thread(mark_battle_create_done, rid, "done")
+        except Exception:
+            logging.exception("battle-create drain failed id=%s", rid)
+            try:
+                await asyncio.to_thread(mark_battle_create_done, rid, "error")
+            except Exception:
+                pass
+
+
 async def _create_and_broadcast_artikel_wizard(context: CallbackContext, *, creator_id: int,
                                                creator_name: str, themes: list, ind_targets,
                                                themes_txt: str, status_chat_id: int,
@@ -34879,6 +34950,9 @@ def main():
         # once/day; the 5:05 broadcast only reads the prepared row).
         scheduler.add_job(lambda: submit_async(run_world_news_evening_prep,CallbackContext(application=application)),"cron", hour=20, minute=0, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
         scheduler.add_job(lambda: submit_async(run_world_news_morning_broadcast,CallbackContext(application=application)),"cron", hour=6, minute=30, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
+        # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
+        # existing broadcast logic, so invites/images/nudges/digest are unchanged).
+        scheduler.add_job(lambda: submit_async(_drain_battle_create_queue_job, CallbackContext(application=application)), "interval", seconds=int((os.getenv("BATTLE_CREATE_DRAIN_SECONDS") or "12").strip() or "12"), coalesce=True, max_instances=1, misfire_grace_time=60)
         # Startup catch-up: if a restart/redeploy straddled either slot (this is what ate
         # 2026-07-04's news), prepare tomorrow / send today's approved-but-unsent entry now.
         scheduler.add_job(lambda: submit_async(run_world_news_startup_catchup,CallbackContext(application=application)),"date", run_date=_get_quiz_schedule_now() + timedelta(seconds=45))
