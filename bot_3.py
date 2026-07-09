@@ -10667,6 +10667,13 @@ async def handle_user_message(update: Update, context: CallbackContext):
         if _is_menu_button_text(text):
             await handle_button_click(update, context)
             return
+        # Any reply-keyboard menu button must reach the button router BEFORE the
+        # German/dictionary interception below — otherwise word-like labels (e.g.
+        # «⚙️ Настройки», «📚 Интерактив») get swallowed as a dictionary lookup and
+        # the button silently does nothing. Independent of ENABLE_LEGACY_REPLY_KEYBOARD.
+        if _is_known_reply_menu_button(text):
+            await handle_button_click(update, context)
+            return
         if update.effective_chat and update.effective_chat.type == "private" and _is_german_text_for_analysis(text):
             await _run_shortcut_text_split(update.message, int(user_id), text, origin="pasted")
             return
@@ -10690,6 +10697,8 @@ def _is_menu_button_text(text: str) -> bool:
         SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT,
         LANGUAGE_TUTOR_BUTTON_TEXT,
+        SETTINGS_BUTTON_TEXT,
+        INTERACTIVE_BUTTON_TEXT,
     }
 
 
@@ -10715,6 +10724,8 @@ def _is_quiz_freeform_navigation_text(text: str) -> bool:
         BATTLE_HISTORY_BUTTON_TEXT,
         ADMIN_BROADCAST_BUTTON_TEXT,
         LANGUAGE_TUTOR_BUTTON_TEXT,
+        SETTINGS_BUTTON_TEXT,
+        INTERACTIVE_BUTTON_TEXT,
         "📌 Выбрать тему",
         "🚀 Начать перевод",
         "✅ Завершить перевод",
