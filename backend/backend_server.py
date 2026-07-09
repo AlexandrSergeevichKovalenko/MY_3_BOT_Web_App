@@ -117,6 +117,9 @@ from backend.database import (
     get_user_prefs,
     set_article_battle_available,
     is_article_battle_available,
+    list_article_battle_available,
+    list_article_sprint_themes,
+    enqueue_battle_create,
     SHORTCUT_PAIRING_CODE_TTL_SECONDS,
 )
 from backend.hotpath_cache import HotPathCacheManager
@@ -3084,6 +3087,27 @@ def _normalize_language_profile_payload_for_mode(profile: dict | None, *, user_i
     return payload
 
 
+# The durable browser-dictionary token authenticates the standalone Safari / home-screen
+# dictionary, which has NO Telegram initData. It is scoped to the dictionary + TTS endpoints
+# that dictionary actually uses — never the whole WebApp API. The global access guard below
+# must honor it, else it 400s ("initData обязателен") before the endpoint's own token
+# resolution ever runs (the real reason standalone audio / breakdown / save all failed).
+_DICT_TOKEN_ACCESS_PREFIXES = (
+    "/api/webapp/dictionary",
+    "/api/webapp/tts/",
+)
+_DICT_TOKEN_ACCESS_EXACT = frozenset({
+    "/api/webapp/flashcards/manual-selection/add",
+})
+
+
+def _dict_token_access_allowed(path: str) -> bool:
+    p = str(path or "")
+    if p in _DICT_TOKEN_ACCESS_EXACT:
+        return True
+    return any(p.startswith(prefix) for prefix in _DICT_TOKEN_ACCESS_PREFIXES)
+
+
 @app.before_request
 def enforce_webapp_access():
     path = request.path or ""
@@ -3099,25 +3123,44 @@ def enforce_webapp_access():
 
     payload = request.get_json(silent=True) or {}
     init_data = _extract_request_init_data(payload)
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
+    resolved_user_id: int | None = None
+    resolved_user_data: dict = {}
+    resolved_parsed = None
 
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
+    if init_data and _telegram_hash_is_valid(init_data):
+        resolved_parsed = _parse_telegram_init_data(init_data)
+        resolved_user_data = resolved_parsed.get("user") or {}
+        uid = resolved_user_data.get("id")
+        if uid:
+            resolved_user_id = int(uid)
+    elif _dict_token_access_allowed(path):
+        # Standalone Safari / home-screen quick dictionary: no Telegram initData, only a
+        # durable browser-dictionary token. Accept it — but ONLY for the dict/tts endpoints
+        # it is scoped to — so the request reaches the endpoint (which re-resolves the user).
+        token = _extract_dict_browser_token(payload)
+        if token:
+            try:
+                rec = resolve_dict_browser_token(token)
+                if rec and int(rec.get("user_id") or 0) > 0:
+                    resolved_user_id = int(rec["user_id"])
+            except Exception:
+                logging.debug("dict browser token resolve in access guard failed", exc_info=True)
+
+    if not resolved_user_id:
+        if not init_data:
+            return jsonify({"error": "initData обязателен"}), 400
+        if not _telegram_hash_is_valid(init_data):
+            return jsonify({"error": "initData не прошёл проверку"}), 401
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
-    is_allowed, allowlist_cache_source = _resolve_webapp_user_allowed(int(user_id))
+    is_allowed, allowlist_cache_source = _resolve_webapp_user_allowed(int(resolved_user_id))
     if not is_allowed:
         return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
 
-    g.telegram_user_id = int(user_id)
-    g.telegram_user = user_data
-    g.telegram_init_data = parsed
+    g.telegram_user_id = int(resolved_user_id)
+    g.telegram_user = resolved_user_data
+    g.telegram_init_data = resolved_parsed
     g.webapp_access_guard_cache_source = allowlist_cache_source
     return None
 
@@ -42049,6 +42092,92 @@ def webapp_settings_window():
     wins = _ONBOARDING_WINDOWS[key]
     schedule = None if wins is None else {"weekday": wins, "weekend": wins}
     return jsonify({"ok": bool(set_user_schedule(int(user_id), schedule)), "window": key})
+
+
+_BATTLE_KINDS = {"artikel", "adjektiv", "wofrage"}
+
+
+@app.route("/api/webapp/battles/state", methods=["POST"])
+def webapp_battles_state():
+    """Hub state: is_pro (create is Pro-only) + battle-readiness."""
+    user_id, _n, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    try:
+        ent = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+        is_pro = str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
+    except Exception:
+        is_pro = False
+    return jsonify({"ok": True, "is_pro": is_pro,
+                    "battle_ready": bool(is_article_battle_available(int(user_id)))})
+
+
+@app.route("/api/webapp/battles/people", methods=["POST"])
+def webapp_battles_people():
+    """Opted-in players for the «Выбрать кого» picker (excluding self)."""
+    user_id, _n, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    try:
+        people = [p for p in (list_article_battle_available() or []) if int(p.get("user_id") or 0) != int(user_id)]
+    except Exception:
+        people = []
+    return jsonify({"ok": True, "people": people})
+
+
+@app.route("/api/webapp/battles/themes", methods=["POST"])
+def webapp_battles_themes():
+    """Themes with enough verified words for a battle (mirror the bot wizard)."""
+    user_id, _n, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    try:
+        from backend.article_sprint_sets import PRACTICE_MIN
+        rows = list_article_sprint_themes() or []
+        themes = [
+            {"theme_key": r["theme_key"],
+             "label": r.get("label_ru") or r.get("label_de") or r["theme_key"],
+             "count": int(r.get("verified_count") or 0)}
+            for r in rows if int(r.get("verified_count") or 0) >= PRACTICE_MIN
+        ]
+    except Exception:
+        themes = []
+    return jsonify({"ok": True, "themes": themes})
+
+
+@app.route("/api/webapp/battles/create", methods=["POST"])
+def webapp_battles_create():
+    """Create a battle from the Mini-App: validate + ENQUEUE. The bot drains the queue
+    and runs the existing _create_and_broadcast_* logic (invites/images/nudges/digest
+    unchanged). Instant response; fan-out happens off the web critical path."""
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    try:
+        ent = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+        is_pro = str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
+    except Exception:
+        is_pro = False
+    if not is_pro:
+        return jsonify({"ok": False, "reason": "pro_only",
+                        "message": "Создавать батлы может Pro. Участвовать по приглашению — можно всем."}), 200
+    body = request.get_json(silent=True) or {}
+    kind = str(body.get("kind") or "artikel").strip().lower()
+    if kind not in _BATTLE_KINDS:
+        return jsonify({"ok": False, "error": "unknown kind"}), 400
+    mode = str(body.get("mode") or "all").strip().lower()
+    if mode not in ("all", "ind"):
+        mode = "all"
+    targets = [int(x) for x in (body.get("users") or []) if str(x).strip().lstrip("-").isdigit()]
+    themes = [str(x) for x in (body.get("themes") or []) if str(x).strip()]
+    if mode == "ind" and not targets:
+        return jsonify({"ok": False, "reason": "no_targets",
+                        "message": "Выбери хотя бы одного игрока."}), 200
+    rid = enqueue_battle_create(int(user_id), str(user_name or ""), kind, mode, targets, themes)
+    if not rid:
+        return jsonify({"ok": False, "error": "enqueue_failed"}), 500
+    return jsonify({"ok": True, "queued": True,
+                    "message": "Приглашения уходят — они прилетят игрокам в личку через пару секунд ⚔️"}), 200
 
 
 @app.route("/api/public/tour-info", methods=["GET", "POST"])
