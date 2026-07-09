@@ -8863,6 +8863,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
         NEXT_TASK_BUTTON_TEXT,
         SCHEDULE_BUTTON_TEXT,
         STREAK_BUTTON_TEXT,
+        SETTINGS_BUTTON_TEXT,
+        INTERACTIVE_BUTTON_TEXT,
     }
     _msg_text = (update.message.text or "").strip() if update.message else ""
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
