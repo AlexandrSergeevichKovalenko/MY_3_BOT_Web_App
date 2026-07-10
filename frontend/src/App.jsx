@@ -9,7 +9,7 @@ import HomeMoreTiles from './components/HomeMoreTiles';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
 import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
-import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic } from './dictionary/WordBreakdown';
+import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
@@ -34654,69 +34654,57 @@ function AppInner() {
                             {tr('← вернуться назад', '← zurück')}
                           </button>
                         )}
-                        <div className="dictionary-row">
-                          <span className="dictionary-label">{tr('Перевод:', 'Übersetzung:')}</span>
-                          <span className="dictionary-translation">
-                            {getDictionaryDisplayedTranslation(dictionaryResult) || '—'}
-                          </span>
-                          {(() => {
-                            const targetTts = resolveDictionaryTargetTts(dictionaryResult, dictionaryDirection);
-                            if (!targetTts.text) return null;
-                            const ttsKey = `dictionary-target-${String(dictionaryDirection || 'default')}`;
-                            const loading = isTtsPending(ttsKey);
-                            return (
-                              <button
-                                type="button"
-                                className={`inline-tts-button ${loading ? 'is-loading' : ''}`}
-                                onClick={() => {
-                                  void playTtsWithUi(ttsKey, targetTts.text, targetTts.locale);
-                                }}
-                                aria-label={tr('Озвучить на изучаемом языке', 'In der Zielsprache vorlesen')}
-                                title={tr('Озвучить на изучаемом языке', 'In der Zielsprache vorlesen')}
-                                disabled={loading}
-                              >
-                                {renderTtsButtonContent(loading)}
-                              </button>
-                            );
-                          })()}
-                          <span className="dictionary-direction">
-                            {getLookupDirectionLabel()}
-                          </span>
+                        {/* HERO (Google/DeepL): source muted + direction on top, then the
+                            translation BIG with der/die/das gender-coloured + 🔊, provider
+                            muted below. The word + its translation are the clear focus. */}
+                        <div className="dict-hero">
+                          <div className="dict-hero-top">
+                            <span className="dict-hero-source">
+                              {getDictionarySourceTarget(dictionaryResult, dictionaryDirection).sourceText || String(dictionaryWord || '').trim()}
+                            </span>
+                            <span className="dict-hero-dir">{getLookupDirectionLabel()}</span>
+                          </div>
+                          <div className="dict-hero-main">
+                            <span className="dict-hero-word">
+                              {(() => {
+                                const t = getDictionaryDisplayedTranslation(dictionaryResult) || '—';
+                                const m = t.match(/^(der|die|das)\s+(.*)$/i);
+                                if (m) return (<><span className={`dq-art ${dictGenderClass(m[1])}`}>{m[1]}</span>{' '}{m[2]}</>);
+                                return t;
+                              })()}
+                            </span>
+                            {(() => {
+                              const targetTts = resolveDictionaryTargetTts(dictionaryResult, dictionaryDirection);
+                              if (!targetTts.text) return null;
+                              const ttsKey = `dictionary-target-${String(dictionaryDirection || 'default')}`;
+                              const loading = isTtsPending(ttsKey);
+                              return (
+                                <button
+                                  type="button"
+                                  className={`dict-hero-tts inline-tts-button ${loading ? 'is-loading' : ''}`}
+                                  onClick={() => { void playTtsWithUi(ttsKey, targetTts.text, targetTts.locale); }}
+                                  aria-label={tr('Озвучить на изучаемом языке', 'In der Zielsprache vorlesen')}
+                                  title={tr('Озвучить на изучаемом языке', 'In der Zielsprache vorlesen')}
+                                  disabled={loading}
+                                >
+                                  {renderTtsButtonContent(loading)}
+                                </button>
+                              );
+                            })()}
+                          </div>
                           {dictionaryResult?.is_base_dict ? (
-                            <span className="dictionary-source-badge is-dict">
+                            <span className="dict-hero-meta">
                               {dictionaryResult.provider === 'base_dict_offline'
                                 ? tr('📖 Словарь (офлайн)', '📖 Wörterbuch (offline)')
                                 : tr('📖 Словарь', '📖 Wörterbuch')}
                             </span>
-                          ) : !!String(dictionaryResult?.provider || '').trim() ? (
-                            <span className="dictionary-direction">
-                              {String(dictionaryResult.provider).toUpperCase()}
-                            </span>
-                          ) : null}
+                          ) : (String(dictionaryResult?.provider || '').trim() ? (
+                            <span className="dict-hero-meta">{String(dictionaryResult.provider).split('_')[0].toLowerCase()}</span>
+                          ) : null)}
                         </div>
-                        {/* «Подробный разбор» — lazy, streamed. Shown after an instant quick
-                            translation (Разбор AI mode) until the breakdown is loaded. Saving
-                            works off the quick translation, so this is never fetched unless the
-                            user taps it — no LLM cost for those who only read the translation. */}
-                        {!dictionaryResult.is_base_dict && dictionaryResult.__offer_breakdown && dictBreakdownPhase !== 'done' && (
-                          <div className="dict-breakdown-cta">
-                            <button
-                              type="button"
-                              className="dict-breakdown-button"
-                              onClick={() => { void streamDictionaryBreakdown(); }}
-                              disabled={dictBreakdownPhase === 'streaming'}
-                            >
-                              {dictBreakdownPhase === 'streaming'
-                                ? tr('Загружаем разбор…', 'Analyse lädt…')
-                                : dictBreakdownPhase === 'error'
-                                  ? tr('↻ Повторить подробный разбор', '↻ Analyse erneut')
-                                  : tr('📖 Подробный разбор', '📖 Ausführliche Analyse')}
-                            </button>
-                            {dictBreakdownError && <div className="webapp-muted dict-breakdown-error">{dictBreakdownError}</div>}
-                          </div>
-                        )}
                         {/* AI/GPT result → the SAME deep card as the quick dictionary.
-                            Offline/base-dict keeps the original compact rendering. */}
+                            Offline/base-dict keeps the original compact rendering. The
+                            «Подробный разбор» trigger now lives in the unified action row below. */}
                         {!dictionaryResult.is_base_dict && <EmbeddedWordCard item={dictionaryResult} />}
                         {dictionaryResult.is_base_dict && (<>
                         <div className="dictionary-row">
@@ -34891,6 +34879,22 @@ function AppInner() {
                               ? tr('Ждём полный GPT-разбор...', 'Warte auf die volle GPT-Analyse...')
                               : tr('Добавить слово в словарь', 'Wort zum Wörterbuch hinzufügen')}
                           </button>
+                          {/* «Подробный разбор» — lazy, streamed; part of the unified action row.
+                              Only offered until the breakdown is loaded (Разбор AI mode). */}
+                          {!dictionaryResult.is_base_dict && dictionaryResult.__offer_breakdown && dictBreakdownPhase !== 'done' && (
+                            <button
+                              type="button"
+                              className="secondary-button dict-breakdown-button"
+                              onClick={() => { void streamDictionaryBreakdown(); }}
+                              disabled={dictBreakdownPhase === 'streaming'}
+                            >
+                              {dictBreakdownPhase === 'streaming'
+                                ? tr('Загружаем разбор…', 'Analyse lädt…')
+                                : dictBreakdownPhase === 'error'
+                                  ? tr('↻ Повторить разбор', '↻ Analyse erneut')
+                                  : tr('📖 Подробный разбор', '📖 Ausführliche Analyse')}
+                            </button>
+                          )}
                           <button
                             className="secondary-button dictionary-share-button"
                             type="button"
@@ -34916,6 +34920,7 @@ function AppInner() {
                             <span className="dictionary-share-label">{tr('PDF', 'PDF')}</span>
                           </button>
                         </div>
+                        {dictBreakdownError && <div className="webapp-muted dict-breakdown-error">{dictBreakdownError}</div>}
                       </div>
                     )}
                     {collocationsVisible && (

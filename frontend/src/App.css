@@ -22255,6 +22255,50 @@ body.worldnews-active .webapp-topbar {
   background: #1f2937;
 }
 
+/* Unified action row: Save = primary accent, «Подробный разбор» = accent outline,
+   share = compact — one consistent style instead of clashing colours. */
+.webapp-dictionary .dictionary-result-actions { margin-top: 12px; flex-wrap: wrap; }
+.webapp-dictionary .dictionary-result-actions .dictionary-save-button {
+  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  border: none;
+  color: #fff;
+  font-weight: 700;
+  min-height: 52px;
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.28);
+}
+.webapp-dictionary .dictionary-result-actions .dictionary-save-button:hover {
+  background: linear-gradient(180deg, #5457e0, #4640d4);
+}
+.webapp-dictionary .dictionary-result-actions .dict-breakdown-button {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 52px;
+  border-radius: 16px;
+  border: 1px solid #6366F1;
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366F1;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: none;
+  cursor: pointer;
+}
+.webapp-dictionary .dictionary-result-actions .dict-breakdown-button:disabled { opacity: 0.6; cursor: default; }
+.webapp-dictionary .dictionary-result-actions .dictionary-share-button { min-height: 52px; }
+
+/* Reclaim top space: drop the corner mascot in the dictionary + tighten the «Словарь»
+   header (~20% smaller) so the main blocks get more room. */
+.webapp-dictionary .section-corner-logo { display: none; }
+.webapp-dictionary .webapp-local-section-head {
+  min-height: 0;
+  padding-right: 0;
+  gap: 2px;
+}
+.webapp-dictionary .webapp-local-section-head h3 {
+  font-size: 19px;
+  line-height: 1.15;
+}
+
 .webapp-dictionary .dictionary-share-label {
   font-size: 11px;
   font-weight: 600;
