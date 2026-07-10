@@ -13922,9 +13922,11 @@ function AppInner() {
   const readerPdfHasServerPages = readerSourceType === 'pdf'
     && Array.isArray(readerPages) && readerPages.length > 0;
   const readerCanUseOriginalLayout = readerSourceType === 'epub' || readerPdfHasServerPages;
-  const readerUsesCustomLayout = readerPdfHasServerPages
-    ? false
-    : (!readerCanUseOriginalLayout || readerLayoutMode === 'custom');
+  // Client-side viewport reflow (paginateReaderText/readerDynamicPages) is RETIRED:
+  // the CSS-column engine now renders ALL text-based sources (PDF, plain text,
+  // URL, EPUB text mode) uniformly. Only original-EPUB (epub.js) stays separate,
+  // gated by readerUsesOriginalEpubLayout. So custom layout is never used.
+  const readerUsesCustomLayout = false;
   const readerDisplayPages = useMemo(() => {
     if (readerUsesOriginalEpubLayout) {
       return [];
@@ -14149,6 +14151,11 @@ function AppInner() {
   // converting a window char offset → its server page for audio.
   const readerWindowModelRef = useRef(null);
   useEffect(() => { readerWindowModelRef.current = readerWindowModel; }, [readerWindowModel]);
+  // Single-server-page sources (plain text / URL) have no page-based progress —
+  // the engine reports its visual reading fraction so % + bookmark still work.
+  const handleReaderVisualProgress = useCallback((pct) => {
+    setReaderProgressPercent(Math.max(0, Math.min(100, Number(pct) || 0)));
+  }, []);
   const readerVisibleText = useMemo(() => {
     if (readerUsesOriginalEpubLayout) {
       return '';
@@ -35112,6 +35119,7 @@ function AppInner() {
                   readerUsesCustomLayout={readerUsesCustomLayout}
                   readerWindowModel={readerWindowModel}
                   loadReaderPageRange={loadReaderPageRange}
+                  onReaderVisualProgress={handleReaderVisualProgress}
                   readerUsesOriginalEpubLayout={readerUsesOriginalEpubLayout}
                   readerOriginalTocHref={readerOriginalTocHref}
                   readerResolvedOriginalTocTitle={readerResolvedOriginalTocTitle}

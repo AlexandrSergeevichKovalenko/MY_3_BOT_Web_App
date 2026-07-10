@@ -62,6 +62,7 @@ export default function ReaderSection(props) {
     readerUsesCustomLayout: readerUsesCustomLayoutProp,
     readerWindowModel = null,
     loadReaderPageRange = () => {},
+    onReaderVisualProgress = () => {},
     readerUsesOriginalEpubLayout = false,
     readerOriginalTocHref = '',
     readerResolvedOriginalTocTitle = '',
@@ -326,6 +327,11 @@ export default function ReaderSection(props) {
     readerColAnchorCharRef.current = ch;
     const p = readerColPageOfChar(ch);
     if (p && p !== readerCurrentPage) setReaderCurrentPage(p);
+    // Single-server-page sources (text/URL): progress is visual (char position in
+    // the whole text), since there are no server pages to derive it from.
+    if (readerPageCount <= 1 && readerWindowModel.totalChars > 0) {
+      onReaderVisualProgress((ch / readerWindowModel.totalChars) * 100);
+    }
   };
 
   // Measure the window into screen-columns; land on the column holding the
@@ -468,6 +474,11 @@ export default function ReaderSection(props) {
     else if (rx > rect.width * 0.86) readerTurnNext();
     else setReaderChromeHidden((v) => !v);
   };
+
+  // Single-server-page sources (text/URL): page number/total is visual (columns).
+  const readerSinglePageDoc = readerPageCount <= 1 && !readerUsesOriginalEpubLayout;
+  const readerDockPageNum = readerSinglePageDoc ? (readerColIndex + 1) : readerCurrentPage;
+  const readerDockPageTotal = readerSinglePageDoc ? readerColCount : readerPageCount;
 
   // "N pages left in chapter" from the table of contents (server-page based).
   const readerChapterPagesLeft = React.useMemo(() => {
@@ -1315,7 +1326,7 @@ export default function ReaderSection(props) {
                       type="button"
                       className="reader-dock-page"
                       onClick={() => {
-                        if (readerUsesOriginalEpubLayout) return;
+                        if (readerUsesOriginalEpubLayout || readerSinglePageDoc) return;
                         setReaderPageJumpInput(String(readerCurrentPage));
                         setReaderShowPageJump(true);
                       }}
@@ -1323,7 +1334,7 @@ export default function ReaderSection(props) {
                     >
                       {readerUsesOriginalEpubLayout
                         ? `${Math.round(readerProgressPercent)}%`
-                        : `${readerCurrentPage} / ${readerPageCount}`}
+                        : `${readerDockPageNum} / ${readerDockPageTotal}`}
                     </button>
                   )}
                 </div>
