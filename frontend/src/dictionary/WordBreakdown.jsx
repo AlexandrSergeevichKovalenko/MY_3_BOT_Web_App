@@ -618,6 +618,16 @@ function GrammarTables({ tables }) {
 // `tts` enables audio; `onSaveChip`/`savedChips` enable tap-to-save chips (both
 // optional — when omitted the chips are inert text and audio buttons hide).
 export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips, hideMeanings }) {
+  // Resolve example-sentence audio URLs (deterministic R2, NO synthesis) when the examples
+  // change, so tapping an example's 🔊 plays an already-cached clip instantly. Must run before
+  // the early return to keep hook order stable.
+  const resolveUrls = tts && tts.resolveUrls;
+  const exampleKey = item ? collectExamples(item).map((e) => e.de).filter(Boolean).join('|') : '';
+  useEffect(() => {
+    if (!resolveUrls || !exampleKey) return;
+    resolveUrls(exampleKey.split('|'));
+  }, [resolveUrls, exampleKey]);
+
   if (!item) return null;
   const pos = clean(item.part_of_speech).toLowerCase();
   const phraseKind = clean(item.phrase_kind).toLowerCase();
@@ -881,7 +891,10 @@ export function useTts() {
     if (mySeq !== seqRef.current) return;
     const el = ensureAudioEl();
     el.onended = () => { if (mySeq === seqRef.current) { setState('idle'); setPlayingText(''); } };
-    el.onerror = () => { if (mySeq === seqRef.current) { setState('error'); setErrorMsg('Не удалось воспроизвести аудио'); } };
+    // onerror is intentionally neutral: a seeded R2 URL that 404s (clip never synthesised) is
+    // EXPECTED — play()'s catch falls back to /tts/generate, and the final catch reports real
+    // errors. Rejecting play() (below) is what drives the fallback.
+    el.onerror = null;
     el.muted = false;
     el.volume = 1;
     el.src = src;
@@ -973,39 +986,25 @@ export function useTts() {
     }
   }, [_startAudio, ensureAudioEl]);
 
-  // Prewarm in the BACKGROUND (on card load): resolve the ready R2 URL and PRELOAD the MP3
-  // so a later tap plays instantly. Absorbs the slow /api/webapp/* server path here, off the
-  // tap's critical path.
-  const warm = useCallback(async (text, language = 'de-DE') => {
-    const t = String(text || '').trim();
-    if (!t) return;
-    const key = `${language}::${t}`;
-    if (urlReadyRef.current.has(key)) return;
+  // Resolve the deterministic R2 URLs for a set of texts (headword + examples) in ONE cheap
+  // background call when the card loads — NO synthesis (zero cost). Seeds urlReadyRef so a tap
+  // plays the cached clip straight from R2 (0.14s). Un-cached clips 404 on tap and play() falls
+  // back to on-demand /tts/generate — so synthesis stays LAZY: only an actual tap pays for TTS
+  // (unlike the old warm() which synthesised the headword for EVERY card open, incl. non-tappers).
+  const resolveUrls = useCallback(async (texts, language = 'de-DE') => {
+    const list = (Array.isArray(texts) ? texts : [texts]).map((s) => String(s || '').trim()).filter(Boolean);
+    const need = [...new Set(list)].filter((t) => !urlReadyRef.current.has(`${language}::${t}`));
+    if (!need.length) return;
     try {
-      const gen = await api('/api/webapp/tts/generate', { text: t, language });
-      let url = (gen && String(gen.status || '') === 'ready' && gen.audio_url) ? String(gen.audio_url) : '';
-      if (!url && String(gen?.status || '') !== 'failed') {
-        const dictToken = getDictToken();
-        const params = new URLSearchParams({ text: t, language });
-        if (dictToken) params.set('dqt', dictToken);
-        const headers = { 'X-Telegram-InitData': getInitData() };
-        if (dictToken) headers['X-Dict-Token'] = dictToken;
-        for (let i = 0; i < 20 && !url; i += 1) {
-          await new Promise((r) => setTimeout(r, 800));
-          const res = await fetch(`/api/webapp/tts/url?${params.toString()}`, { method: 'GET', headers });
-          const data = await res.json().catch(() => ({}));
-          if (data.status === 'ready' && data.audio_url) { url = String(data.audio_url); break; }
-          if (data.status === 'failed') break;
-        }
-      }
-      if (url) {
-        urlReadyRef.current.set(key, url);
-        // Preload the MP3 into the browser HTTP cache (R2 is a fast CDN) so play() is instant.
-        try { const pre = new Audio(); pre.preload = 'auto'; pre.src = url; pre.load(); } catch (_e) { /* ignore */ }
+      const data = await api('/api/webapp/tts/urls', { texts: need, language });
+      const urls = (data && data.urls) || {};
+      for (const t of need) {
+        const u = urls[t];
+        if (u) urlReadyRef.current.set(`${language}::${t}`, String(u));
       }
     } catch (_e) { /* ignore */ }
   }, []);
 
   useEffect(() => () => stop(), [stop]);
-  return { state, playingText, play, stop, warm, errorMsg };
+  return { state, playingText, play, stop, resolveUrls, errorMsg };
 }

@@ -18142,6 +18142,26 @@ def _warm_tts_async(text: str, *, lang_short: str = "de") -> None:
         logging.debug("warm_tts thread start failed", exc_info=True)
 
 
+def _tts_public_url_for_text(text: str, lang_short: str = "de") -> str:
+    """Deterministic R2 public URL for a text's TTS clip — computed from the hash WITHOUT
+    synthesising anything (no Google TTS call, no R2 write, no DB, zero cost). If the clip was
+    ever generated (any user tapped it) this URL already serves it (~0.14s); if not it 404s and
+    the client falls back to on-demand /tts/generate. Lets the client play cached audio instantly
+    while keeping synthesis LAZY — only an actual tap of an un-cached clip ever pays for TTS."""
+    try:
+        normalized_text = _normalize_utterance_text(str(text or ""))
+        if not normalized_text:
+            return ""
+        short = _normalize_short_lang_code(lang_short, "de")
+        voice = _normalize_tts_voice_name(None, short)
+        speed = TTS_WEBAPP_DEFAULT_SPEED
+        cache_key = _tts_object_cache_key(short, voice, speed, normalized_text)
+        object_key = _tts_object_key(short, voice, cache_key)
+        return str(r2_public_url(object_key) or "")
+    except Exception:
+        return ""
+
+
 def _build_tts_url_response_from_meta(meta: dict, *, fallback_object_key: str, retry_after_ms: int | None = None) -> tuple[dict, int]:
     status = str(meta.get("status") or "").strip().lower()
     cache_key = str(meta.get("cache_key") or "").strip()
@@ -44927,6 +44947,30 @@ def _billing_log_r2_delivery_estimate(
         )
     except Exception:
         logging.debug("r2 delivery billing event skipped", exc_info=True)
+
+
+@app.route("/api/webapp/tts/urls", methods=["POST"])
+def webapp_tts_urls():
+    """Batch-resolve the deterministic R2 audio URLs for a set of texts WITHOUT synthesising
+    (zero cost). The client calls this once when a breakdown loads and plays the returned URLs
+    straight from R2 on a tap — instant for any already-cached clip, and it 404-falls back to
+    on-demand /tts/generate for clips nobody has ever played. Synthesis stays lazy. Auth +
+    dict-token access are enforced by the before_request guards; nothing here is billed."""
+    payload = request.get_json(silent=True) or {}
+    texts = payload.get("texts")
+    if not isinstance(texts, list):
+        return jsonify({"error": "texts must be a list"}), 400
+    language = str(payload.get("language") or "de-DE").strip() or "de-DE"
+    lang_short = _normalize_short_lang_code(language, "de")
+    urls: dict[str, str] = {}
+    for raw_t in texts[:16]:
+        t = str(raw_t or "").strip()
+        if not t or t in urls:
+            continue
+        u = _tts_public_url_for_text(t, lang_short=lang_short)
+        if u:
+            urls[t] = u
+    return jsonify({"urls": urls})
 
 
 @app.route("/api/webapp/tts/url", methods=["GET"])

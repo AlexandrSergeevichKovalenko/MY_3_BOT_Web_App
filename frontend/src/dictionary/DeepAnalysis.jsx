@@ -194,8 +194,8 @@ export default function DeepAnalysis({ startParam }) {
   }, [phase, isGuest]);
 
   const germanText = clean(item?.word_de).replace(/^(der|die|das)\s+/i, '');
-  const { warm: warmTts } = tts;
-  useEffect(() => { if (germanText && !isGuest) warmTts(germanText, 'de-DE'); }, [germanText, warmTts, isGuest]);
+  const { resolveUrls: resolveTtsUrls } = tts;
+  useEffect(() => { if (germanText && !isGuest) resolveTtsUrls([germanText], 'de-DE'); }, [germanText, resolveTtsUrls, isGuest]);
 
   const dir = clean(item?.__direction);
   const translation = extractRichTranslation(item) || clean(item?.word_ru) || clean(item?.meanings?.primary?.value);

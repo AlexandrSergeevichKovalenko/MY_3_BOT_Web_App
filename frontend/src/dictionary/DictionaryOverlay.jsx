@@ -164,11 +164,13 @@ export default function DictionaryOverlay() {
     && corrDe.toLowerCase() !== String(quick?.source || '').trim().toLowerCase())
     ? corrDe : '';
 
-  // Prewarm pronunciation as soon as the German text is known.
-  const { warm: warmTts } = tts;
+  // Resolve the headword's R2 audio URL as soon as the German text is known (no synthesis —
+  // zero cost) so tapping 🔊 plays a cached clip instantly; an un-cached clip synthesises only
+  // on the tap itself.
+  const { resolveUrls: resolveTtsUrls } = tts;
   useEffect(() => {
-    if (germanText) warmTts(germanText, 'de-DE');
-  }, [germanText, warmTts]);
+    if (germanText) resolveTtsUrls([germanText], 'de-DE');
+  }, [germanText, resolveTtsUrls]);
 
   const translate = useCallback(async (overrideText, dirOverride) => {
     const text = (typeof overrideText === 'string' ? overrideText : query).trim();
