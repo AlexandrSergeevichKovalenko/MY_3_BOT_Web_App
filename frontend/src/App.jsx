@@ -22257,6 +22257,29 @@ function AppInner() {
     return target.closest('[data-wid][data-sid]');
   };
 
+  // Map a WINDOW char offset (from a rendered word's data-start) to its server
+  // page + a PAGE-LOCAL offset, for the per-page audio synthesis.
+  const readerAudioTargetForChar = (rawCharStart) => {
+    const win = readerWindowModelRef.current || readerWindowModel;
+    let page = readerCurrentPageRef.current;
+    let localCharStart = rawCharStart;
+    if (win && Array.isArray(win.offsets) && Number.isFinite(rawCharStart)) {
+      let chosen = win.offsets[0];
+      for (let i = 0; i < win.offsets.length; i += 1) {
+        if (win.offsets[i].charStart <= rawCharStart) chosen = win.offsets[i]; else break;
+      }
+      if (chosen) { page = chosen.page; localCharStart = rawCharStart - chosen.charStart; }
+    }
+    return { page, localCharStart };
+  };
+  // (Re)start audio from a tapped word — used both to begin playback and to jump
+  // the current playback to a newly tapped word. Robust across pages/windows.
+  const restartReaderAudioFromWord = (wid, rawCharStart) => {
+    const { page, localCharStart } = readerAudioTargetForChar(rawCharStart);
+    void primeReaderAudioPlayback();
+    playReaderAudioPage(page, wid, Number.isFinite(localCharStart) && localCharStart >= 0 ? localCharStart : undefined);
+  };
+
   const handleReaderStructuredClick = (event) => {
     markReaderInteraction();
     if (Date.now() - Number(readerSuppressStructuredClickRef.current || 0) < 420) return;
@@ -22322,9 +22345,9 @@ function AppInner() {
       if (tapCount >= 2) {
         const sentence = readerSentenceMap.get(sid);
         if (!sentence) return;
-        if (readerAudioPlayActive && readerAudioPlayData) {
+        if (readerAudioPlayActive) {
           setReaderAudioStartWid(wid);
-          seekReaderAudioToWid(wid);
+          restartReaderAudioFromWord(wid, Number(metaWord.start));
         }
         handleSelection(event, String(sentence.text || ''), {
           compact: true,
@@ -22342,7 +22365,9 @@ function AppInner() {
 
       // ── Single tap → word translation ────────────────────────────
       setReaderAudioStartWid(wid);
-      if (readerAudioPlayActive && readerAudioPlayData) seekReaderAudioToWid(wid);
+      // If audio is already playing, jump it to this word (page-local restart) —
+      // the old wid-seek used a window wid the per-page audio doesn't know.
+      if (readerAudioPlayActive) restartReaderAudioFromWord(wid, Number(metaWord.start));
       handleSelection(event, metaWord.value, {
         compact: true,
         inlineLookup: true,
