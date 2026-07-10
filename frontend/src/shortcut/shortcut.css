@@ -181,3 +181,27 @@ html[data-scheme="light"] .sc-sublist li { color: #2a3650; }
 .sc-danger p { margin: 0 0 8px; font-size: 14.5px; line-height: 1.5; color: #b02a2a !important; }
 .sc-danger p:last-child { margin-bottom: 0; }
 .sc-danger b { color: #8a1f22 !important; }
+
+/* Navigation paths (iOS menu breadcrumbs) — distinct link-blue, RU line + DE/EN line */
+.sc-navpath {
+  margin: 5px 0 !important;
+  font-style: italic; font-weight: 650;
+  color: #1d4ed8 !important;
+  background: #eef4ff; border-left: 3px solid #1d4ed8;
+  border-radius: 8px; padding: 9px 12px; line-height: 1.5; font-size: 14.5px;
+}
+.sc-navalt { margin: 2px 0 10px !important; font-size: 12.5px !important; line-height: 1.5;
+  color: #5a6680 !important; padding: 0 4px; }
+.sc-nav { color: #1d4ed8 !important; font-style: italic; font-weight: 700; }
+
+/* Inline copyable chip (exact album name) */
+.sc-copychip {
+  display: inline-flex; align-items: center; gap: 9px;
+  margin: 4px 0 6px; padding: 9px 13px;
+  border: 1px dashed #9db8e6; border-radius: 11px;
+  background: #f0f5ff; cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.sc-copychip:active { transform: scale(0.98); }
+.sc-copychip-val { font-size: 15px; font-weight: 800; letter-spacing: 0.5px; color: #1d4ed8; }
+.sc-copychip-ic { font-size: 15px; }

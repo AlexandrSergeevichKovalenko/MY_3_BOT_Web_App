@@ -53,6 +53,25 @@ function CopyCode({ code }) {
   );
 }
 
+// Inline copyable chip (e.g. the exact album name) — tap to copy, no manual typing.
+function CopyChip({ text }) {
+  const [copied, setCopied] = useState(false);
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
+      setTimeout(() => setCopied(false), 1600);
+    } catch (_e) { /* clipboard blocked — user can select manually */ }
+  }, [text]);
+  return (
+    <button type="button" className="sc-copychip" onClick={copy} title="Скопировать">
+      <span className="sc-copychip-val">{text}</span>
+      <span className="sc-copychip-ic">{copied ? '✅' : '📋'}</span>
+    </button>
+  );
+}
+
 export default function ShortcutGuide() {
   const [info, setInfo] = useState(null);
   const [error, setError] = useState('');
@@ -157,10 +176,12 @@ export default function ShortcutGuide() {
             <h2>Сначала создайте альбом «Deutsch Queue»</h2>
             <p className="sc-why">💡 Зачем: это место, куда телефон складывает скриншоты со словами — чтобы потом перевести их все разом. Альбом должен существовать заранее, иначе команде некуда сохранять.</p>
             <p><b>Это самый первый шаг</b> — сделайте его <b>до установки команд</b>.</p>
-            <p>Откройте приложение <b>«Фото»</b> → внизу <b>«Альбомы»</b> → <b>＋</b> → выберите
-              <b> «Новый альбом»</b>. Важно: именно <b>альбом</b>, а <b>не «Новая папка»</b> — это разные вещи.</p>
-            <p>Назовите его <b>точно так, буква в букву</b>: <code>Deutsch Queue</code> (с большой буквы,
-              с пробелом посередине). Ошибётесь в названии — команда не найдёт альбом.</p>
+            <p>Откройте приложение <span className="sc-navpath">«Фото» → «Альбомы» → ＋ → «Новый альбом»</span>.
+              Важно: именно <b>альбом</b>, а <b>не «Новая папка»</b> — это разные вещи.</p>
+            <p className="sc-navalt">🇩🇪 Fotos → Alben → ＋ → «Neues Album» (не «Neuer Ordner»!)   ·   🇬🇧 Photos → Albums → ＋ → «New Album» (не «New Folder»!)</p>
+            <p>Назовите его <b>точно так, буква в букву</b> — нажмите, чтобы <b>скопировать</b> и вставить (не набирайте вручную):</p>
+            <CopyChip text="Deutsch Queue" />
+            <p className="sc-note">С большой буквы, с пробелом посередине. Ошибётесь в названии — команда не найдёт альбом.</p>
             <p className="sc-note">Сюда команда будет складывать скриншоты, а «Ночной Переводчик» — забирать их для перевода.</p>
             <MediaTile src="/onboarding/shortcut/album.jpg" type="image" caption="Новый альбом (не папка!) «Deutsch Queue»" />
           </div>
@@ -178,10 +199,12 @@ export default function ShortcutGuide() {
               ? <a className="sc-btn primary" href={collectorUrl} target="_blank" rel="noreferrer">📲 Установить команду «Сохраняем Скриншот В Папку»</a>
               : <div className="sc-btn disabled">Ссылка загружается…</div>}
             <p className="sc-sub-h">Привяжите её к быстрому запуску:</p>
-            <p>🔹 <b>Двойное касание крышки</b> (любой iPhone): Настройки → Универсальный доступ →
-              Касание → Касание задней панели → Двойное касание → выберите команду «Сохраняем Скриншот В Папку».</p>
-            <p>🔹 <b>Кнопка «Действие»</b> (iPhone 15 Pro и новее): Настройки → Кнопка «Действие» →
-              пролистайте до «Быстрая команда» → выберите команду «Сохраняем Скриншот В Папку».</p>
+            <p>🔹 <b>Двойное касание крышки</b> (любой iPhone). Путь в настройках:</p>
+            <p className="sc-navpath">Настройки → Универсальный доступ → Касание → Касание задней панели → Двойное касание → команда «Сохраняем Скриншот В Папку»</p>
+            <p className="sc-navalt">🇩🇪 Einstellungen → Bedienungshilfen → Tippen → Auf Rückseite tippen → Doppeltippen   ·   🇬🇧 Settings → Accessibility → Touch → Back Tap → Double Tap</p>
+            <p>🔹 <b>Кнопка «Действие»</b> (iPhone 15 Pro и новее). Путь:</p>
+            <p className="sc-navpath">Настройки → Кнопка «Действие» → пролистайте до «Быстрая команда» → команда «Сохраняем Скриншот В Папку»</p>
+            <p className="sc-navalt">🇩🇪 Einstellungen → Aktionstaste → «Kurzbefehl» → …   ·   🇬🇧 Settings → Action Button → «Shortcut» → …</p>
             <div className="sc-media-row">
               <MediaTile src="/onboarding/shortcut/back_tap.mp4" type="video" caption="Двойное касание крышки" />
               <MediaTile src="/onboarding/shortcut/action_button.mp4" type="video" caption="Кнопка «Действие»" />
@@ -210,9 +233,9 @@ export default function ShortcutGuide() {
             <p className="sc-note">⚠️ Код действует 24 часа и нужен только один раз — дальше не понадобится.</p>
             <p><b>2.</b> Теперь запустите эту команду один раз — чтобы ввести код:</p>
             <ul className="sc-sublist">
-              <li>Откройте на iPhone приложение <b>«Команды»</b> (если телефон на немецком — <b>«Kurzbefehle»</b>, на английском — <b>«Shortcuts»</b>). Оно есть на каждом iPhone.</li>
-              <li>Внизу выберите раздел <b>«Медиатека»</b> (нем. <b>«Mediathek»</b>).</li>
-              <li>Вверху нажмите <b>«Все команды»</b> (нем. <b>«Alle Kurzbefehle»</b>).</li>
+              <li>Откройте приложение <span className="sc-nav">«Команды»</span> — 🇩🇪 «Kurzbefehle», 🇬🇧 «Shortcuts». Оно есть на каждом iPhone.</li>
+              <li>Внизу выберите раздел <span className="sc-nav">«Медиатека»</span> — 🇩🇪 «Mediathek», 🇬🇧 «Gallery».</li>
+              <li>Вверху нажмите <span className="sc-nav">«Все команды»</span> — 🇩🇪 «Alle Kurzbefehle», 🇬🇧 «All Shortcuts».</li>
               <li>Найдите установленную команду <b>«Ночной Переводчик»</b> и нажмите <b>по центру плитки</b> (не на три точки — просто по центру). Команда запустится.</li>
               <li>Появится окошко — вставьте <b>скопированный код</b> и подтвердите кнопкой под ним.</li>
             </ul>
@@ -274,8 +297,9 @@ export default function ShortcutGuide() {
               <p>Почему так: распознавание и перевод — тяжёлая работа. Если запускать её днём, она будет замедлять приложение и портить впечатление тебе же в активные часы. Поэтому отправка стоит на самые спокойные утренние часы.</p>
               <p>Исключение — <b>первый день после установки</b>: в этот день можно запускать в любое время, чтобы спокойно всё настроить и проверить.</p>
             </div>
-            <p>В «Командах» откройте вкладку <b>«Автоматизация»</b> → <b>＋</b> →
-              <b> «Создать автоматизацию для себя»</b> → <b>«Время суток»</b>.</p>
+            <p>В приложении «Команды» — путь:</p>
+            <p className="sc-navpath">«Автоматизация» → ＋ → «Создать автоматизацию для себя» → «Время суток»</p>
+            <p className="sc-navalt">🇩🇪 Automation → ＋ → «Persönliche Automation erstellen» → «Tageszeit»   ·   🇬🇧 Automation → ＋ → «Create Personal Automation» → «Time of Day»</p>
             <p>Поставьте утро — <b>06:30–07:30</b>, повтор <b>ежедневно</b>. Действие — запустить команду
               <b> «Ночной Переводчик»</b>. Выключите «Спрашивать до запуска», чтобы команда шла сама.</p>
             <p className="sc-note">👀 Этот шаг тоже детально показан на видео.</p>

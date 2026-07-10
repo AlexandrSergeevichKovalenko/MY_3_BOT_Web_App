@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './onboarding.css';
 
 // Standalone Mini-App first-run onboarding. Opened from Telegram via
@@ -629,6 +629,25 @@ export default function OnboardingWizard() {
   // Public tour: no gating (just click through). Telegram: core steps need confirm.
   const canNext = IS_PUBLIC || step.kind !== 'core' || !!confirmed[step.id];
 
+  // «Далее» unlocks only after the user has scrolled the step to the bottom — so long
+  // pages (with an install button / more info below) are actually read to the end.
+  const bodyRef = useRef(null);
+  const [atBottom, setAtBottom] = useState(false);
+  const checkScrollBottom = useCallback(() => {
+    const el = bodyRef.current;
+    if (!el) { setAtBottom(true); return; }
+    const fits = el.scrollHeight <= el.clientHeight + 6;
+    const scrolledEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+    setAtBottom(fits || scrolledEnd);
+  }, []);
+  useEffect(() => {
+    setAtBottom(false);
+    const r = requestAnimationFrame(checkScrollBottom);
+    const t1 = setTimeout(checkScrollBottom, 350);
+    const t2 = setTimeout(checkScrollBottom, 900);
+    return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); };
+  }, [idx, checkScrollBottom]);
+
   const goNext = useCallback(async () => {
     if (!canNext) return;
     try { tg?.HapticFeedback?.impactOccurred?.('light'); } catch (_e) { /* noop */ }
@@ -757,7 +776,7 @@ export default function OnboardingWizard() {
           <h1 className="ob-title">{step.title}</h1>
         </header>
 
-        <main className="ob-body">
+        <main className="ob-body" ref={bodyRef} onScroll={checkScrollBottom}>
           <StepBody
             step={step}
             isPro={isPro}
@@ -785,9 +804,10 @@ export default function OnboardingWizard() {
             type="button"
             className="ob-btn ob-next"
             onClick={goNext}
-            disabled={!canNext || finishing || done}
+            disabled={!canNext || finishing || done || !atBottom}
           >
             {done ? t('✅ Готово', '✅ Fertig')
+              : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
               : isLast ? (IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 К заданиям', '🎯 Zu den Aufgaben'))
               : t('Далее →', 'Weiter →')}
           </button>
