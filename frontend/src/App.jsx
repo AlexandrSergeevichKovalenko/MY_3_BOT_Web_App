@@ -34507,10 +34507,12 @@ function AppInner() {
                       </div>
                     ) : (
                       <div className="webapp-dictionary-form dict-search-compose">
-                        <div className="dict-search dict-search-bar">
-                          <div className="dictionary-input-wrap dict-input-compact-wrap">
+                        {/* Компактная строка «ввод + Перевести рядом» — точь-в-точь классы
+                            быстрого словаря (dq-search/dq-input-wrap/dq-input/dq-clear/dq-go). */}
+                        <div className="dq-search">
+                          <div className="dq-input-wrap">
                             <input
-                              className="dictionary-input dict-input-compact"
+                              className="ans-input dq-input"
                               value={dictionaryWord}
                               onChange={(event) => setDictionaryWord(event.target.value)}
                               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleDictionaryLookup(e); } }}
@@ -34519,7 +34521,7 @@ function AppInner() {
                             {dictionaryWord.trim() && (
                               <button
                                 type="button"
-                                className="dictionary-clear dict-clear-inline"
+                                className="dq-clear"
                                 onClick={() => setDictionaryWord('')}
                                 aria-label={tr('Очистить слово', 'Wort löschen')}
                               >×</button>
@@ -34527,7 +34529,7 @@ function AppInner() {
                           </div>
                           <button
                             type="button"
-                            className="dict-translate-primary dict-translate-inline"
+                            className="dq-go"
                             onClick={(e) => {
                               if (dictSearchMethod === 'quick') return handleDictionaryQuickLookup(e);
                               if (dictSearchMethod === 'base') return handleDictionaryBaseLookup(e);
