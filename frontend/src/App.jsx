@@ -23040,6 +23040,16 @@ function AppInner() {
     } catch (_e) {}
   }, [initData, readerDocumentId, readerUsesOriginalEpubLayout]);
 
+  // Auto-load the table of contents once per document so the reader can show
+  // "N pages left in chapter" without the user opening the TOC drawer first.
+  const readerTocAutoDocRef = useRef(null);
+  useEffect(() => {
+    if (!readerDocumentId || readerUsesOriginalEpubLayout) return;
+    if (readerTocAutoDocRef.current === readerDocumentId) return;
+    readerTocAutoDocRef.current = readerDocumentId;
+    void loadReaderToc();
+  }, [readerDocumentId, readerUsesOriginalEpubLayout, loadReaderToc]);
+
   async function syncReaderState(patch = {}) {
     if (!initData || !readerDocumentId) return;
     try {
@@ -30934,7 +30944,7 @@ function AppInner() {
     return (
       <div
         ref={webappPageRef}
-        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${youtubeNewsMode && youtubeSectionVisible ? 'is-worldnews-page' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${isWebAppMode && !flashcardsOnly && !(readerHasContent && readerImmersive) && !(isHomeScreen && !activeHomeSubsectionKey) && !dictionarySectionVisible && !youtubeWatchFocusMode ? 'is-sticky-topbar' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
+        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${youtubeNewsMode && youtubeSectionVisible ? 'is-worldnews-page' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${isWebAppMode && !flashcardsOnly && !(readerHasContent && readerImmersive) && !(isHomeScreen && !activeHomeSubsectionKey) && !(dictionarySectionVisible && vocabTab === 'library') && !youtubeWatchFocusMode ? 'is-sticky-topbar' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
         data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
       >
         <pre id="app-perf-report" style={{ display: 'none' }} />
@@ -34400,6 +34410,19 @@ function AppInner() {
                           )}
                         </div>
                       </div>
+                      {/* «Недавние» — только в ПУСТОМ состоянии, прямо под вводом (как в
+                          быстром словаре). При показе результата прячем, чтобы между вводом
+                          и результатом не висел «мусор». */}
+                      {!dictionaryResult && dictSearchRecents.length > 0 && (
+                        <div className="dq-recent dict-search-recent">
+                          <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
+                          <div className="dq-recent-chips">
+                            {dictSearchRecents.map((w) => (
+                              <button key={w} type="button" className="dq-recent-chip" onClick={() => setDictionaryWord(w)}>{w}</button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       {/* Один экшен «Перевести» — запускает выбранный способ перевода.
                           Все три метода сохранены и доступны через переключатель выше. */}
                       <div className="dict-translate-row">
@@ -34426,16 +34449,6 @@ function AppInner() {
                         >
                           {tr('↙ к предложению', '↙ zum Satz')}
                         </button>
-                      )}
-                      {dictSearchRecents.length > 0 && (
-                        <div className="dq-recent dict-search-recent">
-                          <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
-                          <div className="dq-recent-chips">
-                            {dictSearchRecents.map((w) => (
-                              <button key={w} type="button" className="dq-recent-chip" onClick={() => setDictionaryWord(w)}>{w}</button>
-                            ))}
-                          </div>
-                        </div>
                       )}
                     </div>
                     </div>{/* /dict-search-flow */}

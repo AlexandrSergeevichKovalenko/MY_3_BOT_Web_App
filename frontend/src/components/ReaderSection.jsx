@@ -469,6 +469,22 @@ export default function ReaderSection(props) {
     else setReaderChromeHidden((v) => !v);
   };
 
+  // "N pages left in chapter" from the table of contents (server-page based).
+  const readerChapterPagesLeft = React.useMemo(() => {
+    if (readerUsesOriginalEpubLayout || !readerPageCount || readerPageCount <= 1) return null;
+    const items = (Array.isArray(readerTocItems) ? readerTocItems : [])
+      .map((it) => Number(it?.page_number))
+      .filter((p) => Number.isFinite(p) && p > 0)
+      .sort((a, b) => a - b);
+    if (!items.length) return null;
+    let nextChapterPage = null;
+    for (let i = 0; i < items.length; i += 1) {
+      if (items[i] > readerCurrentPage) { nextChapterPage = items[i]; break; }
+    }
+    const boundary = nextChapterPage != null ? nextChapterPage : (readerPageCount + 1);
+    return Math.max(0, boundary - readerCurrentPage);
+  }, [readerTocItems, readerCurrentPage, readerPageCount, readerUsesOriginalEpubLayout]);
+
   return (
     <section
       className={sectionClass}
@@ -928,7 +944,9 @@ export default function ReaderSection(props) {
                     <span className="reader-topbar-pct">
                       {readerUsesOriginalEpubLayout && readerResolvedOriginalTocTitle
                         ? readerResolvedOriginalTocTitle
-                        : `${Math.round(readerProgressPercent)}%`}
+                        : (readerChapterPagesLeft != null && readerChapterPagesLeft > 0
+                          ? `${Math.round(readerProgressPercent)}% · ${readerChapterPagesLeft} ${tr('стр. до главы', 'S. bis Kapitel')}`
+                          : `${Math.round(readerProgressPercent)}%`)}
                     </span>
                   </div>
                   <button
