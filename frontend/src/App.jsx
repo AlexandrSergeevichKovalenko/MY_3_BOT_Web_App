@@ -14132,6 +14132,10 @@ function AppInner() {
     }
     return { text: parts.join('\n\n'), offsets, lo: lo + 1, hi: hi + 1, curCharStart, totalChars: acc };
   }, [readerServerPaged, readerDisplayPages, readerCurrentPage]);
+  // Always-fresh mirror so tap handlers (closures) never use a stale window when
+  // converting a window char offset → its server page for audio.
+  const readerWindowModelRef = useRef(null);
+  useEffect(() => { readerWindowModelRef.current = readerWindowModel; }, [readerWindowModel]);
   const readerVisibleText = useMemo(() => {
     if (readerUsesOriginalEpubLayout) {
       return '';
@@ -22274,12 +22278,13 @@ function AppInner() {
         // offset spanning many server pages; the per-page audio needs the tapped
         // word's OWN server page + a PAGE-LOCAL char offset — otherwise it starts
         // from the wrong word and the visible page jumps far ahead.
+        const win = readerWindowModelRef.current || readerWindowModel;
         let audioPage = readerCurrentPageRef.current;
         let localCharStart = rawCharStart;
-        if (readerWindowModel && Array.isArray(readerWindowModel.offsets) && Number.isFinite(rawCharStart)) {
-          let chosen = readerWindowModel.offsets[0];
-          for (let i = 0; i < readerWindowModel.offsets.length; i += 1) {
-            if (readerWindowModel.offsets[i].charStart <= rawCharStart) chosen = readerWindowModel.offsets[i];
+        if (win && Array.isArray(win.offsets) && Number.isFinite(rawCharStart)) {
+          let chosen = win.offsets[0];
+          for (let i = 0; i < win.offsets.length; i += 1) {
+            if (win.offsets[i].charStart <= rawCharStart) chosen = win.offsets[i];
             else break;
           }
           if (chosen) {
@@ -22287,7 +22292,7 @@ function AppInner() {
             localCharStart = rawCharStart - chosen.charStart;
           }
         }
-        console.log('[ReaderAudio] awaiting tap: wid=', wid, 'page=', audioPage, 'localCharStart=', localCharStart);
+        console.log('[ReaderAudio] awaiting tap: wid=', wid, 'rawChar=', rawCharStart, 'hasWin=', !!win, 'page=', audioPage, 'localCharStart=', localCharStart);
         if (wid) {
           void primeReaderAudioPlayback();
           // Pass the (truthy) wid so the seek branch runs, but the PAGE-LOCAL
