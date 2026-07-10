@@ -5246,6 +5246,16 @@ def _extract_guard_user_id_for_path(path: str) -> int | None:
             return int(str(request.args.get("user_id") or "").strip())
         except Exception:
             return None
+    # enforce_webapp_access already resolved the acting user — from Telegram initData OR the
+    # durable browser-dictionary token — and stashed it on g. Prefer that so the billing guard
+    # accepts the standalone dictionary's token too (else billed endpoints like TTS 400 with
+    # "user_id не определён для billing guard" even though the token authenticated upstream).
+    guard_uid = getattr(g, "telegram_user_id", None)
+    if guard_uid:
+        try:
+            return int(guard_uid)
+        except Exception:
+            pass
     user_id, _username, _error = _get_authenticated_user_from_request_init_data()
     return int(user_id) if user_id is not None else None
 
