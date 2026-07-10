@@ -102,6 +102,23 @@
   cursor: pointer;
 }
 .dict-translate-primary:disabled { opacity: 0.5; box-shadow: none; cursor: default; }
+/* «Подробный разбор» — lazy streamed breakdown trigger under the quick translation. */
+.dict-breakdown-cta { margin: 10px 0 2px; }
+.dict-breakdown-button {
+  width: 100%;
+  min-height: 46px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--dmps-accent, #6366F1);
+  background: color-mix(in srgb, var(--dmps-accent, #6366F1) 12%, transparent);
+  color: var(--dmps-accent, #4f46e5);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dict-breakdown-button:disabled { opacity: 0.65; cursor: default; }
+.dict-breakdown-error { margin-top: 6px; }
 .dict-translate-alt {
   flex: 0 0 auto;
   padding: 0 12px;

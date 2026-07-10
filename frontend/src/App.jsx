@@ -5567,6 +5567,11 @@ function AppInner() {
   const [dictionaryWord, setDictionaryWord] = useState('');
   const [dictSearchMethod, setDictSearchMethod] = useState('gpt'); // 'gpt' | 'quick' | 'base'
   const [dictionaryResult, setDictionaryResult] = useState(null);
+  // Lazy, streamed GPT breakdown for the in-app dictionary (mirrors the quick
+  // dictionary): 'idle' shows the «Подробный разбор» button, 'streaming' fills
+  // the card section-by-section, 'done' hides the button, 'error' offers retry.
+  const [dictBreakdownPhase, setDictBreakdownPhase] = useState('idle'); // idle|streaming|done|error
+  const [dictBreakdownError, setDictBreakdownError] = useState('');
   const [dictionaryError, setDictionaryError] = useState('');
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
   const [dictionaryLookupMode, setDictionaryLookupMode] = useState('');
@@ -6565,6 +6570,7 @@ function AppInner() {
   const ttsCurrentAudioRef = useRef(null);
   const ttsPlaybackSeqRef = useRef(0);
   const dictionaryLookupPollTokenRef = useRef(0);
+  const dictBreakdownAbortRef = useRef(null); // aborts an in-flight breakdown SSE stream
   const analyticsScopeRequestRef = useRef(null);
   const analyticsSummaryRequestIdRef = useRef(0);
   const analyticsTimeseriesRequestIdRef = useRef(0);
@@ -27471,8 +27477,229 @@ function AppInner() {
   };
 
 
+  // ── Lazy, streamed GPT breakdown for the in-app dictionary ──────────────────
+  // Mirrors the quick dictionary: a lookup shows an INSTANT quick translation,
+  // and the full GPT breakdown is fetched (and paid for) only when the user taps
+  // «Подробный разбор», streamed in section-by-section. A user who reads only the
+  // quick translation and taps «Сохранить» never triggers the breakdown — no LLM
+  // cost. Audio stays lazy too (see preloadTts).
+
+  // Shared instant quick-translation → sets a light dictionaryResult. offerBreakdown
+  // marks it so the «Подробный разбор» button appears (gpt/default mode) or not
+  // (⚡ Быстро mode).
+  const runDictQuickTranslate = async (sourceWord, { offerBreakdown = false } = {}) => {
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const quick = await requestQuickTranslation(sourceWord);
+    const sourceLang = normalizeLangCode(
+      quick.detectedSource || quick.sourceLangHint || pair.source_lang,
+    ) || pair.source_lang;
+    const targetLang = normalizeLangCode(
+      quick.targetLang || (sourceLang === pair.source_lang ? pair.target_lang : pair.source_lang),
+    ) || pair.target_lang;
+    const sourceText = String(quick.cleaned || sourceWord).trim();
+    const targetText = String(quick.translation || '').trim();
+    if (!targetText) {
+      throw new Error(tr('Быстрый перевод не вернул результат', 'Schnellübersetzung hat kein Ergebnis geliefert'));
+    }
+    setDictionaryResult({
+      word_ru: sourceText,
+      translation_de: targetText,
+      word_de: targetText,
+      translation_ru: sourceText,
+      source_text: sourceText,
+      target_text: targetText,
+      source_lang: sourceLang,
+      target_lang: targetLang,
+      part_of_speech: '',
+      article: '',
+      forms: {},
+      usage_examples: [],
+      provider: quick.provider || '',
+      quick_mode: true,
+      __offer_breakdown: Boolean(offerBreakdown),
+    });
+    setDictionaryDirection(`${sourceLang}-${targetLang}`);
+    setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: sourceLang, target_lang: targetLang }));
+  };
+
+  // Poll the enrichment tail after the breakdown lands (some deeper sections are
+  // filled in asynchronously server-side). Extracted from the old blocking path.
+  const startDictionaryEnrichmentPoll = (lookupId) => {
+    const id = String(lookupId || '').trim();
+    if (!id) return;
+    const pollToken = dictionaryLookupPollTokenRef.current + 1;
+    dictionaryLookupPollTokenRef.current = pollToken;
+    const pollStatus = async () => {
+      const pollIntervalMs = 1000;
+      const pollDeadlineMs = Date.now() + 45000;
+      let firstPass = true;
+      let transientErrorCount = 0;
+      while (dictionaryLookupPollTokenRef.current === pollToken) {
+        if (Date.now() > pollDeadlineMs) return;
+        if (!firstPass) {
+          await new Promise((resolve) => window.setTimeout(resolve, pollIntervalMs));
+        }
+        firstPass = false;
+        try {
+          const statusResponse = await fetch('/api/webapp/dictionary/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData, lookup_id: id }),
+          });
+          if (!statusResponse.ok) {
+            throw new Error(await readApiError(statusResponse, 'Ошибка статуса словаря', 'Wörterbuch-Statusfehler'));
+          }
+          const statusData = await statusResponse.json();
+          if (dictionaryLookupPollTokenRef.current !== pollToken) return;
+          const statusValue = String(statusData.status || 'enriching').trim().toLowerCase() || 'enriching';
+          transientErrorCount = 0;
+          if (statusValue === 'ready') {
+            if (statusData.item) setDictionaryResult(statusData.item || null);
+            if (statusData.direction) setDictionaryDirection(statusData.direction || resolveDictionaryDirection(statusData.item));
+            if (statusData.language_pair) setDictionaryLanguagePair(resolveLanguagePairForUI(statusData.language_pair));
+            return;
+          }
+          if (statusValue === 'failed') return;
+        } catch (_statusError) {
+          if (dictionaryLookupPollTokenRef.current !== pollToken) return;
+          transientErrorCount += 1;
+          if (transientErrorCount >= 5) return;
+        }
+      }
+    };
+    void pollStatus();
+  };
+
+  // Promote a fetched breakdown response into the visible card + start the tail poll.
+  const applyDictBreakdown = (data) => {
+    const rich = data && data.item ? data.item : null;
+    if (!rich) return null;
+    setDictionaryResult(rich);
+    if (data.direction) setDictionaryDirection(data.direction || resolveDictionaryDirection(rich));
+    if (data.language_pair) setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
+    setDictBreakdownPhase('done');
+    setDictBreakdownError('');
+    if (data.enrichment_pending && data.lookup_id) startDictionaryEnrichmentPoll(data.lookup_id);
+    return rich;
+  };
+
+  // Non-stream breakdown — the atomic fallback when SSE streaming is unsupported/fails.
+  const fetchDictBreakdownAtomic = async (word, lookupLang) => {
+    const resp = await fetch('/api/webapp/dictionary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, word, lookup_lang: lookupLang || undefined }),
+    });
+    if (!resp.ok) {
+      const d = await resp.json().catch(() => ({}));
+      const err = new Error(d && d.error ? d.error : 'Fehler');
+      err.status = resp.status;
+      throw err;
+    }
+    const data = await resp.json();
+    return applyDictBreakdown(data);
+  };
+
+  // Streaming breakdown — opens the SSE endpoint and merges each structured section
+  // into dictionaryResult the moment it lands, so the card fills progressively. A
+  // `done` event carries the fully reconciled item which replaces the partial.
+  const streamDictionaryBreakdown = async () => {
+    const w = String(dictionaryWord || '').trim();
+    if (!w || !initData || dictBreakdownPhase === 'streaming') return;
+    try { dictBreakdownAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
+    const controller = new AbortController();
+    dictBreakdownAbortRef.current = controller;
+    setDictBreakdownPhase('streaming');
+    setDictBreakdownError('');
+    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+    const guessed = normalizeLangCode(detectTtsLangFromText(w));
+    const lookupLang = guessed && (guessed === pair.source_lang || guessed === pair.target_lang) ? guessed : '';
+    try {
+      const resp = await fetch('/api/webapp/dictionary/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: w, lookup_lang: lookupLang || undefined }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        const err = new Error(data && data.error ? data.error : 'Fehler');
+        err.status = resp.status; err.payload = data;
+        throw err;
+      }
+      // Cached hit / immediate result comes back as plain JSON, not a stream.
+      if ((resp.headers.get('Content-Type') || '').includes('application/json')) {
+        const data = await resp.json().catch(() => ({}));
+        applyDictBreakdown(data);
+        return;
+      }
+      if (!resp.body || typeof resp.body.getReader !== 'function') {
+        throw new Error('stream unsupported');
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalApplied = false;
+      const handleFrame = (block) => {
+        let ev = 'message';
+        const dataLines = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) ev = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) return;
+        let payload;
+        try { payload = JSON.parse(dataLines.join('\n')); } catch (_e) { return; }
+        if (ev === 'section') {
+          const fields = (payload && payload.fields) || {};
+          setDictionaryResult((prev) => ({ ...(prev || {}), ...fields }));
+        } else if (ev === 'done') {
+          applyDictBreakdown(payload);
+          finalApplied = true;
+        } else if (ev === 'error') {
+          throw new Error(payload && payload.error ? payload.error : 'stream error');
+        }
+      };
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        // A newer stream started (or this one was aborted) → stop merging.
+        if (dictBreakdownAbortRef.current !== controller) { try { controller.abort(); } catch (_e) { /* ignore */ } return; }
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          handleFrame(frame);
+        }
+      }
+      if (buffer.trim()) handleFrame(buffer);
+      if (!finalApplied) {
+        // Stream ended without a final reconciled item — fall back to the atomic path.
+        await fetchDictBreakdownAtomic(w, lookupLang);
+      }
+    } catch (error) {
+      if (error && error.name === 'AbortError') return;
+      if (error && error.status && error.status >= 400 && error.status < 500) {
+        // Real 4xx (e.g. daily limit) — surface cleanly, do not retry.
+        setDictBreakdownPhase('error');
+        const msg = String((error.payload && error.payload.error) || error.message || '').trim();
+        setDictBreakdownError(msg || tr('Не удалось загрузить подробный разбор.', 'Ausführliche Analyse konnte nicht geladen werden.'));
+        return;
+      }
+      // Transport / streaming failure → try the atomic breakdown once before surfacing.
+      try {
+        await fetchDictBreakdownAtomic(w, lookupLang);
+      } catch (_e2) {
+        setDictBreakdownPhase('error');
+        setDictBreakdownError(tr('Не удалось загрузить подробный разбор.', 'Ausführliche Analyse konnte nicht geladen werden.'));
+      }
+    }
+  };
+
   const handleDictionaryLookup = async (event) => {
-    event.preventDefault();
+    if (event && event.preventDefault) event.preventDefault();
     if (!initData) {
       setDictionaryError(initDataMissingMsg);
       return;
@@ -27484,134 +27711,17 @@ function AppInner() {
     setDictionaryLoading(true);
     setDictionaryLookupMode('gpt');
     dictionaryLookupPollTokenRef.current += 1;
-    setDictionaryLookupProgress({
-      lookupId: null,
-      status: 'idle',
-      saveLocked: false,
-      error: '',
-    });
+    try { dictBreakdownAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
+    setDictBreakdownPhase('idle');
+    setDictBreakdownError('');
+    setDictionaryLookupProgress({ lookupId: null, status: 'ready', saveLocked: false, error: '' });
     setDictionaryError('');
     setDictionaryResult(null);
     setDictionarySaved('');
     setLastLookupScrollY(null);
     try {
-      const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
-      const guessedLookupLang = normalizeLangCode(detectTtsLangFromText(dictionaryWord));
-      const lookupLang = guessedLookupLang && (guessedLookupLang === pair.source_lang || guessedLookupLang === pair.target_lang)
-        ? guessedLookupLang
-        : '';
-      const response = await fetch('/api/webapp/dictionary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          word: dictionaryWord.trim(),
-          lookup_lang: lookupLang || undefined,
-        }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
-      }
-      const data = await response.json();
-      setDictionaryResult(data.item || null);
-      setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
-      setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
-      const nextLookupId = String(data.lookup_id || '').trim() || null;
-      const nextLookupStatus = String(data.lookup_status || 'ready').trim().toLowerCase() || 'ready';
-      const saveLocked = Boolean(data.save_locked ?? (nextLookupStatus !== 'ready'));
-      setDictionaryLookupProgress({
-        lookupId: nextLookupId,
-        status: nextLookupStatus,
-        saveLocked,
-        error: '',
-      });
-      if (nextLookupId && nextLookupStatus !== 'ready') {
-        const pollToken = dictionaryLookupPollTokenRef.current + 1;
-        dictionaryLookupPollTokenRef.current = pollToken;
-        const pollStatus = async () => {
-          const pollIntervalMs = 1000;
-          const pollDeadlineMs = Date.now() + 45000;
-          let firstPass = true;
-          let transientErrorCount = 0;
-          while (dictionaryLookupPollTokenRef.current === pollToken) {
-            if (Date.now() > pollDeadlineMs) {
-              setDictionaryLookupProgress((prev) => ({
-                ...prev,
-                error: tr('GPT-разбор всё ещё уточняется. Попробуйте открыть слово позже.', 'GPT-Analyse wird noch geladen. Versuche es später erneut.'),
-              }));
-              return;
-            }
-            if (!firstPass) {
-              await new Promise((resolve) => window.setTimeout(resolve, pollIntervalMs));
-            }
-            firstPass = false;
-            try {
-              const statusResponse = await fetch('/api/webapp/dictionary/status', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  initData,
-                  lookup_id: nextLookupId,
-                }),
-              });
-              if (!statusResponse.ok) {
-                throw new Error(await readApiError(statusResponse, 'Ошибка статуса словаря', 'Wörterbuch-Statusfehler'));
-              }
-              const statusData = await statusResponse.json();
-              if (dictionaryLookupPollTokenRef.current !== pollToken) {
-                return;
-              }
-              const statusValue = String(statusData.status || 'enriching').trim().toLowerCase() || 'enriching';
-              const statusLookupId = String(statusData.lookup_id || nextLookupId).trim() || nextLookupId;
-              const statusSaveLocked = Boolean(statusData.save_locked ?? (statusValue !== 'ready'));
-              transientErrorCount = 0;
-              setDictionaryLookupProgress({
-                lookupId: statusLookupId,
-                status: statusValue,
-                saveLocked: statusSaveLocked,
-                error: String(statusData.error || '').trim(),
-              });
-              if (statusValue === 'ready') {
-                if (statusData.item) {
-                  setDictionaryResult(statusData.item || null);
-                }
-                if (statusData.direction) {
-                  setDictionaryDirection(statusData.direction || resolveDictionaryDirection(statusData.item));
-                }
-                if (statusData.language_pair) {
-                  setDictionaryLanguagePair(resolveLanguagePairForUI(statusData.language_pair));
-                }
-                return;
-              }
-              if (statusValue === 'failed') {
-                const failureMessage = String(statusData.error || tr('Не удалось догрузить полный GPT-разбор.', 'Vollständige GPT-Analyse konnte nicht nachgeladen werden.')).trim();
-                setDictionaryError(failureMessage);
-                return;
-              }
-            } catch (statusError) {
-              if (dictionaryLookupPollTokenRef.current !== pollToken) {
-                return;
-              }
-              transientErrorCount += 1;
-              setDictionaryLookupProgress((prev) => ({
-                ...prev,
-                error: String(statusError?.message || tr('Ошибка статуса словаря', 'Wörterbuch-Statusfehler')),
-              }));
-              if (transientErrorCount >= 5) {
-                return;
-              }
-            }
-          }
-        };
-        void pollStatus();
-      }
+      // INSTANT quick translation — the full GPT breakdown is lazy (тапом «Подробный разбор»).
+      await runDictQuickTranslate(dictionaryWord.trim(), { offerBreakdown: true });
     } catch (error) {
       setDictionaryError(`${tr('Ошибка словаря', 'Wörterbuchfehler')}: ${error.message}`);
     } finally {
@@ -27633,6 +27743,9 @@ function AppInner() {
     setDictionaryLoading(true);
     setDictionaryLookupMode('quick');
     dictionaryLookupPollTokenRef.current += 1;
+    try { dictBreakdownAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
+    setDictBreakdownPhase('idle');
+    setDictBreakdownError('');
     setDictionaryLookupProgress({
       lookupId: null,
       status: 'ready',
@@ -27644,40 +27757,8 @@ function AppInner() {
     setDictionarySaved('');
     setLastLookupScrollY(null);
     try {
-      const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
-      const quick = await requestQuickTranslation(sourceWord);
-      const sourceLang = normalizeLangCode(
-        quick.detectedSource
-        || quick.sourceLangHint
-        || pair.source_lang
-      ) || pair.source_lang;
-      const targetLang = normalizeLangCode(
-        quick.targetLang
-        || (sourceLang === pair.source_lang ? pair.target_lang : pair.source_lang)
-      ) || pair.target_lang;
-      const sourceText = String(quick.cleaned || sourceWord).trim();
-      const targetText = String(quick.translation || '').trim();
-      if (!targetText) {
-        throw new Error(tr('Быстрый перевод не вернул результат', 'Schnellübersetzung hat kein Ergebnis geliefert'));
-      }
-      setDictionaryResult({
-        word_ru: sourceText,
-        translation_de: targetText,
-        word_de: targetText,
-        translation_ru: sourceText,
-        source_text: sourceText,
-        target_text: targetText,
-        source_lang: sourceLang,
-        target_lang: targetLang,
-        part_of_speech: '',
-        article: '',
-        forms: {},
-        usage_examples: [],
-        provider: quick.provider || '',
-        quick_mode: true,
-      });
-      setDictionaryDirection(`${sourceLang}-${targetLang}`);
-      setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: sourceLang, target_lang: targetLang }));
+      // ⚡ Быстро: pure instant translation, no «Подробный разбор» offer.
+      await runDictQuickTranslate(sourceWord, { offerBreakdown: false });
     } catch (error) {
       setDictionaryError(`${tr('Ошибка быстрого перевода', 'Fehler bei Schnellübersetzung')}: ${error.message}`);
     } finally {
@@ -27697,6 +27778,9 @@ function AppInner() {
     setDictionaryLoading(true);
     setDictionaryLookupMode('base');
     dictionaryLookupPollTokenRef.current += 1;
+    try { dictBreakdownAbortRef.current?.abort(); } catch (_e) { /* ignore */ }
+    setDictBreakdownPhase('idle');
+    setDictBreakdownError('');
     setDictionaryLookupProgress({ lookupId: null, status: 'ready', saveLocked: false, error: '' });
     setDictionaryError('');
     setDictionaryResult(null);
@@ -34412,6 +34496,27 @@ function AppInner() {
                             </span>
                           ) : null}
                         </div>
+                        {/* «Подробный разбор» — lazy, streamed. Shown after an instant quick
+                            translation (Разбор AI mode) until the breakdown is loaded. Saving
+                            works off the quick translation, so this is never fetched unless the
+                            user taps it — no LLM cost for those who only read the translation. */}
+                        {!dictionaryResult.is_base_dict && dictionaryResult.__offer_breakdown && dictBreakdownPhase !== 'done' && (
+                          <div className="dict-breakdown-cta">
+                            <button
+                              type="button"
+                              className="dict-breakdown-button"
+                              onClick={() => { void streamDictionaryBreakdown(); }}
+                              disabled={dictBreakdownPhase === 'streaming'}
+                            >
+                              {dictBreakdownPhase === 'streaming'
+                                ? tr('Загружаем разбор…', 'Analyse lädt…')
+                                : dictBreakdownPhase === 'error'
+                                  ? tr('↻ Повторить подробный разбор', '↻ Analyse erneut')
+                                  : tr('📖 Подробный разбор', '📖 Ausführliche Analyse')}
+                            </button>
+                            {dictBreakdownError && <div className="webapp-muted dict-breakdown-error">{dictBreakdownError}</div>}
+                          </div>
+                        )}
                         {/* AI/GPT result → the SAME deep card as the quick dictionary.
                             Offline/base-dict keeps the original compact rendering. */}
                         {!dictionaryResult.is_base_dict && <EmbeddedWordCard item={dictionaryResult} />}
