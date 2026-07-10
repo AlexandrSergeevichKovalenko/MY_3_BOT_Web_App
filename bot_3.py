@@ -4643,34 +4643,22 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     #  the t.me deeplink — reply-keyboard web_app buttons don't carry initData.)
     rows: list[list[str]] = []
 
-    # 1) Ежедневные задания — главное действие.
-    rows.append([NEXT_TASK_BUTTON_TEXT])
-    # Стрик и Расписание больше НЕ кнопки: стрик едет в сообщениях, а расписание
-    # (и другие настройки) переехали в «⚙️ Настройки» (Mini-App).
-
-    # 2) Тренажёры + батлы, сгруппированные ПО ТЕМЕ — по строке на тему
-    #    [тренировка · батл]. Ровно 2 кнопки в ряд → читаемо на узких экранах.
-    #    ОДНА клавиатура для всех: батл-кнопки видны и Free тоже; при нажатии Free
-    #    получает аккуратную подсказку, что создавать батл может только Pro, а
-    #    участвовать (по приглашению) может каждый (гейт — в _start_battle_wizard).
-    # Учёба-игры (артикли, прилагательные, wo-fragen, числа на слух) собраны на одной
-    # Mini-App странице «📚 Интерактив» (раньше — кнопка на каждую тему).
+    # Порядок под фокус вовлечения (каждая на всю ширину): игры → батлы → задание.
+    # 📚 Интерактив — все учёба-игры на одной Mini-App странице.
     rows.append([INTERACTIVE_BUTTON_TEXT])
-    # Все батлы (создать · пригласить · история) — на Mini-App странице «⚔️ Battles»
-    # (раньше были отдельные кнопки Artikel/Adjektiv/Wo-Frage-батл + История батлов).
+    # ⚔️ Battles — создать · пригласить · история, на одной Mini-App странице.
     rows.append([BATTLES_BUTTON_TEXT])
+    # ▶️ Следующее задание — главный ежедневный CTA. (Стрик/расписание — не кнопки:
+    #    стрик едет в сообщениях, расписание — в «⚙️ Настройки».)
+    rows.append([NEXT_TASK_BUTTON_TEXT])
 
-    # 4) Слова и помощь.
+    # Утилита (самое частое) — перевод + учитель, в один ряд.
     rows.append([DICTIONARY_BATCH_FAST_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT])
 
-    # 5) Настройки: автосейв, готовность к батлам, расписание и тема — на одной
-    #    Mini-App странице (раньше были отдельными кнопками).
-    rows.append([SETTINGS_BUTTON_TEXT])
+    # Поддержка — настройки + справка, в один ряд.
+    rows.append([SETTINGS_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT])
 
-    # 6) Справка.
-    rows.append([HOWTO_GUIDE_BUTTON_TEXT])
-
-    # 7) Админ — отдельной строкой в самом низу.
+    # Админ — отдельной строкой в самом низу.
     if is_admin:
         rows.append([ADMIN_BROADCAST_BUTTON_TEXT, ADMIN_COMMANDS_BUTTON_TEXT])
 
