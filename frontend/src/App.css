@@ -22571,7 +22571,7 @@ body.worldnews-active .webapp-topbar {
 /* Dictionary desktop/tablet layout refinement */
 @media (min-width: 481px) and (max-width: 1024px) {
   .webapp-page.is-dictionary-layout {
-    padding: 16px;
+    padding: 8px 3px;
     background: #0f172a;
   }
 
