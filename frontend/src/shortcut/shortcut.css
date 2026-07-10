@@ -202,3 +202,6 @@ html[data-scheme="light"] .sc-sublist li { color: #2a3650; }
 .sc-copychip:active { transform: scale(0.98); }
 .sc-copychip-val { font-size: 15px; font-weight: 800; letter-spacing: 0.5px; color: #1d4ed8; }
 .sc-copychip-ic { font-size: 15px; }
+
+/* Key user actions (tap targets like «Всегда разрешать») — link-blue, bold */
+.sc-key { color: #1d4ed8 !important; font-weight: 800; font-style: normal; }
