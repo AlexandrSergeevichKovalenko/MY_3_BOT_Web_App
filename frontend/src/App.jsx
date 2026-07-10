@@ -22264,9 +22264,10 @@ function AppInner() {
         console.log('[ReaderAudio] awaiting tap: wid=', wid, 'page=', audioPage, 'localCharStart=', localCharStart);
         if (wid) {
           void primeReaderAudioPlayback();
-          // null (not undefined) → don't fall back to a stale window startWid; the
-          // page-local char offset is the source of truth for the start position.
-          playReaderAudioPage(audioPage, null, Number.isFinite(localCharStart) && localCharStart >= 0 ? localCharStart : undefined);
+          // Pass the (truthy) wid so the seek branch runs, but the PAGE-LOCAL
+          // charStart is what actually positions the start (it takes precedence
+          // over the wid→char map inside playReaderAudioPage).
+          playReaderAudioPage(audioPage, wid, Number.isFinite(localCharStart) && localCharStart >= 0 ? localCharStart : undefined);
         }
       }
       return; // don't show translation when starting audio
