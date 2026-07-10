@@ -142,6 +142,14 @@ const READER_PAGINATION_FIT_RESERVE_PX = 32;
 // but later windows are prefetched during playback so it stays hidden.
 const READER_AUDIO_WINDOW_MAX_PAGES = 12;
 const READER_AUDIO_WINDOW_MAX_CHARS = 7000;
+// Cold-start window: the FIRST synthesis after a word-tap (or a jump) is kept
+// down to ~1 backend TTS chunk (the backend fits ~1200 raw chars per Google TTS
+// round-trip; a full 7000-char window is ~6 sequential round-trips ≈ ~60s before
+// playback). A 1-chunk first clip starts in a few seconds; the full next window
+// is prefetched in the background during that clip so continuation stays seamless.
+// Continuation (auto-next-page) still uses the full window above.
+const READER_AUDIO_FIRST_WINDOW_MAX_PAGES = 2;
+const READER_AUDIO_FIRST_WINDOW_MAX_CHARS = 1200;
 const READER_LOCAL_BOOKMARKS_STORAGE_KEY = 'dds_reader_exact_bookmarks_v1';
 const READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY = 'dds_reader_original_locations_v1';
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
@@ -23460,17 +23468,22 @@ function AppInner() {
     }
   }, []);
 
-  const playReaderAudioPage = useCallback(async (page, startWidOverride, charStartOverride) => {
+  const playReaderAudioPage = useCallback(async (page, startWidOverride, charStartOverride, opts = {}) => {
     if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
       openReaderAudioPremiumPaywall();
       return;
     }
+    // A user-initiated start/jump (word tap, Play button) gets the small
+    // fast-start window; only the auto-next-page continuation (opts.continuation)
+    // keeps the full window — that window was already prefetched during the
+    // previous clip, so it stays seamless.
+    const isContinuation = Boolean(opts?.continuation);
     const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
     // Gapless Web Audio path (feature-flagged). When enabled, delegate to the
     // standalone engine path and skip the legacy <audio> ping-pong entirely.
     if (isWebAudioEngineEnabled() && playReaderAudioPageWebAudioRef.current) {
       try {
-        await playReaderAudioPageWebAudioRef.current(page, startWid, charStartOverride);
+        await playReaderAudioPageWebAudioRef.current(page, startWid, charStartOverride, opts);
         return;
       } catch (err) {
         console.warn('[ReaderAudio] web-audio path failed, falling back to legacy:', err?.message || err);
@@ -23489,7 +23502,9 @@ function AppInner() {
     setReaderAudioPlayError('');
     try {
       const voice = readerAudioVoice || '';
-      const playbackWindow = buildReaderAudioWindow(page);
+      const playbackWindow = isContinuation
+        ? buildReaderAudioWindow(page)
+        : buildReaderAudioWindow(page, READER_AUDIO_FIRST_WINDOW_MAX_PAGES, READER_AUDIO_FIRST_WINDOW_MAX_CHARS);
       if (!playbackWindow?.combinedText) {
         throw new Error('Reader audio page text is empty');
       }
@@ -23948,7 +23963,7 @@ function AppInner() {
   // readerAudioPlayPosition, readerAudioCurrentPageCharOffset, readerCurrentPage)
   // so word highlighting and page sync work unchanged. Playback + the gapless
   // seam are handled by ReaderAudioGaplessEngine.
-  const playReaderAudioPageWebAudio = useCallback(async (page, startWid, charStartOverride) => {
+  const playReaderAudioPageWebAudio = useCallback(async (page, startWid, charStartOverride, opts = {}) => {
     const webKey = (targetPage, targetVoice, targetRate, targetText) => {
       const raw = `${String(readerDocumentId || '')}|${String(targetPage || '')}|${String(targetVoice || '')}|${String(targetRate || '')}|${String(targetText || '')}`;
       let hash = 0;
@@ -24032,7 +24047,11 @@ function AppInner() {
 
     const voice = readerAudioVoice || '';
     const rate = readerAudioRate || 1;
-    const win = buildReaderAudioWindow(page);
+    // Small fast-start window on a user-initiated start/jump; continuation clips
+    // are built full-size by prefetchNextWindow, so only the first win shrinks.
+    const win = opts?.continuation
+      ? buildReaderAudioWindow(page)
+      : buildReaderAudioWindow(page, READER_AUDIO_FIRST_WINDOW_MAX_PAGES, READER_AUDIO_FIRST_WINDOW_MAX_CHARS);
     if (!win?.combinedText) return;
 
     // Engine + context (this runs inside a user-gesture-initiated call chain).
@@ -24339,7 +24358,7 @@ function AppInner() {
       readerAudioPlayingForPageRef.current = nextPage;
       setReaderCurrentPage(nextPage);
       setReaderAudioStartWid(null);
-      playReaderAudioPage(nextPage, null, undefined);
+      playReaderAudioPage(nextPage, null, undefined, { continuation: true });
     };
     audio.addEventListener('ended', onEnded);
     return () => audio.removeEventListener('ended', onEnded);
@@ -27740,7 +27759,7 @@ function AppInner() {
       // INSTANT quick translation — the full GPT breakdown is lazy (тапом «Подробный разбор»).
       await runDictQuickTranslate(dictionaryWord.trim(), { offerBreakdown: true });
     } catch (error) {
-      setDictionaryError(`${tr('Ошибка словаря', 'Wörterbuchfehler')}: ${error.message}`);
+      setDictionaryError(normalizeNetworkErrorMessage(error, 'Не удалось перевести. Попробуйте ещё раз.', 'Übersetzung fehlgeschlagen. Bitte versuche es erneut.'));
     } finally {
       setDictionaryLoading(false);
       setDictionaryLookupMode('');
@@ -27777,7 +27796,7 @@ function AppInner() {
       // ⚡ Быстро: pure instant translation, no «Подробный разбор» offer.
       await runDictQuickTranslate(sourceWord, { offerBreakdown: false });
     } catch (error) {
-      setDictionaryError(`${tr('Ошибка быстрого перевода', 'Fehler bei Schnellübersetzung')}: ${error.message}`);
+      setDictionaryError(normalizeNetworkErrorMessage(error, 'Не удалось перевести. Попробуйте ещё раз.', 'Übersetzung fehlgeschlagen. Bitte versuche es erneut.'));
     } finally {
       setDictionaryLoading(false);
       setDictionaryLookupMode('');
@@ -34430,7 +34449,7 @@ function AppInner() {
                             </div>
                           </div>
                         )}
-                        <div className="dict-translate-row dict-translate-sticky">
+                        <div className="dict-translate-row">
                           <button
                             type="button"
                             className="dict-translate-primary"
@@ -34444,6 +34463,10 @@ function AppInner() {
                             {dictionaryLoading ? tr('Перевод…', 'Übersetze…') : tr('Перевести', 'Übersetzen')}
                           </button>
                         </div>
+                        {/* Ошибка — сразу под кнопкой, видно без прокрутки. */}
+                        {dictionaryError && !renderDictionarySaveLimitNotice(dictionaryError) && (
+                          <div className="webapp-error dict-inline-error">{dictionaryError}</div>
+                        )}
                       </div>
                     ) : (
                       <div className="webapp-dictionary-form dict-search-compose">
@@ -34491,9 +34514,12 @@ function AppInner() {
                     )}
                     </div>{/* /dict-search-flow */}
 
-                    {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError)
-            ? <PaidFeatureSpotlight>{renderDictionarySaveLimitNotice(dictionaryError)}</PaidFeatureSpotlight>
-            : <div className="webapp-error">{dictionaryError}</div>)}
+                    {/* Save-limit spotlight stays here for both states; the plain error is
+                        shown inline under the button in the empty state (above), so here it
+                        renders only once a result exists — avoids a doubled message. */}
+                    {dictionaryError && renderDictionarySaveLimitNotice(dictionaryError)
+                      ? <PaidFeatureSpotlight>{renderDictionarySaveLimitNotice(dictionaryError)}</PaidFeatureSpotlight>
+                      : (dictionaryError && dictionaryResult ? <div className="webapp-error">{dictionaryError}</div> : null)}
                     {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
 
                     {dictionaryResult && (
