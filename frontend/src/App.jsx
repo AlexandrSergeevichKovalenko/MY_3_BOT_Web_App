@@ -6612,6 +6612,7 @@ function AppInner() {
   const ttsPlaybackSeqRef = useRef(0);
   const dictionaryLookupPollTokenRef = useRef(0);
   const dictBreakdownAbortRef = useRef(null); // aborts an in-flight breakdown SSE stream
+  const dictArticlePollTokenRef = useRef(0); // cancels a stale background der/die/das poll
   const analyticsScopeRequestRef = useRef(null);
   const analyticsSummaryRequestIdRef = useRef(0);
   const analyticsTimeseriesRequestIdRef = useRef(0);
@@ -21418,6 +21419,9 @@ function AppInner() {
         sourceLangHint,
         targetLang,
         detectedSource: normalizeLangCode(data?.detected_source_lang || sourceLangHint || '') || sourceLangHint || '',
+        // Article for a single German noun, resolved instantly from the local
+        // Wiktionary table so "das Substantiv" shows without the full breakdown.
+        article: String(data?.article || '').trim(),
       };
       quickTranslateCacheRef.current.set(cacheKey, { ts: Date.now(), payload });
       if (quickTranslateCacheRef.current.size > 200) {
@@ -27601,6 +27605,7 @@ function AppInner() {
   // marks it so the «Подробный разбор» button appears (gpt/default mode) or not
   // (⚡ Быстро mode).
   const runDictQuickTranslate = async (sourceWord, { offerBreakdown = false } = {}) => {
+    const articleToken = ++dictArticlePollTokenRef.current; // invalidate any prior article poll
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
     const quick = await requestQuickTranslation(sourceWord);
     const sourceLang = normalizeLangCode(
@@ -27610,10 +27615,18 @@ function AppInner() {
       quick.targetLang || (sourceLang === pair.source_lang ? pair.target_lang : pair.source_lang),
     ) || pair.target_lang;
     const sourceText = String(quick.cleaned || sourceWord).trim();
-    const targetText = String(quick.translation || '').trim();
-    if (!targetText) {
+    const rawTarget = String(quick.translation || '').trim();
+    if (!rawTarget) {
       throw new Error(tr('Быстрый перевод не вернул результат', 'Schnellübersetzung hat kein Ergebnis geliefert'));
     }
+    // German nouns MUST show their article (der/die/das …) — it matters even more than
+    // the bare translation. Fold the instantly-resolved article into the German side,
+    // exactly like the quick dictionary.
+    const hasArt = (s) => /^(der|die|das)\s/i.test(String(s || ''));
+    const article = String(quick.article || '').trim();
+    const targetText = (targetLang === 'de' && article && !hasArt(rawTarget))
+      ? `${article} ${rawTarget}`
+      : rawTarget;
     setDictionaryResult({
       word_ru: sourceText,
       translation_de: targetText,
@@ -27624,7 +27637,7 @@ function AppInner() {
       source_lang: sourceLang,
       target_lang: targetLang,
       part_of_speech: '',
-      article: '',
+      article,
       forms: {},
       usage_examples: [],
       provider: quick.provider || '',
@@ -27633,6 +27646,35 @@ function AppInner() {
     });
     setDictionaryDirection(`${sourceLang}-${targetLang}`);
     setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: sourceLang, target_lang: targetLang }));
+    // A German noun whose article missed the instant Wiktionary lookup gets der/die/das
+    // filled by a background job — poll for it so it appears on its own, never a 2nd press.
+    const isLoneGermanNoun = targetLang === 'de' && !article && rawTarget
+      && !/\s/.test(rawTarget) && rawTarget[0] === rawTarget[0].toUpperCase();
+    if (isLoneGermanNoun) {
+      (async () => {
+        for (const delay of [900, 1300, 1600, 2000, 2500]) {
+          await new Promise((r) => window.setTimeout(r, delay));
+          if (dictArticlePollTokenRef.current !== articleToken) return;
+          let art = '';
+          try {
+            const a = await dictApi('/api/translate/quick/article', {
+              text: sourceWord, source_lang: pair.source_lang, target_lang: pair.target_lang,
+            });
+            art = String(a?.article || '').trim();
+          } catch (_e) { /* keep polling */ }
+          if (dictArticlePollTokenRef.current !== articleToken) return;
+          if (art) {
+            setDictionaryResult((prev) => {
+              if (!prev || String(prev.article || '').trim()) return prev;
+              const t = String(prev.target_text || prev.translation_de || '').trim();
+              const withArt = hasArt(t) ? t : `${art} ${t}`;
+              return { ...prev, article: art, target_text: withArt, translation_de: withArt, word_de: withArt };
+            });
+            return;
+          }
+        }
+      })();
+    }
   };
 
   // Poll the enrichment tail after the breakdown lands (some deeper sections are
