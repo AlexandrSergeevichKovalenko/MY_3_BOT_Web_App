@@ -3698,12 +3698,16 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 /* keep the audio word/sentence highlight visible in the engine too */
 .webapp-reader .reader-col-track .reader-word.is-playing-word { background: var(--rd-accent-soft); border-radius: 4px; }
 
-/* Immersive: tap-centre hides ALL chrome so the page is full-screen. */
+/* Tap-centre fades the chrome for a clean view. It FADES (opacity) but KEEPS its
+   layout space — collapsing it (display:none) would grow the reading area, force
+   the columns to recompute, and make the text jump. Constant size = no reflow. */
 .webapp-reader.is-chrome-hidden .reader-topbar,
 .webapp-reader.is-chrome-hidden .reader-topbar-peek,
 .webapp-reader.is-chrome-hidden .reader-progline,
 .webapp-reader.is-chrome-hidden .reader-bottom-dock {
-  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity .2s ease !important;
 }
 
 

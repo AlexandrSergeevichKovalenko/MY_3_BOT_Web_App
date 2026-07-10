@@ -1020,27 +1020,6 @@ export default function ReaderSection(props) {
                         </span>
                       </button>
 
-                      {readerCanUseOriginalLayout && (
-                        <button
-                          type="button"
-                          className="reader-overflow-item"
-                          role="menuitem"
-                          onClick={() => {
-                            switchReaderLayoutMode(readerLayoutMode === 'original' ? 'custom' : 'original', { resetTypography: readerLayoutMode !== 'original' });
-                            setReaderOverflowOpen(false);
-                          }}
-                        >
-                          <span className="reader-overflow-ic" aria-hidden="true">
-                            <svg viewBox="0 0 18 18" fill="none"><rect x="3.5" y="3.5" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.4" /><path d="M3.5 7h11" stroke="currentColor" strokeWidth="1.4" /></svg>
-                          </span>
-                          <span className="reader-overflow-label">
-                            {readerLayoutMode === 'original'
-                              ? tr('Текстовый режим', 'Textmodus')
-                              : tr('Оригинальная вёрстка', 'Originallayout')}
-                          </span>
-                        </button>
-                      )}
-
                       <button
                         type="button"
                         className={`reader-overflow-item ${readerTimerPaused ? 'is-paused' : ''}`}
@@ -1474,17 +1453,6 @@ export default function ReaderSection(props) {
                   <div className="reader-settings-sheet-head">
                     <strong>{tr('Настройки чтения', 'Leseeinstellungen')}</strong>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      {readerCanUseOriginalLayout && (
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => switchReaderLayoutMode(readerLayoutMode === 'original' ? 'custom' : 'original', { resetTypography: readerLayoutMode !== 'original' })}
-                        >
-                          {readerLayoutMode === 'original'
-                            ? tr('Текстовый режим', 'Textmodus')
-                            : tr('Оригинал', 'Original')}
-                        </button>
-                      )}
                       <button
                         type="button"
                         className="secondary-button"
@@ -1494,48 +1462,6 @@ export default function ReaderSection(props) {
                       </button>
                     </div>
                   </div>
-                  {readerCanUseOriginalLayout && (
-                    <div className="webapp-muted" style={{ fontSize: 12 }}>
-                      {readerLayoutMode === 'original'
-                        ? tr(
-                          'Сейчас открыт оригинальный режим: читалка показывает исходную EPUB/PDF-вёрстку книги. Любое изменение шрифта переключит книгу в адаптивный текстовый режим.',
-                          'Aktuell ist der Originalmodus aktiv: Der Reader zeigt das ursprüngliche EPUB/PDF-Layout des Buches. Jede Schriftanpassung schaltet in den adaptiven Textmodus um.'
-                        )
-                        : tr(
-                          'Сейчас открыт адаптивный режим: текст пересчитан под ваш шрифт и экран. Кнопка "Оригинал" вернёт исходную вёрстку книги.',
-                          'Aktuell ist der adaptive Modus aktiv: Der Text wurde für deine Schrift und deinen Bildschirm neu berechnet. Mit "Original" kehrst du zum ursprünglichen Buchlayout zurück.'
-                        )}
-                    </div>
-                  )}
-                  {readerCanUseOriginalLayout && (
-                    <label className="webapp-field">
-                      <span>{tr('Режим отображения', 'Anzeigemodus')}</span>
-                      <div className="reader-theme-seg reader-layout-seg">
-                        {[
-                          {
-                            key: 'original',
-                            label: tr('Original', 'Original'),
-                            hint: tr('Исходная EPUB/PDF-вёрстка', 'Ursprüngliches EPUB/PDF-Layout'),
-                          },
-                          {
-                            key: 'custom',
-                            label: tr('Textmodus', 'Textmodus'),
-                            hint: tr('Нужен для word-tap и аудио', 'Für Wort-Tap und Audio'),
-                          },
-                        ].map((option) => (
-                          <button
-                            key={option.key}
-                            type="button"
-                            className={`reader-theme-seg-btn ${readerLayoutMode === option.key ? 'is-active' : ''}`}
-                            onClick={() => switchReaderLayoutMode(option.key, { resetTypography: option.key === 'original' })}
-                          >
-                            <span className="reader-layout-seg-label">{option.label}</span>
-                            <span className="reader-layout-seg-hint">{option.hint}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </label>
-                  )}
 
                   {/* Phase 2.2: Theme switcher */}
                   <label className="webapp-field">

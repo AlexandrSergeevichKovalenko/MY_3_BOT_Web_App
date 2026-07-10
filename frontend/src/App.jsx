@@ -700,11 +700,11 @@ function areReaderPagesEqual(prevPages, nextPages) {
   return true;
 }
 
-function getReaderPreferredLayoutMode(sourceType, pages) {
-  const normalizedSourceType = String(sourceType || '').trim().toLowerCase();
-  const hasPages = Array.isArray(pages) && pages.length > 0;
-  if (!hasPages) return 'custom';
-  return normalizedSourceType === 'pdf' || normalizedSourceType === 'epub' ? 'original' : 'custom';
+function getReaderPreferredLayoutMode() {
+  // Every format now opens in the unified column engine (tap-translate + audio).
+  // The separate original-EPUB (epub.js) renderer is no longer offered as a
+  // user-facing choice, so we never default to 'original'.
+  return 'custom';
 }
 
 function readStoredEconomicsPeriod() {
