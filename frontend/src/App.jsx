@@ -9468,7 +9468,14 @@ function AppInner() {
     }
   }, [initData, normalizeNetworkErrorMessage, tr]);
 
-  const preloadTts = useCallback((text, language = 'de-DE', voice = '') => {
+  // allowSynth=true keeps the eager pre-synthesis (used by SRS review, where a
+  // ready audio on every card matters for study flow). allowSynth=false is a
+  // NO-SYNTH warm: it only checks whether the audio already exists in R2 and
+  // caches that URL (so cached words still play INSTANTLY), but never pays for
+  // /tts/generate up front — new words are synthesised lazily, only on an actual
+  // tap. This is the same money-saving stance as the quick dictionary: we don't
+  // synthesise audio for the ~60% of lookups nobody ever listens to.
+  const preloadTts = useCallback((text, language = 'de-DE', voice = '', allowSynth = true) => {
     if (!initData) return;
     const normalizedText = String(text || '').trim();
     if (!normalizedText) return;
@@ -9494,7 +9501,7 @@ function AppInner() {
           ttsPendingCacheRef.current.delete(key);
           return null;
         }
-        if (!ttsPendingCacheRef.current.has(key)) {
+        if (allowSynth && !ttsPendingCacheRef.current.has(key)) {
           ttsPendingCacheRef.current.set(key, { startedAt: Date.now(), generateStarted: true });
           const generated = await requestTtsGenerate(normalizedText, normalizedLang, normalizedVoice);
           const generatedStatus = String(generated?.status || '').trim().toLowerCase();
@@ -9524,7 +9531,7 @@ function AppInner() {
     const locale = getLearningTtsLocale();
     flashcards.slice(0, 8).forEach((item) => {
       const german = resolveFlashcardGerman(item);
-      if (german) preloadTts(german, locale);
+      if (german) preloadTts(german, locale, '', false); // no-synth warm: instant if cached, synth only on tap
     });
   }, [flashcards, languageProfile?.learning_language, preloadTts]);
 
@@ -9532,7 +9539,7 @@ function AppInner() {
     const targetTts = resolveDictionaryTargetTts(dictionaryResult, dictionaryDirection);
     if (!targetTts.text) return undefined;
     const timerId = window.setTimeout(() => {
-      preloadTts(targetTts.text, targetTts.locale);
+      preloadTts(targetTts.text, targetTts.locale, '', false); // no-synth warm: instant if cached, synth only on tap
     }, 0);
     return () => window.clearTimeout(timerId);
   }, [dictionaryDirection, dictionaryResult, preloadTts, resolveDictionaryTargetTts]);
@@ -9556,7 +9563,7 @@ function AppInner() {
     const locale = getLearningTtsLocale();
     results.slice(0, 6).forEach((item) => {
       const correct = extractCorrectTranslationText(item);
-      if (correct) preloadTts(correct, locale);
+      if (correct) preloadTts(correct, locale, '', false); // no-synth warm: instant if cached, synth only on tap
     });
   }, [results, languageProfile?.learning_language, preloadTts]);
 
