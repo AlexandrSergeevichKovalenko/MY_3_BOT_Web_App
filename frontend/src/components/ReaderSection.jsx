@@ -195,6 +195,11 @@ export default function ReaderSection(props) {
   const readerColCountRef = React.useRef(1);
   const readerColGoLastRef = React.useRef(false);
   const readerColAnchorCharRef = React.useRef(0);
+  // Real, measured column geometry — the CSS column pitch does NOT equal the
+  // viewport width (the browser expands columns to fill), so we measure it from
+  // the laid-out word spans and page by exactly that. Works on any screen.
+  const readerColPitchRef = React.useRef(0);
+  const readerColOriginRef = React.useRef(0);
   const readerGestureRef = React.useRef({ down: false, x: 0, y: 0, moved: false, base: 0 });
 
   const sectionClass = [
@@ -226,12 +231,45 @@ export default function ReaderSection(props) {
   React.useEffect(() => { readerColIndexRef.current = readerColIndex; }, [readerColIndex]);
   React.useEffect(() => { readerColCountRef.current = readerColCount; }, [readerColCount]);
 
-  const readerColStep = () => (readerColViewportRef.current?.clientWidth || 1);
+  const readerColStep = () => readerColPitchRef.current || (readerColViewportRef.current?.clientWidth || 1);
   const applyReaderColTransform = (px, animate) => {
     const track = readerColTrackRef.current;
     if (!track) return;
     track.style.transition = animate ? 'transform .3s cubic-bezier(.4,0,.2,1)' : 'none';
     track.style.transform = `translateX(${px}px)`;
+  };
+  // Apply column styles, then MEASURE the true pitch/origin/column-count from the
+  // rendered spans (never assume pitch === viewport width). Returns { n }.
+  const measureReaderColGeometry = () => {
+    const vp = readerColViewportRef.current;
+    const track = readerColTrackRef.current;
+    if (!vp || !track) return { n: 1 };
+    const w = vp.clientWidth, h = vp.clientHeight;
+    if (w <= 0 || h <= 0) return { n: readerColCountRef.current || 1 };
+    const M = 22;
+    // Padding (not margin) → the single column exactly fills the content box
+    // (w-2M) so the column pitch is the viewport width; symmetric M margins.
+    track.style.height = `${h}px`;
+    track.style.marginLeft = '0px';
+    track.style.paddingLeft = `${M}px`;
+    track.style.paddingRight = `${M}px`;
+    track.style.columnWidth = `${Math.max(1, w - 2 * M)}px`;
+    track.style.columnGap = `${2 * M}px`;
+    // With the padding layout the single column exactly fills the content box,
+    // so the column pitch is EXACTLY the viewport width (integer, no drift).
+    const spans = track.querySelectorAll('[data-start]');
+    let x0 = Infinity, maxX = 0;
+    for (let i = 0; i < spans.length; i += 1) {
+      const x = spans[i].offsetLeft;
+      if (x < x0) x0 = x;
+      if (x > maxX) maxX = x;
+    }
+    if (x0 === Infinity) x0 = 0;
+    const pitch = w;
+    readerColPitchRef.current = pitch;
+    readerColOriginRef.current = x0;
+    const n = Math.max(1, Math.round((maxX - x0) / pitch) + 1);
+    return { n };
   };
 
   // Content signature: in window mode this changes ONLY when the loaded window
@@ -241,7 +279,7 @@ export default function ReaderSection(props) {
     ? `w:${readerWindowModel.lo}:${readerWindowModel.hi}:${readerWindowModel.totalChars}`
     : `p:${readerCurrentPage}:${readerShowsLazyOriginalPage ? 1 : 0}`;
 
-  const readerColOffsetOf = (el) => Math.max(0, (el?.offsetLeft || 0) - 22);
+  const readerColOffsetOf = (el) => Math.max(0, (el?.offsetLeft || 0) - readerColOriginRef.current);
   const readerColFindColOfChar = (charOffset) => {
     const track = readerColTrackRef.current;
     const step = readerColStep();
@@ -297,15 +335,8 @@ export default function ReaderSection(props) {
     const vp = readerColViewportRef.current;
     const track = readerColTrackRef.current;
     if (!vp || !track) return undefined;
-    const M = 22;
     const raf = window.requestAnimationFrame(() => {
-      const w = vp.clientWidth, h = vp.clientHeight;
-      if (w <= 0 || h <= 0) return;
-      track.style.height = `${h}px`;
-      track.style.columnWidth = `${Math.max(1, w - 2 * M)}px`;
-      track.style.columnGap = `${2 * M}px`;
-      track.style.marginLeft = `${M}px`;
-      const n = Math.max(1, Math.round((track.scrollWidth + 2 * M) / w));
+      const { n } = measureReaderColGeometry();
       let target;
       if (readerWindowModel) {
         let anchor = readerColAnchorCharRef.current;
@@ -324,7 +355,7 @@ export default function ReaderSection(props) {
       setReaderColIndex(target);
       readerColIndexRef.current = target;
       readerColCountRef.current = n;
-      applyReaderColTransform(-target * w, false);
+      applyReaderColTransform(-target * readerColStep(), false);
     });
     return () => window.cancelAnimationFrame(raf);
   }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -346,20 +377,14 @@ export default function ReaderSection(props) {
       window.cancelAnimationFrame(raf);
       raf = window.requestAnimationFrame(() => {
         const track = readerColTrackRef.current;
-        const w = vp.clientWidth, h = vp.clientHeight;
-        if (!track || w <= 0 || h <= 0) return;
-        const M = 22;
-        track.style.height = `${h}px`;
-        track.style.columnWidth = `${Math.max(1, w - 2 * M)}px`;
-        track.style.columnGap = `${2 * M}px`;
-        track.style.marginLeft = `${M}px`;
-        const n = Math.max(1, Math.round((track.scrollWidth + 2 * M) / w));
+        if (!track || vp.clientWidth <= 0 || vp.clientHeight <= 0) return;
+        const { n } = measureReaderColGeometry();
         readerColCountRef.current = n;
         setReaderColCount(n);
         const i = Math.max(0, Math.min(readerColFindColOfChar(readerColAnchorCharRef.current), n - 1));
         readerColIndexRef.current = i;
         setReaderColIndex(i);
-        applyReaderColTransform(-i * w, false);
+        applyReaderColTransform(-i * readerColStep(), false);
       });
     });
     ro.observe(vp);
