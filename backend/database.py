@@ -17009,6 +17009,15 @@ def _ensure_dau_schema() -> None:
                     current_step INT NOT NULL DEFAULT 0,
                     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+                CREATE TABLE IF NOT EXISTS bt_3_onboarding_nudges (
+                    user_id      BIGINT PRIMARY KEY,
+                    nudge_date   DATE,
+                    count_today  INT NOT NULL DEFAULT 0,
+                    total_nudges INT NOT NULL DEFAULT 0,
+                    dismissed    BOOLEAN NOT NULL DEFAULT FALSE,
+                    last_nudge_at TIMESTAMPTZ,
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
             """)
         conn.commit()
     _dau_schema_ready = True
@@ -17115,6 +17124,105 @@ def mark_announcement_sent(user_id: int, feature_key: str) -> bool:
         logging.warning("mark_announcement_sent failed user=%s key=%s",
                         user_id, feature_key, exc_info=True)
         return False
+
+
+def get_onboarding_nudge_state(user_id: int) -> dict:
+    """{'count_today': int, 'total': int, 'dismissed': bool} — today's nudge count
+    (0 if the stored date isn't today), lifetime total, and opt-out flag."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT nudge_date, count_today, total_nudges, dismissed "
+                    "FROM bt_3_onboarding_nudges WHERE user_id=%s;",
+                    (int(user_id),))
+                r = cur.fetchone()
+        if not r:
+            return {"count_today": 0, "total": 0, "dismissed": False}
+        import datetime as _dt
+        today = _dt.date.today()
+        count_today = int(r[1] or 0) if r[0] == today else 0
+        return {"count_today": count_today, "total": int(r[2] or 0), "dismissed": bool(r[3])}
+    except Exception:
+        return {"count_today": 0, "total": 0, "dismissed": False}
+
+
+def record_onboarding_nudge(user_id: int) -> bool:
+    """Stamp one nudge just sent: bump today's count (reset on a new day) + lifetime total."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bt_3_onboarding_nudges
+                        (user_id, nudge_date, count_today, total_nudges, last_nudge_at, updated_at)
+                    VALUES (%s, CURRENT_DATE, 1, 1, NOW(), NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        count_today  = CASE WHEN bt_3_onboarding_nudges.nudge_date = CURRENT_DATE
+                                            THEN bt_3_onboarding_nudges.count_today + 1 ELSE 1 END,
+                        total_nudges = bt_3_onboarding_nudges.total_nudges + 1,
+                        nudge_date   = CURRENT_DATE,
+                        last_nudge_at = NOW(),
+                        updated_at   = NOW();
+                """, (int(user_id),))
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("record_onboarding_nudge failed user=%s", user_id, exc_info=True)
+        return False
+
+
+def set_onboarding_nudge_dismissed(user_id: int) -> bool:
+    """User tapped «Позже» — stop nudging (they can still open the tour manually)."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bt_3_onboarding_nudges (user_id, dismissed, updated_at)
+                    VALUES (%s, TRUE, NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET dismissed = TRUE, updated_at = NOW();
+                """, (int(user_id),))
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("set_onboarding_nudge_dismissed failed user=%s", user_id, exc_info=True)
+        return False
+
+
+def list_onboarding_nudge_candidates(candidate_ids, *, max_per_day: int, max_total: int,
+                                     limit: int = 500) -> list[int]:
+    """From `candidate_ids` (the allow-listed users), those eligible for an onboarding
+    nudge: onboarding NOT completed (no row counts as not-completed), NOT dismissed,
+    under today's per-day cap and the lifetime cap. LEFT JOINs so existing users who
+    never started onboarding are INCLUDED. Ordered least-recently-nudged first (fair
+    rotation)."""
+    try:
+        ids = [int(x) for x in (candidate_ids or []) if int(x) > 0]
+        if not ids:
+            return []
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT u.uid
+                    FROM unnest(%s::bigint[]) AS u(uid)
+                    LEFT JOIN bt_3_user_onboarding ob ON ob.user_id = u.uid
+                    LEFT JOIN bt_3_onboarding_nudges n ON n.user_id = u.uid
+                    WHERE COALESCE(ob.completed, FALSE) = FALSE
+                      AND COALESCE(n.dismissed, FALSE) = FALSE
+                      AND COALESCE(n.total_nudges, 0) < %s
+                      AND (n.nudge_date IS DISTINCT FROM CURRENT_DATE
+                           OR COALESCE(n.count_today, 0) < %s)
+                    ORDER BY n.last_nudge_at ASC NULLS FIRST
+                    LIMIT %s;
+                """, (ids, int(max_total), int(max_per_day), int(limit)))
+                rows = cur.fetchall() or []
+        return [int(r[0]) for r in rows]
+    except Exception:
+        logging.warning("list_onboarding_nudge_candidates failed", exc_info=True)
+        return []
 
 
 def record_referral(invited_user_id: int, referrer_user_id: int) -> bool:

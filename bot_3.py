@@ -339,6 +339,10 @@ from backend.database import (
     mark_announcement_sent,
     get_onboarding_state,
     reset_onboarding_state,
+    get_onboarding_nudge_state,
+    record_onboarding_nudge,
+    set_onboarding_nudge_dismissed,
+    list_onboarding_nudge_candidates,
     get_user_streak,
     upsert_user_streak,
     get_users_active_on_date,
@@ -9262,6 +9266,178 @@ async def _send_onboarding_prompt(update: Update, context: CallbackContext) -> N
             photo=io.BytesIO(poster), caption=caption, parse_mode="HTML", reply_markup=kb)
     else:
         await update.effective_message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
+
+
+# ── Onboarding tour: one-time announce (A) + gentle nudges (B) ────────────────
+ONBOARDING_TOUR_ANNOUNCE_KEY = "onboarding_tour_v1"
+ONBOARDING_NUDGE_PER_DAY = max(1, int((os.getenv("ONBOARDING_NUDGE_PER_DAY") or "2").strip() or "2"))
+ONBOARDING_NUDGE_MAX_TOTAL = max(1, int((os.getenv("ONBOARDING_NUDGE_MAX_TOTAL") or "6").strip() or "6"))
+ONBOARDING_NUDGE_BATCH = max(1, int((os.getenv("ONBOARDING_NUDGE_BATCH") or "300").strip() or "300"))
+
+
+async def _send_tour_invite(context: CallbackContext, chat_id: int, *, announce: bool) -> bool:
+    """Send the branded tour-invite card + «🚀 Пройти тур» / «Позже».
+    announce=True → the one-time «bot updated» card; False → a gentle nudge."""
+    if announce:
+        title = "Бот обновился"
+        subtitle = "Загляни на быстрый тур — узнай все возможности за пару минут."
+        lead = "✨ <b>Мы обновили бота!</b>"
+    else:
+        title = "Не забыл про тур?"
+        subtitle = "Пара минут — и узнаешь, что умеет бот и что уже доступно тебе."
+        lead = "👋 <b>Загляни на быстрый тур</b>"
+    caption = (
+        f"{lead}\n\n{subtitle}\n\n"
+        "Нажми «🚀 Пройти тур» — покажу все возможности. Ненужное всегда можно отключить в настройках."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Пройти тур", url=get_webapp_deeplink("onboarding"))],
+        [InlineKeyboardButton("Позже", callback_data="tour:later")],
+    ])
+    poster = None
+    try:
+        from backend.interactive_card import render_tour_invite_card
+        poster = await asyncio.to_thread(render_tour_invite_card, title=title, subtitle=subtitle)
+    except Exception:
+        poster = None
+    for attempt in (1, 2):
+        try:
+            if poster:
+                await context.bot.send_photo(
+                    chat_id=int(chat_id), photo=io.BytesIO(poster), caption=caption,
+                    parse_mode="HTML", reply_markup=kb, suppress_private_keyboard_attach=True)
+            else:
+                await context.bot.send_message(
+                    chat_id=int(chat_id), text=caption, parse_mode="HTML",
+                    reply_markup=kb, suppress_private_keyboard_attach=True)
+            return True
+        except RetryAfter as exc:
+            if attempt == 2:
+                return False
+            await asyncio.sleep(max(1, int(getattr(exc, "retry_after", 1))))
+        except Exception:
+            return False
+    return False
+
+
+async def _tour_later_callback(update: Update, context: CallbackContext) -> None:
+    """«Позже» on a tour invite → stop nudging this user (tour stays reachable)."""
+    q = update.callback_query
+    if not q:
+        return
+    try:
+        await q.answer("Хорошо, не буду напоминать 🙂")
+    except Exception:
+        pass
+    user = update.effective_user
+    if user:
+        try:
+            await asyncio.to_thread(set_onboarding_nudge_dismissed, int(user.id))
+        except Exception:
+            pass
+    ack = ("Хорошо, не буду напоминать 🙂\n"
+           "Открыть тур можно в любой момент — кнопка «🎬 Как пользоваться» в меню снизу.")
+    try:
+        await q.edit_message_caption(caption=ack, reply_markup=None)
+    except Exception:
+        try:
+            await q.edit_message_text(text=ack, reply_markup=None)
+        except Exception:
+            try:
+                await q.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+
+async def _onboarding_announce_command(update: Update, context: CallbackContext) -> None:
+    """/onboarding_announce — one-time «bot updated, take the tour» broadcast (A).
+    No args → preview to yourself. `send` → broadcast to every allowed user who hasn't
+    completed onboarding and wasn't told yet (re-run-safe)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    mode = (args[0].strip().lower() if args else "")
+    if mode != "send":
+        await _send_tour_invite(context, int(user.id), announce=True)
+        await message.reply_text(
+            "👆 Так выглядит анонс тура.\n"
+            "Разослать ВСЕМ, кто ещё не прошёл онбординг: /onboarding_announce send")
+        return
+    ids = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    admin_ids = set()
+    try:
+        admin_ids = {int(x) for x in get_admin_telegram_ids() if int(x) > 0}
+    except Exception:
+        pass
+    await message.reply_text(f"📣 Рассылаю анонс тура… кандидатов: {len(ids)}")
+    sent = skipped = failed = 0
+    for idx, uid in enumerate(ids, start=1):
+        try:
+            uid = int(uid)
+            if uid in admin_ids or _is_synthetic_telegram_user_id(uid):
+                skipped += 1
+                continue
+            if await asyncio.to_thread(was_announcement_sent, uid, ONBOARDING_TOUR_ANNOUNCE_KEY):
+                skipped += 1
+                continue
+            st = await asyncio.to_thread(get_onboarding_state, uid)
+            if st and st.get("completed"):
+                skipped += 1
+                continue
+            if await _send_tour_invite(context, uid, announce=True):
+                await asyncio.to_thread(mark_announcement_sent, uid, ONBOARDING_TOUR_ANNOUNCE_KEY)
+                sent += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+            logging.warning("onboarding announce loop failed uid=%s", uid, exc_info=True)
+        if idx % 20 == 0:
+            await asyncio.sleep(1.0)
+    await message.reply_text(
+        f"✅ Анонс тура: отправлено {sent}, пропущено (уже прошли/были) {skipped}, ошибок {failed}.")
+
+
+async def _onboarding_nudge_job(context: CallbackContext) -> None:
+    """Scheduled gentle nudge (B): invite un-onboarded users to the tour. Respects the
+    per-day + lifetime caps and quiet hours; completed/dismissed users are excluded."""
+    if not _onboarding_enabled():
+        return
+    if _is_quiet_hours_now():
+        return
+    try:
+        allowed = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    except Exception:
+        allowed = []
+    admin_ids = set()
+    try:
+        admin_ids = {int(x) for x in get_admin_telegram_ids() if int(x) > 0}
+    except Exception:
+        pass
+    cand = [int(u) for u in allowed
+            if int(u) > 0 and int(u) not in admin_ids and not _is_synthetic_telegram_user_id(int(u))]
+    if not cand:
+        return
+    targets = await asyncio.to_thread(
+        list_onboarding_nudge_candidates, cand,
+        max_per_day=ONBOARDING_NUDGE_PER_DAY, max_total=ONBOARDING_NUDGE_MAX_TOTAL,
+        limit=ONBOARDING_NUDGE_BATCH)
+    if not targets:
+        return
+    logging.info("onboarding nudge job: %s target(s)", len(targets))
+    for idx, uid in enumerate(targets, start=1):
+        try:
+            if await _send_tour_invite(context, int(uid), announce=False):
+                await asyncio.to_thread(record_onboarding_nudge, int(uid))
+        except Exception:
+            logging.warning("onboarding nudge failed uid=%s", uid, exc_info=True)
+        if idx % 20 == 0:
+            await asyncio.sleep(1.0)
 
 
 async def start(update: Update, context: CallbackContext):
@@ -34488,6 +34664,7 @@ def main():
     application.add_handler(CommandHandler("streak", _streak_command))
     application.add_handler(CommandHandler("invite", _invite_command))
     application.add_handler(CommandHandler("announce_schedule", _announce_schedule_command))
+    application.add_handler(CommandHandler("onboarding_announce", _onboarding_announce_command))
     application.add_handler(CommandHandler("admin_reset_onboarding", _admin_reset_onboarding_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
     application.add_handler(CommandHandler("shortcut_runs", _admin_shortcut_runs_command))
@@ -34537,6 +34714,7 @@ def main():
     application.add_handler(CommandHandler("admin_riddle_health", admin_visual_riddle_health_command))
     application.add_handler(CommandHandler("admin_retag", admin_retag_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
+    application.add_handler(CallbackQueryHandler(_tour_later_callback, pattern=r"^tour:later$"))
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
     application.add_handler(CallbackQueryHandler(handle_world_news_pin_callback, pattern=r"^wn_pin:"))
     application.add_handler(CallbackQueryHandler(handle_world_news_words_callback, pattern=r"^wn_words:"))
@@ -34938,6 +35116,16 @@ def main():
         # Drain Mini-App «⚔️ Battles» create requests every few seconds (bot runs the
         # existing broadcast logic, so invites/images/nudges/digest are unchanged).
         scheduler.add_job(lambda: submit_async(_drain_battle_create_queue_job, CallbackContext(application=application)), "interval", seconds=int((os.getenv("BATTLE_CREATE_DRAIN_SECONDS") or "12").strip() or "12"), coalesce=True, max_instances=1, misfire_grace_time=60)
+
+        # Onboarding tour nudges (B): invite un-onboarded users to the tour, up to
+        # ONBOARDING_NUDGE_PER_DAY/day. One cron run per configured hour (default 12 & 18).
+        for _nh in (os.getenv("ONBOARDING_NUDGE_HOURS") or "12,18").split(","):
+            try:
+                _nh_i = int(_nh.strip())
+            except Exception:
+                continue
+            if 0 <= _nh_i <= 23:
+                scheduler.add_job(lambda: submit_async(_onboarding_nudge_job, CallbackContext(application=application)), "cron", hour=_nh_i, minute=15, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=1800)
         # Startup catch-up: if a restart/redeploy straddled either slot (this is what ate
         # 2026-07-04's news), prepare tomorrow / send today's approved-but-unsent entry now.
         scheduler.add_job(lambda: submit_async(run_world_news_startup_catchup,CallbackContext(application=application)),"date", run_date=_get_quiz_schedule_now() + timedelta(seconds=45))

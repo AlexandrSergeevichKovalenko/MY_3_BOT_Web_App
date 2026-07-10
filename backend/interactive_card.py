@@ -549,6 +549,32 @@ def render_welcome_card() -> bytes | None:
                  accent=(56, 132, 222), motif=_motif_cruise, cta="Пара минут — и поехали")
 
 
+def _motif_compass(base, d, cx, cy, accent):
+    """A compass rose — 'открой все возможности' for the tour-invite card."""
+    r = 168
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=accent, width=20)
+    d.ellipse([cx - r + 26, cy - r + 26, cx + r - 26, cy + r - 26],
+              outline=tuple(min(255, c + 30) for c in accent), width=5)
+    for k in range(8):
+        a = math.radians(k * 45)
+        long = (k % 2 == 0)
+        r1 = (r - 42) if long else (r - 28)
+        x1, y1 = cx + int(r1 * math.sin(a)), cy - int(r1 * math.cos(a))
+        x2, y2 = cx + int((r - 12) * math.sin(a)), cy - int((r - 12) * math.cos(a))
+        d.line([(x1, y1), (x2, y2)], fill=WHITE, width=6 if long else 3)
+    tip = 118
+    d.polygon([(cx, cy - tip), (cx - 30, cy), (cx + 30, cy)], fill=GOLD)             # north
+    d.polygon([(cx, cy + tip), (cx - 30, cy), (cx + 30, cy)], fill=(226, 232, 244))  # south
+    d.ellipse([cx - 16, cy - 16, cx + 16, cy + 16], fill=INK, outline=WHITE, width=4)
+
+
+def render_tour_invite_card(*, title: str, subtitle: str, cta: str = "Пройти тур") -> bytes | None:
+    """Invite card for the onboarding tour — used by the one-time announce and the
+    gentle nudges. Same brand language, distinct purple accent + compass motif."""
+    return _card(badge="ТУР ПО БОТУ", title=title, subtitle=subtitle,
+                 accent=(124, 108, 246), motif=_motif_compass, cta=cta)
+
+
 def render_settings_card() -> bytes | None:
     """Branded hero plaque for the «⚙️ Настройки» reply button."""
     return _card(badge="НАСТРОЙКИ", title="Настройки",
