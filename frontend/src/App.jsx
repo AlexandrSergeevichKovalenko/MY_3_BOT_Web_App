@@ -22243,12 +22243,30 @@ function AppInner() {
       setReaderAudioAwaitingWordTap(false);
       if (wordEl && root.contains(wordEl)) {
         const wid = String(wordEl.getAttribute('data-wid') || '').trim();
-        const charStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
-        console.log('[ReaderAudio] awaiting tap: wid=', wid, 'charStart=', charStart, 'isFinite=', Number.isFinite(charStart));
+        const rawCharStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
+        // In continuous-reflow (window) mode the rendered data-start is a WINDOW
+        // offset spanning many server pages; the per-page audio needs the tapped
+        // word's OWN server page + a PAGE-LOCAL char offset — otherwise it starts
+        // from the wrong word and the visible page jumps far ahead.
+        let audioPage = readerCurrentPageRef.current;
+        let localCharStart = rawCharStart;
+        if (readerWindowModel && Array.isArray(readerWindowModel.offsets) && Number.isFinite(rawCharStart)) {
+          let chosen = readerWindowModel.offsets[0];
+          for (let i = 0; i < readerWindowModel.offsets.length; i += 1) {
+            if (readerWindowModel.offsets[i].charStart <= rawCharStart) chosen = readerWindowModel.offsets[i];
+            else break;
+          }
+          if (chosen) {
+            audioPage = chosen.page;
+            localCharStart = rawCharStart - chosen.charStart;
+          }
+        }
+        console.log('[ReaderAudio] awaiting tap: wid=', wid, 'page=', audioPage, 'localCharStart=', localCharStart);
         if (wid) {
-          const currentPage = readerCurrentPageRef.current;
           void primeReaderAudioPlayback();
-          playReaderAudioPage(currentPage, wid, Number.isFinite(charStart) && charStart >= 0 ? charStart : undefined);
+          // null (not undefined) → don't fall back to a stale window startWid; the
+          // page-local char offset is the source of truth for the start position.
+          playReaderAudioPage(audioPage, null, Number.isFinite(localCharStart) && localCharStart >= 0 ? localCharStart : undefined);
         }
       }
       return; // don't show translation when starting audio
@@ -22260,10 +22278,11 @@ function AppInner() {
       const metaWord = readerWordMap.get(wid);
       if (!metaWord || !sid) return;
 
-      // Track tap count — same sentence within 320ms increments the counter
+      // Track tap count — same sentence within 450ms increments the counter
+      // (320ms was too tight to land a reliable double-tap on a phone).
       const now = Date.now();
       const lastTap = readerLastTapRef.current;
-      const isFast = now - lastTap.time < 320 && lastTap.sid === sid;
+      const isFast = now - lastTap.time < 450 && lastTap.sid === sid;
       const tapCount = isFast ? lastTap.count + 1 : 1;
       readerLastTapRef.current = { time: now, sid, count: tapCount };
 

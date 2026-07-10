@@ -432,7 +432,9 @@ export default function ReaderSection(props) {
     const g = readerGestureRef.current;
     if (!g.down) return;
     const dx = e.clientX - g.x, dy = e.clientY - g.y;
-    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) g.moved = true;
+    // Only real drags count as a swipe; small finger jitter (esp. the 2nd tap of a
+    // double-tap) stays a TAP so the sentence-translation isn't lost.
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) g.moved = true;
     if (Math.abs(dx) >= Math.abs(dy)) {
       const atStart = readerColIndexRef.current === 0 && readerCurrentPage <= 1;
       const atEnd = readerColIndexRef.current >= readerColCountRef.current - 1 && readerCurrentPage >= readerPageCount;
