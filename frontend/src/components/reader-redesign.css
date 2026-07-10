@@ -3801,6 +3801,10 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   opacity: 0 !important;
   pointer-events: none !important;
   transition: opacity .2s ease !important;
+  /* WebKit still composites backdrop-filter at opacity:0, so the blur+saturate
+     kept tinting the page behind the faded bars. Disable it while hidden. */
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 

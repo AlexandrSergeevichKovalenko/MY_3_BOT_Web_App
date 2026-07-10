@@ -700,6 +700,15 @@ body {
   height: 100dvh;
 }
 
+/* Flat reader background across the WHOLE immersive viewport — overrides the app's
+   colourful radial gradient so nothing bleeds through BEHIND the chrome. Fixes the
+   blue (top) / maroon (bottom) bands that appeared when the chrome fades on a
+   centre-tap: the bars' own backgrounds had been the only thing covering the page
+   gradient there. (--rd-bg literals: dark #080c1a, sepia #f4ecd8, cream #fbf8f1.) */
+.webapp-page.is-reader-immersive[data-reader-theme="dark"]  { background: #080c1a; }
+.webapp-page.is-reader-immersive[data-reader-theme="sepia"] { background: #f4ecd8; }
+.webapp-page.is-reader-immersive[data-reader-theme="cream"] { background: #fbf8f1; }
+
 .webapp-page.is-reader-immersive .webapp-main {
   display: flex;
   flex-direction: column;
