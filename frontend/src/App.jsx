@@ -50,6 +50,14 @@ import './styles/home-browser-redesign.css';
 // audio, level/frequency/IPA…). Mounts only when a word is expanded, so its own
 // TTS hook is created on demand. Meanings are hidden here (the Library already
 // renders «Значения» above). Tapping a synonym/collocation chip saves it.
+// Server-internal / infra error text that must NEVER be shown to a user (DB / PgBouncer
+// failures, stack traces, 5xx / gateway errors). We log the raw detail for ourselves and show
+// a clean, human fallback instead — a user should see "что-то не загрузилось", not our plumbing.
+const TECHNICAL_ERROR_RE = /internal server error|connection to server|pgbouncer|railway\.internal|password authentication|psycopg|operationalerror|sqlstate|traceback|could not connect|econnrefused|connection refused|bad gateway|gateway time|service unavailable|server closed the connection|remaining connection slots|too many connections/i;
+function looksLikeTechnicalError(text) {
+  return TECHNICAL_ERROR_RE.test(String(text || ''));
+}
+
 // Generic embedded deep card for a breakdown `item` (a lookup result or a saved
 // response_json). Used by the Library detail and the Search result so both look
 // exactly like the quick dictionary. Mounts its own TTS on demand; tapping a
@@ -7976,7 +7984,14 @@ function AppInner() {
         'Netzwerkfehler. Bitte Internet prüfen und erneut versuchen.'
       );
     }
-    return String(error?.message || fallback);
+    // Never surface raw server/DB internals to the user — log for us, show a clean message.
+    const msg = String(error?.message || '');
+    if (!msg) return fallback;
+    if (looksLikeTechnicalError(msg)) {
+      try { console.warn('[user-error hidden as technical]', msg); } catch (_e) { /* ignore */ }
+      return tr('Сервис временно недоступен. Попробуйте позже.', 'Der Dienst ist vorübergehend nicht verfügbar. Bitte später erneut versuchen.');
+    }
+    return msg;
   }, [tr]);
   const formatSupportTime = (isoValue) => {
     if (!isoValue) return '';
@@ -8226,9 +8241,20 @@ function AppInner() {
       }
       return '';
     };
+    // Show the clean, section-specific fallback for anything technical (5xx, DB/infra errors)
+    // and keep the real detail in the console for us. Genuine user-facing 4xx messages
+    // (validation, limits) are still shown as-is.
+    const cleanOrRaw = (msg) => {
+      const m = String(msg || '').trim();
+      if (response.status >= 500 || looksLikeTechnicalError(m)) {
+        if (m) { try { console.warn('[api-error hidden as technical]', response.status, m); } catch (_e) { /* ignore */ } }
+        return tr('Сервис временно недоступен. Попробуйте позже.', 'Der Dienst ist vorübergehend nicht verfügbar. Bitte später erneut versuchen.');
+      }
+      return m || fallback;
+    };
     try {
       const raw = await response.text();
-      if (!raw) return `${fallback} (HTTP ${response.status})`;
+      if (!raw) return fallback;
       try {
         const parsed = JSON.parse(raw);
         const billingLimitMessage = formatBillingLimitError(parsed);
@@ -8240,16 +8266,16 @@ function AppInner() {
         if (isInitDataAuthFailureMessage(message)) {
           handleInitDataAuthFailure(message);
         }
-        return message || `${fallback} (HTTP ${response.status})`;
+        return cleanOrRaw(message);
       } catch (_jsonError) {
         const compact = String(raw).replace(/\s+/g, ' ').trim();
         if (isInitDataAuthFailureMessage(compact)) {
           handleInitDataAuthFailure(compact);
         }
-        return compact || `${fallback} (HTTP ${response.status})`;
+        return cleanOrRaw(compact);
       }
     } catch (_readError) {
-      return `${fallback} (HTTP ${response.status})`;
+      return fallback;
     }
   }, [handleInitDataAuthFailure, handleSingleInstanceConflict, isInitDataAuthFailureMessage, tr]);
   const parseTranslationLimitNotice = useCallback((value) => {
