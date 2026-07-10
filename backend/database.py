@@ -4662,6 +4662,23 @@ _ACTIVE_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL)
 DB_CONNECT_SSLMODE = str(_ACTIVE_DATABASE_URL_META.get("sslmode") or "require").strip() or "require"
 
 
+def get_active_db_endpoint_info() -> dict:
+    """Non-sensitive summary of the ACTIVE DB endpoint (kind/host/port/sslmode/target) — used
+    by /api/healthz to confirm whether the app talks to the DB over the SLOW public TCP proxy
+    (`railway_tcp_proxy`, ~0.85s/round-trip) or the FAST private network (`railway_private_network`,
+    ~1ms). No credentials are exposed."""
+    return {
+        "endpoint_kind": _ACTIVE_DATABASE_URL_META.get("endpoint_kind"),
+        "host": _ACTIVE_DATABASE_URL_META.get("host"),
+        "port": _ACTIVE_DATABASE_URL_META.get("port"),
+        "sslmode": _ACTIVE_DATABASE_URL_META.get("sslmode"),
+        "connection_target": DB_CONNECTION_TARGET,
+        "source": DATABASE_URL_SOURCE,
+        "pgbouncer_configured": bool(_PGBOUNCER_DATABASE_URL_META.get("configured")),
+        "direct_configured": bool(_DIRECT_DATABASE_URL_META.get("configured")),
+    }
+
+
 def _enforce_db_runtime_policy() -> None:
     service_name = _db_policy_runtime_service_name()
     production_service = _is_strict_pooled_db_runtime(service_name)

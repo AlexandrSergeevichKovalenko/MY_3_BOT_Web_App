@@ -105,6 +105,7 @@ from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
 from backend.database import (
     get_db_connection_context,
+    get_active_db_endpoint_info,
     db_acquire_scope,
     summarize_db_acquire_events,
     _emit_db_pool_runtime_audit,
@@ -3427,7 +3428,12 @@ def web_auth_config():
 
 @app.route("/api/healthz", methods=["GET"])
 def api_healthz():
-    return jsonify({"ok": True, "service": "backend_web"}), 200
+    db_info = {}
+    try:
+        db_info = get_active_db_endpoint_info()
+    except Exception:
+        db_info = {}
+    return jsonify({"ok": True, "service": "backend_web", "db": db_info}), 200
 
 
 @app.route("/api/web/auth/telegram", methods=["POST"])
