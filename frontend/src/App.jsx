@@ -22340,6 +22340,15 @@ function AppInner() {
       const metaWord = readerWordMap.get(wid);
       if (!metaWord || !sid) return;
 
+      // While audio is playing, a word tap means "play from here" — jump the
+      // audio to this word and DON'T open a translation popover (it would hang on
+      // screen and force extra taps to dismiss). Translation resumes when stopped.
+      if (readerAudioPlayActive) {
+        setReaderAudioStartWid(wid);
+        restartReaderAudioFromWord(wid, Number(metaWord.start));
+        return;
+      }
+
       // Track tap count — same sentence within 450ms increments the counter
       // (320ms was too tight to land a reliable double-tap on a phone).
       const now = Date.now();
