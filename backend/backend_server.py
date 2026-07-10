@@ -5260,12 +5260,51 @@ def _extract_guard_user_id_for_path(path: str) -> int | None:
     return int(user_id) if user_id is not None else None
 
 
+# Cache the per-user billing-guard DECISION so the hot path (e.g. every 🔊 tap) doesn't re-run
+# ~4-5 billing DB aggregations (entitlement + today's cost SUM + plan limit + today's feature
+# SUM + Stripe sync). Soft daily limits tolerate a few-minute staleness — a user can't burn much
+# in the window, and every billed action is STILL recorded, so the next re-check after the TTL
+# sees the true totals. Invalidated on subscription change so a fresh Pro upgrade is instant.
+_BILLING_GUARD_DECISION_CACHE: dict[str, tuple[tuple, float]] = {}
+_BILLING_GUARD_DECISION_CACHE_LOCK = threading.Lock()
+_BILLING_GUARD_CACHE_TTL_SEC = max(0, int(str(os.getenv("BILLING_GUARD_CACHE_TTL_SEC") or "180").strip() or "180"))
+# Paths whose decision depends on request params (not just the user) — never cache these.
+_BILLING_GUARD_NO_CACHE_PATHS = {"/api/webapp/youtube/transcript"}
+
+
+def _invalidate_billing_guard_cache_for_user(user_id: int) -> None:
+    """Drop a user's cached billing decisions (e.g. right after they upgrade/pay) so entitlement
+    changes take effect immediately instead of waiting out the TTL."""
+    try:
+        prefix = f"{int(user_id)}|"
+    except Exception:
+        return
+    with _BILLING_GUARD_DECISION_CACHE_LOCK:
+        for k in [key for key in _BILLING_GUARD_DECISION_CACHE if key.startswith(prefix)]:
+            _BILLING_GUARD_DECISION_CACHE.pop(k, None)
+
+
 def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
     rule = _BILLING_GUARD_RULES.get(path) or {}
     user_id = _extract_guard_user_id_for_path(path)
     if user_id is None:
         return {"error": "user_id не определён для billing guard"}, 400
+    cacheable = _BILLING_GUARD_CACHE_TTL_SEC > 0 and path not in _BILLING_GUARD_NO_CACHE_PATHS
+    cache_key = f"{int(user_id)}|{path}" if cacheable else ""
+    if cacheable:
+        now = time.time()
+        with _BILLING_GUARD_DECISION_CACHE_LOCK:
+            hit = _BILLING_GUARD_DECISION_CACHE.get(cache_key)
+            if hit and hit[1] > now:
+                return hit[0]
+    decision = _compute_billing_guard(path, rule, int(user_id))
+    if cacheable:
+        with _BILLING_GUARD_DECISION_CACHE_LOCK:
+            _BILLING_GUARD_DECISION_CACHE[cache_key] = (decision, time.time() + _BILLING_GUARD_CACHE_TTL_SEC)
+    return decision
 
+
+def _compute_billing_guard(path: str, rule: dict, user_id: int) -> tuple[dict | None, int | None]:
     if path == "/api/webapp/youtube/transcript":
         payload = request.get_json(silent=True) or {}
         video_id = str(payload.get("videoId") or "").strip()
@@ -29121,6 +29160,12 @@ def _invalidate_billing_front_caches_for_user(user_id: int) -> None:
         _HOTPATH_BILLING_STATUS_CACHE.mark_stale(("billing_status", safe_user_id, _billing_status_snapshot_key()))
     except Exception:
         logging.warning("Failed to invalidate billing status front cache for user_id=%s", safe_user_id, exc_info=True)
+    # Drop the cached billing-GUARD decision too, so a fresh upgrade/downgrade takes effect on
+    # the next request instead of waiting out the guard-cache TTL.
+    try:
+        _invalidate_billing_guard_cache_for_user(safe_user_id)
+    except Exception:
+        logging.warning("Failed to invalidate billing guard cache for user_id=%s", safe_user_id, exc_info=True)
 
 
 def _invalidate_analytics_front_caches_for_user(user_id: int) -> None:
