@@ -48746,6 +48746,9 @@ def reader_audio_page():
     if rate_raw in (None, ""):
         rate_raw = request.args.get("rate", "1.0")
     page_text_override_raw = str(payload.get("page_text") or "").strip()
+    # Language the client detected over the WHOLE document at open time. Preferred
+    # over re-detecting from this request's (possibly tiny) page_text — see below.
+    language_raw = str(payload.get("language") or "").strip()
     prefetch_only_raw = payload.get("prefetch_only")
     if prefetch_only_raw in (None, ""):
         prefetch_only_raw = request.args.get("prefetch_only", "")
@@ -48827,10 +48830,20 @@ def reader_audio_page():
     if not page_text:
         return jsonify({"error": "Страница пустая"}), 422
 
-    language_for_tts = _normalize_short_lang_code(
-        _detect_reader_language(page_text, fallback=target_lang),
-        fallback=_normalize_short_lang_code(target_lang, fallback="de"),
-    )
+    # Prefer the client-detected document language (`language`) over re-detecting
+    # from this request's page_text. A short audio window — e.g. a dense
+    # index/glossary page full of names, numbers and abbreviations — carries too
+    # little signal for the stopword detector and can flip a German book to an
+    # English voice. The whole-document detection done at open time is reliable,
+    # so use it when supplied; per-page detection is only the fallback.
+    requested_language = _normalize_short_lang_code(language_raw, fallback="") if language_raw else ""
+    if requested_language:
+        language_for_tts = requested_language
+    else:
+        language_for_tts = _normalize_short_lang_code(
+            _detect_reader_language(page_text, fallback=target_lang),
+            fallback=_normalize_short_lang_code(target_lang, fallback="de"),
+        )
     google_lang_code = _TTS_LANG_CODES.get(language_for_tts, "de-DE")
     default_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
     voice_name = voice_raw if voice_raw else default_voice

@@ -10,6 +10,7 @@ import WeeklySummaryModal from './components/WeeklySummaryModal';
 import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic } from './dictionary/WordBreakdown';
+import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
@@ -65,19 +66,49 @@ function looksLikeTechnicalError(text) {
 function EmbeddedWordCard({ item, hideMeanings }) {
   const tts = useDictTts();
   const [savedChips, setSavedChips] = useState(() => new Set());
+  // Tap a synonym / related word / collocation → save it through the SAME canonical
+  // pipeline as the quick dictionary (DictionaryOverlay.saveChip): a deterministic
+  // quick-translate (RU gloss) IN PARALLEL with the GPT breakdown, so the chip is
+  // stored as a proper card (article + translation + grammar + meta), NEVER bare
+  // German. Omitting `quick`/`rich` was why chips saved German-only cards.
   const saveChip = useCallback((text) => {
     const t = String(text || '').trim();
     if (!t) return;
     setSavedChips((prev) => { if (prev.has(t)) return prev; const n = new Set(prev); n.add(t); return n; });
     dictHaptic('ok');
-    dictApi('/api/webapp/dictionary/save', {
-      source_text: t, source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
-      origin_process: 'webapp_related',
-    }).catch(() => { setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; }); });
+    (async () => {
+      try {
+        const pair = dictGuessPair(t);
+        const [quickData, richData] = await Promise.all([
+          dictApi('/api/translate/quick', { text: t, source_lang: pair.source, target_lang: pair.target }).catch(() => null),
+          dictApi('/api/webapp/dictionary', { word: t, lookup_lang: pair.source }).catch(() => null),
+        ]);
+        const rich = richData?.item || null;
+        if (rich) {
+          rich.__direction = String(richData?.direction || rich.__direction || `${pair.source}-${pair.target}`).trim();
+          rich.__language_pair = richData?.language_pair || null;
+        }
+        const detected = String(quickData?.detected_source_lang || pair.source).toLowerCase();
+        const chipTargetLang = detected === pair.target ? pair.source : pair.target;
+        const quick = quickData ? {
+          source: t,
+          translation: String(quickData?.translation || '').trim(),
+          sourceLang: detected,
+          targetLang: chipTargetLang,
+          direction: `${detected}-${chipTargetLang}`,
+        } : null;
+        if (!rich && !(quick && quick.translation)) throw new Error('translate failed');
+        await dictApi('/api/webapp/dictionary/save', buildDictionarySavePayload({
+          rich, sourceText: t, quick, origin: 'webapp_related',
+        }));
+      } catch (_e) {
+        setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; });
+      }
+    })();
   }, []);
-  // Tap an example SENTENCE → save it as a full sentence (de→ru) with its already-shown
-  // Russian gloss. Same canonical /save endpoint as chips; backend classifies it as a
-  // sentence (no article normalisation). Falls back to a quick-translate if no gloss.
+  // Tap an example SENTENCE → same canonical pipeline, but as a full sentence: use the
+  // already-shown Russian gloss (fall back to a deterministic quick-translate), then
+  // buildDictionarySavePayload so it's never saved German-only.
   const saveExample = useCallback((de, ru) => {
     const src = String(de || '').trim();
     if (!src) return;
@@ -90,11 +121,13 @@ function EmbeddedWordCard({ item, hideMeanings }) {
           const q = await dictApi('/api/translate/quick', { text: src, source_lang: 'de', target_lang: 'ru' }).catch(() => null);
           translation = String(q?.translation || '').trim();
         }
-        await dictApi('/api/webapp/dictionary/save', {
-          source_text: src, target_text: translation, translation_ru: translation,
-          source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
-          origin_process: 'webapp_example',
-        });
+        if (!translation) throw new Error('translate failed');
+        await dictApi('/api/webapp/dictionary/save', buildDictionarySavePayload({
+          rich: null,
+          sourceText: src,
+          quick: { source: src, translation, sourceLang: 'de', targetLang: 'ru', direction: 'de-ru' },
+          origin: 'webapp_example',
+        }));
       } catch (_e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(src); return n; });
       }
@@ -23601,6 +23634,10 @@ function AppInner() {
             rate: targetRate,
             page_text: targetText,
             prefetch_only: prefetchOnly,
+            // Book language detected over the WHOLE document at open time. Sent so
+            // the backend voices a German book in German even when the current
+            // audio window is a short, low-signal page (dense index/glossary).
+            language: readerDetectedLanguage || undefined,
           };
           const maxAttempts = prefetchOnly ? 12 : 30;
           let transientRetries = 0;
@@ -23885,6 +23922,7 @@ function AppInner() {
     readerAudioVoice,
     readerAudioWidReverseMap,
     readerAudioWidToCharStart,
+    readerDetectedLanguage,
     readerDocumentId,
     tr,
   ]);
@@ -24017,6 +24055,7 @@ function AppInner() {
             rate,
             page_text: win.combinedText,
             prefetch_only: false,
+            language: readerDetectedLanguage || undefined,
           }),
         });
         const payload = await resp.json().catch(() => ({}));
@@ -24143,7 +24182,8 @@ function AppInner() {
     }
   }, [
     buildReaderAudioWindow, initData, openReaderAudioPremiumPaywall, readerAudioRate,
-    readerAudioVoice, readerAudioWidToCharStart, readerDocumentId, stopReaderAudioPlay,
+    readerAudioVoice, readerAudioWidToCharStart, readerDetectedLanguage, readerDocumentId,
+    stopReaderAudioPlay,
   ]);
 
   // Refs to break ordering cycles between the web-audio helpers.
