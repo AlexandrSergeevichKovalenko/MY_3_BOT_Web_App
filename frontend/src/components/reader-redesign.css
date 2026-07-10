@@ -3764,3 +3764,30 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 /* sepia/cream: play + chip follow the paper accent */
 .webapp-reader.is-immersive[data-reader-theme="sepia"] .reader-dock-play-flat { background: var(--rd-paper-accent); }
 .webapp-reader.is-immersive[data-reader-theme="cream"] .reader-dock-play-flat { background: #0d9488; }
+
+
+/* Fix: the "tap a word" hint must NOT reflow the page. It was an in-flow bar
+   that shrank the reading area on Play → columns recomputed and the text
+   shifted. Float it as a pill so pressing Слушать changes nothing on the page. */
+.webapp-reader .reader-audio-word-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);
+  transform: translateX(-50%);
+  z-index: 16;
+  width: auto;
+  max-width: 82vw;
+  padding: 9px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--rd-accent-soft);
+  background: var(--rd-bg-elev-2);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 26px -8px rgba(0,0,0,0.4);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.webapp-reader.is-immersive[data-reader-theme="sepia"] .reader-audio-word-hint,
+.webapp-reader.is-immersive[data-reader-theme="cream"] .reader-audio-word-hint {
+  background: var(--rd-paper-glass, rgba(244,236,216,0.9));
+}
