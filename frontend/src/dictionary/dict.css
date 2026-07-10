@@ -80,21 +80,6 @@
   padding: 14px 44px 14px 14px;
 }
 
-/* EMPTY state: pin «Перевести» to the bottom of the viewport so it's ALWAYS
-   visible regardless of screen height (that's the point of a translator). The
-   gradient fades scrolling content out behind the opaque button. */
-.dict-translate-row.dict-translate-sticky {
-  position: sticky;
-  bottom: calc(8px + env(safe-area-inset-bottom, 0px));
-  z-index: 6;
-  padding-top: 14px;
-  margin-top: 2px;
-  background: linear-gradient(to top, rgba(16, 23, 44, 0.98) 72%, rgba(16, 23, 44, 0));
-}
-.webapp-page.is-theme-light .dict-translate-row.dict-translate-sticky {
-  background: linear-gradient(to top, var(--dmps-card, #fff8ee) 72%, rgba(255, 248, 238, 0));
-}
-
 /* RESULT state: compact search bar with the translate button INLINE beside the
    input (quick-dict .dq-search), so the input never eats half the screen. */
 .dict-search-bar { display: flex; gap: 8px; align-items: stretch; }
@@ -180,8 +165,14 @@
 .dict-translate-alt:disabled { opacity: 0.5; cursor: default; }
 .dict-back-link { margin-top: 8px; font-size: 12.5px; }
 
-/* 5. Недавние — compact */
+/* 5. Недавние — compact: chips flow left→right and wrap, capped at ~2 rows so
+   they never eat the screen (extra recents beyond two lines are hidden). */
 .dict-search-recent { margin: 8px 0 2px; }
+.dict-search-recent .dq-recent-chips {
+  gap: 6px 8px;
+  max-height: 62px; /* ≈ two rows of chips */
+  overflow: hidden;
+}
 .dict-search-recent .dq-recent-chip { font-size: 13px; padding: 4px 12px; }
 
 /* Share/upload icon must fit its round button */
@@ -1101,7 +1092,11 @@
    the input returns to its normal compact height (results stay reachable).
    Only the input box changes — no buttons, controls or flow are touched. */
 .dict-search-compose.dict-compose-tall .dictionary-input.dict-input-big {
-  min-height: clamp(120px, calc(var(--app-height, 100dvh) * 0.26), 280px);
+  /* Compact + adaptive: a couple of lines scaled to the real screen height, but
+     NEVER tall enough to push the translate button / error off-screen. The whole
+     compose must fit one screen — that's the point of the translator. */
+  min-height: clamp(72px, calc(var(--app-height, 100dvh) * 0.12), 132px);
+  max-height: 132px;
 }
 
 /* ── "Tap a synonym to save it" hint ─────────────────────────────────────────

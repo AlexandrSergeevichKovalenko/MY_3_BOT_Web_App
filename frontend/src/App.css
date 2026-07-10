@@ -22533,8 +22533,13 @@ body.worldnews-active .webapp-topbar {
   .webapp-page.is-dictionary-layout .webapp-dictionary {
     width: min(720px, 100%);
     margin: 0 auto;
-    padding: 20px;
-    gap: 20px;
+    padding: 14px;
+    gap: 10px;
+  }
+  /* Tighten the section header so the compose + button + result fit one screen. */
+  .webapp-page.is-dictionary-layout .webapp-dictionary > h3 {
+    margin: 2px 0 4px;
+    font-size: 22px;
   }
 }
 
