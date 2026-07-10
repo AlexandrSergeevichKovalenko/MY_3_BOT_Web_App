@@ -135,3 +135,7 @@ html[data-scheme="light"] body { background: #eef3fb; }
 .st-seg-sub { font-size: 10.5px; color: var(--st-muted); white-space: nowrap; }
 
 .st-lock-note { margin: 6px 0 0; font-size: 12.5px; color: #8a5a00; }
+
+/* Dictionary tier rows (inside the block) */
+.st-dict-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; }
+.st-dict-row .st-row-title { font-size: 14.5px; font-weight: 700; }

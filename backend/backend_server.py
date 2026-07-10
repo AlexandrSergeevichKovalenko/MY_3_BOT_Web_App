@@ -42038,12 +42038,24 @@ def webapp_settings_state():
         is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
     except Exception:
         is_admin = False
+    # Starter-dictionary tier (none/base/full) so the settings toggles reflect reality.
+    try:
+        st = get_starter_dictionary_state(int(user_id)) or {}
+        dec = str(st.get("decision_status") or "").strip().lower()
+        cnt = int(st.get("last_imported_count") or 0)
+        if dec == "accepted" and cnt > 0:
+            dict_tier = "full" if cnt > int(STARTER_DICTIONARY_IMPORT_LIMIT) * 2 else "base"
+        else:
+            dict_tier = "none"
+    except Exception:
+        dict_tier = "none"
     return jsonify({
         "ok": True,
         "autosave": bool(get_shortcut_autosave_enabled(int(user_id))),
         "battle_ready": bool(is_article_battle_available(int(user_id))),
         "preset": str(prefs.get("preset") or "normal"),
         "window": _settings_current_window_key(prefs),
+        "dict_tier": dict_tier,
         "is_pro": is_pro,
         "is_admin": is_admin,
     })

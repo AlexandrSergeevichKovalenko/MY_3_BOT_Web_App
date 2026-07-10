@@ -70,6 +70,7 @@ export default function SettingsScreen() {
   const [state, setState] = useState(null);
   const [botUrl, setBotUrl] = useState('');
   const [err, setErr] = useState('');
+  const [dictBusy, setDictBusy] = useState(false);
 
   useEffect(() => {
     try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* noop */ }
@@ -118,6 +119,27 @@ export default function SettingsScreen() {
       else if (url) window.location.href = url;
     } catch (_e) { /* noop */ }
   }, [botUrl]);
+
+  // Base-dictionary tier: 'none' | 'base' (~1000) | 'full'. Mutually exclusive toggles.
+  // Reuses the starter-dictionary apply endpoint (decline = remove, accept = (re)import).
+  const setDictTier = useCallback(async (tier) => {
+    if (dictBusy) return;
+    const prev = state ? state.dict_tier : 'none';
+    patch({ dict_tier: tier });
+    setDictBusy(true);
+    try {
+      if (tier === 'none') {
+        await api('/api/webapp/starter-dictionary/apply', { action: 'decline' });
+      } else {
+        await api('/api/webapp/starter-dictionary/apply', { action: 'accept', full: tier === 'full', force_reimport: true });
+      }
+      haptic();
+    } catch (_e) {
+      patch({ dict_tier: prev });
+      setErr('Не удалось. Попробуй ещё раз.');
+      setTimeout(() => setErr(''), 2500);
+    } finally { setDictBusy(false); }
+  }, [dictBusy, state, patch]);
 
   if (err && !state) {
     return <div className="st-root"><div className="st-card"><p className="st-err">{err}</p></div></div>;
@@ -168,6 +190,23 @@ export default function SettingsScreen() {
           <Segmented options={WINDOWS} value={state.window} disabled={!isPro}
             onPick={(k) => persist('window', '/api/webapp/settings/window', k, 'window')} />
           {!isPro ? <p className="st-lock-note">🔓 Настройка расписания — в Pro. На бесплатном приходит подборка заданий в день.</p> : null}
+        </section>
+
+        {/* Base dictionaries — disable to keep only your own words */}
+        <section className="st-block">
+          <div className="st-block-head">
+            <div className="st-row-title">📚 Базовый словарь</div>
+            <div className="st-row-desc">Стартовые слова из общего словаря. Выключишь — останутся только твои слова.</div>
+          </div>
+          <div className="st-dict-row">
+            <div className="st-row-title">📚 Быстрый старт (~1000)</div>
+            <Toggle on={state.dict_tier === 'base'} onChange={(v) => setDictTier(v ? 'base' : 'none')} disabled={dictBusy} />
+          </div>
+          <div className="st-dict-row">
+            <div className="st-row-title">🔓 Весь словарь (полный)</div>
+            <Toggle on={state.dict_tier === 'full'} onChange={(v) => setDictTier(v ? 'full' : 'none')} disabled={dictBusy} />
+          </div>
+          <p className="st-lock-note">{dictBusy ? 'Применяю… (обновится через пару секунд)' : 'Включён только один. Выключишь оба — базовые слова удалятся, твои сохранятся.'}</p>
         </section>
 
         {/* Theme for tomorrow — admin only */}
