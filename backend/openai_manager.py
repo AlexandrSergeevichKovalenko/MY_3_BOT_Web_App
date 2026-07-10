@@ -2100,12 +2100,20 @@ Return STRICT JSON with these fields:
 }
 
 Output rules:
+- ⚠️ LANGUAGE — ABSOLUTE, ZERO EXCEPTIONS: the ENTIRE output contains ONLY Russian and
+  German. NEVER a single English word, gloss, definition, "literal translation", or note.
+  This is the most common mistake — check every field before returning.
+  • translations[].value = the GERMAN equivalent ONLY. NEVER an English sentence/gloss.
+  • translations[].context, meanings.*.context, all notes/explanations = RUSSIAN ONLY.
+  • meanings.*.value = a short RUSSIAN meaning. NEVER English.
+  • usage_examples / save_worthy_options / government_patterns: German on the German side,
+    Russian on the Russian side — never English on either.
+  If you cannot express something in Russian or German, OMIT that field/entry — do NOT fall
+  back to English.
+  FORBIDDEN (never emit anything like this):
+    {"value": "I don't want to get up for work like that in the morning",
+     "context": "literal translation of the Russian sentence"}
 - Explanatory notes must be in Russian.
-- LANGUAGE: NEVER use English anywhere in the output. Every meaning value/context and
-  every explanation must be in RUSSIAN or GERMAN only — German for the equivalent
-  word/phrase, Russian for any explanation. If a phrase has no single concise German
-  equivalent, meanings.primary.value must be a short RUSSIAN explanation — never an
-  English definition.
 - German examples must be natural, frequent, realistic, and learner-useful.
 - meanings.primary.value should reflect the main useful German equivalent(s).
 - meanings.secondary must contain only relevant/common secondary meanings.
@@ -2232,10 +2240,20 @@ Return STRICT JSON with these fields:
 }
 
 Output rules:
+- ⚠️ LANGUAGE — ABSOLUTE, ZERO EXCEPTIONS: the ENTIRE output contains ONLY Russian and
+  German. NEVER a single English word, gloss, definition, "literal translation", or note.
+  This is the most common mistake — check every field before returning.
+  • translations[].value = the GERMAN equivalent ONLY. NEVER an English sentence/gloss.
+  • translations[].context, meanings.*.context, all notes/explanations = RUSSIAN ONLY.
+  • meanings.*.value = a short RUSSIAN meaning. NEVER English.
+  • usage_examples / save_worthy_options / government_patterns: German on the German side,
+    Russian on the Russian side — never English on either.
+  If you cannot express something in Russian or German, OMIT that field/entry — do NOT fall
+  back to English.
+  FORBIDDEN (never emit anything like this):
+    {"value": "I don't want to get up for work like that in the morning",
+     "context": "literal translation of the Russian sentence"}
 - Explanatory notes must be in Russian.
-- LANGUAGE: NEVER use English anywhere in the output. Every meaning value/context and
-  every explanation must be in RUSSIAN or GERMAN only. meanings.primary/secondary
-  values are Russian meanings; explanations are Russian — never an English definition.
 - meanings.primary.value should contain the 1–3 most useful/common Russian meaning(s).
 - meanings.secondary must contain only relevant/common secondary meanings.
 - Each meaning must include short context plus one practical German example and its Russian translation.
@@ -2756,6 +2774,13 @@ CONTENT RULES (same as the full dictionary):
   connotation.*, synonym_differences[].when/nuance, common_mistakes[].why, false_friends[].looks_like/
   actual_meaning, *.example_source) are ALWAYS in explanation_language (fall back to source_language).
   Never infer explanation language from the values.
+- ⚠️ ONLY THREE LANGUAGES EXIST in the output: source_language, target_language, explanation_language.
+  NEVER introduce a fourth language. In particular, if English is NOT one of those three, emit ZERO
+  English — no English word, gloss, definition, note, or "literal translation" anywhere, in ANY field.
+  translations[] are TARGET-LANGUAGE variants ONLY; do NOT add a "literal translation" variant in some
+  other language. If you cannot fill a field in the allowed language, OMIT it — never substitute English.
+  FORBIDDEN example for a ru→de lookup (never emit): {"value":"I don't want to get up for work like
+  that in the morning","context":"literal translation of the Russian sentence"}.
 - GERMAN HEADWORD NORMALIZATION: a standalone German noun in word_source/word_target MUST carry its
   nominative article ("der/die/das + Noun") — never a bare noun. A standalone German verb → infinitive.
 - translations: up to 3 real variants, first is_primary=true. meanings: exactly one primary + up to two

@@ -834,6 +834,12 @@ export function useTts() {
   // Client-side cache: (lang::text) → blob object-URL. Once a word is played, replays
   // are INSTANT — no /tts/generate, no /tts/url poll, no re-download from R2.
   const blobCacheRef = useRef(new Map());
+  // (lang::text) → ready R2 audio_url, resolved AHEAD of the tap by warm(). The whole
+  // /api/webapp/* path (auth + billing before_request guards + DB) is slow (~3–8s) even for
+  // a cache hit, so doing it on tap makes 🔊 feel laggy. warm() pays that cost in the
+  // background when the card loads and PRELOADS the MP3, so the tap just plays — no server
+  // round-trip, near-instant.
+  const urlReadyRef = useRef(new Map());
   const [state, setState] = useState('idle'); // idle|loading|playing|error
   const [playingText, setPlayingText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -908,6 +914,13 @@ export function useTts() {
       try { await _startAudio(cachedBlobUrl, mySeq); return; }
       catch (_e) { blobCacheRef.current.delete(key); /* fall through to refetch */ }
     }
+    // Prewarmed fast path: warm() already resolved the R2 URL (and preloaded the MP3) →
+    // play straight away, skipping the slow /tts server round-trip entirely.
+    const readyUrl = urlReadyRef.current.get(key);
+    if (readyUrl) {
+      try { await _startAudio(readyUrl, mySeq); return; }
+      catch (_e) { urlReadyRef.current.delete(key); /* fall through */ }
+    }
     setState('loading');
     try {
       // /tts/generate ALREADY returns the ready URL for a cached word (or after the
@@ -938,6 +951,7 @@ export function useTts() {
       }
       if (!url) throw new Error('Zeitüberschreitung');
       if (mySeq !== seqRef.current) return;
+      urlReadyRef.current.set(key, url); // remember for instant replays
       // Download the MP3 once and cache it as a blob so every later tap is instant.
       let playSrc = url;
       try {
@@ -959,10 +973,37 @@ export function useTts() {
     }
   }, [_startAudio, ensureAudioEl]);
 
+  // Prewarm in the BACKGROUND (on card load): resolve the ready R2 URL and PRELOAD the MP3
+  // so a later tap plays instantly. Absorbs the slow /api/webapp/* server path here, off the
+  // tap's critical path.
   const warm = useCallback(async (text, language = 'de-DE') => {
     const t = String(text || '').trim();
     if (!t) return;
-    try { await api('/api/webapp/tts/generate', { text: t, language }); } catch (_e) { /* ignore */ }
+    const key = `${language}::${t}`;
+    if (urlReadyRef.current.has(key)) return;
+    try {
+      const gen = await api('/api/webapp/tts/generate', { text: t, language });
+      let url = (gen && String(gen.status || '') === 'ready' && gen.audio_url) ? String(gen.audio_url) : '';
+      if (!url && String(gen?.status || '') !== 'failed') {
+        const dictToken = getDictToken();
+        const params = new URLSearchParams({ text: t, language });
+        if (dictToken) params.set('dqt', dictToken);
+        const headers = { 'X-Telegram-InitData': getInitData() };
+        if (dictToken) headers['X-Dict-Token'] = dictToken;
+        for (let i = 0; i < 20 && !url; i += 1) {
+          await new Promise((r) => setTimeout(r, 800));
+          const res = await fetch(`/api/webapp/tts/url?${params.toString()}`, { method: 'GET', headers });
+          const data = await res.json().catch(() => ({}));
+          if (data.status === 'ready' && data.audio_url) { url = String(data.audio_url); break; }
+          if (data.status === 'failed') break;
+        }
+      }
+      if (url) {
+        urlReadyRef.current.set(key, url);
+        // Preload the MP3 into the browser HTTP cache (R2 is a fast CDN) so play() is instant.
+        try { const pre = new Audio(); pre.preload = 'auto'; pre.src = url; pre.load(); } catch (_e) { /* ignore */ }
+      }
+    } catch (_e) { /* ignore */ }
   }, []);
 
   useEffect(() => () => stop(), [stop]);
