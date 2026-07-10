@@ -33721,9 +33721,31 @@ function AppInner() {
                 {isSectionVisible('dictionary') && (
                   <PerfProfiler id="section.dictionary">
                     <section className="webapp-dictionary" ref={dictionaryRef}>
-                    <div className="webapp-local-section-head">
+                    <div className="webapp-local-section-head dict-section-head">
                       <h3>{tr('Словарь', 'Wörterbuch')}</h3>
-                      <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
+                      {/* Share/PDF sits in the header corner (inline with «Словарь») ONLY in
+                          the quick-result state; once the breakdown is expanded it moves back
+                          down to the action row (see below). */}
+                      {vocabTab === 'search' && dictionaryResult && !dictionaryResult.is_base_dict && dictBreakdownPhase !== 'done' && (
+                        <button
+                          type="button"
+                          className="dict-head-share"
+                          onClick={handleShareDictionaryCard}
+                          disabled={dictionaryShareLoading}
+                          aria-label={tr('Экспорт PDF — поделиться карточкой', 'PDF-Export — Karte teilen')}
+                          title={tr('Экспорт PDF — поделиться карточкой', 'PDF-Export — Karte teilen')}
+                        >
+                          {dictionaryShareLoading ? (
+                            <span className="tts-mini-spinner" aria-hidden="true" />
+                          ) : (
+                            <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 15V4" />
+                              <path d="M8.5 7.5 12 4l3.5 3.5" />
+                              <path d="M5 12v5.5A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5V12" />
+                            </svg>
+                          )}
+                        </button>
+                      )}
                     </div>
 
                     {/* Tab switcher */}
@@ -34895,30 +34917,34 @@ function AppInner() {
                                   : tr('📖 Подробный разбор', '📖 Ausführliche Analyse')}
                             </button>
                           )}
-                          <button
-                            className="secondary-button dictionary-share-button"
-                            type="button"
-                            onClick={handleShareDictionaryCard}
-                            disabled={dictionaryLoading || dictionaryShareLoading || !dictionaryResult}
-                            aria-label={tr('Экспорт PDF — поделиться карточкой', 'PDF-Export — Karte teilen')}
-                            title={tr('Экспорт PDF — поделиться карточкой', 'PDF-Export — Karte teilen')}
-                          >
-                            {dictionaryShareLoading ? (
-                              <span className="tts-mini-spinner" aria-hidden="true" />
-                            ) : (
-                              <svg viewBox="0 0 24 24" aria-hidden="true" className="dictionary-share-icon">
-                                <path
-                                  d="M12 3v10m0-10 4 4m-4-4-4 4M7 10v8h10v-8"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            )}
-                            <span className="dictionary-share-label">{tr('PDF', 'PDF')}</span>
-                          </button>
+                          {/* Bottom PDF/share — only when expanded (breakdown done) or offline;
+                              in the quick-result state it lives in the header corner instead. */}
+                          {(dictionaryResult.is_base_dict || dictBreakdownPhase === 'done') && (
+                            <button
+                              className="secondary-button dictionary-share-button"
+                              type="button"
+                              onClick={handleShareDictionaryCard}
+                              disabled={dictionaryLoading || dictionaryShareLoading || !dictionaryResult}
+                              aria-label={tr('Экспорт PDF — поделиться карточкой', 'PDF-Export — Karte teilen')}
+                              title={tr('Экспорт PDF — поделиться карточкой', 'PDF-Export — Karte teilen')}
+                            >
+                              {dictionaryShareLoading ? (
+                                <span className="tts-mini-spinner" aria-hidden="true" />
+                              ) : (
+                                <svg viewBox="0 0 24 24" aria-hidden="true" className="dictionary-share-icon">
+                                  <path
+                                    d="M12 3v10m0-10 4 4m-4-4-4 4M7 10v8h10v-8"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              )}
+                              <span className="dictionary-share-label">{tr('PDF', 'PDF')}</span>
+                            </button>
+                          )}
                         </div>
                         {dictBreakdownError && <div className="webapp-muted dict-breakdown-error">{dictBreakdownError}</div>}
                       </div>

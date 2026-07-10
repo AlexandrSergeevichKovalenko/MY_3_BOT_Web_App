@@ -22287,17 +22287,37 @@ body.worldnews-active .webapp-topbar {
 .webapp-dictionary .dictionary-result-actions .dictionary-share-button { min-height: 52px; }
 
 /* Reclaim top space: drop the corner mascot in the dictionary + tighten the «Словарь»
-   header (~20% smaller) so the main blocks get more room. */
+   header (~20% smaller) so the main blocks get more room. The header is a flex row so
+   the compact share/PDF button can sit inline with «Словарь» in the top-right corner. */
 .webapp-dictionary .section-corner-logo { display: none; }
 .webapp-dictionary .webapp-local-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   min-height: 0;
   padding-right: 0;
-  gap: 2px;
+  gap: 8px;
 }
 .webapp-dictionary .webapp-local-section-head h3 {
   font-size: 19px;
   line-height: 1.15;
 }
+.dict-head-share {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid var(--dict-border, #334155);
+  background: transparent;
+  color: var(--dict-text-title, #e5e7eb);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.dict-head-share:hover { background: rgba(148, 163, 184, 0.12); }
+.dict-head-share:disabled { opacity: 0.6; cursor: default; }
 
 .webapp-dictionary .dictionary-share-label {
   font-size: 11px;
@@ -22381,8 +22401,8 @@ body.worldnews-active .webapp-topbar {
 @media (max-width: 420px) {
   .webapp-page.is-dictionary-layout {
     padding-top: 8px;
-    padding-left: 6px;
-    padding-right: 6px;
+    padding-left: 3px;
+    padding-right: 3px;
     overflow-x: hidden;
   }
 
@@ -22580,7 +22600,7 @@ body.worldnews-active .webapp-topbar {
   .webapp-page.is-dictionary-layout .webapp-dictionary {
     width: min(720px, 100%);
     margin: 0 auto;
-    padding: 12px 8px;
+    padding: 12px 4px;
     gap: 10px;
   }
   /* Tighten the section header so the compose + button + result fit one screen. */
