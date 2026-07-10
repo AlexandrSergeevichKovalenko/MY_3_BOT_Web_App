@@ -836,17 +836,28 @@ export function useTts() {
   const blobCacheRef = useRef(new Map());
   const [state, setState] = useState('idle'); // idle|loading|playing|error
   const [playingText, setPlayingText] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
-  // ONE reused <audio> element. iOS (esp. a standalone home-screen PWA) blocks play() that
-  // isn't in the user-gesture call stack — and ours runs after an async /tts fetch, so a
-  // freshly-created Audio().play() silently fails. We instead reuse a single element and
-  // "unlock" it DURING the tap (play a silent clip); a later play() on that same element is
-  // then permitted. playsinline keeps iOS from hijacking it into fullscreen.
+  // ONE reused, off-screen <video> element (NOT <audio>). On iOS a <video> plays through the
+  // MEDIA channel and IGNORES the hardware silent/ringer switch — an <audio> element RESPECTS
+  // it and stays mute when the phone is on silent, which is why nothing sounded. It also
+  // plays a cross-origin MP3 URL directly (R2 sends no CORS, so fetch().blob() fails and we
+  // play the URL). Kept in the DOM + "unlocked" during the tap so a post-fetch play() is
+  // allowed (iOS blocks play() outside the gesture stack). playsinline stops fullscreen.
   const ensureAudioEl = useCallback(() => {
     let el = audioRef.current;
     if (!el) {
-      el = new Audio();
-      try { el.setAttribute('playsinline', ''); el.playsInline = true; } catch (_e) { /* ignore */ }
+      try {
+        el = document.createElement('video');
+        el.setAttribute('playsinline', '');
+        el.setAttribute('webkit-playsinline', '');
+        el.playsInline = true;
+        el.preload = 'auto';
+        el.muted = false;
+        el.volume = 1;
+        el.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+        if (typeof document !== 'undefined' && document.body) document.body.appendChild(el);
+      } catch (_e) { el = new Audio(); }
       audioRef.current = el;
     }
     return el;
@@ -864,8 +875,9 @@ export function useTts() {
     if (mySeq !== seqRef.current) return;
     const el = ensureAudioEl();
     el.onended = () => { if (mySeq === seqRef.current) { setState('idle'); setPlayingText(''); } };
-    el.onerror = () => { if (mySeq === seqRef.current) setState('error'); };
+    el.onerror = () => { if (mySeq === seqRef.current) { setState('error'); setErrorMsg('Не удалось воспроизвести аудио'); } };
     el.muted = false;
+    el.volume = 1;
     el.src = src;
     try { el.load(); } catch (_e) { /* ignore */ }
     setState('playing');
@@ -878,6 +890,7 @@ export function useTts() {
     const key = `${language}::${t}`;
     const mySeq = ++seqRef.current;
     setPlayingText(t);
+    setErrorMsg('');
     haptic('light');
     // iOS unlock — MUST run synchronously inside the tap, before any await. Playing a silent
     // clip on the reused element within the gesture authorizes the real play() that follows
@@ -933,10 +946,18 @@ export function useTts() {
         blobCacheRef.current.set(key, playSrc);
       } catch (_e) { /* blob fetch failed — play straight from the URL */ }
       await _startAudio(playSrc, mySeq);
-    } catch (_e) {
-      if (mySeq === seqRef.current) { setState('error'); haptic('bad'); }
+    } catch (e) {
+      if (mySeq === seqRef.current) {
+        setState('error'); haptic('bad');
+        const name = String(e?.name || '');
+        setErrorMsg(
+          name === 'NotAllowedError'
+            ? 'iOS заблокировал звук. Проверь боковой переключатель «бесшумно» и громкость.'
+            : (String(e?.message || '').trim() || 'Не удалось воспроизвести аудио'),
+        );
+      }
     }
-  }, [_startAudio]);
+  }, [_startAudio, ensureAudioEl]);
 
   const warm = useCallback(async (text, language = 'de-DE') => {
     const t = String(text || '').trim();
@@ -945,5 +966,5 @@ export function useTts() {
   }, []);
 
   useEffect(() => () => stop(), [stop]);
-  return { state, playingText, play, stop, warm };
+  return { state, playingText, play, stop, warm, errorMsg };
 }

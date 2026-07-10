@@ -790,6 +790,7 @@ export default function DictionaryOverlay() {
               {headTranslation}
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
+            {tts.errorMsg && <div className="dd-err" role="status">🔊 {tts.errorMsg}</div>}
             {item && <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} onSaveExample={saveExample} savedChips={savedChips} />}
             {(enrich === 'loading' || enrich === 'streaming') && (
               <BreakdownSkeleton arrived={streamSections} />
