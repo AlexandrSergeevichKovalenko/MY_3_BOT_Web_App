@@ -22536,23 +22536,6 @@ body.worldnews-active .webapp-topbar {
     padding: 20px;
     gap: 20px;
   }
-
-  /* Sticky «На главную» topbar for the dictionary Search view (not the Library
-     tab, which manages its own fixed layout). The base .webapp-page uses
-     `overflow-x: hidden`, which turns the page into a scroll container and kills
-     position:sticky on descendants (that's why the dictionary was carved out of
-     the global is-sticky-topbar). Switching to `overflow-x: clip` clips the same
-     horizontal overflow WITHOUT creating a scroll container, so the topbar can
-     stick against the normal document scroll — and window.scrollTo (used by the
-     reader deep-link «↙ к предложению») keeps working. */
-  .webapp-page.is-dictionary-layout:not(.is-vocab-library-fixed) {
-    overflow-x: clip;
-  }
-  .webapp-page.is-dictionary-layout:not(.is-vocab-library-fixed) .webapp-topbar {
-    position: sticky;
-    top: 0;
-    z-index: 40;
-  }
 }
 
 @media (min-width: 1025px) {
