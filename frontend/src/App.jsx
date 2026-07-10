@@ -14072,15 +14072,52 @@ function AppInner() {
     && readerImmersive
     && readerTopbarCollapsed
     && !readerArchiveOpen;
+  // ── Phase 1 Step 2: continuous reflow window ─────────────────────────
+  // For server-paged docs, feed the engine a WINDOW = the contiguous run of
+  // already-loaded pages around the current page (concatenated), so text flows
+  // across page boundaries into full screens (no more short/half-empty pages).
+  // Offsets map char position back to a server page for progress/anchoring.
+  const readerServerPaged = readerPageCount > 0 && !readerUsesOriginalEpubLayout && !readerUsesCustomLayout;
+  const readerWindowModel = useMemo(() => {
+    if (!readerServerPaged) return null;
+    const pages = readerDisplayPages;
+    const curIdx = Math.max(0, Math.min(pages.length - 1, Number(readerCurrentPage || 1) - 1));
+    const hasText = (idx) => idx >= 0 && idx < pages.length && String(pages[idx]?.text || '').trim().length > 0;
+    if (!hasText(curIdx)) return null;
+    let lo = curIdx, hi = curIdx;
+    while (lo > 0 && hasText(lo - 1)) lo -= 1;
+    while (hi < pages.length - 1 && hasText(hi + 1)) hi += 1;
+    const MAXW = 60;
+    if (hi - lo + 1 > MAXW) {
+      lo = Math.max(lo, curIdx - Math.floor(MAXW / 2));
+      hi = Math.min(pages.length - 1, lo + MAXW - 1);
+      lo = Math.max(0, hi - MAXW + 1);
+    }
+    const parts = [];
+    const offsets = [];
+    let acc = 0;
+    let curCharStart = 0;
+    for (let i = lo; i <= hi; i += 1) {
+      const t = normalizeReaderVisiblePageText(String(pages[i]?.text || ''));
+      offsets.push({ page: i + 1, charStart: acc });
+      if (i === curIdx) curCharStart = acc;
+      parts.push(t);
+      acc += t.length + 2; // "\n\n"
+    }
+    return { text: parts.join('\n\n'), offsets, lo: lo + 1, hi: hi + 1, curCharStart, totalChars: acc };
+  }, [readerServerPaged, readerDisplayPages, readerCurrentPage]);
   const readerVisibleText = useMemo(() => {
     if (readerUsesOriginalEpubLayout) {
       return '';
+    }
+    if (readerWindowModel) {
+      return readerWindowModel.text;
     }
     if (readerPageCount > 0) {
       return getReaderDisplayPageText(readerCurrentPage);
     }
     return normalizeReaderVisiblePageText(String(readerContent || ''));
-  }, [getReaderDisplayPageText, readerPageCount, readerCurrentPage, readerContent, readerUsesOriginalEpubLayout]);
+  }, [getReaderDisplayPageText, readerPageCount, readerCurrentPage, readerContent, readerUsesOriginalEpubLayout, readerWindowModel]);
   const readerResolvedOriginalTocTitle = useMemo(() => {
     const currentHref = normalizeReaderEpubHref(readerOriginalTocHref);
     if (!currentHref) return String(readerOriginalTocTitle || '').trim();
@@ -34863,6 +34900,8 @@ function AppInner() {
                   isCurrentReaderPageBookmarked={isCurrentReaderPageBookmarked}
                   readerCanUseOriginalLayout={readerCanUseOriginalLayout}
                   readerUsesCustomLayout={readerUsesCustomLayout}
+                  readerWindowModel={readerWindowModel}
+                  loadReaderPageRange={loadReaderPageRange}
                   readerUsesOriginalEpubLayout={readerUsesOriginalEpubLayout}
                   readerOriginalTocHref={readerOriginalTocHref}
                   readerResolvedOriginalTocTitle={readerResolvedOriginalTocTitle}

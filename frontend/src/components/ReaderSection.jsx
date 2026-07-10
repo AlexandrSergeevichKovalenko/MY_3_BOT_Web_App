@@ -60,6 +60,8 @@ export default function ReaderSection(props) {
     isCurrentReaderPageBookmarked,
     readerCanUseOriginalLayout,
     readerUsesCustomLayout: readerUsesCustomLayoutProp,
+    readerWindowModel = null,
+    loadReaderPageRange = () => {},
     readerUsesOriginalEpubLayout = false,
     readerOriginalTocHref = '',
     readerResolvedOriginalTocTitle = '',
@@ -192,6 +194,7 @@ export default function ReaderSection(props) {
   const readerColIndexRef = React.useRef(0);
   const readerColCountRef = React.useRef(1);
   const readerColGoLastRef = React.useRef(false);
+  const readerColAnchorCharRef = React.useRef(0);
   const readerGestureRef = React.useRef({ down: false, x: 0, y: 0, moved: false, base: 0 });
 
   const sectionClass = [
@@ -231,8 +234,64 @@ export default function ReaderSection(props) {
     track.style.transform = `translateX(${px}px)`;
   };
 
-  // Measure how many screen-columns the current page produced, then land on the
-  // first (or last, when we arrived by turning backwards) column.
+  // Content signature: in window mode this changes ONLY when the loaded window
+  // itself changes (extension / new doc / external jump), NOT on every page turn,
+  // so turning columns inside the window never re-measures or fights the engine.
+  const readerColContentSig = readerWindowModel
+    ? `w:${readerWindowModel.lo}:${readerWindowModel.hi}:${readerWindowModel.totalChars}`
+    : `p:${readerCurrentPage}:${readerShowsLazyOriginalPage ? 1 : 0}`;
+
+  const readerColOffsetOf = (el) => Math.max(0, (el?.offsetLeft || 0) - 22);
+  const readerColFindColOfChar = (charOffset) => {
+    const track = readerColTrackRef.current;
+    const step = readerColStep();
+    if (!track || step <= 1) return 0;
+    const spans = track.querySelectorAll('[data-start]');
+    let el = null;
+    for (let i = 0; i < spans.length; i += 1) {
+      if (Number(spans[i].getAttribute('data-start')) >= charOffset - 1) { el = spans[i]; break; }
+    }
+    if (!el) el = spans[spans.length - 1];
+    if (!el) return 0;
+    return Math.max(0, Math.floor((readerColOffsetOf(el) + step * 0.5) / step));
+  };
+  const readerColVisibleCharAt = (colIndex) => {
+    const track = readerColTrackRef.current;
+    const step = readerColStep();
+    if (!track || step <= 1) return readerColAnchorCharRef.current;
+    const lo = colIndex * step - 2, hi = (colIndex + 1) * step;
+    const spans = track.querySelectorAll('[data-start]');
+    let bestStart = Infinity;
+    for (let i = 0; i < spans.length; i += 1) {
+      const x = readerColOffsetOf(spans[i]);
+      if (x >= lo && x < hi) {
+        const s = Number(spans[i].getAttribute('data-start'));
+        if (s < bestStart) bestStart = s;
+      }
+    }
+    return bestStart === Infinity ? readerColAnchorCharRef.current : bestStart;
+  };
+  const readerColPageOfChar = (charOffset) => {
+    const offs = readerWindowModel?.offsets;
+    if (!Array.isArray(offs) || !offs.length) return null;
+    let page = offs[0].page;
+    for (let i = 0; i < offs.length; i += 1) {
+      if (offs[i].charStart <= charOffset) page = offs[i].page; else break;
+    }
+    return page;
+  };
+  // Record the reading position (char) and sync the server page for progress /
+  // bookmark / prefetch — WITHOUT re-measuring (window text is unchanged).
+  const readerColSyncPosition = () => {
+    if (!readerWindowModel) return;
+    const ch = readerColVisibleCharAt(readerColIndexRef.current);
+    readerColAnchorCharRef.current = ch;
+    const p = readerColPageOfChar(ch);
+    if (p && p !== readerCurrentPage) setReaderCurrentPage(p);
+  };
+
+  // Measure the window into screen-columns; land on the column holding the
+  // current reading position (anchor), so turning + window growth stay put.
   React.useLayoutEffect(() => {
     if (!readerColUsesEngine) return undefined;
     const vp = readerColViewportRef.current;
@@ -242,15 +301,25 @@ export default function ReaderSection(props) {
     const raf = window.requestAnimationFrame(() => {
       const w = vp.clientWidth, h = vp.clientHeight;
       if (w <= 0 || h <= 0) return;
-      // Bounded height + fixed column width ⇒ text flows into side-by-side columns
-      // that overflow to the right; each column is exactly one screen.
       track.style.height = `${h}px`;
       track.style.columnWidth = `${Math.max(1, w - 2 * M)}px`;
       track.style.columnGap = `${2 * M}px`;
       track.style.marginLeft = `${M}px`;
       const n = Math.max(1, Math.round((track.scrollWidth + 2 * M) / w));
-      const target = readerColGoLastRef.current ? n - 1 : 0;
+      let target;
+      if (readerWindowModel) {
+        let anchor = readerColAnchorCharRef.current;
+        const ap = readerColPageOfChar(anchor);
+        if (ap == null || Math.abs(ap - readerCurrentPage) > 2) {
+          anchor = readerWindowModel.curCharStart;
+          readerColAnchorCharRef.current = anchor;
+        }
+        target = readerColFindColOfChar(anchor);
+      } else {
+        target = readerColGoLastRef.current ? n - 1 : 0;
+      }
       readerColGoLastRef.current = false;
+      target = Math.max(0, Math.min(n - 1, target));
       setReaderColCount(n);
       setReaderColIndex(target);
       readerColIndexRef.current = target;
@@ -258,12 +327,13 @@ export default function ReaderSection(props) {
       applyReaderColTransform(-target * w, false);
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [readerColUsesEngine, readerCurrentPage, readerFontSize, readerFontWeight, readerShowsLazyOriginalPage]);
+  }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keep the transform in sync when the column index changes (animated turn).
+  // Animate the turn + record the new reading position.
   React.useEffect(() => {
     if (!readerColUsesEngine) return;
     applyReaderColTransform(-readerColIndex * readerColStep(), true);
+    readerColSyncPosition();
   }, [readerColIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-measure on viewport resize (rotation / chrome toggle / keyboard).
@@ -286,7 +356,7 @@ export default function ReaderSection(props) {
         const n = Math.max(1, Math.round((track.scrollWidth + 2 * M) / w));
         readerColCountRef.current = n;
         setReaderColCount(n);
-        const i = Math.min(readerColIndexRef.current, n - 1);
+        const i = Math.max(0, Math.min(readerColFindColOfChar(readerColAnchorCharRef.current), n - 1));
         readerColIndexRef.current = i;
         setReaderColIndex(i);
         applyReaderColTransform(-i * w, false);
@@ -294,12 +364,17 @@ export default function ReaderSection(props) {
     });
     ro.observe(vp);
     return () => { ro.disconnect(); window.cancelAnimationFrame(raf); };
-  }, [readerColUsesEngine]);
+  }, [readerColUsesEngine]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const readerTurnNext = () => {
     if (readerColIndexRef.current < readerColCountRef.current - 1) {
       setReaderColIndex((i) => i + 1);
-    } else if (readerCurrentPage < readerPageCount) {
+    } else if (readerWindowModel && readerWindowModel.hi < readerPageCount) {
+      // End of loaded window but the book continues — load ahead; when the window
+      // grows, the measure re-runs and keeps us anchored, adding columns to turn.
+      loadReaderPageRange(readerWindowModel.hi + 1);
+      applyReaderColTransform(-readerColIndexRef.current * readerColStep(), true);
+    } else if (!readerWindowModel && readerCurrentPage < readerPageCount) {
       readerColGoLastRef.current = false;
       setReaderCurrentPage(readerCurrentPage + 1);
     } else {
@@ -309,7 +384,10 @@ export default function ReaderSection(props) {
   const readerTurnPrev = () => {
     if (readerColIndexRef.current > 0) {
       setReaderColIndex((i) => i - 1);
-    } else if (readerCurrentPage > 1) {
+    } else if (readerWindowModel && readerWindowModel.lo > 1) {
+      loadReaderPageRange(readerWindowModel.lo - 1);
+      applyReaderColTransform(0, true);
+    } else if (!readerWindowModel && readerCurrentPage > 1) {
       readerColGoLastRef.current = true;
       setReaderCurrentPage(readerCurrentPage - 1);
     } else {
