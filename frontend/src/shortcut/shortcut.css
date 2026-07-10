@@ -205,3 +205,13 @@ html[data-scheme="light"] .sc-sublist li { color: #2a3650; }
 
 /* Key user actions (tap targets like «Всегда разрешать») — link-blue, bold */
 .sc-key { color: #1d4ed8 !important; font-weight: 800; font-style: normal; }
+
+/* Multilingual menu paths — each language on its own line, flag never orphaned */
+.sc-langs { margin: 5px 0 11px; }
+.sc-langline {
+  margin: 3px 0 !important;
+  color: #1d4ed8 !important; font-style: italic; font-weight: 600;
+  line-height: 1.5; font-size: 14px;
+}
+.sc-flag { font-style: normal; margin-right: 5px; }
+.sc-sublist .sc-langs { margin: 4px 0 2px; }
