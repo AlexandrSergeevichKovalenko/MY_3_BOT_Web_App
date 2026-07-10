@@ -6694,10 +6694,13 @@ body {
     display: flex;
   }
 
-  /* Reader and Flashcards-only strip page padding to 0 — restore clearance
-     for the Telegram Mini-App header that overlaps the web content top. */
+  /* Reader: no fixed top clearance. The Telegram Mini-App reserves its own
+     native header above our webview, so a hardcoded 20px just wasted a strip of
+     vertical space at the very top of the book (and its transparent area let the
+     still-mounted section behind bleed through). Use only the OS safe-area inset
+     — ≈0 on normal Telegram, real clearance only under a notch/fullscreen. */
   .webapp-page.is-reader-immersive .webapp-main {
-    padding-top: 20px;
+    padding-top: env(safe-area-inset-top, 0px);
   }
 
   .webapp-page.is-flashcards .webapp-main {
