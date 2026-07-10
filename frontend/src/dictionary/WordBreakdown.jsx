@@ -823,6 +823,10 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   );
 }
 
+// Tiny valid silent WAV — used to "unlock" the audio element inside the tap gesture so a
+// later programmatic play() (after our async fetch) is allowed by iOS.
+const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
 // Listen via the shared TTS pipeline: POST generate → poll url → play the MP3.
 export function useTts() {
   const audioRef = useRef(null);
@@ -833,22 +837,40 @@ export function useTts() {
   const [state, setState] = useState('idle'); // idle|loading|playing|error
   const [playingText, setPlayingText] = useState('');
 
+  // ONE reused <audio> element. iOS (esp. a standalone home-screen PWA) blocks play() that
+  // isn't in the user-gesture call stack — and ours runs after an async /tts fetch, so a
+  // freshly-created Audio().play() silently fails. We instead reuse a single element and
+  // "unlock" it DURING the tap (play a silent clip); a later play() on that same element is
+  // then permitted. playsinline keeps iOS from hijacking it into fullscreen.
+  const ensureAudioEl = useCallback(() => {
+    let el = audioRef.current;
+    if (!el) {
+      el = new Audio();
+      try { el.setAttribute('playsinline', ''); el.playsInline = true; } catch (_e) { /* ignore */ }
+      audioRef.current = el;
+    }
+    return el;
+  }, []);
+
   const stop = useCallback(() => {
     seqRef.current += 1;
-    if (audioRef.current) { try { audioRef.current.pause(); } catch (_e) { /* ignore */ } audioRef.current = null; }
+    const el = audioRef.current;
+    if (el) { try { el.pause(); } catch (_e) { /* ignore */ } }
     setState('idle');
     setPlayingText('');
   }, []);
 
   const _startAudio = useCallback(async (src, mySeq) => {
     if (mySeq !== seqRef.current) return;
-    const audio = new Audio(src);
-    audioRef.current = audio;
-    audio.onended = () => { if (mySeq === seqRef.current) { setState('idle'); setPlayingText(''); } };
-    audio.onerror = () => { if (mySeq === seqRef.current) setState('error'); };
+    const el = ensureAudioEl();
+    el.onended = () => { if (mySeq === seqRef.current) { setState('idle'); setPlayingText(''); } };
+    el.onerror = () => { if (mySeq === seqRef.current) setState('error'); };
+    el.muted = false;
+    el.src = src;
+    try { el.load(); } catch (_e) { /* ignore */ }
     setState('playing');
-    await audio.play();
-  }, []);
+    await el.play();
+  }, [ensureAudioEl]);
 
   const play = useCallback(async (text, language = 'de-DE') => {
     const t = String(text || '').trim();
@@ -857,6 +879,16 @@ export function useTts() {
     const mySeq = ++seqRef.current;
     setPlayingText(t);
     haptic('light');
+    // iOS unlock — MUST run synchronously inside the tap, before any await. Playing a silent
+    // clip on the reused element within the gesture authorizes the real play() that follows
+    // our async /tts fetch. Without this, standalone-PWA audio never sounds.
+    try {
+      const el = ensureAudioEl();
+      el.muted = false;
+      el.src = SILENT_WAV; // 0-length clip: unlocks the element, then ends on its own
+      const p = el.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (_e) { /* ignore */ }
     // Fast path: replay from the in-memory blob — instant, zero network.
     const cachedBlobUrl = blobCacheRef.current.get(key);
     if (cachedBlobUrl) {

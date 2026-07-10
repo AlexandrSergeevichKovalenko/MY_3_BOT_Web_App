@@ -606,23 +606,6 @@ export default function DictionaryOverlay() {
     })();
   }, []);
 
-  const openFull = useCallback(() => {
-    // Carry our auth into the full dictionary so it works outside Telegram too (home-screen
-    // PWA / standalone Safari). The full app authenticates via the durable dict token OR a
-    // cached initData — pass whichever we have so «Открыть полный словарь» no longer dead-ends
-    // on "initData nicht gefunden".
-    try {
-      const token = getDictToken();
-      const init = getInitData();
-      const params = new URLSearchParams({ startapp: 'dictionary' });
-      if (token) params.set('dqt', token);
-      else if (init) params.set('initData', init);
-      window.location.assign(`/webapp?${params.toString()}`);
-    } catch (_e) {
-      try { window.location.assign('/webapp?startapp=dictionary'); } catch (_e2) { /* ignore */ }
-    }
-  }, []);
-
   // Share this breakdown — SAME pattern as «Полный разбор»: one fast call mints a
   // durable share token, then open Telegram's native share sheet with the deep-link.
   // Recipient (even without the bot) taps it → a read-only guest view of the same
@@ -842,10 +825,6 @@ export default function DictionaryOverlay() {
         )}
         </>
         )}
-
-        <button type="button" className="dq-full" onClick={openFull}>
-          Открыть полный словарь →
-        </button>
       </div>
 
       {chipHint && (
