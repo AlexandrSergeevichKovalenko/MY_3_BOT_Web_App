@@ -792,13 +792,14 @@
   align-items: center;
   gap: 8px;
   margin: 0;
-  padding: 8px 14px 10px;
+  padding: 8px 12px 9px;
   border-radius: 0;
   border: none;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
-  background: rgba(8,12,26,0.82);
-  backdrop-filter: blur(var(--rd-blur));
-  -webkit-backdrop-filter: blur(var(--rd-blur));
+  /* No hard divider line — the reading surface flows up under a translucent
+     blur, and the slim progress line below is the only separator. */
+  background: linear-gradient(180deg, rgba(8,12,26,0.86), rgba(8,12,26,0.72));
+  backdrop-filter: blur(var(--rd-blur)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--rd-blur)) saturate(1.4);
   box-shadow: none;
 }
 
@@ -3242,23 +3243,28 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   align-items: center;
   gap: 10px;
 }
+/* Borderless glyph buttons (Apple-Books style) — no boxed chip, just the icon in
+   a muted tone with a soft round tap-tint. The generous 34px hit area lives in
+   the padding, not a visible border. */
 .webapp-reader .reader-topbar-icbtn {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   flex-shrink: 0;
-  border-radius: 12px;
-  border: 1px solid var(--rd-border);
-  background: var(--rd-bg-elev);
-  color: var(--rd-text);
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--rd-text-muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background .15s, border-color .15s, color .15s;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .18s ease, color .18s ease, transform .1s ease;
 }
-.webapp-reader .reader-topbar-icbtn:hover { background: var(--rd-bg-elev-2); border-color: var(--rd-border-hi); }
-.webapp-reader .reader-topbar-icbtn svg { width: 19px; height: 19px; }
-.webapp-reader .reader-topbar-more.is-active { background: var(--rd-accent-soft); border-color: transparent; color: var(--rd-accent); }
+.webapp-reader .reader-topbar-icbtn:hover { background: var(--rd-bg-elev); color: var(--rd-text); }
+.webapp-reader .reader-topbar-icbtn:active { transform: scale(0.9); background: var(--rd-bg-elev-2); }
+.webapp-reader .reader-topbar-icbtn svg { width: 20px; height: 20px; }
+.webapp-reader .reader-topbar-more.is-active { background: var(--rd-accent-soft); color: var(--rd-accent); }
 .webapp-reader .reader-topbar-center {
   flex: 1;
   min-width: 0;
@@ -3280,18 +3286,19 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 /* ── Slim progress line under the topbar ────────────────────── */
 .webapp-reader .reader-progline {
   height: 2px;
-  margin: 2px 2px 0;
-  border-radius: 2px;
+  margin: 4px 10px 0;
+  border-radius: 99px;
   background: var(--rd-border);
   position: relative;
-  overflow: hidden;
+  overflow: visible;
 }
 .webapp-reader .reader-progline i {
   position: absolute;
   inset: 0 auto 0 0;
-  border-radius: 2px;
-  background: var(--rd-accent);
-  transition: width .35s ease;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--rd-accent-2), var(--rd-accent));
+  box-shadow: 0 0 6px -1px var(--rd-accent-glow);
+  transition: width .4s cubic-bezier(.4,1,.4,1);
 }
 
 /* ── Overflow menu (···) ────────────────────────────────────── */
@@ -3477,8 +3484,13 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-reader .reader-page-sheet-measure .reader-page-sheet-inner { overflow: hidden; text-align: left; }
 
 /* ── Sepia / cream overrides for the new chrome ─────────────── */
+/* Borderless glyph buttons stay borderless on paper — just a muted ink glyph. */
 .webapp-reader[data-reader-theme="sepia"] .reader-topbar-icbtn,
-.webapp-reader[data-reader-theme="cream"] .reader-topbar-icbtn,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar-icbtn {
+  background: transparent;
+  border: none;
+  color: var(--rd-paper-muted);
+}
 .webapp-reader[data-reader-theme="sepia"] .reader-peek-pill,
 .webapp-reader[data-reader-theme="cream"] .reader-peek-pill {
   background: var(--rd-paper-soft);
@@ -3486,7 +3498,9 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   color: var(--rd-paper-text);
 }
 .webapp-reader[data-reader-theme="sepia"] .reader-topbar-icbtn:hover,
-.webapp-reader[data-reader-theme="cream"] .reader-topbar-icbtn:hover,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar-icbtn:hover { background: rgba(0,0,0,0.06); color: var(--rd-paper-text); }
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar-icbtn:active,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar-icbtn:active { background: rgba(0,0,0,0.1); }
 .webapp-reader[data-reader-theme="sepia"] .reader-peek-pill:hover,
 .webapp-reader[data-reader-theme="cream"] .reader-peek-pill:hover { background: rgba(0,0,0,0.07); }
 .webapp-reader[data-reader-theme="sepia"] .reader-peek-title,
@@ -3497,8 +3511,8 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-reader[data-reader-theme="sepia"] .reader-topbar-more.is-active,
 .webapp-reader[data-reader-theme="sepia"] .reader-dock-btn.is-active,
 .webapp-reader[data-reader-theme="sepia"] .reader-overflow-timer { color: var(--rd-paper-accent); }
-.webapp-reader[data-reader-theme="sepia"] .reader-progline i { background: var(--rd-paper-accent); color: var(--rd-paper-accent); }
-.webapp-reader[data-reader-theme="cream"] .reader-progline i { background: #0d9488; }
+.webapp-reader[data-reader-theme="sepia"] .reader-progline i { background: var(--rd-paper-accent); box-shadow: 0 0 6px -1px rgba(178,93,44,0.5); }
+.webapp-reader[data-reader-theme="cream"] .reader-progline i { background: #0d9488; box-shadow: 0 0 6px -1px rgba(13,148,136,0.45); }
 .webapp-reader.is-immersive[data-reader-theme="sepia"] .reader-bottom-dock,
 .webapp-reader.is-immersive[data-reader-theme="cream"] .reader-bottom-dock {
   background: linear-gradient(0deg, var(--rd-paper-bg) 60%, transparent);
@@ -3715,23 +3729,27 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
    │  SLIM CHROME (2026-07-09) — halve top bar & bottom dock, drop slider,   │
    │  flat-wide Play, small thin neat buttons, one-line title.              │
    ╰───────────────────────────────────────────────────────────────────────╯ */
-/* Top bar — thin, one line */
-.webapp-reader .reader-topbar-flag { gap: 4px; padding: 5px 10px 5px; }
-.webapp-reader .reader-topbar-row { gap: 8px; }
-.webapp-reader .reader-topbar-icbtn { width: 30px; height: 30px; border-radius: 9px; }
-.webapp-reader .reader-topbar-icbtn svg { width: 16px; height: 16px; }
+/* Top bar — thin, one refined line: borderless glyphs + serif title + soft meta */
+.webapp-reader .reader-topbar-flag { gap: 2px; padding: 5px 8px 5px; }
+.webapp-reader .reader-topbar-row { gap: 4px; }
+.webapp-reader .reader-topbar-icbtn { width: 32px; height: 32px; border-radius: 50%; }
+.webapp-reader .reader-topbar-icbtn svg { width: 19px; height: 19px; }
 .webapp-reader .reader-topbar-center {
-  display: flex; align-items: baseline; justify-content: center; gap: 7px; min-width: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; min-width: 0; padding: 0 4px;
 }
 .webapp-reader .reader-topbar-center .reader-topbar-title {
-  font-size: 13.5px; font-weight: 600; max-width: 60vw;
+  font-family: var(--rd-font-serif);
+  font-size: 15px; font-weight: 600; line-height: 1.1; letter-spacing: -0.01em;
+  color: var(--rd-text); max-width: 62vw;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .webapp-reader .reader-topbar-pct {
-  font-size: 11px; font-weight: 700; color: var(--rd-text-faint);
-  font-variant-numeric: tabular-nums; flex-shrink: 0;
+  font-size: 10px; font-weight: 600; color: var(--rd-text-faint);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.02em; flex-shrink: 0;
+  max-width: 70vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.webapp-reader .reader-progline { margin-top: 3px; height: 2px; }
+.webapp-reader .reader-progline { margin: 3px 10px 0; height: 2px; }
 .webapp-reader .reader-topbar-peek-flag { padding: 5px 10px; }
 .webapp-reader .reader-peek-pill { height: 30px; }
 
