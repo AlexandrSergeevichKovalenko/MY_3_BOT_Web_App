@@ -23478,6 +23478,17 @@ function AppInner() {
     // keeps the full window — that window was already prefetched during the
     // previous clip, so it stays seamless.
     const isContinuation = Boolean(opts?.continuation);
+    // User-initiated start or jump (tap a new word while audio plays): stop
+    // whatever is currently sounding RIGHT NOW so two voices never overlap while
+    // the new clip synthesizes. The request token below only silences the async
+    // response — it does not pause the live <audio>/engine already playing.
+    if (!isContinuation) {
+      try { audioElementRef.current?.pause(); } catch (_e) { /* ignore */ }
+      try { readerAudioPreloadElementRef.current?.pause?.(); } catch (_e) { /* ignore */ }
+      if (readerAudioWebActiveRef.current && readerAudioWebEngineRef.current) {
+        try { readerAudioWebEngineRef.current.pause(); } catch (_e) { /* ignore */ }
+      }
+    }
     const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
     // Gapless Web Audio path (feature-flagged). When enabled, delegate to the
     // standalone engine path and skip the legacy <audio> ping-pong entirely.
@@ -23592,6 +23603,7 @@ function AppInner() {
             prefetch_only: prefetchOnly,
           };
           const maxAttempts = prefetchOnly ? 12 : 30;
+          let transientRetries = 0;
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             const resp = await fetch('/api/webapp/reader/audio/page', {
               method: 'POST',
@@ -23603,6 +23615,17 @@ function AppInner() {
               if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
                 openReaderAudioPremiumPaywall();
                 return null;
+              }
+              // Transient gateway/worker errors (502/503/504) are common on
+              // Railway when a dense-page synth briefly exceeds the proxy timeout
+              // or a worker recycles. The backend de-dupes by text_hash
+              // (singleflight), so a retry usually returns the now-cached blob.
+              // Retry a few times before surfacing an error.
+              if (resp.status >= 502 && resp.status <= 504 && transientRetries < 4) {
+                transientRetries += 1;
+                console.warn(`[ReaderAudio] transient HTTP ${resp.status}, retry ${transientRetries}/4`);
+                await new Promise((resolve) => window.setTimeout(resolve, 1200));
+                continue;
               }
               throw new Error(payload.error || `HTTP ${resp.status}`);
             }
@@ -23841,7 +23864,13 @@ function AppInner() {
       setReaderAudioPlayData(null);
       setReaderAudioPlayPosition(0);
       setReaderAudioPaused(false);
-      setReaderAudioPlayError(String(e?.message || e));
+      // Keep the raw error for us, show a clean human message to the reader
+      // (never a bare "HTTP 502" / stack — see feedback_user_facing_error_copy).
+      console.warn('[ReaderAudio] playback failed:', e?.message || e);
+      setReaderAudioPlayError(tr(
+        'Не удалось запустить аудио. Попробуй ещё раз через пару секунд.',
+        'Audio konnte nicht gestartet werden. Bitte versuche es in ein paar Sekunden erneut.'
+      ));
     } finally {
       setReaderAudioPlayLoading(false);
     }
@@ -23857,6 +23886,7 @@ function AppInner() {
     readerAudioWidReverseMap,
     readerAudioWidToCharStart,
     readerDocumentId,
+    tr,
   ]);
 
   const pauseReaderAudioPlay = useCallback(() => {
@@ -23974,6 +24004,7 @@ function AppInner() {
       const key = webKey(win.startPage, voice, rate, win.combinedText);
       const cached = readerAudioPageCacheRef.current.get(key);
       if (cached?.audio_url) return { key, data: cached };
+      let transientRetries = 0;
       for (let attempt = 0; attempt < 30; attempt += 1) {
         const resp = await fetch('/api/webapp/reader/audio/page', {
           method: 'POST',
@@ -23993,6 +24024,12 @@ function AppInner() {
           if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
             openReaderAudioPremiumPaywall();
             return null;
+          }
+          // Transient gateway/worker errors — retry (backend singleflight caches).
+          if (resp.status >= 502 && resp.status <= 504 && transientRetries < 4) {
+            transientRetries += 1;
+            await new Promise((r) => window.setTimeout(r, 1200));
+            continue;
           }
           throw new Error(payload.error || `HTTP ${resp.status}`);
         }
