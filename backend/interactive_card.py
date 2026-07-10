@@ -489,11 +489,64 @@ def render_next_task_card(*, level: str = "") -> bytes | None:
                  accent=(96, 165, 250), motif=_motif_next_arrow, cta="Открой и реши")
 
 
+def _motif_cruise(base, d, cx, cy, accent):
+    """A stylized cruise liner with the captain waving 'welcome aboard'."""
+    white = (245, 248, 252)
+    navy = (24, 42, 82)
+    dark = (30, 42, 66)
+    skin = (247, 209, 176)
+    sea = (46, 108, 176)
+    sea_lt = (120, 170, 220)
+
+    # --- ocean ---
+    wave_top = cy + 150
+    d.rounded_rectangle([cx - 300, wave_top, cx + 300, cy + 268], radius=44, fill=sea)
+    for off in (0, 34):
+        for bx in (cx - 240, cx - 60, cx + 130):
+            d.arc([bx - 60, wave_top - 22 + off, bx + 60, wave_top + 40 + off], 200, 340, fill=sea_lt, width=6)
+
+    # --- hull (trapezoid) with accent stripe + portholes ---
+    hy = cy + 62
+    d.polygon([(cx - 236, hy), (cx + 236, hy), (cx + 186, wave_top + 18), (cx - 186, wave_top + 18)], fill=white)
+    d.polygon([(cx - 236, hy + 8), (cx + 236, hy + 8), (cx + 216, hy + 54), (cx - 216, hy + 54)], fill=accent)
+    for i in range(-3, 4):
+        d.ellipse([cx + i * 56 - 11, hy + 22, cx + i * 56 + 11, hy + 44], fill=GOLD, outline=white, width=3)
+
+    # --- superstructure (two decks) + window rows ---
+    d.rounded_rectangle([cx - 172, hy - 72, cx + 172, hy + 4], radius=14, fill=white)
+    d.rounded_rectangle([cx - 118, hy - 134, cx + 118, hy - 66], radius=14, fill=white)
+    for row_y in (hy - 54, hy - 116):
+        for i in range(-4, 5):
+            if abs(i) * 28 <= (52 if row_y < hy - 100 else 118):
+                d.rounded_rectangle([cx + i * 28 - 8, row_y, cx + i * 28 + 8, row_y + 18], radius=3, fill=navy)
+
+    # --- funnels + gold band ---
+    for fx in (cx - 44, cx + 44):
+        d.rounded_rectangle([fx - 26, hy - 196, fx + 26, hy - 126], radius=11, fill=accent)
+        d.rectangle([fx - 26, hy - 172, fx + 26, hy - 156], fill=GOLD)
+
+    # --- mast + pennant flag ---
+    d.line([(cx, hy - 206), (cx, hy - 268)], fill=dark, width=6)
+    d.polygon([(cx, hy - 268), (cx + 56, hy - 252), (cx, hy - 236)], fill=GOLD)
+
+    # --- captain on the front deck, waving welcome ---
+    px, py = cx - 150, hy - 44
+    d.rounded_rectangle([px - 27, py, px + 27, py + 78], radius=13, fill=navy)          # jacket
+    for by in (py + 16, py + 36, py + 56):
+        d.ellipse([px - 4, by - 4, px + 4, by + 4], fill=GOLD)                          # buttons
+    d.line([(px + 18, py + 14), (px + 60, py - 34)], fill=navy, width=18)               # raised arm
+    d.ellipse([px + 52, py - 48, px + 76, py - 24], fill=skin)                          # waving hand
+    d.ellipse([px - 21, py - 48, px + 21, py - 6], fill=skin)                           # head
+    d.rounded_rectangle([px - 25, py - 60, px + 25, py - 40], radius=9, fill=white)     # cap top
+    d.rectangle([px - 27, py - 44, px + 27, py - 35], fill=dark)                        # cap brim
+    d.ellipse([px - 7, py - 58, px + 7, py - 46], fill=GOLD)                            # cap badge
+
+
 def render_welcome_card() -> bytes | None:
     """Branded hero plaque for the first-run onboarding prompt (/start). Same brand
     language as the task cards so the welcome feels like part of the product."""
-    return _card(badge="WILLKOMMEN", title="Willkommen!", subtitle="Настроим бота под тебя",
-                 accent=(52, 211, 153), motif=_motif_next_arrow, cta="Пара минут — и поехали")
+    return _card(badge="WILLKOMMEN", title="Willkommen an Bord!", subtitle="Настроим бота под тебя",
+                 accent=(56, 132, 222), motif=_motif_cruise, cta="Пара минут — и поехали")
 
 
 def render_settings_card() -> bytes | None:
