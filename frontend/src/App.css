@@ -22398,6 +22398,21 @@ body.worldnews-active .webapp-topbar {
   }
 }
 
+/* AUTHORITATIVE dictionary side padding for ALL phone/tablet widths. The
+   per-breakpoint rules were fragmented (max-width:420 vs 481–1024, with a 421–480
+   gap), so different users saw different gaps. One rule with !important makes the
+   main frame equally wide on EVERY device width. Desktop (≥1025) keeps its own. */
+@media (max-width: 1024px) {
+  .webapp-page.is-dictionary-layout {
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+  }
+  .webapp-page.is-dictionary-layout .webapp-dictionary {
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+  }
+}
+
 @media (max-width: 420px) {
   .webapp-page.is-dictionary-layout {
     padding-top: 8px;
