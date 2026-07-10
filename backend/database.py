@@ -19574,6 +19574,19 @@ def resolve_shortcut_install_token(
 _DICT_BROWSER_TOKEN_SCHEMA_READY = False
 _DICT_BROWSER_TOKEN_SCHEMA_LOCK = threading.Lock()
 
+# HOT-PATH cache: token_hash → (user_id, expiry_ts). resolve_dict_browser_token runs on EVERY
+# standalone-dictionary request (audio / breakdown / save), and its DB write+commit dominated
+# request latency (~3.6s of guard time). Caching the token→user identity in-process removes the
+# DB round-trip on a hit. Only the LOW-sensitivity token identity is cached — the admin access
+# allowlist is a SEPARATE check with its own cache, so this NEVER bypasses access control. The
+# revoke fn clears this cache (instant in-process; cross-worker delay is bounded by the TTL, fine
+# for a dictionary token). TTL env-tunable up to a day.
+_DICT_BROWSER_TOKEN_RESOLVE_CACHE: dict[str, tuple[int, float]] = {}
+_DICT_BROWSER_TOKEN_RESOLVE_CACHE_LOCK = threading.Lock()
+_DICT_BROWSER_TOKEN_CACHE_TTL_SEC = max(
+    0, int(str(os.getenv("DICT_BROWSER_TOKEN_CACHE_TTL_SEC") or "21600").strip() or "21600")
+)
+
 
 def _dict_browser_token_hash(raw_token: str) -> str:
     return hashlib.sha256(str(raw_token or "").strip().encode("utf-8")).hexdigest()
@@ -19638,12 +19651,21 @@ def create_dict_browser_token(*, user_id: int, user_agent: str | None = None) ->
 
 
 def resolve_dict_browser_token(raw_token: str) -> dict | None:
-    """Return {"user_id": int} for a valid, non-revoked token, else None. Touches
-    last_used_at."""
+    """Return {"user_id": int} for a valid, non-revoked token, else None.
+
+    HOT PATH — cached in-process (see _DICT_BROWSER_TOKEN_RESOLVE_CACHE). A cache hit does NO
+    DB work; only a miss touches the DB (and refreshes last_used_at, so that write is throttled
+    to ~once per TTL instead of every request)."""
     token = str(raw_token or "").strip()
     if not token:
         return None
     token_hash = _dict_browser_token_hash(token)
+    if _DICT_BROWSER_TOKEN_CACHE_TTL_SEC > 0:
+        now = time.time()
+        with _DICT_BROWSER_TOKEN_RESOLVE_CACHE_LOCK:
+            hit = _DICT_BROWSER_TOKEN_RESOLVE_CACHE.get(token_hash)
+            if hit and hit[1] > now:
+                return {"user_id": int(hit[0])}
     ensure_dict_browser_token_table()
     try:
         with get_db_connection_context() as conn:
@@ -19664,7 +19686,13 @@ def resolve_dict_browser_token(raw_token: str) -> dict | None:
         return None
     if not row:
         return None
-    return {"user_id": int(row[0])}
+    user_id = int(row[0])
+    if _DICT_BROWSER_TOKEN_CACHE_TTL_SEC > 0:
+        with _DICT_BROWSER_TOKEN_RESOLVE_CACHE_LOCK:
+            _DICT_BROWSER_TOKEN_RESOLVE_CACHE[token_hash] = (
+                user_id, time.time() + _DICT_BROWSER_TOKEN_CACHE_TTL_SEC,
+            )
+    return {"user_id": user_id}
 
 
 def revoke_dict_browser_tokens_for_user(user_id: int) -> int:
@@ -19684,6 +19712,11 @@ def revoke_dict_browser_tokens_for_user(user_id: int) -> int:
                 )
                 revoked = cursor.rowcount
                 conn.commit()
+        # Drop this user's cached token identities so the revoke takes effect immediately
+        # in-process (other workers expire within the TTL).
+        with _DICT_BROWSER_TOKEN_RESOLVE_CACHE_LOCK:
+            for h in [k for k, v in _DICT_BROWSER_TOKEN_RESOLVE_CACHE.items() if int(v[0]) == int(user_id)]:
+                _DICT_BROWSER_TOKEN_RESOLVE_CACHE.pop(h, None)
         return int(revoked or 0)
     except Exception:
         logging.warning("revoke_dict_browser_tokens_for_user failed", exc_info=True)
