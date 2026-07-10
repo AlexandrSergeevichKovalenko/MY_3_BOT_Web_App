@@ -475,8 +475,13 @@ function StepBody(props) {
             </li>
             <li>
               <b>{t('📚 «Интерактив»', '📚 «Interaktiv»')}</b>
-              {t(' — одна кнопка открывает все тренажёры: артикли, окончания прилагательных, Wo-Fragen и числа на слух. Рядом — кнопки дуэлей (батлов) с другими учениками.',
-                 ' — eine Taste öffnet alle Übungen: Artikel, Adjektivendungen, Wo-Fragen und Zahlen nach Gehör. Daneben — Tasten für Duelle mit anderen Lernenden.')}
+              {t(' — одна кнопка открывает все тренажёры: артикли, окончания прилагательных, Wo-Fragen и числа на слух.',
+                 ' — eine Taste öffnet alle Übungen: Artikel, Adjektivendungen, Wo-Fragen und Zahlen nach Gehör.')}
+            </li>
+            <li>
+              <b>{t('⚔️ «Battles»', '⚔️ «Battles»')}</b>
+              {t(' — дуэли с другими учениками: создать батл, пригласить игроков и посмотреть историю — всё на одной странице.',
+                 ' — Duelle mit anderen Lernenden: ein Battle erstellen, Spieler einladen und die Historie ansehen — alles auf einer Seite.')}
             </li>
             <li>
               <b>{t('⚙️ «Настройки»', '⚙️ «Einstellungen»')}</b>

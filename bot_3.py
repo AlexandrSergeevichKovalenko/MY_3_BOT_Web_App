@@ -4656,12 +4656,9 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     # Учёба-игры (артикли, прилагательные, wo-fragen, числа на слух) собраны на одной
     # Mini-App странице «📚 Интерактив» (раньше — кнопка на каждую тему).
     rows.append([INTERACTIVE_BUTTON_TEXT])
-    # Все батлы + история — на Mini-App странице «⚔️ Battles».
+    # Все батлы (создать · пригласить · история) — на Mini-App странице «⚔️ Battles»
+    # (раньше были отдельные кнопки Artikel/Adjektiv/Wo-Frage-батл + История батлов).
     rows.append([BATTLES_BUTTON_TEXT])
-
-    # 3) Батлы пока остаются кнопками (Фаза B — отдельный хаб). Сгруппированы 2 в ряд.
-    rows.append([ARTIKEL_BATTLE_CALL_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
-    rows.append([WOFRAGE_BATTLE_BUTTON_TEXT, BATTLE_HISTORY_BUTTON_TEXT])
 
     # 4) Слова и помощь.
     rows.append([DICTIONARY_BATCH_FAST_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT])
