@@ -14733,7 +14733,13 @@ def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
     return toc
 
 
-_EPUB_PAGE_SPLIT_CHARS = 3000  # soft max chars per reader page
+# Screen-sized reader pages, SAME unit as PDF/text (_READER_FIXED_PAGE_CHARS=1100).
+# Was 3000 → EPUB reported ~2.7× fewer pages than the same book as PDF and than
+# other readers (a 960k-char book showed ~320 pages vs Apple Books' ~755). Making
+# the EPUB page a screen (~1100 chars) unifies the page unit across all formats,
+# so the counter matches what the reader actually swipes. (Re-paginates on
+# ingest → existing EPUBs need a re-upload; bookmarks are stored as % and survive.)
+_EPUB_PAGE_SPLIT_CHARS = _READER_FIXED_PAGE_CHARS  # was 3000
 _EPUB_MAX_TOTAL_TEXT_CHARS = 3_000_000
 _EPUB_LEGACY_TRUNCATED_TOTAL_CHARS = 150_000
 

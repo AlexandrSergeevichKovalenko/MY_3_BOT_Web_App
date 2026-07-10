@@ -1769,9 +1769,13 @@
 }
 
 /* Notes/hints on the dark sheet resolve to the sheet's own light muted ink in
-   every theme (fixes the sepia/cream invisible-text case for these too). */
-.webapp-reader .reader-settings-sheet .webapp-muted {
-  color: var(--rd-text-muted);
+   every theme (fixes the sepia/cream invisible-text case for these too). The
+   !important + extra scope defeats the global `[data-reader-theme] .webapp-muted
+   { color: paper-ink !important }` rule that would otherwise paint them dark. */
+.webapp-reader .reader-settings-sheet .webapp-muted,
+.webapp-reader[data-reader-theme="sepia"] .reader-settings-sheet .webapp-muted,
+.webapp-reader[data-reader-theme="cream"] .reader-settings-sheet .webapp-muted {
+  color: var(--rd-text-muted) !important;
 }
 
 /* Debug-looking "IMMERSIVE: ON" chip — hidden. It's always ON while reading, so
