@@ -34386,78 +34386,109 @@ function AppInner() {
                       </button>
                     </div>
 
-                    {/* 4. Большое поле ввода — как в быстром словаре.
-                        Пока перевода нет, поле растягивается на свободную высоту экрана
-                        (заполняет пустоту внизу); после перевода — обычная высота. */}
-                    <div className={`webapp-dictionary-form dict-search-compose${dictionaryResult ? '' : ' dict-compose-tall'}`}>
-                      <div className="dictionary-input-wrap">
-                        <textarea
-                          className="dictionary-input dict-input-big"
-                          rows={4}
-                          value={dictionaryWord}
-                          onChange={(event) => setDictionaryWord(event.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDictionaryLookup(e); } }}
-                          placeholder={tr('Слово или фраза…', 'Wort oder Phrase…')}
-                        />
-                        <div className="dictionary-input-tools">
-                          <button
-                            type="button"
-                            className="dictionary-clear"
-                            title={tr('Вставить', 'Einfügen')}
-                            onClick={async () => { try { const t = (await navigator.clipboard.readText() || '').trim(); if (t) setDictionaryWord(t); } catch (_e) { /* ignore */ } }}
-                            aria-label={tr('Вставить', 'Einfügen')}
-                          >📋</button>
-                          {dictionaryWord.trim() && (
+                    {/* Раскладка 1-в-1 с быстрым словарём:
+                        • ПУСТО → большой ввод + «Недавние», а «Перевести» ПРИЖАТ к низу
+                          экрана (виден всегда, на любой высоте — в этом смысл переводчика);
+                        • ЕСТЬ РЕЗУЛЬТАТ → компактная строка ввода с кнопкой «Перевести»
+                          рядом, результат сразу под ней (ввод не занимает пол-экрана). */}
+                    {!dictionaryResult ? (
+                      <div className="webapp-dictionary-form dict-search-compose dict-compose-tall">
+                        <div className="dictionary-input-wrap">
+                          <textarea
+                            className="dictionary-input dict-input-big"
+                            rows={4}
+                            value={dictionaryWord}
+                            onChange={(event) => setDictionaryWord(event.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDictionaryLookup(e); } }}
+                            placeholder={tr('Слово или фраза…', 'Wort oder Phrase…')}
+                          />
+                          <div className="dictionary-input-tools">
                             <button
                               type="button"
                               className="dictionary-clear"
-                              onClick={() => setDictionaryWord('')}
-                              aria-label={tr('Очистить слово', 'Wort löschen')}
-                            >×</button>
-                          )}
-                        </div>
-                      </div>
-                      {/* «Недавние» — только в ПУСТОМ состоянии, прямо под вводом (как в
-                          быстром словаре). При показе результата прячем, чтобы между вводом
-                          и результатом не висел «мусор». */}
-                      {!dictionaryResult && dictSearchRecents.length > 0 && (
-                        <div className="dq-recent dict-search-recent">
-                          <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
-                          <div className="dq-recent-chips">
-                            {dictSearchRecents.map((w) => (
-                              <button key={w} type="button" className="dq-recent-chip" onClick={() => setDictionaryWord(w)}>{w}</button>
-                            ))}
+                              title={tr('Вставить', 'Einfügen')}
+                              onClick={async () => { try { const t = (await navigator.clipboard.readText() || '').trim(); if (t) setDictionaryWord(t); } catch (_e) { /* ignore */ } }}
+                              aria-label={tr('Вставить', 'Einfügen')}
+                            >📋</button>
+                            {dictionaryWord.trim() && (
+                              <button
+                                type="button"
+                                className="dictionary-clear"
+                                onClick={() => setDictionaryWord('')}
+                                aria-label={tr('Очистить слово', 'Wort löschen')}
+                              >×</button>
+                            )}
                           </div>
                         </div>
-                      )}
-                      {/* Один экшен «Перевести» — запускает выбранный способ перевода.
-                          Все три метода сохранены и доступны через переключатель выше. */}
-                      <div className="dict-translate-row">
-                        <button
-                          type="button"
-                          className="dict-translate-primary"
-                          onClick={(e) => {
-                            if (dictSearchMethod === 'quick') return handleDictionaryQuickLookup(e);
-                            if (dictSearchMethod === 'base') return handleDictionaryBaseLookup(e);
-                            return handleDictionaryLookup(e);
-                          }}
-                          disabled={dictionaryLoading || !dictionaryWord.trim()}
-                        >
-                          {dictionaryLoading
-                            ? tr('Перевод…', 'Übersetze…')
-                            : tr('Перевести', 'Übersetzen')}
-                        </button>
+                        {dictSearchRecents.length > 0 && (
+                          <div className="dq-recent dict-search-recent">
+                            <span className="dq-recent-label">{tr('Недавние', 'Zuletzt')}</span>
+                            <div className="dq-recent-chips">
+                              {dictSearchRecents.map((w) => (
+                                <button key={w} type="button" className="dq-recent-chip" onClick={() => setDictionaryWord(w)}>{w}</button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div className="dict-translate-row dict-translate-sticky">
+                          <button
+                            type="button"
+                            className="dict-translate-primary"
+                            onClick={(e) => {
+                              if (dictSearchMethod === 'quick') return handleDictionaryQuickLookup(e);
+                              if (dictSearchMethod === 'base') return handleDictionaryBaseLookup(e);
+                              return handleDictionaryLookup(e);
+                            }}
+                            disabled={dictionaryLoading || !dictionaryWord.trim()}
+                          >
+                            {dictionaryLoading ? tr('Перевод…', 'Übersetze…') : tr('Перевести', 'Übersetzen')}
+                          </button>
+                        </div>
                       </div>
-                      {lastLookupScrollY !== null && (
-                        <button
-                          type="button"
-                          className="secondary-button dictionary-back-icon dict-back-link"
-                          onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
-                        >
-                          {tr('↙ к предложению', '↙ zum Satz')}
-                        </button>
-                      )}
-                    </div>
+                    ) : (
+                      <div className="webapp-dictionary-form dict-search-compose">
+                        <div className="dict-search dict-search-bar">
+                          <div className="dictionary-input-wrap dict-input-compact-wrap">
+                            <input
+                              className="dictionary-input dict-input-compact"
+                              value={dictionaryWord}
+                              onChange={(event) => setDictionaryWord(event.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleDictionaryLookup(e); } }}
+                              placeholder={tr('Слово или фраза…', 'Wort oder Phrase…')}
+                            />
+                            {dictionaryWord.trim() && (
+                              <button
+                                type="button"
+                                className="dictionary-clear dict-clear-inline"
+                                onClick={() => setDictionaryWord('')}
+                                aria-label={tr('Очистить слово', 'Wort löschen')}
+                              >×</button>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            className="dict-translate-primary dict-translate-inline"
+                            onClick={(e) => {
+                              if (dictSearchMethod === 'quick') return handleDictionaryQuickLookup(e);
+                              if (dictSearchMethod === 'base') return handleDictionaryBaseLookup(e);
+                              return handleDictionaryLookup(e);
+                            }}
+                            disabled={dictionaryLoading || !dictionaryWord.trim()}
+                          >
+                            {dictionaryLoading ? tr('Перевод…', 'Übersetze…') : tr('Перевести', 'Übersetzen')}
+                          </button>
+                        </div>
+                        {lastLookupScrollY !== null && (
+                          <button
+                            type="button"
+                            className="secondary-button dictionary-back-icon dict-back-link"
+                            onClick={() => window.scrollTo({ top: lastLookupScrollY, behavior: 'smooth' })}
+                          >
+                            {tr('↙ к предложению', '↙ zum Satz')}
+                          </button>
+                        )}
+                      </div>
+                    )}
                     </div>{/* /dict-search-flow */}
 
                     {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError)
