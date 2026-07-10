@@ -160,7 +160,7 @@ const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows',
   'battles', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
   'howto_tools', 'keyboard']);
 function StepBody(props) {
-  const { step, isPro, confirmed, busy, stepErr, onConfirm, dictOffer, onDictAction,
+  const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
     onShortcutSetup } = props;
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
@@ -219,7 +219,11 @@ function StepBody(props) {
                'Verbinden wir Wörter, mit denen Training und Wiederholungen starten. Wähle, wie viele:')}
           </p>
           {done ? (
-            <span className="ob-lock ob-ok">{hasFull ? t('✅ Весь словарь подключён', '✅ Ganzes Wörterbuch verbunden') : t('✅ Словарь подключён', '✅ Wörterbuch verbunden')}</span>
+            dictChoice === 'decline' && !have ? (
+              <span className="ob-lock">{t('⏭ Пропущено — базовый словарь можно подключить позже в ⚙️ Настройках.', '⏭ Übersprungen — das Basis-Wörterbuch kannst du später in ⚙️ Einstellungen verbinden.')}</span>
+            ) : (
+              <span className="ob-lock ob-ok">{hasFull ? t('✅ Весь словарь подключён', '✅ Ganzes Wörterbuch verbunden') : t('✅ Словарь подключён', '✅ Wörterbuch verbunden')}</span>
+            )
           ) : partial ? (
             <div className="ob-actions ob-actions-col">
               <span className="ob-lock ob-ok">{t('✅ Базовый словарь подключён', '✅ Basis-Wörterbuch verbunden')}</span>
@@ -230,7 +234,7 @@ function StepBody(props) {
                   onClick={() => onDictAction('accept', true)}
                   disabled={busy}
                 >
-                  {busy ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Догрузить весь словарь', '🔓 Ganzes Wörterbuch laden')} — ~${total} ${t('слов', 'Wörter')}`}
+                  {dictBusy === 'full' ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Догрузить весь словарь', '🔓 Ganzes Wörterbuch laden')} — ~${total} ${t('слов', 'Wörter')}`}
                 </button>
               ) : null}
             </div>
@@ -242,7 +246,7 @@ function StepBody(props) {
                 onClick={() => onDictAction('accept', false)}
                 disabled={busy}
               >
-                {busy ? t('Подключаю…', 'Verbinde…') : `${t('📚 Быстрый старт', '📚 Schnellstart')}${n ? ` — ~${n} ${t('слов', 'Wörter')}` : ''}`}
+                {dictBusy === 'quick' ? t('Подключаю…', 'Verbinde…') : `${t('📚 Быстрый старт', '📚 Schnellstart')}${n ? ` — ~${n} ${t('слов', 'Wörter')}` : ''}`}
               </button>
               {total > n ? (
                 <button
@@ -251,7 +255,7 @@ function StepBody(props) {
                   onClick={() => onDictAction('accept', true)}
                   disabled={busy}
                 >
-                  {busy ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Весь словарь', '🔓 Ganzes Wörterbuch')} — ~${total} ${t('слов', 'Wörter')}`}
+                  {dictBusy === 'full' ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Весь словарь', '🔓 Ganzes Wörterbuch')} — ~${total} ${t('слов', 'Wörter')}`}
                 </button>
               ) : null}
               <button
@@ -264,7 +268,7 @@ function StepBody(props) {
               </button>
             </div>
           )}
-          <p className="ob-muted-note">{t('Быстрый старт — меньше слов, проще начать. Весь словарь — сразу весь набор. Поменять можно потом.', 'Schnellstart — weniger Wörter, leichter Einstieg. Ganzes Wörterbuch — gleich der volle Satz. Später änderbar.')}</p>
+          <p className="ob-muted-note">{t('Быстрый старт — меньше слов, проще начать. Весь словарь — сразу весь набор. Здесь — подключаешь, а отключить эти базовые словари (если захочешь только свои слова) можно потом в ⚙️ Настройках.', 'Schnellstart — weniger Wörter, leichter Einstieg. Ganzes Wörterbuch — der volle Satz. Hier verbindest du sie; später kannst du diese Basis-Wörterbücher in ⚙️ Einstellungen wieder abschalten (wenn du nur deine eigenen Wörter willst).')}</p>
           {stepErr ? <p className="ob-err">{stepErr}</p> : null}
         </div>
       );
@@ -571,6 +575,8 @@ export default function OnboardingWizard() {
   const [finishing, setFinishing] = useState(false);
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);      // per-step async action in flight
+  const [dictBusy, setDictBusy] = useState(''); // which dict button is in flight: quick|full|decline
+  const [dictChoice, setDictChoice] = useState(''); // final dict decision: quick|full|decline
   const [stepErr, setStepErr] = useState('');
   const [dictOffer, setDictOffer] = useState(null);  // starter-dictionary offer
   const [selPreset, setSelPreset] = useState('normal');   // intensity (visual default)
@@ -742,15 +748,18 @@ export default function OnboardingWizard() {
   // Connect / skip the base dictionary (accept starts a background import job).
   const dictAction = useCallback(async (action, full = false) => {
     setStepErr('');
+    setDictBusy(action === 'decline' ? 'decline' : (full ? 'full' : 'quick'));
     setBusy(true);
     try {
       await api('/api/webapp/starter-dictionary/apply', { action, full: !!full });
       setConfirmed((c) => ({ ...c, dictionary: true }));
+      setDictChoice(action === 'decline' ? 'decline' : (full ? 'full' : 'quick'));
       try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
     } catch (_e) {
       setStepErr('Не удалось. Попробуй ещё раз.');
     } finally {
       setBusy(false);
+      setDictBusy('');
     }
   }, []);
 
@@ -782,6 +791,8 @@ export default function OnboardingWizard() {
             isPro={isPro}
             confirmed={!!confirmed[step.id]}
             busy={busy}
+            dictBusy={dictBusy}
+            dictChoice={dictChoice}
             stepErr={stepErr}
             onConfirm={confirmStep}
             dictOffer={dictOffer}
