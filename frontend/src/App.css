@@ -22541,6 +22541,59 @@ body.worldnews-active .webapp-topbar {
     margin: 2px 0 4px;
     font-size: 22px;
   }
+
+  /* ── Dictionary Search (empty state): TRUE viewport flex-fill ───────────────
+     Global height-adaptive layout — NOT size hacks. The whole chain
+     page → shell → main → video-dictionary → section → search-flow → compose
+     becomes a flex column pinned to the EXACT visible viewport (--app-height),
+     so the input flexes to soak up free space and «Перевести» + error sit at the
+     bottom of the screen on ANY device height, with no scrolling. Same proven
+     approach as .is-fsrs-study. JSX-gated by `is-dict-fill`, added only in the
+     EMPTY Search state (no result): once a result appears the class drops and the
+     page scrolls normally for the (possibly long) breakdown. */
+  .webapp-page.is-dict-fill {
+    height: var(--app-height, 100dvh);
+    max-height: var(--app-height, 100dvh);
+    min-height: 0;
+    overflow: hidden;
+    align-items: stretch; /* stretch the shell to full height, not just its content */
+  }
+  .webapp-page.is-dict-fill .webapp-shell {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .webapp-page.is-dict-fill .webapp-main,
+  .webapp-page.is-dict-fill .webapp-video-dictionary,
+  .webapp-page.is-dict-fill .webapp-dictionary,
+  .webapp-page.is-dict-fill .dict-search-flow,
+  .webapp-page.is-dict-fill .dict-search-compose.dict-compose-tall {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  /* Input soaks up the leftover height; the foot items keep natural height and
+     land at the bottom of the viewport. */
+  .webapp-page.is-dict-fill .dict-search-compose.dict-compose-tall .dictionary-input-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .webapp-page.is-dict-fill .dictionary-input.dict-input-big {
+    flex: 1 1 auto;
+    min-height: 44px;   /* can shrink on short phones so the foot never clips */
+    max-height: none;
+    resize: none;
+  }
+  .webapp-page.is-dict-fill .dict-search-recent,
+  .webapp-page.is-dict-fill .dict-translate-row,
+  .webapp-page.is-dict-fill .dict-inline-error {
+    flex: 0 0 auto;
+  }
 }
 
 @media (min-width: 1025px) {
