@@ -42,6 +42,7 @@ export default function BattlesHub() {
   const [mode, setMode] = useState('all');
   const [selUsers, setSelUsers] = useState([]);
   const [selThemes, setSelThemes] = useState([]);
+  const [themesOpen, setThemesOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState('');
 
@@ -98,51 +99,61 @@ export default function BattlesHub() {
           <p className="bt-sub">Короткие дуэли на грамматику с другими учениками.</p>
         </header>
 
-        <section className="bt-block">
+        <div className="bt-create">
           <div className="bt-block-title">🚀 Начать батл</div>
           {!isPro ? <p className="bt-lock">🔓 Создавать батлы может Pro. Участвовать по приглашению — можно всем.</p> : null}
 
-          <div className="bt-label">Тема батла</div>
-          <Segmented options={KINDS} value={kind} onPick={setKind} disabled={!isPro} />
+          <div className="bt-sub bt-sub-blue">
+            <div className="bt-sub-title">🎯 Тема батла</div>
+            <Segmented options={KINDS} value={kind} onPick={setKind} disabled={!isPro} />
+          </div>
 
-          <div className="bt-label">Кого зовём</div>
-          <Segmented options={MODES} value={mode} onPick={setMode} disabled={!isPro} />
-
-          {mode === 'ind' ? (
-            <div className="bt-people">
-              {people.length === 0 ? (
-                <p className="bt-empty">Пока нет игроков в списке приглашаемых. Пусть друзья включат «Готовность к батлам» в ⚙️ Настройках.</p>
-              ) : people.map((p) => (
-                <button key={p.user_id} type="button"
-                  className={`bt-person ${selUsers.includes(p.user_id) ? 'is-sel' : ''}`}
-                  onClick={() => { if (isPro) toggleUser(p.user_id); }} disabled={!isPro}>
-                  <span className="bt-person-name">{p.name}</span>
-                  <span className="bt-check">{selUsers.includes(p.user_id) ? '✓' : ''}</span>
-                </button>
-              ))}
-            </div>
-          ) : null}
-
-          {kind === 'artikel' && themes.length > 0 ? (
-            <>
-              <div className="bt-label">Темы слов (по желанию)</div>
-              <div className="bt-chips">
-                {themes.map((th) => (
-                  <button key={th.theme_key} type="button"
-                    className={`bt-chip ${selThemes.includes(th.theme_key) ? 'is-sel' : ''}`}
-                    onClick={() => { if (isPro) toggleTheme(th.theme_key); }} disabled={!isPro}>
-                    {th.label}
+          <div className="bt-sub bt-sub-green">
+            <div className="bt-sub-title">👥 Кого зовём</div>
+            <Segmented options={MODES} value={mode} onPick={setMode} disabled={!isPro} />
+            {mode === 'ind' ? (
+              <div className="bt-people">
+                {people.length === 0 ? (
+                  <p className="bt-empty">Пока нет игроков в списке приглашаемых. Пусть друзья включат «Готовность к батлам» в ⚙️ Настройках.</p>
+                ) : people.map((p) => (
+                  <button key={p.user_id} type="button"
+                    className={`bt-person ${selUsers.includes(p.user_id) ? 'is-sel' : ''}`}
+                    onClick={() => { if (isPro) toggleUser(p.user_id); }} disabled={!isPro}>
+                    <span className="bt-person-name">{p.name}</span>
+                    <span className="bt-check">{selUsers.includes(p.user_id) ? '✓' : ''}</span>
                   </button>
                 ))}
               </div>
-              <p className="bt-hint">Ничего не выбрал — будет микс по всем темам.</p>
-            </>
+            ) : null}
+          </div>
+
+          {kind === 'artikel' && themes.length > 0 ? (
+            <div className="bt-sub bt-sub-amber">
+              <button type="button" className="bt-collapse" onClick={() => setThemesOpen((o) => !o)}>
+                <span className="bt-sub-title">🏷 Темы слов {selThemes.length ? `· выбрано ${selThemes.length}` : '(по желанию)'}</span>
+                <span className="bt-caret">{themesOpen ? '▾' : '▸'}</span>
+              </button>
+              {themesOpen ? (
+                <>
+                  <div className="bt-chips">
+                    {themes.map((th) => (
+                      <button key={th.theme_key} type="button"
+                        className={`bt-chip ${selThemes.includes(th.theme_key) ? 'is-sel' : ''}`}
+                        onClick={() => { if (isPro) toggleTheme(th.theme_key); }} disabled={!isPro}>
+                        {th.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="bt-hint">Ничего не выбрал — будет микс по всем темам.</p>
+                </>
+              ) : null}
+            </div>
           ) : null}
 
           <button type="button" className="bt-send" onClick={send} disabled={!isPro || sending}>
             {sending ? 'Отправляю…' : '🚀 Отправить приглашение'}
           </button>
-        </section>
+        </div>
 
         <button type="button" className="bt-linkrow" onClick={() => openLink('ans_bh_0')}>
           <span>📜 История батлов</span><span className="bt-chev">›</span>
