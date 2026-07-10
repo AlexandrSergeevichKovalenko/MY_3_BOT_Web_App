@@ -14490,6 +14490,82 @@ def _repaginate_reader_text_fixed(full_text: str, target_chars: int = _READER_FI
     return pages
 
 
+def _extract_pdf_outline(data: bytes) -> list[tuple[str, int]]:
+    """The PDF's own embedded outline/bookmarks as (title, physical_page_1based).
+
+    Returns [] when the PDF has no outline (then the TOC falls back to the strict
+    first-line heuristic). This is the RELIABLE chapter source for real books.
+    """
+    if _pymupdf is None or not data:
+        return []
+    try:
+        with _pymupdf.open(stream=data, filetype="pdf") as doc:
+            raw = doc.get_toc(simple=True) or []
+    except Exception:
+        logging.exception("reader PDF outline extraction failed")
+        return []
+    out: list[tuple[str, int]] = []
+    for entry in raw:
+        try:
+            title = re.sub(r"\s+", " ", str(entry[1] or "")).strip()
+            page = int(entry[2] or 0)
+        except Exception:
+            continue
+        if title and page > 0:
+            out.append((title[:200], page))
+    return out
+
+
+def _apply_pdf_outline_to_pages(
+    source_texts: list[str], full_text: str, pages: list[dict], outline: list[tuple[str, int]]
+) -> None:
+    """Tag fixed reader pages with real chapter titles from the PDF outline.
+
+    The outline references PHYSICAL PDF pages; our reader pages are fixed ~1100-char
+    pages. Map each bookmark's physical page → its proportional char position in the
+    book → the fixed page that contains it, and set chapter_title there so
+    _build_toc_from_pages surfaces the real chapters (and skips the heuristic).
+    Proportional (not exact) mapping — accurate to ~a page, fine for chapter jumps.
+    """
+    if not outline or not pages or not source_texts:
+        return
+    sep = 2  # "\n\n" join between physical pages / fixed pages
+    # Char offset at the start of each physical page (pre-normalisation).
+    phys_offsets: list[int] = []
+    running = 0
+    for t in source_texts:
+        phys_offsets.append(running)
+        running += len(t) + sep
+    total_source = max(1, running - sep)
+    total_full = max(1, len(full_text))
+    n_phys = len(source_texts)
+    # Char offset at the start of each fixed page.
+    fixed_offsets: list[int] = []
+    running = 0
+    for p in pages:
+        fixed_offsets.append(running)
+        running += len(str(p.get("text") or "")) + sep
+
+    def fixed_index_for_char(target_char: float) -> int:
+        idx = 0
+        for i, off in enumerate(fixed_offsets):
+            if off <= target_char:
+                idx = i
+            else:
+                break
+        return idx
+
+    for title, phys_page in outline:
+        pidx = min(max(phys_page - 1, 0), n_phys - 1)
+        target_char = (phys_offsets[pidx] / total_source) * total_full
+        fi = fixed_index_for_char(target_char)
+        page = pages[fi]
+        # First chapter to claim a page wins (avoid clobbering when several
+        # bookmarks land on the same fixed page).
+        if not str(page.get("chapter_title") or "").strip():
+            page["chapter_title"] = title
+
+
 def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not data:
         return "", []
@@ -14501,6 +14577,14 @@ def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not full_text:
         return "", []
     pages = _repaginate_reader_text_fixed(full_text)
+    # Prefer the PDF's real embedded outline for the TOC when present.
+    try:
+        outline = _extract_pdf_outline(data)
+        if outline:
+            _apply_pdf_outline_to_pages(source_texts, full_text, pages, outline)
+            logging.info("[READER_TOC] applied embedded PDF outline: %s bookmarks", len(outline))
+    except Exception:
+        logging.exception("reader PDF outline mapping failed; falling back to heuristic TOC")
     return full_text, pages
 
 
@@ -14564,18 +14648,40 @@ def _is_epub_navigation_document(item: Any, raw_html: str) -> bool:
 
 
 def _looks_like_chapter_heading(line: str) -> bool:
-    if not line or len(line) > 100:
+    """Heuristic chapter-heading detector for docs with NO embedded outline.
+
+    Deliberately STRICT: a plain first line ("Im Elternhaus") can't be told from
+    body text without an outline, so we only accept high-confidence heading shapes
+    and reject the false positives that used to pollute the TOC — alphabetical
+    index/register lines ("659. – 2. Innere Entwicklung …", "256.") and lone
+    Roman-numeral/single-letter register heads ("I n", "E. im völkischen Staat …").
+    """
+    if not line:
         return False
     line = line.strip()
-    patterns = [
-        r'^(?:Kapitel|Chapter|Teil|Part|Section|Abschnitt|Глава|Часть|Раздел)\s+\S',
-        r'^\d+[\.\)]\s+\S',
-        r'^[IVXLCDM]+[\.:]?\s+\S',
-    ]
-    for pat in patterns:
-        if re.match(pat, line, re.IGNORECASE):
-            return True
-    if 4 <= len(line) <= 80 and line == line.upper() and any(c.isalpha() for c in line):
+    if len(line) < 3 or len(line) > 90:
+        return False
+    # Index/register rows carry two or more page numbers — never a chapter title.
+    if len(re.findall(r'\d+', line)) >= 2:
+        return False
+    # Explicit chapter keyword.
+    if re.match(
+        r'^(?:Kapitel|Chapter|Teil|Part|Section|Abschnitt|Vorwort|Einleitung|Prolog|Epilog'
+        r'|Глава|Часть|Раздел)\b',
+        line, re.IGNORECASE,
+    ):
+        return True
+    # Numbered chapter — a SINGLE 1–3 digit number, dot/paren, then a CAPITAL word
+    # ("3. Die organisatorische Formung"). Requiring the capital rejects index
+    # run-ins like "659. – 2. …" and "256." (nothing/­dash after the number).
+    if re.match(r'^\d{1,3}[\.\)]\s+[A-ZÄÖÜ]', line):
+        return True
+    # Roman-numeral chapter — romans then a REQUIRED dot/colon then a capital word
+    # ("IV. Das Ende", "I. Einleitung"), so a bare "I n" is not a heading.
+    if re.match(r'^[IVXLCDM]{1,4}[\.:]\s+[A-ZÄÖÜ]', line):
+        return True
+    # Strong ALL-CAPS title, no digits ("ADOLF HITLER / MEIN KAMPF").
+    if 4 <= len(line) <= 80 and line == line.upper() and re.search(r'[A-ZÄÖÜ]', line) and not re.search(r'\d', line):
         return True
     return False
 
@@ -14583,6 +14689,14 @@ def _looks_like_chapter_heading(line: str) -> bool:
 def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
     toc: list[dict] = []
     is_epub = source_type in ("epub",)
+    # When explicit chapter titles exist (EPUB chapters, or a PDF's embedded
+    # outline mapped onto pages at ingest), trust them EXCLUSIVELY and never invent
+    # headings from body text on the other pages — that first-line heuristic is the
+    # source of the garbage TOC entries. The heuristic runs only as a last resort
+    # for docs with no structure at all (plain PDF/text without an outline).
+    has_explicit_titles = any(
+        isinstance(p, dict) and str(p.get("chapter_title") or "").strip() for p in pages
+    )
     last_title_key = ""
     for page in pages:
         if not isinstance(page, dict):
@@ -14593,6 +14707,9 @@ def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
         title = str(page.get("chapter_title") or "").strip()
         text = str(page.get("text") or "").strip()
         if not title:
+            if has_explicit_titles:
+                # Structured doc: only outline/chapter pages belong in the TOC.
+                continue
             if not text:
                 continue
             first_line = text.split("\n")[0].strip()
