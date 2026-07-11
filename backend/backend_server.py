@@ -44473,19 +44473,32 @@ def _build_flashcard_feel_private_message(
     return "\n".join(lines)
 
 
-def _build_flashcard_feel_reply_markup(feedback_token: str, question_request_key: str | None = None) -> dict:
+def _build_flashcard_feel_reply_markup(
+    feedback_token: str,
+    question_request_key: str | None = None,
+    deepdive_card_id: int | None = None,
+) -> dict:
     token = str(feedback_token or "").strip()
     followup_key = str(question_request_key or "").strip()
-    followup_callback = f"quizask:{followup_key}" if followup_key else "langgpt:continue"
+    # Prefer the in-place Mini-App: "Задать вопрос" opens the deep-dive overlay
+    # straight on the ask panel (?startapp=dive_<id>_ask) instead of dumping a
+    # "напишите ваш вопрос" message at the chat bottom that the user has to scroll
+    # down to find. The callback stays only as a fallback when no card was created.
+    if deepdive_card_id:
+        followup_button = {
+            "text": "❓ Задать вопрос",
+            "url": _build_webapp_deeplink(f"dive_{int(deepdive_card_id)}_ask"),
+        }
+    else:
+        followup_callback = f"quizask:{followup_key}" if followup_key else "langgpt:continue"
+        followup_button = {"text": "❓ Задать вопрос", "callback_data": followup_callback}
     return {
         "inline_keyboard": [
             [
                 {"text": "👍 Like", "callback_data": f"feelfb:{token}:like"},
                 {"text": "👎 Dislike", "callback_data": f"feelfb:{token}:dislike"},
             ],
-            [
-                {"text": "❓ Задать вопрос", "callback_data": followup_callback},
-            ],
+            [followup_button],
         ]
     }
 
@@ -44599,7 +44612,32 @@ def _dispatch_flashcard_feel_messages(
                     exc_info=True,
                 )
 
-            reply_markup = _build_flashcard_feel_reply_markup(token, question_request_key)
+            # Persist the word context so "Задать вопрос" can open the deep-dive
+            # overlay in place (listen / feel / collocation / ask) instead of
+            # sending a message to the chat bottom. Best-effort: on failure we fall
+            # back to the legacy callback button below.
+            deepdive_card_id = None
+            try:
+                from backend.database import create_deepdive_card
+                deepdive_card_id = create_deepdive_card(
+                    user_id=int(user_id),
+                    source_text=source_text,
+                    target_text=target_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    context_text=feel_text,
+                )
+            except Exception:
+                logging.warning(
+                    "⚠️ feel deep-dive card create failed for user_id=%s entry_id=%s",
+                    int(user_id),
+                    int(entry_id),
+                    exc_info=True,
+                )
+
+            reply_markup = _build_flashcard_feel_reply_markup(
+                token, question_request_key, deepdive_card_id
+            )
             text = _build_flashcard_feel_private_message(
                 source_text=source_text,
                 target_text=target_text,

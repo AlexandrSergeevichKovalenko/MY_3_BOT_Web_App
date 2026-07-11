@@ -12900,18 +12900,29 @@ def _build_dictionary_feel_private_message(
     return "\n".join(lines)
 
 
-def _build_dictionary_feel_reply_markup(token: str, question_request_key: str | None = None) -> InlineKeyboardMarkup:
+def _build_dictionary_feel_reply_markup(
+    token: str,
+    question_request_key: str | None = None,
+    deepdive_card_id: int | None = None,
+) -> InlineKeyboardMarkup:
     feedback_token = str(token or "").strip()
     followup_key = str(question_request_key or "").strip()
-    followup_callback = f"quizask:{followup_key}" if followup_key else "langgpt:continue"
+    # "Задать вопрос" opens the deep-dive overlay straight on the ask panel
+    # (?startapp=dive_<id>_ask) — in place, no message dumped at the chat bottom.
+    # Callback stays as a fallback when no card was created.
+    if deepdive_card_id:
+        followup_button = InlineKeyboardButton(
+            "❓ Задать вопрос", url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}_ask")
+        )
+    else:
+        followup_callback = f"quizask:{followup_key}" if followup_key else "langgpt:continue"
+        followup_button = InlineKeyboardButton("❓ Задать вопрос", callback_data=followup_callback)
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{feedback_token}:like"),
             InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{feedback_token}:dislike"),
         ],
-        [
-            InlineKeyboardButton("❓ Задать вопрос", callback_data=followup_callback),
-        ],
+        [followup_button],
     ])
 
 
@@ -14453,7 +14464,23 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
             source_lang=source_lang,
             target_lang=target_lang,
         )
-        reply_markup = _build_dictionary_feel_reply_markup(token, question_request_key)
+        # Persist the word context so "Задать вопрос" opens the deep-dive overlay in
+        # place (listen / feel / collocation / ask) instead of dumping a message at
+        # the chat bottom. Best-effort: on failure, fall back to the legacy callback.
+        feel_deepdive_card_id = None
+        try:
+            feel_deepdive_card_id = await asyncio.to_thread(
+                create_deepdive_card,
+                user_id=int(user.id),
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                context_text=feel_text,
+            )
+        except Exception:
+            logging.warning("⚠️ feel deep-dive card create failed user_id=%s", int(user.id), exc_info=True)
+        reply_markup = _build_dictionary_feel_reply_markup(token, question_request_key, feel_deepdive_card_id)
         text = _build_dictionary_feel_private_message(
             source_text=source_text,
             target_text=target_text or "—",
@@ -14617,7 +14644,23 @@ async def handle_quiz_feel_callback(update: Update, context: CallbackContext) ->
             source_lang=source_lang,
             target_lang=target_lang,
         )
-        reply_markup = _build_dictionary_feel_reply_markup(token, question_request_key)
+        # Persist the word context so "Задать вопрос" opens the deep-dive overlay in
+        # place (listen / feel / collocation / ask) instead of dumping a message at
+        # the chat bottom. Best-effort: on failure, fall back to the legacy callback.
+        feel_deepdive_card_id = None
+        try:
+            feel_deepdive_card_id = await asyncio.to_thread(
+                create_deepdive_card,
+                user_id=int(user.id),
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                context_text=feel_text,
+            )
+        except Exception:
+            logging.warning("⚠️ feel deep-dive card create failed user_id=%s", int(user.id), exc_info=True)
+        reply_markup = _build_dictionary_feel_reply_markup(token, question_request_key, feel_deepdive_card_id)
         text = _build_dictionary_feel_private_message(
             source_text=source_text,
             target_text=target_text or "—",
@@ -20336,12 +20379,18 @@ def _build_followup_answer_keyboard(
     # sent messages to the chat bottom). Legacy buttons stay as a fallback.
     if deepdive_card_id:
         rows.append([InlineKeyboardButton("📖 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}"))])
+        # "Ещё вопрос" / "Задать вопрос" opens the deep-dive overlay straight on the
+        # ask panel — in place, no message dumped at the chat bottom.
+        rows.append([InlineKeyboardButton(
+            str(continue_button_text or "❓ Ещё вопрос"),
+            url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}_ask"),
+        )])
     else:
         if speak_key:
             rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"quizspeak:{speak_key}")])
         if feel_key:
             rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")])
-    rows.append([InlineKeyboardButton(str(continue_button_text or "❓ Ещё вопрос"), callback_data=str(continue_callback_data or "langgpt:continue"))])
+        rows.append([InlineKeyboardButton(str(continue_button_text or "❓ Ещё вопрос"), callback_data=str(continue_callback_data or "langgpt:continue"))])
     return InlineKeyboardMarkup(rows)
 
 

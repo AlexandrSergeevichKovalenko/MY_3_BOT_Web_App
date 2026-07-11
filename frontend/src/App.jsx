@@ -23633,16 +23633,20 @@ function AppInner() {
         // iOS Safari warm-start: a brief muted play+pause forces the browser to
         // actually fill the audio buffer. Without this, iOS may hold readyState
         // at 1 (HAVE_METADATA) indefinitely for a background audio element.
+        // KEEP the buffer element MUTED here — do NOT unmute after the warm-start.
+        // Unmuting raced with the pause and let the buffered (next-window) audio
+        // leak out as a SECOND parallel voice. The seamless swap unmutes the buffer
+        // only when it actually becomes the active element.
         preloadEl.muted = true;
+        preloadEl.volume = 0;
         const warmPromise = preloadEl.play();
         if (warmPromise !== undefined) {
           warmPromise
             .then(() => {
               preloadEl.pause();
               preloadEl.currentTime = 0;
-              preloadEl.muted = false;
             })
-            .catch(() => { preloadEl.muted = false; });
+            .catch(() => {});
         }
       };
       const loadReaderAudioPageData = async ({
@@ -35372,6 +35376,7 @@ function AppInner() {
                   readerUsesCustomLayout={readerUsesCustomLayout}
                   readerWindowModel={readerWindowModel}
                   loadReaderPageRange={loadReaderPageRange}
+                  readerAudioPlayingWid={readerAudioPlayingWid}
                   onReaderVisualProgress={handleReaderVisualProgress}
                   readerUsesOriginalEpubLayout={readerUsesOriginalEpubLayout}
                   readerOriginalTocHref={readerOriginalTocHref}

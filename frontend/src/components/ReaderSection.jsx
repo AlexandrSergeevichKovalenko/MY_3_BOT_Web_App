@@ -150,6 +150,7 @@ export default function ReaderSection(props) {
     applyReaderAudioEnginePref = () => {},
     readerAudioEngineSupported = false,
     readerAudioStartWid = null,
+    readerAudioPlayingWid = null,
     readerAudioAwaitingWordTap = false,
     onReaderAudioPlayBtn = () => {},
     playReaderAudioPage = () => {},
@@ -411,6 +412,32 @@ export default function ReaderSection(props) {
     ro.observe(vp);
     return () => { ro.disconnect(); window.cancelAnimationFrame(raf); };
   }, [readerColUsesEngine]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Follow the spoken word during audio: scroll to the column holding the
+  // currently-highlighted word. Uses the LIVE DOM span, so it's immune to the
+  // window-coordinate shifts that made the view jump to a page start when audio
+  // started on a tapped word (or crossed a page). Keeps the read word on screen.
+  React.useEffect(() => {
+    if (!readerColUsesEngine || !readerAudioPlayActive || !readerAudioPlayingWid) return undefined;
+    const raf = window.requestAnimationFrame(() => {
+      const track = readerColTrackRef.current;
+      if (!track) return;
+      let el = null;
+      try {
+        const sel = (typeof window !== 'undefined' && window.CSS && CSS.escape)
+          ? CSS.escape(readerAudioPlayingWid) : readerAudioPlayingWid;
+        el = track.querySelector(`[data-wid="${sel}"]`);
+      } catch (_e) { el = null; }
+      if (!el) return;
+      const step = readerColStep();
+      if (step <= 1) return;
+      const col = Math.max(0, Math.floor((readerColOffsetOf(el) + step * 0.5) / step));
+      if (Number.isFinite(col) && col !== readerColIndexRef.current) {
+        setReaderColIndex(col);
+      }
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [readerAudioPlayingWid, readerAudioPlayActive, readerColUsesEngine]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const readerTurnNext = () => {
     if (readerColIndexRef.current < readerColCountRef.current - 1) {
