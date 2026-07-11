@@ -394,6 +394,7 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
             "lang": data.get("language") or "de",
             "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
             "items": data.get("items") or [],
+            "is_generated": data.get("is_generated"),
         }, diag
 
     candidates = _gather_candidates()
@@ -440,6 +441,7 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
             "lang": data.get("language") or "de",
             "text": text[:WORLD_NEWS_MAX_TRANSCRIPT_CHARS],
             "items": data.get("items") or [],
+            "is_generated": data.get("is_generated"),
         }, diag
     diag["reason"] = "all_candidates_rejected"
     logger.warning("world_news: no candidate passed duration+transcript checks (diag=%s)", diag)
@@ -628,6 +630,7 @@ def prepare_world_news(
     variety is preferred, but never at the cost of having no news at all."""
     from backend.database import (
         upsert_world_news_daily, get_world_news_for_date, get_recent_world_news_video_ids,
+        upsert_youtube_transcript_cache,
     )
 
     date_str = (news_date or _today_str()).strip()
@@ -669,6 +672,23 @@ def prepare_world_news(
         quiz=pack["quiz"],
         status=status,
     )
+    # Warm the shared transcript library so EVERY user — not just the library admin — gets the
+    # German subtitles for this curated video. Without this, non-admin users (free AND non-admin
+    # Pro) hit the library gate in the /youtube_transcript endpoint and see «Субтитры недоступны»,
+    # because only the admin's own view live-fetches and caches the transcript. We store the German
+    # `items` only; the RU translations layer stays on its own on-demand, Pro-gated path (the
+    # cache upsert COALESCEs translations, so we never clobber any that get added later).
+    try:
+        upsert_youtube_transcript_cache(
+            picked["video_id"],
+            picked["items"],
+            picked["lang"],
+            picked.get("is_generated"),
+        )
+    except Exception:
+        logger.warning(
+            "world_news: transcript-cache warm failed video=%s", picked.get("video_id"), exc_info=True,
+        )
     logger.info(
         "world_news: prepared %s video=%s phrases=%d quiz=%d",
         date_str, picked["video_id"], len(pack["phrases"]), len(pack["quiz"]),
