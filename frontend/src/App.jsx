@@ -5792,6 +5792,9 @@ function AppInner() {
   // spots (HTML timeupdate + web RAF) and restartReaderAudioFromWord.
   const readerAudioJumpPendingRef = useRef(false);
   const readerAudioJumpPendingTimerRef = useRef(0);
+  // State mirror of the ref so the readerAudioPlayingWid memo can drop the
+  // highlight/word-follow while a jump is settling (the ref alone isn't reactive).
+  const [readerAudioJumpPending, setReaderAudioJumpPending] = useState(false);
   const readerAudioWebClipsRef = useRef(new Map()); // clipKey -> { window, data, segments }
   const playReaderAudioPageWebAudioRef = useRef(null);
   // Ping-pong audio elements: activeEl plays, bufEl preloads next page.
@@ -5814,6 +5817,23 @@ function AppInner() {
       return (v === 'sepia' || v === 'cream') ? v : 'dark';
     } catch { return 'dark'; }
   });
+  // Paint the ROOT layers (html/body/#root) with the reader's own background while
+  // the reader is open. The default `body{background:#f6f1ea}` (cream) otherwise
+  // bleeds a LIGHT frame around the book wherever our page doesn't physically cover
+  // the screen (top safe-area + tablet window edges) — invisible in sepia (cream≈
+  // sepia) but an obvious light band in DARK theme. :has() didn't take in the
+  // Telegram webview, so set it imperatively here.
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    if (!readerImmersive) return undefined;
+    const bg = readerColorTheme === 'sepia' ? '#f4ecd8' : readerColorTheme === 'cream' ? '#fbf8f1' : '#080c1a';
+    const targets = [document.documentElement, document.body];
+    const rootEl = document.getElementById('root');
+    if (rootEl) targets.push(rootEl);
+    const prev = targets.map((el) => el.style.backgroundColor);
+    targets.forEach((el) => { el.style.backgroundColor = bg; });
+    return () => { targets.forEach((el, i) => { el.style.backgroundColor = prev[i] || ''; }); };
+  }, [readerImmersive, readerColorTheme]);
   const destroyReaderOriginalEpub = useCallback(() => {
     if (readerEpubRelocationSaveTimeoutRef.current) {
       window.clearTimeout(readerEpubRelocationSaveTimeoutRef.current);
@@ -14371,6 +14391,9 @@ function AppInner() {
 
   const readerAudioPlayingWid = useMemo(() => {
     if (!readerAudioPlayData || !readerAudioPlayActive) return null;
+    // Mid-jump: old audio data is still mounted while the new clip synthesises —
+    // don't resolve a STALE word (it would scroll the view to the old page).
+    if (readerAudioJumpPending) return null;
     const t = readerAudioPlayPosition;
     const timing = readerAudioPlayData.word_timings.find((w) => t >= w.start_ms && t < w.end_ms);
     if (!timing) return null;
@@ -14408,7 +14431,7 @@ function AppInner() {
       return readerAudioCharStartMap.get(String(localCharStart)) || null;
     }
     return readerAudioWidMap.get(String(timing.wid)) || null;
-  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioCharStartMap, readerAudioWordSpans, readerWindowModel, readerAudioPlayActive, readerAudioCurrentPageCharOffset, readerCurrentPage]);
+  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioCharStartMap, readerAudioWordSpans, readerWindowModel, readerAudioPlayActive, readerAudioCurrentPageCharOffset, readerCurrentPage, readerAudioJumpPending]);
 
   const readerAudioPlayingSid = useMemo(() => {
     if (!readerAudioPlayingWid) return null;
@@ -22430,13 +22453,23 @@ function AppInner() {
   };
   // (Re)start audio from a tapped word — used both to begin playback and to jump
   // the current playback to a newly tapped word. Robust across pages/windows.
+  const endReaderAudioJump = () => {
+    readerAudioJumpPendingRef.current = false;
+    setReaderAudioJumpPending(false);
+    if (readerAudioJumpPendingTimerRef.current) {
+      clearTimeout(readerAudioJumpPendingTimerRef.current);
+      readerAudioJumpPendingTimerRef.current = 0;
+    }
+  };
   const beginReaderAudioJump = () => {
-    // Suppress audio page-follow until the new clip's meta is installed; a safety
-    // timer lifts it even if that install path is missed, so we never stick.
+    // Suppress audio page-follow AND the word-highlight/follow until the new clip's
+    // meta is installed; a safety timer lifts it even if that install path is missed.
     readerAudioJumpPendingRef.current = true;
+    setReaderAudioJumpPending(true);
     if (readerAudioJumpPendingTimerRef.current) clearTimeout(readerAudioJumpPendingTimerRef.current);
     readerAudioJumpPendingTimerRef.current = setTimeout(() => {
       readerAudioJumpPendingRef.current = false;
+      setReaderAudioJumpPending(false);
     }, 9000);
   };
   const restartReaderAudioFromWord = (wid, rawCharStart) => {
@@ -23984,7 +24017,7 @@ function AppInner() {
       readerAudioWindowMetaRef.current = normalizedWindow;
       // New clip meta is in place → page-follow can safely resume (it now reads the
       // NEW segments, whose first page = the tapped word's page, so no bounce).
-      readerAudioJumpPendingRef.current = false;
+      endReaderAudioJump();
       const initialCharOffset = Number(currentSegment?.charStart || 0);
       readerAudioCurrentPageCharOffsetRef.current = initialCharOffset;
       setReaderAudioCurrentPageCharOffset(initialCharOffset);
@@ -24382,7 +24415,7 @@ function AppInner() {
       readerAudioWebActiveRef.current = true;
       readerAudioWindowMetaRef.current = { ...win, segments };
       // New clip meta installed → resume page-follow (reads the new segments now).
-      readerAudioJumpPendingRef.current = false;
+      endReaderAudioJump();
       readerAudioPlayingForPageRef.current = win.startPage;
       readerCurrentPageRef.current = win.startPage;
       setReaderCurrentPage(win.startPage);
