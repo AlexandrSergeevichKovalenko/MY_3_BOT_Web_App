@@ -4082,6 +4082,74 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-page.is-telegram-tablet .webapp-reader .reader-lib-search { height: 52px; font-size: 16px; }
 .webapp-page.is-telegram-tablet .webapp-reader .reader-lib-search-icon { width: 22px; height: 22px; }
 
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  INLINE FIGURES / TABLES — images extracted from the book, spliced into │
+   │  the reading flow. A figure is a block that never splits across columns  │
+   │  and fits within one column height, so paging stays clean.              │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+.webapp-reader .reader-figure {
+  display: block;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 16px 0;
+  text-align: center;
+  cursor: zoom-in;
+}
+.webapp-reader .reader-figure-img {
+  display: block;
+  max-width: 100%;
+  max-height: 58vh;
+  margin: 0 auto;
+  border-radius: 8px;
+  object-fit: contain;
+  -webkit-user-select: none;
+  user-select: none;
+  box-shadow: 0 4px 16px -6px rgba(0,0,0,0.5);
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-figure-img,
+.webapp-reader[data-reader-theme="cream"] .reader-figure-img {
+  box-shadow: 0 4px 14px -6px rgba(58,47,34,0.35);
+  background: rgba(255,255,255,0.5);
+}
+
+/* Tap-to-enlarge lightbox (rendered as a sibling of the reader, fixed over all) */
+.reader-figure-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0,0,0,0.93);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(env(safe-area-inset-top, 0px) + 12px) 14px calc(env(safe-area-inset-bottom, 0px) + 14px);
+  animation: rd-fade-in .16s ease both;
+}
+.reader-figure-lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.reader-figure-lightbox-close {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  right: 14px;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.16);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* Fix: the "tap a word" hint must NOT reflow the page. It was an in-flow bar
    that shrank the reading area on Play → columns recomputed and the text
    shifted. Float it as a pill so pressing Слушать changes nothing on the page. */
