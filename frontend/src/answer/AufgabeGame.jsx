@@ -352,6 +352,46 @@ function AufgabeArtikel({ task, onSubmit, submitting }) {
   );
 }
 
+function wfSplitBlank(s) {
+  const str = String(s || '');
+  const i = str.indexOf('___');
+  if (i < 0) return ['', str];
+  return [str.slice(0, i), str.slice(i + 3)];
+}
+
+function AufgabeWoFrage({ task, onSubmit, submitting }) {
+  // Wo-Frage Sprint review (mixed "Alle" flow): the Q&A sentence with the "___" blank +
+  // the 4 question-word options. One tap = instant answer (reveal shown by the caller).
+  const [pick, setPick] = useState(null);
+  const [pre, post] = wfSplitBlank(task.s);
+  const choose = (o) => {
+    if (submitting || pick) return;  // lock after the first tap
+    setPick(o); tapHaptic(); onSubmit(o);
+  };
+  return (
+    <>
+      <div className={`as-word wo-word${pick ? ' picked' : ''}`}>
+        <span className="fit-line wo-line">
+          <span>{pre}</span>
+          <span className="wo-slot">{pick || '?'}</span>
+          <span>{post}</span>
+        </span>
+      </div>
+      {task.clue ? <div className="wo-clue">{task.clue}</div> : null}
+      {task.hint_ru ? <p className="au-hint" style={{ textAlign: 'center' }}>💡 {task.hint_ru}</p> : null}
+      <div className="as-buttons wo-buttons">
+        {(task.opts || []).map((o) => (
+          <button
+            key={o} type="button"
+            className={`as-btn-art wo-opt${pick === o ? ' on' : ''}`}
+            onClick={() => choose(o)} disabled={submitting || !!pick}
+          >{o}</button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function AufgabeVideo({ task, onSubmit, submitting }) {
   // Remedial theory card ("тебе было сложно"): a PICKER of curated clips for the topic.
   // The learner taps whichever explanation they like (it plays inline), can open several,
@@ -427,5 +467,6 @@ export default function AufgabeGame({ task, onSubmit, submitting }) {
   if (fmt === 'satzbau') return <AufgabeSatzbau task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'adjektiv') return <AufgabeAdjektiv task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'artikel') return <AufgabeArtikel task={task} onSubmit={onSubmit} submitting={submitting} />;
+  if (fmt === 'wofrage') return <AufgabeWoFrage task={task} onSubmit={onSubmit} submitting={submitting} />;
   return <AufgabeText task={task} onSubmit={onSubmit} submitting={submitting} />;
 }

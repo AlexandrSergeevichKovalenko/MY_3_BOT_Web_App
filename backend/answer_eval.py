@@ -1382,6 +1382,13 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
             pass
         meta["before"] = before
         meta["after"] = after
+    elif fmt == "wofrage":
+        # Wo-Frage Sprint review card (mixed "Alle" flow). Send the Q&A sentence (with
+        # the "___" blank), the clue line, and the 4 options; NEVER the correct answer.
+        meta["s"] = str(payload.get("s") or "")
+        meta["clue"] = str(payload.get("clue") or "")
+        meta["opts"] = [str(o) for o in (payload.get("opts") or []) if str(o).strip()]
+        meta["hint_ru"] = str(payload.get("hint_ru") or payload.get("verb_ru") or "")
     elif fmt == "artikel":
         # der/die/das review card (mirrors Artikel Sprint). Send the noun + the three
         # options; NEVER the correct article. The RU meaning is not the answer, so it
@@ -1515,6 +1522,10 @@ def review_overview(*, user_id: int) -> dict:
         sections.append({"family": "artikel", "emoji": "⚡",
                          "title_de": "Artikel", "title_ru": "Артикли",
                          "subtitle_de": "der / die / das", "count": int(c["artikel"])})
+    if int(c.get("wofrage", 0)) > 0:
+        sections.append({"family": "wofrage", "emoji": "❓",
+                         "title_de": "Wo-Fragen", "title_ru": "Wo-Fragen",
+                         "subtitle_de": "Worauf / An wem …", "count": int(c["wofrage"])})
     if int(c.get("grammar", 0)) > 0:
         sections.append({"family": "grammar", "emoji": "🧩",
                          "title_de": "Grammatik", "title_ru": "Грамматика",
@@ -1527,7 +1538,7 @@ def load_review_next(*, user_id: int, family: str | None = None) -> dict:
     scopes the session to one section ('artikel' | 'grammar'); None = all mistakes."""
     from backend.database import get_next_due_mistake, count_due_mistakes
     fam = (str(family).strip().lower() or None) if family else None
-    if fam not in ("artikel", "grammar", None):
+    if fam not in ("artikel", "wofrage", "grammar", None):
         fam = None
     remaining = count_due_mistakes(int(user_id), family=fam)
     if remaining <= 0:
@@ -1585,6 +1596,45 @@ def answer_artikel_review(*, user_id: int, mistake_id: int, is_correct: bool) ->
             "remaining": count_due_mistakes(int(user_id), family="artikel")}
 
 
+def load_wofrage_review_batch(*, user_id: int, limit: int = 20) -> dict:
+    """FAST path for the Wo-Fragen section of работа над ошибками: a whole page of due
+    Wo-Frage Sprint mistakes as ready-to-render cards (question + clue + 4 options + the
+    true answer + rule/tip) in ONE query. The client prefetches the batch, grades LOCALLY
+    (the answer ships with the card, same as the Wo-Frage Trainer) and advances
+    spaced-repetition fire-and-forget. `a` is sent because review is personal study, not a
+    scored test."""
+    from backend.database import get_due_wofrage_mistakes_batch, count_due_mistakes
+    rows = get_due_wofrage_mistakes_batch(int(user_id), int(limit))
+    cards = []
+    for r in rows:
+        p = r.get("payload") or {}
+        s = str(p.get("s") or "")
+        a = str(p.get("correct") or "")
+        if not s or not a:
+            continue
+        cards.append({
+            "id": int(r["id"]), "s": s, "a": a,
+            "clue": str(p.get("clue") or ""),
+            "opts": [str(o) for o in (p.get("opts") or []) if str(o).strip()],
+            "erklaerung": str(p.get("erklaerung") or ""),
+            "tip": str(p.get("tip") or ""),
+            "lemma": str(p.get("lemma") or ""),
+            "verb_ru": str(p.get("verb_ru") or ""),
+        })
+    return {"kind": "wofrage_review", "cards": cards,
+            "remaining": count_due_mistakes(int(user_id), family="wofrage")}
+
+
+def answer_wofrage_review(*, user_id: int, mistake_id: int, is_correct: bool) -> dict:
+    """Advance ONE Wo-Fragen review card's spaced-repetition schedule (fire-and-forget
+    from the batch client). Grading already happened locally on the deterministic answer,
+    so this only reschedules — off the user's critical path."""
+    from backend.database import reschedule_mistake, count_due_mistakes
+    reschedule_mistake(mistake_id=int(mistake_id), user_id=int(user_id), is_correct=bool(is_correct))
+    return {"kind": "wofrage_review", "ok": True,
+            "remaining": count_due_mistakes(int(user_id), family="wofrage")}
+
+
 def evaluate_review(*, user_id: int, mistake_id: int, answer: str,
                     family: str | None = None) -> dict:
     """Grade a review answer, advance/reset its spaced-repetition schedule, and
@@ -1592,7 +1642,7 @@ def evaluate_review(*, user_id: int, mistake_id: int, answer: str,
     'remaining' count scoped to the section the learner is drilling."""
     from backend.database import get_aufgabe_mistake, reschedule_mistake, count_due_mistakes
     fam = str(family).strip().lower() if family else None
-    if fam not in ("artikel", "grammar"):
+    if fam not in ("artikel", "wofrage", "grammar"):
         fam = None
     m = get_aufgabe_mistake(int(user_id), int(mistake_id))
     if not m:

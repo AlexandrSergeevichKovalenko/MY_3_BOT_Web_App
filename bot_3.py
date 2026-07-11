@@ -28608,6 +28608,7 @@ async def admin_review_makedue_command(update: Update, context: CallbackContext)
     """TEST: make YOUR review mistakes due right now (skip the 1-day SR wait).
     /review_makedue            → only your `artikel` mistakes
     /review_makedue all        → every format
+    /review_makedue wofrage    → only that format (any format name works)
     Then open «🧩 Разобрать ошибки» (/review) to drill them immediately."""
     user = update.effective_user
     message = update.effective_message
@@ -28617,10 +28618,15 @@ async def admin_review_makedue_command(update: Update, context: CallbackContext)
         await message.reply_text("Admins only.")
         return
     args = [a.strip().lower() for a in (context.args or []) if a.strip()]
-    fmt = None if (args and args[0] in ("all", "все", "всё")) else "artikel"
+    if args and args[0] in ("all", "все", "всё"):
+        fmt = None
+    elif args:
+        fmt = args[0]  # explicit format, e.g. wofrage / artikel / cloze
+    else:
+        fmt = "artikel"
     from backend.database import force_due_mistakes
     n = await asyncio.to_thread(force_due_mistakes, int(user.id), fmt=fmt)
-    scope = "все форматы" if fmt is None else "формат «artikel»"
+    scope = "все форматы" if fmt is None else f"формат «{fmt}»"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "🧩 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
     await message.reply_text(

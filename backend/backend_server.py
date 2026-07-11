@@ -24273,6 +24273,45 @@ def answer_review_artikel_answer():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/answer/review/wofrage/batch", methods=["POST"])
+def answer_review_wofrage_batch():
+    """FAST Wo-Fragen section of работа над ошибками: a whole page of due Wo-Frage Sprint
+    cards (question + clue + options + answer + rule/tip) in one shot, so the client
+    prefetches + grades locally."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        limit = max(1, min(40, int(payload.get("limit") or 20)))
+    except (TypeError, ValueError):
+        limit = 20
+    from backend.answer_eval import load_wofrage_review_batch
+    return jsonify({"ok": True, **load_wofrage_review_batch(user_id=int(user_id), limit=limit)})
+
+
+@app.route("/api/answer/review/wofrage/answer", methods=["POST"])
+def answer_review_wofrage_answer():
+    """Advance ONE Wo-Fragen review card's SR schedule (fire-and-forget; graded locally)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        mistake_id = int(payload.get("mistake_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "mistake_id обязателен"}), 400
+    is_correct = bool(payload.get("is_correct"))
+    from backend.answer_eval import answer_wofrage_review
+    try:
+        result = answer_wofrage_review(user_id=int(user_id), mistake_id=mistake_id, is_correct=is_correct)
+    except Exception:
+        logging.exception("wofrage review answer failed id=%s user=%s", mistake_id, user_id)
+        return jsonify({"error": "Ошибка"}), 500
+    _inbox_mark_kind_done(int(user_id), "rv")  # ✅ the "Работа над ошибками" card
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/answer/numdict/session", methods=["POST"])
 def answer_numdict_session():
     """Zahlen-Diktat: the 3-item session bundle (audio + prompt per item)."""
@@ -24866,6 +24905,34 @@ def wofrage_submit():
     )
     _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
     _flip_battle_ctas_done_async(int(user_id), set_id)  # flip play buttons → «✅ Сыграно»
+    if recorded:
+        # Feed wrong Wo-Fragen (incl. timeouts → chosen "" = "didn't know it") into the
+        # shared «работа над ошибками» spaced-repetition queue as a `wofrage` card — its
+        # own section inside the review, next to Artikel. Off the critical path.
+        try:
+            wrong_items = [it for it in items if not it["ok"]]
+            if wrong_items:
+                def _log_wofrage_mistakes():
+                    try:
+                        from backend.database import record_aufgabe_mistake
+                        for it in wrong_items:
+                            record_aufgabe_mistake(
+                                user_id=int(user_id), fmt="wofrage",
+                                payload={
+                                    "s": it["s"], "clue": it["clue"], "opts": it["opts"],
+                                    "correct": it["a"], "target": it["target"],
+                                    "erklaerung": it["erklaerung"], "tip": it["tip"],
+                                    "lemma": it["lemma"], "verb_ru": it["verb_ru"],
+                                    "obj": it["obj"], "obj_ru": it["obj_ru"],
+                                    "hint_ru": it["verb_ru"] or it["clue"],
+                                },
+                                correct_answer=it["a"], wrong_answer=it["chosen"],
+                            )
+                    except Exception:
+                        logging.warning("wofrage mistake-queue log failed set=%s", set_id, exc_info=True)
+                threading.Thread(target=_log_wofrage_mistakes, daemon=True).start()
+        except Exception:
+            pass
     if not recorded:
         prev = get_wofrage_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))

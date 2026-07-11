@@ -1345,7 +1345,7 @@ def _mistake_hash(fmt: str, payload: dict, correct_answer: str) -> str:
         str(fmt or ""),
         str(correct_answer or ""),
         str(p.get("satz") or p.get("before") or p.get("original")
-            or p.get("wort") or " ".join(p.get("woerter") or [])),
+            or p.get("wort") or p.get("s") or " ".join(p.get("woerter") or [])),
     ])
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:32]
 
@@ -1543,8 +1543,10 @@ def _mistake_family_clause(family: str | None) -> str:
     fam = str(family or "").strip().lower()
     if fam == "artikel":
         return "AND format = 'artikel'"
+    if fam == "wofrage":
+        return "AND format = 'wofrage'"
     if fam == "grammar":
-        return "AND format <> 'artikel'"
+        return "AND format NOT IN ('artikel', 'wofrage')"
     return ""  # all families
 
 
@@ -1566,7 +1568,8 @@ def count_due_mistakes(user_id: int, *, family: str | None = None) -> int:
 
 def count_due_mistakes_by_family(user_id: int) -> dict:
     """Due-mistake counts split into user-facing sections for работа над ошибками:
-    {'artikel': n, 'grammar': m, 'total': t}. Powers the review overview/section picker."""
+    {'artikel': n, 'wofrage': w, 'grammar': m, 'total': t}. Powers the review
+    overview/section picker (each grammar-game family gets its own block)."""
     try:
         ensure_aufgabe_mistakes_schema()
         with get_db_connection_context() as conn:
@@ -1574,17 +1577,18 @@ def count_due_mistakes_by_family(user_id: int) -> dict:
                 cur.execute(
                     "SELECT "
                     "  COUNT(*) FILTER (WHERE format = 'artikel'), "
-                    "  COUNT(*) FILTER (WHERE format <> 'artikel'), "
+                    "  COUNT(*) FILTER (WHERE format = 'wofrage'), "
+                    "  COUNT(*) FILTER (WHERE format NOT IN ('artikel', 'wofrage')), "
                     "  COUNT(*) "
                     "FROM bt_3_aufgabe_mistakes "
                     "WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW();",
                     (int(user_id),),
                 )
-                row = cur.fetchone() or [0, 0, 0]
-                return {"artikel": int(row[0] or 0), "grammar": int(row[1] or 0),
-                        "total": int(row[2] or 0)}
+                row = cur.fetchone() or [0, 0, 0, 0]
+                return {"artikel": int(row[0] or 0), "wofrage": int(row[1] or 0),
+                        "grammar": int(row[2] or 0), "total": int(row[3] or 0)}
     except Exception:
-        return {"artikel": 0, "grammar": 0, "total": 0}
+        return {"artikel": 0, "wofrage": 0, "grammar": 0, "total": 0}
 
 
 def force_due_mistakes(user_id: int, *, fmt: str | None = None) -> int:
@@ -41635,6 +41639,34 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
         return list(best.values())
     except Exception:
         logging.warning("get_due_artikel_mistakes_batch failed user_id=%s", user_id, exc_info=True)
+        return []
+
+
+def get_due_wofrage_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
+    """A whole PAGE of due `wofrage` (Wo-Frage Sprint) review mistakes in ONE query.
+    The stored payload is fully self-contained (sentence + clue + options + answer +
+    rule/tip), so работа над ошибками can prefetch the batch and grade LOCALLY (the
+    deterministic answer ships with the card) — no per-card round-trip. Returns dicts
+    with id + the raw payload."""
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, payload FROM bt_3_aufgabe_mistakes "
+                    "WHERE user_id=%s AND format='wofrage' "
+                    "  AND mastered=FALSE AND due_at<=NOW() "
+                    "ORDER BY due_at ASC, id ASC LIMIT %s;",
+                    (int(user_id), int(limit)),
+                )
+                rows = cur.fetchall() or []
+        out = []
+        for r in rows:
+            payload = r[1] if isinstance(r[1], dict) else {}
+            out.append({"id": int(r[0]), "payload": payload})
+        return out
+    except Exception:
+        logging.warning("get_due_wofrage_mistakes_batch failed user_id=%s", user_id, exc_info=True)
         return []
 
 
