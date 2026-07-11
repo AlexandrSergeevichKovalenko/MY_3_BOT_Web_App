@@ -718,6 +718,21 @@ body {
   gap: 0;
 }
 
+/* The immersive reader must fill the FULL window — on a tablet the app goes
+   fullscreen (wide), yet the reader was rendering as a phone-width centred panel
+   while the library filled the screen. Force the whole reader column to full width
+   and drop the app's 1200px content cap / centring (100% = the window everywhere,
+   so the phone is unaffected). The book text is the priority — it gets the space. */
+.webapp-page.is-reader-immersive .webapp-shell,
+.webapp-page.is-reader-immersive .webapp-main,
+.webapp-page.is-reader-immersive .webapp-reader,
+.webapp-page.is-reader-immersive .webapp-reader.is-immersive {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
 .webapp-page.is-telegram-tablet {
   --telegram-tablet-top-safe-offset: calc(env(safe-area-inset-top, 0px) + 48px);
   --telegram-tablet-inline-safe-offset: clamp(18px, 3vw, 34px);
