@@ -21,8 +21,27 @@ async function api(path) {
 }
 
 function MediaTile({ src, type, caption }) {
+  // Only render once the URL is confirmed to be a REAL media file — a missing asset is
+  // served as index.html (200 text/html) and a bare <video> would spin forever without
+  // erroring. HEAD-check the content-type and hide otherwise. (Owner's videos, once
+  // added, just start appearing.)
   const [hidden, setHidden] = useState(false);
-  if (hidden) return null;
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        const res = await fetch(src, { method: 'HEAD' });
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        const ok = res.ok && ct.startsWith(type === 'video' ? 'video/' : 'image/');
+        if (!off) { setReady(ok); setHidden(!ok); }
+      } catch (_e) {
+        if (!off) setReady(true);
+      }
+    })();
+    return () => { off = true; };
+  }, [src, type]);
+  if (hidden || !ready) return null;
   return (
     <figure className="sc-media">
       {type === 'video' ? (

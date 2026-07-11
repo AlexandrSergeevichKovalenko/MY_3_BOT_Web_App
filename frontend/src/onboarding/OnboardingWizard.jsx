@@ -78,8 +78,28 @@ const WINDOWS = [
 
 // Media slot that hides itself if the asset isn't there yet (drop the file later).
 function MediaTile({ src, type = 'video', caption }) {
+  // Only render once we've confirmed the URL is a REAL media file. A missing asset is
+  // served by the SPA as index.html (200 text/html) — a bare <video> would then spin
+  // forever without firing onError. So HEAD-check the content-type first and hide if
+  // it isn't video/*|image/*. (Videos owner will add later just start appearing.)
   const [hidden, setHidden] = useState(false);
-  if (hidden) return null;
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        const res = await fetch(src, { method: 'HEAD' });
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        const ok = res.ok && ct.startsWith(type === 'video' ? 'video/' : 'image/');
+        if (!off) { setReady(ok); setHidden(!ok); }
+      } catch (_e) {
+        // Network/HEAD unsupported — show and let onError catch a hard failure.
+        if (!off) setReady(true);
+      }
+    })();
+    return () => { off = true; };
+  }, [src, type]);
+  if (hidden || !ready) return null;
   return (
     <figure className="ob-media">
       {type === 'video' ? (
@@ -151,7 +171,7 @@ const PRO_TEASER = (
       {t(' можно настроить количество и время доставки.',
          ' kannst du Menge und Uhrzeit einstellen.')}
     </p>
-    <span className="ob-lock">{t('🔓 перк Pro', '🔓 Pro-Vorteil')}</span>
+    <span className="ob-lock">{t('🔒 Только в Pro', '🔒 Nur mit Pro')}</span>
   </div>
 );
 
@@ -162,7 +182,7 @@ const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows',
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
-    onShortcutSetup } = props;
+    onShortcutSetup, shortcutOpening } = props;
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
     case 'welcome':
@@ -227,14 +247,16 @@ function StepBody(props) {
           ) : partial ? (
             <div className="ob-actions ob-actions-col">
               <span className="ob-lock ob-ok">{t('✅ Базовый словарь подключён', '✅ Basis-Wörterbuch verbunden')}</span>
-              {total > have ? (
+              {dictChoice === 'full' ? (
+                <span className="ob-lock ob-ok">{t('✅ Догружаю весь словарь — это займёт пару минут, можно идти дальше', '✅ Lade das ganze Wörterbuch — ein paar Minuten, du kannst weitergehen')}</span>
+              ) : total > have ? (
                 <button
                   type="button"
                   className="ob-confirm ob-alt"
                   onClick={() => onDictAction('accept', true)}
                   disabled={busy}
                 >
-                  {dictBusy === 'full' ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Догрузить весь словарь', '🔓 Ganzes Wörterbuch laden')} — ~${total} ${t('слов', 'Wörter')}`}
+                  {dictBusy === 'full' ? t('⏳ Догружаю…', '⏳ Lade…') : `${t('🔓 Догрузить весь словарь', '🔓 Ganzes Wörterbuch laden')} — ~${total} ${t('слов', 'Wörter')}`}
                 </button>
               ) : null}
             </div>
@@ -323,8 +345,8 @@ function StepBody(props) {
                ' machst du mit einer Bewegung einen Screenshot eines deutschen Wortes aus jeder App — und morgens übersetzt das Handy alles selbst und schickt die Wörter privat. Nur noch speichern.')}
           </p>
           <p className="ob-lead">{t('Необязательно, настраивается один раз. Можно сейчас или позже.', 'Optional, wird einmal eingerichtet. Jetzt oder später.')}</p>
-          <button type="button" className="ob-confirm" onClick={onShortcutSetup}>
-            {t('📲 Настроить сейчас', '📲 Jetzt einrichten')}
+          <button type="button" className="ob-confirm" onClick={onShortcutSetup} disabled={shortcutOpening}>
+            {shortcutOpening ? t('⏳ Открываю…', '⏳ Öffne…') : t('📲 Настроить сейчас', '📲 Jetzt einrichten')}
           </button>
           <span className="ob-muted-note">{t('Пропустишь — откроешь потом через «🎬 Как пользоваться».', 'Überspringst du — öffnest du es später über «🎬 Wie man es benutzt».')}</span>
         </div>
@@ -542,7 +564,7 @@ function StepBody(props) {
             На бесплатном — подборка заданий в день. В <b>Pro</b> можно настроить количество
             и время. Пока — заглушка каркаса.
           </p>
-          <span className="ob-lock">🔓 перк Pro</span>
+          <span className="ob-lock">🔒 Только в Pro</span>
         </div>
       );
     case 'opt':
@@ -583,6 +605,7 @@ export default function OnboardingWizard() {
   const [selWindow, setSelWindow] = useState('allday');   // active window (visual default)
   const [selBattle, setSelBattle] = useState(null);       // battle readiness: null|'yes'|'no'
   const [botUrl, setBotUrl] = useState('');               // install link (public tour only)
+  const [shortcutOpening, setShortcutOpening] = useState(false); // «Настроить сейчас» in flight
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
@@ -681,13 +704,29 @@ export default function OnboardingWizard() {
   // «Настроить сейчас» on the Shortcut step (the last content step): complete
   // onboarding and hand off to the full Shortcut setup screen.
   const openShortcutSetup = useCallback(async () => {
-    try { await api('/api/webapp/onboarding/complete'); } catch (_e) { /* noop */ }
-    const url = botUrl ? `${botUrl}?startapp=shortcut` : '';
+    if (shortcutOpening) return;
+    setShortcutOpening(true);
+    try { tg?.HapticFeedback?.impactOccurred?.('medium'); } catch (_e) { /* noop */ }
+    // Complete onboarding in the BACKGROUND — don't block the open on it.
+    api('/api/webapp/onboarding/complete').catch(() => {});
+    // The deeplink needs bot_url; it loads async on mount, so on an early tap it may
+    // still be empty (this is why it used to need several taps). Fetch it inline if so.
+    let base = botUrl;
+    if (!base) {
+      try {
+        const r = await fetch('/api/public/tour-info');
+        const d = await r.json().catch(() => ({}));
+        base = d.bot_url || '';
+        if (base) setBotUrl(base);
+      } catch (_e) { /* noop */ }
+    }
+    const url = base ? `${base}?startapp=shortcut` : '';
     try {
       if (url && tg?.openTelegramLink) tg.openTelegramLink(url);
       else if (url) window.location.href = url;
     } catch (_e) { /* noop */ }
-  }, [botUrl]);
+    setShortcutOpening(false);
+  }, [botUrl, shortcutOpening]);
 
   const confirmStep = useCallback(async () => {
     setStepErr('');
@@ -804,6 +843,7 @@ export default function OnboardingWizard() {
             selBattle={selBattle}
             onPickBattle={pickBattle}
             onShortcutSetup={openShortcutSetup}
+            shortcutOpening={shortcutOpening}
           />
         </main>
 
