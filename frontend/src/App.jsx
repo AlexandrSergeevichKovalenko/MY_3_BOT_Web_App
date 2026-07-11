@@ -5832,8 +5832,21 @@ function AppInner() {
     if (rootEl) targets.push(rootEl);
     const prev = targets.map((el) => el.style.backgroundColor);
     targets.forEach((el) => { el.style.backgroundColor = bg; });
-    return () => { targets.forEach((el, i) => { el.style.backgroundColor = prev[i] || ''; }); };
-  }, [readerImmersive, readerColorTheme]);
+    // The light band at the very top is Telegram's OWN header/background (its native
+    // close/⋯ controls sit there) — not our DOM, so CSS can't touch it. Recolor it
+    // via the WebApp API so the native chrome matches the book theme (hex support:
+    // header/bg since Bot API 6.9, bottom bar since 8.0). Restore to the Telegram
+    // theme colour ('bg_color') on exit.
+    try { telegramApp?.setHeaderColor?.(bg); } catch (_e) { /* older client */ }
+    try { telegramApp?.setBackgroundColor?.(bg); } catch (_e) { /* older client */ }
+    try { telegramApp?.setBottomBarColor?.(bg); } catch (_e) { /* < 8.0 */ }
+    return () => {
+      targets.forEach((el, i) => { el.style.backgroundColor = prev[i] || ''; });
+      try { telegramApp?.setHeaderColor?.('bg_color'); } catch (_e) { /* noop */ }
+      try { telegramApp?.setBackgroundColor?.('bg_color'); } catch (_e) { /* noop */ }
+      try { telegramApp?.setBottomBarColor?.('bg_color'); } catch (_e) { /* noop */ }
+    };
+  }, [readerImmersive, readerColorTheme, telegramApp]);
   const destroyReaderOriginalEpub = useCallback(() => {
     if (readerEpubRelocationSaveTimeoutRef.current) {
       window.clearTimeout(readerEpubRelocationSaveTimeoutRef.current);
