@@ -861,6 +861,51 @@ export default function ReaderSection(props) {
                                 </svg>
                               </div>
                             )}
+                            {readerLibActionsOpenId === item.id && (
+                              <div className="reader-lib-cover-actions" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  className="reader-lib-cover-act"
+                                  disabled={isOpening}
+                                  onClick={(e) => { e.stopPropagation(); openReaderDocument(item.id); }}
+                                  title={tr('Открыть книгу', 'Buch öffnen')}
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none"><path d="M5 12h12.5M12 6l6 6-6 6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                                  <span>{tr('Открыть', 'Lesen')}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="reader-lib-cover-act"
+                                  onClick={(e) => { e.stopPropagation(); renameReaderDocument(item.id, item.title); }}
+                                  title={tr('Переименовать', 'Umbenennen')}
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none"><path d="M16.4 4.6a2 2 0 0 1 2.83 2.83L9.5 17.16l-3.9.9.9-3.9 9.9-9.56Z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M14.5 6.5 17.5 9.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+                                  <span>{tr('Название', 'Titel')}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="reader-lib-cover-act"
+                                  onClick={(e) => { e.stopPropagation(); archiveReaderDocument(item.id, !Boolean(item?.is_archived)); }}
+                                  title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
+                                >
+                                  {Boolean(item?.is_archived) ? (
+                                    <svg viewBox="0 0 24 24" fill="none"><path d="M19.5 8.5V4.5h-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M19 11a7 7 0 1 1-1.7-4.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                                  ) : (
+                                    <svg viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="4.2" rx="1.2" stroke="currentColor" strokeWidth="1.7" /><path d="M5.5 9.2 6.2 19h11.6l.7-9.8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M10 13h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+                                  )}
+                                  <span>{Boolean(item?.is_archived) ? tr('Вернуть', 'Zurück') : tr('Скрыть', 'Ausblenden')}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="reader-lib-cover-act is-danger"
+                                  onClick={(e) => { e.stopPropagation(); deleteReaderDocument(item.id); }}
+                                  title={tr('Удалить', 'Löschen')}
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none"><path d="M5 7h14M9 7V5.6A1.6 1.6 0 0 1 10.6 4h2.8A1.6 1.6 0 0 1 15 5.6V7M6.6 7 7.2 19h9.6L17.4 7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M10 10.5v5M14 10.5v5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+                                  <span>{tr('Удалить', 'Löschen')}</span>
+                                </button>
+                              </div>
+                            )}
                           </div>
                           <div
                             className="reader-library-card-body"
@@ -872,100 +917,6 @@ export default function ReaderSection(props) {
                               {meta && <span>{meta}</span>}
                             </div>
                           </div>
-                          {readerLibActionsOpenId === item.id && (
-                          <div className="reader-library-actions" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              type="button"
-                              className="reader-lib-action reader-lib-action-open"
-                              onClick={(e) => { e.stopPropagation(); openReaderDocument(item.id); }}
-                              disabled={isOpening}
-                              title={tr('Открыть книгу', 'Buch öffnen')}
-                            >
-                              {isOpening ? (
-                                <svg className="reader-lib-spinner reader-lib-action-icon" viewBox="0 0 24 24" fill="none">
-                                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="42 14" />
-                                </svg>
-                              ) : (
-                                <span className="reader-lib-action-icon" aria-hidden="true">
-                                  <svg viewBox="0 0 18 18" fill="none">
-                                    <path d="M7.5 4.5 12 9l-4.5 4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                                  </svg>
-                                </span>
-                              )}
-                              <span className="reader-lib-action-label">
-                                {isOpening ? tr('Загрузка…', 'Laden…') : tr('Открыть', 'Lesen')}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="reader-lib-action"
-                              onClick={(e) => { e.stopPropagation(); renameReaderDocument(item.id, item.title); }}
-                              title={tr('Переименовать', 'Umbenennen')}
-                            >
-                              <span className="reader-lib-action-icon" aria-hidden="true">
-                                <svg viewBox="0 0 18 18" fill="none">
-                                  <path
-                                    d="M12.9 3.6a1.5 1.5 0 0 1 2.12 2.12L7.2 13.5 4.5 14.1l.6-2.7 7.8-7.8Z"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
-                                  <path
-                                    d="M11.4 5.1 13.5 7.2"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                  />
-                                </svg>
-                              </span>
-                              <span className="reader-lib-action-label">
-                                {tr('Название', 'Titel')}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="reader-lib-action"
-                              onClick={(e) => { e.stopPropagation(); archiveReaderDocument(item.id, !Boolean(item?.is_archived)); }}
-                              title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
-                            >
-                              <span className="reader-lib-action-icon" aria-hidden="true">
-                                {Boolean(item?.is_archived) ? (
-                                  <svg viewBox="0 0 18 18" fill="none">
-                                    <path d="M14.25 6.75V3.75h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                                    <path d="M13.9 8.25a5.25 5.25 0 1 1-1.1-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                                  </svg>
-                                ) : (
-                                  <svg viewBox="0 0 18 18" fill="none">
-                                    <path d="M3.75 5.25h10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                                    <path d="M5.25 5.25 6 13.5h6l.75-8.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                                    <path d="M7.5 8.25h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                                    <path d="M9 3.75v4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                                  </svg>
-                                )}
-                              </span>
-                              <span className="reader-lib-action-label">
-                                {Boolean(item?.is_archived) ? tr('Вернуть', 'Zurück') : tr('Скрыть', 'Ausblenden')}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="reader-lib-action is-danger"
-                              onClick={(e) => { e.stopPropagation(); deleteReaderDocument(item.id); }}
-                              title={tr('Удалить', 'Löschen')}
-                            >
-                              <span className="reader-lib-action-icon" aria-hidden="true">
-                                <svg viewBox="0 0 18 18" fill="none">
-                                  <path d="M5.25 5.25 12.75 12.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                                  <path d="M12.75 5.25 5.25 12.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                                </svg>
-                              </span>
-                              <span className="reader-lib-action-label">
-                                {tr('Удалить', 'Löschen')}
-                              </span>
-                            </button>
-                          </div>
-                          )}
                         </div>
                       );
                     })}

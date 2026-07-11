@@ -503,7 +503,7 @@
 .webapp-reader .reader-lib-search {
   flex: 1;
   height: 40px;
-  padding: 0 18px;
+  padding: 0 18px 0 22px;
   border-radius: 99px;
   border: 1px solid var(--rd-border);
   background: var(--rd-surface);
@@ -687,6 +687,47 @@
 .webapp-reader .reader-lib-more:hover { background: rgba(15,18,28,0.62); }
 .webapp-reader .reader-lib-more:active { transform: scale(0.9); }
 .webapp-reader .reader-lib-more.is-open { background: var(--rd-accent); }
+
+/* Actions overlaid ON the cover (2×2) — big clear white glyphs on a blurred scrim.
+   On a colourful cover white reads in BOTH Telegram themes, so no light override. */
+.webapp-reader .reader-lib-cover-actions {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 5px;
+  padding: 11px;
+  background: rgba(8,10,18,0.58);
+  backdrop-filter: blur(9px) saturate(1.1);
+  -webkit-backdrop-filter: blur(9px) saturate(1.1);
+  border-radius: 10px;
+  animation: rd-fade-in .15s ease;
+}
+.webapp-reader .reader-lib-cover-act {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: none;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.09);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .12s, transform .1s;
+}
+.webapp-reader .reader-lib-cover-act:hover { background: rgba(255,255,255,0.18); }
+.webapp-reader .reader-lib-cover-act:active { transform: scale(0.94); }
+.webapp-reader .reader-lib-cover-act:disabled { opacity: 0.5; }
+.webapp-reader .reader-lib-cover-act svg { width: 23px; height: 23px; }
+.webapp-reader .reader-lib-cover-act.is-danger { color: #fca5a5; }
+.webapp-reader .reader-lib-cover-act.is-danger:hover { background: rgba(248,113,113,0.22); }
 
 .webapp-reader .reader-library-cover-progress {
   position: absolute;
