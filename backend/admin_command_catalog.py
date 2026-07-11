@@ -580,6 +580,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "args": 'нет аргументов',
             "example": '/admin_cw_rerender',
         },
+        {
+            "cmd": '/cw_health',
+            "desc": 'READ-ONLY диагностика: почему кроссворды не отправляются. Разбивка пула (ready/pending/failed/retired), сколько отправляемо прямо сейчас vs в cooldown, последняя отправка, статус флага CROSSWORDS_ENABLED и вердикт с причиной.',
+            "args": 'нет аргументов',
+            "example": '/cw_health',
+        },
     ]),
     ('numbers', '🔢 Числа и аудирование', [
         {

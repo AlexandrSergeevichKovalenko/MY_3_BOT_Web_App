@@ -278,6 +278,7 @@ from backend.database import (
     mark_article_quiz_answer_feedback_sent,
     upsert_article_quiz_text_entry,
     pick_next_crossword,
+    crossword_pool_health,
     mark_crossword_sent,
     mark_crossword_send_failed,
     reset_crossword_images_to_pending,
@@ -32307,6 +32308,71 @@ async def admin_pool_report_command(update: Update, context: CallbackContext) ->
         await message.reply_text(f"❌ pool report failed: {exc}")
 
 
+async def admin_crossword_health_command(update: Update, context: CallbackContext) -> None:
+    """READ-ONLY diagnosis of WHY crosswords aren't going out. Breaks down the bank
+    (ready / pending / failed / retired), shows how many are sendable RIGHT NOW vs
+    blocked by cooldown, the last send, and whether the feature is enabled. /cw_health"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        h = await asyncio.to_thread(crossword_pool_health, cooldown_days=CROSSWORD_COOLDOWN_DAYS)
+    except Exception as exc:
+        await message.reply_text(f"❌ cw_health failed: {exc}")
+        return
+
+    enabled = _crosswords_enabled()
+    slots = ", ".join(f"{hh:02d}:{mm:02d}" for (hh, mm) in sorted(CROSSWORD_SLOT_TIMES))
+    last_sent = h.get("last_sent_at")
+    last_sent_s = last_sent.strftime("%Y-%m-%d %H:%M") if last_sent else "никогда"
+    frees = h.get("oldest_cooldown_sent_at")
+    frees_s = (frees + timedelta(days=CROSSWORD_COOLDOWN_DAYS)).strftime("%Y-%m-%d %H:%M") if frees else None
+
+    lines = [
+        "🔤 <b>Kreuzwort — health</b>",
+        f"• включено: {'✅ да' if enabled else '❌ НЕТ (CROSSWORDS_ENABLED=off)'}",
+        f"• слоты: {slots} · cooldown {CROSSWORD_COOLDOWN_DAYS}д",
+        f"• последняя отправка: <b>{last_sent_s}</b>",
+        "",
+        f"<b>Пул ({h['total']} всего):</b>",
+        f"• ✅ ready (не retired): <b>{h['ready']}</b>",
+        f"• ⏳ pending: {h['pending']}",
+        f"• ❌ failed: {h['failed']}",
+        f"• 🚫 retired: {h['retired']}",
+        "",
+        f"<b>➡️ отправляемо ПРЯМО СЕЙЧАС: {h['sendable_now']}</b>",
+        f"• в cooldown (ready, но рано): {h['in_cooldown']}",
+    ]
+    if h["sendable_now"] == 0 and frees_s:
+        lines.append(f"• ближайший выйдет из cooldown: {frees_s}")
+
+    # Verdict — the single most-likely cause.
+    if not enabled:
+        verdict = "🔴 Фича выключена env-флагом CROSSWORDS_ENABLED → включи."
+    elif h["sendable_now"] > 0:
+        verdict = "🟢 Пул готов — есть что слать. Если тишина, проблема в cron/слоте, не в пуле (смотри логи cw_slot)."
+    elif h["ready"] == 0 and h["total"] > 0 and (h["pending"] + h["failed"] + h["retired"]) > 0:
+        if h["retired"] >= h["total"]:
+            verdict = "🔴 Весь пул retired (авто-ретайр после 3 фейлов). Перегенерируй: /admin_cw_pool."
+        elif h["failed"] > 0 or h["pending"] > 0:
+            verdict = "🔴 Ни одной ready-картинки (застряли в pending/failed). Ре-рендер: /admin_cw_rerender, потом /admin_cw_pool."
+        else:
+            verdict = "🔴 Нет ready-записей — перегенерируй пул: /admin_cw_pool."
+    elif h["total"] == 0:
+        verdict = "🔴 Банк пустой — сгенерируй пул: /admin_cw_pool."
+    elif h["in_cooldown"] > 0:
+        verdict = "🟠 Все ready-карты в cooldown. Пул слишком мал под 2 слота/день — долей: /admin_cw_pool."
+    else:
+        verdict = "🟠 Отправлять нечего по неочевидной причине — проверь логи cw_slot."
+    lines += ["", verdict]
+
+    await message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 async def admin_pool_refill_command(update: Update, context: CallbackContext) -> None:
     """Force a translation-pool refill NOW and report generated-vs-upserted, so we can see
     live whether the refill produces sentences and how many survive dedup. Records a
@@ -34937,6 +35003,7 @@ def main():
     application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
+    application.add_handler(CommandHandler("cw_health", admin_crossword_health_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
     application.add_handler(CommandHandler("admin_ls_pool", admin_listening_pool_command))
     application.add_handler(CommandHandler("admin_nd_send", admin_numdict_send_command))

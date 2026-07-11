@@ -39644,6 +39644,50 @@ def mark_crossword_send_failed(crossword_id: str, *, retire_after: int = 3) -> N
         conn.commit()
 
 
+def crossword_pool_health(*, cooldown_days: int = 21) -> dict:
+    """READ-ONLY snapshot of the crossword bank so we can see WHY the scheduler picks
+    nothing. `pick_next_crossword` needs image_status='ready' AND retired=FALSE AND
+    (never sent OR sent > cooldown ago) — this breaks that gate down into buckets and
+    reports the most-recent send + when the next cooldown-blocked card frees up."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*)                                                        AS total,
+                    COUNT(*) FILTER (WHERE retired)                                  AS retired,
+                    COUNT(*) FILTER (WHERE NOT retired AND image_status = 'ready')   AS ready,
+                    COUNT(*) FILTER (WHERE NOT retired AND image_status = 'pending') AS pending,
+                    COUNT(*) FILTER (WHERE NOT retired AND image_status = 'failed')  AS failed,
+                    COUNT(*) FILTER (
+                        WHERE NOT retired AND image_status = 'ready'
+                          AND (last_sent_at IS NULL
+                               OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
+                    )                                                               AS sendable_now,
+                    COUNT(*) FILTER (
+                        WHERE NOT retired AND image_status = 'ready'
+                          AND last_sent_at IS NOT NULL
+                          AND last_sent_at >= NOW() - INTERVAL '1 day' * %s
+                    )                                                               AS in_cooldown,
+                    MAX(last_sent_at)                                               AS last_sent_at,
+                    MIN(last_sent_at) FILTER (
+                        WHERE NOT retired AND image_status = 'ready'
+                          AND last_sent_at IS NOT NULL
+                          AND last_sent_at >= NOW() - INTERVAL '1 day' * %s
+                    )                                                               AS oldest_cooldown_sent_at
+                FROM bt_3_crossword_bank
+                """,
+                (int(cooldown_days), int(cooldown_days), int(cooldown_days)),
+            )
+            row = cursor.fetchone() or []
+    cols = ["total", "retired", "ready", "pending", "failed", "sendable_now",
+            "in_cooldown", "last_sent_at", "oldest_cooldown_sent_at"]
+    out = dict(zip(cols, row))
+    for k in ("total", "retired", "ready", "pending", "failed", "sendable_now", "in_cooldown"):
+        out[k] = int(out.get(k) or 0)
+    return out
+
+
 def record_crossword_dispatch(
     *,
     slot_date,
