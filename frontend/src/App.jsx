@@ -9,6 +9,7 @@ import HomeMoreTiles from './components/HomeMoreTiles';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
 import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
+import ProFeatureModal from './components/ProFeatureModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -6253,6 +6254,8 @@ function AppInner() {
   // fills the progressive teacher breakdown (Part 2/3).
   const [storyResultModalOpen, setStoryResultModalOpen] = useState(false);
   const [storyExplain, setStoryExplain] = useState(null);
+  // «Функция Pro» plaque (shown in place instead of redirecting to the subscription page).
+  const [proFeatureModal, setProFeatureModal] = useState(null);
   const [storyExplainLoading, setStoryExplainLoading] = useState(false);
   const [storyExplainErr, setStoryExplainErr] = useState('');
   const [storyExplainDe, setStoryExplainDe] = useState(false);
@@ -14974,16 +14977,36 @@ function AppInner() {
   const readerAudioPremiumEnabled = ['pro', 'trial'].includes(billingEffectiveMode);
 
   function openReaderAudioPremiumPaywall() {
-    const message = tr(
-      'Аудио в книге доступно только по премиум подписке.',
-      'Audio im Reader ist nur mit Premium verfügbar.'
-    );
-    setReaderAudioError(message);
-    setReaderAudioPlayError(message);
     if (readerAudioPlayActive) {
       stopReaderAudioPlay();
     }
-    openSingleSectionAndScroll('subscription', billingRef);
+    // Show a friendly in-place plaque — do NOT yank the user to the subscription page
+    // (from the fullscreen reader it opened with no back button and wouldn't scroll).
+    setProFeatureModal({
+      emoji: '🎧',
+      title: tr('Аудиокнига — функция Pro', 'Hörbuch — eine Pro-Funktion'),
+      intro: tr(
+        'Озвучка книг доступна по подписке Pro. Само чтение, перевод по тапу и словарь остаются бесплатными.',
+        'Das Vorlesen von Büchern gibt es mit Pro. Lesen, Tippen-Übersetzung und Wörterbuch bleiben kostenlos.'
+      ),
+      bullets: [
+        tr('Озвучка любой книги приятным голосом', 'Jedes Buch mit angenehmer Stimme'),
+        tr('Подсветка слов во время чтения', 'Wort-Highlight beim Vorlesen'),
+        tr('Плюс безлимит на переводы, читалку и карточки', 'Dazu unbegrenzt Übersetzungen, Reader und Karten'),
+      ],
+    });
+  }
+
+  function closeProFeatureModal() {
+    setProFeatureModal(null);
+  }
+
+  function upgradeFromProFeatureModal() {
+    setProFeatureModal(null);
+    // Leave the fullscreen reader first so the subscription page opens in the normal,
+    // scrollable app view (with its own navigation) instead of a broken half-screen.
+    setReaderDocumentId(null);
+    setTimeout(() => openSingleSectionAndScroll('subscription', billingRef), 60);
   }
 
   const goHomeScreen = () => {
@@ -32879,6 +32902,17 @@ function AppInner() {
               initData={initData}
               storyContext={storyContext}
               onSaveWord={handleSaveSentenceDraft}
+            />
+
+            <ProFeatureModal
+              isOpen={!!proFeatureModal}
+              onClose={closeProFeatureModal}
+              onUpgrade={upgradeFromProFeatureModal}
+              tr={tr}
+              emoji={proFeatureModal?.emoji}
+              title={proFeatureModal?.title}
+              intro={proFeatureModal?.intro}
+              bullets={proFeatureModal?.bullets || []}
             />
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (

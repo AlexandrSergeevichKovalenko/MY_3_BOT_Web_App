@@ -1,0 +1,83 @@
+/* «Функция Pro» plaque — centered, dismissible, sits above the reader overlay. */
+.profeat-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000; /* above the fullscreen reader */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.profeat-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  background: rgba(8, 12, 24, 0.62);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  cursor: pointer;
+}
+.profeat-card {
+  position: relative;
+  width: 100%;
+  max-width: 360px;
+  background: #fff;
+  border-radius: 22px;
+  padding: 26px 22px 20px;
+  text-align: center;
+  box-shadow: 0 24px 60px rgba(8, 12, 24, 0.4);
+  animation: profeatPop 0.22s ease;
+}
+@keyframes profeatPop {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+.profeat-close {
+  position: absolute;
+  top: 10px; right: 12px;
+  width: 34px; height: 34px;
+  border: none; background: transparent;
+  font-size: 26px; line-height: 1; color: #9aa4b8;
+  cursor: pointer;
+}
+.profeat-badge {
+  display: inline-block;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
+  color: #8a5a00; background: #fff2cc;
+  padding: 5px 12px; border-radius: 999px; margin-bottom: 12px;
+}
+.profeat-emoji { font-size: 46px; line-height: 1; margin-bottom: 8px; }
+.profeat-title {
+  margin: 0 0 8px; font-size: 20px; font-weight: 800; color: #1c2536;
+  letter-spacing: -0.01em;
+}
+.profeat-intro { margin: 0 0 14px; font-size: 14.5px; line-height: 1.5; color: #5d6b82; }
+.profeat-list {
+  list-style: none; margin: 0 0 18px; padding: 0;
+  text-align: left; display: flex; flex-direction: column; gap: 8px;
+}
+.profeat-list li {
+  position: relative;
+  padding-left: 26px;
+  font-size: 14px; line-height: 1.45; color: #2a3650;
+}
+.profeat-list li::before {
+  content: '✓';
+  position: absolute; left: 4px; top: 0;
+  color: #34c47a; font-weight: 900;
+}
+.profeat-cta {
+  display: block; width: 100%;
+  border: none; border-radius: 14px;
+  padding: 14px 16px; margin-bottom: 8px;
+  font-size: 16px; font-weight: 800; color: #fff; cursor: pointer;
+  background: linear-gradient(135deg, #3a7bd5, #5b34d5);
+  box-shadow: 0 10px 22px rgba(58, 52, 213, 0.28);
+}
+.profeat-cta:active { transform: scale(0.985); }
+.profeat-later {
+  display: block; width: 100%;
+  border: none; background: transparent;
+  padding: 10px; font-size: 14.5px; font-weight: 700; color: #8a94a6; cursor: pointer;
+}
