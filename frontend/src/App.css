@@ -18172,10 +18172,11 @@ body.worldnews-active .webapp-topbar {
      resolves against the real viewport.) Safe-area padding keeps the topbar clear
      of the native Telegram controls. */
   position: fixed;
+  /* inset:0 alone (top+bottom+left+right = 0) stretches the reader to ALL four
+     physical edges. Do NOT also set an explicit height — 100dvh can resolve a few
+     px short of the real bottom in this webview, leaving a light sliver at the
+     bottom edge. Letting top:0+bottom:0 govern the height removes that gap. */
   inset: 0;
-  width: 100vw;
-  height: 100vh;
-  height: 100dvh;
   max-width: none;
   border-radius: 0;
   padding-top: var(--telegram-tablet-top-safe-offset);
