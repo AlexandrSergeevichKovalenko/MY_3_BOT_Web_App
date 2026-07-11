@@ -14336,6 +14336,22 @@ function AppInner() {
     return map;
   }, [readerSentencesModel]);
 
+  // Word spans (DOM window-global char range → wid), sorted by start. Lets the
+  // karaoke highlight find the word at a char offset by RANGE (robust to small
+  // normalization drift between the audio combinedText and the DOM window text).
+  const readerAudioWordSpans = useMemo(() => {
+    const spans = [];
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word' && token.start != null) {
+          spans.push({ start: Number(token.start), end: Number(token.end ?? token.start), wid: String(token.wid ?? '') });
+        }
+      }
+    }
+    spans.sort((a, b) => a.start - b.start);
+    return spans;
+  }, [readerSentencesModel]);
+
   const readerAudioPlayingWid = useMemo(() => {
     if (!readerAudioPlayData || !readerAudioPlayActive) return null;
     const t = readerAudioPlayPosition;
@@ -14343,11 +14359,39 @@ function AppInner() {
     if (!timing) return null;
     // Prefer char_start matching (robust against frontend/backend word-count differences).
     if (timing.char_start != null) {
-      const localCharStart = Number(timing.char_start) - Number(readerAudioCurrentPageCharOffset || 0);
+      const audioChar = Number(timing.char_start);
+      const win = readerWindowModel;
+      const meta = readerAudioWindowMetaRef.current;
+      if (win && Array.isArray(win.offsets) && meta && Array.isArray(meta.segments)) {
+        // Multi-page reflow window. The audio timing's char is in the SPACE-joined
+        // combinedText; the DOM word spans use the '\n\n'-joined window text. Bridge
+        // via server page + page-local char:
+        //   combinedText char → (audio segment) page + local → DOM window-global char.
+        const seg = meta.segments.find((s) => audioChar >= Number(s.charStart) && audioChar < Number(s.charEnd));
+        const page = seg ? Number(seg.page) : Number(readerCurrentPage);
+        const localChar = seg
+          ? audioChar - Number(seg.charStart)
+          : audioChar - Number(readerAudioCurrentPageCharOffset || 0);
+        const domOff = win.offsets.find((o) => o.page === page);
+        if (!domOff || localChar < 0) return null; // audio page not in the rendered window
+        const domChar = Number(domOff.charStart) + localChar;
+        const exact = readerAudioCharStartMap.get(String(domChar));
+        if (exact) return exact;
+        // Nearest word whose span starts at/just before domChar (tolerates drift).
+        const spans = readerAudioWordSpans;
+        let lo = 0; let hi = spans.length - 1; let best = null;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (spans[mid].start <= domChar) { best = spans[mid]; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        return best && (domChar - best.start) < 240 ? best.wid : null;
+      }
+      // Single-page / pageless source: combinedText char is already DOM-local.
+      const localCharStart = audioChar - Number(readerAudioCurrentPageCharOffset || 0);
       return readerAudioCharStartMap.get(String(localCharStart)) || null;
     }
     return readerAudioWidMap.get(String(timing.wid)) || null;
-  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioCharStartMap, readerAudioPlayActive, readerAudioCurrentPageCharOffset]);
+  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioCharStartMap, readerAudioWordSpans, readerWindowModel, readerAudioPlayActive, readerAudioCurrentPageCharOffset, readerCurrentPage]);
 
   const readerAudioPlayingSid = useMemo(() => {
     if (!readerAudioPlayingWid) return null;
