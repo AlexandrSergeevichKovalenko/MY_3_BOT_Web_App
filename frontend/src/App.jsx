@@ -23275,6 +23275,13 @@ function AppInner() {
     if (!initData || !documentId) return;
     const safeDocumentId = Number(documentId || 0);
     if (!safeDocumentId) return;
+    // On a tablet the reader must fill the whole screen. Telegram opens Mini-Apps
+    // in a narrow (phone-width) window on iPad unless we go fullscreen, so request
+    // it HERE — in the tap's gesture context (Telegram requires a user gesture) —
+    // so the reading engine re-measures wide and shows the two-page spread.
+    if (telegramTabletLike && !telegramFullscreenMode && typeof telegramApp?.requestFullscreen === 'function') {
+      requestTelegramFullscreen();
+    }
     if (readerOpenInFlightRef.current === safeDocumentId) return;
     readerOpenInFlightRef.current = safeDocumentId;
     setReaderOpeningDocumentId(safeDocumentId);
