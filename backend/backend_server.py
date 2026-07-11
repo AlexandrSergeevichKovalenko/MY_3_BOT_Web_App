@@ -41321,9 +41321,19 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
     if not can_enqueue_background_jobs():
         return {"error": "Shortcut processing is temporarily unavailable"}, 503
 
-    # Per-word Free limit superseded by the per-RUN model (/api/shortcut/run-check):
-    # the shortcut asks permission once per run, so words inside an approved run flow
-    # freely — Free = 3 trial runs total, Pro = 2 runs/day, enforced at run-check.
+    # AUTHORITATIVE run gate — enforced HERE, on the work endpoint, so the Free/Pro run
+    # limit holds even if the user hand-edits the shortcut to skip the /run-check
+    # pre-flight (which is only advisory). Placed AFTER the dedup reserve so a duplicate
+    # retry doesn't consume a run. Records the actual run (approved OR blocked); this is
+    # the single source of truth for the run counter (Free = 3 trial total, Pro = 2/day).
+    _gate_allowed, _gate_reason, _gate_extra = _shortcut_run_gate(int(user_id))
+    record_shortcut_run_check(user_id, allowed=bool(_gate_allowed), reason=_gate_reason,
+                              is_pro=_gate_extra.get("is_pro"), in_window=_gate_extra.get("in_window"),
+                              run_index=_gate_extra.get("total_runs"))
+    if not _gate_allowed:
+        logging.info("shortcut_lookup: run BLOCKED user_id=%s reason=%s (enforced server-side)", user_id, _gate_reason)
+        return {"allowed": False, "reason": _gate_reason,
+                "message": _gate_extra.get("message", "Лимит запусков исчерпан."), "blocks_sent": 0}, 200
 
     # Write raw text to Redis immediately so bot_3.py can find it even before
     # BACKGROUND_JOBS processes the Dramatiq job (avoids the "no pending" race condition).
@@ -42753,6 +42763,43 @@ def _shortcut_setup_grace_active(user_id: int, total_runs: int) -> bool:
     return int(total_runs) < _SHORTCUT_RUN_WINDOW_GRACE
 
 
+def _shortcut_run_gate(user_id: int) -> tuple[bool, str, dict]:
+    """Authoritative per-run limit decision for «Ночной Переводчик». Used by BOTH the
+    advisory /run-check AND the actual work endpoint /lookup, so the limit holds even
+    if the user hand-edits the shortcut to skip the pre-flight check. Pure decision —
+    does NOT write to the DB (the caller records). Returns (allowed, reason, extra):
+    extra carries used/limit/window/message on a block, or is_pro/in_window on approval."""
+    try:
+        ent = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+        is_pro = str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
+    except Exception:
+        is_pro = False
+    try:
+        is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
+    except Exception:
+        is_admin = False
+    total_runs = count_shortcut_runs_total(int(user_id))
+    in_window, _local = _shortcut_within_send_window()
+    base = {"is_pro": is_pro, "is_admin": is_admin, "in_window": in_window, "total_runs": total_runs}
+    # 1) quota (count) — only approved runs count; admins exempt
+    if not is_admin:
+        if is_pro:
+            used_today = count_shortcut_runs_today(int(user_id))
+            if used_today >= _SHORTCUT_RUN_PRO_DAILY:
+                return False, "pro_daily", {**base, "used": used_today, "limit": _SHORTCUT_RUN_PRO_DAILY,
+                    "message": f"На сегодня лимит запусков исчерпан ({_SHORTCUT_RUN_PRO_DAILY} в день). Попробуйте завтра."}
+        elif total_runs >= _SHORTCUT_RUN_FREE_TOTAL:
+            return False, "free_total", {**base, "used": total_runs, "limit": _SHORTCUT_RUN_FREE_TOTAL,
+                "message": f"Бесплатные пробные запуски ({_SHORTCUT_RUN_FREE_TOTAL}) закончились. Оформите Pro, чтобы пользоваться дальше."}
+    # 2) time window — skipped during first-day grace and for admins
+    grace_active = _shortcut_setup_grace_active(int(user_id), total_runs)
+    if (not grace_active) and (not is_admin) and (not in_window):
+        return False, "time_window", {**base, "window": f"{_SHORTCUT_RUN_WINDOW_START}–{_SHORTCUT_RUN_WINDOW_END}",
+            "message": f"Отправка доступна утром ({_SHORTCUT_RUN_WINDOW_START}–{_SHORTCUT_RUN_WINDOW_END}). Поставь автозапуск на это время — всё пойдёт само."}
+    # 3) approved
+    return True, ("grace" if grace_active else ("admin" if is_admin else "ok")), base
+
+
 @app.route("/api/shortcut/run-check", methods=["POST"])
 def shortcut_run_check():
     """Per-RUN gate for «Ночной Переводчик». The shortcut MUST call this FIRST and,
@@ -42778,49 +42825,24 @@ def shortcut_run_check():
         return jsonify({"allowed": False, "error": "invalid_install_token"}), 401
     if not is_telegram_user_allowed(user_id):
         return jsonify({"allowed": False, "reason": "no_access", "message": "Доступ закрыт."}), 403
-    try:
-        ent = resolve_entitlement(user_id=user_id, tz="Europe/Vienna")
-        is_pro = str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
-    except Exception:
-        is_pro = False
-    try:
-        is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
-    except Exception:
-        is_admin = False
-
-    total_runs = count_shortcut_runs_total(int(user_id))
-    in_window, local_hhmm = _shortcut_within_send_window()
-
-    # 1) quota (count) limits — only approved runs count; admins are exempt
-    if is_pro:
-        used_today = count_shortcut_runs_today(int(user_id))
-        if used_today >= _SHORTCUT_RUN_PRO_DAILY and not is_admin:
-            record_shortcut_run_check(user_id, allowed=False, reason="pro_daily", is_pro=is_pro, in_window=in_window, run_index=total_runs)
-            return jsonify({"allowed": False, "reason": "pro_daily", "used": used_today, "limit": _SHORTCUT_RUN_PRO_DAILY,
-                            "message": f"На сегодня лимит запусков исчерпан ({_SHORTCUT_RUN_PRO_DAILY} в день). Попробуйте завтра."}), 200
-    else:
-        if total_runs >= _SHORTCUT_RUN_FREE_TOTAL and not is_admin:
-            record_shortcut_run_check(user_id, allowed=False, reason="free_total", is_pro=is_pro, in_window=in_window, run_index=total_runs)
-            return jsonify({"allowed": False, "reason": "free_total", "used": total_runs, "limit": _SHORTCUT_RUN_FREE_TOTAL,
-                            "message": f"Бесплатные пробные запуски ({_SHORTCUT_RUN_FREE_TOTAL}) закончились. Оформите Pro, чтобы пользоваться дальше."}), 200
-
-    # 2) time window — skipped during the first-day setup grace and for admins
-    grace_active = _shortcut_setup_grace_active(int(user_id), total_runs)
-    window_enforced = (not grace_active) and (not is_admin)
-    if window_enforced and not in_window:
-        record_shortcut_run_check(user_id, allowed=False, reason="time_window", is_pro=is_pro, in_window=False, run_index=total_runs)
-        return jsonify({"allowed": False, "reason": "time_window",
-                        "window": f"{_SHORTCUT_RUN_WINDOW_START}–{_SHORTCUT_RUN_WINDOW_END}",
-                        "message": f"Отправка доступна утром ({_SHORTCUT_RUN_WINDOW_START}–{_SHORTCUT_RUN_WINDOW_END}). Поставь автозапуск на это время — всё пойдёт само."}), 200
-
-    # 3) approved
-    approve_reason = "grace" if grace_active else ("admin" if is_admin else "ok")
-    record_shortcut_run_check(user_id, allowed=True, reason=approve_reason, is_pro=is_pro, in_window=in_window, run_index=total_runs)
-    # `reason` is echoed so a run can be diagnosed at a glance: "admin" = you're an
-    # admin and EXEMPT from the caps (that's why the limit didn't stop you); "grace" =
-    # first-day setup grace; "ok" = a normal counted run. `is_admin` exposed too.
-    return jsonify({"allowed": True, "reason": approve_reason, "used": total_runs + 1,
-                    "is_pro": is_pro, "is_admin": is_admin, "in_window": in_window}), 200
+    # Advisory pre-flight: decide via the SHARED gate. The ACTUAL run is recorded at the
+    # work endpoint (/lookup), which re-runs the same gate — so a well-behaved shortcut
+    # sees the verdict here and stops early, but the real enforcement lives on /lookup
+    # (holds even if the shortcut is hand-edited to skip this call).
+    allowed, reason, extra = _shortcut_run_gate(int(user_id))
+    if not allowed:
+        record_shortcut_run_check(user_id, allowed=False, reason=reason,
+                                  is_pro=extra.get("is_pro"), in_window=extra.get("in_window"),
+                                  run_index=extra.get("total_runs"))
+        payload = {"allowed": False, "reason": reason}
+        for k in ("used", "limit", "window", "message"):
+            if k in extra:
+                payload[k] = extra[k]
+        return jsonify(payload), 200
+    # `reason` echoed for diagnosis: "admin"=exempt from caps, "grace"=first-day, "ok"=counted.
+    return jsonify({"allowed": True, "reason": reason, "used": int(extra.get("total_runs", 0)) + 1,
+                    "is_pro": extra.get("is_pro"), "is_admin": extra.get("is_admin"),
+                    "in_window": extra.get("in_window")}), 200
 
 
 @app.route("/api/shortcut/lookup", methods=["POST"])
