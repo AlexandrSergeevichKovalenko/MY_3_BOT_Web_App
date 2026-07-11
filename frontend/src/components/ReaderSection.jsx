@@ -333,7 +333,12 @@ export default function ReaderSection(props) {
     const ch = readerColVisibleCharAt(readerColIndexRef.current);
     readerColAnchorCharRef.current = ch;
     const p = readerColPageOfChar(ch);
-    if (p && p !== readerCurrentPage) setReaderCurrentPage(p);
+    // During audio, the audio page-sync OWNS readerCurrentPage. If the word-follow
+    // (which moves the column) also set it here, changing readerCurrentPage would
+    // recompute the window → recompute the highlighted word → re-fire the follow →
+    // endless page bouncing. So only update the page from column moves when NOT
+    // playing; the anchor is still recorded above so window edges stay aligned.
+    if (p && p !== readerCurrentPage && !readerAudioPlayActive) setReaderCurrentPage(p);
     // Single-server-page sources (text/URL): progress is visual (char position in
     // the whole text), since there are no server pages to derive it from.
     if (readerPageCount <= 1 && readerWindowModel.totalChars > 0) {
@@ -434,8 +439,14 @@ export default function ReaderSection(props) {
       if (!el) return;
       const step = readerColStep();
       if (step <= 1) return;
-      const col = Math.max(0, Math.floor((readerColOffsetOf(el) + step * 0.5) / step));
-      if (Number.isFinite(col) && col !== readerColIndexRef.current) {
+      const x = readerColOffsetOf(el);
+      const cur = readerColIndexRef.current;
+      // If the spoken word is already on the visible column, do NOTHING. Following
+      // every word (even visible ones) fought the re-anchor and bounced the page.
+      // Only scroll when the word has genuinely moved off the current column.
+      if (x >= cur * step - 6 && x < (cur + 1) * step - 6) return;
+      const col = Math.max(0, Math.floor((x + step * 0.5) / step));
+      if (Number.isFinite(col) && col !== cur) {
         setReaderColIndex(col);
       }
     });

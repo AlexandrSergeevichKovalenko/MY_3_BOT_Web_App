@@ -1353,20 +1353,35 @@
   width: 100%;
   max-width: 340px;
   padding: 18px;
-  border-radius: var(--rd-r-xl);
-  background: rgba(14,18,32,0.97);
-  border: 1px solid var(--rd-border-hi);
-  box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+  /* Self-contained dark material — readable in EVERY reader theme (paper/sepia/dark),
+     matching the settings & TOC sheets. Redeclaring the tokens locally fixes the
+     paper/light case where the dialog stayed dark but text went dark → invisible. */
+  --rd-text: #F2F5FF;
+  --rd-text-2: #e9ecf5;
+  --rd-text-muted: rgba(236,240,252,0.66);
+  --rd-text-faint: rgba(236,240,252,0.5);
+  --rd-border: rgba(255,255,255,0.10);
+  --rd-border-hi: rgba(255,255,255,0.16);
+  --rd-bg-elev: rgba(255,255,255,0.06);
+  --rd-bg-elev-2: rgba(255,255,255,0.10);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(24,28,44,0.98), rgba(15,18,30,0.98));
+  border: 1px solid rgba(255,255,255,0.10);
+  box-shadow: 0 24px 60px -12px rgba(0,0,0,0.7);
+  backdrop-filter: blur(var(--rd-blur)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--rd-blur)) saturate(1.2);
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
 .webapp-reader .reader-page-jump-title {
-  font-size: 15px;
-  font-weight: 800;
+  font-family: var(--rd-font-serif);
+  font-size: 17px;
+  font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--rd-text);
+  text-align: center;
 }
 
 .webapp-reader .reader-page-jump-body {
