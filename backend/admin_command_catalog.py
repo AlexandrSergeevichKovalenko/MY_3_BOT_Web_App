@@ -571,8 +571,8 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
         {
             "cmd": '/admin_cw_pool',
             "desc": 'Запускает генерацию пула кроссвордов и рендер их изображений; при флаге пересоздаёт пул с нуля.',
-            "args": 'необязательный первый аргумент-флаг: fresh, force, new или regen (форсирует полную регенерацию); без него — обычное пополнение.',
-            "example": '/admin_cw_pool fresh',
+            "args": 'необязательные аргументы (в любом порядке): флаг fresh/force/new/regen (полная регенерация) и/или число N — целевой размер пула на этот прогон (переопределяет env CROSSWORD_POOL_TARGET). Пример: /admin_cw_pool 60.',
+            "example": '/admin_cw_pool 60',
         },
         {
             "cmd": '/admin_cw_rerender',
@@ -585,6 +585,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "desc": 'READ-ONLY диагностика: почему кроссворды не отправляются. Разбивка пула (ready/pending/failed/retired), сколько отправляемо прямо сейчас vs в cooldown, последняя отправка, статус флага CROSSWORDS_ENABLED и вердикт с причиной.',
             "args": 'нет аргументов',
             "example": '/cw_health',
+        },
+        {
+            "cmd": '/admin_cw_revive',
+            "desc": 'Оживляет (un-retire) все кроссворды с готовой картинкой (image_status=ready), сбрасывая fail_count — возвращает в ротацию карты, ошибочно заретайренные из-за временных сбоев отправки. Мгновенно и бесплатно; действительно битые сами ре-ретайрнутся.',
+            "args": 'нет аргументов',
+            "example": '/admin_cw_revive',
         },
     ]),
     ('numbers', '🔢 Числа и аудирование', [

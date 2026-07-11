@@ -39688,6 +39688,26 @@ def crossword_pool_health(*, cooldown_days: int = 21) -> dict:
     return out
 
 
+def revive_retired_crosswords() -> int:
+    """Un-retire every crossword whose IMAGE is still ready — resetting fail_count so
+    they re-enter the send rotation. Cards get auto-retired after N zero-recipient slots,
+    which also fires on TRANSIENT outages (R2/image blips), so a healthy puzzle can end
+    up retired through no fault of its own. Reviving ready-image cards is instant + free;
+    any genuinely broken one simply re-retires via the same safety net. Returns count."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET retired = FALSE, fail_count = 0, updated_at = NOW()
+                WHERE retired = TRUE AND image_status = 'ready'
+                """
+            )
+            n = cursor.rowcount
+        conn.commit()
+    return int(n or 0)
+
+
 def record_crossword_dispatch(
     *,
     slot_date,

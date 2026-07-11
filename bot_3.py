@@ -279,6 +279,7 @@ from backend.database import (
     upsert_article_quiz_text_entry,
     pick_next_crossword,
     crossword_pool_health,
+    revive_retired_crosswords,
     mark_crossword_sent,
     mark_crossword_send_failed,
     reset_crossword_images_to_pending,
@@ -499,8 +500,13 @@ NUMDICT_POOL_TARGET   = max(12, int((os.getenv("NUMDICT_POOL_TARGET") or "120").
 NUMDICT_SESSION_ITEMS = 3
 # Bump when the audio reading logic changes → new R2 key → no stale cached audio.
 NUMDICT_AUDIO_VERSION = "v4"  # v4 = alnum codes read digit runs in pairs (two-digit numbers), letters spelled
-CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "21").strip() or "21"))
-CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "15").strip() or "15"))
+# Pool must comfortably exceed slots/day × cooldown so a card is always past cooldown
+# at send time: 2 slots/day × 14d = 28, and target 50 leaves headroom (was 15 — BELOW
+# the live pool size, so the nightly top-up generated nothing and the pool slowly drained
+# to a cooldown-wall blackout). The group send also now falls back to cooldown=0 as a
+# hard no-blackout floor regardless of these numbers.
+CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "14").strip() or "14"))
+CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "50").strip() or "50"))
 CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))
 VISUAL_RIDDLE_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_HOUR") or "6").strip() or "6")))
 VISUAL_RIDDLE_POOL_TOPUP_MINUTE = max(0, min(59, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_MINUTE") or "15").strip() or "15")))
@@ -27142,9 +27148,12 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
         return
 
     try:
-        entry = await asyncio.to_thread(
-            pick_next_crossword, cooldown_days=CROSSWORD_COOLDOWN_DAYS
-        )
+        # Prefer a card past its cooldown; if the whole ready-pool is still in
+        # cooldown, fall back to cooldown=0 (least-recently-seen first) so we NEVER
+        # go dark — an occasional early repeat beats a silent blackout. Mirrors the
+        # per-user delivery path.
+        entry = (await asyncio.to_thread(pick_next_crossword, cooldown_days=CROSSWORD_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_crossword, cooldown_days=0))
     except Exception:
         logging.warning("cw_slot: pick_next_crossword failed", exc_info=True)
         return
@@ -27202,7 +27211,10 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
             crossword_id, slot_date, slot_hour,
         )
         try:
-            await asyncio.to_thread(mark_crossword_send_failed, crossword_id)
+            # retire_after=8 (not 3): a transient R2/image blip can zero-send several
+            # slots in a row for a perfectly good puzzle — a wider margin stops those
+            # blips from silently draining the pool into the retired graveyard.
+            await asyncio.to_thread(mark_crossword_send_failed, crossword_id, retire_after=8)
         except Exception:
             logging.warning("cw_slot: mark_crossword_send_failed failed crossword_id=%s", crossword_id, exc_info=True)
         await _alert_admin_interactive(
@@ -32356,21 +32368,49 @@ async def admin_crossword_health_command(update: Update, context: CallbackContex
     elif h["sendable_now"] > 0:
         verdict = "🟢 Пул готов — есть что слать. Если тишина, проблема в cron/слоте, не в пуле (смотри логи cw_slot)."
     elif h["ready"] == 0 and h["total"] > 0 and (h["pending"] + h["failed"] + h["retired"]) > 0:
-        if h["retired"] >= h["total"]:
-            verdict = "🔴 Весь пул retired (авто-ретайр после 3 фейлов). Перегенерируй: /admin_cw_pool."
+        if h["retired"] > 0:
+            verdict = "🔴 Живых ready-карт нет, но есть retired. Оживи их: /admin_cw_revive (мгновенно, бесплатно)."
         elif h["failed"] > 0 or h["pending"] > 0:
             verdict = "🔴 Ни одной ready-картинки (застряли в pending/failed). Ре-рендер: /admin_cw_rerender, потом /admin_cw_pool."
         else:
-            verdict = "🔴 Нет ready-записей — перегенерируй пул: /admin_cw_pool."
+            verdict = "🔴 Нет ready-записей — догенерируй пул: /admin_cw_pool 50."
     elif h["total"] == 0:
-        verdict = "🔴 Банк пустой — сгенерируй пул: /admin_cw_pool."
+        verdict = "🔴 Банк пустой — сгенерируй пул: /admin_cw_pool 50."
     elif h["in_cooldown"] > 0:
-        verdict = "🟠 Все ready-карты в cooldown. Пул слишком мал под 2 слота/день — долей: /admin_cw_pool."
+        # Not a blackout anymore (send falls back to cooldown=0), but a small pool = early repeats.
+        hint = " Есть retired — оживи /admin_cw_revive." if h["retired"] > 0 else " Долей: /admin_cw_pool 50."
+        verdict = "🟠 Все ready-карты в cooldown — блэкаута не будет (fallback), но возможны ранние повторы." + hint
     else:
         verdict = "🟠 Отправлять нечего по неочевидной причине — проверь логи cw_slot."
     lines += ["", verdict]
 
     await message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def admin_crossword_revive_command(update: Update, context: CallbackContext) -> None:
+    """Un-retire every crossword whose image is still ready (resets fail_count) so they
+    re-enter rotation. Recovers cards that were auto-retired by transient send outages —
+    instant and free. Genuinely broken ones just re-retire via the safety net. /admin_cw_revive"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        n = await asyncio.to_thread(revive_retired_crosswords)
+    except Exception as exc:
+        await message.reply_text(f"❌ revive failed: {exc}")
+        return
+    try:
+        h = await asyncio.to_thread(crossword_pool_health, cooldown_days=CROSSWORD_COOLDOWN_DAYS)
+        tail = f"\nСейчас: ready {h['ready']}, retired {h['retired']}, отправляемо сейчас {h['sendable_now']}."
+    except Exception:
+        tail = ""
+    await message.reply_text(
+        f"♻️ Оживлено кроссвордов (retired → ready): <b>{n}</b>." + tail
+        + "\n\nПроверь /cw_health.", parse_mode="HTML")
 
 
 async def admin_pool_refill_command(update: Update, context: CallbackContext) -> None:
@@ -32610,19 +32650,25 @@ async def admin_crossword_pool_command(update: Update, context: CallbackContext)
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    force_fresh = any(
-        str(a).strip().lower() in ("fresh", "force", "new", "regen")
-        for a in (context.args or [])
-    )
+    args = [str(a).strip() for a in (context.args or [])]
+    force_fresh = any(a.lower() in ("fresh", "force", "new", "regen") for a in args)
+    # Optional explicit target: /admin_cw_pool 60 — top up beyond the env default in
+    # one shot (the env target caps the nightly job; this overrides for a manual fill).
+    target = CROSSWORD_POOL_TARGET
+    for a in args:
+        if a.isdigit():
+            target = max(5, int(a))
+            break
     status_msg = await message.reply_text(
-        "Regenerating crossword pool (fresh)..." if force_fresh else "Preparing crossword pool..."
+        f"Regenerating crossword pool (fresh, target {target})..." if force_fresh
+        else f"Preparing crossword pool (target {target})..."
     )
     try:
         from backend.crossword_generator import prepare_crossword_pool
         gen_result = await asyncio.to_thread(
             prepare_crossword_pool,
-            target_ready=CROSSWORD_POOL_TARGET,
-            max_attempts=20,
+            target_ready=target,
+            max_attempts=30,
             force_fresh=force_fresh,
         )
         from backend.crossword_renderer import prepare_crossword_images_batch
@@ -35004,6 +35050,7 @@ def main():
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("cw_health", admin_crossword_health_command))
+    application.add_handler(CommandHandler("admin_cw_revive", admin_crossword_revive_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
     application.add_handler(CommandHandler("admin_ls_pool", admin_listening_pool_command))
     application.add_handler(CommandHandler("admin_nd_send", admin_numdict_send_command))
