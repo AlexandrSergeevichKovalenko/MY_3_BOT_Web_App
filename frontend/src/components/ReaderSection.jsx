@@ -196,6 +196,9 @@ export default function ReaderSection(props) {
   const readerColCountRef = React.useRef(1);
   const readerColGoLastRef = React.useRef(false);
   const readerColAnchorCharRef = React.useRef(0);
+  // Tracks the doc whose saved bookmark has already been restored (one-shot per
+  // open) so single-page/pageless sources land on the saved position, not char 0.
+  const readerColRestoredDocRef = React.useRef(null);
   // Real, measured column geometry — the CSS column pitch does NOT equal the
   // viewport width (the browser expands columns to fill), so we measure it from
   // the laid-out word spans and page by exactly that. Works on any screen.
@@ -345,6 +348,18 @@ export default function ReaderSection(props) {
       const { n } = measureReaderColGeometry();
       let target;
       if (readerWindowModel) {
+        // One-shot bookmark restore for single-page (pageless) sources — they have
+        // no server page to jump to, so map the saved % → a char anchor. Paged docs
+        // restore via readerCurrentPage and skip this.
+        if (readerSinglePageDoc
+            && readerColRestoredDocRef.current !== readerDocumentId
+            && readerWindowModel.totalChars > 0) {
+          const pct = Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0)));
+          if (pct > 0.3) {
+            readerColAnchorCharRef.current = Math.round((pct / 100) * readerWindowModel.totalChars);
+          }
+          readerColRestoredDocRef.current = readerDocumentId;
+        }
         let anchor = readerColAnchorCharRef.current;
         const ap = readerColPageOfChar(anchor);
         if (ap == null || Math.abs(ap - readerCurrentPage) > 2) {
