@@ -5782,6 +5782,13 @@ function AppInner() {
   const readerAudioWebEngineRef = useRef(null);
   const readerAudioWebRafRef = useRef(0);
   const readerAudioWebActiveRef = useRef(false);
+  // True from the moment a word-tap JUMP is requested until the NEW clip's window
+  // meta is installed. While true, the audio page-follow is suppressed so the view
+  // doesn't briefly snap to the OLD audio page (where playback was before the tap)
+  // during the ~5s synth of the new clip and then bounce back. See the two page-sync
+  // spots (HTML timeupdate + web RAF) and restartReaderAudioFromWord.
+  const readerAudioJumpPendingRef = useRef(false);
+  const readerAudioJumpPendingTimerRef = useRef(0);
   const readerAudioWebClipsRef = useRef(new Map()); // clipKey -> { window, data, segments }
   const playReaderAudioPageWebAudioRef = useRef(null);
   // Ping-pong audio elements: activeEl plays, bufEl preloads next page.
@@ -22420,8 +22427,18 @@ function AppInner() {
   };
   // (Re)start audio from a tapped word — used both to begin playback and to jump
   // the current playback to a newly tapped word. Robust across pages/windows.
+  const beginReaderAudioJump = () => {
+    // Suppress audio page-follow until the new clip's meta is installed; a safety
+    // timer lifts it even if that install path is missed, so we never stick.
+    readerAudioJumpPendingRef.current = true;
+    if (readerAudioJumpPendingTimerRef.current) clearTimeout(readerAudioJumpPendingTimerRef.current);
+    readerAudioJumpPendingTimerRef.current = setTimeout(() => {
+      readerAudioJumpPendingRef.current = false;
+    }, 9000);
+  };
   const restartReaderAudioFromWord = (wid, rawCharStart) => {
     const { page, localCharStart } = readerAudioTargetForChar(rawCharStart);
+    beginReaderAudioJump();
     void primeReaderAudioPlayback();
     playReaderAudioPage(page, wid, Number.isFinite(localCharStart) && localCharStart >= 0 ? localCharStart : undefined);
   };
@@ -22463,6 +22480,7 @@ function AppInner() {
         }
         console.log('[ReaderAudio] awaiting tap: wid=', wid, 'rawChar=', rawCharStart, 'hasWin=', !!win, 'page=', audioPage, 'localCharStart=', localCharStart);
         if (wid) {
+          beginReaderAudioJump();
           void primeReaderAudioPlayback();
           // Pass the (truthy) wid so the seek branch runs, but the PAGE-LOCAL
           // charStart is what actually positions the start (it takes precedence
@@ -23961,6 +23979,9 @@ function AppInner() {
         segments: windowSegments,
       };
       readerAudioWindowMetaRef.current = normalizedWindow;
+      // New clip meta is in place → page-follow can safely resume (it now reads the
+      // NEW segments, whose first page = the tapped word's page, so no bounce).
+      readerAudioJumpPendingRef.current = false;
       const initialCharOffset = Number(currentSegment?.charStart || 0);
       readerAudioCurrentPageCharOffsetRef.current = initialCharOffset;
       setReaderAudioCurrentPageCharOffset(initialCharOffset);
@@ -24357,6 +24378,8 @@ function AppInner() {
       // Prime shared state so highlight + page UI work.
       readerAudioWebActiveRef.current = true;
       readerAudioWindowMetaRef.current = { ...win, segments };
+      // New clip meta installed → resume page-follow (reads the new segments now).
+      readerAudioJumpPendingRef.current = false;
       readerAudioPlayingForPageRef.current = win.startPage;
       readerCurrentPageRef.current = win.startPage;
       setReaderCurrentPage(win.startPage);
@@ -24396,7 +24419,7 @@ function AppInner() {
       const posMs = engine.getPositionMs();
       setReaderAudioPlayPosition(posMs);
       const meta = readerAudioWindowMetaRef.current;
-      if (meta?.segments?.length) {
+      if (meta?.segments?.length && !readerAudioJumpPendingRef.current) {
         const seg = meta.segments.find((s) => (
           Number.isFinite(s?.startMs) && Number.isFinite(s?.endMs)
           && posMs >= Number(s.startMs) && posMs < Number(s.endMs)
@@ -24578,6 +24601,7 @@ function AppInner() {
     const audio = readerAudioActiveElRef.current || audioElementRef.current;
     if (!audio || !readerAudioPlayActive) return undefined;
     const syncVisiblePageFromAudio = () => {
+      if (readerAudioJumpPendingRef.current) return; // don't follow stale audio mid-jump
       const windowMeta = readerAudioWindowMetaRef.current;
       if (!windowMeta?.segments?.length) return;
       const positionMs = Math.max(0, Number(audio.currentTime || 0) * 1000);
