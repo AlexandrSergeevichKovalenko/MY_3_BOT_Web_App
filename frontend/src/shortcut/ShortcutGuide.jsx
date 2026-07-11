@@ -311,6 +311,34 @@ export default function ShortcutGuide() {
         <li className="sc-step">
           <div className="sc-step-no">4</div>
           <div className="sc-step-body">
+            <h2>Важные настройки: разрешите авто-удаление обработанных фото 🧹</h2>
+            <p className="sc-why">💡 Зачем: чтобы телефон сам удалял уже переведённые скриншоты из альбома (иначе они копятся) и <b>не переспрашивал</b> каждый раз. Без этого автоматика будет останавливаться на вопросах — а нам нужно, чтобы всё шло само.</p>
+
+            <p className="sc-sub-h">Часть 1 — в Настройках телефона</p>
+            <p>Открой <b>Настройки телефона</b> → пролистай до пункта «Быстрые команды»:</p>
+            <NavLangs ru="Настройки → «Быстрые команды»" de="Einstellungen → «Kurzbefehle»" en="Settings → «Shortcuts»" />
+            <p>Включи <b>iCloud-синхронизацию</b> и <b>«Приватный доступ»</b>, затем внизу открой «Дополнительно»:</p>
+            <NavLangs ru="«Дополнительно»" de="«Erweitert»" en="«Advanced»" />
+            <p>Включи все переключатели — особенно <b className="sc-key">«Разрешить удаление без подтверждения»</b> и <b className="sc-key">«Разрешить удаление большого объёма данных»</b>:</p>
+            <NavLangs ru="«Удаление без подтверждения» + «Удаление большого объёма»" de="«Löschen ohne Bestätigung» + «Löschen großer Datenmengen»" en="«Delete Without Confirmation» + «Delete Large Amounts»" />
+            <PhotoLink src="/onboarding/shortcut/perm_settings_main.jpg">Фото 1 — переключатели в «Быстрые команды»</PhotoLink>
+            <PhotoLink src="/onboarding/shortcut/perm_settings_advanced.jpg">Фото 2 — переключатели в «Дополнительно»</PhotoLink>
+
+            <p className="sc-sub-h">Часть 2 — в приложении «Быстрые команды»</p>
+            <p>Открой приложение <b>«Быстрые команды»</b> (🇩🇪 «Kurzbefehle» · 🇬🇧 «Shortcuts»), найди команду <b>«Ночной Переводчик»</b>, <b className="sc-key">нажми и подержи</b> по центру плитки — появится меню. Выбери «Детали»:</p>
+            <NavLangs ru="«Детали»" de="«Details»" en="«Details»" />
+            <p>Открой «Конфиденциальность»:</p>
+            <NavLangs ru="«Конфиденциальность»" de="«Datenschutz»" en="«Privacy»" />
+            <p>Внизу, в разделе «Разрешить удаление данных», для <b>«Фото»</b> выбери <b className="sc-key">«Удалять без запроса»</b>:</p>
+            <NavLangs ru="Фото → «Удалять без запроса»" de="Fotos → «Ohne Nachfrage löschen»" en="Fotos → «Delete Without Asking»" />
+            <PhotoLink src="/onboarding/shortcut/perm_shortcut_menu.jpg">Фото 3 — меню по долгому нажатию → «Детали»</PhotoLink>
+            <PhotoLink src="/onboarding/shortcut/perm_shortcut_privacy.jpg">Фото 4 — «Фото»: «Удалять без запроса»</PhotoLink>
+          </div>
+        </li>
+
+        <li className="sc-step">
+          <div className="sc-step-no">5</div>
+          <div className="sc-step-body">
             <h2>Первый запуск: подтвердите разрешения (один раз)</h2>
             <p className="sc-why">💡 Зачем: после установки нужно один раз пройти команды вручную. iPhone в первый раз спрашивает разрешение на каждое действие — вы отвечаете <b className="sc-key">«Всегда разрешать»</b>, и дальше всё идёт само, без вопросов. Без этого разового прогона автоматика не заработает.</p>
 
@@ -348,34 +376,6 @@ export default function ShortcutGuide() {
               запустили «Ночной Переводчик», который берёт фото, отправляет на перевод и чистит альбом. Дальше
               всё работает <b>само</b>.</p>
             <MediaTile src="/onboarding/shortcut/first_run.mp4" type="video" caption="🎬 Первый запуск и подтверждения — по шагам" />
-          </div>
-        </li>
-
-        <li className="sc-step">
-          <div className="sc-step-no">5</div>
-          <div className="sc-step-body">
-            <h2>Важные настройки: разрешите авто-удаление обработанных фото 🧹</h2>
-            <p className="sc-why">💡 Зачем: чтобы телефон сам удалял уже переведённые скриншоты из альбома (иначе они копятся) и <b>не переспрашивал</b> каждый раз. Без этого автоматика будет останавливаться на вопросах — а нам нужно, чтобы всё шло само.</p>
-
-            <p className="sc-sub-h">Часть 1 — в Настройках телефона</p>
-            <p>Открой <b>Настройки телефона</b> → пролистай до пункта «Быстрые команды»:</p>
-            <NavLangs ru="Настройки → «Быстрые команды»" de="Einstellungen → «Kurzbefehle»" en="Settings → «Shortcuts»" />
-            <p>Включи <b>iCloud-синхронизацию</b> и <b>«Приватный доступ»</b>, затем внизу открой «Дополнительно»:</p>
-            <NavLangs ru="«Дополнительно»" de="«Erweitert»" en="«Advanced»" />
-            <p>Включи все переключатели — особенно <b className="sc-key">«Разрешить удаление без подтверждения»</b> и <b className="sc-key">«Разрешить удаление большого объёма данных»</b>:</p>
-            <NavLangs ru="«Удаление без подтверждения» + «Удаление большого объёма»" de="«Löschen ohne Bestätigung» + «Löschen großer Datenmengen»" en="«Delete Without Confirmation» + «Delete Large Amounts»" />
-            <PhotoLink src="/onboarding/shortcut/perm_settings_main.jpg">Фото 1 — переключатели в «Быстрые команды»</PhotoLink>
-            <PhotoLink src="/onboarding/shortcut/perm_settings_advanced.jpg">Фото 2 — переключатели в «Дополнительно»</PhotoLink>
-
-            <p className="sc-sub-h">Часть 2 — в приложении «Быстрые команды»</p>
-            <p>Открой приложение <b>«Быстрые команды»</b> (🇩🇪 «Kurzbefehle» · 🇬🇧 «Shortcuts»), найди команду <b>«Ночной Переводчик»</b>, <b className="sc-key">нажми и подержи</b> по центру плитки — появится меню. Выбери «Детали»:</p>
-            <NavLangs ru="«Детали»" de="«Details»" en="«Details»" />
-            <p>Открой «Конфиденциальность»:</p>
-            <NavLangs ru="«Конфиденциальность»" de="«Datenschutz»" en="«Privacy»" />
-            <p>Внизу, в разделе «Разрешить удаление данных», для <b>«Фото»</b> выбери <b className="sc-key">«Удалять без запроса»</b>:</p>
-            <NavLangs ru="Фото → «Удалять без запроса»" de="Fotos → «Ohne Nachfrage löschen»" en="Fotos → «Delete Without Asking»" />
-            <PhotoLink src="/onboarding/shortcut/perm_shortcut_menu.jpg">Фото 3 — меню по долгому нажатию → «Детали»</PhotoLink>
-            <PhotoLink src="/onboarding/shortcut/perm_shortcut_privacy.jpg">Фото 4 — «Фото»: «Удалять без запроса»</PhotoLink>
           </div>
         </li>
 

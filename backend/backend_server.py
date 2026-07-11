@@ -42816,7 +42816,11 @@ def shortcut_run_check():
     # 3) approved
     approve_reason = "grace" if grace_active else ("admin" if is_admin else "ok")
     record_shortcut_run_check(user_id, allowed=True, reason=approve_reason, is_pro=is_pro, in_window=in_window, run_index=total_runs)
-    return jsonify({"allowed": True, "used": total_runs + 1, "is_pro": is_pro, "in_window": in_window}), 200
+    # `reason` is echoed so a run can be diagnosed at a glance: "admin" = you're an
+    # admin and EXEMPT from the caps (that's why the limit didn't stop you); "grace" =
+    # first-day setup grace; "ok" = a normal counted run. `is_admin` exposed too.
+    return jsonify({"allowed": True, "reason": approve_reason, "used": total_runs + 1,
+                    "is_pro": is_pro, "is_admin": is_admin, "in_window": in_window}), 200
 
 
 @app.route("/api/shortcut/lookup", methods=["POST"])
