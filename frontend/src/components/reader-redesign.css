@@ -4044,6 +4044,42 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-page.is-telegram-tablet .webapp-reader .reader-col-track { line-height: 1.74; }
 .webapp-page.is-telegram-tablet .webapp-reader .reader-page-sheet-inner { line-height: 1.8; }
 
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  TABLET LIBRARY SCALE-UP (Phase 4) — shelf, hero + add-form are phone-  │
+   │  sized on the big screen. Scale covers, titles, hero and the add sheet  │
+   │  so the library reads as a proper Apple-Books shelf on a tablet.        │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+/* Shelf grid — roomier gaps */
+.webapp-page.is-telegram-tablet .webapp-reader .reader-library-grid { column-gap: 26px; row-gap: 36px; }
+/* Card title + meta bigger */
+.webapp-page.is-telegram-tablet .webapp-reader .reader-library-title { font-size: 18px; margin-top: 3px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-library-meta { font-size: 13px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-library-cover { border-radius: 12px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-archive-cover-fallback { font-size: 42px; }
+/* ⋯ corner + cover actions — comfortable touch targets */
+.webapp-page.is-telegram-tablet .webapp-reader .reader-lib-more { width: 36px; height: 36px; top: 9px; right: 9px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-lib-cover-act svg { width: 28px; height: 28px; }
+
+/* Hero «Продолжаешь читать» — larger cover + type */
+.webapp-page.is-telegram-tablet .webapp-reader .reader-hero-card { gap: 22px; padding: 22px; border-radius: 26px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-hero-cover { width: 150px; height: 212px; border-radius: 11px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-hero-title { font-size: 24px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-hero-kicker { font-size: 14px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-hero-meta { font-size: 15px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-hero-continue { height: 52px; font-size: 17px; }
+
+/* Add sheet — bigger textarea + buttons, roomier card */
+.webapp-page.is-telegram-tablet .webapp-reader .reader-add-form { padding: 20px; border-radius: 22px; gap: 14px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-add-textarea { min-height: 88px; font-size: 17px; padding: 15px 17px; border-radius: 14px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-add-row { gap: 12px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-add-file-btn { height: 54px; font-size: 16px; border-radius: 14px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-add-file-btn svg { width: 22px; height: 22px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-add-submit { height: 54px; font-size: 16px; padding: 0 28px; border-radius: 14px; }
+
+/* Library search — taller pill, bigger text */
+.webapp-page.is-telegram-tablet .webapp-reader .reader-lib-search { height: 52px; font-size: 16px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-lib-search-icon { width: 22px; height: 22px; }
+
 /* Fix: the "tap a word" hint must NOT reflow the page. It was an in-flow bar
    that shrank the reading area on Play → columns recomputed and the text
    shifted. Float it as a pill so pressing Слушать changes nothing on the page. */
