@@ -709,6 +709,28 @@ body {
 .webapp-page.is-reader-immersive[data-reader-theme="sepia"] { background: #f4ecd8; }
 .webapp-page.is-reader-immersive[data-reader-theme="cream"] { background: #fbf8f1; }
 
+/* Full-bleed book: the DEFAULT `body { background:#f6f1ea }` (cream) was showing as
+   a light frame wherever our page doesn't physically cover the screen — the top
+   safe-area band and the thin strips beside the rounded window on tablet. Paint the
+   ROOT layers (html/body/#root) with the reader's own background whenever the reader
+   is open, so there is zero light edge anywhere — the book fills the whole screen. */
+html:has(.webapp-page.is-reader-immersive[data-reader-theme="dark"]),
+body:has(.webapp-page.is-reader-immersive[data-reader-theme="dark"]),
+#root:has(.webapp-page.is-reader-immersive[data-reader-theme="dark"])  { background: #080c1a !important; }
+html:has(.webapp-page.is-reader-immersive[data-reader-theme="sepia"]),
+body:has(.webapp-page.is-reader-immersive[data-reader-theme="sepia"]),
+#root:has(.webapp-page.is-reader-immersive[data-reader-theme="sepia"]) { background: #f4ecd8 !important; }
+html:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
+body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
+#root:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]) { background: #fbf8f1 !important; }
+
+/* And let the immersive page span the full viewport WIDTH so the reader background
+   reaches the side edges (height stays governed by the existing 100dvh / --app-height
+   rules — don't force it taller or the bottom dock could slip under a native bar). */
+.webapp-page.is-reader-immersive {
+  width: 100vw;
+}
+
 .webapp-page.is-reader-immersive .webapp-main {
   display: flex;
   flex-direction: column;
