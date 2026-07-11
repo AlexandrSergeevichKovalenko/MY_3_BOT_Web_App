@@ -14399,10 +14399,6 @@ def _extract_text_from_pdf_bytes(data: bytes) -> str:
 _READER_PDF_MAX_SOURCE_PAGES = 4000  # hard ceiling on physical PDF pages we read
 _READER_BOOK_MAX_TOTAL_CHARS = 3_000_000  # keep in sync with EPUB (_EPUB_MAX_TOTAL_TEXT_CHARS)
 _READER_FIXED_PAGE_CHARS = 1100  # target chars per fixed reader page (~one phone screen)
-# Inline images (figures/tables) extracted from PDFs and shown in the reading flow.
-_READER_IMG_MIN_PX = 40  # skip tiny raster runs (bullets, rules, inline glyphs)
-_READER_IMG_MAX_PER_DOC = 500  # safety ceiling on extracted images per book
-_READER_IMG_MAX_BYTES = 4_000_000  # skip absurdly large single images
 
 
 def _extract_pdf_source_page_texts(data: bytes) -> list[str]:
@@ -14571,173 +14567,6 @@ def _apply_pdf_outline_to_pages(
             page["chapter_title"] = title
 
 
-def _reader_anchor_regex(needle: str):
-    """Whitespace-insensitive regex for a short text anchor, or None."""
-    needle = str(needle or "").strip()
-    if not needle:
-        return None
-    parts = [re.escape(p) for p in needle.split() if p]
-    if not parts:
-        return None
-    try:
-        return re.compile(r"\s+".join(parts))
-    except Exception:
-        return None
-
-
-def _extract_pdf_image_records(data: bytes) -> list[dict]:
-    """Per-physical-page embedded raster images with text anchors for positioning.
-
-    Uses PyMuPDF `get_text("dict")` blocks: type-1 blocks are images (with raw
-    bytes + ext + size + bbox). For each we capture the tail of the nearest
-    preceding text block and the head of the following one, so the image can be
-    placed back into the linearized reading text by anchor search."""
-    if _pymupdf is None:
-        return []
-    records: list[dict] = []
-
-    def block_text(b) -> str:
-        out = []
-        for line in b.get("lines") or []:
-            for span in line.get("spans") or []:
-                out.append(span.get("text") or "")
-        return " ".join(t for t in out if t).strip()
-
-    try:
-        with _pymupdf.open(stream=data, filetype="pdf") as doc:
-            for idx, page in enumerate(doc):
-                if idx >= _READER_PDF_MAX_SOURCE_PAGES:
-                    break
-                try:
-                    info = page.get_text("dict")
-                except Exception:
-                    continue
-                blocks = info.get("blocks") or []
-                page_h = float(info.get("height") or getattr(page.rect, "height", 0) or 1) or 1
-                page_w = float(info.get("width") or getattr(page.rect, "width", 0) or 1) or 1
-                page_area = max(1.0, page_w * page_h)
-                n = len(blocks)
-                for bi, b in enumerate(blocks):
-                    if int(b.get("type", -1)) != 1:
-                        continue
-                    bbox = b.get("bbox") or [0, 0, 0, 0]
-                    try:
-                        x0, y0, x1, y1 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
-                    except Exception:
-                        continue
-                    bw, bh = (x1 - x0), (y1 - y0)
-                    # Filter by ON-PAGE size (points): skip tiny icons/rules/bullets and
-                    # near-full-page backgrounds (rendering those would just duplicate the
-                    # reflowed page text).
-                    if bw < 24 or bh < 24:
-                        continue
-                    if (bw * bh) > 0.92 * page_area:
-                        continue
-                    # RENDER THE REGION as it actually appears on the page (color, soft
-                    # masks, vector art, tables) at 2× for clarity — far more faithful than
-                    # the raw image XObject bytes, which lose masks/colour (black boxes).
-                    try:
-                        clip = _pymupdf.Rect(x0, y0, x1, y1)
-                        pix = page.get_pixmap(matrix=_pymupdf.Matrix(2, 2), clip=clip, alpha=False)
-                        img_bytes = pix.tobytes("png")
-                        w = int(pix.width)
-                        h = int(pix.height)
-                    except Exception:
-                        continue
-                    if not img_bytes or len(img_bytes) > _READER_IMG_MAX_BYTES:
-                        continue
-                    ext = "png"
-                    y_frac = max(0.0, min(1.0, y0 / page_h))
-                    before = ""
-                    for j in range(bi - 1, -1, -1):
-                        if int(blocks[j].get("type", -1)) == 0:
-                            t = block_text(blocks[j])
-                            if t:
-                                before = t[-80:]
-                                break
-                    after = ""
-                    for j in range(bi + 1, n):
-                        if int(blocks[j].get("type", -1)) == 0:
-                            t = block_text(blocks[j])
-                            if t:
-                                after = t[:80]
-                                break
-                    records.append({
-                        "phys_idx": idx,
-                        "y_frac": y_frac,
-                        "before": before,
-                        "after": after,
-                        "bytes": bytes(img_bytes),
-                        "ext": ext,
-                        "w": w,
-                        "h": h,
-                    })
-                    if len(records) >= _READER_IMG_MAX_PER_DOC:
-                        return records
-    except Exception:
-        logging.exception("reader PDF image extraction failed")
-    return records
-
-
-def _attach_pdf_images_to_pages(
-    pages: list[dict], full_text: str, source_texts: list[str], images_raw: list[dict]
-) -> int:
-    """Place each extracted image into a final page as a page-local char offset.
-
-    Position is resolved by whitespace-insensitive search of the image's text
-    anchors in full_text; falls back to a proportional guess by physical page +
-    vertical position when the anchor can't be found. Attaches `_images` (with
-    raw bytes) to the page dict — the ingest job uploads them to R2 and swaps in
-    URLs before persisting."""
-    if not pages or not images_raw:
-        return 0
-    ranges: list[tuple[int, int]] = []
-    acc = 0
-    for p in pages:
-        t = str(p.get("text") or "")
-        ranges.append((acc, acc + len(t)))
-        acc += len(t) + 2  # "\n\n" separator between repaginated pages
-    total = max(1, acc)
-    n_phys = max(1, len(source_texts))
-    attached = 0
-    for img in images_raw:
-        off = -1
-        rx = _reader_anchor_regex(img.get("before"))
-        if rx is not None:
-            m = rx.search(full_text)
-            if m:
-                off = m.end()
-        if off < 0:
-            rx = _reader_anchor_regex(img.get("after"))
-            if rx is not None:
-                m = rx.search(full_text)
-                if m:
-                    off = m.start()
-        if off < 0:
-            frac = (float(img.get("phys_idx", 0)) + float(img.get("y_frac", 0.0))) / n_phys
-            off = int(max(0, min(total - 1, round(frac * total))))
-        pg_i = len(ranges) - 1
-        for i, (lo, hi) in enumerate(ranges):
-            if off < hi:
-                pg_i = i
-                break
-        lo, _hi = ranges[pg_i]
-        page_len = len(str(pages[pg_i].get("text") or ""))
-        local = max(0, min(page_len, off - lo))
-        pages[pg_i].setdefault("_images", []).append({
-            "offset": local,
-            "bytes": img["bytes"],
-            "ext": img["ext"],
-            "w": img["w"],
-            "h": img["h"],
-        })
-        attached += 1
-    for p in pages:
-        if p.get("_images"):
-            p["_images"].sort(key=lambda x: x["offset"])
-    return attached
-
-
 def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not data:
         return "", []
@@ -14757,14 +14586,6 @@ def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
             logging.info("[READER_TOC] applied embedded PDF outline: %s bookmarks", len(outline))
     except Exception:
         logging.exception("reader PDF outline mapping failed; falling back to heuristic TOC")
-    # Inline figures/tables: extract embedded raster images + place them in the flow.
-    try:
-        images_raw = _extract_pdf_image_records(data)
-        if images_raw:
-            n = _attach_pdf_images_to_pages(pages, full_text, source_texts, images_raw)
-            logging.info("[READER_IMG] extracted %s image(s), placed %s", len(images_raw), n)
-    except Exception:
-        logging.exception("reader PDF image extraction/attach failed")
     return full_text, pages
 
 
@@ -15575,46 +15396,6 @@ def _resolve_reader_original_source_bytes(
     return b"", None
 
 
-def _upload_reader_page_images(*, document_id: int, user_id: int, content_pages: list[dict]) -> list[dict]:
-    """Upload each page's extracted `_images` (raw bytes) to public R2 and replace
-    them with `images:[{offset,url,w,h}]`. Runs in the ingest job (has document_id).
-    Bytes must NOT reach the DB — JSONB can't serialize them, so `_images` is popped."""
-    if not content_pages:
-        return content_pages
-    counter = 0
-    for page in content_pages:
-        if not isinstance(page, dict):
-            continue
-        raws = page.pop("_images", None)
-        if not raws:
-            continue
-        out: list[dict] = []
-        for raw in raws:
-            try:
-                counter += 1
-                ext = str(raw.get("ext") or "png").lower()
-                content_type = (
-                    "image/jpeg" if ext in ("jpg", "jpeg")
-                    else "image/webp" if ext == "webp"
-                    else "image/png"
-                )
-                key = f"reader_assets/{int(user_id)}/{int(document_id)}/img_{counter}.{ext}"
-                r2_put_bytes(key, raw["bytes"], content_type=content_type)
-                out.append({
-                    "offset": int(raw.get("offset") or 0),
-                    "url": r2_public_url(key),
-                    "w": int(raw.get("w") or 0),
-                    "h": int(raw.get("h") or 0),
-                })
-            except Exception:
-                logging.exception("reader inline-image upload failed document_id=%s", document_id)
-        if out:
-            page["images"] = out
-    if counter:
-        logging.info("[READER_IMG] uploaded %s inline image(s) for document_id=%s", counter, document_id)
-    return content_pages
-
-
 def _process_reader_library_ingest_job(
     *,
     user_id: int,
@@ -15663,14 +15444,6 @@ def _process_reader_library_ingest_job(
         )
         if not normalized_text:
             raise ValueError("Не удалось извлечь текст")
-        # Upload any extracted inline figures/tables to R2 and swap bytes → URLs
-        # before the pages are persisted as JSONB.
-        try:
-            content_pages = _upload_reader_page_images(
-                document_id=int(document_id), user_id=int(user_id), content_pages=content_pages
-            )
-        except Exception:
-            logging.exception("reader inline-image finalize failed document_id=%s", document_id)
         title = _infer_reader_title(
             input_text=normalized_text,
             input_url=resolved_url or input_url or file_name,

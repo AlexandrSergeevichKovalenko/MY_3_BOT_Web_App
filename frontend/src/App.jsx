@@ -14040,9 +14040,6 @@ function AppInner() {
       return readerPages.map((item, index) => ({
         page_number: Number(item?.page_number || index + 1),
         text: item ? String(item?.text || '').trim() : '',
-        // Inline figures/tables extracted at ingest: [{offset, url, w, h}] with a
-        // page-local char offset. Kept here so the render can splice them into flow.
-        images: Array.isArray(item?.images) ? item.images : [],
       }));
     }
     if (!readerCanonicalText) return [];
@@ -14272,29 +14269,6 @@ function AppInner() {
   // converting a window char offset → its server page for audio.
   const readerWindowModelRef = useRef(null);
   useEffect(() => { readerWindowModelRef.current = readerWindowModel; }, [readerWindowModel]);
-  // Inline figures/tables for the currently visible window/page, with char offsets
-  // translated into the SAME coordinate space as readerVisibleText (window-global in
-  // window mode, page-local otherwise) so the render can splice them into the flow.
-  const readerVisibleImages = useMemo(() => {
-    const out = [];
-    const pushPageImages = (pageNumber, base) => {
-      const imgs = readerDisplayPages[pageNumber - 1]?.images;
-      if (!Array.isArray(imgs)) return;
-      for (const im of imgs) {
-        if (im && im.url) {
-          out.push({ offset: base + Number(im.offset || 0), url: String(im.url), w: Number(im.w || 0), h: Number(im.h || 0) });
-        }
-      }
-    };
-    if (readerWindowModel && Array.isArray(readerWindowModel.offsets)) {
-      for (const off of readerWindowModel.offsets) pushPageImages(Number(off.page), Number(off.charStart || 0));
-    } else if (readerPageCount >= 1) {
-      pushPageImages(Number(readerCurrentPage || 1), 0);
-    }
-    out.sort((a, b) => a.offset - b.offset);
-    return out;
-  }, [readerWindowModel, readerDisplayPages, readerCurrentPage, readerPageCount]);
-  const [readerImageLightbox, setReaderImageLightbox] = useState(null);
   // Single-server-page sources (plain text / URL) have no page-based progress —
   // the engine reports its visual reading fraction so % + bookmark still work.
   const handleReaderVisualProgress = useCallback((pct) => {
@@ -22936,35 +22910,9 @@ function AppInner() {
     resetReaderPhraseGesture();
   };
 
-  const renderReaderStructuredText = () => {
-    // Splice inline figures/tables into the flow at their char offset (between
-    // sentences — figures sit between paragraphs). Each carries data-start so the
-    // column engine measures/places it like any other node.
-    const figures = readerVisibleImages;
-    let figPtr = 0;
-    const nodes = [];
-    const emitFiguresUpTo = (charPos) => {
-      while (figPtr < figures.length && figures[figPtr].offset <= charPos) {
-        const fig = figures[figPtr];
-        const idx = figPtr;
-        nodes.push(
-          <span
-            key={`reader-figure-${idx}-${fig.offset}`}
-            className="reader-figure"
-            data-start={fig.offset}
-            data-reader-figure="1"
-            role="button"
-            onClick={() => setReaderImageLightbox(fig)}
-          >
-            <img className="reader-figure-img" src={fig.url} alt="" loading="lazy" draggable="false" />
-          </span>
-        );
-        figPtr += 1;
-      }
-    };
-    readerSentencesModel.forEach((sentence) => {
-      emitFiguresUpTo(sentence.start);
-      nodes.push(
+  const renderReaderStructuredText = () => (
+    <div className="reader-container">
+      {readerSentencesModel.map((sentence) => (
         <span
           key={sentence.sid}
           className={`reader-sentence ${selectedSentenceIds.has(sentence.sid) ? 'is-selected' : ''}${readerAudioPlayingSid === sentence.sid ? ' is-playing-sentence' : ''}`}
@@ -23003,11 +22951,9 @@ function AppInner() {
             );
           })}
         </span>
-      );
-    });
-    emitFiguresUpTo(Infinity);
-    return <div className="reader-container">{nodes}</div>;
-  };
+      ))}
+    </div>
+  );
 
   const getReaderCoverInitials = (title) => {
     const value = String(title || '').trim();
@@ -35780,29 +35726,6 @@ function AppInner() {
                   jumpReaderTocItem={jumpReaderTocItem}
                   switchReaderLayoutMode={switchReaderLayoutMode}
                 />
-                {readerImageLightbox && (
-                  <div
-                    className="reader-figure-lightbox"
-                    role="dialog"
-                    aria-modal="true"
-                    onClick={() => setReaderImageLightbox(null)}
-                  >
-                    <button
-                      type="button"
-                      className="reader-figure-lightbox-close"
-                      aria-label={tr('Закрыть', 'Schließen')}
-                      onClick={(e) => { e.stopPropagation(); setReaderImageLightbox(null); }}
-                    >
-                      ✕
-                    </button>
-                    <img
-                      className="reader-figure-lightbox-img"
-                      src={readerImageLightbox.url}
-                      alt=""
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                )}
               </PerfProfiler>
             )}
 
