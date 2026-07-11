@@ -167,6 +167,9 @@ const TTS_CACHE_MAX_ENTRIES = 60;
 const FREE_SRS_PREFETCH_QUEUE_LIMIT = 3;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const READER_DEFAULT_FONT_SIZE = 18;
+// Tablet default reading size — bigger by default so the book text reads
+// comfortably on the large screen (user can still adjust via the Aa slider).
+const READER_TABLET_FONT_SIZE = 21;
 const READER_DEFAULT_FONT_WEIGHT = 500;
 const READER_PAGINATION_FIT_RESERVE_PX = 32;
 // Reader TTS window sizing. Page flips INSIDE one audio clip are seamless;
@@ -17626,14 +17629,14 @@ function AppInner() {
       setReaderProgressPercent(stablePercent);
       setReaderOriginalCoverVisible(false);
       if (resetTypography) {
-        setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+        setReaderFontSize(telegramTabletLike ? READER_TABLET_FONT_SIZE : READER_DEFAULT_FONT_SIZE);
         setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
       }
       setReaderLayoutMode('custom');
       return;
     }
     if (resetTypography) {
-      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontSize(telegramTabletLike ? READER_TABLET_FONT_SIZE : READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
     }
     setReaderOriginalCoverVisible(false);
@@ -23376,7 +23379,7 @@ function AppInner() {
       const sourceType = String(data?.source_type || doc?.source_type || 'text');
       const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
       const preferredLayoutMode = getReaderPreferredLayoutMode(sourceType, pages);
-      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontSize(telegramTabletLike ? READER_TABLET_FONT_SIZE : READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
       readerPendingPagePercentRef.current = preferredLayoutMode === 'custom'
         ? (bookmark > 0 ? bookmark : progress)
@@ -24780,7 +24783,7 @@ function AppInner() {
       if (processingStatus !== 'ready') {
         upsertReaderLibraryDocument(doc);
         setReaderDocumentId(docId);
-        setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+        setReaderFontSize(telegramTabletLike ? READER_TABLET_FONT_SIZE : READER_DEFAULT_FONT_SIZE);
         setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
         setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
         setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
@@ -24819,7 +24822,7 @@ function AppInner() {
       const preferredLayoutMode = getReaderPreferredLayoutMode(sourceType, pages);
       const progress = Number(doc?.progress_percent || 0);
       const bookmark = Number(doc?.bookmark_percent || 0);
-      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontSize(telegramTabletLike ? READER_TABLET_FONT_SIZE : READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
       readerPendingPagePercentRef.current = preferredLayoutMode === 'custom'
         ? (bookmark || progress || 0)

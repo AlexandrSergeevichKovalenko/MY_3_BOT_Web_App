@@ -4037,6 +4037,13 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-page.is-telegram-tablet .webapp-reader .reader-dock-play-flat svg { width: 23px; height: 23px; }
 .webapp-page.is-telegram-tablet .webapp-reader .reader-dock-page { height: 52px; padding: 0 20px; border-radius: 14px; font-size: 17px; }
 
+/* Reading typography (Phase 3): looser leading on the big screen so the book
+   breathes like Apple Books. Font size comes from the bigger tablet default
+   (READER_TABLET_FONT_SIZE); this adds the matching line-height. The column
+   engine re-measures live, so paging stays exact. */
+.webapp-page.is-telegram-tablet .webapp-reader .reader-col-track { line-height: 1.74; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-page-sheet-inner { line-height: 1.8; }
+
 /* Fix: the "tap a word" hint must NOT reflow the page. It was an in-flow bar
    that shrank the reading area on Play → columns recomputed and the text
    shifted. Float it as a pill so pressing Слушать changes nothing on the page. */

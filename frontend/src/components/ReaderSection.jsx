@@ -275,7 +275,9 @@ export default function ReaderSection(props) {
       M = Math.min(60, Math.max(28, Math.round(w * 0.03)));
     } else if (w >= 620) {
       cols = 1;
-      M = Math.max(22, Math.round((w - 640) / 2)); // cap the single column ~640px, centred
+      // Portrait tablet: one wide column that uses more of the screen for the book
+      // text (Apple-Books-like) — cap ~760px, centred, with a sensible min margin.
+      M = Math.max(32, Math.round((w - 760) / 2));
     }
     const gap = 2 * M;
     const colWidth = cols === 2 ? Math.max(1, (w - 4 * M) / 2) : Math.max(1, w - 2 * M);
