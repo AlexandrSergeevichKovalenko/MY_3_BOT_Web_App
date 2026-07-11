@@ -18172,11 +18172,15 @@ body.worldnews-active .webapp-topbar {
      resolves against the real viewport.) Safe-area padding keeps the topbar clear
      of the native Telegram controls. */
   position: fixed;
-  /* inset:0 alone (top+bottom+left+right = 0) stretches the reader to ALL four
-     physical edges. Do NOT also set an explicit height — 100dvh can resolve a few
-     px short of the real bottom in this webview, leaving a light sliver at the
-     bottom edge. Letting top:0+bottom:0 govern the height removes that gap. */
-  inset: 0;
+  /* Fill all four edges. The persistent light sliver at the very bottom is the
+     home-indicator SAFE-AREA below the visual viewport: bottom:0 stops at the
+     viewport edge, so that strip stays the app's light background. Overshoot the
+     bottom by the safe-area inset so the reader's dark bg physically covers it.
+     (The dock keeps its own safe-area padding, so its buttons stay above the strip.) */
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
   max-width: none;
   border-radius: 0;
   padding-top: var(--telegram-tablet-top-safe-offset);
