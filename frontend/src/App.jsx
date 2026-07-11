@@ -15004,7 +15004,10 @@ function AppInner() {
   function upgradeFromProFeatureModal() {
     setProFeatureModal(null);
     // Leave the fullscreen reader first so the subscription page opens in the normal,
-    // scrollable app view (with its own navigation) instead of a broken half-screen.
+    // scrollable app view WITH its top bar (🏠 home). Immersive mode hides the topbar
+    // (display:none) and uses a fixed flex layout — without clearing it the subscription
+    // page had no way home and wouldn't scroll.
+    setReaderImmersive(false);
     setReaderDocumentId(null);
     setTimeout(() => openSingleSectionAndScroll('subscription', billingRef), 60);
   }
