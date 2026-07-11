@@ -854,47 +854,7 @@ export default function ReaderSection(props) {
                 )}
               </section>
 
-              {/* ── Audio panel (offline whole-doc) ─────────────────── */}
-              {readerDocumentId && (
-                <section className="reader-audio-panel">
-                  <div className="reader-audio-head">
-                    <strong>{tr('Оффлайн-аудио документа', 'Offline-Audio des Dokuments')}</strong>
-                  </div>
-                  {readerAudioPremiumLocked && (
-                    <div className="webapp-muted">{readerAudioPremiumHint}</div>
-                  )}
-                  <div className="reader-audio-actions">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => (readerAudioPremiumLocked ? onReaderAudioUpgrade() : downloadReaderAudio(true))}
-                      disabled={readerAudioLoading || billingActionLoading}
-                    >
-                      {readerAudioPremiumLocked
-                        ? tr('Открыть Premium', 'Premium öffnen')
-                        : (readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать весь документ', 'Ganzes Dokument herunterladen'))}
-                    </button>
-                  </div>
-                  {readerAudioError && <div className="webapp-error">{readerAudioError}</div>}
-                  {readerAudioPreviewUrl && (
-                    <div className="reader-audio-preview">
-                      <audio controls preload="metadata" src={readerAudioPreviewUrl} className="reader-audio-player" />
-                      <div className="reader-audio-preview-actions">
-                        <a
-                          href={readerAudioPreviewUrl}
-                          download={readerAudioPreviewName || 'reader_audio.wav'}
-                          className="secondary-button"
-                        >
-                          {tr('Скачать файл', 'Datei herunterladen')}
-                        </a>
-                        <button type="button" className="secondary-button" onClick={closeReaderAudioPreview}>
-                          {tr('Назад', 'Zurück')}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </section>
-              )}
+              {/* Offline whole-document audio panel removed — we don't offer that. */}
             </div>
           );
         }
