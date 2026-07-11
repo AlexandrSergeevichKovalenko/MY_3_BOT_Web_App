@@ -248,7 +248,9 @@ export default function ReaderSection(props) {
   const applyReaderColTransform = (px, animate) => {
     const track = readerColTrackRef.current;
     if (!track) return;
-    track.style.transition = animate ? 'transform .3s cubic-bezier(.4,0,.2,1)' : 'none';
+    // Snappier page-turn: shorter with a decel (ease-out) curve so the page arrives
+    // crisply and settles — reads more like a physical page flip than the old linear-ish glide.
+    track.style.transition = animate ? 'transform .26s cubic-bezier(.2,.68,.32,1)' : 'none';
     track.style.transform = `translateX(${px}px)`;
   };
   // Apply column styles, then MEASURE the true pitch/origin/column-count from the
@@ -510,6 +512,7 @@ export default function ReaderSection(props) {
     if (!readerColUsesEngine) return;
     const g = readerGestureRef.current;
     g.down = true; g.x = e.clientX; g.y = e.clientY; g.moved = false;
+    g.t = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
     g.base = -readerColIndexRef.current * readerColStep();
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_err) { /* ignore */ }
     applyReaderColTransform(g.base, false);
@@ -535,7 +538,14 @@ export default function ReaderSection(props) {
     g.down = false;
     const dx = e.clientX - g.x, dy = e.clientY - g.y;
     if (!g.moved) { handleReaderColTap(e); return; }
-    if (Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) > 40) {
+    // Turn on either a committed DRAG (>40px) OR a quick FLICK (high velocity, even
+    // if short) — the flick makes page-turns feel instant/light like Apple Books,
+    // instead of "dead" when a fast swipe travels under 40px.
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+    const dt = Math.max(1, now - (g.t || now));
+    const vx = dx / dt; // px per ms
+    const isFlick = Math.abs(vx) > 0.45 && Math.abs(dx) > 8;
+    if (Math.abs(dx) >= Math.abs(dy) && (Math.abs(dx) > 40 || isFlick)) {
       if (dx < 0) readerTurnNext(); else readerTurnPrev();
     } else {
       applyReaderColTransform(-readerColIndexRef.current * readerColStep(), true);
