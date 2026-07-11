@@ -25260,6 +25260,14 @@ body.worldnews-active .webapp-topbar {
   border-right-color: rgba(171, 126, 72, 0.22);
 }
 
+/* Grabber + close chip need dark ink on the light drawer (base is white). */
+.webapp-page.is-theme-light .reader-toc-drawer::before {
+  background: rgba(90, 68, 40, 0.22);
+}
+.webapp-page.is-theme-light .reader-toc-close-btn {
+  background: rgba(120, 92, 55, 0.1) !important;
+}
+
 .webapp-page.is-theme-light .reader-toc-head {
   border-bottom-color: rgba(171, 126, 72, 0.18);
 }
