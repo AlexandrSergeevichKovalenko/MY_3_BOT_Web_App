@@ -608,40 +608,49 @@ export default function ReaderSection(props) {
                 </div>
               </div>
 
-              {/* ── Add form (URL / file / submit) ─────────────────── */}
+              {/* ── Add form: paste URL/text → Открыть, OR pick a file → opens instantly ── */}
               {readerAddOpen && (
                 <div className="reader-add-form-wrap">
-                  <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
-                    <label className="webapp-field">
-                      <span>{tr('URL или текст', 'URL oder Text')}</span>
-                      <textarea
-                        rows={2}
-                        value={readerInput}
-                        onChange={(event) => setReaderInput(event.target.value)}
-                        placeholder={tr(
-                          'Вставьте URL статьи/книги (включая PDF) или сам текст.',
-                          'Füge URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
-                        )}
-                      />
-                    </label>
-                    <label className="webapp-field">
-                      <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
-                      <input
-                        ref={readerFileInputRef}
-                        type="file"
-                        accept=".txt,.md,.pdf,.epub,text/plain,application/pdf,application/epub+zip"
-                        onChange={handleReaderFileSelect}
-                      />
-                      {readerSelectedFile && (
-                        <small className="webapp-muted">
-                          {tr('Выбран файл', 'Datei gewählt')}: {readerSelectedFile.name}
-                        </small>
+                  <form className="reader-add-form" onSubmit={handleReaderIngest}>
+                    <textarea
+                      className="reader-add-textarea"
+                      rows={2}
+                      value={readerInput}
+                      onChange={(event) => setReaderInput(event.target.value)}
+                      placeholder={tr(
+                        'Вставь ссылку на статью или книгу (PDF), либо сам текст',
+                        'Link zu einem Artikel/Buch (PDF) oder den Text einfügen'
                       )}
-                    </label>
-                    <div className="webapp-actions">
-                      <button type="submit" className="primary-button" disabled={readerLoading}>
-                        {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser öffnen')}
+                    />
+                    <div className="reader-add-row">
+                      <button
+                        type="button"
+                        className="reader-add-file-btn"
+                        onClick={() => readerFileInputRef.current?.click()}
+                        disabled={readerLoading}
+                      >
+                        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                          <path d="M10 4.5v11M4.5 10h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                        </svg>
+                        {readerLoading ? tr('Открываем…', 'Öffnen…') : tr('Файл с телефона', 'Datei vom Telefon')}
                       </button>
+                      <button
+                        type="submit"
+                        className="reader-add-submit"
+                        disabled={readerLoading || !String(readerInput || '').trim()}
+                      >
+                        {tr('Открыть', 'Öffnen')}
+                      </button>
+                    </div>
+                    <input
+                      ref={readerFileInputRef}
+                      type="file"
+                      className="reader-add-file-input"
+                      accept=".txt,.md,.pdf,.epub,text/plain,application/pdf,application/epub+zip"
+                      onChange={handleReaderFileSelect}
+                    />
+                    <div className="reader-add-hint">
+                      {tr('EPUB · PDF · TXT — выбранный файл откроется сразу', 'EPUB · PDF · TXT — die gewählte Datei öffnet sofort')}
                     </div>
                   </form>
                   {readerError && (

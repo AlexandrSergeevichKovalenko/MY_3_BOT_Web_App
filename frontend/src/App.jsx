@@ -23022,6 +23022,9 @@ function AppInner() {
     setReaderErrorCode('');
     if (file) {
       setReaderInput('');
+      // Auto-open: choosing a file IS the action — no extra "Открыть" tap. Ingest
+      // reads the file straight from the input ref, so this is safe immediately.
+      void handleReaderIngest();
       return;
     }
     if (!file) {
