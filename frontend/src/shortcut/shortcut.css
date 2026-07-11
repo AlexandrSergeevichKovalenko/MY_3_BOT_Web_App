@@ -215,3 +215,16 @@ html[data-scheme="light"] .sc-sublist li { color: #2a3650; }
 }
 .sc-flag { font-style: normal; margin-right: 5px; }
 .sc-sublist .sc-langs { margin: 4px 0 2px; }
+
+/* Reference-photo links — neat blue, clickable, stacked one under another */
+.sc-photolink {
+  display: flex; align-items: center; gap: 9px;
+  margin: 6px 0; padding: 11px 13px;
+  border: 1px solid #cfe0fb; border-radius: 12px;
+  background: #f2f7ff; text-decoration: none;
+  color: #1d4ed8; font-weight: 700; font-size: 14px;
+}
+.sc-photolink:active { background: #e6f0ff; }
+.sc-photolink-ico { font-size: 17px; }
+.sc-photolink-text { flex: 1; line-height: 1.35; }
+.sc-photolink-open { font-size: 12px; font-weight: 700; color: #3b82f6; white-space: nowrap; }
