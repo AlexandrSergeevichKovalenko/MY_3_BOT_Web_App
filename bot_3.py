@@ -7310,8 +7310,16 @@ async def admin_send_audio_command(update: Update, context: CallbackContext):
 # Reading the RIGHT table per job is what keeps /scheduler_health from false "never" alarms.
 _SCHEDULER_HEALTH_CATALOG = [
     # job_key, label, max_age_hours, default_on, source
-    ("today_plan_auto", "План на день в личку (07:00)", 30, True, "guard"),
-    ("today_evening_reminders_auto", "Вечерние напоминания (18:00)", 30, True, "guard"),
+    # INTENTIONALLY OFF (default_on=False) since 2026-07-11 by owner decision — these two
+    # personal DMs were deliberately stopped (turned off via Railway env
+    # TODAY_PLAN_SCHEDULER_ENABLED / TODAY_EVENING_REMINDER_ENABLED, not in code). They last
+    # ran 2026-06-30; the code registration is still default-ON, so WITHOUT this flag the
+    # health report screamed "ПРОТУХЛО" forever. Marked off so they sit quietly under "💤"
+    # instead of red. If you re-enable either DM, flip its flag back to True. Do NOT
+    # "fix" these as a break — the silence is on purpose. (See d6daec89 for the separate
+    # 2026-07-03 anti-spam trim of the 18:00 nag branch — unrelated to this off-switch.)
+    ("today_plan_auto", "План на день в личку (07:00)", 30, False, "guard"),
+    ("today_evening_reminders_auto", "Вечерние напоминания (18:00)", 30, False, "guard"),
     ("daily_audio_auto", "Аудио с ошибками в личку (06:35 Вена)", 30, True, "guard"),
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
