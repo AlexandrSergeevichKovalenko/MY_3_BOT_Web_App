@@ -5751,6 +5751,15 @@ function AppInner() {
   const [readerAudioPreviewUrl, setReaderAudioPreviewUrl] = useState('');
   const [readerAudioPreviewName, setReaderAudioPreviewName] = useState('');
   const [readerProgressPercent, setReaderProgressPercent] = useState(0);
+  // «Original» reading mode — render the source PDF pages as images (faithful
+  // layout/images/tables/colour). Separate from the reflow «Text» mode.
+  const [readerViewMode, setReaderViewMode] = useState('text'); // 'text' | 'original'
+  const [readerOriginalPage, setReaderOriginalPage] = useState(1);
+  const [readerOriginalPageCount, setReaderOriginalPageCount] = useState(0);
+  const [readerOriginalUrl, setReaderOriginalUrl] = useState('');
+  const [readerOriginalAvailable, setReaderOriginalAvailable] = useState(true);
+  const [readerOriginalLoading, setReaderOriginalLoading] = useState(false);
+  const readerOriginalCacheRef = useRef(new Map()); // physical page -> image url
   const [readerBookmarkPercent, setReaderBookmarkPercent] = useState(0);
   const [readerReadingMode, setReaderReadingMode] = useState('vertical');
   const [readerSessionStartedAt, setReaderSessionStartedAt] = useState('');
@@ -14050,6 +14059,60 @@ function AppInner() {
     return normalizeReaderVisiblePageText(String(readerDisplayPages[pageIndex]?.text || ''));
   }, [readerDisplayPages]);
   const readerPageCount = readerDisplayPages.length;
+  // «Original» mode: fetch/render a physical PDF page image (cached server-side + here).
+  const fetchReaderOriginalPage = useCallback(async (page) => {
+    if (!readerDocumentId) return { available: false, page_count: 0 };
+    const p = Math.max(1, Math.round(Number(page) || 1));
+    const cached = readerOriginalCacheRef.current.get(p);
+    if (cached) {
+      setReaderOriginalUrl(cached); setReaderOriginalPage(p); setReaderOriginalAvailable(true);
+      return { available: true, page_count: readerOriginalPageCount, url: cached };
+    }
+    setReaderOriginalLoading(true);
+    try {
+      const res = await fetch('/api/webapp/reader/page_image', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, document_id: readerDocumentId, page: p }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const count = Number(data?.page_count || 0);
+      if (count) setReaderOriginalPageCount(count);
+      if (data?.available && data?.url) {
+        readerOriginalCacheRef.current.set(p, data.url);
+        setReaderOriginalUrl(data.url); setReaderOriginalPage(p); setReaderOriginalAvailable(true);
+        return { available: true, page_count: count, url: data.url };
+      }
+      setReaderOriginalAvailable(false);
+      return { available: false, page_count: count };
+    } catch {
+      return { available: false, page_count: 0 };
+    } finally {
+      setReaderOriginalLoading(false);
+    }
+  }, [readerDocumentId, initData, readerOriginalPageCount]);
+  const openReaderOriginal = useCallback(async () => {
+    setReaderViewMode('original');
+    setReaderOriginalAvailable(true);
+    const total = readerPageCount || 1;
+    const fraction = total > 1 ? Math.max(0, Math.min(1, (Math.max(1, readerCurrentPage) - 1) / (total - 1))) : 0;
+    // Render page 1 first to learn the physical page count, then jump to the page
+    // matching the current reading position (reflow-page fraction → physical page).
+    const info = await fetchReaderOriginalPage(1);
+    const count = info?.page_count || 0;
+    if (info?.available && count > 1) {
+      const target = Math.max(1, Math.min(count, Math.round(fraction * (count - 1)) + 1));
+      if (target !== 1) fetchReaderOriginalPage(target);
+    }
+  }, [readerPageCount, readerCurrentPage, fetchReaderOriginalPage]);
+  const readerCanUseOriginal = readerSourceType === 'pdf';
+  // Always start a freshly-opened book in Text mode; drop any cached original pages.
+  useEffect(() => {
+    setReaderViewMode('text');
+    readerOriginalCacheRef.current.clear();
+    setReaderOriginalPageCount(0);
+    setReaderOriginalUrl('');
+    setReaderOriginalAvailable(true);
+  }, [readerDocumentId]);
   const buildReaderAudioWindow = useCallback((startPage, maxPages = READER_AUDIO_WINDOW_MAX_PAGES, maxChars = READER_AUDIO_WINDOW_MAX_CHARS) => {
     const safeStartPage = Math.max(1, Math.min(readerPageCount || 1, Number(startPage || 1) || 1));
     const segments = [];
@@ -35586,6 +35649,8 @@ function AppInner() {
                   tr={tr}
                   handleBillingUpgrade={handleBillingUpgrade}
                   billingActionLoading={billingActionLoading}
+                  readerCanUseOriginal={readerCanUseOriginal}
+                  onOpenReaderOriginal={openReaderOriginal}
 
                   readerRef={readerRef}
                   readerArticleRef={readerArticleRef}
@@ -35726,6 +35791,61 @@ function AppInner() {
                   jumpReaderTocItem={jumpReaderTocItem}
                   switchReaderLayoutMode={switchReaderLayoutMode}
                 />
+                {readerViewMode === 'original' && (
+                  <div className="reader-original-view">
+                    <div className="reader-original-topbar">
+                      <button
+                        type="button"
+                        className="reader-original-back"
+                        onClick={() => setReaderViewMode('text')}
+                      >
+                        <svg viewBox="0 0 18 18" fill="none" width="17" height="17">
+                          <path d="M10.75 4.25 6 9l4.75 4.75" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        {tr('Текст', 'Text')}
+                      </button>
+                      <span className="reader-original-counter">
+                        {readerOriginalAvailable
+                          ? `${readerOriginalPage}${readerOriginalPageCount ? ` / ${readerOriginalPageCount}` : ''}`
+                          : tr('Оригинал', 'Original')}
+                      </span>
+                      <span className="reader-original-topbar-spacer" />
+                    </div>
+                    {readerOriginalAvailable ? (
+                      <div className="reader-original-stage">
+                        {readerOriginalUrl && (
+                          <img className="reader-original-img" src={readerOriginalUrl} alt="" draggable="false" />
+                        )}
+                        {readerOriginalLoading && <div className="reader-original-spinner">…</div>}
+                      </div>
+                    ) : (
+                      <div className="reader-original-unavailable">
+                        {tr(
+                          'Оригинал недоступен для этой книги — она была загружена раньше. Перезалейте книгу, чтобы включить режим «Оригинал».',
+                          'Original für dieses Buch nicht verfügbar — es wurde früher hochgeladen. Bitte erneut hochladen, um den Originalmodus zu aktivieren.'
+                        )}
+                      </div>
+                    )}
+                    {readerOriginalAvailable && (
+                      <div className="reader-original-dock">
+                        <button
+                          type="button"
+                          className="reader-original-nav"
+                          disabled={readerOriginalPage <= 1 || readerOriginalLoading}
+                          onClick={() => fetchReaderOriginalPage(readerOriginalPage - 1)}
+                          aria-label={tr('Назад', 'Zurück')}
+                        >‹</button>
+                        <button
+                          type="button"
+                          className="reader-original-nav"
+                          disabled={readerOriginalLoading || (readerOriginalPageCount > 0 && readerOriginalPage >= readerOriginalPageCount)}
+                          onClick={() => fetchReaderOriginalPage(readerOriginalPage + 1)}
+                          aria-label={tr('Вперёд', 'Weiter')}
+                        >›</button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </PerfProfiler>
             )}
 

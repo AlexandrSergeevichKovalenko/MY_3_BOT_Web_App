@@ -4117,3 +4117,102 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-reader .reader-dock-audio-toggle svg { width: 16px; height: 16px; }
 .webapp-reader .reader-dock-audio-close { width: 34px; height: 34px; }
 .webapp-reader .reader-dock-audio-rate { height: 32px; }
+
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  «ORIGINAL» READING MODE — full-page rendered PDF images (fidelity).    │
+   │  A dark viewer chrome around the book's own pages; swipe/nav + pinch.   │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+.reader-original-view {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: #0b0d12;
+  display: flex;
+  flex-direction: column;
+}
+.reader-original-topbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) 14px 8px;
+  background: rgba(10, 13, 20, 0.94);
+}
+.reader-original-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-radius: 999px;
+  padding: 8px 15px 8px 11px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.reader-original-counter {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.reader-original-topbar-spacer { width: 84px; }
+.reader-original-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  touch-action: pinch-zoom;
+  -webkit-overflow-scrolling: touch;
+  position: relative;
+  background: #15171d;
+}
+.reader-original-img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+.reader-original-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 30px;
+}
+.reader-original-unavailable {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 28px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 16px;
+  line-height: 1.55;
+}
+.reader-original-dock {
+  flex-shrink: 0;
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  padding: 10px 14px calc(env(safe-area-inset-bottom, 0px) + 12px);
+  background: rgba(10, 13, 20, 0.94);
+}
+.reader-original-nav {
+  width: 60px;
+  height: 46px;
+  border-radius: 13px;
+  border: none;
+  background: rgba(255, 255, 255, 0.13);
+  color: #fff;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.reader-original-nav:disabled { opacity: 0.32; }

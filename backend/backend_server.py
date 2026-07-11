@@ -15238,6 +15238,57 @@ def _resume_stale_reader_library_documents(
     return refreshed_items
 
 
+# ── «Original» reading mode: render the source PDF pages on demand ──────────
+_reader_pdf_pagecount_cache: dict[int, int] = {}
+
+
+def _reader_source_object_key(user_id: int, document_id: int) -> str:
+    return f"reader_source/{int(user_id)}/{int(document_id)}/source.pdf"
+
+
+def _reader_page_image_key(user_id: int, document_id: int, page: int, zoom: int = 2) -> str:
+    return f"reader_pages/{int(user_id)}/{int(document_id)}/p{int(page)}_{int(zoom)}x.jpg"
+
+
+def _render_reader_pdf_page(user_id: int, document_id: int, page: int, zoom: int = 2) -> tuple[str | None, int]:
+    """(public_url, page_count) for a physical PDF page rendered as an image, cached
+    in R2. url is None when the source PDF was not retained (book ingested before the
+    Original-mode feature → needs re-upload)."""
+    if _pymupdf is None:
+        return None, 0
+    page = max(1, int(page))
+    page_key = _reader_page_image_key(user_id, document_id, page, zoom)
+    page_count = _reader_pdf_pagecount_cache.get(int(document_id), 0)
+    try:
+        if page_count and r2_exists(page_key):
+            return r2_public_url(page_key), page_count
+    except Exception:
+        pass
+    try:
+        pdf_bytes = r2_get_bytes(_reader_source_object_key(user_id, document_id))
+    except Exception:
+        pdf_bytes = None
+    if not pdf_bytes:
+        return None, page_count
+    try:
+        with _pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+            page_count = int(doc.page_count)
+            _reader_pdf_pagecount_cache[int(document_id)] = page_count
+            try:
+                if r2_exists(page_key):
+                    return r2_public_url(page_key), page_count
+            except Exception:
+                pass
+            idx = min(max(0, page - 1), max(0, page_count - 1))
+            pix = doc[idx].get_pixmap(matrix=_pymupdf.Matrix(zoom, zoom), alpha=False)
+            img_bytes = pix.tobytes("jpg", jpg_quality=82)
+        r2_put_bytes(page_key, img_bytes, content_type="image/jpeg")
+        return r2_public_url(page_key), page_count
+    except Exception:
+        logging.exception("reader page render failed document_id=%s page=%s", document_id, page)
+        return None, page_count
+
+
 def _resolve_reader_ingest_content(
     *,
     input_text: str,
@@ -15464,6 +15515,21 @@ def _process_reader_library_ingest_job(
             raise RuntimeError("Не удалось сохранить обработанный документ")
         if upload_r2_object_key:
             try:
+                # For PDFs, RETAIN the source under a deterministic key so the reader's
+                # «Original» mode can render pages on demand later; then remove the
+                # month-scoped upload. Non-PDFs are still just cleaned up.
+                if source_type == "pdf":
+                    try:
+                        src_bytes = r2_get_bytes(upload_r2_object_key)
+                        if src_bytes:
+                            r2_put_bytes(
+                                _reader_source_object_key(int(user_id), int(document_id)),
+                                src_bytes,
+                                content_type="application/pdf",
+                                cache_control="private, max-age=31536000",
+                            )
+                    except Exception:
+                        logging.warning("reader source retain failed document_id=%s", document_id, exc_info=True)
                 r2_delete_object(upload_r2_object_key)
             except Exception:
                 logging.warning(
@@ -48347,6 +48413,35 @@ def reader_library_pages():
         "pages_start": safe_start,
         "pages_end": safe_end,
         "total_pages": total_pages,
+    })
+
+
+@app.route("/api/webapp/reader/page_image", methods=["POST"])
+def reader_page_image():
+    """«Original» mode: return a rendered image of a physical PDF page (cached in R2).
+    available=False means the source PDF wasn't retained (older book → re-upload)."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    page = int(payload.get("page") or 1)
+    if not init_data or document_id is None:
+        return jsonify({"error": "initData and document_id are required"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    url, page_count = _render_reader_pdf_page(int(user_id), int(document_id), page)
+    if not url:
+        return jsonify({"ok": True, "available": False, "page_count": int(page_count or 0)})
+    return jsonify({
+        "ok": True,
+        "available": True,
+        "url": url,
+        "page": max(1, int(page)),
+        "page_count": int(page_count or 0),
     })
 
 

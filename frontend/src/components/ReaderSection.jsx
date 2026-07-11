@@ -71,6 +71,8 @@ export default function ReaderSection(props) {
     readerUsesOriginalEpubLayout = false,
     readerOriginalTocHref = '',
     readerResolvedOriginalTocTitle = '',
+    readerCanUseOriginal = false,
+    onOpenReaderOriginal = () => {},
     readerOriginalCoverUrl = '',
     readerOriginalCoverVisible = false,
     dismissReaderOriginalCover = () => {},
@@ -1034,6 +1036,21 @@ export default function ReaderSection(props) {
                           : `${Math.round(readerProgressPercent)}%`)}
                     </span>
                   </div>
+                  {readerCanUseOriginal && (
+                    <button
+                      type="button"
+                      className="reader-topbar-icbtn reader-topbar-original"
+                      onClick={onOpenReaderOriginal}
+                      title={tr('Оригинал страницы', 'Originalseite')}
+                      aria-label={tr('Оригинал страницы', 'Originalseite')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none">
+                        <rect x="2.75" y="3" width="12.5" height="12" rx="1.7" stroke="currentColor" strokeWidth="1.5" />
+                        <circle cx="6.5" cy="7" r="1.15" fill="currentColor" />
+                        <path d="M3 12.5l3.4-3.2 2.3 2.1 2.9-2.7 3.4 3.3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="reader-topbar-icbtn reader-topbar-collapse"
