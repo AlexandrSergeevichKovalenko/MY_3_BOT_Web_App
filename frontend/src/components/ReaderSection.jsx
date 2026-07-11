@@ -193,6 +193,9 @@ export default function ReaderSection(props) {
   const [readerColIndex, setReaderColIndex] = React.useState(0);
   const [readerColCount, setReaderColCount] = React.useState(1);
   const [readerChromeHidden, setReaderChromeHidden] = React.useState(false);
+  // Which library book has its action menu (⋯) expanded — Apple-Books style, one
+  // quiet corner button instead of a permanent 4-button row on every cover.
+  const [readerLibActionsOpenId, setReaderLibActionsOpenId] = React.useState(null);
   const readerColIndexRef = React.useRef(0);
   const readerColCountRef = React.useRef(1);
   const readerColGoLastRef = React.useRef(false);
@@ -778,6 +781,20 @@ export default function ReaderSection(props) {
                             ) : (
                               <span className="reader-archive-cover-fallback">{initials}</span>
                             )}
+                            <button
+                              type="button"
+                              className={`reader-lib-more${readerLibActionsOpenId === item.id ? ' is-open' : ''}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setReaderLibActionsOpenId((cur) => (cur === item.id ? null : item.id));
+                              }}
+                              title={tr('Ещё', 'Mehr')}
+                              aria-label={tr('Действия', 'Aktionen')}
+                            >
+                              <svg viewBox="0 0 18 18" fill="currentColor" aria-hidden="true">
+                                <circle cx="9" cy="4" r="1.45" /><circle cx="9" cy="9" r="1.45" /><circle cx="9" cy="14" r="1.45" />
+                              </svg>
+                            </button>
                             <div className="reader-library-cover-progress" style={{ width: `${progress}%` }} />
                             {isOpening && (
                               <div className="reader-library-cover-loading">
@@ -797,7 +814,8 @@ export default function ReaderSection(props) {
                               {meta && <span>{meta}</span>}
                             </div>
                           </div>
-                          <div className="reader-library-actions">
+                          {readerLibActionsOpenId === item.id && (
+                          <div className="reader-library-actions" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"
                               className="reader-lib-action reader-lib-action-open"
@@ -889,6 +907,7 @@ export default function ReaderSection(props) {
                               </span>
                             </button>
                           </div>
+                          )}
                         </div>
                       );
                     })}

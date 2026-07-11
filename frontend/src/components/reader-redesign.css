@@ -136,13 +136,14 @@
 
 .webapp-reader .reader-lib-header-title {
   margin: 0;
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -0.025em;
-  color: #F0F4FF;
+  font-family: var(--rd-font-serif);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--rd-text);
   background: none;
   -webkit-text-fill-color: unset;
-  line-height: 1.1;
+  line-height: 1;
 }
 
 .webapp-reader .reader-lib-header-actions {
@@ -442,8 +443,10 @@
 .webapp-reader .reader-library-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  padding: 4px 0 18px;
+  column-gap: 18px;
+  row-gap: 26px;
+  padding: 6px 0 24px;
+  align-items: start;
 }
 
 @media (min-width: 760px) {
@@ -458,82 +461,50 @@
   }
 }
 
+/* ── Apple-Books shelf: the COVER floats with a soft shadow; the card is just a
+   transparent column of cover + title + meta (+ a collapsed ⋯ action menu). ── */
 .webapp-reader .reader-library-card {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background:
-    linear-gradient(180deg, rgba(12, 18, 34, 0.82) 0%, rgba(7, 12, 24, 0.96) 100%);
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 18px;
-  overflow: hidden;
-  box-shadow:
-    0 14px 30px rgba(6, 10, 22, 0.24),
-    inset 0 1px 0 rgba(255,255,255,0.04);
-  cursor: pointer;
-  transition: transform .15s ease, box-shadow .18s ease, border-color .18s ease;
-}
-
-.webapp-reader .reader-library-card:hover,
-.webapp-reader .reader-library-card:focus-visible {
-  transform: translateY(-2px);
-  border-color: rgba(148, 163, 184, 0.24);
-  box-shadow:
-    0 18px 38px rgba(6, 10, 22, 0.3),
-    inset 0 1px 0 rgba(255,255,255,0.05);
-  outline: none;
-}
-
-.webapp-reader .reader-library-card:hover .reader-library-cover {
-  transform: none;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
   box-shadow: none;
+  cursor: pointer;
 }
-
+.webapp-reader .reader-library-card:focus-visible { outline: none; }
+.webapp-reader .reader-library-card:hover .reader-library-cover,
+.webapp-reader .reader-library-card:focus-visible .reader-library-cover {
+  transform: translateY(-3px);
+  box-shadow: 0 18px 38px -10px rgba(0,0,0,0.5);
+}
 .webapp-reader .reader-library-card.is-active .reader-library-cover {
-  box-shadow: inset 0 0 0 2px rgba(16,185,129,0.5);
+  box-shadow: 0 12px 26px -8px rgba(0,0,0,0.45), 0 0 0 2px var(--rd-accent);
 }
-
 .webapp-reader .reader-library-card.is-opening .reader-library-cover {
-  box-shadow: inset 0 0 0 2px rgba(56,189,248,0.45);
+  box-shadow: 0 12px 26px -8px rgba(0,0,0,0.45), 0 0 0 2px rgba(56,189,248,0.7);
 }
 
 .webapp-reader .reader-library-cover {
   position: relative;
   width: 100%;
   aspect-ratio: 2/3;
-  border-radius: 0;
+  border-radius: 10px;
   overflow: hidden;
-  box-shadow:
-    inset 1px 0 0 rgba(255,255,255,0.08),
-    inset -1px 0 0 rgba(0,0,0,0.35);
-  transition: box-shadow .2s ease;
+  box-shadow: 0 10px 24px -8px rgba(0,0,0,0.45), 0 2px 6px -2px rgba(0,0,0,0.3);
+  transition: transform .2s ease, box-shadow .2s ease;
 }
-
-/* paper grain overlay для книжной фактуры */
-.webapp-reader .reader-library-cover::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  width: auto;
-  background:
-    radial-gradient(ellipse at 30% 0%, rgba(255,255,255,0.18) 0%, transparent 60%),
-    repeating-linear-gradient(125deg, transparent 0 22px, rgba(0,0,0,0.05) 22px 24px);
-  mix-blend-mode: overlay;
-  z-index: 1;
-  pointer-events: none;
-}
-
-/* edge highlight по правому краю */
+/* printed-cover feel: soft top highlight + inner spine hairline */
 .webapp-reader .reader-library-cover::after {
   content: '';
   position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(255,255,255,0.18);
-  z-index: 2;
+  inset: 0;
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), inset -1px 0 0 rgba(0,0,0,0.18);
   pointer-events: none;
+  z-index: 2;
 }
 
 .webapp-reader .reader-archive-cover-img {
@@ -547,27 +518,53 @@
 
 .webapp-reader .reader-archive-cover-fallback {
   position: relative;
-  z-index: 2;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
   height: 100%;
   font-family: var(--rd-font-serif);
-  font-size: 34px;
+  font-size: 32px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   color: #fff;
-  text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  text-shadow: 0 2px 10px rgba(0,0,0,0.4);
 }
+
+/* ⋯ corner button — the single entry to per-book actions */
+.webapp-reader .reader-lib-more {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 4;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  background: rgba(15,18,28,0.44);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background .15s, transform .1s;
+}
+.webapp-reader .reader-lib-more svg { width: 15px; height: 15px; }
+.webapp-reader .reader-lib-more:hover { background: rgba(15,18,28,0.62); }
+.webapp-reader .reader-lib-more:active { transform: scale(0.9); }
+.webapp-reader .reader-lib-more.is-open { background: var(--rd-accent); }
 
 .webapp-reader .reader-library-cover-progress {
   position: absolute;
   bottom: 0;
   left: 0;
   height: 3px;
-  background: linear-gradient(90deg, var(--rd-accent), var(--rd-accent-2));
-  box-shadow: 0 0 10px var(--rd-accent-glow);
+  background: #fff;
+  box-shadow: 0 -1px 6px rgba(0,0,0,0.35);
   z-index: 3;
   border-radius: 0;
 }
@@ -575,31 +572,31 @@
 .webapp-reader .reader-library-cover-loading {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(8,12,26,0.7);
   backdrop-filter: blur(6px);
-  color: var(--rd-accent);
+  color: #fff;
+  border-radius: 10px;
 }
 
 .webapp-reader .reader-library-card-body {
-  padding: 12px 12px 10px;
+  padding: 11px 2px 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
   min-width: 0;
-  background:
-    linear-gradient(180deg, rgba(9, 15, 28, 0.02) 0%, rgba(9, 15, 28, 0.14) 100%);
+  background: transparent;
 }
 
 .webapp-reader .reader-library-title {
-  color: #f5f7ff;
+  color: var(--rd-text);
   font-family: var(--rd-font-serif);
   font-size: 15px;
   font-weight: 600;
-  line-height: 1.28;
+  line-height: 1.25;
   letter-spacing: -0.01em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -610,118 +607,73 @@
 .webapp-reader .reader-library-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px 8px;
-  font-size: 11px;
-  color: rgba(226, 232, 240, 0.68);
+  gap: 4px 7px;
+  font-size: 11.5px;
+  color: var(--rd-text-faint);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
 }
 
 .webapp-reader .reader-library-meta span:first-child {
-  color: #5eead4;
-  font-weight: 800;
-  font-size: 11px;
+  color: var(--rd-accent);
+  font-weight: 700;
 }
 
 
-/* ── Card actions: компактная нижняя панель ─────────────── */
+/* ── Card actions: collapsed menu revealed by ⋯ ─────────── */
 .webapp-reader .reader-library-actions {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
-  margin-top: 0;
-  padding: 0 12px 12px;
-  background:
-    linear-gradient(180deg, rgba(9, 15, 28, 0.22) 0%, rgba(7, 12, 24, 0.02) 100%);
+  gap: 4px;
+  margin-top: 8px;
+  padding: 7px;
+  border: 1px solid var(--rd-border);
+  border-radius: 14px;
+  background: var(--rd-bg-elev);
+  box-shadow: 0 8px 22px -12px rgba(0,0,0,0.4);
+  animation: rd-fade-in .14s ease;
 }
 
 .webapp-reader .reader-lib-action {
   min-width: 0;
-  min-height: 34px;
-  padding: 0 6px;
+  min-height: 42px;
+  padding: 0 2px;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(255,255,255,0.045);
-  color: rgba(226, 232, 240, 0.72);
+  border: none;
+  background: transparent;
+  color: var(--rd-text-muted);
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  font-size: 10.5px;
+  gap: 3px;
+  font-size: 9.5px;
   font-weight: 600;
-  transition: background .12s ease, color .12s ease, border-color .12s ease, transform .12s ease;
+  transition: background .12s ease, color .12s ease;
   -webkit-tap-highlight-color: transparent;
 }
 
-.webapp-reader .reader-lib-action:hover {
-  background: rgba(255,255,255,0.095);
-  color: #f8fbff;
-  border-color: rgba(148, 163, 184, 0.24);
-  transform: translateY(-1px);
+.webapp-reader .reader-lib-action:hover,
+.webapp-reader .reader-lib-action:active {
+  background: var(--rd-bg-elev-2);
+  color: var(--rd-text);
 }
 
-.webapp-reader .reader-lib-action.is-danger {
-  color: rgba(252, 165, 165, 0.84);
-}
+.webapp-reader .reader-lib-action.is-danger { color: var(--rd-danger); }
+.webapp-reader .reader-lib-action.is-danger:hover { background: rgba(248,113,113,0.14); }
+.webapp-reader .reader-lib-action-open { color: var(--rd-accent); }
+.webapp-reader .reader-lib-action-open:hover { background: var(--rd-accent-soft); }
 
-.webapp-reader .reader-lib-action.is-danger:hover {
-  color: #fecaca;
-  border-color: rgba(248,113,113,0.36);
-  background: rgba(248,113,113,0.14);
-}
-
-.webapp-reader .reader-lib-action-open {
-  background: linear-gradient(135deg, rgba(16,185,129,0.22), rgba(13,148,136,0.16));
-  border-color: rgba(16,185,129,0.34);
-  color: #6ee7d0;
-}
-
-.webapp-reader .reader-lib-action-open:hover {
-  background: linear-gradient(135deg, var(--rd-accent), var(--rd-accent-2));
-  border-color: transparent;
-  color: #fff;
-}
-
-.webapp-reader .reader-lib-action-icon {
-  width: 12px;
-  height: 12px;
-}
-
+.webapp-reader .reader-lib-action-icon,
 .webapp-reader .reader-lib-action-icon svg {
-  width: 12px;
-  height: 12px;
+  width: 17px;
+  height: 17px;
 }
 
 .webapp-reader .reader-lib-action-label {
   line-height: 1;
   white-space: nowrap;
-  font-size: 10.5px;
-}
-
-/* Library mode: кнопки всегда на светлом фоне приложения */
-.webapp-reader:not(.is-immersive) .reader-lib-action {
-  background: rgba(255,255,255,0.045);
-  border-color: rgba(148, 163, 184, 0.14);
-  color: rgba(226, 232, 240, 0.72);
-}
-.webapp-reader:not(.is-immersive) .reader-lib-action:hover {
-  background: rgba(255,255,255,0.095);
-  color: #f8fbff;
-  border-color: rgba(148, 163, 184, 0.24);
-}
-.webapp-reader:not(.is-immersive) .reader-lib-action.is-danger {
-  color: rgba(252, 165, 165, 0.84);
-}
-.webapp-reader:not(.is-immersive) .reader-lib-action.is-danger:hover {
-  color: #fecaca;
-  border-color: rgba(248,113,113,0.36);
-  background: rgba(248,113,113,0.14);
-}
-.webapp-reader:not(.is-immersive) .reader-lib-action-open {
-  background: linear-gradient(135deg, rgba(16,185,129,0.22), rgba(13,148,136,0.16));
-  border-color: rgba(16,185,129,0.34);
-  color: #6ee7d0;
+  font-size: 9.5px;
 }
 
 
@@ -1866,9 +1818,7 @@
   .webapp-reader .reader-lib-controls { flex-wrap: wrap; }
   .webapp-reader .reader-page-sheet { padding: 22px 18px 18px; }
   .webapp-reader .reader-topbar { padding: 8px 12px 10px; }
-  .webapp-reader .reader-library-grid { gap: 12px; }
-  .webapp-reader .reader-lib-action-label { display: none; }
-  .webapp-reader .reader-lib-action { gap: 0; padding: 0; }
+  .webapp-reader .reader-library-grid { column-gap: 15px; row-gap: 22px; }
 }
 
 
@@ -2514,46 +2464,13 @@
 }
 
 
-/* ── (4b) Library card action buttons: не вылазить, сжиматься ──────── */
-.webapp-reader .reader-library-actions {
-  flex-wrap: nowrap;
-  gap: 3px;
-  overflow: hidden;
-}
-
-.webapp-reader .reader-lib-action {
-  flex: 1 1 0;
-  min-width: 0;
-  padding: 0 2px !important;
-  font-size: 9.5px;
-  min-height: 26px;
-  gap: 3px;
-  overflow: hidden;
-}
-
+/* Library action buttons now live in a toggled ⋯ menu (styled in the shelf block
+   above), so the old cramped always-visible-row overrides are gone. */
 .webapp-reader .reader-lib-action-label {
-  font-size: 9.5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-}
-
-.webapp-reader .reader-lib-action-icon {
-  width: 11px;
-  height: 11px;
-  flex-shrink: 0;
-}
-
-.webapp-reader .reader-lib-action-icon svg {
-  width: 11px;
-  height: 11px;
-}
-
-/* Узкие экраны — оставить только иконки, скрыть текст */
-@media (max-width: 480px) {
-  .webapp-reader .reader-lib-action-label { display: none !important; }
-  .webapp-reader .reader-lib-action { min-height: 32px; }
 }
 
 
@@ -3027,12 +2944,12 @@
 }
 
 .webapp-reader[data-reader-theme="dark"] .reader-lib-action {
-  background: rgba(255,255,255,0.06);
-  border-color: rgba(255,255,255,0.12);
-  color: rgba(255,255,255,0.7);
+  background: transparent;
+  border: none;
+  color: var(--rd-text-muted);
 }
 .webapp-reader[data-reader-theme="dark"] .reader-lib-action.is-danger {
-  color: rgba(248,113,113,0.8);
+  color: rgba(248,113,113,0.85);
 }
 
 /* Dark theme: force readable text colors even if older App.css rules load later */

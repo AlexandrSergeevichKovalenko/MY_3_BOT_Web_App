@@ -24872,23 +24872,33 @@ body.worldnews-active .webapp-topbar {
 .webapp-page.is-theme-light .reader-library > .webapp-field,
 .webapp-page.is-theme-light .reader-audio-preview,
 .webapp-page.is-theme-light .reader-settings-sheet .webapp-field,
-.webapp-page.is-theme-light .reader-library-card,
-.webapp-page.is-theme-light .reader-library-cover,
 .webapp-page.is-theme-light .reader-immersive-indicator,
 .webapp-page.is-theme-light .reader-timer-pill.is-paused {
   border-color: #d2c2aa;
   background: #fff8ee;
 }
 
+/* Apple-Books shelf on the light (paper) shell: the ⋯ action menu is a warm
+   paper card with borderless muted-ink buttons. Covers/cards stay transparent
+   floating covers (the card is NOT re-boxed — removed from the rule above). */
 .webapp-page.is-theme-light .reader-library-actions {
-  border-top-color: #d2c2aa;
+  background: #fdf7ec;
+  border-color: #e3d6bd;
+  box-shadow: 0 8px 22px -12px rgba(105, 78, 47, 0.28);
 }
 
 .webapp-page.is-theme-light .reader-lib-action {
-  background: rgba(255, 248, 238, 0.6);
-  color: #5a4a39;
-  border-right-color: #d2c2aa;
+  background: transparent;
+  color: #6f6049;
+  border: none;
 }
+.webapp-page.is-theme-light .reader-lib-action:hover,
+.webapp-page.is-theme-light .reader-lib-action:active {
+  background: rgba(120, 92, 55, 0.1);
+  color: #2c1f0f;
+}
+.webapp-page.is-theme-light .reader-lib-action.is-danger { color: #b44a35; }
+.webapp-page.is-theme-light .reader-lib-action-open { color: #0d9488; }
 
 .webapp-page.is-theme-light .reader-topbar-title,
 .webapp-page.is-theme-light .reader-library-head h4,
