@@ -14614,22 +14614,40 @@ def _extract_pdf_image_records(data: bytes) -> list[dict]:
                     continue
                 blocks = info.get("blocks") or []
                 page_h = float(info.get("height") or getattr(page.rect, "height", 0) or 1) or 1
+                page_w = float(info.get("width") or getattr(page.rect, "width", 0) or 1) or 1
+                page_area = max(1.0, page_w * page_h)
                 n = len(blocks)
                 for bi, b in enumerate(blocks):
                     if int(b.get("type", -1)) != 1:
                         continue
-                    w = int(b.get("width") or 0)
-                    h = int(b.get("height") or 0)
-                    if w < _READER_IMG_MIN_PX or h < _READER_IMG_MIN_PX:
+                    bbox = b.get("bbox") or [0, 0, 0, 0]
+                    try:
+                        x0, y0, x1, y1 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+                    except Exception:
                         continue
-                    img_bytes = b.get("image")
+                    bw, bh = (x1 - x0), (y1 - y0)
+                    # Filter by ON-PAGE size (points): skip tiny icons/rules/bullets and
+                    # near-full-page backgrounds (rendering those would just duplicate the
+                    # reflowed page text).
+                    if bw < 24 or bh < 24:
+                        continue
+                    if (bw * bh) > 0.92 * page_area:
+                        continue
+                    # RENDER THE REGION as it actually appears on the page (color, soft
+                    # masks, vector art, tables) at 2× for clarity — far more faithful than
+                    # the raw image XObject bytes, which lose masks/colour (black boxes).
+                    try:
+                        clip = _pymupdf.Rect(x0, y0, x1, y1)
+                        pix = page.get_pixmap(matrix=_pymupdf.Matrix(2, 2), clip=clip, alpha=False)
+                        img_bytes = pix.tobytes("png")
+                        w = int(pix.width)
+                        h = int(pix.height)
+                    except Exception:
+                        continue
                     if not img_bytes or len(img_bytes) > _READER_IMG_MAX_BYTES:
                         continue
-                    ext = str(b.get("ext") or "png").lower()
-                    if ext not in ("png", "jpg", "jpeg", "webp"):
-                        ext = "png"
-                    bbox = b.get("bbox") or [0, 0, 0, 0]
-                    y_frac = max(0.0, min(1.0, float(bbox[1]) / page_h))
+                    ext = "png"
+                    y_frac = max(0.0, min(1.0, y0 / page_h))
                     before = ""
                     for j in range(bi - 1, -1, -1):
                         if int(blocks[j].get("type", -1)) == 0:
