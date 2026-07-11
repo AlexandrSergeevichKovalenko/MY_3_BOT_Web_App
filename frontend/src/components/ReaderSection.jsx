@@ -259,17 +259,34 @@ export default function ReaderSection(props) {
     if (!vp || !track) return { n: 1 };
     const w = vp.clientWidth, h = vp.clientHeight;
     if (w <= 0 || h <= 0) return { n: readerColCountRef.current || 1 };
-    const M = 22;
-    // Padding (not margin) → the single column exactly fills the content box
-    // (w-2M) so the column pitch is the viewport width; symmetric M margins.
+    // Columns-per-screen scale with the viewport so a TABLET uses the whole screen
+    // for the book text (Apple-Books style), while the phone is unchanged:
+    //   • landscape tablet (≥900px) → TWO-page spread (2 columns fill the screen)
+    //   • portrait tablet (620–900) → ONE wide column capped to a comfortable
+    //     measure and centred
+    //   • phone (<620) → ONE full-width column (original)
+    // Invariant that keeps paging aligned: gap = 2·M and pitch = viewport width, so
+    // exactly `cols` columns fit per screen and the next screen's first column lands
+    // on the left margin (no drift). Column pattern per screen: [M · col · 2M · col · M].
+    let cols = 1;
+    let M = 22;
+    if (w >= 900) {
+      cols = 2;
+      M = Math.min(60, Math.max(28, Math.round(w * 0.03)));
+    } else if (w >= 620) {
+      cols = 1;
+      M = Math.max(22, Math.round((w - 640) / 2)); // cap the single column ~640px, centred
+    }
+    const gap = 2 * M;
+    const colWidth = cols === 2 ? Math.max(1, (w - 4 * M) / 2) : Math.max(1, w - 2 * M);
     track.style.height = `${h}px`;
     track.style.marginLeft = '0px';
     track.style.paddingLeft = `${M}px`;
     track.style.paddingRight = `${M}px`;
-    track.style.columnWidth = `${Math.max(1, w - 2 * M)}px`;
-    track.style.columnGap = `${2 * M}px`;
-    // With the padding layout the single column exactly fills the content box,
-    // so the column pitch is EXACTLY the viewport width (integer, no drift).
+    track.style.columnWidth = `${colWidth}px`;
+    track.style.columnGap = `${gap}px`;
+    // Pitch is EXACTLY the viewport width — one swipe turns a whole screen
+    // (= `cols` columns), integer, no drift.
     const spans = track.querySelectorAll('[data-start]');
     let x0 = Infinity, maxX = 0;
     for (let i = 0; i < spans.length; i += 1) {
