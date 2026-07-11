@@ -23061,22 +23061,54 @@ function AppInner() {
 
   const readReaderClipboardForUrl = useCallback((opts = {}) => {
     const tg = telegramApp;
-    const handle = (text) => {
+    const applyUrl = (text) => {
       const url = extractHttpUrl(text);
-      if (!url) return;
+      if (!url) return false;
+      setReaderAddOpen(true);
       if (opts.autoOpen) {
-        setReaderAddOpen(true);
         setReaderInput(url);
         void handleReaderIngest(null, url);
       } else {
         setReaderArticleClipUrl(url);
       }
+      return true;
+    };
+    // Telegram's readTextFromClipboard EXISTS but often returns empty (privacy-
+    // restricted), so try the standard clipboard API FIRST — on a real user gesture
+    // (the "Вставить из буфера" tap) it works in most Telegram webviews.
+    const tryTelegram = () => {
+      try {
+        if (tg?.readTextFromClipboard) {
+          tg.readTextFromClipboard((text) => {
+            if (!applyUrl(text) && opts.manual) {
+              setReaderAddOpen(true);
+              setReaderError(tr(
+                'Ссылка не найдена в буфере. Вставь её в поле выше и нажми «Открыть».',
+                'Kein Link in der Zwischenablage. Füge ihn oben ein und tippe «Öffnen».'
+              ));
+            }
+          });
+          return;
+        }
+      } catch (_e) { /* ignore */ }
+      if (opts.manual) {
+        setReaderAddOpen(true);
+        setReaderError(tr(
+          'Не удалось прочитать буфер. Вставь ссылку в поле выше и нажми «Открыть».',
+          'Zwischenablage nicht lesbar. Füge den Link oben ein und tippe «Öffnen».'
+        ));
+      }
     };
     try {
-      if (tg?.readTextFromClipboard) tg.readTextFromClipboard(handle);
-      else if (navigator?.clipboard?.readText) navigator.clipboard.readText().then(handle).catch(() => {});
-    } catch (_e) { /* clipboard unavailable — user can paste into the field */ }
-  }, [telegramApp]);
+      if (navigator?.clipboard?.readText) {
+        navigator.clipboard.readText()
+          .then((text) => { if (!applyUrl(text)) tryTelegram(); })
+          .catch(() => tryTelegram());
+        return;
+      }
+    } catch (_e) { /* ignore */ }
+    tryTelegram();
+  }, [telegramApp, tr]);
 
   const openReaderArticleClipUrl = useCallback(() => {
     const url = String(readerArticleClipUrl || '').trim();
@@ -35432,7 +35464,7 @@ function AppInner() {
                   readerArticleClipUrl={readerArticleClipUrl}
                   openReaderArticleClipUrl={openReaderArticleClipUrl}
                   dismissReaderArticleClip={() => setReaderArticleClipUrl('')}
-                  pasteReaderClipboardUrl={() => readReaderClipboardForUrl({ autoOpen: true })}
+                  pasteReaderClipboardUrl={() => readReaderClipboardForUrl({ autoOpen: true, manual: true })}
                   readerLoading={readerLoading}
                   readerError={readerError}
                   readerErrorCode={readerErrorCode}
