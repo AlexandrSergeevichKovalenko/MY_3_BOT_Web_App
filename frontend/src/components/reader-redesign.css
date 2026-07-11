@@ -3610,9 +3610,11 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   flex-direction: column;
   gap: 2px;
   padding-bottom: env(safe-area-inset-bottom, 0px);
-  background: linear-gradient(0deg, rgba(8,12,26,0.96) 55%, rgba(8,12,26,0));
-  backdrop-filter: blur(var(--rd-blur));
-  -webkit-backdrop-filter: blur(var(--rd-blur));
+  /* Solid dark base with a short soft top fade. NO backdrop-filter: blurring over
+     the transparent top of the gradient made WebKit composite a LIGHT smear right
+     at the dock's top edge (the "светлый просвет"). Dropping the blur keeps the
+     soft fade but removes the light seam. */
+  background: linear-gradient(0deg, var(--rd-bg) 72%, transparent);
 }
 .webapp-reader .reader-dock-actions {
   display: flex;

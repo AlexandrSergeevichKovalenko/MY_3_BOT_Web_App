@@ -299,6 +299,12 @@ function normalizeReaderPaginationText(rawText) {
 
 function normalizeReaderVisiblePageText(rawText) {
   return String(rawText || '')
+    // Strip glyphs that render as empty "tofu" boxes: Private-Use-Area codepoints
+    // (font-specific dot-leaders baked into PDFs — e.g. the leader dots in a table
+    // of contents that the reading serif can't render), the Unicode replacement /
+    // object-replacement chars, and non-printable control chars (keep \n, \t).
+    .replace(/[\uE000-\uF8FF\uFFFC\uFFFD]+/g, ' ')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]+/g, ' ')
     .split(/\n\n+/)
     .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
     .filter(Boolean)
@@ -14211,20 +14217,40 @@ function AppInner() {
   // across page boundaries into full screens (no more short/half-empty pages).
   // Offsets map char position back to a server page for progress/anchoring.
   const readerServerPaged = readerPageCount > 0 && !readerUsesOriginalEpubLayout && !readerUsesCustomLayout;
+  // Remembers the current 60-page sliding-window bounds so long/fast paging doesn't
+  // re-centre (and re-measure) the window on every single turn — see hysteresis below.
+  const readerWindowBoundsRef = useRef(null);
   const readerWindowModel = useMemo(() => {
     if (!readerServerPaged) return null;
     const pages = readerDisplayPages;
     const curIdx = Math.max(0, Math.min(pages.length - 1, Number(readerCurrentPage || 1) - 1));
     const hasText = (idx) => idx >= 0 && idx < pages.length && String(pages[idx]?.text || '').trim().length > 0;
     if (!hasText(curIdx)) return null;
-    let lo = curIdx, hi = curIdx;
-    while (lo > 0 && hasText(lo - 1)) lo -= 1;
-    while (hi < pages.length - 1 && hasText(hi + 1)) hi += 1;
+    let loRange = curIdx, hiRange = curIdx;
+    while (loRange > 0 && hasText(loRange - 1)) loRange -= 1;
+    while (hiRange < pages.length - 1 && hasText(hiRange + 1)) hiRange += 1;
     const MAXW = 60;
-    if (hi - lo + 1 > MAXW) {
-      lo = Math.max(lo, curIdx - Math.floor(MAXW / 2));
-      hi = Math.min(pages.length - 1, lo + MAXW - 1);
-      lo = Math.max(0, hi - MAXW + 1);
+    let lo; let hi;
+    if (hiRange - loRange + 1 <= MAXW) {
+      // Whole loaded run fits → stable bounds, no sliding (turning never re-measures).
+      lo = loRange; hi = hiRange;
+      readerWindowBoundsRef.current = null;
+    } else {
+      // Loaded run exceeds the window → slide with HYSTERESIS: keep the previous
+      // 60-page window until the current page comes within MARGIN of an edge, then
+      // re-centre. Without this the window slid every single turn during long/fast
+      // paging → a full column re-measure per page → lag + the view jumping around.
+      const MARGIN = 12;
+      const prev = readerWindowBoundsRef.current;
+      const prevOk = prev && prev.lo >= loRange && prev.hi <= hiRange && (prev.hi - prev.lo + 1) === MAXW;
+      if (prevOk && curIdx >= prev.lo + MARGIN && curIdx <= prev.hi - MARGIN) {
+        lo = prev.lo; hi = prev.hi;
+      } else {
+        lo = Math.max(loRange, curIdx - Math.floor(MAXW / 2));
+        hi = Math.min(hiRange, lo + MAXW - 1);
+        lo = Math.max(loRange, hi - MAXW + 1);
+        readerWindowBoundsRef.current = { lo, hi };
+      }
     }
     const parts = [];
     const offsets = [];
