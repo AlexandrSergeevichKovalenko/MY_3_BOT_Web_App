@@ -24942,6 +24942,23 @@ body.worldnews-active .webapp-topbar {
 .webapp-page.is-theme-light .reader-add-clip-url { color: #6f6049; }
 .webapp-page.is-theme-light .reader-add-clip-x { color: #9a8a70; }
 
+/* «Перейти к странице» modal: LIGHT paper material in the light theme (was a dark
+   block, jarring on a light page). Redeclare the sheet's local tokens to dark ink. */
+.webapp-page.is-theme-light .reader-page-jump-dialog {
+  background: linear-gradient(180deg, #fdf8f0, #f6ecde);
+  border-color: #e3d6bd;
+  box-shadow: 0 24px 60px -14px rgba(105, 78, 47, 0.32);
+  --rd-text: #211a10;
+  --rd-text-2: #3a2f20;
+  --rd-text-muted: #5a4a39;
+  --rd-text-faint: #8a7a60;
+  --rd-border: #ddceb2;
+  --rd-bg-elev: rgba(120, 92, 55, 0.08);
+}
+.webapp-page.is-theme-light .reader-page-jump-body {
+  background: rgba(120, 92, 55, 0.07);
+}
+
 .webapp-page.is-theme-light .reader-topbar-title,
 .webapp-page.is-theme-light .reader-library-head h4,
 .webapp-page.is-theme-light .reader-library-title,
@@ -25086,6 +25103,8 @@ body.worldnews-active .webapp-topbar {
 .webapp-page.is-theme-light .reader-lib-search::placeholder {
   color: #7a6552;
 }
+
+.webapp-page.is-theme-light .reader-lib-search-icon { color: #9a8a70; }
 
 .webapp-page.is-theme-light .reader-lib-search:focus {
   border-color: #b99f7f;

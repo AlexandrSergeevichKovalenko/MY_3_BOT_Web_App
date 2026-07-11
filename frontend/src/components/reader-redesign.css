@@ -500,10 +500,27 @@
   gap: 8px;
 }
 
+.webapp-reader .reader-lib-search-wrap {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.webapp-reader .reader-lib-search-icon {
+  position: absolute;
+  left: 16px;
+  width: 17px;
+  height: 17px;
+  color: var(--rd-text-faint);
+  pointer-events: none;
+  z-index: 1;
+}
 .webapp-reader .reader-lib-search {
   flex: 1;
+  width: 100%;
   height: 40px;
-  padding: 0 18px 0 22px;
+  padding: 0 16px 0 44px;
   border-radius: 99px;
   border: 1px solid var(--rd-border);
   background: var(--rd-surface);
@@ -667,7 +684,7 @@
   position: absolute;
   top: 7px;
   right: 7px;
-  z-index: 4;
+  z-index: 7;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -1579,8 +1596,9 @@
 }
 
 .webapp-reader .reader-page-jump-total {
-  color: var(--rd-text-faint);
-  font-size: 13px;
+  color: var(--rd-text-muted);
+  font-size: 14px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 

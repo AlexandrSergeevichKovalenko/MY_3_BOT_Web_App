@@ -790,13 +790,19 @@ export default function ReaderSection(props) {
               {/* ── Library section ────────────────────────────────── */}
               <section className="reader-library">
                 <div className="reader-lib-controls">
-                  <input
-                    type="text"
-                    className="reader-lib-search"
-                    value={readerLibrarySearch}
-                    onChange={(event) => setReaderLibrarySearch(event.target.value)}
-                    placeholder={tr('Поиск по библиотеке…', 'Suche in Bibliothek…')}
-                  />
+                  <div className="reader-lib-search-wrap">
+                    <svg className="reader-lib-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
+                      <path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    </svg>
+                    <input
+                      type="text"
+                      className="reader-lib-search"
+                      value={readerLibrarySearch}
+                      onChange={(event) => setReaderLibrarySearch(event.target.value)}
+                      placeholder={tr('Поиск по библиотеке…', 'Suche in Bibliothek…')}
+                    />
+                  </div>
                   <label className="reader-lib-archive-toggle">
                     <input
                       type="checkbox"
@@ -846,12 +852,18 @@ export default function ReaderSection(props) {
                                 e.stopPropagation();
                                 setReaderLibActionsOpenId((cur) => (cur === item.id ? null : item.id));
                               }}
-                              title={tr('Ещё', 'Mehr')}
-                              aria-label={tr('Действия', 'Aktionen')}
+                              title={readerLibActionsOpenId === item.id ? tr('Закрыть', 'Schließen') : tr('Ещё', 'Mehr')}
+                              aria-label={readerLibActionsOpenId === item.id ? tr('Закрыть', 'Schließen') : tr('Действия', 'Aktionen')}
                             >
-                              <svg viewBox="0 0 18 18" fill="currentColor" aria-hidden="true">
-                                <circle cx="9" cy="4" r="1.45" /><circle cx="9" cy="9" r="1.45" /><circle cx="9" cy="14" r="1.45" />
-                              </svg>
+                              {readerLibActionsOpenId === item.id ? (
+                                <svg viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                                  <path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                </svg>
+                              ) : (
+                                <svg viewBox="0 0 18 18" fill="currentColor" aria-hidden="true">
+                                  <circle cx="9" cy="4" r="1.45" /><circle cx="9" cy="9" r="1.45" /><circle cx="9" cy="14" r="1.45" />
+                                </svg>
+                              )}
                             </button>
                             <div className="reader-library-cover-progress" style={{ width: `${progress}%` }} />
                             {isOpening && (
@@ -862,7 +874,10 @@ export default function ReaderSection(props) {
                               </div>
                             )}
                             {readerLibActionsOpenId === item.id && (
-                              <div className="reader-lib-cover-actions" onClick={(e) => e.stopPropagation()}>
+                              <div
+                                className="reader-lib-cover-actions"
+                                onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setReaderLibActionsOpenId(null); }}
+                              >
                                 <button
                                   type="button"
                                   className="reader-lib-cover-act"
