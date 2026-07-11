@@ -41333,14 +41333,24 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
                               run_index=_gate_extra.get("total_runs"))
     if not _gate_allowed:
         logging.info("shortcut_lookup: run BLOCKED user_id=%s reason=%s (enforced server-side)", user_id, _gate_reason)
-        # Friendly one-time «trial ended» DM (Free run-limit) so the user understands why
-        # nothing was translated + how to continue (Pro).
+        # Friendly DM so the user understands why nothing was translated (Free trial ended
+        # / Pro over the daily cap) + how to continue.
         try:
-            _notify_shortcut_run_blocked(int(user_id), _gate_reason, _gate_extra)
+            _notify_shortcut_run_status(int(user_id), _gate_reason, _gate_extra)
         except Exception:
-            logging.debug("run-blocked DM dispatch failed", exc_info=True)
+            logging.debug("run-status DM dispatch failed", exc_info=True)
         return {"allowed": False, "reason": _gate_reason,
                 "message": _gate_extra.get("message", "Лимит запусков исчерпан."), "blocks_sent": 0}, 200
+
+    if _gate_reason == "pro_grace":
+        # The one courtesy run past the Pro daily cap: we STILL process it (the shortcut
+        # already deleted the photos, so dropping would lose them) but warn the user not
+        # to send more today. 4th+ runs are dropped above.
+        logging.info("shortcut_lookup: Pro daily-limit GRACE run user_id=%s (processed + warned)", user_id)
+        try:
+            _notify_shortcut_run_status(int(user_id), "pro_grace", _gate_extra)
+        except Exception:
+            logging.debug("pro-grace DM dispatch failed", exc_info=True)
 
     # Write raw text to Redis immediately so bot_3.py can find it even before
     # BACKGROUND_JOBS processes the Dramatiq job (avoids the "no pending" race condition).
@@ -42792,9 +42802,15 @@ def _shortcut_run_gate(user_id: int) -> tuple[bool, str, dict]:
     if not is_admin:
         if is_pro:
             used_today = count_shortcut_runs_today(int(user_id))
-            if used_today >= _SHORTCUT_RUN_PRO_DAILY:
+            if used_today > _SHORTCUT_RUN_PRO_DAILY:
+                # 4th+ run today: hard block + DROP (the user was warned on the grace run).
                 return False, "pro_daily", {**base, "used": used_today, "limit": _SHORTCUT_RUN_PRO_DAILY,
-                    "message": f"На сегодня лимит запусков исчерпан ({_SHORTCUT_RUN_PRO_DAILY} в день). Попробуйте завтра."}
+                    "message": f"Лимит Pro — {_SHORTCUT_RUN_PRO_DAILY} перевода в день — уже исчерпан. Больше сегодня не отправляй: фото удалятся, а перевод не придёт. Завтра утром снова доступно."}
+            if used_today == _SHORTCUT_RUN_PRO_DAILY:
+                # The run right AFTER the daily limit: the shortcut has already deleted the
+                # photos, so DROPPING would lose them. Process this ONE anyway (grace) and
+                # warn the user not to send more today. Bypasses the window check on purpose.
+                return True, "pro_grace", {**base, "used": used_today, "limit": _SHORTCUT_RUN_PRO_DAILY}
         elif total_runs >= _SHORTCUT_RUN_FREE_TOTAL:
             return False, "free_total", {**base, "used": total_runs, "limit": _SHORTCUT_RUN_FREE_TOTAL,
                 "message": f"Бесплатные пробные запуски ({_SHORTCUT_RUN_FREE_TOTAL}) закончились. Оформите Pro, чтобы пользоваться дальше."}
@@ -42807,43 +42823,75 @@ def _shortcut_run_gate(user_id: int) -> tuple[bool, str, dict]:
     return True, ("grace" if grace_active else ("admin" if is_admin else "ok")), base
 
 
-def _notify_shortcut_run_blocked(user_id: int, reason: str, extra: dict) -> None:
-    """DM the user a friendly «trial ended» plaque when their FREE auto-translate run is
-    blocked — ONCE (first time they hit the limit), so it doesn't nag on every retry.
-    Explains what happened + why + a «Оформить Pro» button into the subscription section."""
-    try:
-        if reason != "free_total":
-            return  # only the Free trial-ended case gets the upsell DM
-        if not mark_announcement_sent(int(user_id), "shortcut_trial_ended_v1"):
-            return  # already told this user once
-        limit = int(extra.get("limit") or _SHORTCUT_RUN_FREE_TOTAL)
-        try:
-            from backend.interactive_card import render_shortcut_limit_card
-            poster = render_shortcut_limit_card(limit=limit)
-        except Exception:
-            poster = None
-        caption = (
-            "🔒 <b>Пробные запуски закончились</b>\n\n"
-            "Ты запустил авто-перевод скриншотов из папки, но на бесплатном доступно только "
-            f"<b>{limit}</b> запусков — чтобы попробовать, как это работает, и понять, нужна ли тебе функция.\n\n"
-            "Поэтому последняя операция <b>не прошла</b> — фото не переведены.\n\n"
-            "Хочешь пользоваться дальше — оформи <b>Pro</b> 👇"
-        )
+def _shortcut_send_dm(user_id: int, caption: str, poster, *, pro_button: bool) -> None:
+    """Send one shortcut-status DM (photo card if available, else text). pro_button adds
+    the «✨ Оформить Pro» → subscription button (Free upsell); Pro users get no button."""
+    reply_markup = None
+    if pro_button:
         reply_markup = json.dumps({"inline_keyboard": [[
             {"text": "✨ Оформить Pro", "url": _build_webapp_deeplink("subscription")}]]})
-        token = TELEGRAM_Deutsch_BOT_TOKEN
+    token = TELEGRAM_Deutsch_BOT_TOKEN
+    try:
         if poster:
-            requests.post(
-                f"https://api.telegram.org/bot{token}/sendPhoto",
-                data={"chat_id": int(user_id), "caption": caption, "parse_mode": "HTML", "reply_markup": reply_markup},
-                files={"photo": ("limit.png", poster, "image/png")}, timeout=30)
+            data = {"chat_id": int(user_id), "caption": caption, "parse_mode": "HTML"}
+            if reply_markup:
+                data["reply_markup"] = reply_markup
+            requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                          data=data, files={"photo": ("card.png", poster, "image/png")}, timeout=30)
         else:
-            requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                data={"chat_id": int(user_id), "text": caption, "parse_mode": "HTML", "reply_markup": reply_markup},
-                timeout=30)
+            data = {"chat_id": int(user_id), "text": caption, "parse_mode": "HTML"}
+            if reply_markup:
+                data["reply_markup"] = reply_markup
+            requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=30)
     except Exception:
-        logging.warning("shortcut run-blocked DM failed user=%s", user_id, exc_info=True)
+        logging.warning("shortcut DM send failed user=%s", user_id, exc_info=True)
+
+
+def _notify_shortcut_run_status(user_id: int, reason: str, extra: dict) -> None:
+    """Friendly DM when a run is limited. free_total = trial ended (once EVER, Free upsell).
+    pro_grace = the courtesy run was processed but warn «don't send more today» (once/DAY).
+    pro_daily = 4th+ run was DROPPED (once/day). Guards stop it nagging on every retry."""
+    try:
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        if reason == "free_total":
+            if not mark_announcement_sent(int(user_id), "shortcut_trial_ended_v1"):
+                return
+            limit = int(extra.get("limit") or _SHORTCUT_RUN_FREE_TOTAL)
+            try:
+                from backend.interactive_card import render_shortcut_limit_card
+                poster = render_shortcut_limit_card(limit=limit)
+            except Exception:
+                poster = None
+            caption = ("🔒 <b>Пробные запуски закончились</b>\n\n"
+                "Ты запустил авто-перевод скриншотов из папки, но на бесплатном доступно только "
+                f"<b>{limit}</b> запусков — чтобы попробовать, как это работает.\n\n"
+                "Поэтому последняя операция <b>не прошла</b> — фото не переведены.\n\n"
+                "Хочешь пользоваться дальше — оформи <b>Pro</b> 👇")
+            _shortcut_send_dm(user_id, caption, poster, pro_button=True)
+        elif reason in ("pro_grace", "pro_daily"):
+            # one DM per day covers both the grace warning and any later drops
+            if not mark_announcement_sent(int(user_id), f"shortcut_pro_daily_{today}"):
+                return
+            limit = int(extra.get("limit") or _SHORTCUT_RUN_PRO_DAILY)
+            try:
+                from backend.interactive_card import render_shortcut_pro_limit_card
+                poster = render_shortcut_pro_limit_card(limit=limit)
+            except Exception:
+                poster = None
+            if reason == "pro_grace":
+                caption = (f"⏳ <b>Сегодняшний лимит исчерпан</b>\n\n"
+                    f"На Pro доступно <b>{limit}</b> авто-перевода в день. Этот набор мы <b>обработали и пришлём</b> — "
+                    "ты ничего не потерял.\n\n"
+                    "❗️Но <b>больше сегодня не запускай</b> «Ночной Переводчик»: следующие фото просто удалятся из папки, "
+                    "а перевод не придёт. Завтра утром снова доступно.")
+            else:
+                caption = (f"🚫 <b>Лимит на сегодня исчерпан</b>\n\n"
+                    f"На Pro — <b>{limit}</b> авто-перевода в день. Этот запуск <b>не обработан</b>, фото из папки удалены.\n\n"
+                    "Не запускай больше сегодня — завтра утром снова доступно.")
+            _shortcut_send_dm(user_id, caption, poster, pro_button=False)
+    except Exception:
+        logging.warning("shortcut run-status DM failed user=%s reason=%s", user_id, reason, exc_info=True)
 
 
 @app.route("/api/shortcut/run-check", methods=["POST"])

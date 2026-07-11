@@ -593,6 +593,28 @@ def render_shortcut_limit_card(*, limit: int) -> bytes | None:
                  accent=(245, 158, 11), motif=_motif_lock, cta="Оформить Pro")
 
 
+def _motif_clock(base, d, cx, cy, accent):
+    """A clean clock face — the daily cap resets tomorrow."""
+    r = 152
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=accent, width=22)
+    d.ellipse([cx - r + 26, cy - r + 26, cx + r - 26, cy + r - 26], fill=(12, 18, 34))
+    for k in range(12):
+        a = math.radians(k * 30)
+        x1, y1 = cx + int((r - 42) * math.sin(a)), cy - int((r - 42) * math.cos(a))
+        x2, y2 = cx + int((r - 26) * math.sin(a)), cy - int((r - 26) * math.cos(a))
+        d.line([(x1, y1), (x2, y2)], fill=WHITE, width=4)
+    d.line([(cx, cy), (cx, cy - 92)], fill=GOLD, width=11)       # minute hand
+    d.line([(cx, cy), (cx + 62, cy + 34)], fill=GOLD, width=11)  # hour hand
+    d.ellipse([cx - 13, cy - 13, cx + 13, cy + 13], fill=GOLD)
+
+
+def render_shortcut_pro_limit_card(*, limit: int) -> bytes | None:
+    """«Лимит на сегодня» plaque for the DM sent when a Pro user hits the daily run cap."""
+    return _card(badge="ЛИМИТ НА СЕГОДНЯ", title="Лимит на сегодня",
+                 subtitle=f"Pro — {int(limit)} авто-перевода в день",
+                 accent=(59, 130, 246), motif=_motif_clock, cta="Завтра утром снова")
+
+
 def render_settings_card() -> bytes | None:
     """Branded hero plaque for the «⚙️ Настройки» reply button."""
     return _card(badge="НАСТРОЙКИ", title="Настройки",
