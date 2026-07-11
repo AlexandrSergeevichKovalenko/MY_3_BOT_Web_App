@@ -18166,6 +18166,18 @@ body.worldnews-active .webapp-topbar {
 
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive {
   box-sizing: border-box;
+  /* Pin the whole reader to the physical viewport so it fills EVERY edge of the
+     tablet — no light frame from any parent layer can show, because the book now
+     sits above them, edge to edge. (No ancestor has transform/filter, so `fixed`
+     resolves against the real viewport.) Safe-area padding keeps the topbar clear
+     of the native Telegram controls. */
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  max-width: none;
+  border-radius: 0;
   padding-top: var(--telegram-tablet-top-safe-offset);
 }
 
