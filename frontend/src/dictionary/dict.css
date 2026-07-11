@@ -17,13 +17,19 @@
   overscroll-behavior-y: contain;
   padding-top: calc(env(safe-area-inset-top, 0px) + 60px);
   padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  /* Halve the side gaps (was 16px) so the card gets more useful width. */
+  padding-left: 8px;
+  padding-right: 8px;
 }
 .ans-root.dq-scroll .ans-card {
   width: 100%;
-  max-width: 440px;
+  max-width: 480px;
   margin: 0 auto;
   flex: 1 0 auto;   /* fill the screen height; grow with content */
   animation: none;  /* the rise/translate animation nudged content under the header */
+  /* Halve the inner padding (was 20px sides) so text/elements get more room. */
+  padding-left: 10px;
+  padding-right: 10px;
 }
 
 .dq-card { gap: 14px; }
@@ -462,11 +468,11 @@
   border-top: 1px solid var(--dmps-border, #334155);
 }
 .dq-block strong {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: var(--dmps-text-muted, #94a3b8);
+  color: #818cf8; /* distinct accent so the section is clearly visible */
 }
 .dq-block span {
   font-size: 15px;
@@ -664,19 +670,28 @@
 /* ── Deep grammar tables (collapsible) ───────────────────────────────────────── */
 .dq-gt { width: 100%; }
 .dq-gt > summary {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: var(--dmps-text-muted, #94a3b8);
+  color: #818cf8; /* distinct accent so the collapsible section is clearly visible */
   cursor: pointer;
   list-style: none;
-  padding: 2px 0;
+  padding: 3px 0;
   overflow-wrap: anywhere;
 }
 .dq-gt > summary::-webkit-details-marker { display: none; }
-.dq-gt > summary::after { content: ' ▾'; opacity: 0.6; }
+.dq-gt > summary::after { content: ' ▾'; opacity: 1; font-size: 12px; }
 .dq-gt[open] > summary::after { content: ' ▴'; }
+
+/* Section headings / collapsible toggles: darker accent on light backgrounds so
+   they stay readable (the base #818cf8 is tuned for dark). */
+html[data-scheme="light"] .dq-block strong,
+html[data-scheme="light"] .dq-gt > summary,
+.webapp-page.is-theme-light .dq-block strong,
+.webapp-page.is-theme-light .dq-gt > summary {
+  color: #5b4fd6;
+}
 
 /* Declension table — fixed layout so long compounds (Herausforderungen) wrap
    inside the card instead of overflowing to the right on narrow phones. */
