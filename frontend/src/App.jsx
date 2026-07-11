@@ -5703,6 +5703,10 @@ function AppInner() {
   const translationResultCardRefsRef = useRef(new Map());
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
+  // "Find an article on the web" → open a browser search, then pick up the copied
+  // link from the clipboard when the user returns and offer to open it.
+  const [readerArticleClipUrl, setReaderArticleClipUrl] = useState('');
+  const readerArticleSearchPendingRef = useRef(false);
   const [readerLoading, setReaderLoading] = useState(false);
   const [readerOpeningDocumentId, setReaderOpeningDocumentId] = useState(0);
   const [readerError, setReaderError] = useState('');
@@ -23035,6 +23039,70 @@ function AppInner() {
     }
   };
 
+  // ── "Найти статью в интернете": open a web search in the browser, then, when the
+  //    user returns, read the copied link from the clipboard and offer to open it. ──
+  const extractHttpUrl = (text) => {
+    const m = String(text || '').match(/https?:\/\/[^\s'"<>]+/i);
+    return m ? m[0].replace(/[.,)]+$/, '') : '';
+  };
+
+  const openReaderArticleSearch = useCallback(() => {
+    const q = String(readerInput || '').trim();
+    const query = q && !/^https?:\/\//i.test(q) ? q : '';
+    const url = `https://www.google.com/search?q=${encodeURIComponent(query || 'artikel zum lesen')}`;
+    readerArticleSearchPendingRef.current = true;
+    try {
+      if (telegramApp?.openLink) telegramApp.openLink(url);
+      else window.open(url, '_blank', 'noopener');
+    } catch (_e) {
+      window.open(url, '_blank', 'noopener');
+    }
+  }, [readerInput, telegramApp]);
+
+  const readReaderClipboardForUrl = useCallback((opts = {}) => {
+    const tg = telegramApp;
+    const handle = (text) => {
+      const url = extractHttpUrl(text);
+      if (!url) return;
+      if (opts.autoOpen) {
+        setReaderAddOpen(true);
+        setReaderInput(url);
+        void handleReaderIngest(null, url);
+      } else {
+        setReaderArticleClipUrl(url);
+      }
+    };
+    try {
+      if (tg?.readTextFromClipboard) tg.readTextFromClipboard(handle);
+      else if (navigator?.clipboard?.readText) navigator.clipboard.readText().then(handle).catch(() => {});
+    } catch (_e) { /* clipboard unavailable — user can paste into the field */ }
+  }, [telegramApp]);
+
+  const openReaderArticleClipUrl = useCallback(() => {
+    const url = String(readerArticleClipUrl || '').trim();
+    setReaderArticleClipUrl('');
+    if (!url) return;
+    setReaderAddOpen(true);
+    setReaderInput(url);
+    void handleReaderIngest(null, url);
+  }, [readerArticleClipUrl]);
+
+  // On returning from the browser search, auto-detect a copied article link.
+  useEffect(() => {
+    const tryPickup = () => {
+      if (!readerArticleSearchPendingRef.current) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      readerArticleSearchPendingRef.current = false;
+      window.setTimeout(() => readReaderClipboardForUrl(), 450);
+    };
+    document.addEventListener('visibilitychange', tryPickup);
+    window.addEventListener('focus', tryPickup);
+    return () => {
+      document.removeEventListener('visibilitychange', tryPickup);
+      window.removeEventListener('focus', tryPickup);
+    };
+  }, [readReaderClipboardForUrl]);
+
   const goReaderPage = (delta) => {
     if (readerPageCount === 0) return;
     const step = delta > 0 ? 1 : -1;
@@ -24504,9 +24572,11 @@ function AppInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readerDocumentId]);
 
-  async function handleReaderIngest(event) {
+  async function handleReaderIngest(event, inputOverride) {
     event?.preventDefault?.();
-    const rawInput = String(readerInput || '').trim();
+    // inputOverride lets callers (e.g. "open this URL from the clipboard") ingest a
+    // URL directly, without waiting for the setReaderInput state to settle.
+    const rawInput = String(inputOverride != null ? inputOverride : (readerInput || '')).trim();
     const liveSelectedFile = readerFileInputRef.current?.files?.[0] || null;
     const selectedFile = liveSelectedFile || null;
     const looksLikeLocalReaderFileName = /^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(rawInput);
@@ -35358,6 +35428,11 @@ function AppInner() {
                   readerSelectedFile={readerSelectedFile}
                   handleReaderFileSelect={handleReaderFileSelect}
                   handleReaderIngest={handleReaderIngest}
+                  openReaderArticleSearch={openReaderArticleSearch}
+                  readerArticleClipUrl={readerArticleClipUrl}
+                  openReaderArticleClipUrl={openReaderArticleClipUrl}
+                  dismissReaderArticleClip={() => setReaderArticleClipUrl('')}
+                  pasteReaderClipboardUrl={() => readReaderClipboardForUrl({ autoOpen: true })}
                   readerLoading={readerLoading}
                   readerError={readerError}
                   readerErrorCode={readerErrorCode}

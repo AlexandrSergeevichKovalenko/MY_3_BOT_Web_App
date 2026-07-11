@@ -47,6 +47,11 @@ export default function ReaderSection(props) {
     readerInput, setReaderInput,
     readerSelectedFile,
     handleReaderFileSelect, handleReaderIngest,
+    openReaderArticleSearch = () => {},
+    readerArticleClipUrl = '',
+    openReaderArticleClipUrl = () => {},
+    dismissReaderArticleClip = () => {},
+    pasteReaderClipboardUrl = () => {},
     readerLoading, readerError, readerErrorCode,
 
     // ── reading state ────────────────────────────────────────────
@@ -642,6 +647,34 @@ export default function ReaderSection(props) {
                         {tr('Открыть', 'Öffnen')}
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      className="reader-add-search"
+                      onClick={openReaderArticleSearch}
+                    >
+                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                        <circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M2.8 10h14.4M10 2.8c2 2 2 12.4 0 14.4M10 2.8c-2 2-2 12.4 0 14.4" stroke="currentColor" strokeWidth="1.3" />
+                      </svg>
+                      {tr('Найти статью в интернете', 'Artikel im Internet finden')}
+                    </button>
+                    {readerArticleClipUrl && (
+                      <div className="reader-add-clip">
+                        <div className="reader-add-clip-text">
+                          <span className="reader-add-clip-label">{tr('Скопированная ссылка', 'Kopierter Link')}</span>
+                          <span className="reader-add-clip-url">{readerArticleClipUrl}</span>
+                        </div>
+                        <button type="button" className="reader-add-clip-open" onClick={openReaderArticleClipUrl}>
+                          {tr('Открыть', 'Öffnen')}
+                        </button>
+                        <button
+                          type="button"
+                          className="reader-add-clip-x"
+                          onClick={dismissReaderArticleClip}
+                          aria-label={tr('Закрыть', 'Schließen')}
+                        >✕</button>
+                      </div>
+                    )}
                     <input
                       ref={readerFileInputRef}
                       type="file"
@@ -650,7 +683,12 @@ export default function ReaderSection(props) {
                       onChange={handleReaderFileSelect}
                     />
                     <div className="reader-add-hint">
-                      {tr('EPUB · PDF · TXT — выбранный файл откроется сразу', 'EPUB · PDF · TXT — die gewählte Datei öffnet sofort')}
+                      {tr('Файл откроется сразу. Из браузера — скопируй ссылку и вернись, мы её подхватим.',
+                          'Die Datei öffnet sofort. Aus dem Browser den Link kopieren und zurückkehren — wir übernehmen ihn.')}
+                      {' '}
+                      <button type="button" className="reader-add-paste" onClick={pasteReaderClipboardUrl}>
+                        {tr('Вставить из буфера', 'Aus Zwischenablage')}
+                      </button>
                     </div>
                   </form>
                   {readerError && (

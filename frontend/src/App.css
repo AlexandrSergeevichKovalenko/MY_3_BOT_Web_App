@@ -24928,6 +24928,19 @@ body.worldnews-active .webapp-topbar {
   background: #eadfc9;
   color: #b0a088;
 }
+.webapp-page.is-theme-light .reader-add-search {
+  border-color: #ddceb2;
+  color: #6f6049;
+}
+.webapp-page.is-theme-light .reader-add-search:hover { background: #f6ecd9; color: #2c1f0f; border-color: #0d9488; }
+.webapp-page.is-theme-light .reader-add-paste { color: #0d9488; }
+.webapp-page.is-theme-light .reader-add-clip {
+  background: rgba(13,148,136,0.1);
+  border-color: rgba(13,148,136,0.3);
+}
+.webapp-page.is-theme-light .reader-add-clip-label { color: #0d7a70; }
+.webapp-page.is-theme-light .reader-add-clip-url { color: #6f6049; }
+.webapp-page.is-theme-light .reader-add-clip-x { color: #9a8a70; }
 
 .webapp-page.is-theme-light .reader-topbar-title,
 .webapp-page.is-theme-light .reader-library-head h4,

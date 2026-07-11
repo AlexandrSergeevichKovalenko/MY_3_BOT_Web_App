@@ -285,7 +285,57 @@
   color: var(--rd-text-faint);
   text-align: center;
   letter-spacing: 0.01em;
+  line-height: 1.5;
 }
+.webapp-reader .reader-add-paste {
+  border: none; background: none; padding: 0; cursor: pointer;
+  color: var(--rd-accent); font-size: 11.5px; font-weight: 600;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+
+/* "Найти статью в интернете" — opens a web search in the browser */
+.webapp-reader .reader-add-search {
+  height: 42px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  border-radius: 12px;
+  border: 1px dashed var(--rd-border-hi);
+  background: transparent;
+  color: var(--rd-text-muted);
+  font-size: 13.5px; font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.webapp-reader .reader-add-search svg { width: 18px; height: 18px; opacity: 0.8; flex-shrink: 0; }
+.webapp-reader .reader-add-search:hover { background: var(--rd-bg-elev); color: var(--rd-text); border-color: var(--rd-accent); }
+
+/* Copied-link pickup banner (returns from browser) */
+.webapp-reader .reader-add-clip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 9px 9px 13px;
+  border-radius: 12px;
+  background: var(--rd-accent-soft);
+  border: 1px solid rgba(16,185,129,0.3);
+  animation: rd-fade-in .15s ease;
+}
+.webapp-reader .reader-add-clip-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.webapp-reader .reader-add-clip-label {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--rd-accent);
+}
+.webapp-reader .reader-add-clip-url {
+  font-size: 12px; color: var(--rd-text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.webapp-reader .reader-add-clip-open {
+  flex-shrink: 0; height: 34px; padding: 0 15px; border-radius: 10px; border: none;
+  background: linear-gradient(135deg, var(--rd-accent), var(--rd-accent-2)); color: #fff;
+  font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.webapp-reader .reader-add-clip-x {
+  flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; border: none;
+  background: transparent; color: var(--rd-text-muted); font-size: 14px; cursor: pointer;
+}
+.webapp-reader .reader-add-clip-x:hover { background: var(--rd-bg-elev); color: var(--rd-text); }
 
 .webapp-reader .webapp-reader-form,
 .webapp-reader .reader-audio-panel {
