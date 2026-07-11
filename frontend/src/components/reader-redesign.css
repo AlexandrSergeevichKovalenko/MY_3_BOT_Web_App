@@ -3813,7 +3813,12 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
    │  flat-wide Play, small thin neat buttons, one-line title.              │
    ╰───────────────────────────────────────────────────────────────────────╯ */
 /* Top bar — thin, one refined line: borderless glyphs + serif title + soft meta */
-.webapp-reader .reader-topbar-flag { gap: 2px; padding: 5px 8px 5px; }
+/* Expanded topbar and collapsed peek share ONE fixed height so toggling the
+   collapse chevron does NOT resize the reading area (article is flex:1). Without
+   this, each collapse/expand reflowed the CSS columns and the reading position
+   drifted a bit every time → the text appeared to "jump". */
+.webapp-reader .reader-topbar-flag { gap: 2px; padding: 5px 8px 5px; min-height: 54px; box-sizing: border-box; }
+.webapp-reader .reader-topbar-peek-flag { min-height: 54px; box-sizing: border-box; align-items: center; }
 .webapp-reader .reader-topbar-row { gap: 4px; }
 .webapp-reader .reader-topbar-icbtn { width: 32px; height: 32px; border-radius: 50%; }
 .webapp-reader .reader-topbar-icbtn svg { width: 19px; height: 19px; }

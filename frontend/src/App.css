@@ -24852,6 +24852,20 @@ body.worldnews-active .webapp-topbar {
   box-shadow:
     0 16px 32px rgba(105, 78, 47, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.62);
+  /* In Telegram-light mode the sheet is LIGHT — so override the sheet's own
+     self-contained (dark-material) tokens back to DARK ink. Without this, the
+     light tokens leak into elements the light theme doesn't colour directly
+     (theme-swatch labels, the audio note, slider read-outs) → white on light. */
+  --rd-text: #17120d;
+  --rd-text-2: #2c1d0e;
+  --rd-text-muted: #5a4a39;
+  --rd-text-faint: #766450;
+  --rd-border: #dccdb5;
+  --rd-border-hi: #d2c2aa;
+  --rd-surface: rgba(255, 252, 246, 0.9);
+  --rd-surface-hi: #fff8ee;
+  --rd-bg-elev: rgba(120, 92, 55, 0.08);
+  --rd-bg-elev-2: rgba(120, 92, 55, 0.14);
 }
 
 .webapp-page.is-theme-light .webapp-reader-form .webapp-field,
