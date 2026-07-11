@@ -133,6 +133,8 @@ from backend.database import (
     backfill_frequency_ranks,
     get_shortcut_autosave_enabled,
     set_shortcut_autosave_enabled,
+    get_reply_keyboard_delivered_version,
+    mark_reply_keyboard_delivered,
     init_db,
     db_acquire_scope,
     get_db_connection,
@@ -1687,66 +1689,111 @@ class TrackingExtBot(ExtBot):
         kwargs.pop("suppress_private_keyboard_attach", None)
         return kwargs
 
+    @staticmethod
+    def _resolve_dm_chat_id(args, kwargs) -> int | None:
+        """Positive chat_id (a private chat) from args/kwargs, else None."""
+        chat_id = kwargs.get("chat_id")
+        if chat_id is None and args:
+            chat_id = args[0]
+        return int(chat_id) if isinstance(chat_id, int) and chat_id > 0 else None
+
+    async def _ensure_dm_keyboard_after_send(self, args, kwargs, suppress: bool) -> None:
+        """Guarantee the DM reply-keyboard for a message that could not carry it
+        itself (photo/poll/inline-markup message). Honors suppress + swallows errors."""
+        if suppress:
+            return
+        chat_id = self._resolve_dm_chat_id(args, kwargs)
+        if chat_id is None:
+            return
+        try:
+            await _ensure_reply_keyboard_delivered(self, chat_id)
+        except Exception:
+            pass
+
     async def send_message(self, *args, **kwargs):
         suppress_private_keyboard_attach = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         # Keep the DM reply-keyboard alive silently: piggyback it onto ordinary DM
         # text replies that don't already carry a markup (throttled per user), so
-        # users never lose the buttons and we never send standalone "menu" messages.
+        # chatty users never lose the buttons and we never send standalone "menu"
+        # messages to them. Whether we managed to carry the keyboard on THIS message
+        # decides whether the guaranteed-delivery fallback needs to run below.
+        chat_id = self._resolve_dm_chat_id(args, kwargs)
+        carried_keyboard = False
         try:
-            chat_id = kwargs.get("chat_id")
-            if chat_id is None and args:
-                chat_id = args[0]
-            if isinstance(chat_id, int) and chat_id > 0 and not suppress_private_keyboard_attach:
+            if chat_id is not None and not suppress_private_keyboard_attach:
                 rm = kwargs.get("reply_markup")
                 if rm is None:
-                    if _kb_should_attach(int(chat_id)):
-                        kwargs["reply_markup"] = _build_private_language_tutor_reply_keyboard(int(chat_id))
+                    if _kb_should_attach(chat_id):
+                        kwargs["reply_markup"] = _build_private_language_tutor_reply_keyboard(chat_id)
+                        carried_keyboard = True
                 elif isinstance(rm, ReplyKeyboardMarkup):
-                    _kb_last_attach[int(chat_id)] = pytime.time()
+                    _kb_last_attach[chat_id] = pytime.time()
+                    carried_keyboard = True
         except Exception:
             pass
         msg = await super().send_message(*args, **kwargs)
+        if chat_id is not None and not suppress_private_keyboard_attach:
+            if carried_keyboard:
+                await _mark_kb_delivered(chat_id)
+            else:
+                await self._ensure_dm_keyboard_after_send(args, kwargs, suppress_private_keyboard_attach)
         return await self._track_single(msg, "text")
 
     async def send_photo(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_photo(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "photo")
 
     async def send_audio(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_audio(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "audio")
 
     async def send_voice(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_voice(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "voice")
 
     async def send_document(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_document(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "document")
 
     async def send_video(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_video(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "video")
 
     async def send_video_note(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_video_note(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "video_note")
 
     async def send_animation(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_animation(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "animation")
 
     async def send_sticker(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_sticker(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "sticker")
 
     async def copy_message(self, *args, **kwargs):
@@ -1761,16 +1808,20 @@ class TrackingExtBot(ExtBot):
         return await self._track_single(msg, "forward")
 
     async def send_media_group(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         messages = await super().send_media_group(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         if messages:
             for msg in messages:
                 await _track_telegram_message_async(msg, "media_group")
         return messages
 
     async def send_poll(self, *args, **kwargs):
+        suppress = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         msg = await super().send_poll(*args, **kwargs)
+        await self._ensure_dm_keyboard_after_send(args, kwargs, suppress)
         return await self._track_single(msg, "poll")
 
 
@@ -5142,6 +5193,70 @@ def _kb_should_attach(user_id: int) -> bool:
 # NOTE: the actual piggyback lives in TrackingExtBot.send_message — PTB's Bot uses
 # __slots__ and forbids reassigning bot.send_message on the instance, so it must be
 # a subclass method, not a monkey-patch.
+
+
+# ── Guaranteed reply-keyboard delivery ───────────────────────────────────────
+# The piggyback above is free but only fires on plain-text replies with no markup —
+# so a PUSH-ONLY user (who only ever receives photos / polls / inline-keyboard
+# messages / hero cards, and never sends the bot a message that yields a plain reply)
+# would silently never get the reply-keyboard at all. To close that gap we guarantee
+# at-least-once delivery per user, persisted in the DB (survives redeploys): after any
+# DM send that could NOT carry the keyboard itself, we make sure the user has received
+# it once, sending a single lightweight standalone menu message if not.
+# Bump REPLY_KEYBOARD_VERSION to force a one-time re-delivery to everyone (e.g. after a
+# layout change) — the next DM push to each user re-sends the fresh keyboard.
+REPLY_KEYBOARD_VERSION = "2026-07-11"
+# In-memory cache of "user already has version X" so the hot send path stays O(1) once
+# warmed. Empty on a fresh process → first DM send per user does one DB read.
+_kb_delivered_versions: dict[int, str] = {}
+
+
+async def _mark_kb_delivered(chat_id: int) -> None:
+    """Record (memory + DB) that the current-version keyboard reached this DM user.
+    No-op (and no DB write) if already recorded this process."""
+    uid = int(chat_id)
+    if _kb_delivered_versions.get(uid) == REPLY_KEYBOARD_VERSION:
+        return
+    _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION
+    try:
+        await asyncio.to_thread(mark_reply_keyboard_delivered, uid, REPLY_KEYBOARD_VERSION)
+    except Exception:
+        logging.debug("mark_reply_keyboard_delivered failed chat_id=%s", chat_id, exc_info=True)
+
+
+async def _ensure_reply_keyboard_delivered(bot, chat_id: int) -> None:
+    """Guarantee this DM user has received the current reply-keyboard at least once.
+    Cheap fast-paths (memory, then a one-time DB read); only genuinely un-delivered
+    users get a single standalone menu message. Best-effort — never raises."""
+    uid = int(chat_id)
+    if _kb_delivered_versions.get(uid) == REPLY_KEYBOARD_VERSION:
+        return
+    try:
+        stored = await asyncio.to_thread(get_reply_keyboard_delivered_version, uid)
+    except Exception:
+        stored = None
+    if stored == REPLY_KEYBOARD_VERSION:
+        _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION
+        return
+    # Mark BEFORE sending so a burst of pushes (e.g. a 7-card batch) sends only one
+    # standalone message; roll back if the send fails so a later push retries.
+    _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION
+    try:
+        kb = _build_private_language_tutor_reply_keyboard(uid)
+        # Call the base ExtBot method directly to bypass our overridden send_message
+        # (avoids re-entrancy). This message is meant to persist, so it isn't tracked
+        # for auto-cleanup.
+        await ExtBot.send_message(
+            bot,
+            chat_id=uid,
+            text="📋 Меню под рукой — задания, тренажёры и словарь на кнопках снизу.",
+            reply_markup=kb,
+        )
+        _kb_last_attach[uid] = pytime.time()
+        await asyncio.to_thread(mark_reply_keyboard_delivered, uid, REPLY_KEYBOARD_VERSION)
+    except Exception:
+        _kb_delivered_versions.pop(uid, None)
+        logging.debug("ensure reply keyboard delivery failed chat_id=%s", chat_id, exc_info=True)
 
 
 def _format_shortcut_pairing_code_ttl_note() -> str:

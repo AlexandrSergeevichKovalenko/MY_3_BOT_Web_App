@@ -6245,6 +6245,18 @@ def ensure_webapp_tables() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            # Which DM reply-keyboard version each user has actually received. Lets the
+            # bot GUARANTEE at-least-once delivery of the buttons: push-only users (who
+            # only ever get photos/polls/inline-keyboard messages) never trigger the
+            # piggyback, so without this they silently end up with no keyboard. Persistent
+            # (survives redeploys); bump the version string in bot_3.py to force redelivery.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_reply_keyboard_state (
+                    user_id BIGINT PRIMARY KEY,
+                    keyboard_version TEXT,
+                    delivered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_pair_created
                 ON bt_3_webapp_dictionary_queries (user_id, source_lang, target_lang, created_at DESC);
@@ -23213,6 +23225,39 @@ def set_shortcut_autosave_enabled(user_id: int, enabled: bool) -> bool:
             )
         conn.commit()
     return bool(enabled)
+
+
+def get_reply_keyboard_delivered_version(user_id: int) -> str | None:
+    """The DM reply-keyboard version this user has already received, or None if never.
+    Read-only; safe to call on the send hot path (best-effort, swallows errors)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT keyboard_version FROM bt_3_reply_keyboard_state WHERE user_id = %s LIMIT 1;",
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+        return str(row[0]) if row and row[0] is not None else None
+    except Exception:
+        logging.debug("get_reply_keyboard_delivered_version failed user_id=%s", user_id, exc_info=True)
+        return None
+
+
+def mark_reply_keyboard_delivered(user_id: int, keyboard_version: str) -> None:
+    """Record that the given keyboard version reached this DM user (upsert)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_reply_keyboard_state (user_id, keyboard_version, delivered_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET keyboard_version = EXCLUDED.keyboard_version, delivered_at = NOW();
+                """,
+                (int(user_id), str(keyboard_version)),
+            )
+        conn.commit()
 
 
 def get_telegram_dictionary_folder_preference(
