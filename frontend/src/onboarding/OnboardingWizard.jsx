@@ -249,16 +249,28 @@ function StepBody(props) {
               <span className="ob-lock ob-ok">{t('✅ Базовый словарь подключён', '✅ Basis-Wörterbuch verbunden')}</span>
               {dictChoice === 'full' ? (
                 <span className="ob-lock ob-ok">{t('✅ Догружаю весь словарь — это займёт пару минут, можно идти дальше', '✅ Lade das ganze Wörterbuch — ein paar Minuten, du kannst weitergehen')}</span>
-              ) : total > have ? (
-                <button
-                  type="button"
-                  className="ob-confirm ob-alt"
-                  onClick={() => onDictAction('accept', true)}
-                  disabled={busy}
-                >
-                  {dictBusy === 'full' ? t('⏳ Догружаю…', '⏳ Lade…') : `${t('🔓 Догрузить весь словарь', '🔓 Ganzes Wörterbuch laden')} — ~${total} ${t('слов', 'Wörter')}`}
-                </button>
-              ) : null}
+              ) : (
+                <>
+                  {total > have ? (
+                    <button
+                      type="button"
+                      className="ob-confirm ob-alt"
+                      onClick={() => onDictAction('accept', true)}
+                      disabled={busy}
+                    >
+                      {dictBusy === 'full' ? t('⏳ Догружаю…', '⏳ Lade…') : `${t('🔓 Догрузить весь словарь', '🔓 Ganzes Wörterbuch laden')} — ~${total} ${t('слов', 'Wörter')}`}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="ob-skip"
+                    onClick={() => onDictAction('keep')}
+                    disabled={busy}
+                  >
+                    {confirmed ? t('✅ Оставляю базовый — дальше', '✅ Basis behalten — weiter') : t('Пропустить (оставить базовый)', 'Überspringen (Basis behalten)')}
+                  </button>
+                </>
+              )}
             </div>
           ) : IS_PUBLIC ? null : (
             <div className="ob-actions ob-actions-col">
@@ -787,6 +799,14 @@ export default function OnboardingWizard() {
   // Connect / skip the base dictionary (accept starts a background import job).
   const dictAction = useCallback(async (action, full = false) => {
     setStepErr('');
+    if (action === 'keep') {
+      // Base dictionary already connected — just confirm the step (no API) so «Далее»
+      // unlocks. Used by «Пропустить» in the partial state (base kept, full skipped).
+      setConfirmed((c) => ({ ...c, dictionary: true }));
+      setDictChoice('keep');
+      try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
+      return;
+    }
     setDictBusy(action === 'decline' ? 'decline' : (full ? 'full' : 'quick'));
     setBusy(true);
     try {

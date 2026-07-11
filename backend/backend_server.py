@@ -337,6 +337,7 @@ from backend.database import (
     count_shortcut_runs_total,
     record_shortcut_run,
     record_shortcut_run_check,
+    mark_announcement_sent,
     get_shortcut_installation_stats,
     get_shortcut_runs_report,
     get_shortcut_installations_for_user,
@@ -41325,13 +41326,19 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
     # limit holds even if the user hand-edits the shortcut to skip the /run-check
     # pre-flight (which is only advisory). Placed AFTER the dedup reserve so a duplicate
     # retry doesn't consume a run. Records the actual run (approved OR blocked); this is
-    # the single source of truth for the run counter (Free = 3 trial total, Pro = 2/day).
+    # the single source of truth for the run counter (Free = 5 trial total, Pro = 2/day).
     _gate_allowed, _gate_reason, _gate_extra = _shortcut_run_gate(int(user_id))
     record_shortcut_run_check(user_id, allowed=bool(_gate_allowed), reason=_gate_reason,
                               is_pro=_gate_extra.get("is_pro"), in_window=_gate_extra.get("in_window"),
                               run_index=_gate_extra.get("total_runs"))
     if not _gate_allowed:
         logging.info("shortcut_lookup: run BLOCKED user_id=%s reason=%s (enforced server-side)", user_id, _gate_reason)
+        # Friendly one-time «trial ended» DM (Free run-limit) so the user understands why
+        # nothing was translated + how to continue (Pro).
+        try:
+            _notify_shortcut_run_blocked(int(user_id), _gate_reason, _gate_extra)
+        except Exception:
+            logging.debug("run-blocked DM dispatch failed", exc_info=True)
         return {"allowed": False, "reason": _gate_reason,
                 "message": _gate_extra.get("message", "Лимит запусков исчерпан."), "blocks_sent": 0}, 200
 
@@ -42706,7 +42713,7 @@ def shortcut_link_installation():
 
 
 _SHORTCUT_RUN_PRO_DAILY = max(1, int((os.getenv("SHORTCUT_RUN_PRO_DAILY") or "2").strip() or "2"))
-_SHORTCUT_RUN_FREE_TOTAL = max(0, int((os.getenv("SHORTCUT_RUN_FREE_TOTAL") or "3").strip() or "3"))
+_SHORTCUT_RUN_FREE_TOTAL = max(0, int((os.getenv("SHORTCUT_RUN_FREE_TOTAL") or "5").strip() or "5"))
 # Off-peak send window: «Ночной Переводчик» may only send outside the first-setup grace
 # during these hours (server is free). Configurable; fail-open if the clock/tz breaks.
 _SHORTCUT_RUN_WINDOW_START = (os.getenv("SHORTCUT_RUN_WINDOW_START") or "05:00").strip()
@@ -42798,6 +42805,45 @@ def _shortcut_run_gate(user_id: int) -> tuple[bool, str, dict]:
             "message": f"Отправка доступна утром ({_SHORTCUT_RUN_WINDOW_START}–{_SHORTCUT_RUN_WINDOW_END}). Поставь автозапуск на это время — всё пойдёт само."}
     # 3) approved
     return True, ("grace" if grace_active else ("admin" if is_admin else "ok")), base
+
+
+def _notify_shortcut_run_blocked(user_id: int, reason: str, extra: dict) -> None:
+    """DM the user a friendly «trial ended» plaque when their FREE auto-translate run is
+    blocked — ONCE (first time they hit the limit), so it doesn't nag on every retry.
+    Explains what happened + why + a «Оформить Pro» button into the subscription section."""
+    try:
+        if reason != "free_total":
+            return  # only the Free trial-ended case gets the upsell DM
+        if not mark_announcement_sent(int(user_id), "shortcut_trial_ended_v1"):
+            return  # already told this user once
+        limit = int(extra.get("limit") or _SHORTCUT_RUN_FREE_TOTAL)
+        try:
+            from backend.interactive_card import render_shortcut_limit_card
+            poster = render_shortcut_limit_card(limit=limit)
+        except Exception:
+            poster = None
+        caption = (
+            "🔒 <b>Пробные запуски закончились</b>\n\n"
+            "Ты запустил авто-перевод скриншотов из папки, но на бесплатном доступно только "
+            f"<b>{limit}</b> запусков — чтобы попробовать, как это работает, и понять, нужна ли тебе функция.\n\n"
+            "Поэтому последняя операция <b>не прошла</b> — фото не переведены.\n\n"
+            "Хочешь пользоваться дальше — оформи <b>Pro</b> 👇"
+        )
+        reply_markup = json.dumps({"inline_keyboard": [[
+            {"text": "✨ Оформить Pro", "url": _build_webapp_deeplink("subscription")}]]})
+        token = TELEGRAM_Deutsch_BOT_TOKEN
+        if poster:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendPhoto",
+                data={"chat_id": int(user_id), "caption": caption, "parse_mode": "HTML", "reply_markup": reply_markup},
+                files={"photo": ("limit.png", poster, "image/png")}, timeout=30)
+        else:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data={"chat_id": int(user_id), "text": caption, "parse_mode": "HTML", "reply_markup": reply_markup},
+                timeout=30)
+    except Exception:
+        logging.warning("shortcut run-blocked DM failed user=%s", user_id, exc_info=True)
 
 
 @app.route("/api/shortcut/run-check", methods=["POST"])

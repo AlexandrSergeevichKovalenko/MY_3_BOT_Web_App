@@ -18238,6 +18238,13 @@ function AppInner() {
       setSelectedSections(new Set(['guide']));
       const t = setTimeout(() => { scrollToRef(guideRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
+    } else if (startParam === 'subscription' || startParam === 'billing') {
+      // Deep-link into the «Подписка» section (e.g. the DM «Оформить Pro» button).
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['subscription']));
+      const t = setTimeout(() => { scrollToRef(billingRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
     } else if (startParam === 'worldnews' || startParam.startsWith('worldnews')) {
       // «Начни день с коротких новостей» → open the YouTube section in news mode. The actual
       // video + phrases + quiz are fetched by the worldNews loader effect once initData is ready.

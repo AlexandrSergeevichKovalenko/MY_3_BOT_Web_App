@@ -575,6 +575,24 @@ def render_tour_invite_card(*, title: str, subtitle: str, cta: str = "Пройт
                  accent=(124, 108, 246), motif=_motif_compass, cta=cta)
 
 
+def _motif_lock(base, d, cx, cy, accent):
+    """A padlock — the trial-runs limit was reached."""
+    d.arc([cx - 66, cy - 150, cx + 66, cy - 20], 180, 360, fill=accent, width=26)
+    d.rounded_rectangle([cx - 96, cy - 44, cx + 96, cy + 120], radius=28, fill=accent)
+    d.rounded_rectangle([cx - 96, cy - 44, cx + 96, cy + 120], radius=28,
+                        outline=tuple(min(255, c + 34) for c in accent), width=5)
+    d.ellipse([cx - 22, cy + 8, cx + 22, cy + 52], fill=INK)
+    d.polygon([(cx - 11, cy + 42), (cx + 11, cy + 42), (cx + 17, cy + 96), (cx - 17, cy + 96)], fill=INK)
+
+
+def render_shortcut_limit_card(*, limit: int) -> bytes | None:
+    """«Пробные запуски закончились» plaque for the DM sent when a Free user hits the
+    shortcut auto-translate run limit."""
+    return _card(badge="ПРОБА ЗАКОНЧИЛАСЬ", title="Лимит исчерпан",
+                 subtitle=f"Бесплатно — {int(limit)} авто-переводов на пробу",
+                 accent=(245, 158, 11), motif=_motif_lock, cta="Оформить Pro")
+
+
 def render_settings_card() -> bytes | None:
     """Branded hero plaque for the «⚙️ Настройки» reply button."""
     return _card(badge="НАСТРОЙКИ", title="Настройки",
