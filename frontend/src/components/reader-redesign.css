@@ -4125,7 +4125,7 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .reader-original-view {
   position: fixed;
   inset: 0;
-  z-index: 150;
+  z-index: 300;
   background: #0b0d12;
   display: flex;
   flex-direction: column;
@@ -4136,7 +4136,9 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: calc(env(safe-area-inset-top, 0px) + 8px) 14px 8px;
+  /* Extra top space so «← Текст» clears Telegram's own overlaid close/⋯ controls
+     (they sit at the very top on tablet fullscreen and hid our back button). */
+  padding: calc(env(safe-area-inset-top, 0px) + 50px) 14px 8px;
   background: rgba(10, 13, 20, 0.94);
 }
 .reader-original-back {
@@ -4162,19 +4164,41 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .reader-original-stage {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
+  padding: 8px;
   touch-action: pinch-zoom;
   -webkit-overflow-scrolling: touch;
   position: relative;
   background: #15171d;
 }
+/* Default: the WHOLE page fits on screen (no bottom cut) — fit to height/width. */
 .reader-original-img {
   max-width: 100%;
+  max-height: 100%;
+  width: auto;
   height: auto;
+  object-fit: contain;
   display: block;
+  margin: auto;
+}
+/* Double-tap → zoom in; the stage scrolls so you can pan the enlarged page. */
+.reader-original-stage.is-zoomed {
+  overflow: auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+  touch-action: pan-x pan-y;
+}
+.reader-original-img.is-zoomed {
+  max-width: none;
+  max-height: none;
+  width: 210%;
+  height: auto;
+  object-fit: initial;
+  margin: 0;
+  cursor: grab;
 }
 .reader-original-spinner {
   position: absolute;

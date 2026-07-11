@@ -5759,6 +5759,7 @@ function AppInner() {
   const [readerOriginalUrl, setReaderOriginalUrl] = useState('');
   const [readerOriginalAvailable, setReaderOriginalAvailable] = useState(true);
   const [readerOriginalLoading, setReaderOriginalLoading] = useState(false);
+  const [readerOriginalZoomed, setReaderOriginalZoomed] = useState(false);
   const readerOriginalCacheRef = useRef(new Map()); // physical page -> image url
   const [readerBookmarkPercent, setReaderBookmarkPercent] = useState(0);
   const [readerReadingMode, setReaderReadingMode] = useState('vertical');
@@ -14090,9 +14091,31 @@ function AppInner() {
       setReaderOriginalLoading(false);
     }
   }, [readerDocumentId, initData, readerOriginalPageCount]);
+  // Quietly warm neighbour pages so ‹/› turns feel instant.
+  const prefetchReaderOriginalPage = useCallback((page) => {
+    const p = Math.max(1, Math.round(Number(page) || 0));
+    if (p < 1 || !readerDocumentId) return;
+    if (readerOriginalPageCount && p > readerOriginalPageCount) return;
+    if (readerOriginalCacheRef.current.has(p)) return;
+    fetch('/api/webapp/reader/page_image', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, document_id: readerDocumentId, page: p }),
+    }).then((r) => r.json()).then((d) => {
+      if (d?.available && d?.url) readerOriginalCacheRef.current.set(p, d.url);
+    }).catch(() => {});
+  }, [readerDocumentId, initData, readerOriginalPageCount]);
+  const goReaderOriginalPage = useCallback((page) => {
+    const p = Math.max(1, Math.round(Number(page) || 1));
+    setReaderOriginalZoomed(false);
+    fetchReaderOriginalPage(p).then(() => {
+      prefetchReaderOriginalPage(p + 1);
+      prefetchReaderOriginalPage(p - 1);
+    });
+  }, [fetchReaderOriginalPage, prefetchReaderOriginalPage]);
   const openReaderOriginal = useCallback(async () => {
     setReaderViewMode('original');
     setReaderOriginalAvailable(true);
+    setReaderOriginalZoomed(false);
     const total = readerPageCount || 1;
     const fraction = total > 1 ? Math.max(0, Math.min(1, (Math.max(1, readerCurrentPage) - 1) / (total - 1))) : 0;
     // Render page 1 first to learn the physical page count, then jump to the page
@@ -14101,9 +14124,26 @@ function AppInner() {
     const count = info?.page_count || 0;
     if (info?.available && count > 1) {
       const target = Math.max(1, Math.min(count, Math.round(fraction * (count - 1)) + 1));
-      if (target !== 1) fetchReaderOriginalPage(target);
+      if (target !== 1) { fetchReaderOriginalPage(target).then(() => { prefetchReaderOriginalPage(target + 1); prefetchReaderOriginalPage(target - 1); }); }
     }
-  }, [readerPageCount, readerCurrentPage, fetchReaderOriginalPage]);
+  }, [readerPageCount, readerCurrentPage, fetchReaderOriginalPage, prefetchReaderOriginalPage]);
+  // Swipe left/right to turn pages (only when not zoomed, so panning still works).
+  const readerOriginalSwipeRef = useRef({ x: 0, y: 0, active: false });
+  const onReaderOriginalPointerDown = useCallback((e) => {
+    readerOriginalSwipeRef.current = { x: e.clientX, y: e.clientY, active: true };
+  }, []);
+  const onReaderOriginalPointerUp = useCallback((e) => {
+    const g = readerOriginalSwipeRef.current;
+    if (!g.active) return;
+    g.active = false;
+    if (readerOriginalZoomed) return;
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      if (dx < 0) goReaderOriginalPage(readerOriginalPage + 1);
+      else goReaderOriginalPage(readerOriginalPage - 1);
+    }
+  }, [readerOriginalZoomed, readerOriginalPage, goReaderOriginalPage]);
   const readerCanUseOriginal = readerSourceType === 'pdf';
   // Always start a freshly-opened book in Text mode; drop any cached original pages.
   useEffect(() => {
@@ -35812,9 +35852,19 @@ function AppInner() {
                       <span className="reader-original-topbar-spacer" />
                     </div>
                     {readerOriginalAvailable ? (
-                      <div className="reader-original-stage">
+                      <div
+                        className={`reader-original-stage${readerOriginalZoomed ? ' is-zoomed' : ''}`}
+                        onPointerDown={onReaderOriginalPointerDown}
+                        onPointerUp={onReaderOriginalPointerUp}
+                        onDoubleClick={() => setReaderOriginalZoomed((v) => !v)}
+                      >
                         {readerOriginalUrl && (
-                          <img className="reader-original-img" src={readerOriginalUrl} alt="" draggable="false" />
+                          <img
+                            className={`reader-original-img${readerOriginalZoomed ? ' is-zoomed' : ''}`}
+                            src={readerOriginalUrl}
+                            alt=""
+                            draggable="false"
+                          />
                         )}
                         {readerOriginalLoading && <div className="reader-original-spinner">…</div>}
                       </div>
@@ -35832,14 +35882,14 @@ function AppInner() {
                           type="button"
                           className="reader-original-nav"
                           disabled={readerOriginalPage <= 1 || readerOriginalLoading}
-                          onClick={() => fetchReaderOriginalPage(readerOriginalPage - 1)}
+                          onClick={() => goReaderOriginalPage(readerOriginalPage - 1)}
                           aria-label={tr('Назад', 'Zurück')}
                         >‹</button>
                         <button
                           type="button"
                           className="reader-original-nav"
                           disabled={readerOriginalLoading || (readerOriginalPageCount > 0 && readerOriginalPage >= readerOriginalPageCount)}
-                          onClick={() => fetchReaderOriginalPage(readerOriginalPage + 1)}
+                          onClick={() => goReaderOriginalPage(readerOriginalPage + 1)}
                           aria-label={tr('Вперёд', 'Weiter')}
                         >›</button>
                       </div>
