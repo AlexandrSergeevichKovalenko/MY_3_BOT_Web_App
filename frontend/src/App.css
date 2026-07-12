@@ -15105,12 +15105,20 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-dock-cl,
   .webapp-page .youtube-dock-cr { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
   .webapp-page .youtube-dock-center {
-    display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; justify-content: center;
+    display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0;
+    justify-content: center; overflow: hidden;
   }
+  /* дети центра должны сжиматься, иначе контент вылезает за бокс и наезжает на
+     соседние кластеры (h3 без min-width:0 не усекается в эллипсис — flex default
+     min-width:auto). Таймер-HUD тоже даём сжимать/прятать при нехватке места. */
+  .webapp-page .youtube-dock-center > * { min-width: 0; flex: 0 1 auto; }
   .webapp-page .youtube-dock-center h3 {
-    margin: 0; font-size: 18px; font-weight: 800; color: var(--d-title); letter-spacing: -.01em;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin: 0; min-width: 0; font-size: 18px; font-weight: 800; color: var(--d-title);
+    letter-spacing: -.01em; white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis;
   }
+  /* таймер-задачи (today HUD) по умолчанию position:absolute → в центре дока
+     наезжал на заголовок. Пиним static, как это было для старой mainline. */
+  .webapp-page .youtube-dock-center .today-section-task-hud { position: static; }
   .webapp-page .youtube-dock-divider { flex: 0 0 auto; width: 1px; height: 26px; background: var(--d-border); }
 
   .webapp-page .youtube-iconbtn {
@@ -15168,6 +15176,15 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-dock-pi:disabled { opacity: .5; cursor: default; }
   .webapp-page .youtube-dock-pi svg { width: 18px; height: 18px; color: var(--d-muted); flex: 0 0 auto; }
   .webapp-page .youtube-dock-pi.is-active { color: var(--d-accent-2); }
+}
+
+/* Узкий док (901–1180px): убираем текст-подписи у иконок источника и лейбл
+   «Video», чтобы центру-заголовку хватало места и он не усекался/не наезжал. */
+@media (min-width: 901px) and (max-width: 1180px) {
+  .webapp-page .youtube-dock2 .youtube-group-label { display: none; }
+  .webapp-page .youtube-dock-cl .youtube-iconbtn-lbl { display: none; }
+  .webapp-page .youtube-dock-cl .youtube-iconbtn { width: 40px; padding: 0; }
+  .webapp-page .youtube-dock2 { gap: 9px; padding: 10px 12px; }
 }
 
 .youtube-command-action:hover:not(:disabled),
