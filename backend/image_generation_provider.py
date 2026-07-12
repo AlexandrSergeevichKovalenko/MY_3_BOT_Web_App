@@ -107,6 +107,17 @@ def generate_image_bytes(
     normalized_prompt = str(prompt or "").strip()
     if not normalized_prompt:
         raise ValueError("image_prompt is required")
+    # Cost-control gate (real money — gpt-image-1 is OpenAI): when the weekly REAL-money
+    # ceiling is breached AND enforcement is enabled, pause paid image generation. Default
+    # OFF (shadow). Callers already handle generation failures (pool jobs skip + retry next
+    # cycle), so this degrades gracefully rather than breaking any flow.
+    try:
+        from backend import spend_ceiling as _sc
+        _spend_blocked = _sc.should_block_tier(_sc.TIER_HEAVY)
+    except Exception:
+        _spend_blocked = False
+    if _spend_blocked:
+        raise RuntimeError("image generation temporarily paused (weekly spend ceiling reached)")
     if IMAGE_GENERATION_PROVIDER != "openai_gpt_image_1":
         raise RuntimeError(f"Unsupported image generation provider: {IMAGE_GENERATION_PROVIDER}")
 

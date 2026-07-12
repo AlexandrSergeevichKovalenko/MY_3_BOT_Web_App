@@ -212,6 +212,28 @@ def set_tier_blocked(tiers, *, reason: str | None = None, week: str | None = Non
     return wanted
 
 
+class SpendPausedError(RuntimeError):
+    """Raised by a gated paid call when its tier is paused AND enforcement is enabled.
+    Callers should treat it as a soft, temporary unavailability (not an error to surface raw)."""
+
+    def __init__(self, tier: str = TIER_HEAVY):
+        self.tier = tier
+        super().__init__(f"spend tier paused: {tier}")
+
+
+def enforce_enabled() -> bool:
+    """Master switch for actually BLOCKING paid calls. Default OFF (shadow: alerts only).
+    The auto-stop tick and the paid-call gate both honor this, so nothing blocks users
+    until APP_SPEND_CEILING_ENFORCE is turned on."""
+    return (os.getenv("APP_SPEND_CEILING_ENFORCE", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def should_block_tier(tier: str = TIER_HEAVY) -> bool:
+    """True only when enforcement is ON and this tier is currently paused. Cheap (1 Redis
+    GET); fail-open. Use at real-money HEAVY paid-call sites (image gen, heavy LLM, Perplexity)."""
+    return enforce_enabled() and is_tier_blocked(tier)
+
+
 # ── Evaluation (compute status + record; does NOT DM or block) ───────────────
 def evaluate_ceiling(now: datetime | None = None) -> dict:
     """Compute weekly spend vs the ceiling and return a decision dict for the caller
