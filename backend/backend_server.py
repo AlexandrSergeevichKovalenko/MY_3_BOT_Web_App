@@ -334,6 +334,7 @@ from backend.database import (
     link_shortcut_installation,
     resolve_shortcut_install_token,
     count_shortcut_runs_today,
+    count_shortcut_denied_runs_today,
     count_shortcut_runs_total,
     record_shortcut_run,
     record_shortcut_run_check,
@@ -15583,10 +15584,57 @@ def _resume_stale_reader_library_documents(
 
 # ── «Original» reading mode: render the source PDF pages on demand ──────────
 _reader_pdf_pagecount_cache: dict[int, int] = {}
+# Cumulative per-page char counts of the source PDF (cum[i] = chars before physical
+# page i; cum[-1] = total). Maps a reading text-fraction → the physical page by the
+# ACTUAL text distribution instead of assuming uniform text per page.
+_reader_pdf_cumlens_cache: dict[int, list[int]] = {}
 
 
 def _reader_source_object_key(user_id: int, document_id: int) -> str:
     return f"reader_source/{int(user_id)}/{int(document_id)}/source.pdf"
+
+
+def _reader_pdf_cumlens(user_id: int, document_id: int) -> list[int] | None:
+    cached = _reader_pdf_cumlens_cache.get(int(document_id))
+    if cached is not None:
+        return cached
+    if _pymupdf is None:
+        return None
+    try:
+        pdf_bytes = r2_get_bytes(_reader_source_object_key(user_id, document_id))
+    except Exception:
+        pdf_bytes = None
+    if not pdf_bytes:
+        return None
+    try:
+        cum = [0]
+        with _pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+            _reader_pdf_pagecount_cache[int(document_id)] = int(doc.page_count)
+            for page in doc:
+                try:
+                    n = len(page.get_text("text") or "")
+                except Exception:
+                    n = 0
+                cum.append(cum[-1] + n)
+        _reader_pdf_cumlens_cache[int(document_id)] = cum
+        return cum
+    except Exception:
+        logging.exception("reader pdf cumlens failed doc=%s", document_id)
+        return None
+
+
+def _reader_pdf_page_for_fraction(user_id: int, document_id: int, fraction: float) -> int:
+    """Physical page (1-based) at the given reading text-fraction (0..1), by the PDF's
+    real per-page text distribution. 0 if unavailable."""
+    cum = _reader_pdf_cumlens(user_id, document_id)
+    if not cum or len(cum) < 2 or cum[-1] <= 0:
+        return 0
+    frac = max(0.0, min(1.0, float(fraction or 0.0)))
+    target = frac * cum[-1]
+    import bisect
+    idx = bisect.bisect_right(cum, target) - 1
+    idx = max(0, min(len(cum) - 2, idx))
+    return idx + 1
 
 
 def _reader_page_image_key(user_id: int, document_id: int, page: int, zoom: int = 2) -> str:
@@ -41748,6 +41796,7 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
             _notify_shortcut_run_status(int(user_id), _gate_reason, _gate_extra)
         except Exception:
             logging.debug("run-status DM dispatch failed", exc_info=True)
+        _shortcut_check_abuse(int(user_id))  # alert admins if this user is hammering the endpoint
         return {"allowed": False, "reason": _gate_reason,
                 "message": _gate_extra.get("message", "Лимит запусков исчерпан."), "blocks_sent": 0}, 200
 
@@ -43133,6 +43182,9 @@ def shortcut_link_installation():
 
 _SHORTCUT_RUN_PRO_DAILY = max(1, int((os.getenv("SHORTCUT_RUN_PRO_DAILY") or "2").strip() or "2"))
 _SHORTCUT_RUN_FREE_TOTAL = max(0, int((os.getenv("SHORTCUT_RUN_FREE_TOTAL") or "5").strip() or "5"))
+# Alert admins when one user racks up more than this many BLOCKED attempts in a day
+# (broken/edited shortcut or a stolen token hammering the endpoint).
+_SHORTCUT_ABUSE_ALERT_THRESHOLD = max(1, int((os.getenv("SHORTCUT_ABUSE_ALERT_THRESHOLD") or "5").strip() or "5"))
 # Off-peak send window: «Ночной Переводчик» may only send outside the first-setup grace
 # during these hours (server is free). Configurable; fail-open if the clock/tz breaks.
 _SHORTCUT_RUN_WINDOW_START = (os.getenv("SHORTCUT_RUN_WINDOW_START") or "05:00").strip()
@@ -43300,6 +43352,34 @@ def _notify_shortcut_run_status(user_id: int, reason: str, extra: dict) -> None:
         logging.warning("shortcut run-status DM failed user=%s reason=%s", user_id, reason, exc_info=True)
 
 
+def _shortcut_check_abuse(user_id: int) -> None:
+    """When one user racks up more than _SHORTCUT_ABUSE_ALERT_THRESHOLD blocked attempts in
+    a day (broken/edited shortcut or a stolen token hammering the endpoint), DM the admins
+    ONCE that day. Called right after a denial is recorded."""
+    try:
+        denied = count_shortcut_denied_runs_today(int(user_id))
+        if denied <= _SHORTCUT_ABUSE_ALERT_THRESHOLD:
+            return
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        if not mark_announcement_sent(int(user_id), f"shortcut_abuse_alert_{today}"):
+            return  # already alerted for this user today
+        text = (f"⚠️ <b>Shortcut: подозрение на абьюз</b>\n\n"
+                f"user_id <code>{int(user_id)}</code> — <b>{denied}</b> отказов сегодня "
+                f"(&gt;{_SHORTCUT_ABUSE_ALERT_THRESHOLD}).\n\n"
+                f"Вероятно, сломанный/отредактированный шорткат или украденный токен долбит эндпоинт. "
+                f"Смотри <code>/shortcut_runs</code>. При необходимости отзови токен (пользователь переустанавливает — re-pair).")
+        token = TELEGRAM_Deutsch_BOT_TOKEN
+        for admin_id in get_admin_telegram_ids():
+            try:
+                requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                              data={"chat_id": int(admin_id), "text": text, "parse_mode": "HTML"}, timeout=15)
+            except Exception:
+                pass
+    except Exception:
+        logging.debug("shortcut abuse check failed user=%s", user_id, exc_info=True)
+
+
 @app.route("/api/shortcut/run-check", methods=["POST"])
 def shortcut_run_check():
     """Per-RUN gate for «Ночной Переводчик». The shortcut MUST call this FIRST and,
@@ -43334,6 +43414,7 @@ def shortcut_run_check():
         record_shortcut_run_check(user_id, allowed=False, reason=reason,
                                   is_pro=extra.get("is_pro"), in_window=extra.get("in_window"),
                                   run_index=extra.get("total_runs"))
+        _shortcut_check_abuse(int(user_id))  # alert admins if this user is hammering the endpoint
         payload = {"allowed": False, "reason": reason}
         for k in ("used", "limit", "window", "message"):
             if k in extra:
@@ -48773,6 +48854,16 @@ def reader_page_image():
     user_id = user_data.get("id")
     if not user_id:
         return jsonify({"error": "user_id отсутствует"}), 400
+    # Accurate open position: when the client sends `frac` (reading fraction 0..1) and
+    # no explicit page, resolve the physical page by the PDF's real text distribution.
+    frac = payload.get("frac")
+    if frac is not None:
+        try:
+            mapped = _reader_pdf_page_for_fraction(int(user_id), int(document_id), float(frac))
+            if mapped > 0:
+                page = mapped
+        except Exception:
+            pass
     url, page_count = _render_reader_pdf_page(int(user_id), int(document_id), page)
     if not url:
         return jsonify({"ok": True, "available": False, "page_count": int(page_count or 0)})

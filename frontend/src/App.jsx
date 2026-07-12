@@ -14074,27 +14074,34 @@ function AppInner() {
   }, [readerDisplayPages]);
   const readerPageCount = readerDisplayPages.length;
   // «Original» mode: fetch/render a physical PDF page image (cached server-side + here).
-  const fetchReaderOriginalPage = useCallback(async (page) => {
+  const fetchReaderOriginalPage = useCallback(async (page, frac) => {
     if (!readerDocumentId) return { available: false, page_count: 0 };
     const p = Math.max(1, Math.round(Number(page) || 1));
-    const cached = readerOriginalCacheRef.current.get(p);
-    if (cached) {
-      setReaderOriginalUrl(cached); setReaderOriginalPage(p); setReaderOriginalAvailable(true);
-      return { available: true, page_count: readerOriginalPageCount, url: cached };
+    // When frac is given, the SERVER picks the accurate physical page — don't use the
+    // page cache (we don't yet know which page it maps to).
+    if (frac == null) {
+      const cached = readerOriginalCacheRef.current.get(p);
+      if (cached) {
+        setReaderOriginalUrl(cached); setReaderOriginalPage(p); setReaderOriginalAvailable(true);
+        return { available: true, page: p, page_count: readerOriginalPageCount, url: cached };
+      }
     }
     setReaderOriginalLoading(true);
     try {
+      const body = { initData, document_id: readerDocumentId, page: p };
+      if (frac != null) body.frac = Math.max(0, Math.min(1, Number(frac) || 0));
       const res = await fetch('/api/webapp/reader/page_image', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, document_id: readerDocumentId, page: p }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       const count = Number(data?.page_count || 0);
       if (count) setReaderOriginalPageCount(count);
       if (data?.available && data?.url) {
-        readerOriginalCacheRef.current.set(p, data.url);
-        setReaderOriginalUrl(data.url); setReaderOriginalPage(p); setReaderOriginalAvailable(true);
-        return { available: true, page_count: count, url: data.url };
+        const serverPage = Math.max(1, Number(data?.page || p));
+        readerOriginalCacheRef.current.set(serverPage, data.url);
+        setReaderOriginalUrl(data.url); setReaderOriginalPage(serverPage); setReaderOriginalAvailable(true);
+        return { available: true, page: serverPage, page_count: count, url: data.url };
       }
       setReaderOriginalAvailable(false);
       return { available: false, page_count: count };
@@ -14130,14 +14137,13 @@ function AppInner() {
     setReaderOriginalAvailable(true);
     setReaderOriginalZoomed(false);
     const total = readerPageCount || 1;
+    // Reading text-fraction → the server maps it to the accurate physical PDF page by
+    // the real per-page text distribution (not a uniform-page guess).
     const fraction = total > 1 ? Math.max(0, Math.min(1, (Math.max(1, readerCurrentPage) - 1) / (total - 1))) : 0;
-    // Render page 1 first to learn the physical page count, then jump to the page
-    // matching the current reading position (reflow-page fraction → physical page).
-    const info = await fetchReaderOriginalPage(1);
-    const count = info?.page_count || 0;
-    if (info?.available && count > 1) {
-      const target = Math.max(1, Math.min(count, Math.round(fraction * (count - 1)) + 1));
-      if (target !== 1) { fetchReaderOriginalPage(target).then(() => { prefetchReaderOriginalPage(target + 1); prefetchReaderOriginalPage(target - 1); }); }
+    const info = await fetchReaderOriginalPage(1, fraction);
+    if (info?.available && info?.page) {
+      prefetchReaderOriginalPage(info.page + 1);
+      prefetchReaderOriginalPage(info.page - 1);
     }
   }, [readerPageCount, readerCurrentPage, fetchReaderOriginalPage, prefetchReaderOriginalPage]);
   // Swipe left/right to turn pages (only when not zoomed, so panning still works).
