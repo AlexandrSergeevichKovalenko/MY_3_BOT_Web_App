@@ -9064,6 +9064,34 @@ async def backfill_billing_prices_command(update: Update, context: CallbackConte
     await update.message.reply_text("\n".join(lines))
 
 
+async def pool_r2_orphans_command(update: Update, context: CallbackContext) -> None:
+    """Admin: reclaim R2 images of RETIRED game-pool items (rebus/article_quiz/crossword) that
+    the crowd-mastery rotation left orphaned. '/pool_r2_orphans' = dry-run; add 'delete' to write.
+    Crossword is age-guarded so the revive path isn't broken."""
+    user = update.effective_user
+    if not user or not _is_admin_user(int(user.id)):
+        return
+    args = context.args or []
+    do_delete = bool(args) and str(args[0]).strip().lower() in ("delete", "del", "run", "yes", "go")
+    await update.message.reply_text(
+        "🧹 Удаляю осиротевшие картинки игровых пулов…" if do_delete
+        else "🔎 Считаю осиротевшие картинки игровых пулов (dry-run)…"
+    )
+    try:
+        from backend.database import reclaim_retired_pool_r2_orphans
+        res = await asyncio.to_thread(reclaim_retired_pool_r2_orphans, dry_run=not do_delete)
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Ошибка (ничего не изменено): {exc}")
+        return
+    head = "🗑 Удалено" if not res["dry_run"] else "🔎 Найдено (dry-run)"
+    lines = [f"{head}: {res['total']} осиротевших картинок ретайрнутых заданий."]
+    for pool, n in (res.get("per_pool") or {}).items():
+        lines.append(f"• {pool} — {n}")
+    if res["dry_run"] and res["total"]:
+        lines.append("\nУдалить: /pool_r2_orphans delete")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def r2_usage_command(update: Update, context: CallbackContext) -> None:
     """Admin: real R2 storage size per top-level prefix (read-only). Use it to see whether any
     remaining prefix (tts_legacy, support_attachments, pool art, …) is worth cleaning."""
@@ -35369,6 +35397,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
     application.add_handler(CommandHandler("r2_usage", r2_usage_command))
+    application.add_handler(CommandHandler("pool_r2_orphans", pool_r2_orphans_command))
     application.add_handler(CommandHandler("backfill_billing_prices", backfill_billing_prices_command))
     application.add_handler(CallbackQueryHandler(handle_admin_commands_callback, pattern=r"^admincmd:"))
     application.add_handler(CallbackQueryHandler(handle_describe_new_callback, pattern=r"^dnew_"))

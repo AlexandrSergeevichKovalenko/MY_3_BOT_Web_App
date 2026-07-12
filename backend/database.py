@@ -28145,6 +28145,51 @@ def archive_reader_library_document(
     return _reader_library_row_to_dict(row, include_content=False)
 
 
+def reclaim_retired_pool_r2_orphans(*, dry_run: bool = True, crossword_idle_days: int = 30) -> dict:
+    """The crowd-mastery rotation retires game-pool items (rebus/article_quiz/crossword) but
+    NEVER deletes their R2 image → orphan forever (unlike image_quiz/visual_riddle which have
+    idle cleaners). Reclaim them. SAFE: rebus/article_quiz 'retired' = permanent mastery (no
+    revive); crossword 'retired' is overloaded with a revivable send-failure state, so only
+    crossword items retired AND idle > crossword_idle_days are touched (a stale one won't be
+    revived). dry_run=True only counts. Nulls the DB image ref after deleting so re-runs don't
+    re-report the same rows. Fail-open."""
+    targets: list[tuple[str, str, int, str]] = []  # (table, key_col, id, object_key)
+    per_pool: dict[str, int] = {}
+    specs = [
+        ("rebus", "bt_3_rebus_bank", "composed_image_object_key",
+         "SELECT id, composed_image_object_key FROM bt_3_rebus_bank "
+         "WHERE retired = TRUE AND composed_image_object_key IS NOT NULL AND composed_image_object_key <> '';", False),
+        ("article_quiz", "bt_3_article_quiz_bank", "image_object_key",
+         "SELECT id, image_object_key FROM bt_3_article_quiz_bank "
+         "WHERE retired = TRUE AND image_object_key IS NOT NULL AND image_object_key <> '';", False),
+        ("crossword", "bt_3_crossword_bank", "image_object_key",
+         "SELECT id, image_object_key FROM bt_3_crossword_bank "
+         "WHERE retired = TRUE AND image_object_key IS NOT NULL AND image_object_key <> '' "
+         "AND updated_at < NOW() - (%s || ' days')::interval;", True),
+    ]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for pool, table, col, sql, needs_idle in specs:
+                cursor.execute(sql, (int(crossword_idle_days),) if needs_idle else None)
+                rows = cursor.fetchall() or []
+                per_pool[pool] = len(rows)
+                for rid, key in rows:
+                    targets.append((table, col, int(rid), str(key)))
+    deleted = 0
+    if not dry_run and targets:
+        try:
+            from backend.r2_storage import r2_delete_keys
+            deleted = r2_delete_keys([t[3] for t in targets])
+        except Exception:
+            logging.warning("reclaim_retired_pool_r2_orphans: R2 delete failed", exc_info=True)
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                for table, col, rid, _key in targets:
+                    cursor.execute(f"UPDATE {table} SET {col} = NULL WHERE id = %s;", (rid,))
+            conn.commit()
+    return {"dry_run": bool(dry_run), "per_pool": per_pool, "total": len(targets), "deleted": deleted}
+
+
 def get_all_reader_library_owner_doc_ids() -> set[tuple[int, int]]:
     """Every LIVE (user_id, document_id) reader-library row — used to detect orphaned R2
     objects (reader_source/reader_pages/reader-audio-pages keyed by {uid}/{doc}). RAISES on

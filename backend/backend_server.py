@@ -16583,11 +16583,15 @@ def _force_translate_text(
         quick_providers.append(("libretranslate", _quick_translate_libretranslate))
     if AZURE_TRANSLATOR_KEY:
         quick_providers.append(("azure_translator", _quick_translate_azure))
-    if GOOGLE_TRANSLATE_API_KEY:
-        quick_providers.append(("google_translate", _quick_translate_google))
     if ARGOS_TRANSLATE_ENABLED:
         quick_providers.append(("argos_offline", _quick_translate_argos))
     quick_providers.append(("mymemory", _quick_translate_mymemory))
+    # Google Translate LAST: its 500k/mo free tier expires after the Google Cloud account's
+    # first 12 months, after which it bills from the very first char. So exhaust every
+    # perpetually-free provider above first (DeepL/Libre/Azure-F0/Argos/MyMemory); Google is a
+    # last resort only (the monthly budget still caps it, but we avoid paying while free options exist).
+    if GOOGLE_TRANSLATE_API_KEY:
+        quick_providers.append(("google_translate", _quick_translate_google))
 
     for provider_name, provider_fn in quick_providers:
         try:
