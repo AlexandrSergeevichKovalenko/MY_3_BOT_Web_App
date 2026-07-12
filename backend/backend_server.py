@@ -14567,6 +14567,109 @@ def _apply_pdf_outline_to_pages(
             page["chapter_title"] = title
 
 
+def _reader_ws_regex(needle: str):
+    """Whitespace-insensitive compiled regex for a short text anchor, or None."""
+    needle = str(needle or "").strip()
+    if not needle:
+        return None
+    parts = [re.escape(p) for p in needle.split() if p]
+    if not parts:
+        return None
+    try:
+        return re.compile(r"\s+".join(parts))
+    except Exception:
+        return None
+
+
+def _detect_pdf_heading_texts(data: bytes) -> list[dict]:
+    """Detect HEADING blocks in a PDF from the document's OWN font signal (no per-book
+    guessing): the dominant span size is the body; blocks whose size is meaningfully
+    larger (or bold + a bit larger) and short are headings. Returns [{text, level}]."""
+    if _pymupdf is None:
+        return []
+    size_weight: dict[int, int] = {}
+    block_infos: list[dict] = []
+    try:
+        with _pymupdf.open(stream=data, filetype="pdf") as doc:
+            for idx, page in enumerate(doc):
+                if idx >= _READER_PDF_MAX_SOURCE_PAGES:
+                    break
+                try:
+                    info = page.get_text("dict")
+                except Exception:
+                    continue
+                for b in info.get("blocks") or []:
+                    if int(b.get("type", -1)) != 0:
+                        continue
+                    spans = [s for line in (b.get("lines") or []) for s in (line.get("spans") or [])]
+                    if not spans:
+                        continue
+                    text = " ".join(" ".join((s.get("text") or "").split()) for s in spans).strip()
+                    if not text:
+                        continue
+                    max_size = 0
+                    bold = False
+                    for s in spans:
+                        sz = round(float(s.get("size", 0) or 0))
+                        if sz > max_size:
+                            max_size = sz
+                        if int(s.get("flags", 0)) & 16:
+                            bold = True
+                        size_weight[sz] = size_weight.get(sz, 0) + len(s.get("text", "") or "")
+                    block_infos.append({"text": text, "size": max_size, "bold": bold})
+    except Exception:
+        logging.exception("reader PDF heading detection failed")
+        return []
+    if not size_weight:
+        return []
+    body = max(size_weight.items(), key=lambda kv: kv[1])[0] or 1
+    headings: list[dict] = []
+    seen: set[str] = set()
+    for b in block_infos:
+        text = b["text"]
+        size = b["size"]
+        if len(text) < 3 or len(text) > 140:
+            continue
+        if not re.search(r"[A-Za-zÀ-ÿ]", text):  # skip pure numbers / symbols (page nos)
+            continue
+        is_heading = size >= body * 1.2 or (b["bold"] and size >= body * 1.08 and len(text) <= 90)
+        if not is_heading:
+            continue
+        key = text.lower()
+        if key in seen:  # dedup repeated running headers so we don't tag them everywhere
+            continue
+        seen.add(key)
+        level = 1 if size >= body * 1.7 else (2 if size >= body * 1.35 else 3)
+        headings.append({"text": text, "level": level})
+    return headings
+
+
+def _attach_pdf_headings_to_pages(pages: list[dict], headings: list[dict]) -> int:
+    """Locate each detected heading's text in the repaginated pages (whitespace-
+    insensitive) and mark it as a heading block range. Keeps the reading text itself
+    untouched — structure rides as a per-page `blocks` side-array."""
+    if not pages or not headings:
+        return 0
+    attached = 0
+    for h in headings:
+        rx = _reader_ws_regex(h.get("text"))
+        if rx is None:
+            continue
+        for p in pages:
+            txt = str(p.get("text") or "")
+            m = rx.search(txt)
+            if m:
+                p.setdefault("blocks", []).append({
+                    "start": m.start(), "end": m.end(), "type": "heading", "level": int(h.get("level") or 2),
+                })
+                attached += 1
+                break
+    for p in pages:
+        if p.get("blocks"):
+            p["blocks"].sort(key=lambda b: b["start"])
+    return attached
+
+
 def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not data:
         return "", []
@@ -14586,6 +14689,15 @@ def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
             logging.info("[READER_TOC] applied embedded PDF outline: %s bookmarks", len(outline))
     except Exception:
         logging.exception("reader PDF outline mapping failed; falling back to heuristic TOC")
+    # Structure: detect headings by the document's own font size/weight and mark them
+    # as `blocks` ranges (reading text unchanged). Same side-array the EPUB path uses.
+    try:
+        headings = _detect_pdf_heading_texts(data)
+        if headings:
+            n = _attach_pdf_headings_to_pages(pages, headings)
+            logging.info("[READER_STRUCT] PDF headings detected=%s placed=%s", len(headings), n)
+    except Exception:
+        logging.exception("reader PDF heading structure failed")
     return full_text, pages
 
 
