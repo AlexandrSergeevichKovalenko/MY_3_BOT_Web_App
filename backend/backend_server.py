@@ -10574,6 +10574,16 @@ def _fetch_perplexity_results(
     source_lang: str | None = None,
     target_lang: str | None = None,
 ) -> list[dict]:
+    # Cost-control gate (real money — Perplexity web search). When the weekly REAL-money
+    # ceiling is breached AND enforcement is on, skip the paid call; callers already treat
+    # an empty result list gracefully. Default OFF (shadow) -> no effect.
+    try:
+        from backend import spend_ceiling as _sc
+        if _sc.should_block_tier(_sc.TIER_HEAVY):
+            logging.info("Skill resources [%s] skipped: weekly spend ceiling reached (%s)", stage, log_context)
+            return []
+    except Exception:
+        pass
     api_key = str(os.getenv("PERPLEXITY_API_KEY") or "").strip()
     if not api_key:
         logging.warning("Skill resources [%s] skipped: PERPLEXITY_API_KEY is missing (%s)", stage, log_context)
