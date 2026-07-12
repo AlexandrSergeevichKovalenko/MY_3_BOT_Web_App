@@ -14859,7 +14859,7 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
 .youtube-desktop-status-chips {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
   flex-wrap: wrap;
   flex: 1 1 100%;
@@ -14889,8 +14889,16 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   color: var(--yt-text-secondary);
 }
 
+/* Tidy the wide-screen command bar (iPad landscape / browser). It used
+   justify-content:space-between (from .youtube-desktop-command-row) + a
+   flex:1 1 560px source group + margin-left:auto on the view group, which flung
+   the two button groups to opposite ends with a big empty gap and wrapped oddly
+   ("разбросанные значки"). Make it one clean LEFT-aligned wrapping toolbar with
+   consistent gaps. */
 .youtube-desktop-command-row-controls {
-  align-items: flex-start;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
 }
 
 .youtube-desktop-control-group {
@@ -14901,12 +14909,12 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
 }
 
 .youtube-desktop-control-group-source {
-  flex: 1 1 560px;
+  flex: 0 1 auto;
 }
 
 .youtube-desktop-control-group-view {
-  justify-content: flex-end;
-  margin-left: auto;
+  justify-content: flex-start;
+  margin-left: 0;
 }
 
 .youtube-command-action {
