@@ -4240,3 +4240,24 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   -webkit-tap-highlight-color: transparent;
 }
 .reader-original-nav:disabled { opacity: 0.32; }
+
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  STRUCTURE-AWARE TEXT (EPUB) — real headings & list items from the      │
+   │  book's own markup, so Text mode reads like Apple Books (not a blob).   │
+   │  Sizes in `em` so they scale with the reader font-size setting.         │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+.webapp-reader .reader-sentence.reader-blk-heading {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+.webapp-reader .reader-sentence.reader-blk-h1 { font-size: 1.62em; }
+.webapp-reader .reader-sentence.reader-blk-h2 { font-size: 1.38em; }
+.webapp-reader .reader-sentence.reader-blk-h3 { font-size: 1.2em; }
+.webapp-reader .reader-sentence.reader-blk-h4,
+.webapp-reader .reader-sentence.reader-blk-h5,
+.webapp-reader .reader-sentence.reader-blk-h6 { font-size: 1.08em; }
+.webapp-reader .reader-sentence.reader-blk-li::before {
+  content: '\2022\00a0';
+  opacity: 0.55;
+}

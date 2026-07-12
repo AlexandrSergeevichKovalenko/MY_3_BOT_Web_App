@@ -298,39 +298,21 @@ function normalizeReaderPaginationText(rawText) {
 }
 
 function normalizeReaderVisiblePageText(rawText) {
-  const paragraphs = String(rawText || '')
+  return String(rawText || '')
     // Strip "tofu" glyphs: Private-Use-Area, replacement/object-replacement, and
-    // non-printable control chars (keep \n, \t).
+    // non-printable control chars (keep \n, \t). Universally safe for any book.
     .replace(/[\uE000-\uF8FF\uFFFC\uFFFD]+/g, ' ')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]+/g, ' ')
-    // TABLE OF CONTENTS: a run of 4+ dot leaders followed by a page number
-    // ("Wiener Zeit....... 71") is one entry — turn it into its OWN line ending
-    // "... \u00B7 71" so the TOC reads as a list instead of a wall. (4+ dots, so a
-    // 3-dot prose ellipsis is never caught.)
+    // TABLE-OF-CONTENTS dot leaders ("Wiener Zeit....... 71"): a run of 4+ dots then
+    // a page number becomes its own line "title \u00B7 71" (universal TOC convention,
+    // language-independent; a 3-dot prose ellipsis is never caught).
     .replace(/(?:\s*[.\u00B7\u2022\u2219]\s*){4,}\s*([0-9]{1,4}|[IVXLCM]{1,7})\b/g, ' \u00B7 $1\n\n')
-    // Any remaining long dot-leader run \u2192 a single middot separator.
     .replace(/(?:\s*[.\u00B7\u2022\u2219]\s*){4,}/g, ' \u00B7 ')
     .replace(/\u2026{2,}/g, ' ')
     .split(/\n\n+/)
     .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
-    .filter(Boolean);
-  // Merge consecutive SHORT fragments that are not already complete — index/register
-  // pages extract each entry as its own tiny paragraph (huge gaps). A paragraph that
-  // ends in sentence punctuation OR a page number is "complete" and never absorbs the
-  // next one, so TOC entries (\u2026 \u00B7 71) stay one-per-line while stray index bits
-  // flow together. Prose paragraphs are long, so they never merge.
-  const SHORT = 48;
-  const isComplete = (t) => /[.!?:\u00BB\u201D")\]0-9]$/.test(t);
-  const merged = [];
-  for (const para of paragraphs) {
-    const prev = merged.length ? merged[merged.length - 1] : null;
-    if (prev !== null && prev.length < SHORT && !isComplete(prev) && para.length < SHORT) {
-      merged[merged.length - 1] = `${prev} ${para}`;
-    } else {
-      merged.push(para);
-    }
-  }
-  return merged.join('\n\n');
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 function normalizeReaderEpubHref(rawHref) {
@@ -14072,6 +14054,8 @@ function AppInner() {
       return readerPages.map((item, index) => ({
         page_number: Number(item?.page_number || index + 1),
         text: item ? String(item?.text || '').trim() : '',
+        // Semantic block ranges (headings / list items) for structure-aware render.
+        blocks: Array.isArray(item?.blocks) ? item.blocks : [],
       }));
     }
     if (!readerCanonicalText) return [];
@@ -14394,6 +14378,36 @@ function AppInner() {
   // converting a window char offset → its server page for audio.
   const readerWindowModelRef = useRef(null);
   useEffect(() => { readerWindowModelRef.current = readerWindowModel; }, [readerWindowModel]);
+  // Semantic blocks (headings / list items) for the current window/page, offsets
+  // translated into readerVisibleText coordinates so the render can style them.
+  const readerVisibleBlocks = useMemo(() => {
+    const out = [];
+    const pushPageBlocks = (pageNumber, base) => {
+      const blocks = readerDisplayPages[pageNumber - 1]?.blocks;
+      if (!Array.isArray(blocks)) return;
+      for (const b of blocks) {
+        if (b && (b.type === 'heading' || b.type === 'list-item')) {
+          out.push({ start: base + Number(b.start || 0), end: base + Number(b.end || 0), type: b.type, level: Number(b.level || 0) });
+        }
+      }
+    };
+    if (readerWindowModel && Array.isArray(readerWindowModel.offsets)) {
+      for (const off of readerWindowModel.offsets) pushPageBlocks(Number(off.page), Number(off.charStart || 0));
+    } else if (readerPageCount >= 1) {
+      pushPageBlocks(Number(readerCurrentPage || 1), 0);
+    }
+    out.sort((a, b) => a.start - b.start);
+    return out;
+  }, [readerWindowModel, readerDisplayPages, readerCurrentPage, readerPageCount]);
+  const readerBlockTypeAt = useCallback((charStart) => {
+    const blocks = readerVisibleBlocks;
+    // small linear scan is fine (few headings/list items per window)
+    for (let i = 0; i < blocks.length; i += 1) {
+      if (charStart >= blocks[i].start - 1 && charStart < blocks[i].end) return blocks[i];
+      if (blocks[i].start > charStart) break;
+    }
+    return null;
+  }, [readerVisibleBlocks]);
   // Single-server-page sources (plain text / URL) have no page-based progress —
   // the engine reports its visual reading fraction so % + bookmark still work.
   const handleReaderVisualProgress = useCallback((pct) => {
@@ -23037,10 +23051,18 @@ function AppInner() {
 
   const renderReaderStructuredText = () => (
     <div className="reader-container">
-      {readerSentencesModel.map((sentence) => (
+      {readerSentencesModel.map((sentence) => {
+        // Structure-aware styling: a sentence inside a heading/list-item block
+        // (from the EPUB's own markup) gets the matching class so it renders like a
+        // real heading / list item, Apple-Books style. Prose is the default.
+        const block = readerBlockTypeAt(sentence.start);
+        const blockClass = block
+          ? (block.type === 'heading' ? ` reader-blk-heading reader-blk-h${Math.min(6, Math.max(1, block.level || 2))}` : ' reader-blk-li')
+          : '';
+        return (
         <span
           key={sentence.sid}
-          className={`reader-sentence ${selectedSentenceIds.has(sentence.sid) ? 'is-selected' : ''}${readerAudioPlayingSid === sentence.sid ? ' is-playing-sentence' : ''}`}
+          className={`reader-sentence${blockClass} ${selectedSentenceIds.has(sentence.sid) ? 'is-selected' : ''}${readerAudioPlayingSid === sentence.sid ? ' is-playing-sentence' : ''}`}
           data-sid={sentence.sid}
           data-start={sentence.start}
           data-end={sentence.end}
@@ -23076,7 +23098,8 @@ function AppInner() {
             );
           })}
         </span>
-      ))}
+        );
+      })}
     </div>
   );
 

@@ -14745,6 +14745,172 @@ _EPUB_MAX_TOTAL_TEXT_CHARS = 3_000_000
 _EPUB_LEGACY_TRUNCATED_TOTAL_CHARS = 150_000
 
 
+from html.parser import HTMLParser as _StructHTMLParser
+
+_EPUB_HEADING_TAGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+_EPUB_PARAGRAPH_TAGS = {"p", "div", "section", "article", "blockquote"}
+_EPUB_SKIP_TAGS = {"script", "style", "noscript", "head", "title"}
+
+
+class _EpubStructureParser(_StructHTMLParser):
+    """Walk EPUB chapter HTML into ordered semantic blocks so the reader can render
+    real headings / list items / paragraphs (Apple-Books-like) instead of flat text.
+    Uses the document's OWN structure (tags) — no per-book guessing."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks: list[dict] = []
+        self._buf: list[str] = []
+        self._skip = 0
+        self._pending_type = "paragraph"
+        self._pending_level = 0
+
+    def _flush(self, block_type: str, level: int = 0):
+        raw = "".join(self._buf)
+        self._buf = []
+        text = " ".join(raw.split())
+        if text:
+            self.blocks.append({"type": block_type, "level": level, "text": text})
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in _EPUB_SKIP_TAGS:
+            self._skip += 1
+            return
+        if tag == "br":
+            self._buf.append(" ")
+            return
+        if tag in _EPUB_HEADING_TAGS:
+            self._flush("paragraph")
+            self._pending_type = "heading"
+            self._pending_level = _EPUB_HEADING_TAGS[tag]
+            return
+        if tag == "li":
+            self._flush("paragraph")
+            self._pending_type = "list-item"
+            self._pending_level = 0
+            return
+        if tag in _EPUB_PARAGRAPH_TAGS:
+            self._flush("paragraph")
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in _EPUB_SKIP_TAGS:
+            self._skip = max(0, self._skip - 1)
+            return
+        if tag in _EPUB_HEADING_TAGS:
+            self._flush("heading", self._pending_level)
+            self._pending_type = "paragraph"
+            self._pending_level = 0
+            return
+        if tag == "li":
+            self._flush("list-item")
+            self._pending_type = "paragraph"
+            return
+        if tag in _EPUB_PARAGRAPH_TAGS:
+            self._flush("paragraph")
+
+    def handle_data(self, data):
+        if self._skip <= 0 and data:
+            self._buf.append(data)
+
+    def close(self):
+        super().close()
+        self._flush("paragraph")
+
+
+def _extract_structured_from_html(raw_html: str) -> tuple[str, list[dict]]:
+    """Return (text, blocks). text = block texts joined by blank lines; blocks marks
+    the char ranges that are HEADINGS or LIST ITEMS (paragraphs are the default and
+    need no marker), as {start, end, type, level} offsets into text."""
+    parser = _EpubStructureParser()
+    try:
+        parser.feed(str(raw_html or ""))
+        parser.close()
+    except Exception:
+        return _extract_text_from_html(raw_html), []
+    parts: list[str] = []
+    ranges: list[dict] = []
+    pos = 0
+    for block in parser.blocks:
+        text = block.get("text") or ""
+        if not text:
+            continue
+        start = pos
+        end = start + len(text)
+        if block["type"] in ("heading", "list-item"):
+            ranges.append({"start": start, "end": end, "type": block["type"], "level": int(block.get("level") or 0)})
+        parts.append(text)
+        pos = end + 2  # "\n\n" separator
+    return "\n\n".join(parts), ranges
+
+
+def _split_chapter_into_pages_structured(
+    text: str, blocks: list[dict], chapter_title: str, page_offset: int
+) -> list[dict]:
+    """Like _split_chapter_into_pages but carries per-page block ranges (re-based to
+    each page's local char offsets) so heading/list styling survives pagination."""
+    def slice_blocks(page_text: str, base: int) -> list[dict]:
+        if not blocks:
+            return []
+        page_end = base + len(page_text)
+        out = []
+        for b in blocks:
+            bs, be = int(b["start"]), int(b["end"])
+            if be <= base or bs >= page_end:
+                continue
+            local_start = max(0, bs - base)
+            local_end = min(len(page_text), be - base)
+            if local_end > local_start:
+                out.append({"start": local_start, "end": local_end, "type": b["type"], "level": b.get("level", 0)})
+        return out
+
+    pages: list[dict] = []
+    if len(text) <= _EPUB_PAGE_SPLIT_CHARS:
+        page_text = text
+        pages.append({
+            "page_number": page_offset + 1,
+            "text": page_text,
+            "chapter_title": chapter_title,
+            "blocks": slice_blocks(page_text, 0),
+        })
+        return pages
+    # Walk paragraphs, tracking the running char base in the ORIGINAL text so block
+    # ranges stay aligned. Paragraphs are re-joined with the same "\n\n".
+    paragraphs = re.split(r"\n{2,}", text)
+    current_parts: list[str] = []
+    current_len = 0
+    page_base = 0  # char offset (in `text`) where the current page starts
+    cursor = 0     # char offset walked so far in `text`
+    for idx, para in enumerate(paragraphs):
+        sep = 2 if idx < len(paragraphs) - 1 else 0
+        stripped = para.strip()
+        if current_len > 0 and current_len + len(para) + 2 > _EPUB_PAGE_SPLIT_CHARS:
+            page_text = "\n\n".join(current_parts)
+            pages.append({
+                "page_number": page_offset + len(pages) + 1,
+                "text": page_text,
+                "chapter_title": chapter_title,
+                "blocks": slice_blocks(page_text, page_base),
+            })
+            current_parts = []
+            current_len = 0
+            page_base = cursor
+        if stripped:
+            current_parts.append(stripped)
+            current_len += len(stripped) + 2
+        cursor += len(para) + sep
+    if current_parts:
+        page_text = "\n\n".join(current_parts)
+        pages.append({
+            "page_number": page_offset + len(pages) + 1,
+            "text": page_text,
+            "chapter_title": chapter_title,
+            "blocks": slice_blocks(page_text, page_base),
+        })
+    return pages
+
+
 def _split_chapter_into_pages(text: str, chapter_title: str, page_offset: int) -> list[dict]:
     """Split a long chapter into ~_EPUB_PAGE_SPLIT_CHARS-char pages at paragraph boundaries."""
     if len(text) <= _EPUB_PAGE_SPLIT_CHARS:
@@ -14843,21 +15009,24 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
             continue
         if _is_epub_navigation_document(item, raw_html):
             continue
-        chapter_text = _extract_text_from_html(raw_html)
-        normalized = _normalize_reader_text(chapter_text, max_chars=50000)
+        # Structure-aware extraction: keep the document's own headings / lists /
+        # paragraphs. Do NOT re-normalize the text afterwards — that would shift the
+        # char offsets the block ranges point at (the parser already collapsed
+        # whitespace per block). Cap length by simple truncation instead.
+        normalized, chapter_blocks = _extract_structured_from_html(raw_html)
         if not normalized:
             continue
         remaining_chars = max(0, _EPUB_MAX_TOTAL_TEXT_CHARS - total_chars)
         if remaining_chars <= 0:
             break
-        if len(normalized) > remaining_chars:
-            normalized = _normalize_reader_text(normalized, max_chars=remaining_chars)
-            if not normalized:
-                break
+        cap = min(50000, remaining_chars)
+        if len(normalized) > cap:
+            normalized = normalized[:cap].rstrip()
+            chapter_blocks = [b for b in chapter_blocks if int(b["start"]) < len(normalized)]
         chapter_title = _extract_html_heading_title(raw_html, chapter_num)
         chunks.append(normalized)
         total_chars += len(normalized) + 2
-        sub_pages = _split_chapter_into_pages(normalized, chapter_title, len(pages))
+        sub_pages = _split_chapter_into_pages_structured(normalized, chapter_blocks, chapter_title, len(pages))
         pages.extend(sub_pages)
     # Re-number pages sequentially after all chapters are processed
     for i, p in enumerate(pages):
