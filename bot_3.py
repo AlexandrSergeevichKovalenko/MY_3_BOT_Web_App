@@ -3779,6 +3779,8 @@ async def _drip_delivery_job(context: CallbackContext) -> None:
     for u in users:
         try:
             uid = int(u.get("user_id") or 0)
+            if _is_synthetic_telegram_user_id(uid):
+                continue  # no card rendering / delivery for test/load users
             schedule = u.get("schedule")
             tz = u.get("tz_name")
             if not uid or not _now_in_window(schedule, tz):

@@ -40971,8 +40971,9 @@ def get_daily_interactive_activity(since_hours: int = 24) -> dict[int, dict[str,
     sql = (
         "SELECT user_id, category, SUM(answered)::int, SUM(correct)::numeric FROM (\n    "
         + "\n    UNION ALL\n    ".join(parts)
-        + "\n) t GROUP BY user_id, category"
+        + "\n) t WHERE user_id < %s GROUP BY user_id, category"  # exclude synthetic test/load users
     )
+    params.append(SYNTHETIC_TELEGRAM_USER_ID_MIN)
     out: dict[int, dict[str, list]] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -41251,6 +41252,13 @@ def mark_aufgabe_send_failed(aufgabe_id: str, *, retire_after: int = 3) -> None:
 # stays fresh and users don't keep seeing what everyone already knows. The retire is
 # logical (retired=TRUE) so the row stays for stats + dedup history.
 
+# Test/load users have IDs at/above this bound (env SYNTHETIC_TELEGRAM_USER_ID_MIN, kept
+# in sync with bot_3.py / backend_server.py). They are never real people, so they are
+# EXCLUDED from analytics, leaderboards and active-user counts. Filter in SQL with
+# `AND user_id < SYNTHETIC_TELEGRAM_USER_ID_MIN`.
+SYNTHETIC_TELEGRAM_USER_ID_MIN = max(
+    1, int((os.getenv("SYNTHETIC_TELEGRAM_USER_ID_MIN") or "9100000001").strip() or "9100000001"))
+
 _ACTIVE_USER_SOURCES = [
     ("bt_3_challenge_results", "created_at"),
     ("bt_3_aufgabe_answers", "answered_at"),
@@ -41278,8 +41286,9 @@ def count_active_users(days: int = 30) -> int:
                 with conn.cursor() as cur:
                     cur.execute(
                         f"SELECT DISTINCT user_id FROM {tbl} "
-                        f"WHERE {ts} >= NOW() - INTERVAL '1 day' * %s",  # noqa: S608 (names are constants)
-                        (int(days),),
+                        f"WHERE {ts} >= NOW() - INTERVAL '1 day' * %s "
+                        f"AND user_id < %s",  # noqa: S608 (names are constants) — exclude synthetic
+                        (int(days), SYNTHETIC_TELEGRAM_USER_ID_MIN),
                     )
                     for r in cur.fetchall() or []:
                         if r[0] is not None:
@@ -41735,8 +41744,9 @@ def active_user_ids_in_window(start, end) -> set[int]:
             with get_db_connection_context() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f"SELECT DISTINCT user_id FROM {tbl} WHERE {ts} >= %s AND {ts} < %s",  # noqa: S608
-                        (start, end),
+                        f"SELECT DISTINCT user_id FROM {tbl} WHERE {ts} >= %s AND {ts} < %s "
+                        f"AND user_id < %s",  # noqa: S608 — exclude synthetic test/load users
+                        (start, end, SYNTHETIC_TELEGRAM_USER_ID_MIN),
                     )
                     for r in cur.fetchall() or []:
                         if r[0] is not None:

@@ -110,7 +110,13 @@ def get_leaderboard_rows_since(since_hours: int) -> list:
 
 
 def get_quiz_leaderboard(days: int = 7) -> dict:
-    lb = compute_quiz_leaderboard(get_leaderboard_rows_since(int(days) * 24))
+    rows = get_leaderboard_rows_since(int(days) * 24) or []
+    try:  # exclude synthetic test/load users from the PUBLIC leaderboard
+        from backend.database import SYNTHETIC_TELEGRAM_USER_ID_MIN
+        rows = [r for r in rows if int(r.get("user_id") or 0) < SYNTHETIC_TELEGRAM_USER_ID_MIN]
+    except Exception:
+        pass
+    lb = compute_quiz_leaderboard(rows)
     # Backfill display names for players whose points came only from nameless sources
     # (Telegram-GROUP inline answers land in per-type tables that store no user_name), so
     # they don't degrade to the "Student" placeholder on the podium. Nomination dicts

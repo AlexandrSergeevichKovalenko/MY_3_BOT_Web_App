@@ -22294,6 +22294,8 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
 
         for user_id in user_ids:
             scanned_users += 1
+            if _is_synthetic_telegram_user_id(int(user_id)):
+                continue  # never spend OpenAI tokens prewarming test/load users
             if not _is_webapp_user_allowed(int(user_id)):
                 continue
             eligible_users += 1
