@@ -7149,6 +7149,13 @@ def _analytics_paid_gate_response(user_id: int) -> tuple[dict | None, int | None
 
 def _refresh_subscription_before_translation_start(user_id: int) -> None:
     user_id_value = int(user_id)
+    # Already-Pro (cached)? The live Stripe sync's eligibility gate skips active-paid users,
+    # so there's nothing to refresh — skip the uncached subscription read + sync entirely.
+    try:
+        if str(resolve_entitlement(user_id_value).get("effective_mode") or "free").strip().lower() != "free":
+            return
+    except Exception:
+        pass
     trace_request_id = getattr(g, "request_id", None) if has_request_context() else None
     trace_path = request.path if has_request_context() else None
     started_perf = time.perf_counter()
