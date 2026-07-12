@@ -8960,6 +8960,81 @@ async def _app_spend_ceiling_tick_job(context: CallbackContext) -> None:
                 pass
 
 
+def _reader_r2_orphan_sweep(dry_run: bool = True) -> dict:
+    """One-time reclaim: delete R2 reader objects (source PDF / page renders / per-page audio)
+    whose owning book no longer exists in bt_3_reader_library. dry_run=True only counts.
+    SAFE: the live (user,doc) set fetch RAISES on DB error (caller aborts) so a failed fetch
+    can never be mistaken for 'no live books' and wipe everything. Archived books stay live."""
+    from backend.database import get_all_reader_library_owner_doc_ids
+    from backend.r2_storage import r2_list_keys, r2_delete_keys
+    live = get_all_reader_library_owner_doc_ids()  # raises on DB error -> abort
+    prefixes = ("reader_source/", "reader_pages/", "reader-audio-pages/")
+    scanned = 0
+    orphan_keys: list[str] = []
+    orphan_bytes = 0
+    per_prefix: dict[str, dict] = {}
+    for pfx in prefixes:
+        p_obj = 0
+        p_bytes = 0
+        for key, size in r2_list_keys(pfx):
+            scanned += 1
+            parts = [x for x in key.split("/") if x]
+            if len(parts) < 3:
+                continue
+            try:
+                owner = (int(parts[1]), int(parts[2]))
+            except Exception:
+                continue
+            if owner not in live:
+                orphan_keys.append(key)
+                orphan_bytes += size
+                p_obj += 1
+                p_bytes += size
+        per_prefix[pfx] = {"objects": p_obj, "bytes": p_bytes}
+    deleted = 0
+    if not dry_run and orphan_keys:
+        deleted = r2_delete_keys(orphan_keys)
+    return {
+        "dry_run": bool(dry_run),
+        "scanned": scanned,
+        "live_docs": len(live),
+        "orphan_objects": len(orphan_keys),
+        "orphan_bytes": orphan_bytes,
+        "deleted": deleted,
+        "per_prefix": per_prefix,
+    }
+
+
+async def reader_r2_orphans_command(update: Update, context: CallbackContext) -> None:
+    """Admin: reclaim orphaned reader R2 storage. '/reader_r2_orphans' = dry-run (count only);
+    '/reader_r2_orphans delete' = actually delete."""
+    user = update.effective_user
+    if not user or not _is_admin_user(int(user.id)):
+        return
+    args = context.args or []
+    do_delete = bool(args) and str(args[0]).strip().lower() in ("delete", "del", "run", "yes", "go")
+    await update.message.reply_text(
+        "🧹 Удаляю осиротевшие объекты R2 ридера…" if do_delete
+        else "🔎 Считаю осиротевшие объекты R2 ридера (dry-run)…"
+    )
+    try:
+        res = await asyncio.to_thread(_reader_r2_orphan_sweep, not do_delete)
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Ошибка sweep (ничего не удалено): {exc}")
+        return
+    mb = res["orphan_bytes"] / 1024 / 1024
+    head = "🗑 Удалено" if not res["dry_run"] else "🔎 Найдено (dry-run)"
+    lines = [
+        f"{head}: {res['orphan_objects']} объектов, ~{mb:.1f} МБ",
+        f"Живых книг: {res['live_docs']} · просканировано объектов: {res['scanned']}",
+    ]
+    for pfx, st in res["per_prefix"].items():
+        lines.append(f"• {pfx} — {st['objects']} сирот, ~{st['bytes'] / 1024 / 1024:.1f} МБ")
+    if res["dry_run"] and res["orphan_objects"]:
+        lines.append("\nУдалить: /reader_r2_orphans delete")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def handle_appcap_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     admin = update.effective_user
@@ -35213,6 +35288,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
+    application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
     application.add_handler(CallbackQueryHandler(handle_admin_commands_callback, pattern=r"^admincmd:"))
     application.add_handler(CallbackQueryHandler(handle_describe_new_callback, pattern=r"^dnew_"))
     # Early group: capture an admin's typed custom description after «✏️ Своё» (consumes

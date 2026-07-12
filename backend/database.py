@@ -28145,6 +28145,21 @@ def archive_reader_library_document(
     return _reader_library_row_to_dict(row, include_content=False)
 
 
+def get_all_reader_library_owner_doc_ids() -> set[tuple[int, int]]:
+    """Every LIVE (user_id, document_id) reader-library row — used to detect orphaned R2
+    objects (reader_source/reader_pages/reader-audio-pages keyed by {uid}/{doc}). RAISES on
+    DB error on purpose: a caller must NOT treat a failed fetch as 'no live docs' and delete
+    everything. Archived books are still live rows here, so their storage is preserved."""
+    result: set[tuple[int, int]] = set()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT user_id, id FROM bt_3_reader_library;")
+            for uid, did in cursor.fetchall() or []:
+                if uid is not None and did is not None:
+                    result.add((int(uid), int(did)))
+    return result
+
+
 def delete_reader_library_document(
     *,
     user_id: int,

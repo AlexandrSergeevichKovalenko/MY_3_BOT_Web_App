@@ -214,6 +214,36 @@ def r2_delete_prefix(prefix: str) -> int:
     return deleted
 
 
+def r2_list_keys(prefix: str):
+    """Yield (key, size_bytes) for every object under a prefix (read-only). For orphan sweeps."""
+    prefix = str(prefix or "").strip().lstrip("/")
+    if not prefix:
+        return
+    cfg = load_r2_config_from_env()
+    client = _r2_client()
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=cfg.bucket_name, Prefix=prefix):
+        for obj in (page.get("Contents") or []):
+            key = str(obj.get("Key") or "").strip()
+            if key:
+                yield key, int(obj.get("Size") or 0)
+
+
+def r2_delete_keys(keys) -> int:
+    """Batch-delete a specific list of object keys. Returns the count issued for deletion."""
+    key_list = [str(k).strip() for k in (keys or []) if str(k).strip()]
+    if not key_list:
+        return 0
+    cfg = load_r2_config_from_env()
+    client = _r2_client()
+    deleted = 0
+    for i in range(0, len(key_list), 1000):  # delete_objects handles up to 1000 keys/call
+        batch = [{"Key": k} for k in key_list[i:i + 1000]]
+        client.delete_objects(Bucket=cfg.bucket_name, Delete={"Objects": batch, "Quiet": True})
+        deleted += len(batch)
+    return deleted
+
+
 def r2_get_bytes(object_key: str) -> bytes | None:
     cfg = load_r2_config_from_env()
     key = _normalize_object_key(object_key)
