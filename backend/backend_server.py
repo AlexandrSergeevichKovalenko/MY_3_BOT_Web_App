@@ -7101,6 +7101,16 @@ def _paid_surface_gate_response(
     feature: str,
     feature_title: str,
 ) -> tuple[dict | None, int | None]:
+    # Fast path via the Redis-cached entitlement (Phase 2.1): an already-Pro user passes the
+    # gate instantly — 1 Redis GET, no Postgres read, no live Stripe sync. We only fall back
+    # to the full live-refresh path when the CACHED answer looks FREE, so a user who JUST
+    # subscribed (webhook maybe not arrived) is still caught before we deny them.
+    try:
+        cached = resolve_entitlement(int(user_id))  # bare call -> cached read path
+        if str(cached.get("effective_mode") or "free").strip().lower() != "free":
+            return None, None
+    except Exception:
+        pass
     entitlement, _subscription = _resolve_user_entitlement(
         user_id=int(user_id),
         now_ts_utc=datetime.now(timezone.utc),
@@ -25830,10 +25840,11 @@ def artikel_submit():
 
 
 def _artikel_user_is_pro(user_id: int) -> bool:
+    # Cached read path (Phase 2.1) — no per-request DB read / Stripe sync for a game gate;
+    # the cache busts on subscription change.
     try:
-        ent, _sub = _resolve_user_entitlement(
-            user_id=int(user_id), now_ts_utc=datetime.now(timezone.utc), tz="Europe/Vienna")
-        return str(ent.get("effective_mode") or "free").lower() in {"pro", "trial"}
+        ent = resolve_entitlement(int(user_id))
+        return str(ent.get("effective_mode") or "free").strip().lower() != "free"
     except Exception:
         return False
 
