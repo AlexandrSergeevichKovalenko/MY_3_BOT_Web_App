@@ -17345,8 +17345,33 @@ async def log_translation_mistake(user_id, original_text, user_translation, cate
     print(f"✅ Все ошибки успешно обработаны!")
 
 
+async def _bot_cost_cap_block(message, user_id: int) -> bool:
+    """Per-user daily EUR cost cap (Free €0.2 / Pro €0.5) for BOT-SIDE paid ops (the Mini-App
+    already enforces it in the request guard; the bot did not). Cheap: cached entitlement +
+    one spent-today sum. Returns True (and shows a clean message) when the cap is hit — the
+    caller should then abort the paid operation. Fail-open on any error."""
+    try:
+        from backend.database import enforce_daily_cost_cap
+        err = await asyncio.to_thread(enforce_daily_cost_cap, int(user_id), None, "Europe/Vienna")
+    except Exception:
+        return False
+    if not err:
+        return False
+    try:
+        cap = float(err.get("cap_eur") or 0)
+        spent = float(err.get("spent_eur") or 0)
+        await message.reply_text(
+            "🚫 На сегодня достигнут дневной лимит по затратам "
+            f"(€{spent:.2f} из €{cap:.2f}). Он обновится после полуночи.\n"
+            "Если нужно больше — оформите Pro в приложении."
+        )
+    except Exception:
+        pass
+    return True
+
+
 async def check_user_translation(update: Update, context: CallbackContext, translation_text=None):
-    
+
     if update.message is None or update.message.text is None:
         logging.warning("⚠️ update.message отсутствует в check_user_translation().")
         return
@@ -17373,6 +17398,10 @@ async def check_user_translation(update: Update, context: CallbackContext, trans
     # Получаем ID пользователя
     user_id = update.message.from_user.id
     username = update.message.from_user.first_name
+
+    # Per-user daily cost cap (bot-side) — abort before the paid LLM translation check.
+    if await _bot_cost_cap_block(update.message, int(user_id)):
+        return
 
     # Подключаемся к базе данных
     conn = get_db_connection()
