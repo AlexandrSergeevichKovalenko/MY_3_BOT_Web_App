@@ -290,12 +290,67 @@
     border-radius: 15px !important;
   }
   .webapp-page.is-home-bento .hdt-ic svg { width: 56% !important; height: 56% !important; }
-  .webapp-page.is-home-bento .hdt-bl,
+  /* Подписи крупнее + жирнее + перенос длинных нем. слов (без обрезки). */
+  .webapp-page.is-home-bento .hdt-bl {
+    font-size: clamp(15.5px, 2.35vh, 19px) !important;
+    font-weight: 800 !important;
+    line-height: 1.16 !important;
+    overflow-wrap: anywhere;
+    word-break: normal;
+    hyphens: auto;
+  }
   .webapp-page.is-home-bento .hdt-bt.hero .hdt-bl {
-    font-size: clamp(14px, 2vh, 17px) !important;
-    line-height: 1.15 !important;
+    font-size: clamp(17px, 2.8vh, 22px) !important;
+    font-weight: 700 !important;
   }
   .webapp-page.is-home-bento .hdt-bars { height: clamp(20px, 3vh, 34px) !important; }
+
+  /* 8. ШАПКА (home) как аккуратная hero-карта. Было: аватар-кнопка висела
+     ПОСРЕДИ карточки (в конце .topbar-row-main сразу за заголовком), а контролы
+     ломались в 2 ряда. Стало: аватар слева как бренд-иконка (order:-1), бренд,
+     контролы одной строкой справа. Только home — бренд-строки рендерятся лишь тут. */
+  .webapp-page.is-home-bento .webapp-topbar {
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 16px !important;
+    padding: 14px 20px !important;
+    border-radius: 22px !important;
+    background: #FBFAF7 !important;
+    border: 1px solid #E8E6DE !important;
+    box-shadow: 0 6px 18px rgba(40, 38, 30, 0.05) !important;
+    margin-top: 4px !important;
+  }
+  .webapp-page:not(.is-theme-light).is-home-bento .webapp-topbar {
+    background: rgba(255, 255, 255, 0.05) !important;
+    border-color: rgba(255, 255, 255, 0.08) !important;
+    box-shadow: none !important;
+  }
+  .webapp-page.is-home-bento .topbar-row-main {
+    display: flex !important;
+    align-items: center !important;
+    gap: 14px !important;
+    flex: 1 1 auto !important;
+  }
+  .webapp-page.is-home-bento .topbar-profile {
+    order: -1 !important;
+    margin: 0 !important;
+    flex: 0 0 auto !important;
+  }
+  .webapp-page.is-home-bento .topbar-avatar {
+    width: 54px !important;
+    height: 54px !important;
+    border-radius: 16px !important;
+  }
+  .webapp-page.is-home-bento .topbar-title { flex: 0 1 auto !important; }
+  .webapp-page.is-home-bento .topbar-row-controls {
+    order: 5 !important;
+    flex: 0 0 auto !important;
+  }
+  .webapp-page.is-home-bento .topbar-controls {
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    gap: 10px !important;
+  }
 
   /* 7. Широкий браузер (не планшет): 4 колонки × 3 ряда вместо 3×4. */
   @media (min-width: 1120px) {
