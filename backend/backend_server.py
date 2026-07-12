@@ -7064,6 +7064,19 @@ def _resolve_user_entitlement(
             cursor=cursor,
         )
         return entitlement, {}
+    # Fast path (Phase 2.1): if the CACHED entitlement already says Pro, skip the uncached
+    # subscription read + live Stripe sync and return it. This is behavior-preserving — the
+    # live sync deliberately NEVER re-verifies an already-active-paid user (see its eligibility
+    # gate), so for a Pro user the old path already did nothing but extra queries. Only
+    # free/lapsed/unknown users fall through to the full refresh below (to catch a NEW sub).
+    # Guarded on subscription/cursor None so row-consuming callers (billing status) are unaffected.
+    if subscription is None and cursor is None:
+        try:
+            _cached_ent = resolve_entitlement(int(user_id))
+        except Exception:
+            _cached_ent = None
+        if _cached_ent is not None and str(_cached_ent.get("effective_mode") or "free").strip().lower() != "free":
+            return _cached_ent, {}
     subscription_row = dict(subscription) if isinstance(subscription, dict) else (get_user_subscription(int(user_id)) or {})
     if refresh_from_stripe:
         subscription_row = _sync_user_subscription_from_live_stripe(
