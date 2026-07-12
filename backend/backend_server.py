@@ -41408,15 +41408,15 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
         return {"allowed": False, "reason": _gate_reason,
                 "message": _gate_extra.get("message", "Лимит запусков исчерпан."), "blocks_sent": 0}, 200
 
-    if _gate_reason == "pro_grace":
-        # The one courtesy run past the Pro daily cap: we STILL process it (the shortcut
-        # already deleted the photos, so dropping would lose them) but warn the user not
-        # to send more today. 4th+ runs are dropped above.
-        logging.info("shortcut_lookup: Pro daily-limit GRACE run user_id=%s (processed + warned)", user_id)
-        try:
-            _notify_shortcut_run_status(int(user_id), "pro_grace", _gate_extra)
-        except Exception:
-            logging.debug("pro-grace DM dispatch failed", exc_info=True)
+    # Proactive: if this APPROVED Pro run was the LAST one of the day (the 2nd), softly
+    # warn the user now — «you've used both sends today, don't send more» — so the next
+    # run is a conscious choice on their side (and their shortcut can stop on it).
+    try:
+        if (_gate_extra.get("is_pro") and not _gate_extra.get("is_admin")
+                and int(_gate_extra.get("used_today", 0)) + 1 >= _SHORTCUT_RUN_PRO_DAILY):
+            _notify_shortcut_run_status(int(user_id), "pro_used_up", _gate_extra)
+    except Exception:
+        logging.debug("pro-used-up DM dispatch failed", exc_info=True)
 
     # Write raw text to Redis immediately so bot_3.py can find it even before
     # BACKGROUND_JOBS processes the Dramatiq job (avoids the "no pending" race condition).
@@ -42868,15 +42868,12 @@ def _shortcut_run_gate(user_id: int) -> tuple[bool, str, dict]:
     if not is_admin:
         if is_pro:
             used_today = count_shortcut_runs_today(int(user_id))
-            if used_today > _SHORTCUT_RUN_PRO_DAILY:
-                # 4th+ run today: hard block + DROP (the user was warned on the grace run).
+            base["used_today"] = used_today
+            if used_today >= _SHORTCUT_RUN_PRO_DAILY:
+                # Hard daily cap — no grace. The user is warned right after the 2nd send
+                # («all sends used today»), so a 3rd is on them. DROP (don't process/save).
                 return False, "pro_daily", {**base, "used": used_today, "limit": _SHORTCUT_RUN_PRO_DAILY,
-                    "message": f"Лимит Pro — {_SHORTCUT_RUN_PRO_DAILY} перевода в день — уже исчерпан. Больше сегодня не отправляй: фото удалятся, а перевод не придёт. Завтра утром снова доступно."}
-            if used_today == _SHORTCUT_RUN_PRO_DAILY:
-                # The run right AFTER the daily limit: the shortcut has already deleted the
-                # photos, so DROPPING would lose them. Process this ONE anyway (grace) and
-                # warn the user not to send more today. Bypasses the window check on purpose.
-                return True, "pro_grace", {**base, "used": used_today, "limit": _SHORTCUT_RUN_PRO_DAILY}
+                    "message": f"Лимит Pro — {_SHORTCUT_RUN_PRO_DAILY} отправки в день — уже исчерпан. Больше сегодня не отправляй. Завтра утром снова доступно."}
         elif total_runs >= _SHORTCUT_RUN_FREE_TOTAL:
             return False, "free_total", {**base, "used": total_runs, "limit": _SHORTCUT_RUN_FREE_TOTAL,
                 "message": f"Бесплатные пробные запуски ({_SHORTCUT_RUN_FREE_TOTAL}) закончились. Оформите Pro, чтобы пользоваться дальше."}
@@ -42915,8 +42912,9 @@ def _shortcut_send_dm(user_id: int, caption: str, poster, *, pro_button: bool) -
 
 def _notify_shortcut_run_status(user_id: int, reason: str, extra: dict) -> None:
     """Friendly DM when a run is limited. free_total = trial ended (once EVER, Free upsell).
-    pro_grace = the courtesy run was processed but warn «don't send more today» (once/DAY).
-    pro_daily = 4th+ run was DROPPED (once/day). Guards stop it nagging on every retry."""
+    pro_used_up = the 2nd (last) send of the day just went through — soft «you're out for
+    today» warning. pro_daily = a 3rd+ run was DROPPED. Both Pro cases share ONE DM/day
+    (the proactive pro_used_up normally fires first). Guards stop it nagging on retries."""
     try:
         import datetime as _dt
         today = _dt.date.today().isoformat()
@@ -42935,8 +42933,8 @@ def _notify_shortcut_run_status(user_id: int, reason: str, extra: dict) -> None:
                 "Поэтому последняя операция <b>не прошла</b> — фото не переведены.\n\n"
                 "Хочешь пользоваться дальше — оформи <b>Pro</b> 👇")
             _shortcut_send_dm(user_id, caption, poster, pro_button=True)
-        elif reason in ("pro_grace", "pro_daily"):
-            # one DM per day covers both the grace warning and any later drops
+        elif reason in ("pro_used_up", "pro_daily"):
+            # one DM per day covers both the proactive «you're out» and any later drop
             if not mark_announcement_sent(int(user_id), f"shortcut_pro_daily_{today}"):
                 return
             limit = int(extra.get("limit") or _SHORTCUT_RUN_PRO_DAILY)
@@ -42945,15 +42943,14 @@ def _notify_shortcut_run_status(user_id: int, reason: str, extra: dict) -> None:
                 poster = render_shortcut_pro_limit_card(limit=limit)
             except Exception:
                 poster = None
-            if reason == "pro_grace":
-                caption = (f"⏳ <b>Сегодняшний лимит исчерпан</b>\n\n"
-                    f"На Pro доступно <b>{limit}</b> авто-перевода в день. Этот набор мы <b>обработали и пришлём</b> — "
-                    "ты ничего не потерял.\n\n"
-                    "❗️Но <b>больше сегодня не запускай</b> «Ночной Переводчик»: следующие фото просто удалятся из папки, "
+            if reason == "pro_used_up":
+                caption = (f"✅ <b>На сегодня всё — обе отправки пришли</b>\n\n"
+                    f"На Pro доступно <b>{limit}</b> отправки в день (в каждой — до 25 фото), в утренние часы.\n\n"
+                    "❗️<b>Больше сегодня не запускай</b> «Ночной Переводчик»: следующие фото просто удалятся из папки, "
                     "а перевод не придёт. Завтра утром снова доступно.")
             else:
                 caption = (f"🚫 <b>Лимит на сегодня исчерпан</b>\n\n"
-                    f"На Pro — <b>{limit}</b> авто-перевода в день. Этот запуск <b>не обработан</b>, фото из папки удалены.\n\n"
+                    f"На Pro — <b>{limit}</b> отправки в день. Этот запуск <b>не обработан</b>, фото из папки удалены.\n\n"
                     "Не запускай больше сегодня — завтра утром снова доступно.")
             _shortcut_send_dm(user_id, caption, poster, pro_button=False)
     except Exception:
