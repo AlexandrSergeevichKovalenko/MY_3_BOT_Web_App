@@ -9682,9 +9682,10 @@ ONBOARDING_NUDGE_MAX_TOTAL = max(1, int((os.getenv("ONBOARDING_NUDGE_MAX_TOTAL")
 ONBOARDING_NUDGE_BATCH = max(1, int((os.getenv("ONBOARDING_NUDGE_BATCH") or "300").strip() or "300"))
 
 
-async def _send_tour_invite(context: CallbackContext, chat_id: int, *, announce: bool) -> bool:
+async def _send_tour_invite(context: CallbackContext, chat_id: int, *, announce: bool) -> tuple[bool, str | None]:
     """Send the branded tour-invite card + «🚀 Пройти тур» / «Позже».
-    announce=True → the one-time «bot updated» card; False → a gentle nudge."""
+    announce=True → the one-time «bot updated» card; False → a gentle nudge.
+    Returns (ok, error_reason) — reason is the exception name on failure (for reports)."""
     if announce:
         title = "Бот обновился"
         subtitle = "Загляни на быстрый тур — узнай все возможности за пару минут."
@@ -9717,14 +9718,14 @@ async def _send_tour_invite(context: CallbackContext, chat_id: int, *, announce:
                 await context.bot.send_message(
                     chat_id=int(chat_id), text=caption, parse_mode="HTML",
                     reply_markup=kb, suppress_private_keyboard_attach=True)
-            return True
+            return True, None
         except RetryAfter as exc:
             if attempt == 2:
-                return False
+                return False, "RetryAfter"
             await asyncio.sleep(max(1, int(getattr(exc, "retry_after", 1))))
-        except Exception:
-            return False
-    return False
+        except Exception as exc:
+            return False, type(exc).__name__
+    return False, "unknown"
 
 
 async def _tour_later_callback(update: Update, context: CallbackContext) -> None:
@@ -9782,32 +9783,54 @@ async def _onboarding_announce_command(update: Update, context: CallbackContext)
     except Exception:
         pass
     await message.reply_text(f"📣 Рассылаю анонс тура… кандидатов: {len(ids)}")
-    sent = skipped = failed = 0
+    sent = 0
+    skip_admin = skip_synth = skip_seen = skip_done = 0
+    err_counts: dict[str, int] = {}
     for idx, uid in enumerate(ids, start=1):
         try:
             uid = int(uid)
-            if uid in admin_ids or _is_synthetic_telegram_user_id(uid):
-                skipped += 1
+            if uid in admin_ids:
+                skip_admin += 1
+                continue
+            if _is_synthetic_telegram_user_id(uid):
+                skip_synth += 1
                 continue
             if await asyncio.to_thread(was_announcement_sent, uid, ONBOARDING_TOUR_ANNOUNCE_KEY):
-                skipped += 1
+                skip_seen += 1
                 continue
             st = await asyncio.to_thread(get_onboarding_state, uid)
             if st and st.get("completed"):
-                skipped += 1
+                skip_done += 1
                 continue
-            if await _send_tour_invite(context, uid, announce=True):
+            ok, err = await _send_tour_invite(context, uid, announce=True)
+            if ok:
                 await asyncio.to_thread(mark_announcement_sent, uid, ONBOARDING_TOUR_ANNOUNCE_KEY)
                 sent += 1
             else:
-                failed += 1
-        except Exception:
-            failed += 1
+                key = err or "unknown"
+                err_counts[key] = err_counts.get(key, 0) + 1
+        except Exception as exc:
+            key = type(exc).__name__
+            err_counts[key] = err_counts.get(key, 0) + 1
             logging.warning("onboarding announce loop failed uid=%s", uid, exc_info=True)
         if idx % 20 == 0:
             await asyncio.sleep(1.0)
+    total_skipped = skip_admin + skip_synth + skip_seen + skip_done
+    total_failed = sum(err_counts.values())
+    err_detail = ", ".join(f"{k}×{v}" for k, v in sorted(err_counts.items(), key=lambda x: -x[1])) if err_counts else "—"
     await message.reply_text(
-        f"✅ Анонс тура: отправлено {sent}, пропущено (уже прошли/были) {skipped}, ошибок {failed}.")
+        "✅ <b>Анонс тура завершён</b>\n"
+        f"Кандидатов: <b>{len(ids)}</b>\n"
+        f"📨 Отправлено: <b>{sent}</b>\n"
+        f"⏭ Пропущено: <b>{total_skipped}</b>\n"
+        f"   • тест/синтетические: {skip_synth}\n"
+        f"   • админы: {skip_admin}\n"
+        f"   • уже получали анонс: {skip_seen}\n"
+        f"   • уже прошли онбординг: {skip_done}\n"
+        f"⚠️ Ошибок доставки: <b>{total_failed}</b> ({err_detail})\n"
+        "<i>Ошибки — это обычно те, кто заблокировал бота или удалил аккаунт (Forbidden/BadRequest). "
+        "Норма для любой рассылки. Синтетическим/тест-юзерам анонс НЕ уходит.</i>",
+        parse_mode="HTML")
 
 
 async def _onboarding_nudge_job(context: CallbackContext) -> None:
@@ -9839,7 +9862,8 @@ async def _onboarding_nudge_job(context: CallbackContext) -> None:
     logging.info("onboarding nudge job: %s target(s)", len(targets))
     for idx, uid in enumerate(targets, start=1):
         try:
-            if await _send_tour_invite(context, int(uid), announce=False):
+            ok, _err = await _send_tour_invite(context, int(uid), announce=False)
+            if ok:
                 await asyncio.to_thread(record_onboarding_nudge, int(uid))
         except Exception:
             logging.warning("onboarding nudge failed uid=%s", uid, exc_info=True)
