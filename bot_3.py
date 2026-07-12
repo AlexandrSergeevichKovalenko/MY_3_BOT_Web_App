@@ -19492,6 +19492,7 @@ async def send_daily_summary(context: CallbackContext):
     candidate_user_ids.update({int(row[0]) for row in rows if row and row[0] is not None})
     if not candidate_user_ids:
         candidate_user_ids.update(await _collect_scheduler_candidate_user_ids(lookback_days=30))
+    candidate_user_ids = {u for u in candidate_user_ids if not _is_synthetic_telegram_user_id(u)}
 
     display_names = await _resolve_report_display_names(context, candidate_user_ids, all_users)
     delivery_map = await _build_user_delivery_map(context, candidate_user_ids, job_name="send_daily_summary")
@@ -19637,6 +19638,7 @@ async def send_progress_report(context: CallbackContext):
     candidate_user_ids.update({int(row[0]) for row in rows if row and row[0] is not None})
     if not candidate_user_ids:
         candidate_user_ids.update(await _collect_scheduler_candidate_user_ids(lookback_days=30))
+    candidate_user_ids = {u for u in candidate_user_ids if not _is_synthetic_telegram_user_id(u)}
 
     display_names = await _resolve_report_display_names(context, candidate_user_ids, all_users)
     delivery_map = await _build_user_delivery_map(context, candidate_user_ids, job_name="send_progress_report")

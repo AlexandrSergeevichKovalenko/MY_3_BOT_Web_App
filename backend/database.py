@@ -37929,11 +37929,11 @@ def get_story_leaderboard(story_id: int) -> list[dict]:
                     COUNT(tv.id) AS peoples_votes
                 FROM bt_story_scores sc
                 LEFT JOIN bt_translation_votes tv ON tv.score_id = sc.id
-                WHERE sc.story_id = %s
+                WHERE sc.story_id = %s AND sc.user_id < %s
                 GROUP BY sc.id
                 ORDER BY sc.total_score DESC, sc.created_at ASC;
                 """,
-                (story_id,),
+                (story_id, SYNTHETIC_TELEGRAM_USER_ID_MIN),
             )
             rows = cursor.fetchall()
     return [
@@ -41040,6 +41040,8 @@ def get_group_untimed_answers_since(since_hours: int = 24) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(sql, params)
             for key, uid, is_correct in (cursor.fetchall() or []):
+                if int(uid) >= SYNTHETIC_TELEGRAM_USER_ID_MIN:
+                    continue  # exclude synthetic from champion counting
                 rows.append({"challenge_key": str(key), "user_id": int(uid), "name": "",
                              "is_correct": bool(is_correct), "time_ms": None})
     return rows
@@ -41076,6 +41078,8 @@ def get_sprint_leaderboard_rows_since(since_hours: int = 24) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(sql, (int(since_hours), int(since_hours), int(since_hours)))
             for key, uid, name, score in (cursor.fetchall() or []):
+                if int(uid) >= SYNTHETIC_TELEGRAM_USER_ID_MIN:
+                    continue  # exclude synthetic from the sprint leaderboard rows
                 sc = float(score or 0)
                 rows.append({"challenge_key": str(key), "user_id": int(uid), "name": str(name or ""),
                              "is_correct": sc >= 0.5, "time_ms": None, "score": sc})
