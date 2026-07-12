@@ -13160,6 +13160,35 @@ def _enforce_google_translate_user_daily_cap(requested_chars: int) -> None:
         )
 
 
+class ProviderBudgetExceededError(RuntimeError):
+    """Raised before a paid call when a provider hits its FREE-tier monthly budget, so the
+    translate cascade falls through to the next provider's free tier (like Google does)."""
+
+    def __init__(self, message, payload=None):
+        super().__init__(message)
+        self.payload = payload or {}
+
+
+def _enforce_provider_monthly_budget(provider: str, requested_units: int, units_type: str = "chars") -> None:
+    """Hard-stop a paid provider once it reaches its FREE-tier monthly budget (or is admin-blocked),
+    so the translate cascade rides each provider's free tier IN ORDER instead of one silently
+    going paid. Fail-open on any lookup error (never break translation because the budget status
+    couldn't be read). Mirrors _enforce_google_translate_monthly_budget for the other providers."""
+    try:
+        status = get_provider_monthly_budget_status(provider=str(provider).strip().lower(), units_type=units_type)
+    except Exception:
+        return
+    if not status:
+        return
+    limit = int(status.get("effective_limit_units") or 0)
+    used = float(status.get("used_units") or 0.0)
+    if bool(status.get("is_blocked")) or (limit > 0 and used + max(0, int(requested_units or 0)) > limit):
+        raise ProviderBudgetExceededError(
+            f"{provider} monthly free-tier budget reached: {int(used)} + {int(requested_units)} > {limit} {units_type}",
+            payload={"provider": provider, "unit": units_type, "used": int(used), "limit": limit},
+        )
+
+
 def _enforce_google_translate_monthly_budget(requested_chars: int) -> dict:
     requested_value = max(0, int(requested_chars or 0))
     status = get_google_translate_monthly_budget_status()
@@ -16565,6 +16594,10 @@ def _force_translate_text(
             if provider_name == "google_translate":
                 _enforce_google_translate_user_daily_cap(len(cleaned))
                 _enforce_google_translate_monthly_budget(len(cleaned))
+            elif provider_name == "azure_translator":
+                _enforce_provider_monthly_budget("azure_translator", len(cleaned))
+            elif provider_name == "deepl_free":
+                _enforce_provider_monthly_budget("deepl_free", len(cleaned))
             payload = provider_fn(cleaned, source_lang, target_lang)
             translated = str((payload or {}).get("translation") or "").strip()
             if translated:
@@ -32683,6 +32716,10 @@ def translate_quick():
                     if provider_name == "google_translate":
                         _enforce_google_translate_user_daily_cap(len(text))
                         _enforce_google_translate_monthly_budget(len(text))
+                    elif provider_name == "azure_translator":
+                        _enforce_provider_monthly_budget("azure_translator", len(text))
+                    elif provider_name == "deepl_free":
+                        _enforce_provider_monthly_budget("deepl_free", len(text))
                     res = translate_func(text, source_lang, target_lang)
                     provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)
                     if _has_translation(res):
