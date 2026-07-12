@@ -12442,6 +12442,25 @@ def _billing_log_openai_usage(
             )
         except Exception as exc:
             logging.debug("billing tokens_out skipped: %s", exc)
+    # Fix C: emit a 'requests' row so the economics report's "N запросов" / per-user req counts
+    # include the web tier (the bot tier already does this). Count-only, no cost (dollars ride
+    # on the token rows above). Idempotent via the ':req' seed.
+    try:
+        log_billing_event(
+            idempotency_key=f"req_{hashlib.sha1((seed + ':req').encode('utf-8', 'ignore')).hexdigest()[:30]}",
+            user_id=int(user_id) if user_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            action_type=action_type,
+            provider="openai",
+            units_type="requests",
+            units_value=1.0,
+            currency=BILLING_CURRENCY_DEFAULT,
+            status="estimated",
+            metadata=dict(base_meta),
+        )
+    except Exception as exc:
+        logging.debug("billing requests skipped: %s", exc)
 
 
 def _billing_log_stripe_payment_fee(
@@ -58308,6 +58327,21 @@ def explain_webapp_translation():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    # 2.3b: wire the previously-dead per-user daily COUNT cap for the (heavy, OpenAI) explain
+    # feature. Complements the EUR cap already on this endpoint — a ceiling on the NUMBER of
+    # explains regardless of cost. Free-tier only (Pro bypasses); idempotent per content.
+    _explain_key = hashlib.sha1(f"{original_text}|{user_translation}|{mode}".encode("utf-8", "ignore")).hexdigest()[:24]
+    _explain_reservation = reserve_free_feature_usage(
+        user_id=int(user_id),
+        feature_key="dictionary_openai_explanation_daily",
+        idempotency_key=f"explain:webapp:{int(user_id)}:{_explain_key}",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={"origin": "webapp_explain", "mode": mode},
+        tz="Europe/Vienna",
+    )
+    if _explain_reservation.get("blocked"):
+        return jsonify(_explain_reservation.get("error") or build_free_limit_error("dictionary_openai_explanation_daily", used=5, tz="Europe/Vienna")), 429
     # Explanation language for the teacher-grade breakdown: 🇩🇪 checkbox → target_lang,
     # otherwise the learner's source language (RU by default).
     req_explain_lang = str(payload.get("explanation_language") or "").strip().lower()
