@@ -522,7 +522,11 @@
      ширину контейнера. Исключаем home (.is-home-bento): у него своя раскладка
      (bento сам центрируется max-width:720). На телефоне (<700px) правило не
      действует — весь блок под @media (min-width:700px). */
-  .webapp-page.is-telegram-tablet:not(.is-home-bento) .webapp-main {
+  /* NB: NOT gated on .is-telegram-tablet — that class is Telegram-only (never set
+     in a plain browser, see App.jsx: the setter effect returns early without
+     telegramApp). This whole block is @media (min-width:700px), so it covers BOTH
+     the browser and the tablet, and leaves the phone (<700px) alone. */
+  .webapp-page:not(.is-home-bento) .webapp-main {
     /* width:100% is the ACTUAL cure — .webapp-main was sizing to its content
        (~289px, centered) instead of stretching to the shell, so every section
        looked like a narrow column. grid-template-columns just laid out its

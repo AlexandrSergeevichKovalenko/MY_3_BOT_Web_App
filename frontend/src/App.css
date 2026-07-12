@@ -14623,63 +14623,59 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   TABLET — YouTube/Видео «Вариант B»: плеер-герой сверху + транскрипт снизу.
-   iPad сваливался в мобильную раскладку (всё ≤900px): крошечный плеер, узкая
-   колонка. Здесь НИЧЕГО не удаляется и не переносится — существующая (мобильная)
-   разметка со всеми кнопками/функциями просто раскладывается по-планшетному:
-   секция на всю ширину, большой 16:9-плеер (высота ограничена, чтобы транскрипт
-   был виден в любой ориентации), высокий транскрипт DE|RU. Классовый скоуп
-   .is-telegram-tablet бьёт мобильные @media(max-width:900px) по специфичности.
-   Телефон (<700px, без класса планшета) не затронут. */
+   TABLET + БРАУЗЕР — YouTube/Видео «Вариант B»: плеер-герой сверху + транскрипт
+   снизу. iPad сваливался в мобильную раскладку (всё ≤900px): крошечный плеер,
+   узкая колонка; в браузере — та же беда. НИЧЕГО не удаляется и не переносится —
+   существующая разметка со всеми кнопками/функциями просто раскладывается:
+   секция на всю ширину, большой 16:9-плеер (высота ≤ ~52vh, чтобы транскрипт был
+   виден в любой ориентации), высокий транскрипт DE|RU.
+   Scope = @media (min-width:700px), БЕЗ .is-telegram-tablet (этот класс Telegram-
+   only, в браузере не ставится). Планшет всегда ≥700, поэтому покрываем и его, и
+   браузер; телефон <700 не затронут. Селекторы с .webapp-page бьют мобильные
+   @media(max-width:900px) по специфичности в диапазоне 700–900. */
+@media (min-width: 700px) {
+  /* 1. Секция и вложенные гриды — на всю ширину (иначе схлопываются по контенту). */
+  .webapp-page .webapp-video-dictionary,
+  .webapp-page .webapp-video {
+    grid-template-columns: minmax(0, 1fr) !important;
+    width: 100%;
+  }
 
-/* 1. Секция и вложенные гриды — на всю ширину (иначе схлопываются по контенту,
-      как это было с .webapp-main). */
-.webapp-page.is-telegram-tablet .webapp-video-dictionary,
-.webapp-page.is-telegram-tablet .webapp-video {
-  grid-template-columns: minmax(0, 1fr) !important;
-  width: 100%;
-}
+  /* 2. Плеер — большой герой 16:9, высота ≤ ~52vh (кап на SHELL); фрейму width:100%
+        (иначе пустой фрейм схлопывается в 2px-линию). */
+  .webapp-page .youtube-player-card { width: 100%; display: flex; flex-direction: column; align-items: center; }
+  .webapp-page .webapp-video-player-shell { width: 100%; }
+  .webapp-page .webapp-video-player-shell:not(.is-app-fullscreen) {
+    max-width: min(100%, calc(52vh * 16 / 9));
+    margin: 0 auto;
+  }
+  .webapp-page .webapp-video-player-shell:not(.is-app-fullscreen) .webapp-video-frame {
+    width: 100%;
+  }
 
-/* 2. Плеер — большой герой 16:9, высота ≤ ~52vh. Кап ставим на SHELL (через
-      высоту), а фрейму даём width:100% — иначе пустой фрейм (нет видео)
-      схлопывается в 2px-линию. Проверено на скомпилированном CSS. */
-.webapp-page.is-telegram-tablet .youtube-player-card { width: 100%; }
-.webapp-page.is-telegram-tablet .webapp-video-player-shell { width: 100%; }
-.webapp-page.is-telegram-tablet .webapp-video-player-shell:not(.is-app-fullscreen) {
-  max-width: min(100%, calc(52vh * 16 / 9));
-  margin: 0 auto;
-}
-.webapp-page.is-telegram-tablet .webapp-video-player-shell:not(.is-app-fullscreen) .webapp-video-frame {
-  width: 100%;
-}
+  /* 3. Транскрипт — высокий, заполняет место под плеером (было min(24-26vh)). */
+  .webapp-page .webapp-subtitles-list,
+  .webapp-page .webapp-video .webapp-subtitles:first-of-type .webapp-subtitles-list,
+  .webapp-page .webapp-video .webapp-subtitles.is-translation .webapp-subtitles-list {
+    max-height: min(38vh, 520px) !important;
+  }
 
-/* 3. Транскрипт — высокий, заполняет пространство под плеером (было min(24-26vh)). */
-.webapp-page.is-telegram-tablet .webapp-subtitles-list,
-.webapp-page.is-telegram-tablet .webapp-video .webapp-subtitles:first-of-type .webapp-subtitles-list,
-.webapp-page.is-telegram-tablet .webapp-video .webapp-subtitles.is-translation .webapp-subtitles-list {
-  max-height: min(38vh, 520px) !important;
-}
+  /* 4. Шапка/контролы (мобильная разметка) — просторнее и в строку. На браузере
+        ≥901px показывается desktop-панель, и эти правила там просто не действуют. */
+  .webapp-page .webapp-video .webapp-local-section-head { padding: 16px 20px; }
+  .webapp-page .youtube-player-first-controls-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .webapp-page .youtube-player-first-controls-row > * { flex: 1 1 auto; }
 
-/* 4. Шапка/контролы (мобильная разметка) — просторнее и в строку. Все кнопки
-      сохранены, просто дышат. */
-.webapp-page.is-telegram-tablet .webapp-video .webapp-local-section-head {
-  padding: 16px 20px;
-}
-.webapp-page.is-telegram-tablet .youtube-player-first-controls-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.webapp-page.is-telegram-tablet .youtube-player-first-controls-row > * {
-  flex: 1 1 auto;
-}
-
-/* 5. Форма поиска/смены видео — комфортная ширина по центру, не растянута в нить
-      и не на весь экран. */
-.webapp-page.is-telegram-tablet .webapp-video-form.youtube-setup-form {
-  max-width: 760px;
-  width: 100%;
-  margin: 0 auto;
+  /* 5. Форма поиска/смены видео — комфортная ширина по центру. */
+  .webapp-page .webapp-video-form.youtube-setup-form {
+    max-width: 760px;
+    width: 100%;
+    margin: 0 auto;
+  }
 }
 
 @media (max-width: 900px) {
