@@ -178,7 +178,9 @@ const READER_PAGINATION_FIT_RESERVE_PX = 32;
 // disappears for normal reading. First-window generation is a bit longer,
 // but later windows are prefetched during playback so it stays hidden.
 const READER_AUDIO_WINDOW_MAX_PAGES = 12;
-const READER_AUDIO_WINDOW_MAX_CHARS = 7000;
+// Smaller window (5000, was 7000) = less TTS synthesised per clip → lower cost, at
+// the price of slightly more window boundaries (still seamless via prefetch).
+const READER_AUDIO_WINDOW_MAX_CHARS = 5000;
 // Cold-start window: the FIRST synthesis after a word-tap (or a jump) is kept
 // down to ~1 backend TTS chunk (the backend fits ~1200 raw chars per Google TTS
 // round-trip; a full 7000-char window is ~6 sequential round-trips ≈ ~60s before
@@ -5824,6 +5826,11 @@ function AppInner() {
   const [readerAudioElGen, setReaderAudioElGen] = useState(0); // bumped on swap to re-trigger effects
   const readerAudioPlayingForPageRef = useRef(null);
   const readerAudioRequestTokenRef = useRef(0);
+  // Deferred next-window prefetch: instead of synthesising the next window the moment
+  // a clip starts (paying TTS for audio the user may never reach), we set a gate here
+  // and only run it once the CURRENT clip is ~60% played — by then the user has
+  // committed to listening on, so the prefetch is very unlikely to be wasted.
+  const readerAudioPrefetchGateRef = useRef(null); // { run, fired } | null
   const readerAudioPrefetchTimeoutRef = useRef(null);
   const readerAudioPageCacheRef = useRef(new Map());
   const readerAudioPageRequestsRef = useRef(new Map());
@@ -14652,6 +14659,21 @@ function AppInner() {
     }
     return null;
   }, [readerAudioPlayingWid, readerSentencesModel]);
+
+  // Fire the deferred next-window prefetch once the current clip is ~60% played.
+  // Duration is read from the CURRENT clip's word timings at fire time, so this works
+  // for both audio engines (they both update readerAudioPlayPosition in ms).
+  useEffect(() => {
+    const gate = readerAudioPrefetchGateRef.current;
+    if (!gate || gate.fired) return;
+    const wt = readerAudioPlayData?.word_timings;
+    if (!Array.isArray(wt) || !wt.length) return;
+    const durationMs = Number(wt[wt.length - 1]?.end_ms || 0);
+    if (durationMs > 0 && Number(readerAudioPlayPosition || 0) >= 0.6 * durationMs) {
+      gate.fired = true;
+      try { gate.run?.(); } catch (_e) { /* prefetch is best-effort */ }
+    }
+  }, [readerAudioPlayPosition, readerAudioPlayData]);
 
   const readerElapsedTotalSeconds = Math.max(0, Number(readerAccumulatedSeconds || 0) + Number(readerLiveSeconds || 0));
   const readerSwipeThreshold = readerSwipeSensitivity === 'high' ? 24 : readerSwipeSensitivity === 'low' ? 52 : 36;
@@ -24183,30 +24205,25 @@ function AppInner() {
           }
         }
       };
+      // Defer the next-window prefetch to ~60% of THIS clip (via the gate), and only
+      // ONE window ahead (dropped the 2nd/trailing prefetch) — cuts TTS spent on audio
+      // the reader may never reach.
       const nextWindow = buildReaderAudioWindow((playbackWindow.endPage || page) + 1);
-      if (nextWindow?.combinedText) {
-        loadReaderAudioPageData({
-          targetPage: nextWindow.startPage,
-          targetVoice: voice,
-          targetRate: readerAudioRate,
-          targetText: nextWindow.combinedText,
-          token: null,
-          prefetchOnly: true,
-          browserPreload: true,
-        }).catch(() => {});
-        const trailingWindow = buildReaderAudioWindow(nextWindow.endPage + 1);
-        if (trailingWindow?.combinedText) {
+      readerAudioPrefetchGateRef.current = {
+        fired: false,
+        run: () => {
+          if (!nextWindow?.combinedText) return;
           loadReaderAudioPageData({
-            targetPage: trailingWindow.startPage,
+            targetPage: nextWindow.startPage,
             targetVoice: voice,
             targetRate: readerAudioRate,
-            targetText: trailingWindow.combinedText,
+            targetText: nextWindow.combinedText,
             token: null,
             prefetchOnly: true,
-            browserPreload: false,
+            browserPreload: true,
           }).catch(() => {});
-        }
-      }
+        },
+      };
       const data = await loadReaderAudioPageData({
         targetPage: playbackWindow.startPage,
         targetVoice: voice,
@@ -24458,6 +24475,7 @@ function AppInner() {
 
   const stopReaderAudioPlay = useCallback(() => {
     readerAudioRequestTokenRef.current += 1;
+    readerAudioPrefetchGateRef.current = null; // cancel any pending deferred prefetch
     if (readerAudioPrefetchTimeoutRef.current) {
       window.clearTimeout(readerAudioPrefetchTimeoutRef.current);
       readerAudioPrefetchTimeoutRef.current = null;
@@ -24653,7 +24671,8 @@ function AppInner() {
 
       await engine.start(key, { offsetSec, rate, audibleEndSec: audibleBoundsOf(data).endSec });
       startWebRafRef.current?.();
-      prefetchNextWindowRef.current?.(win, voice, rate);
+      // Defer next-window prefetch to ~60% of this clip (see the gate effect).
+      readerAudioPrefetchGateRef.current = { fired: false, run: () => prefetchNextWindowRef.current?.(win, voice, rate) };
     } catch (err) {
       setReaderAudioPlayLoading(false);
       throw err;
@@ -24772,7 +24791,11 @@ function AppInner() {
     setReaderAudioCurrentPageCharOffset(clip.window.segments[0]?.charStart || 0);
     setReaderAudioPlayData(clip.data);
     readerAudioPagesPlayedRef.current += Number(clip.segments?.length || 1);
-    prefetchNextWindowRef.current?.(clip.window, readerAudioVoice || '', readerAudioRate || 1);
+    // Defer the following window's prefetch to ~60% of this newly-active clip.
+    readerAudioPrefetchGateRef.current = {
+      fired: false,
+      run: () => prefetchNextWindowRef.current?.(clip.window, readerAudioVoice || '', readerAudioRate || 1),
+    };
   };
 
   // Keep the delegation ref pointing at the latest web-audio play fn.
