@@ -8841,6 +8841,107 @@ async def handle_admin_economics_callback(update: Update, context: CallbackConte
     await query.answer("Некорректная кнопка.", show_alert=True)
 
 
+# ── Cost-control Phase 1: app-wide weekly spend-ceiling tick + admin buttons ──
+# Heavy lifting lives in backend/spend_ceiling.py (imported lazily → no import cycle).
+# SHADOW-FIRST: the tick only DMs admins with soft/hard alerts; it pauses the "heavy"
+# tier ONLY when APP_SPEND_CEILING_ENFORCE is enabled. Nothing here blocks users by default.
+def _app_spend_ceiling_enforce_enabled() -> bool:
+    return (os.getenv("APP_SPEND_CEILING_ENFORCE", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _app_spend_ceiling_tick_job(context: CallbackContext) -> None:
+    try:
+        from backend import spend_ceiling as _sc
+        decision = await asyncio.to_thread(_sc.evaluate_ceiling)
+    except Exception:
+        logging.debug("spend-ceiling tick: evaluate failed", exc_info=True)
+        return
+    if not isinstance(decision, dict) or decision.get("error"):
+        return
+    try:
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    except Exception:
+        admin_ids = []
+    if not admin_ids:
+        return
+
+    # 1) Alerts — deduped inside evaluate_ceiling via notified_thresholds (fire once/week).
+    text = None
+    if decision.get("hard_newly"):
+        text = _sc.format_hard_alert(decision)
+    elif decision.get("new_soft"):
+        text = _sc.format_soft_alert(decision)
+    if text:
+        try:
+            kb = _sc.build_appcap_keyboard()
+        except Exception:
+            kb = None
+        for aid in admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=aid, text=text, parse_mode="HTML",
+                    reply_markup=kb, suppress_private_keyboard_attach=True,
+                )
+            except Exception:
+                logging.debug("spend-ceiling alert DM failed aid=%s", aid, exc_info=True)
+
+    # 2) Auto-stop of the heavy tier — ONLY when explicitly enabled (shadow-first).
+    if not _app_spend_ceiling_enforce_enabled() or not decision.get("hard"):
+        return
+    should_block = bool(decision.get("should_block_now"))
+    if not should_block:
+        gd = decision.get("grace_deadline")
+        if gd:
+            try:
+                should_block = datetime.now(timezone.utc) >= datetime.fromisoformat(str(gd))
+            except Exception:
+                should_block = False
+    if should_block and "heavy" not in (decision.get("blocked_tiers") or []):
+        try:
+            await asyncio.to_thread(_sc.set_tier_blocked, [_sc.TIER_HEAVY])
+        except Exception:
+            logging.debug("spend-ceiling auto-stop failed", exc_info=True)
+            return
+        for aid in admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=aid,
+                    text="⛔ Авто-стоп: тяжёлые функции остановлены (превышен недельный потолок затрат). "
+                         "Дешёвое ядро (перевод, словарь) работает. Добавь бюджет кнопкой, чтобы возобновить.",
+                    parse_mode="HTML", suppress_private_keyboard_attach=True,
+                )
+            except Exception:
+                pass
+
+
+async def handle_appcap_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")   # appcap:add:5 | appcap:stop | appcap:why
+    action = parts[1] if len(parts) > 1 else ""
+    amount = parts[2] if len(parts) > 2 else None
+    await query.answer("Секунду…", show_alert=False)
+    try:
+        from backend import spend_ceiling as _sc
+        result = await asyncio.to_thread(_sc.apply_appcap_action, action, amount=amount, admin_id=int(admin.id))
+    except Exception:
+        logging.debug("appcap action failed", exc_info=True)
+        try:
+            await query.message.reply_text("Не получилось выполнить действие. Подробности в логах.")
+        except Exception:
+            pass
+        return
+    try:
+        await query.message.reply_text(str(result.get("text") or "Готово."), parse_mode="HTML")
+    except Exception:
+        pass
+
+
 async def handle_tts_budget_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     admin = update.effective_user
@@ -35035,6 +35136,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_user_removal_action, pattern=r"^userpurge:(confirm|cancel):"))
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
+    application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
     application.add_handler(CallbackQueryHandler(handle_admin_commands_callback, pattern=r"^admincmd:"))
     application.add_handler(CallbackQueryHandler(handle_describe_new_callback, pattern=r"^dnew_"))
     # Early group: capture an admin's typed custom description after «✏️ Своё» (consumes
@@ -35207,6 +35309,7 @@ def main():
                 application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
+                application.job_queue.run_repeating(_app_spend_ceiling_tick_job, interval=int(os.getenv("APP_SPEND_CEILING_TICK_SECONDS", "120") or 120), first=90),
             ),
             enabled=True,
             category="housekeeping",
