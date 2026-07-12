@@ -182,6 +182,129 @@
     grid-auto-rows: 140px !important;
   }
 
+  /* =====================================================================
+     ВАРИАНТ A — «Rail + Grid» стартового экрана (планшет + браузер).
+     Чиним раздутый телефонный bento: «Heute» уходит в ЛЕВЫЙ РЕЛЬС, справа —
+     ровная сетка равных плиток. Всё пиним в один экран (адаптив по высоте) без
+     скролла; иконки/подписи крупнее. Ничего не убрано. Только home
+     (.is-home-bento) — секции и прочие экраны не затронуты. Телефон (<700px)
+     не входит: весь блок под @media (min-width:700px). Сайдбар в DOM не
+     рендерится, поэтому flex-пин shell/main безопасен на любой ширине. */
+
+  /* 1. Пин страницы в высоту вьюпорта — без вертикального скролла. */
+  .webapp-page.is-home-bento {
+    height: var(--app-height, 100dvh) !important;
+    overflow: hidden !important;
+  }
+  .webapp-page.is-home-bento .webapp-shell {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 auto;
+    min-height: 0 !important;
+  }
+  .webapp-page.is-home-bento .webapp-main {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    padding-bottom: 22px !important;
+  }
+
+  /* 2. .hdt-root → 2 колонки: рельс (today) + правая (head + bento). */
+  .webapp-page.is-home-bento .hdt-root {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid !important;
+    grid-template-columns: clamp(232px, 24%, 300px) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "today head" "today bento";
+    column-gap: 20px;
+    row-gap: 14px;
+    padding-bottom: 0 !important;
+  }
+
+  /* 3. Рельс «Heute»: метрики вертикально, заполняют высоту. */
+  .webapp-page.is-home-bento .hdt-today-card {
+    grid-area: today;
+    margin: 0 !important;
+    display: flex;
+    min-height: 0;
+  }
+  .webapp-page.is-home-bento .hdt-today-inner {
+    display: flex !important;
+    flex-direction: column;
+    width: 100%;
+    padding: 18px !important;
+  }
+  .webapp-page.is-home-bento .hdt-metrics {
+    grid-template-columns: 1fr !important;
+    grid-auto-rows: minmax(0, 1fr);
+    flex: 1 1 auto;
+    gap: 12px !important;
+  }
+  .webapp-page.is-home-bento .hdt-metric {
+    align-items: flex-start !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    padding: clamp(12px, 2.2vh, 20px) 16px !important;
+  }
+  .webapp-page.is-home-bento .hdt-metric-val { font-size: clamp(26px, 4.2vh, 38px) !important; }
+  .webapp-page.is-home-bento .hdt-metric-lbl { font-size: 13px !important; text-align: left !important; }
+  .webapp-page.is-home-bento .hdt-plan-bar { width: 100% !important; }
+
+  /* 4. Заголовок «Bereiche» — над сеткой в правой колонке. */
+  .webapp-page.is-home-bento .hdt-section-head {
+    grid-area: head;
+    padding: 2px 2px 0 !important;
+    align-self: end;
+  }
+
+  /* 5. Bento → равномерная сетка 3×4, заполняет высоту, БЕЗ журнальных 2×2. */
+  .webapp-page.is-home-bento .hdt-bento {
+    grid-area: bento;
+    max-width: none !important;
+    margin: 0 !important;
+    min-height: 0;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    grid-template-rows: repeat(4, minmax(0, 1fr)) !important;
+    grid-auto-rows: minmax(0, 1fr) !important;
+    gap: 12px !important;
+    padding: 0 !important;
+  }
+  /* сброс журнальной раскладки — плитки равные, поток слева-направо. */
+  .webapp-page.is-home-bento .hdt-bt,
+  .webapp-page.is-home-bento .hdt-bento[data-no-eco] .hdt-a-su {
+    grid-area: auto !important;
+  }
+
+  /* 6. Внутренности плитки крупнее (планшет), масштаб по высоте с клампами. */
+  .webapp-page.is-home-bento .hdt-bt {
+    padding: clamp(13px, 1.9vh, 19px) !important;
+    border-radius: 20px !important;
+  }
+  .webapp-page.is-home-bento .hdt-ic,
+  .webapp-page.is-home-bento .hdt-bt.hero .hdt-ic {
+    width: clamp(40px, 5.2vh, 54px) !important;
+    height: clamp(40px, 5.2vh, 54px) !important;
+    border-radius: 15px !important;
+  }
+  .webapp-page.is-home-bento .hdt-ic svg { width: 56% !important; height: 56% !important; }
+  .webapp-page.is-home-bento .hdt-bl,
+  .webapp-page.is-home-bento .hdt-bt.hero .hdt-bl {
+    font-size: clamp(14px, 2vh, 17px) !important;
+    line-height: 1.15 !important;
+  }
+  .webapp-page.is-home-bento .hdt-bars { height: clamp(20px, 3vh, 34px) !important; }
+
+  /* 7. Широкий браузер (не планшет): 4 колонки × 3 ряда вместо 3×4. */
+  @media (min-width: 1120px) {
+    .webapp-page.is-home-bento:not(.is-telegram-tablet) .hdt-bento {
+      grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+      grid-template-rows: repeat(3, minmax(0, 1fr)) !important;
+    }
+  }
+
   /* ============ СЕТКА РАЗДЕЛОВ (legacy — теперь только HomeMoreTiles) ============ */
   .hdt-grid {
     grid-template-columns: repeat(5, 1fr) !important;
