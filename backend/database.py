@@ -17411,6 +17411,7 @@ def grant_pro_days(user_id: int, days: int = 1, reason: str = "streak") -> bool:
                     VALUES (%s, GREATEST(NOW(), COALESCE(%s, NOW()), COALESCE(%s, NOW())) + (%s || ' days')::interval, %s);
                 """, (int(user_id), cur_until, paid_end, int(days), str(reason)))
             conn.commit()
+        _bust_entitlement_cache(int(user_id))  # earned Pro changed → re-resolve next request
         return True
     except Exception:
         logging.warning("grant_pro_days failed user=%s", user_id, exc_info=True)
@@ -32272,6 +32273,7 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
             row = cursor.fetchone()
     if not row:
         raise RuntimeError("Failed to bind stripe customer to user subscription")
+    _bust_entitlement_cache(int(user_id_value))  # subscription row changed → re-resolve
     return _subscription_row_to_dict(row)
 
 
@@ -32384,6 +32386,7 @@ def set_subscription_from_stripe(
             row = cursor.fetchone()
     if not row:
         raise RuntimeError("Failed to upsert Stripe subscription")
+    _bust_entitlement_cache(user_id_value)  # Stripe webhook changed the plan → re-resolve
     return _subscription_row_to_dict(row)
 
 
@@ -33532,6 +33535,15 @@ def _pro_denylist() -> set[int]:
     return out
 
 
+def _bust_entitlement_cache(user_id: int) -> None:
+    """Invalidate a user's cached entitlement after any plan-change write (Stripe/grant/bind)."""
+    try:
+        from backend import entitlement_cache as _ent_cache
+        _ent_cache.invalidate(int(user_id))
+    except Exception:
+        pass
+
+
 def resolve_entitlement(
     user_id: int,
     now_ts_utc: datetime | None = None,
@@ -33539,6 +33551,20 @@ def resolve_entitlement(
     subscription: dict | None = None,
     cursor=None,
 ) -> dict:
+    # Hot-path cache (2.1): a user's plan/cap doesn't change second-to-second, so serve the
+    # resolved entitlement from Redis and skip the 2 Postgres reads (subscription + earned-Pro
+    # grant). Only the plain READ path is cached (no transactional cursor, no pre-fetched sub,
+    # default time). Busted on plan-change events (Stripe webhook / DAU grant / bind).
+    # Fail-open: a cache miss falls straight through to the live DB path below.
+    _cacheable = cursor is None and subscription is None and now_ts_utc is None
+    if _cacheable:
+        try:
+            from backend import entitlement_cache as _ent_cache
+            _cached = _ent_cache.get(int(user_id))
+        except Exception:
+            _cached = None
+        if _cached is not None:
+            return _cached
     now_utc = _to_aware_datetime(now_ts_utc)
     if isinstance(subscription, dict):
         subscription_row = dict(subscription)
@@ -33636,7 +33662,7 @@ def resolve_entitlement(
         else str(free_plan.get("name") or "Free")
     )
 
-    return {
+    result = {
         "user_id": int(user_id),
         "plan_code": effective_plan_code,
         "plan_name": effective_plan_name,
@@ -33647,6 +33673,13 @@ def resolve_entitlement(
         "cap_eur": float(cap_eur) if cap_eur is not None else None,
         "reset_at": _next_local_midnight_iso(now_utc, tz=tz),
     }
+    if _cacheable:
+        try:
+            from backend import entitlement_cache as _ent_cache
+            _ent_cache.set(int(user_id), result)
+        except Exception:
+            pass
+    return result
 
 
 def enforce_daily_cost_cap(
