@@ -18,6 +18,21 @@ import { guessPair, buildDictionarySavePayload } from './saveUtils';
 
 const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 
+// Tablet/wide-screen (iPad etc.) — NOT a handset. Mirrors detectTabletLikeViewport
+// in App.jsx. On tablet the quick-dict should open FULLSCREEN like the main app
+// (Telegram otherwise presents it as a narrow ~20% compact sheet). Phones untouched.
+function isTabletLikeViewport() {
+  try {
+    const w = window.innerWidth || 0;
+    const h = window.innerHeight || 0;
+    const ua = String(navigator.userAgent || '');
+    if (/iPhone|iPod|Windows Phone|Android.*Mobile/i.test(ua)) return false;
+    const isIPadDesktopUA = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1;
+    const isTabletUA = /iPad|Tablet|PlayBook|Silk|Android(?!.*Mobile)/i.test(ua) || isIPadDesktopUA;
+    return isTabletUA || w >= 700 || (Math.max(w, h) >= 1000 && Math.min(w, h) >= 600);
+  } catch (_e) { return false; }
+}
+
 const LANG_NAMES = { ru: 'Русский', de: 'Deutsch' };
 
 // Effective direction: an explicit user choice (forced) wins; otherwise auto from
@@ -122,6 +137,13 @@ export default function DictionaryOverlay() {
     try {
       tg?.ready?.();
       tg?.expand?.();
+      // On tablet, request true fullscreen so the quick-dict fills the screen like
+      // the main app instead of Telegram's narrow compact sheet. Phone untouched;
+      // older clients that lack requestFullscreen simply reject (caught).
+      if (isTabletLikeViewport() && typeof tg?.requestFullscreen === 'function') {
+        Promise.resolve(tg.requestFullscreen()).catch(() => { /* unsupported client */ });
+        try { document.documentElement.setAttribute('data-dq-tablet', '1'); } catch (_e) { /* ignore */ }
+      }
       tg?.setHeaderColor?.('secondary_bg_color');
       tg?.disableVerticalSwipes?.();
     } catch (_e) { /* ignore */ }

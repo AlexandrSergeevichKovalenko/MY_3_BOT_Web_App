@@ -32,6 +32,21 @@
   padding-right: 10px;
 }
 
+/* Tablet (iPad etc.): the quick-dict now opens FULLSCREEN (see DictionaryOverlay),
+   so let the card fill the screen proportionally instead of sitting at 480px in a
+   sea of empty space. `data-dq-tablet` is set on <html> by DictionaryOverlay ONLY
+   on tablet — phones keep the compact 480px card untouched. Internal design is
+   unchanged; only the container width + gutters scale up, adaptively. */
+[data-dq-tablet] .ans-root.dq-scroll {
+  padding-left: clamp(16px, 4vw, 48px);
+  padding-right: clamp(16px, 4vw, 48px);
+}
+[data-dq-tablet] .ans-root.dq-scroll .ans-card {
+  max-width: min(960px, 100%);
+  padding-left: clamp(16px, 3vw, 32px);
+  padding-right: clamp(16px, 3vw, 32px);
+}
+
 .dq-card { gap: 14px; }
 
 /* ── Full-dict Search: compact controls + big input (quick-dict style) ───────── */
