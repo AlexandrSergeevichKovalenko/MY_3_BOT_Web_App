@@ -9035,6 +9035,35 @@ async def reader_r2_orphans_command(update: Update, context: CallbackContext) ->
     await update.message.reply_text("\n".join(lines))
 
 
+async def backfill_billing_prices_command(update: Update, context: CallbackContext) -> None:
+    """Admin: retroactively price historical OpenAI token events that were logged at $0 before
+    price snapshots existed. '/backfill_billing_prices' = dry-run; add 'apply' to write."""
+    user = update.effective_user
+    if not user or not _is_admin_user(int(user.id)):
+        return
+    args = context.args or []
+    do_apply = bool(args) and str(args[0]).strip().lower() in ("apply", "run", "yes", "go", "delete")
+    await update.message.reply_text(
+        "💵 Применяю бэкфилл цен OpenAI…" if do_apply else "💵 Считаю бэкфилл цен OpenAI (dry-run)…"
+    )
+    try:
+        from backend.database import backfill_openai_billing_costs
+        res = await asyncio.to_thread(backfill_openai_billing_costs, dry_run=not do_apply)
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Ошибка бэкфилла (ничего не изменено): {exc}")
+        return
+    head = "✅ Применено" if not res["dry_run"] else "🔎 Dry-run"
+    lines = [
+        f"{head}: {res['priced']} строк оценено, +${res['added_usd']:.4f}",
+        f"Просканировано: {res['scanned']} · без цены (нет snapshot/модели): {res['unpriced']}",
+    ]
+    if res["dry_run"] and res["priced"]:
+        lines.append("\nПрименить: /backfill_billing_prices apply")
+    elif res["dry_run"] and not res["priced"]:
+        lines.append("\nНечего бэкфиллить (нет $0-событий с ценой). Убедись, что Fix A env выставлен + сервис передеплоился.")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def r2_usage_command(update: Update, context: CallbackContext) -> None:
     """Admin: real R2 storage size per top-level prefix (read-only). Use it to see whether any
     remaining prefix (tts_legacy, support_attachments, pool art, …) is worth cleaning."""
@@ -35316,6 +35345,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
     application.add_handler(CommandHandler("r2_usage", r2_usage_command))
+    application.add_handler(CommandHandler("backfill_billing_prices", backfill_billing_prices_command))
     application.add_handler(CallbackQueryHandler(handle_admin_commands_callback, pattern=r"^admincmd:"))
     application.add_handler(CallbackQueryHandler(handle_describe_new_callback, pattern=r"^dnew_"))
     # Early group: capture an admin's typed custom description after «✏️ Своё» (consumes

@@ -30296,6 +30296,78 @@ def get_effective_billing_price_snapshot(
     }
 
 
+def _resolve_openai_backfill_price(model: str, unit: str) -> dict | None:
+    """Current price snapshot for an OpenAI token unit, trying the exact (dated) model SKU then
+    the date-stripped family SKU (mirrors _openai_priced_sku). as_of defaults to now so the
+    CURRENT price applies to historical events."""
+    kind = "input" if str(unit) == "tokens_in" else "output"
+    exact = f"{str(model).strip()}_{kind}"
+    snap = get_effective_billing_price_snapshot(provider="openai", sku=exact, unit=unit)
+    if snap:
+        return snap
+    family = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", str(model).strip())
+    if family and family != str(model).strip():
+        snap = get_effective_billing_price_snapshot(provider="openai", sku=f"{family}_{kind}", unit=unit)
+    return snap
+
+
+def backfill_openai_billing_costs(*, dry_run: bool = True) -> dict:
+    """Recompute cost_amount for HISTORICAL OpenAI token events left at $0 because no price
+    snapshot existed at write time. Uses the current price (as_of=now). dry_run=True only
+    counts. Idempotent: already-priced rows (cost>0) are excluded, so re-running is safe."""
+    scanned = 0
+    priced = 0
+    unpriced = 0
+    added_usd = 0.0
+    updates: list[tuple[int, float, int | None]] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, units_type, units_value, metadata "
+                "FROM bt_3_billing_events "
+                "WHERE provider = 'openai' AND COALESCE(cost_amount, 0) = 0 "
+                "  AND units_type IN ('tokens_in', 'tokens_out') AND COALESCE(units_value, 0) > 0;"
+            )
+            rows = cursor.fetchall() or []
+    for rid, unit, units_value, meta in rows:
+        scanned += 1
+        model = str((meta or {}).get("model") or "").strip() if isinstance(meta, dict) else ""
+        if not model or model == "unknown":
+            unpriced += 1
+            continue
+        snap = _resolve_openai_backfill_price(model, str(unit))
+        if not snap:
+            unpriced += 1
+            continue
+        cost = float(units_value or 0) * float(snap.get("price_per_unit") or 0)
+        if cost <= 0:
+            unpriced += 1
+            continue
+        added_usd += cost
+        priced += 1
+        updates.append((int(rid), round(cost, 8), int(snap.get("id")) if snap.get("id") is not None else None))
+    if not dry_run and updates:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                for rid, cost, snap_id in updates:
+                    cursor.execute(
+                        "UPDATE bt_3_billing_events "
+                        "SET cost_amount = %s, price_snapshot_id = %s, "
+                        "    metadata = COALESCE(metadata, '{}'::jsonb) "
+                        "               || jsonb_build_object('pricing_state', 'backfilled') "
+                        "WHERE id = %s;",
+                        (cost, snap_id, rid),
+                    )
+            conn.commit()
+    return {
+        "dry_run": bool(dry_run),
+        "scanned": scanned,
+        "priced": priced,
+        "unpriced": unpriced,
+        "added_usd": round(added_usd, 4),
+    }
+
+
 def log_billing_event(
     *,
     idempotency_key: str,
