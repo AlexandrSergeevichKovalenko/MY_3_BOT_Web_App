@@ -22989,6 +22989,25 @@ def count_shortcut_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> i
         return 0
 
 
+def count_shortcut_denied_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> int:
+    """BLOCKED «Ночной Переводчик» attempts today (allowed=FALSE) — for the abuse alert
+    (a broken/edited shortcut or a stolen token hammering the endpoint)."""
+    try:
+        _ensure_shortcut_runs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_shortcut_runs "
+                    "WHERE user_id=%s AND allowed IS FALSE "
+                    "AND (ran_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date;",
+                    (int(user_id), str(tz_name), str(tz_name)),
+                )
+                r = cur.fetchone()
+        return int(r[0] or 0) if r else 0
+    except Exception:
+        return 0
+
+
 def count_shortcut_runs_total(user_id: int) -> int:
     """Lifetime APPROVED «Ночной Переводчик» runs (Free trial cap + grace index)."""
     try:
@@ -32193,7 +32212,7 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
                         stripe_customer_id,
                         updated_at
                     )
-                    VALUES (%s, 'free', 'trialing', %s, %s, NOW())
+                    VALUES (%s, 'free', 'inactive', %s, %s, NOW())
                     ON CONFLICT (user_id) DO UPDATE
                     SET
                         stripe_customer_id = EXCLUDED.stripe_customer_id,
@@ -32211,7 +32230,7 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
                     """,
                     (
                         user_id_value,
-                        _compute_trial_ends_at(datetime.now(timezone.utc), trial_days=TRIAL_POLICY_DAYS, tz_name=TRIAL_POLICY_TZ),
+                        None,  # trial discontinued: bind starts as inactive-free, no trial_ends_at
                         customer_id_value,
                     ),
                 )
@@ -32228,7 +32247,7 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
                     stripe_customer_id,
                     updated_at
                 )
-                VALUES (%s, 'free', 'trialing', %s, %s, NOW())
+                VALUES (%s, 'free', 'inactive', %s, %s, NOW())
                 ON CONFLICT (user_id) DO UPDATE
                 SET
                     stripe_customer_id = EXCLUDED.stripe_customer_id,
@@ -32246,7 +32265,7 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
                 """,
                 (
                     user_id_value,
-                    _compute_trial_ends_at(datetime.now(timezone.utc), trial_days=TRIAL_POLICY_DAYS, tz_name=TRIAL_POLICY_TZ),
+                    None,  # trial discontinued: bind starts as inactive-free, no trial_ends_at
                     customer_id_value,
                 ),
             )
