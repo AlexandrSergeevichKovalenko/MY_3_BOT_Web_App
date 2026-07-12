@@ -207,7 +207,7 @@ export default function ShortcutGuide() {
         </div>
       </div>
 
-      <MediaTile src="/onboarding/shortcut/full_process.mp4" type="video" caption="🎬 Полное видео: вся установка по шагам — рекомендуем посмотреть перед началом" />
+      <MediaTile src="https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/shortcuts/%D0%A3%D1%81%D1%82%D0%B0%D0%BD%D0%BE%D0%B2%D0%BA%D0%B0%20%D0%B8%20%D0%BD%D0%B0%D1%81%D1%82%D1%80%D0%BE%D0%B9%D0%BA%D0%B0%20Shortcut/full_process.mp4" type="video" caption="🎬 Полное видео: вся установка по шагам — рекомендуем посмотреть перед началом" />
 
       {error ? <div className="sc-error">{error}</div> : null}
 
@@ -323,7 +323,7 @@ export default function ShortcutGuide() {
             <NavLangs ru="«Удаление без подтверждения» + «Удаление большого объёма»" de="«Löschen ohne Bestätigung» + «Löschen großer Datenmengen»" en="«Delete Without Confirmation» + «Delete Large Amounts»" />
             <PhotoLink src="/onboarding/shortcut/perm_settings_main.jpg">Фото 1 — переключатели в «Быстрые команды»</PhotoLink>
             <PhotoLink src="/onboarding/shortcut/perm_settings_advanced.jpg">Фото 2 — переключатели в «Дополнительно»</PhotoLink>
-            <MediaTile src="/onboarding/shortcut/perm_settings.mp4" type="video" caption="🎬 Как включить эти настройки в Настройках телефона" />
+            <MediaTile src="https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/shortcuts/%D0%A3%D1%81%D1%82%D0%B0%D0%BD%D0%BE%D0%B2%D0%BA%D0%B0%20%D0%B8%20%D0%BD%D0%B0%D1%81%D1%82%D1%80%D0%BE%D0%B9%D0%BA%D0%B0%20Shortcut/perm_settings.mp4" type="video" caption="🎬 Как включить эти настройки в Настройках телефона" />
 
             <p className="sc-sub-h">Часть 2 — в приложении «Быстрые команды»</p>
             <p>Открой приложение <b>«Быстрые команды»</b> (🇩🇪 «Kurzbefehle» · 🇬🇧 «Shortcuts»), найди команду <b>«Ночной Переводчик»</b>, <b className="sc-key">нажми и подержи</b> по центру плитки — появится меню. Выбери «Детали»:</p>
