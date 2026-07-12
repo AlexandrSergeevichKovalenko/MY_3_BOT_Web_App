@@ -638,6 +638,7 @@ from backend.r2_storage import (
     r2_public_url,
     r2_key_from_public_url,
     r2_delete_object,
+    r2_delete_prefix,
     r2_bucket_usage_summary,
     r2_get_bytes,
     r2_generate_presigned_put_url,
@@ -49115,6 +49116,21 @@ def reader_library_delete():
                 document_id,
                 user_id,
                 exc_info=True,
+            )
+    # Reclaim the book's FULL R2 footprint: the retained source PDF (1-20MB), the rendered
+    # page images and the per-page audio were previously orphaned forever on delete. Prefixes
+    # are scoped to this exact (user, document). Best-effort — failures logged, never fail the delete.
+    for _prefix in (
+        f"reader_source/{int(user_id)}/{int(document_id)}/",
+        f"reader_pages/{int(user_id)}/{int(document_id)}/",
+        f"reader-audio-pages/{int(user_id)}/{int(document_id)}/",
+    ):
+        try:
+            r2_delete_prefix(_prefix)
+        except Exception:
+            logging.warning(
+                "reader delete: R2 prefix cleanup failed prefix=%s document_id=%s user_id=%s",
+                _prefix, document_id, user_id, exc_info=True,
             )
     return jsonify({"ok": True, "deleted": True})
 

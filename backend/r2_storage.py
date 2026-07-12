@@ -188,6 +188,32 @@ def r2_delete_object(object_key: str) -> bool:
         raise
 
 
+def r2_delete_prefix(prefix: str) -> int:
+    """Delete EVERY object under a key prefix (list + batch delete). Returns the count deleted.
+
+    Used to reclaim a resource's full R2 footprint at once (e.g. all of a deleted book's
+    reader_source/reader_pages/reader-audio-pages objects). SAFETY: the prefix must contain
+    at least two '/' separators, so a bare top-level prefix like 'reader_source/' can never
+    be passed by accident and wipe every user's data."""
+    prefix = str(prefix or "").strip().lstrip("/")
+    if not prefix or prefix.count("/") < 2:
+        # Refuse anything less specific than '<top>/<a>/<b>' to prevent a mass wipe.
+        return 0
+    cfg = load_r2_config_from_env()
+    client = _r2_client()
+    paginator = client.get_paginator("list_objects_v2")
+    deleted = 0
+    for page in paginator.paginate(Bucket=cfg.bucket_name, Prefix=prefix):
+        objs = [{"Key": str(o.get("Key"))} for o in (page.get("Contents") or []) if o.get("Key")]
+        for i in range(0, len(objs), 1000):  # delete_objects handles up to 1000 keys/call
+            batch = objs[i:i + 1000]
+            if not batch:
+                continue
+            client.delete_objects(Bucket=cfg.bucket_name, Delete={"Objects": batch, "Quiet": True})
+            deleted += len(batch)
+    return deleted
+
+
 def r2_get_bytes(object_key: str) -> bytes | None:
     cfg = load_r2_config_from_env()
     key = _normalize_object_key(object_key)
