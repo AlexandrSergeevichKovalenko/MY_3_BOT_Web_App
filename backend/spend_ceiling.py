@@ -117,10 +117,14 @@ def _is_night(now: datetime | None = None, tz: str = TRIAL_POLICY_TZ) -> bool:
 
 
 # ── Weekly spend (Postgres SUM → EUR, Redis-cached) ──────────────────────────
-def _rebuild_week_spend_from_db(start_utc: datetime, end_utc: datetime) -> float:
-    """One indexed SUM over bt_3_billing_events for the week, converted to EUR."""
+def _rebuild_week_spend_from_db(start_utc: datetime, end_utc: datetime) -> tuple[float, float]:
+    """One indexed SUM over bt_3_billing_events for the week → (real_eur, free_eur).
+    real = pay-from-first-unit providers (drives the ceiling / the stop);
+    free = notional list-price value of usage still inside providers' FREE tiers
+    (shown for visibility, NEVER enforced)."""
     excluded = _excluded_providers()
-    total_eur = 0.0
+    real_eur = 0.0
+    free_eur = 0.0
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -134,18 +138,19 @@ def _rebuild_week_spend_from_db(start_utc: datetime, end_utc: datetime) -> float
             )
             rows = cursor.fetchall() or []
     for provider, currency, amount in rows:
-        if str(provider or "").strip().lower() in excluded:
-            continue  # inside its free tier / revenue-linked → not real out-of-pocket money
         try:
-            total_eur += float(convert_cost_to_eur(float(amount or 0.0), currency) or 0.0)
+            eur = float(convert_cost_to_eur(float(amount or 0.0), currency) or 0.0)
         except Exception:
             continue
-    return round(total_eur, 6)
+        if str(provider or "").strip().lower() in excluded:
+            free_eur += eur
+        else:
+            real_eur += eur
+    return round(real_eur, 6), round(free_eur, 6)
 
 
-def get_week_spend_eur(now: datetime | None = None, *, max_age_sec: int | None = None, force: bool = False) -> float:
-    """Weekly spend in EUR, served from a short-lived Redis cache; refreshed from
-    Postgres at most once per TTL. Falls back to a direct DB SUM if Redis is down."""
+def get_week_spend_breakdown(now: datetime | None = None, *, max_age_sec: int | None = None, force: bool = False) -> tuple[float, float]:
+    """(real_eur, free_eur) for the current week — Redis-cached ~TTL, DB fallback."""
     start_utc, end_utc, week_key = _week_bounds_utc(now)
     ttl = _SPEND_CACHE_TTL_SEC if max_age_sec is None else int(max_age_sec)
     client = _redis()
@@ -156,16 +161,22 @@ def get_week_spend_eur(now: datetime | None = None, *, max_age_sec: int | None =
             if raw:
                 payload = json.loads(raw)
                 if (_time.time() - float(payload.get("ts", 0))) < ttl:
-                    return float(payload.get("eur", 0.0))
+                    return float(payload.get("eur", 0.0)), float(payload.get("free", 0.0))
         except Exception:
             pass
-    total = _rebuild_week_spend_from_db(start_utc, end_utc)
+    real, free = _rebuild_week_spend_from_db(start_utc, end_utc)
     if client is not None:
         try:
-            client.set(key, json.dumps({"eur": total, "ts": _time.time()}), ex=max(ttl * 4, 3600))
+            client.set(key, json.dumps({"eur": real, "free": free, "ts": _time.time()}), ex=max(ttl * 4, 3600))
         except Exception:
             pass
-    return total
+    return real, free
+
+
+def get_week_spend_eur(now: datetime | None = None, *, max_age_sec: int | None = None, force: bool = False) -> float:
+    """Weekly REAL out-of-pocket spend in EUR (this is what drives the ceiling / stop)."""
+    real, _free = get_week_spend_breakdown(now, max_age_sec=max_age_sec, force=force)
+    return real
 
 
 # ── Tier gate (sub-ms Redis flag; fail-open) ─────────────────────────────────
@@ -216,7 +227,7 @@ def evaluate_ceiling(now: datetime | None = None) -> dict:
         return {"error": "no_ceiling_row"}
     week_key = str(ceiling.get("period_week") or "")
     limit_eur = float(ceiling.get("effective_limit_eur") or 0.0)
-    spent_eur = get_week_spend_eur(now if isinstance(now, datetime) else None)
+    spent_eur, free_eur = get_week_spend_breakdown(now if isinstance(now, datetime) else None)
     pct = (spent_eur / limit_eur * 100.0) if limit_eur > 0 else 0.0
 
     notified = ceiling.get("notified_thresholds") or {}
@@ -264,6 +275,7 @@ def evaluate_ceiling(now: datetime | None = None) -> dict:
     return {
         "week": week_key,
         "spent_eur": round(spent_eur, 4),
+        "free_eur": round(free_eur, 4),
         "limit_eur": round(limit_eur, 4),
         "pct": round(pct, 1),
         "new_soft": new_soft,
@@ -295,15 +307,23 @@ def build_appcap_keyboard():
     return InlineKeyboardMarkup(rows)
 
 
+def _free_line(decision: dict) -> str:
+    free = float(decision.get("free_eur", 0.0) or 0.0)
+    if free <= 0:
+        return ""
+    return f"\n🆓 Бесплатные ресурсы (Google/DeepL/Azure/R2): ~{_fmt_eur(free)} — <i>в потолок не идут</i>."
+
+
 def format_soft_alert(decision: dict) -> str:
     spent = decision.get("spent_eur", 0.0)
     limit = decision.get("limit_eur", 0.0)
     pct = decision.get("pct", 0.0)
     remaining = max(0.0, float(limit) - float(spent))
     return (
-        f"💸 <b>Затраты приложения: {_fmt_eur(spent)} из {_fmt_eur(limit)}</b> "
+        f"💸 <b>Реальные затраты: {_fmt_eur(spent)} из {_fmt_eur(limit)}</b> "
         f"({pct:.0f}%) за неделю {decision.get('week')}.\n"
-        f"Осталось {_fmt_eur(remaining)}. Можно добавить бюджет на эту неделю или посмотреть, куда ушло."
+        f"Осталось {_fmt_eur(remaining)}.{_free_line(decision)}\n"
+        f"Можно добавить бюджет на эту неделю или посмотреть, куда ушло."
     )
 
 
@@ -318,8 +338,8 @@ def format_hard_alert(decision: dict) -> str:
             "(дешёвое ядро продолжит работать)."
         )
     return (
-        f"⛔ <b>Достигнут недельный потолок затрат: {_fmt_eur(spent)} / {_fmt_eur(limit)}</b> "
-        f"(неделя {decision.get('week')}).\n{when}\n\n"
+        f"⛔ <b>Достигнут недельный потолок РЕАЛЬНЫХ затрат: {_fmt_eur(spent)} / {_fmt_eur(limit)}</b> "
+        f"(неделя {decision.get('week')}).{_free_line(decision)}\n{when}\n\n"
         "Добавить бюджет на эту неделю, остановить сейчас или разобраться в причине:"
     )
 
