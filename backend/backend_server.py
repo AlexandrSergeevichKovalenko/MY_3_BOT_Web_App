@@ -523,6 +523,8 @@ from backend.database import (
     finish_scheduler_run_guard,
     get_cached_reader_audio_page,
     save_reader_audio_page_cache,
+    delete_stale_reader_audio_pages,
+    reader_audio_cache_total_bytes,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
@@ -633,6 +635,7 @@ from backend.r2_storage import (
     r2_exists,
     r2_put_bytes,
     r2_public_url,
+    r2_key_from_public_url,
     r2_delete_object,
     r2_bucket_usage_summary,
     r2_get_bytes,
@@ -51948,6 +51951,41 @@ def _dispatch_daily_audio(target_date: date) -> dict:
     }
 
 
+def _run_reader_audio_cache_eviction_job() -> None:
+    """Evict cold reader-audio cache: delete rows not played in READER_AUDIO_CACHE_TTL_DAYS
+    (default 90) and remove their R2 objects. Storing longer than the ~4.8-month TTS
+    break-even is wasteful for the long tail (most audio is never re-heard); active
+    reading keeps a page hot via last_played_at."""
+    ttl_days = int((os.getenv("READER_AUDIO_CACHE_TTL_DAYS") or "90").strip() or "90")
+    if ttl_days <= 0:
+        logging.info("[READER_AUDIO_TTL] disabled (READER_AUDIO_CACHE_TTL_DAYS<=0)")
+        return
+    total_rows = 0
+    total_objs = 0
+    try:
+        for _ in range(200):  # up to 200 batches × 5000 = 1M rows/run safety cap
+            urls = delete_stale_reader_audio_pages(older_than_days=ttl_days, limit=5000)
+            if not urls:
+                break
+            total_rows += len(urls)
+            for url in urls:
+                key = r2_key_from_public_url(url)
+                if not key:
+                    continue
+                try:
+                    r2_delete_object(key)
+                    total_objs += 1
+                except Exception:
+                    logging.warning("[READER_AUDIO_TTL] R2 delete failed key=%s", key)
+        remaining_gb = reader_audio_cache_total_bytes() / (1024 ** 3)
+        logging.info(
+            "[READER_AUDIO_TTL] evicted rows=%s r2_objects=%s ttl_days=%s remaining_cache=%.3f GB",
+            total_rows, total_objs, ttl_days, remaining_gb,
+        )
+    except Exception:
+        logging.exception("[READER_AUDIO_TTL] eviction job failed")
+
+
 def _run_audio_scheduler_job() -> None:
     mode = (os.getenv("AUDIO_SCHEDULER_DATE_MODE") or "yesterday").strip().lower()
     tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
@@ -56547,6 +56585,19 @@ def _start_audio_scheduler() -> None:
         coalesce=True,
         misfire_grace_time=21600,
     )
+    # Daily eviction of cold reader-audio cache (TTL, default 90 days) — caps the
+    # otherwise-unbounded R2 storage cost. Runs once/day off-peak.
+    reader_audio_ttl_enabled = (os.getenv("READER_AUDIO_CACHE_TTL_ENABLED") or "1").strip().lower()
+    if reader_audio_ttl_enabled in ("1", "true", "yes", "on"):
+        _audio_scheduler.add_job(
+            _run_reader_audio_cache_eviction_job,
+            "cron",
+            hour=int((os.getenv("READER_AUDIO_CACHE_TTL_HOUR") or "4").strip() or "4"),
+            minute=int((os.getenv("READER_AUDIO_CACHE_TTL_MINUTE") or "20").strip() or "20"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=21600,
+        )
     analytics_enabled = (os.getenv("ANALYTICS_PRIVATE_SCHEDULER_ENABLED") or "1").strip().lower()
     if analytics_enabled in ("1", "true", "yes", "on"):
         analytics_hour = int((os.getenv("ANALYTICS_PRIVATE_SCHEDULER_HOUR") or "19").strip())

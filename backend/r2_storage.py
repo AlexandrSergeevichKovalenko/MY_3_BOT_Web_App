@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from collections import defaultdict
 from functools import lru_cache
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,21 @@ def r2_public_url(object_key: str) -> str:
     normalized_key = _normalize_object_key(object_key)
     escaped_key = quote(normalized_key, safe="/-_.~")
     return f"{cfg.public_base_url}/{escaped_key}"
+
+
+def r2_key_from_public_url(url: str) -> str | None:
+    """Inverse of r2_public_url: recover the object key from a stored public URL, or
+    None if the URL doesn't belong to our bucket's public base."""
+    url = str(url or "").strip()
+    if not url:
+        return None
+    try:
+        base = load_r2_config_from_env().public_base_url.rstrip("/")
+    except Exception:
+        return None
+    if base and url.startswith(base + "/"):
+        return unquote(url[len(base) + 1:])
+    return None
 
 
 def r2_exists(object_key: str) -> bool:

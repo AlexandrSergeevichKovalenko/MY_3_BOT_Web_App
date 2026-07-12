@@ -8700,6 +8700,31 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_provider_budget_controls_period
                 ON bt_3_provider_budget_controls (period_month DESC, provider);
             """)
+            # Phase 1 cost-control: single app-wide WEEKLY spend ceiling (in EUR) that the
+            # admin manages from DM. One row per ISO week (Europe/Vienna). effective limit =
+            # base + extra; `extra` accumulates the admin's +€2/+€5/+€10 top-ups for THAT
+            # week only (next week starts a fresh row → back to base). `blocked_tiers` holds
+            # which cost tiers are paused ({"heavy"} first); hard_reached_at/auto_stop_at drive
+            # the soft→hard state machine (2h grace by day, immediate stop at night). Sits
+            # ALONGSIDE the per-provider monthly budgets above (two layers). Additive; nothing
+            # enforces off it until the enforcement layer is wired (shadow-first rollout).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_app_spend_ceiling (
+                    period_week TEXT PRIMARY KEY,
+                    base_limit_eur NUMERIC(12,4) NOT NULL DEFAULT 10.0,
+                    extra_limit_eur NUMERIC(12,4) NOT NULL DEFAULT 0,
+                    blocked_tiers JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    hard_reached_at TIMESTAMPTZ,
+                    auto_stop_at TIMESTAMPTZ,
+                    notified_thresholds JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    decisions JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (base_limit_eur >= 0),
+                    CHECK (extra_limit_eur >= 0)
+                );
+            """)
             cursor.execute(
                 """
                 DO $$
@@ -30734,6 +30759,216 @@ def mark_provider_budget_threshold_notified(
     return _provider_budget_row_to_dict(row)
 
 
+# ── Phase 1 cost-control: app-wide WEEKLY spend ceiling (EUR) ────────────────
+# Data layer only. effective limit = base + extra; `extra` accumulates the admin's
+# +€2/+€5/+€10 top-ups for THAT ISO week (Europe/Vienna); a new week starts a fresh
+# row → back to base. Sits alongside the per-provider monthly budgets (two layers).
+# Nothing enforces off this yet — the counter/eval/gate wiring lands later (shadow-first).
+try:
+    APP_SPEND_CEILING_WEEKLY_BASE_EUR = float(os.getenv("APP_SPEND_CEILING_WEEKLY_EUR", "10") or "10")
+except Exception:
+    APP_SPEND_CEILING_WEEKLY_BASE_EUR = 10.0
+
+_APP_SPEND_CEILING_RETURN_COLS = (
+    "period_week, base_limit_eur, extra_limit_eur, blocked_tiers, hard_reached_at, "
+    "auto_stop_at, notified_thresholds, decisions, metadata, created_at, updated_at"
+)
+
+
+def _iso_week_key(as_of: date | datetime | None = None, tz: str = TRIAL_POLICY_TZ) -> str:
+    """ISO-week key 'YYYY-Www' in the given tz (default Europe/Vienna, weeks Mon–Sun)."""
+    tzinfo = _resolve_timezone(tz)
+    if isinstance(as_of, datetime):
+        local_dt = _to_aware_datetime(as_of).astimezone(tzinfo)
+    elif isinstance(as_of, date):
+        local_dt = datetime.combine(as_of, dt_time.min, tzinfo=tzinfo)
+    else:
+        local_dt = datetime.now(timezone.utc).astimezone(tzinfo)
+    iso_year, iso_week, _ = local_dt.isocalendar()
+    return f"{int(iso_year):04d}-W{int(iso_week):02d}"
+
+
+def _app_spend_ceiling_row_to_dict(row) -> dict | None:
+    if not row:
+        return None
+    base = float(_row_get(row, 1, 0) or 0.0)
+    extra = float(_row_get(row, 2, 0) or 0.0)
+    blocked = _row_get(row, 3, [])
+    decisions = _row_get(row, 7, [])
+    return {
+        "period_week": str(_row_get(row, 0, "") or ""),
+        "base_limit_eur": base,
+        "extra_limit_eur": extra,
+        "effective_limit_eur": max(0.0, base + extra),
+        "blocked_tiers": blocked if isinstance(blocked, list) else [],
+        "hard_reached_at": _row_get(row, 4).isoformat() if _row_get(row, 4) else None,
+        "auto_stop_at": _row_get(row, 5).isoformat() if _row_get(row, 5) else None,
+        "notified_thresholds": _row_get(row, 6, {}) if isinstance(_row_get(row, 6, {}), dict) else {},
+        "decisions": decisions if isinstance(decisions, list) else [],
+        "metadata": _row_get(row, 8, {}) if isinstance(_row_get(row, 8, {}), dict) else {},
+        "created_at": _row_get(row, 9).isoformat() if _row_get(row, 9) else None,
+        "updated_at": _row_get(row, 10).isoformat() if _row_get(row, 10) else None,
+    }
+
+
+def get_or_create_app_spend_ceiling(
+    *,
+    week: str | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+    base_limit_eur: float | None = None,
+) -> dict | None:
+    week_key = str(week).strip() if isinstance(week, str) and str(week).strip() else _iso_week_key(tz=tz)
+    base_value = float(base_limit_eur) if base_limit_eur is not None else APP_SPEND_CEILING_WEEKLY_BASE_EUR
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO bt_3_app_spend_ceiling (period_week, base_limit_eur) "
+                "VALUES (%s, %s) "
+                "ON CONFLICT (period_week) DO UPDATE SET updated_at = NOW() "
+                "RETURNING " + _APP_SPEND_CEILING_RETURN_COLS + ";",
+                (week_key, base_value),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return _app_spend_ceiling_row_to_dict(row)
+
+
+def add_app_spend_ceiling_extra(
+    *,
+    add_eur: float,
+    week: str | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+    metadata: dict | None = None,
+) -> dict | None:
+    """Accumulate an admin top-up (+€N) onto THIS week's ceiling. Not carried to next week."""
+    get_or_create_app_spend_ceiling(week=week, tz=tz)
+    week_key = str(week).strip() if isinstance(week, str) and str(week).strip() else _iso_week_key(tz=tz)
+    try:
+        add_value = max(0.0, float(add_eur or 0.0))
+    except Exception:
+        add_value = 0.0
+    meta = metadata if isinstance(metadata, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_app_spend_ceiling "
+                "SET extra_limit_eur = extra_limit_eur + %s, "
+                "    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb, "
+                "    updated_at = NOW() "
+                "WHERE period_week = %s "
+                "RETURNING " + _APP_SPEND_CEILING_RETURN_COLS + ";",
+                (add_value, Json(meta), week_key),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return _app_spend_ceiling_row_to_dict(row)
+
+
+def set_app_spend_ceiling_blocked_tiers(
+    *,
+    tiers,
+    week: str | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    """Set which cost tiers are paused this week (e.g. ['heavy']); [] resumes everything."""
+    get_or_create_app_spend_ceiling(week=week, tz=tz)
+    week_key = str(week).strip() if isinstance(week, str) and str(week).strip() else _iso_week_key(tz=tz)
+    tiers_list = sorted({str(t).strip().lower() for t in (tiers or []) if str(t).strip()})
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_app_spend_ceiling "
+                "SET blocked_tiers = %s::jsonb, updated_at = NOW() "
+                "WHERE period_week = %s "
+                "RETURNING " + _APP_SPEND_CEILING_RETURN_COLS + ";",
+                (Json(tiers_list), week_key),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return _app_spend_ceiling_row_to_dict(row)
+
+
+def set_app_spend_ceiling_hard_state(
+    *,
+    week: str | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+    hard_reached_at: datetime | None = None,
+    auto_stop_at: datetime | None = None,
+) -> dict | None:
+    """Set the hard-threshold timestamps that drive the soft→hard auto-stop timer.
+    Pass None to clear a field (e.g. after the admin tops up and cancels the pending stop)."""
+    get_or_create_app_spend_ceiling(week=week, tz=tz)
+    week_key = str(week).strip() if isinstance(week, str) and str(week).strip() else _iso_week_key(tz=tz)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_app_spend_ceiling "
+                "SET hard_reached_at = %s, auto_stop_at = %s, updated_at = NOW() "
+                "WHERE period_week = %s "
+                "RETURNING " + _APP_SPEND_CEILING_RETURN_COLS + ";",
+                (hard_reached_at, auto_stop_at, week_key),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return _app_spend_ceiling_row_to_dict(row)
+
+
+def mark_app_spend_ceiling_threshold_notified(
+    *,
+    threshold_percent: int | float,
+    week: str | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    """Record that a soft/hard threshold (e.g. 80/95/100) was already DM'd this week (dedup)."""
+    base = get_or_create_app_spend_ceiling(week=week, tz=tz)
+    week_key = str(week).strip() if isinstance(week, str) and str(week).strip() else _iso_week_key(tz=tz)
+    try:
+        threshold_value = int(round(float(threshold_percent)))
+    except Exception:
+        threshold_value = 0
+    if threshold_value <= 0:
+        return base
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_app_spend_ceiling "
+                "SET notified_thresholds = COALESCE(notified_thresholds, '{}'::jsonb) "
+                "        || jsonb_build_object(%s, NOW()::text), "
+                "    updated_at = NOW() "
+                "WHERE period_week = %s "
+                "RETURNING " + _APP_SPEND_CEILING_RETURN_COLS + ";",
+                (str(threshold_value), week_key),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return _app_spend_ceiling_row_to_dict(row)
+
+
+def append_app_spend_ceiling_decision(
+    *,
+    decision: dict,
+    week: str | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    """Append one admin decision (top-up / stop / resume) to the audit trail for the week."""
+    get_or_create_app_spend_ceiling(week=week, tz=tz)
+    week_key = str(week).strip() if isinstance(week, str) and str(week).strip() else _iso_week_key(tz=tz)
+    dec = decision if isinstance(decision, dict) else {"note": str(decision)}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_app_spend_ceiling "
+                "SET decisions = COALESCE(decisions, '[]'::jsonb) || %s::jsonb, "
+                "    updated_at = NOW() "
+                "WHERE period_week = %s "
+                "RETURNING " + _APP_SPEND_CEILING_RETURN_COLS + ";",
+                (Json([dec]), week_key),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return _app_spend_ceiling_row_to_dict(row)
+
+
 def get_user_billing_summary(
     *,
     user_id: int,
@@ -33333,15 +33568,14 @@ def resolve_entitlement(
 
     source_of_entitlement = "free_default"
     if bool(current_plan.get("is_paid")) and status in {"active", "trialing"}:
+        # Paid plan with a Stripe card-added trial (status 'trialing') stays Pro — KEEP.
         effective_mode = "pro"
         source_of_entitlement = "paid_subscription"
-    elif status == "trialing" and trial_ends_at_dt is not None and now_utc < trial_ends_at_dt:
-        effective_mode = "trial"
-        source_of_entitlement = "explicit_trial_subscription"
     else:
+        # Free-plan product trial is discontinued: 'trialing' on the free plan = just Free.
         effective_mode = "free"
         if status == "trialing":
-            source_of_entitlement = "expired_or_invalid_trial"
+            source_of_entitlement = "legacy_free_trial"
 
     # Earned Pro grant (DAU reward, Этап 4) — honest earned access; beats the denylist.
     try:
@@ -33370,8 +33604,6 @@ def resolve_entitlement(
     ) or {})
     if effective_mode == "pro":
         cap_eur = pro_plan.get("daily_cost_cap_eur")
-    elif effective_mode == "trial":
-        cap_eur = float(_env_decimal("TRIAL_DAILY_COST_CAP_EUR", "1.00"))
     else:
         cap_eur = free_plan.get("daily_cost_cap_eur")
         if cap_eur is None:
@@ -33379,12 +33611,10 @@ def resolve_entitlement(
             cap_eur = float(fallback) if fallback is not None else None
 
     effective_plan_code = "pro" if effective_mode == "pro" else "free"
-    if effective_mode == "trial":
-        effective_plan_code = "trial"
     effective_plan_name = (
         str(pro_plan.get("name") or "Pro")
         if effective_mode == "pro"
-        else ("Trial" if effective_mode == "trial" else str(free_plan.get("name") or "Free"))
+        else str(free_plan.get("name") or "Free")
     )
 
     return {
@@ -33577,13 +33807,7 @@ def enforce_feature_limit(
     effective_mode = str(entitlement.get("effective_mode") or "free")
     plan_code = str(entitlement.get("plan_code") or "free")
 
-    # Product policy: trial has full features, except YouTube safety limit.
-    if effective_mode == "trial" and feature_code != "youtube_fetch_daily":
-        return None
-
     lookup_plan = "free" if effective_mode == "free" else plan_code
-    if effective_mode == "trial" and feature_code == "youtube_fetch_daily":
-        lookup_plan = "free"
     limit = get_plan_limit(lookup_plan, feature_code, period="day")
     if not limit:
         return None
@@ -33662,6 +33886,44 @@ def get_user_action_month_usage(
             )
             row = cursor.fetchone()
     return float((row or [0])[0] or 0.0)
+
+
+def reader_audio_cache_total_bytes() -> int:
+    """Total bytes of cached reader audio (for the costs report)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT COALESCE(SUM(audio_bytes_len), 0) FROM bt_3_reader_audio_pages")
+                return int((cursor.fetchone() or [0])[0] or 0)
+    except Exception:
+        logging.exception("reader_audio_cache_total_bytes failed")
+        return 0
+
+
+def delete_stale_reader_audio_pages(older_than_days: int = 90, limit: int = 5000) -> list[str]:
+    """Delete reader-audio cache rows not played (or created, if never played) within
+    the last `older_than_days`, in a batch of up to `limit`. Returns the deleted rows'
+    audio_url list so the caller can remove the R2 objects. Call repeatedly until it
+    returns []. Active reading keeps a page 'hot' (last_played_at updates on play)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM bt_3_reader_audio_pages
+                    WHERE id IN (
+                        SELECT id FROM bt_3_reader_audio_pages
+                        WHERE COALESCE(last_played_at, created_at) < NOW() - (%s * INTERVAL '1 day')
+                        LIMIT %s
+                    )
+                    RETURNING audio_url
+                    """,
+                    (int(older_than_days), int(limit)),
+                )
+                return [str(r[0]) for r in cursor.fetchall() if r and r[0]]
+    except Exception:
+        logging.exception("delete_stale_reader_audio_pages failed")
+        return []
 
 
 def enforce_reader_audio_pro_monthly_limit(
