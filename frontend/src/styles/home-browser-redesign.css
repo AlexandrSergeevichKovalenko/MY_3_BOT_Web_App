@@ -358,11 +358,20 @@
     gap: 10px !important;
   }
 
-  /* 7. Широкий браузер (не планшет): 4 колонки × 3 ряда вместо 3×4. */
-  @media (min-width: 1120px) {
+  /* 7. Широкий браузер (не планшет): больше колонок → меньше рядов → 12 плиток
+        влезают в один экран без скролла. 4×3 на средних окнах, 6×2 на очень
+        широких. Порог 4-колонок понижен до 1000px, чтобы обычные окна тоже
+        получали компактную раскладку, а не высокую 3×4. */
+  @media (min-width: 1000px) {
     .webapp-page.is-home-bento:not(.is-telegram-tablet) .hdt-bento {
       grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
       grid-template-rows: repeat(3, minmax(0, 1fr)) !important;
+    }
+  }
+  @media (min-width: 1440px) {
+    .webapp-page.is-home-bento:not(.is-telegram-tablet) .hdt-bento {
+      grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+      grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
     }
   }
 

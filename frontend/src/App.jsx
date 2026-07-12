@@ -29763,9 +29763,12 @@ function AppInner() {
           fs: 0,
           disablekb: 1,
           playsinline: 1,
-          // News mode: hide the native YouTube chrome (settings, CC, fullscreen, «Watch on
-          // YouTube») — we provide subtitles/controls in-app. Tap the video to play/pause.
-          controls: youtubeNewsMode ? 0 : 1,
+          // Hide ALL native YouTube chrome (control bar, CC button, settings gear,
+          // annotations, «Watch on YouTube») — we provide our own transport + subtitles.
+          // Crucially this removes the native CC button so the user can't switch on
+          // YouTube's built-in captions, which would overlap our DE/RU subtitles.
+          // Tap the video to play/pause; our controls handle the rest.
+          controls: 0,
           iv_load_policy: 3,
           cc_load_policy: 0,
         },
@@ -33688,7 +33691,7 @@ function AppInner() {
                           {!youtubePlayerReady && youtubeId && (
                             <iframe
                               title="YouTube player"
-                              src={`https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1&fs=0&disablekb=1&playsinline=1`}
+                              src={`https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1&fs=0&disablekb=1&playsinline=1&controls=0&cc_load_policy=0&iv_load_policy=3`}
                               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                             />
                           )}
