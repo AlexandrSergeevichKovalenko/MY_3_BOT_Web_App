@@ -28153,39 +28153,39 @@ def reclaim_retired_pool_r2_orphans(*, dry_run: bool = True, crossword_idle_days
     crossword items retired AND idle > crossword_idle_days are touched (a stale one won't be
     revived). dry_run=True only counts. Nulls the DB image ref after deleting so re-runs don't
     re-report the same rows. Fail-open."""
-    targets: list[tuple[str, str, int, str]] = []  # (table, key_col, id, object_key)
+    targets: list[tuple[str, str, str, str, str]] = []  # (table, id_col, key_col, id_value, object_key)
     per_pool: dict[str, int] = {}
+    # (pool, table, PK column, image-key column, needs crossword idle guard)
     specs = [
-        ("rebus", "bt_3_rebus_bank", "composed_image_object_key",
-         "SELECT id, composed_image_object_key FROM bt_3_rebus_bank "
-         "WHERE retired = TRUE AND composed_image_object_key IS NOT NULL AND composed_image_object_key <> '';", False),
-        ("article_quiz", "bt_3_article_quiz_bank", "image_object_key",
-         "SELECT id, image_object_key FROM bt_3_article_quiz_bank "
-         "WHERE retired = TRUE AND image_object_key IS NOT NULL AND image_object_key <> '';", False),
-        ("crossword", "bt_3_crossword_bank", "image_object_key",
-         "SELECT id, image_object_key FROM bt_3_crossword_bank "
-         "WHERE retired = TRUE AND image_object_key IS NOT NULL AND image_object_key <> '' "
-         "AND updated_at < NOW() - (%s || ' days')::interval;", True),
+        ("rebus", "bt_3_rebus_bank", "compound_id", "composed_image_object_key", False),
+        ("article_quiz", "bt_3_article_quiz_bank", "word_id", "image_object_key", False),
+        ("crossword", "bt_3_crossword_bank", "crossword_id", "image_object_key", True),
     ]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            for pool, table, col, sql, needs_idle in specs:
-                cursor.execute(sql, (int(crossword_idle_days),) if needs_idle else None)
+            for pool, table, id_col, key_col, needs_idle in specs:
+                where = f"retired = TRUE AND {key_col} IS NOT NULL AND {key_col} <> ''"
+                if needs_idle:
+                    where += " AND updated_at < NOW() - (%s || ' days')::interval"
+                cursor.execute(
+                    f"SELECT {id_col}, {key_col} FROM {table} WHERE {where};",
+                    (int(crossword_idle_days),) if needs_idle else None,
+                )
                 rows = cursor.fetchall() or []
                 per_pool[pool] = len(rows)
                 for rid, key in rows:
-                    targets.append((table, col, int(rid), str(key)))
+                    targets.append((table, id_col, key_col, str(rid), str(key)))
     deleted = 0
     if not dry_run and targets:
         try:
             from backend.r2_storage import r2_delete_keys
-            deleted = r2_delete_keys([t[3] for t in targets])
+            deleted = r2_delete_keys([t[4] for t in targets])
         except Exception:
             logging.warning("reclaim_retired_pool_r2_orphans: R2 delete failed", exc_info=True)
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
-                for table, col, rid, _key in targets:
-                    cursor.execute(f"UPDATE {table} SET {col} = NULL WHERE id = %s;", (rid,))
+                for table, id_col, key_col, id_value, _key in targets:
+                    cursor.execute(f"UPDATE {table} SET {key_col} = NULL WHERE {id_col} = %s;", (id_value,))
             conn.commit()
     return {"dry_run": bool(dry_run), "per_pool": per_pool, "total": len(targets), "deleted": deleted}
 
