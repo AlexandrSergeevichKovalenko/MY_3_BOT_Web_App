@@ -501,6 +501,7 @@ from backend.database import (
     resolve_entitlement,
     enforce_daily_cost_cap,
     enforce_feature_limit,
+    get_user_provider_units_today,
     get_free_feature_limit_metadata,
     get_free_feature_usage_today,
     increment_free_feature_usage,
@@ -13135,6 +13136,30 @@ def _quick_translate_google(text: str, source_lang: str | None, target_lang: str
     }
 
 
+def _enforce_google_translate_user_daily_cap(requested_chars: int) -> None:
+    """2.3a — per-user DAILY Google Translate char cap (FAIRNESS: one user can't drain the
+    shared free tier and lock out everyone else; the monthly budget already caps COST at $0).
+    Uses the request user from flask.g so no user_id threading is needed; a no-op off the web
+    request path (bot/background) and fail-open on any error. Tunable via
+    GOOGLE_TRANSLATE_USER_DAILY_CHARS (0 disables)."""
+    try:
+        cap = int(os.getenv("GOOGLE_TRANSLATE_USER_DAILY_CHARS", "20000") or 20000)
+        if cap <= 0 or not has_request_context():
+            return
+        uid = getattr(g, "telegram_user_id", None)
+        if not uid:
+            return
+        used = get_user_provider_units_today(int(uid), "google_translate", "chars", "Europe/Vienna")
+    except Exception:
+        return
+    if used + max(0, int(requested_chars or 0)) > cap:
+        raise GoogleTranslateBudgetExceededError(
+            f"Google Translate per-user daily limit reached: {int(used)} + {int(requested_chars)} > {cap} chars",
+            payload={"provider": "google_translate", "unit": "chars", "scope": "user_daily",
+                     "used": int(used), "limit": cap},
+        )
+
+
 def _enforce_google_translate_monthly_budget(requested_chars: int) -> dict:
     requested_value = max(0, int(requested_chars or 0))
     status = get_google_translate_monthly_budget_status()
@@ -16538,6 +16563,7 @@ def _force_translate_text(
     for provider_name, provider_fn in quick_providers:
         try:
             if provider_name == "google_translate":
+                _enforce_google_translate_user_daily_cap(len(cleaned))
                 _enforce_google_translate_monthly_budget(len(cleaned))
             payload = provider_fn(cleaned, source_lang, target_lang)
             translated = str((payload or {}).get("translation") or "").strip()
@@ -32655,6 +32681,7 @@ def translate_quick():
                 provider_started_perf = time.perf_counter()
                 try:
                     if provider_name == "google_translate":
+                        _enforce_google_translate_user_daily_cap(len(text))
                         _enforce_google_translate_monthly_budget(len(text))
                     res = translate_func(text, source_lang, target_lang)
                     provider_timings_ms[provider_name] = _elapsed_ms_since(provider_started_perf)

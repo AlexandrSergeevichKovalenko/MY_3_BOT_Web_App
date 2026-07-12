@@ -30296,6 +30296,27 @@ def get_effective_billing_price_snapshot(
     }
 
 
+def get_user_provider_units_today(user_id: int, provider: str, units_type: str = "chars", tz: str = TRIAL_POLICY_TZ) -> float:
+    """Sum a user's billed units for a provider over the local day — for per-user daily caps
+    (e.g. Google Translate chars fairness cap). Best-effort; 0.0 on error."""
+    try:
+        tzinfo = _resolve_timezone(tz)
+        now_local = datetime.now(timezone.utc).astimezone(tzinfo)
+        day_start_utc = datetime.combine(now_local.date(), dt_time.min, tzinfo=tzinfo).astimezone(timezone.utc)
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COALESCE(SUM(units_value), 0) FROM bt_3_billing_events "
+                    "WHERE user_id = %s AND provider = %s AND units_type = %s AND event_time >= %s;",
+                    (int(user_id), str(provider).strip().lower(), str(units_type).strip().lower(), day_start_utc),
+                )
+                row = cursor.fetchone()
+        return float((row or [0])[0] or 0.0)
+    except Exception:
+        logging.debug("get_user_provider_units_today failed uid=%s provider=%s", user_id, provider, exc_info=True)
+        return 0.0
+
+
 def _resolve_openai_backfill_price(model: str, unit: str) -> dict | None:
     """Current price snapshot for an OpenAI token unit, trying the exact (dated) model SKU then
     the date-stripped family SKU (mirrors _openai_priced_sku). as_of defaults to now so the
