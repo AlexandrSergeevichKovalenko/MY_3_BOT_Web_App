@@ -9035,6 +9035,32 @@ async def reader_r2_orphans_command(update: Update, context: CallbackContext) ->
     await update.message.reply_text("\n".join(lines))
 
 
+async def r2_usage_command(update: Update, context: CallbackContext) -> None:
+    """Admin: real R2 storage size per top-level prefix (read-only). Use it to see whether any
+    remaining prefix (tts_legacy, support_attachments, pool art, …) is worth cleaning."""
+    user = update.effective_user
+    if not user or not _is_admin_user(int(user.id)):
+        return
+    await update.message.reply_text("📦 Считаю размер R2 по префиксам…")
+    try:
+        from backend.r2_storage import r2_bucket_usage_summary
+        s = await asyncio.to_thread(r2_bucket_usage_summary, prefix_depth=1, max_prefixes=60)
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Ошибка замера R2: {exc}")
+        return
+
+    def _fmt(num_bytes: int) -> str:
+        if num_bytes >= 1024 ** 3:
+            return f"{num_bytes / 1024 ** 3:.2f} ГБ"
+        return f"{num_bytes / 1024 / 1024:.1f} МБ"
+
+    total_b = int(s.get("total_bytes") or 0)
+    lines = [f"📦 <b>R2 всего: {_fmt(total_b)}</b> · {int(s.get('total_objects') or 0)} объектов", ""]
+    for p in s.get("prefixes", []):
+        lines.append(f"• {p.get('prefix')} — {_fmt(int(p.get('bytes') or 0))} · {int(p.get('objects') or 0)} об.")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 async def handle_appcap_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     admin = update.effective_user
@@ -35289,6 +35315,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
+    application.add_handler(CommandHandler("r2_usage", r2_usage_command))
     application.add_handler(CallbackQueryHandler(handle_admin_commands_callback, pattern=r"^admincmd:"))
     application.add_handler(CallbackQueryHandler(handle_describe_new_callback, pattern=r"^dnew_"))
     # Early group: capture an admin's typed custom description after «✏️ Своё» (consumes
