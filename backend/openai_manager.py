@@ -7416,6 +7416,16 @@ async def run_visual_riddle_blueprint(payload: dict) -> dict:
     )
 
 
+def _heavy_spend_blocked() -> bool:
+    """True when the weekly REAL-money ceiling is breached AND enforcement is on (default OFF).
+    Used to pause OPTIONAL heavy LLM generation (theory/beginner/explain). Cheap + fail-open."""
+    try:
+        from backend import spend_ceiling as _sc
+        return _sc.should_block_tier(_sc.TIER_HEAVY)
+    except Exception:
+        return False
+
+
 async def _run_json_assistant_task(
     *,
     task_name: str,
@@ -7447,6 +7457,8 @@ async def _run_json_assistant_task(
 
 
 async def run_theory_generation(payload: dict) -> dict:
+    if _heavy_spend_blocked():
+        return {}  # graceful: same shape as an LLM failure; callers already handle {}
     return await _run_json_assistant_task(
         task_name="theory_generation",
         system_instruction_key="theory_generation",
@@ -7471,6 +7483,8 @@ async def run_theory_check_feedback(payload: dict) -> dict:
 
 
 async def run_beginner_topic(payload: dict) -> dict:
+    if _heavy_spend_blocked():
+        return {}  # graceful: same shape as an LLM failure; callers already handle {}
     return await _run_json_assistant_task(
         task_name="beginner_topic",
         system_instruction_key="beginner_topic",
@@ -7696,6 +7710,8 @@ async def run_translation_explanation_structured(
     explanation_language: str,
 ) -> dict:
     """Teacher-grade structured error breakdown (JSON) for the translation explain modal."""
+    if _heavy_spend_blocked():
+        return _coerce_structured_explanation("")  # graceful empty, same as an LLM failure
     payload = {
         "source_language": (source_lang or "").strip().lower(),
         "target_language": (target_lang or "").strip().lower(),
