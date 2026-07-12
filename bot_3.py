@@ -4372,6 +4372,15 @@ def _reserve_telegram_ask_gpt_daily(
     question_len: int = 0,
     has_context: bool = False,
 ) -> dict:
+    # Per-user daily EUR cost cap (Free €0.2 / Pro €0.5), bot-side. Blocks BEFORE the count
+    # reservation so a Pro user (higher/no count limit) is still bounded by cost. Cheap:
+    # cached entitlement + one spent-today sum. Fail-open. Callers already handle "blocked".
+    try:
+        from backend.database import enforce_daily_cost_cap
+        if enforce_daily_cost_cap(user_id=int(user_id), tz="Europe/Vienna"):
+            return {"blocked": True, "reason": "cost_cap"}
+    except Exception:
+        pass
     return reserve_free_feature_usage(
         user_id=int(user_id),
         feature_key="ask_gpt_daily",
