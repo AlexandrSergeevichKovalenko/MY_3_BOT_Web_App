@@ -15079,16 +15079,21 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     --d-shadow:0 24px 50px rgba(111,84,52,.16);
   }
 
-  /* внешняя обёртка-«шапка» становится прозрачной — виден только сам док */
+  /* внешняя обёртка-«шапка» становится прозрачным блоком — виден только сам док.
+     display:block критично: базовый .webapp-local-section-head — GRID, чей auto-
+     столбец схлопывался по контенту и упаковывал док влево (пустая зона справа).
+     !important на фоне — светлая тема переопределяет фон head с высокой спец-стью. */
   .webapp-page .youtube-player-first .youtube-player-first-head {
-    background: transparent;
-    border: 0;
-    box-shadow: none;
-    padding: 0;
+    display: block !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
   }
 
   .webapp-page .youtube-dock2 {
     display: flex;
+    width: 100%;
     align-items: center;
     gap: 12px;
     padding: 11px 15px;
