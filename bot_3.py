@@ -9064,6 +9064,67 @@ async def backfill_billing_prices_command(update: Update, context: CallbackConte
     await update.message.reply_text("\n".join(lines))
 
 
+async def _weekly_r2_cleanup_job(context: CallbackContext) -> None:
+    """WEEKLY auto-clean of orphaned R2 storage — GLOBAL (all users / the whole pool bank),
+    so nothing has to be run by hand: reader objects (PDF / page renders / audio) of DELETED
+    books + retired game-pool images (rebus / article_quiz / crossword). Measures R2 before &
+    after and DMs admins a short summary (было → стало, сколько МБ, по категориям). Primary
+    bot process only; best-effort."""
+    def _gb(b):
+        return (b or 0) / 1024 / 1024 / 1024
+
+    async def _measure():
+        try:
+            from backend.r2_storage import r2_bucket_usage_summary
+            return await asyncio.to_thread(r2_bucket_usage_summary, prefix_depth=1, max_prefixes=60)
+        except Exception:
+            return {}
+
+    before = await _measure()
+    reader_res, pool_res = {}, {}
+    try:
+        reader_res = await asyncio.to_thread(_reader_r2_orphan_sweep, False)
+    except Exception:
+        logging.warning("weekly R2 cleanup: reader sweep failed", exc_info=True)
+    try:
+        from backend.database import reclaim_retired_pool_r2_orphans
+        pool_res = await asyncio.to_thread(reclaim_retired_pool_r2_orphans, dry_run=False)
+    except Exception:
+        logging.warning("weekly R2 cleanup: pool reclaim failed", exc_info=True)
+    after = await _measure()
+
+    b_bytes, b_obj = int(before.get("total_bytes") or 0), int(before.get("total_objects") or 0)
+    a_bytes, a_obj = int(after.get("total_bytes") or 0), int(after.get("total_objects") or 0)
+    freed_mb = max(0, b_bytes - a_bytes) / 1024 / 1024
+    per_pool = pool_res.get("per_pool") or {}
+    reader_del = int(reader_res.get("deleted") or reader_res.get("orphan_objects") or 0)
+    pool_total = int(pool_res.get("total") or 0)
+
+    lines = ["🧹 <b>Недельная авто-чистка R2</b>"]
+    if before and after:
+        lines.append(f"Было: {_gb(b_bytes):.2f} ГБ ({b_obj} об.) → Стало: {_gb(a_bytes):.2f} ГБ ({a_obj} об.)")
+    lines.append(f"Освобождено: ~{freed_mb:.1f} МБ · удалено объектов: {reader_del + pool_total}")
+    lines.append("")
+    lines.append(f"📖 Книги (удалённые): {reader_del} об.")
+    lines.append(
+        f"🧩 Интерактивы (ретайрнутые): rebus {int(per_pool.get('rebus', 0))} · "
+        f"article_quiz {int(per_pool.get('article_quiz', 0))} · crossword {int(per_pool.get('crossword', 0))}"
+    )
+    text = "\n".join(lines)
+    logging.info("weekly R2 cleanup done: freed_mb=%.1f reader=%s pools=%s", freed_mb, reader_del, per_pool)
+    try:
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    except Exception:
+        admin_ids = []
+    for aid in admin_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=aid, text=text, parse_mode="HTML", suppress_private_keyboard_attach=True,
+            )
+        except Exception:
+            logging.debug("weekly R2 cleanup DM failed aid=%s", aid, exc_info=True)
+
+
 async def pool_r2_orphans_command(update: Update, context: CallbackContext) -> None:
     """Admin: reclaim R2 images of RETIRED game-pool items (rebus/article_quiz/crossword) that
     the crowd-mastery rotation left orphaned. '/pool_r2_orphans' = dry-run; add 'delete' to write.
@@ -35572,6 +35633,7 @@ def main():
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
                 application.job_queue.run_repeating(_app_spend_ceiling_tick_job, interval=int(os.getenv("APP_SPEND_CEILING_TICK_SECONDS", "600") or 600), first=120),
+                application.job_queue.run_repeating(_weekly_r2_cleanup_job, interval=int(os.getenv("WEEKLY_R2_CLEANUP_SECONDS", str(7 * 24 * 3600)) or 7 * 24 * 3600), first=600),
             ),
             enabled=True,
             category="housekeeping",

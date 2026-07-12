@@ -15063,7 +15063,7 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
    flex:1 1 auto min-width:0 с усечением заголовка → элементы НИКОГДА не наезжают.
    Обе темы через токены --d-*. Мобильную шапку (≤900) не трогаем. Токены 1:1 из
    макета-эталона. */
-@media (min-width: 901px) {
+@media (min-width: 700px) {
   .webapp-page .youtube-player-first .youtube-dock2 {
     --d-panel:#111827; --d-card:#1e293b; --d-border:#334155; --d-border-soft:#26344a;
     --d-title:#e2e8f0; --d-secondary:#cbd5e1; --d-muted:#94a3b8; --d-subtle:#64748b;
@@ -15090,6 +15090,11 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     box-shadow: none !important;
     padding: 0 !important;
   }
+
+  /* На планшете-портрете (700–900) тоже показываем DOCK, а не мобильную шапку:
+     редизайн теперь единый для tablet/browser (≥700). Телефон (<700) не тронут. */
+  .webapp-page .youtube-player-first .youtube-mobile-head { display: none !important; }
+  .webapp-page .youtube-player-first .youtube-desktop-command-bar.youtube-dock2 { display: flex !important; }
 
   .webapp-page .youtube-dock2 {
     display: flex;
@@ -15176,20 +15181,21 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-dock-pi:disabled { opacity: .5; cursor: default; }
   .webapp-page .youtube-dock-pi svg { width: 18px; height: 18px; color: var(--d-muted); flex: 0 0 auto; }
   .webapp-page .youtube-dock-pi.is-active { color: var(--d-accent-2); }
+  .webapp-page .youtube-dock-pi-sep { height: 1px; background: var(--d-border-soft); margin: 6px 8px; }
 }
 
 /* Источник — иконки-онли ВСЕГДА (≥901). Контент капнут max-width:1180 у
    .webapp-main, поэтому сам док никогда не шире ~1080px — на текст-подписи
    «Wechseln/Suchen» + лейбл «Video» места нет, они давили центр-заголовок и он
    наезжал на «⋯». Иконки + тултипы (title) сохраняют смысл. */
-@media (min-width: 901px) {
+@media (min-width: 700px) {
   .webapp-page .youtube-dock2 .youtube-group-label { display: none; }
   .webapp-page .youtube-dock-cl .youtube-iconbtn-lbl { display: none; }
   .webapp-page .youtube-dock-cl .youtube-iconbtn { width: 40px; padding: 0; }
 }
 /* Чип статуса («Untertitel: Noch nicht geladen» бывает длинным) не должен съедать
    ширину у центра — ограничиваем и усекаем. */
-@media (min-width: 901px) {
+@media (min-width: 700px) {
   .webapp-page .youtube-dock-cr .youtube-status-chip {
     max-width: 190px;
     overflow: hidden;
@@ -15199,7 +15205,7 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     line-height: 28px;
   }
 }
-@media (min-width: 901px) and (max-width: 1120px) {
+@media (min-width: 700px) and (max-width: 1120px) {
   /* совсем узко — прячем чип статуса целиком, статус виден по сегменту/кнопкам */
   .webapp-page .youtube-dock-cr .youtube-desktop-status-chips { display: none; }
 }
@@ -15209,7 +15215,7 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
    караоке-подсветка активного слова + транспорт единым стилем .tbtn. Обе темы
    через --d-* (объявляем на .youtube-player-first, делим с доком). ТОЛЬКО CSS —
    разметку/обработчики не трогаем, переопределяем существующие классы. ≥901px. */
-@media (min-width: 901px) {
+@media (min-width: 700px) {
   .webapp-page .youtube-player-first {
     --d-panel:#111827; --d-card:#1e293b; --d-border:#334155; --d-border-soft:#26344a;
     --d-title:#e2e8f0; --d-secondary:#cbd5e1; --d-muted:#94a3b8; --d-subtle:#64748b;
@@ -15229,7 +15235,7 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-player-first .youtube-subtitles-panel {
     background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 0 !important;
   }
-  .webapp-page .youtube-player-first .youtube-subtitles-panel-head { display: none; }
+  .webapp-page .youtube-player-first .youtube-subtitles-panel-head { display: none !important; }
 
   /* две колонки-карточки с зазором */
   .webapp-page .youtube-player-first .youtube-subtitles-panel-content.is-dual {

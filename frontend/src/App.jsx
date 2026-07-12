@@ -33561,6 +33561,15 @@ function AppInner() {
                                       ? tr('Перезагрузить субтитры', 'Untertitel neu laden')
                                       : tr('Загрузить субтитры', 'Untertitel laden')}
                                 </button>
+                                <div className="youtube-dock-pi-sep" aria-hidden="true" />
+                                <button
+                                  type="button"
+                                  className={`youtube-dock-pi ${youtubeDictOpen ? 'is-active' : ''}`}
+                                  onClick={() => { setYoutubeDictOpen((prev) => !prev); setYoutubeDockMoreOpen(false); }}
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+                                  {tr('Словарь рядом', 'Wörterbuch daneben')}
+                                </button>
                               </div>
                             )}
                           </div>
