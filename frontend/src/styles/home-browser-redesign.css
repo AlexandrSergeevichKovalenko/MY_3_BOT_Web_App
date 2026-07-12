@@ -191,10 +191,16 @@
      не входит: весь блок под @media (min-width:700px). Сайдбар в DOM не
      рендерится, поэтому flex-пин shell/main безопасен на любой ширине. */
 
-  /* 1. Пин страницы в высоту вьюпорта — без вертикального скролла. */
+  /* 1. Пин страницы в высоту вьюпорта. Когда контент влезает (планшет, нормальные
+        окна) — скролла нет. Но в КОРОТКОМ окне браузера 12 плиток + шапка + рельс
+        не помещаются: раньше overflow:hidden их РЕЗАЛ без возможности прокрутки.
+        overflow-y:auto = аккуратный запасной скролл (ничего не теряется), а
+        overflow-x:hidden убирает случайный горизонтальный сдвиг. */
   .webapp-page.is-home-bento {
     height: var(--app-height, 100dvh) !important;
-    overflow: hidden !important;
+    max-height: var(--app-height, 100dvh) !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
   }
   .webapp-page.is-home-bento .webapp-shell {
     display: flex !important;

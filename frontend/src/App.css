@@ -14660,6 +14660,15 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     max-height: min(38vh, 520px) !important;
   }
 
+  /* 3b. Субтитры DE|RU — ДВЕ КОЛОНКИ бок о бок (как в утверждённом дизайне).
+        Правила grid-template-columns для .is-dual не существовало вовсе, поэтому
+        .youtube-subtitles-panel-content (grid без колонок) ставил DE и RU стопкой.
+        При RU:OFF класс is-single — остаётся одна колонка на всю ширину. */
+  .webapp-page .youtube-subtitles-panel-content.is-dual {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+
   /* 4. Шапка/контролы (мобильная разметка) — просторнее и в строку. На браузере
         ≥901px показывается desktop-панель, и эти правила там просто не действуют. */
   .webapp-page .webapp-video .webapp-local-section-head { padding: 16px 20px; }
