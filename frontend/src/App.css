@@ -15204,6 +15204,94 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-dock-cr .youtube-desktop-status-chips { display: none; }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   PREMIUM DOCK · Этап 2 — субтитры Overlay OFF: ДВЕ премиум-карточки DE / RU +
+   караоке-подсветка активного слова + транспорт единым стилем .tbtn. Обе темы
+   через --d-* (объявляем на .youtube-player-first, делим с доком). ТОЛЬКО CSS —
+   разметку/обработчики не трогаем, переопределяем существующие классы. ≥901px. */
+@media (min-width: 901px) {
+  .webapp-page .youtube-player-first {
+    --d-panel:#111827; --d-card:#1e293b; --d-border:#334155; --d-border-soft:#26344a;
+    --d-title:#e2e8f0; --d-secondary:#cbd5e1; --d-muted:#94a3b8; --d-subtle:#64748b;
+    --d-accent:#e0ad5b; --d-accent-2:#cf9d63; --d-accent-soft:rgba(224,173,91,.15);
+    --d-accent-line:rgba(224,173,91,.5); --d-on-accent:#1f1a14; --d-hover:#1f2937;
+    --d-shadow:0 30px 60px rgba(0,0,0,.5);
+  }
+  .webapp-page.is-theme-light .youtube-player-first {
+    --d-panel:#fbf5e9; --d-card:#fff8ee; --d-border:#d8c8b0; --d-border-soft:#e6dac4;
+    --d-title:#17120d; --d-secondary:#2f271f; --d-muted:#5a4a39; --d-subtle:#8a765f;
+    --d-accent:#c1873f; --d-accent-2:#a76f2c; --d-accent-soft:rgba(193,135,63,.14);
+    --d-accent-line:rgba(193,135,63,.45); --d-on-accent:#3a2a12; --d-hover:#efe3cf;
+    --d-shadow:0 24px 50px rgba(111,84,52,.16);
+  }
+
+  /* внешняя панель — прозрачный контейнер; общий заголовок скрыт (у карточек свой) */
+  .webapp-page .youtube-player-first .youtube-subtitles-panel {
+    background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 0 !important;
+  }
+  .webapp-page .youtube-player-first .youtube-subtitles-panel-head { display: none; }
+
+  /* две колонки-карточки с зазором */
+  .webapp-page .youtube-player-first .youtube-subtitles-panel-content.is-dual {
+    grid-template-columns: 1fr 1fr; gap: 16px; align-items: start;
+  }
+  .webapp-page .youtube-player-first .youtube-subtitles-block {
+    background: var(--d-panel); border: 1px solid var(--d-border); border-radius: 24px;
+    box-shadow: var(--d-shadow); overflow: hidden; padding: 0;
+  }
+  /* шапка карточки: langtag */
+  .webapp-page .youtube-player-first .youtube-subtitles-card-head {
+    padding: 14px 22px 12px; border-bottom: 1px solid var(--d-border-soft);
+    display: flex; align-items: center; gap: 12px; min-height: 0;
+  }
+  .webapp-page .youtube-player-first .youtube-subtitles-card-badge > span,
+  .webapp-page .youtube-player-first .youtube-subtitles-block-ru .youtube-subtitles-card-head > span {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 34px; height: 26px; padding: 0 8px; border-radius: 8px; min-height: 0;
+    font-size: 11px; font-weight: 900; letter-spacing: .04em; white-space: nowrap;
+    background: var(--d-accent-soft); color: var(--d-accent-2); border: 1px solid var(--d-accent-line);
+  }
+  /* тело — список строк */
+  .webapp-page .youtube-player-first .youtube-subtitles-block .webapp-subtitles-list {
+    max-height: min(46vh, 620px) !important; border: 0 !important; background: transparent !important;
+    padding: 16px 24px 22px !important; border-radius: 0 !important;
+  }
+  .webapp-page .youtube-player-first .youtube-subtitles-block .webapp-subtitles-list p {
+    font-size: 16px; line-height: 1.5; color: var(--d-subtle); font-weight: 600;
+    padding: 7px 0; margin: 0; transition: color .15s; background: transparent !important;
+  }
+  /* активная строка DE — крупная, кинематографичная */
+  .webapp-page .youtube-player-first .youtube-subtitles-block-de .webapp-subtitles-list p.is-active {
+    font-size: clamp(22px, 1.7vw, 26px) !important; line-height: 1.34; font-weight: 750;
+    color: var(--d-title) !important; letter-spacing: -.012em; padding: 10px 12px !important; margin: 4px -12px;
+  }
+  .webapp-page .youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p { color: var(--d-muted) !important; font-weight: 500; }
+  .webapp-page .youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p.is-active {
+    font-size: 21px !important; line-height: 1.36; font-weight: 650; color: var(--d-accent-2) !important; padding: 9px 0 !important;
+  }
+  /* караоке — активное слово бронзовой заливкой */
+  .webapp-page .youtube-player-first .webapp-subtitles-list p.is-active .is-cue-active {
+    color: var(--d-on-accent) !important; font-weight: 800; background: var(--d-accent);
+    border-radius: 6px; padding: 1px 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone;
+  }
+
+  /* транспорт под видео — единый .tbtn, центр (is-toggle) — бронза */
+  .webapp-page .youtube-player-first .youtube-sentence-jump-bar {
+    display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px;
+  }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-btn {
+    height: 44px; min-width: 52px; padding: 0 16px; border-radius: 14px;
+    border: 1px solid var(--d-border); background: var(--d-card); color: var(--d-secondary);
+    display: inline-flex; align-items: center; justify-content: center; transition: .15s;
+  }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-btn:hover:not(:disabled) { background: var(--d-hover); color: var(--d-title); }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-btn:disabled { opacity: .4; cursor: default; }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-btn.is-toggle {
+    min-width: 72px; background: var(--d-accent); border-color: transparent; color: var(--d-on-accent);
+    box-shadow: 0 8px 20px var(--d-accent-soft);
+  }
+}
+
 .youtube-command-action:hover:not(:disabled),
 .youtube-command-toggle:hover:not(:disabled) {
   background: var(--yt-bg-hover);
