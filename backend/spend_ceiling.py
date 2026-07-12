@@ -62,6 +62,27 @@ GRACE_HOURS = _env_float("APP_SPEND_CEILING_GRACE_HOURS", 2.0)
 NIGHT_START = dt_time(0, 0)
 NIGHT_END = dt_time(6, 30)
 
+# The weekly € ceiling must reflect ACTUAL out-of-pocket money, not list price.
+# billing_events records the notional list-price cost of every unit (e.g. Google TTS at
+# ~$16/1M chars) even while we are inside a provider's FREE tier. Providers whose monthly
+# per-provider budget keeps them within their free allowance (google_tts 1M, google_translate
+# 500k, deepl 500k, azure 2M, R2 10GB) cost us ~€0 in reality, and Stripe fees are
+# revenue-linked (not a controllable API spend) — so they are EXCLUDED from the ceiling sum.
+# Only genuinely pay-from-first-unit providers (openai, perplexity, …) count.
+_DEFAULT_EXCLUDED_PROVIDERS = {
+    "google_tts", "google_translate", "deepl_free", "deepl",
+    "azure_translator", "cloudflare_r2_class_a", "cloudflare_r2_class_b",
+    "cloudflare_r2_storage", "youtube_api", "stripe",
+}
+
+
+def _excluded_providers() -> set[str]:
+    raw = (os.getenv("APP_SPEND_CEILING_EXCLUDE_PROVIDERS", "") or "").strip()
+    if raw:
+        return {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return set(_DEFAULT_EXCLUDED_PROVIDERS)
+
+
 _SPEND_CACHE_TTL_SEC = int(_env_float("APP_SPEND_CACHE_TTL_SEC", 90))
 _REDIS_SPEND_KEY = "spend:app:week:{week}"          # JSON {"eur": float, "ts": epoch}
 _REDIS_BLOCK_KEY = "spend:app:blocked:{tier}"        # "1" when that tier is paused
@@ -98,20 +119,23 @@ def _is_night(now: datetime | None = None, tz: str = TRIAL_POLICY_TZ) -> bool:
 # ── Weekly spend (Postgres SUM → EUR, Redis-cached) ──────────────────────────
 def _rebuild_week_spend_from_db(start_utc: datetime, end_utc: datetime) -> float:
     """One indexed SUM over bt_3_billing_events for the week, converted to EUR."""
+    excluded = _excluded_providers()
     total_eur = 0.0
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT currency, COALESCE(SUM(cost_amount), 0)
+                SELECT provider, currency, COALESCE(SUM(cost_amount), 0)
                 FROM bt_3_billing_events
                 WHERE event_time >= %s AND event_time < %s
-                GROUP BY currency;
+                GROUP BY provider, currency;
                 """,
                 (start_utc, end_utc),
             )
             rows = cursor.fetchall() or []
-    for currency, amount in rows:
+    for provider, currency, amount in rows:
+        if str(provider or "").strip().lower() in excluded:
+            continue  # inside its free tier / revenue-linked → not real out-of-pocket money
         try:
             total_eur += float(convert_cost_to_eur(float(amount or 0.0), currency) or 0.0)
         except Exception:
@@ -303,8 +327,6 @@ def format_hard_alert(decision: dict) -> str:
 def analyze_week_cause(now: datetime | None = None) -> str:
     """Read-only weekly breakdown for the 📊 button: € by provider + top activities."""
     start_utc, end_utc, week_key = _week_bounds_utc(now if isinstance(now, datetime) else None)
-    provider_eur: dict[str, float] = {}
-    action_eur: dict[str, float] = {}
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -321,7 +343,12 @@ def analyze_week_cause(now: datetime | None = None) -> str:
     except Exception:
         logger.debug("analyze_week_cause query failed", exc_info=True)
         return "Не удалось собрать разбор затрат."
-    total = 0.0
+    excluded = _excluded_providers()
+    counted_total = 0.0
+    free_total = 0.0
+    counted_prov: dict[str, float] = {}
+    free_prov: dict[str, float] = {}
+    action_eur: dict[str, float] = {}  # counted (real-money) activities only
     for provider, action_type, currency, amount in rows:
         try:
             eur = float(convert_cost_to_eur(float(amount or 0.0), currency) or 0.0)
@@ -329,17 +356,30 @@ def analyze_week_cause(now: datetime | None = None) -> str:
             eur = 0.0
         if eur <= 0:
             continue
-        total += eur
-        provider_eur[str(provider or "—")] = provider_eur.get(str(provider or "—"), 0.0) + eur
-        action_eur[str(action_type or "—")] = action_eur.get(str(action_type or "—"), 0.0) + eur
-    if total <= 0:
-        return f"📊 Неделя {week_key}: платных затрат пока не зафиксировано."
-    top_prov = sorted(provider_eur.items(), key=lambda kv: kv[1], reverse=True)[:6]
-    top_act = sorted(action_eur.items(), key=lambda kv: kv[1], reverse=True)[:5]
-    lines = [f"📊 <b>Разбор недели {week_key}</b> — всего {_fmt_eur(total)}", "", "<b>По провайдерам:</b>"]
-    lines += [f"• {name} — {_fmt_eur(v)}" for name, v in top_prov]
-    lines += ["", "<b>Топ активностей:</b>"]
-    lines += [f"• {name} — {_fmt_eur(v)}" for name, v in top_act]
+        pname = str(provider or "—")
+        if pname.strip().lower() in excluded:
+            free_total += eur
+            free_prov[pname] = free_prov.get(pname, 0.0) + eur
+        else:
+            counted_total += eur
+            counted_prov[pname] = counted_prov.get(pname, 0.0) + eur
+            aname = str(action_type or "—")
+            action_eur[aname] = action_eur.get(aname, 0.0) + eur
+    if counted_total <= 0 and free_total <= 0:
+        return f"📊 Неделя {week_key}: затрат пока не зафиксировано."
+    lines = [
+        f"📊 <b>Разбор недели {week_key}</b>",
+        f"💶 В потолок (реальные деньги): <b>{_fmt_eur(counted_total)}</b>",
+    ]
+    if counted_prov:
+        lines += ["", "<b>Платные провайдеры:</b>"]
+        lines += [f"• {n} — {_fmt_eur(v)}" for n, v in sorted(counted_prov.items(), key=lambda kv: kv[1], reverse=True)[:6]]
+    if action_eur:
+        lines += ["", "<b>Топ платных активностей:</b>"]
+        lines += [f"• {n} — {_fmt_eur(v)}" for n, v in sorted(action_eur.items(), key=lambda kv: kv[1], reverse=True)[:5]]
+    if free_prov:
+        lines += ["", f"🆓 <b>Бесплатный тариф (НЕ в потолок): {_fmt_eur(free_total)}</b>"]
+        lines += [f"• {n} — {_fmt_eur(v)}" for n, v in sorted(free_prov.items(), key=lambda kv: kv[1], reverse=True)[:6]]
     return "\n".join(lines)
 
 
