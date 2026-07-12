@@ -53,8 +53,11 @@ COPY --from=frontend_builder /app/frontend/dist /app/frontend/dist
 
 # Railway даёт PORT, обычно 8080
 ENV PORT=8080
+# Memory: cap glibc malloc arenas (kills threaded-Python RSS fragmentation) + return freed pages to the OS.
+ENV MALLOC_ARENA_MAX=2
+ENV MALLOC_TRIM_THRESHOLD_=100000
 
 # 4) Запускаем Flask через gunicorn с настраиваемой web-concurrency.
 # Web entrypoint deliberately keeps backend runtime side effects disabled.
 # ВАЖНО: чтобы это работало, в requirements.txt должен быть gunicorn
-CMD ["sh", "-c", "gunicorn -b 0.0.0.0:${PORT} -k gthread --workers ${WEB_CONCURRENCY:-2} --threads ${GUNICORN_THREADS:-8} --max-requests ${GUNICORN_MAX_REQUESTS:-2000} --max-requests-jitter ${GUNICORN_MAX_REQUESTS_JITTER:-200} --timeout 300 --graceful-timeout 30 backend.web_service:app"]
+CMD ["sh", "-c", "gunicorn -b 0.0.0.0:${PORT} -k gthread --workers ${WEB_CONCURRENCY:-1} --threads ${GUNICORN_THREADS:-2} --max-requests ${GUNICORN_MAX_REQUESTS:-2000} --max-requests-jitter ${GUNICORN_MAX_REQUESTS_JITTER:-200} --timeout 300 --graceful-timeout 30 backend.web_service:app"]

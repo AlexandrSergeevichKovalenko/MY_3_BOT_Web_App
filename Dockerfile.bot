@@ -24,5 +24,8 @@ COPY users_comparison_analytics.py /app/users_comparison_analytics.py
 COPY backend/ /app/backend/
 
 ENV PYTHONPATH=/app
+# Memory: cap glibc malloc arenas (kills threaded-Python RSS fragmentation) + return freed pages to the OS.
+ENV MALLOC_ARENA_MAX=2
+ENV MALLOC_TRIM_THRESHOLD_=100000
 
 CMD ["python", "bot_3.py"]

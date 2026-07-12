@@ -13,7 +13,11 @@ RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 -r 
 COPY backend/ /app/backend/
 
 ENV PYTHONPATH=/app
-ENV DRAMATIQ_WORKER_THREADS=24
+# Memory: cap glibc malloc arenas + return freed pages to the OS.
+ENV MALLOC_ARENA_MAX=2
+ENV MALLOC_TRIM_THRESHOLD_=100000
+# Right-sized for 1-2 DAU (was 24). The worker stays; only concurrency drops. Override via env if load grows.
+ENV DRAMATIQ_WORKER_THREADS=4
 ENV DRAMATIQ_WORKER_TIMEOUT_MS=1000
 ENV TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY=24
 ENV TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY=4

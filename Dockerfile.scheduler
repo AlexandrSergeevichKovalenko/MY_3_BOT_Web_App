@@ -15,6 +15,9 @@ RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 \
 COPY backend/ /app/backend/
 
 ENV PYTHONPATH=/app
+# Memory: cap glibc malloc arenas + return freed pages to the OS.
+ENV MALLOC_ARENA_MAX=2
+ENV MALLOC_TRIM_THRESHOLD_=100000
 # This service IS the scheduler — mark it so backend_server.py skips APScheduler on import.
 ENV SCHEDULER_SERVICE_ENABLED=1
 # TTS admin monitor jobs read in-process web state; they must stay in web, not here.
