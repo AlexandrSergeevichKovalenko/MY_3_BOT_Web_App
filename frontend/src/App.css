@@ -14640,12 +14640,17 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   width: 100%;
 }
 
-/* 2. Плеер — большой герой 16:9, но высота ≤ ~50vh: ширину капим через высоту,
-      чтобы в ландшафте под плеером оставалось место транскрипту. */
+/* 2. Плеер — большой герой 16:9, высота ≤ ~52vh. Кап ставим на SHELL (через
+      высоту), а фрейму даём width:100% — иначе пустой фрейм (нет видео)
+      схлопывается в 2px-линию. Проверено на скомпилированном CSS. */
+.webapp-page.is-telegram-tablet .youtube-player-card { width: 100%; }
 .webapp-page.is-telegram-tablet .webapp-video-player-shell { width: 100%; }
-.webapp-page.is-telegram-tablet .webapp-video-player-shell:not(.is-app-fullscreen) .webapp-video-frame {
-  max-width: min(100%, calc(50vh * 16 / 9));
+.webapp-page.is-telegram-tablet .webapp-video-player-shell:not(.is-app-fullscreen) {
+  max-width: min(100%, calc(52vh * 16 / 9));
   margin: 0 auto;
+}
+.webapp-page.is-telegram-tablet .webapp-video-player-shell:not(.is-app-fullscreen) .webapp-video-frame {
+  width: 100%;
 }
 
 /* 3. Транскрипт — высокий, заполняет пространство под плеером (было min(24-26vh)). */

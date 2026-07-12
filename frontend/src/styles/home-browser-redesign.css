@@ -523,6 +523,11 @@
      (bento сам центрируется max-width:720). На телефоне (<700px) правило не
      действует — весь блок под @media (min-width:700px). */
   .webapp-page.is-telegram-tablet:not(.is-home-bento) .webapp-main {
+    /* width:100% is the ACTUAL cure — .webapp-main was sizing to its content
+       (~289px, centered) instead of stretching to the shell, so every section
+       looked like a narrow column. grid-template-columns just laid out its
+       children; it never widened main itself. Verified via compiled-CSS harness. */
+    width: 100% !important;
     grid-template-columns: minmax(0, 1fr) !important;
   }
 }
