@@ -95,7 +95,13 @@ html[data-scheme="light"] .sc-code-val { color: #9a6b00; }
 
 /* Media */
 .sc-media { margin: 10px 0 4px; }
-.sc-media img, .sc-media video { width: 100%; border-radius: 12px; display: block; background: rgba(0,0,0,0.25); }
+.sc-media img, .sc-media video {
+  /* Show the WHOLE media without scrolling: portrait recordings capped by height
+     (centered, letterboxed); landscape fills width. Fullscreen via native controls. */
+  display: block; margin: 0 auto;
+  max-width: 100%; max-height: 60vh; width: auto; height: auto;
+  border-radius: 12px; background: rgba(0,0,0,0.25);
+}
 .sc-media figcaption { font-size: 12.5px; color: #8b97ad; text-align: center; margin-top: 6px; }
 .sc-media-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 460px) { .sc-media-row { grid-template-columns: 1fr; } }
