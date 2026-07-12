@@ -14622,6 +14622,61 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   text-decoration: underline;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   TABLET — YouTube/Видео «Вариант B»: плеер-герой сверху + транскрипт снизу.
+   iPad сваливался в мобильную раскладку (всё ≤900px): крошечный плеер, узкая
+   колонка. Здесь НИЧЕГО не удаляется и не переносится — существующая (мобильная)
+   разметка со всеми кнопками/функциями просто раскладывается по-планшетному:
+   секция на всю ширину, большой 16:9-плеер (высота ограничена, чтобы транскрипт
+   был виден в любой ориентации), высокий транскрипт DE|RU. Классовый скоуп
+   .is-telegram-tablet бьёт мобильные @media(max-width:900px) по специфичности.
+   Телефон (<700px, без класса планшета) не затронут. */
+
+/* 1. Секция и вложенные гриды — на всю ширину (иначе схлопываются по контенту,
+      как это было с .webapp-main). */
+.webapp-page.is-telegram-tablet .webapp-video-dictionary,
+.webapp-page.is-telegram-tablet .webapp-video {
+  grid-template-columns: minmax(0, 1fr) !important;
+  width: 100%;
+}
+
+/* 2. Плеер — большой герой 16:9, но высота ≤ ~50vh: ширину капим через высоту,
+      чтобы в ландшафте под плеером оставалось место транскрипту. */
+.webapp-page.is-telegram-tablet .webapp-video-player-shell { width: 100%; }
+.webapp-page.is-telegram-tablet .webapp-video-player-shell:not(.is-app-fullscreen) .webapp-video-frame {
+  max-width: min(100%, calc(50vh * 16 / 9));
+  margin: 0 auto;
+}
+
+/* 3. Транскрипт — высокий, заполняет пространство под плеером (было min(24-26vh)). */
+.webapp-page.is-telegram-tablet .webapp-subtitles-list,
+.webapp-page.is-telegram-tablet .webapp-video .webapp-subtitles:first-of-type .webapp-subtitles-list,
+.webapp-page.is-telegram-tablet .webapp-video .webapp-subtitles.is-translation .webapp-subtitles-list {
+  max-height: min(38vh, 520px) !important;
+}
+
+/* 4. Шапка/контролы (мобильная разметка) — просторнее и в строку. Все кнопки
+      сохранены, просто дышат. */
+.webapp-page.is-telegram-tablet .webapp-video .webapp-local-section-head {
+  padding: 16px 20px;
+}
+.webapp-page.is-telegram-tablet .youtube-player-first-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.webapp-page.is-telegram-tablet .youtube-player-first-controls-row > * {
+  flex: 1 1 auto;
+}
+
+/* 5. Форма поиска/смены видео — комфортная ширина по центру, не растянута в нить
+      и не на весь экран. */
+.webapp-page.is-telegram-tablet .webapp-video-form.youtube-setup-form {
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+}
+
 @media (max-width: 900px) {
   .webapp-video-dictionary {
     gap: 20px;
