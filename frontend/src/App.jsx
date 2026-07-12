@@ -298,17 +298,37 @@ function normalizeReaderPaginationText(rawText) {
 }
 
 function normalizeReaderVisiblePageText(rawText) {
-  return String(rawText || '')
+  const paragraphs = String(rawText || '')
     // Strip glyphs that render as empty "tofu" boxes: Private-Use-Area codepoints
-    // (font-specific dot-leaders baked into PDFs — e.g. the leader dots in a table
-    // of contents that the reading serif can't render), the Unicode replacement /
+    // (font-specific dot-leaders baked into PDFs), the Unicode replacement /
     // object-replacement chars, and non-printable control chars (keep \n, \t).
     .replace(/[\uE000-\uF8FF\uFFFC\uFFFD]+/g, ' ')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]+/g, ' ')
+    // Collapse TABLE-OF-CONTENTS dot leaders ("Wiener Zeit....... 71"): runs of 4+
+    // dots/middots (optionally spaced) become one space so the entry reads cleanly.
+    // Prose (<=3 dots for an ellipsis) is untouched.
+    .replace(/(?:\s*[.\u00B7\u2022\u2219]\s*){4,}/g, ' ')
+    .replace(/\u2026{2,}/g, ' ')
     .split(/\n\n+/)
     .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
-    .filter(Boolean)
-    .join('\n\n');
+    .filter(Boolean);
+  // Merge consecutive SHORT fragments that do NOT end a sentence — index/register
+  // pages extract each entry as its own paragraph, reflowing into a column of tiny
+  // lines with huge gaps. Merging short+short (never a heading followed by a long
+  // body paragraph) makes them read as flowing lines. Prose paragraphs are long, so
+  // they never merge.
+  const SHORT = 48;
+  const endsSentence = (s) => /[.!?:\u00BB\u201D")\]]$/.test(s);
+  const merged = [];
+  for (const para of paragraphs) {
+    const prev = merged.length ? merged[merged.length - 1] : null;
+    if (prev !== null && prev.length < SHORT && !endsSentence(prev) && para.length < SHORT) {
+      merged[merged.length - 1] = `${prev} ${para}`;
+    } else {
+      merged.push(para);
+    }
+  }
+  return merged.join('\n\n');
 }
 
 function normalizeReaderEpubHref(rawHref) {
@@ -35874,24 +35894,6 @@ function AppInner() {
                           'Оригинал недоступен для этой книги — она была загружена раньше. Перезалейте книгу, чтобы включить режим «Оригинал».',
                           'Original für dieses Buch nicht verfügbar — es wurde früher hochgeladen. Bitte erneut hochladen, um den Originalmodus zu aktivieren.'
                         )}
-                      </div>
-                    )}
-                    {readerOriginalAvailable && (
-                      <div className="reader-original-dock">
-                        <button
-                          type="button"
-                          className="reader-original-nav"
-                          disabled={readerOriginalPage <= 1 || readerOriginalLoading}
-                          onClick={() => goReaderOriginalPage(readerOriginalPage - 1)}
-                          aria-label={tr('Назад', 'Zurück')}
-                        >‹</button>
-                        <button
-                          type="button"
-                          className="reader-original-nav"
-                          disabled={readerOriginalLoading || (readerOriginalPageCount > 0 && readerOriginalPage >= readerOriginalPageCount)}
-                          onClick={() => goReaderOriginalPage(readerOriginalPage + 1)}
-                          aria-label={tr('Вперёд', 'Weiter')}
-                        >›</button>
                       </div>
                     )}
                   </div>
