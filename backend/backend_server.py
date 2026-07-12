@@ -12339,6 +12339,33 @@ def _billing_log_event_safe(
         )
 
 
+_OPENAI_MODEL_DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
+
+def _openai_priced_sku(model: str, unit: str) -> tuple[dict | None, str]:
+    """Resolve an OpenAI price snapshot for a token unit ('tokens_in'/'tokens_out'): try the
+    exact (possibly DATED) model SKU first, then the date-stripped FAMILY SKU. Returns
+    (snapshot_or_None, sku_that_matched). Fixes web-tier gpt-4.1-mini-<date> being priced at $0
+    (snapshots are seeded under the family name), WITHOUT breaking full-model SKUs seeded dated
+    — the exact match always wins first."""
+    kind = "input" if str(unit) == "tokens_in" else "output"
+    exact_sku = f"{model}_{kind}"
+    snap = get_effective_billing_price_snapshot(
+        provider="openai", sku=exact_sku, unit=unit, currency=BILLING_CURRENCY_DEFAULT
+    )
+    if snap:
+        return snap, exact_sku
+    family = _OPENAI_MODEL_DATE_RE.sub("", str(model))
+    if family and family != model:
+        fam_sku = f"{family}_{kind}"
+        snap = get_effective_billing_price_snapshot(
+            provider="openai", sku=fam_sku, unit=unit, currency=BILLING_CURRENCY_DEFAULT
+        )
+        if snap:
+            return snap, fam_sku
+    return None, exact_sku
+
+
 def _billing_log_openai_usage(
     *,
     user_id: int | None,
@@ -12363,13 +12390,7 @@ def _billing_log_openai_usage(
     }
     if prompt_tokens > 0:
         try:
-            sku_in = f"{model}_input"
-            snapshot_in = get_effective_billing_price_snapshot(
-                provider="openai",
-                sku=sku_in,
-                unit="tokens_in",
-                currency=BILLING_CURRENCY_DEFAULT,
-            )
+            snapshot_in, sku_in = _openai_priced_sku(model, "tokens_in")
             meta_in = dict(base_meta)
             meta_in["price_sku"] = sku_in
             if snapshot_in:
@@ -12396,13 +12417,7 @@ def _billing_log_openai_usage(
             logging.debug("billing tokens_in skipped: %s", exc)
     if completion_tokens > 0:
         try:
-            sku_out = f"{model}_output"
-            snapshot_out = get_effective_billing_price_snapshot(
-                provider="openai",
-                sku=sku_out,
-                unit="tokens_out",
-                currency=BILLING_CURRENCY_DEFAULT,
-            )
+            snapshot_out, sku_out = _openai_priced_sku(model, "tokens_out")
             meta_out = dict(base_meta)
             meta_out["price_sku"] = sku_out
             if snapshot_out:
