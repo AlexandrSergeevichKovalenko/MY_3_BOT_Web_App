@@ -34,6 +34,8 @@ from backend.database import (
     mark_app_spend_ceiling_threshold_notified,
     set_app_spend_ceiling_hard_state,
     set_app_spend_ceiling_blocked_tiers,
+    add_app_spend_ceiling_extra,
+    append_app_spend_ceiling_decision,
 )
 
 logger = logging.getLogger(__name__)
@@ -247,3 +249,145 @@ def evaluate_ceiling(now: datetime | None = None) -> dict:
         "grace_deadline": grace_deadline_iso,
         "blocked_tiers": ceiling.get("blocked_tiers") or [],
     }
+
+
+# ── Presentation + admin actions (pure; the bot layer calls these) ───────────
+TOP_UP_OPTIONS = (2, 5, 10)
+
+
+def _fmt_eur(x) -> str:
+    try:
+        return f"€{float(x or 0):.2f}"
+    except Exception:
+        return "€0.00"
+
+
+def build_appcap_keyboard():
+    """Inline keyboard for the ceiling DM: +€2/€5/€10 · ⛔ stop · 📊 why."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = [[InlineKeyboardButton(f"➕ €{n}", callback_data=f"appcap:add:{n}") for n in TOP_UP_OPTIONS]]
+    rows.append([InlineKeyboardButton("⛔ Остановить сейчас", callback_data="appcap:stop")])
+    rows.append([InlineKeyboardButton("📊 Разобраться в причине", callback_data="appcap:why")])
+    return InlineKeyboardMarkup(rows)
+
+
+def format_soft_alert(decision: dict) -> str:
+    spent = decision.get("spent_eur", 0.0)
+    limit = decision.get("limit_eur", 0.0)
+    pct = decision.get("pct", 0.0)
+    remaining = max(0.0, float(limit) - float(spent))
+    return (
+        f"💸 <b>Затраты приложения: {_fmt_eur(spent)} из {_fmt_eur(limit)}</b> "
+        f"({pct:.0f}%) за неделю {decision.get('week')}.\n"
+        f"Осталось {_fmt_eur(remaining)}. Можно добавить бюджет на эту неделю или посмотреть, куда ушло."
+    )
+
+
+def format_hard_alert(decision: dict) -> str:
+    spent = decision.get("spent_eur", 0.0)
+    limit = decision.get("limit_eur", 0.0)
+    if decision.get("should_block_now"):
+        when = "🌙 Ночь — тяжёлые функции остановлены сразу (аудио-книга, картинки, тяжёлый LLM). Дешёвое ядро работает."
+    else:
+        when = (
+            f"⏳ Если не отвечу, тяжёлые функции авто-остановятся в {decision.get('grace_deadline') or '~2 ч'} "
+            "(дешёвое ядро продолжит работать)."
+        )
+    return (
+        f"⛔ <b>Достигнут недельный потолок затрат: {_fmt_eur(spent)} / {_fmt_eur(limit)}</b> "
+        f"(неделя {decision.get('week')}).\n{when}\n\n"
+        "Добавить бюджет на эту неделю, остановить сейчас или разобраться в причине:"
+    )
+
+
+def analyze_week_cause(now: datetime | None = None) -> str:
+    """Read-only weekly breakdown for the 📊 button: € by provider + top activities."""
+    start_utc, end_utc, week_key = _week_bounds_utc(now if isinstance(now, datetime) else None)
+    provider_eur: dict[str, float] = {}
+    action_eur: dict[str, float] = {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT provider, action_type, currency, COALESCE(SUM(cost_amount), 0)
+                    FROM bt_3_billing_events
+                    WHERE event_time >= %s AND event_time < %s
+                    GROUP BY provider, action_type, currency;
+                    """,
+                    (start_utc, end_utc),
+                )
+                rows = cursor.fetchall() or []
+    except Exception:
+        logger.debug("analyze_week_cause query failed", exc_info=True)
+        return "Не удалось собрать разбор затрат."
+    total = 0.0
+    for provider, action_type, currency, amount in rows:
+        try:
+            eur = float(convert_cost_to_eur(float(amount or 0.0), currency) or 0.0)
+        except Exception:
+            eur = 0.0
+        if eur <= 0:
+            continue
+        total += eur
+        provider_eur[str(provider or "—")] = provider_eur.get(str(provider or "—"), 0.0) + eur
+        action_eur[str(action_type or "—")] = action_eur.get(str(action_type or "—"), 0.0) + eur
+    if total <= 0:
+        return f"📊 Неделя {week_key}: платных затрат пока не зафиксировано."
+    top_prov = sorted(provider_eur.items(), key=lambda kv: kv[1], reverse=True)[:6]
+    top_act = sorted(action_eur.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    lines = [f"📊 <b>Разбор недели {week_key}</b> — всего {_fmt_eur(total)}", "", "<b>По провайдерам:</b>"]
+    lines += [f"• {name} — {_fmt_eur(v)}" for name, v in top_prov]
+    lines += ["", "<b>Топ активностей:</b>"]
+    lines += [f"• {name} — {_fmt_eur(v)}" for name, v in top_act]
+    return "\n".join(lines)
+
+
+def _reset_week_alerts(week_key: str) -> None:
+    """Re-arm soft/hard alerts + clear the pending auto-stop after a top-up, so the next
+    approach to the RAISED ceiling alerts again. Own-module UPDATE (avoids editing database.py)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_app_spend_ceiling "
+                    "SET notified_thresholds = '{}'::jsonb, hard_reached_at = NULL, "
+                    "    auto_stop_at = NULL, updated_at = NOW() "
+                    "WHERE period_week = %s;",
+                    (str(week_key),),
+                )
+            conn.commit()
+    except Exception:
+        logger.debug("_reset_week_alerts failed week=%s", week_key, exc_info=True)
+
+
+def apply_appcap_action(action: str, *, amount=None, admin_id=None) -> dict:
+    """Apply an admin button press. Returns {ok, text}. The bot handler is a thin wrapper."""
+    act = str(action or "").strip().lower()
+    _, _, week_key = _week_bounds_utc()
+    if act == "add":
+        try:
+            add_eur = float(amount or 0)
+        except Exception:
+            add_eur = 0.0
+        if add_eur <= 0:
+            return {"ok": False, "text": "Некорректная сумма добора."}
+        row = add_app_spend_ceiling_extra(add_eur=add_eur, week=week_key, metadata={"by": admin_id})
+        _reset_week_alerts(week_key)
+        set_tier_blocked([], week=week_key)  # resume everything
+        try:
+            append_app_spend_ceiling_decision(decision={"action": "add", "eur": add_eur, "by": admin_id}, week=week_key)
+        except Exception:
+            pass
+        new_limit = row.get("effective_limit_eur") if row else None
+        return {"ok": True, "text": f"✅ Бюджет недели поднят до {_fmt_eur(new_limit)}. Функции возобновлены."}
+    if act == "stop":
+        set_tier_blocked([TIER_HEAVY], reason="admin_manual_stop", week=week_key)
+        try:
+            append_app_spend_ceiling_decision(decision={"action": "stop", "by": admin_id}, week=week_key)
+        except Exception:
+            pass
+        return {"ok": True, "text": "⛔ Тяжёлые функции остановлены. Дешёвое ядро (перевод, словарь) продолжает работать."}
+    if act == "why":
+        return {"ok": True, "text": analyze_week_cause()}
+    return {"ok": False, "text": "Неизвестное действие."}
