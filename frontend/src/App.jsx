@@ -10,6 +10,7 @@ import WeeklySummaryModal from './components/WeeklySummaryModal';
 import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
+import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -5866,6 +5867,11 @@ function AppInner() {
   const [readerAudioPlayActive, setReaderAudioPlayActive] = useState(false);
   const [readerAudioPlayLoading, setReaderAudioPlayLoading] = useState(false);
   const [readerAudioPlayError, setReaderAudioPlayError] = useState('');
+  // Monthly reader-audio cap hit (429). Holds the backend limit payload so we can show
+  // an honest "limit reached / resets on <date>" plaque instead of the misleading
+  // "try again in a couple seconds" toast, plus a one-tap "ask admin for more" action.
+  const [readerAudioLimitInfo, setReaderAudioLimitInfo] = useState(null);
+  const [readerAudioLimitRequestState, setReaderAudioLimitRequestState] = useState('idle'); // idle | sending | sent | error
   const [readerAudioPlayData, setReaderAudioPlayData] = useState(null);
   const [readerAudioPlayPosition, setReaderAudioPlayPosition] = useState(0);
   const [readerAudioVoice, setReaderAudioVoice] = useState('');
@@ -15356,6 +15362,44 @@ function AppInner() {
     });
   }
 
+  function openReaderAudioLimitModal(payload) {
+    if (readerAudioPlayActive) {
+      stopReaderAudioPlay();
+    }
+    setReaderAudioLimitRequestState('idle');
+    setReaderAudioLimitInfo({
+      limit: Number(payload?.limit || 0),
+      used: Number(payload?.used || 0),
+      remaining: Number(payload?.remaining || 0),
+      resetAt: String(payload?.reset_at || ''),
+      // The global ceiling is a service-wide cap the user can't lift by asking — hide the
+      // "ask admin" button in that case and word it as a temporary service limit.
+      isGlobal: String(payload?.error || '').includes('global'),
+    });
+  }
+
+  function closeReaderAudioLimitModal() {
+    setReaderAudioLimitInfo(null);
+  }
+
+  const requestReaderAudioLimitIncrease = useCallback(async () => {
+    if (readerAudioLimitRequestState === 'sending' || readerAudioLimitRequestState === 'sent') return;
+    setReaderAudioLimitRequestState('sending');
+    const info = readerAudioLimitInfo || {};
+    // Lands in the existing two-way support inbox AND DMs the admin, who can reply and
+    // run /reader_audio_setlimit <user_id> <chars> to grant more.
+    const text = tr(
+      `🎧 Прошу увеличить месячный лимит озвучки в читалке. Уже использовано ${info.used || 0} из ${info.limit || 0} символов в этом месяце.`,
+      `🎧 Bitte erhöhe mein monatliches Vorlese-Limit im Reader. Ich habe diesen Monat schon ${info.used || 0} von ${info.limit || 0} Zeichen genutzt.`,
+    );
+    try {
+      await postSupportApi('/api/webapp/support/messages/send', { text });
+      setReaderAudioLimitRequestState('sent');
+    } catch (_error) {
+      setReaderAudioLimitRequestState('error');
+    }
+  }, [readerAudioLimitRequestState, readerAudioLimitInfo, tr, postSupportApi]);
+
   function closeProFeatureModal() {
     setProFeatureModal(null);
   }
@@ -23953,6 +23997,17 @@ function AppInner() {
             // ignore non-JSON premium gate payload parsing errors
           }
         }
+        if (response.status === 429) {
+          try {
+            const errorPayload = await response.clone().json();
+            if (String(errorPayload?.error || '').includes('monthly_limit_exceeded')) {
+              openReaderAudioLimitModal(errorPayload);
+              return;
+            }
+          } catch (_error) {
+            // ignore non-JSON limit payload parsing errors
+          }
+        }
         throw new Error(await readApiError(response, 'Ошибка аудио-конвертации', 'Fehler bei Audio-Konvertierung'));
       }
       const blob = await response.blob();
@@ -24240,6 +24295,12 @@ function AppInner() {
             if (!resp.ok && resp.status !== 202) {
               if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
                 openReaderAudioPremiumPaywall();
+                return null;
+              }
+              // Monthly cap reached (429): show the honest limit plaque, not the generic
+              // "try again" toast. Skip on prefetch so a background window doesn't pop it.
+              if (resp.status === 429 && String(payload?.error || '').includes('monthly_limit_exceeded')) {
+                if (!prefetchOnly) openReaderAudioLimitModal(payload);
                 return null;
               }
               // Transient gateway/worker errors (502/503/504) are common on
@@ -24650,6 +24711,10 @@ function AppInner() {
         if (!resp.ok && resp.status !== 202) {
           if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
             openReaderAudioPremiumPaywall();
+            return null;
+          }
+          if (resp.status === 429 && String(payload?.error || '').includes('monthly_limit_exceeded')) {
+            openReaderAudioLimitModal(payload);
             return null;
           }
           // Transient gateway/worker errors — retry (backend singleflight caches).
@@ -33357,6 +33422,15 @@ function AppInner() {
               title={proFeatureModal?.title}
               intro={proFeatureModal?.intro}
               bullets={proFeatureModal?.bullets || []}
+            />
+
+            <ReaderAudioLimitModal
+              isOpen={!!readerAudioLimitInfo}
+              info={readerAudioLimitInfo}
+              requestState={readerAudioLimitRequestState}
+              onRequestIncrease={requestReaderAudioLimitIncrease}
+              onClose={closeReaderAudioLimitModal}
+              tr={tr}
             />
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (

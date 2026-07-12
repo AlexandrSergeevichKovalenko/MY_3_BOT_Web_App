@@ -1,0 +1,78 @@
+/* Reader-audio monthly-limit plaque. Reuses the .profeat-* card shell (ProFeatureModal.css)
+   for identical geometry/animation, and layers calm, non-alarming accents on top — this is a
+   gentle "you've used this month's listening" note for a paying user, not an upsell. */
+
+.ralimit-badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #1b5fb0;
+  background: #e8f1ff;
+  padding: 5px 12px;
+  border-radius: 999px;
+  margin-bottom: 12px;
+}
+
+/* Usage meter: used / limit for the month. */
+.ralimit-usage {
+  margin: 2px 0 16px;
+}
+.ralimit-usage-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #eef1f6;
+  overflow: hidden;
+}
+.ralimit-usage-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4b7bd6, #6b58d6);
+}
+.ralimit-usage-caption {
+  margin-top: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #7a8598;
+  text-align: center;
+}
+.ralimit-usage-caption b { color: #3a4a63; }
+
+/* Primary "ask admin for more" action — harmonizes with the app's indigo accent but is
+   visually distinct from the gold Pro CTA so it doesn't read as a paywall. */
+.ralimit-request {
+  display: block;
+  width: 100%;
+  border: none;
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 8px;
+  font-size: 15.5px;
+  font-weight: 800;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, #4b7bd6, #6b58d6);
+  box-shadow: 0 10px 22px rgba(75, 88, 214, 0.24);
+  transition: transform 0.08s ease, opacity 0.15s ease;
+}
+.ralimit-request:active { transform: scale(0.985); }
+.ralimit-request:disabled { cursor: default; }
+.ralimit-request.is-sending { opacity: 0.72; }
+.ralimit-request.is-sent {
+  background: #e9f8ef;
+  color: #1e874e;
+  box-shadow: none;
+}
+.ralimit-request.is-error {
+  background: #fdecec;
+  color: #c0392b;
+  box-shadow: none;
+}
+
+.ralimit-sent-note {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #7a8598;
+  text-align: center;
+}

@@ -3830,7 +3830,7 @@ CLOUDFLARE_R2_CLASS_B_MONTHLY_BASE_LIMIT_OPS = max(0, _env_int("CLOUDFLARE_R2_CL
 CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB", 0))
 CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB", 10))
 STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS = max(0, _env_int("STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS", 0))
-READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 10_000))
+READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 20_000))
 # Hard ceiling across ALL users for Reader Audio (google_tts) chars per month —
 # protects the external TTS budget no matter how many PRO users there are. Set
 # below the provider's monthly free allotment (e.g. 1M) to be safe.
@@ -8539,6 +8539,19 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_youtube_proxy_subtitles_access_enabled
                 ON bt_3_youtube_proxy_subtitles_access (enabled, updated_at DESC);
             """)
+            # Per-user monthly char limit override for Reader Audio TTS. When a row exists
+            # it replaces the global READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS default for that
+            # user (admins grant increases here on request). Absent → the default applies.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_reader_audio_limit_overrides (
+                    user_id BIGINT PRIMARY KEY,
+                    monthly_char_limit INTEGER NOT NULL,
+                    granted_by BIGINT,
+                    note TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_today_regenerate_limits (
                     user_id BIGINT NOT NULL,
@@ -12189,6 +12202,7 @@ def purge_telegram_user_personal_data(
         ("today_reminder_settings", "DELETE FROM bt_3_today_reminder_settings WHERE user_id = %s;"),
         ("audio_grammar_settings", "DELETE FROM bt_3_audio_grammar_settings WHERE user_id = %s;"),
         ("youtube_proxy_subtitles_access", "DELETE FROM bt_3_youtube_proxy_subtitles_access WHERE user_id = %s;"),
+        ("reader_audio_limit_overrides", "DELETE FROM bt_3_reader_audio_limit_overrides WHERE user_id = %s;"),
         ("today_regenerate_limits", "DELETE FROM bt_3_today_regenerate_limits WHERE user_id = %s;"),
         ("default_topics", "DELETE FROM bt_3_default_topics WHERE user_id = %s;"),
         ("telegram_quiz_attempts", "DELETE FROM bt_3_telegram_quiz_attempts WHERE user_id = %s;"),
@@ -33998,7 +34012,9 @@ def enforce_reader_audio_pro_monthly_limit(
         )
     )
     requested = max(0.0, float(requested_units or 0.0))
-    limit_value = float(READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS)
+    # Per-user override (admin-granted on request) wins over the global default.
+    override_limit = get_reader_audio_limit_override(int(user_id))
+    limit_value = float(override_limit) if override_limit else float(READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS)
     if used_units + requested > limit_value:
         used_out = int(round(used_units))
         limit_out = int(round(limit_value))
@@ -34534,6 +34550,72 @@ def upsert_youtube_proxy_subtitles_access(
     return {
         "user_id": int(row[0]),
         "enabled": bool(row[1]),
+        "granted_by": int(row[2]) if row[2] is not None else None,
+        "note": row[3] if row[3] is not None else None,
+        "created_at": row[4].isoformat() if row[4] else None,
+        "updated_at": row[5].isoformat() if row[5] else None,
+    }
+
+
+def get_reader_audio_limit_override(user_id: int) -> int | None:
+    """Per-user monthly Reader-Audio char limit, or None when no override exists
+    (→ caller falls back to READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS)."""
+    if not user_id:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT monthly_char_limit
+                FROM bt_3_reader_audio_limit_overrides
+                WHERE user_id = %s
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    if not row or row[0] is None:
+        return None
+    try:
+        value = int(row[0])
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def upsert_reader_audio_limit_override(
+    *,
+    user_id: int,
+    monthly_char_limit: int,
+    granted_by: int | None = None,
+    note: str | None = None,
+) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_reader_audio_limit_overrides (
+                    user_id,
+                    monthly_char_limit,
+                    granted_by,
+                    note,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET
+                    monthly_char_limit = EXCLUDED.monthly_char_limit,
+                    granted_by = COALESCE(EXCLUDED.granted_by, bt_3_reader_audio_limit_overrides.granted_by),
+                    note = COALESCE(EXCLUDED.note, bt_3_reader_audio_limit_overrides.note),
+                    updated_at = NOW()
+                RETURNING user_id, monthly_char_limit, granted_by, note, created_at, updated_at;
+                """,
+                (int(user_id), int(monthly_char_limit), granted_by, note),
+            )
+            row = cursor.fetchone()
+    return {
+        "user_id": int(row[0]),
+        "monthly_char_limit": int(row[1]),
         "granted_by": int(row[2]) if row[2] is not None else None,
         "note": row[3] if row[3] is not None else None,
         "created_at": row[4].isoformat() if row[4] else None,

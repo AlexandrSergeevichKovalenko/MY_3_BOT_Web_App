@@ -3324,6 +3324,43 @@ async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> 
         f"Заработанный Pro активен до: {until}", parse_mode="HTML")
 
 
+async def _admin_reader_audio_setlimit_command(update: Update, context: CallbackContext) -> None:
+    """/reader_audio_setlimit <user_id> <chars> — set a per-user monthly Reader-Audio
+    char limit (0 removes the override → back to the global default). Used to grant users
+    who ask for more listening via the in-app «попросить больше» button."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    if len(args) < 2:
+        await message.reply_text("Использование: /reader_audio_setlimit <user_id> <chars>\n(chars=0 — убрать override)"); return
+    try:
+        uid = int(args[0]); chars = int(args[1])
+    except Exception:
+        await message.reply_text("user_id и chars — числа."); return
+    if chars <= 0:
+        from backend.database import get_db_connection_context
+        def _clear():
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM bt_3_reader_audio_limit_overrides WHERE user_id = %s;", (uid,))
+        await asyncio.to_thread(_clear)
+        await message.reply_text(f"✅ Override для {uid} снят — действует общий лимит.")
+        return
+    from backend.database import upsert_reader_audio_limit_override
+    row = await asyncio.to_thread(
+        upsert_reader_audio_limit_override,
+        user_id=uid, monthly_char_limit=chars, granted_by=getattr(user, "id", None),
+        note="admin /reader_audio_setlimit",
+    )
+    await message.reply_text(
+        f"✅ Лимит озвучки читалки для {uid} = <b>{int(row['monthly_char_limit']):,}</b> символов/мес".replace(",", " "),
+        parse_mode="HTML",
+    )
+
+
 _STREAK_MILESTONES = {7, 14, 30, 60, 100, 200, 365}
 
 
@@ -35100,6 +35137,7 @@ def main():
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
+    application.add_handler(CommandHandler("reader_audio_setlimit", _admin_reader_audio_setlimit_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
     application.add_handler(CommandHandler("pending_purges", pending_purges_command))
