@@ -15057,6 +15057,114 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   color: #ffffff;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   PREMIUM DOCK (планшет-ландшафт / браузер, ≥901px — там показывается desktop-
+   панель). Плавающий док из 3 flex-кластеров: крайние flex:0 0 auto, центр
+   flex:1 1 auto min-width:0 с усечением заголовка → элементы НИКОГДА не наезжают.
+   Обе темы через токены --d-*. Мобильную шапку (≤900) не трогаем. Токены 1:1 из
+   макета-эталона. */
+@media (min-width: 901px) {
+  .webapp-page .youtube-player-first .youtube-dock2 {
+    --d-panel:#111827; --d-card:#1e293b; --d-border:#334155; --d-border-soft:#26344a;
+    --d-title:#e2e8f0; --d-secondary:#cbd5e1; --d-muted:#94a3b8; --d-subtle:#64748b;
+    --d-hover:#1f2937; --d-chip:#0b1220; --d-accent:#e0ad5b; --d-accent-2:#cf9d63;
+    --d-accent-soft:rgba(224,173,91,.15); --d-accent-line:rgba(224,173,91,.5); --d-on-accent:#1f1a14;
+    --d-shadow:0 30px 60px rgba(0,0,0,.5);
+  }
+  .webapp-page.is-theme-light .youtube-player-first .youtube-dock2 {
+    --d-panel:#fbf5e9; --d-card:#fff8ee; --d-border:#d8c8b0; --d-border-soft:#e6dac4;
+    --d-title:#17120d; --d-secondary:#2f271f; --d-muted:#5a4a39; --d-subtle:#8a765f;
+    --d-hover:#efe3cf; --d-chip:#f2e8d7; --d-accent:#c1873f; --d-accent-2:#a76f2c;
+    --d-accent-soft:rgba(193,135,63,.14); --d-accent-line:rgba(193,135,63,.45); --d-on-accent:#3a2a12;
+    --d-shadow:0 24px 50px rgba(111,84,52,.16);
+  }
+
+  /* внешняя обёртка-«шапка» становится прозрачной — виден только сам док */
+  .webapp-page .youtube-player-first .youtube-player-first-head {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  .webapp-page .youtube-dock2 {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 15px;
+    border-radius: 22px;
+    background: var(--d-panel);
+    border: 1px solid var(--d-border);
+    box-shadow: var(--d-shadow);
+  }
+  .webapp-page .youtube-dock-cl,
+  .webapp-page .youtube-dock-cr { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+  .webapp-page .youtube-dock-center {
+    display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; justify-content: center;
+  }
+  .webapp-page .youtube-dock-center h3 {
+    margin: 0; font-size: 18px; font-weight: 800; color: var(--d-title); letter-spacing: -.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .webapp-page .youtube-dock-divider { flex: 0 0 auto; width: 1px; height: 26px; background: var(--d-border); }
+
+  .webapp-page .youtube-iconbtn {
+    position: relative; height: 40px; min-width: 40px; padding: 0 12px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border-radius: 13px; border: 1px solid var(--d-border); background: var(--d-card);
+    color: var(--d-secondary); font-size: 13.5px; font-weight: 650; cursor: pointer; transition: .15s;
+  }
+  .webapp-page .youtube-iconbtn:hover:not(:disabled) { background: var(--d-hover); color: var(--d-title); }
+  .webapp-page .youtube-iconbtn:disabled { opacity: .5; cursor: default; }
+  .webapp-page .youtube-iconbtn.youtube-iconbtn-icon-only { padding: 0; width: 40px; }
+  .webapp-page .youtube-iconbtn.is-active { background: var(--d-accent-soft); border-color: var(--d-accent-line); color: var(--d-accent-2); }
+  .webapp-page .youtube-iconbtn svg { width: 20px; height: 20px; display: block; }
+  .webapp-page .youtube-iconbtn-lbl { white-space: nowrap; }
+
+  .webapp-page .youtube-dock2 .youtube-group-label {
+    font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--d-subtle); border: 0; padding: 0; margin: 0;
+  }
+
+  .webapp-page .youtube-dock-cr .youtube-desktop-status-chips {
+    display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; margin: 0; width: auto;
+  }
+  .webapp-page .youtube-dock2 .youtube-status-chip {
+    height: 30px; padding: 0 13px; border-radius: 999px; min-height: 0;
+    border: 1px solid var(--d-accent-line); background: var(--d-accent-soft);
+    color: var(--d-accent-2); font-size: 12.5px; font-weight: 700; white-space: nowrap;
+  }
+
+  .webapp-page .youtube-seg {
+    display: inline-flex; align-items: center; gap: 3px; padding: 4px;
+    border-radius: 14px; background: var(--d-chip); border: 1px solid var(--d-border-soft);
+  }
+  .webapp-page .youtube-seg-btn {
+    height: 32px; padding: 0 13px; border: 0; border-radius: 10px; cursor: pointer;
+    background: transparent; color: var(--d-muted); font-size: 13px; font-weight: 700;
+    font-family: inherit; transition: .15s;
+  }
+  .webapp-page .youtube-seg-btn:hover:not(:disabled) { color: var(--d-title); }
+  .webapp-page .youtube-seg-btn:disabled { opacity: .45; cursor: default; }
+  .webapp-page .youtube-seg-btn.on { background: var(--d-accent); color: var(--d-on-accent); box-shadow: 0 4px 12px var(--d-accent-soft); }
+
+  .webapp-page .youtube-dock-more { position: relative; display: inline-flex; }
+  .webapp-page .youtube-dock-popover {
+    position: absolute; z-index: 30; top: calc(100% + 8px); left: 0; width: 268px;
+    background: var(--d-card); border: 1px solid var(--d-border); border-radius: 16px;
+    box-shadow: 0 26px 54px rgba(0,0,0,.28); padding: 8px;
+  }
+  .webapp-page .youtube-dock-pi {
+    display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border-radius: 12px;
+    border: 0; background: transparent; color: var(--d-secondary); font-size: 14px; font-weight: 650;
+    cursor: pointer; text-align: left; font-family: inherit;
+  }
+  .webapp-page .youtube-dock-pi:hover:not(:disabled) { background: var(--d-hover); color: var(--d-title); }
+  .webapp-page .youtube-dock-pi:disabled { opacity: .5; cursor: default; }
+  .webapp-page .youtube-dock-pi svg { width: 18px; height: 18px; color: var(--d-muted); flex: 0 0 auto; }
+  .webapp-page .youtube-dock-pi.is-active { color: var(--d-accent-2); }
+}
+
 .youtube-command-action:hover:not(:disabled),
 .youtube-command-toggle:hover:not(:disabled) {
   background: var(--yt-bg-hover);

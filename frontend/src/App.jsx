@@ -5781,6 +5781,9 @@ function AppInner() {
   const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [youtubeSettingsOpen, setYoutubeSettingsOpen] = useState(false);
+  // Premium Dock: presentational-only popover («⋯ Mehr») holding the rare source
+  // actions (Paste transcript / Reload subtitles). Does not touch video logic.
+  const [youtubeDockMoreOpen, setYoutubeDockMoreOpen] = useState(false);
   const [youtubeDictOpen, setYoutubeDictOpen] = useState(false);
   const [youtubeDictQuery, setYoutubeDictQuery] = useState('');
   const [youtubeDictResult, setYoutubeDictResult] = useState(null);
@@ -33407,101 +33410,145 @@ function AppInner() {
                       </div>
                     )}
                     <div className="webapp-local-section-head youtube-player-first-head">
-                      <div className="youtube-desktop-command-bar">
-                        <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
-                          <div className="youtube-desktop-mainline">
-                            <div className="youtube-player-first-title-wrap">
-                              <h3>{youtubeNewsMode ? tr('Новость дня', 'News des Tages') : tr('Видео YouTube', 'YouTube Video')}</h3>
-                              {youtubeTaskDone && (
-                                <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
-                              )}
-                            </div>
-                            {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
-                            <button type="button" className="youtube-command-action youtube-command-home-btn" onClick={goHomeScreen}>
-                              {tr('← На главную', '← Startseite')}
+                      <div className="youtube-desktop-command-bar youtube-dock2">
+                        {/* ── Premium Dock: 3 flex-кластера (крайние 0 0 auto, центр 1 1 auto)
+                             — элементы никогда не наезжают. Функционал/обработчики те же. ── */}
+                        {/* LEFT: назад + источник видео + «⋯ Ещё» (редкие действия в поповере) */}
+                        <div className="youtube-dock-cl">
+                          <button
+                            type="button"
+                            className="youtube-iconbtn youtube-iconbtn-icon-only youtube-dock-back"
+                            onClick={goHomeScreen}
+                            title={tr('На главную', 'Startseite')}
+                            aria-label={tr('На главную', 'Startseite')}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
+                          </button>
+                          <span className="youtube-group-label">{tr('Видео', 'Video')}</span>
+                          {!youtubeNewsMode && (
+                            <button
+                              type="button"
+                              className="youtube-iconbtn"
+                              onClick={() => setYoutubeForceShowPanel(true)}
+                              title={tr('Сменить видео', 'Video wechseln')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2.5" /><path d="M7 4v16M17 4v16M2.5 9H7M2.5 15H7M17 9h4.5M17 15h4.5" /></svg>
+                              <span className="youtube-iconbtn-lbl">{tr('Сменить', 'Wechseln')}</span>
                             </button>
+                          )}
+                          {!youtubeNewsMode && (
+                            <button
+                              type="button"
+                              className="youtube-iconbtn"
+                              onClick={() => {
+                                setYoutubeForceShowPanel(true);
+                                searchYoutubeVideos();
+                              }}
+                              disabled={youtubeSearchLoading}
+                              title={tr('Искать в YouTube', 'Auf YouTube suchen')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.5-4.5" /></svg>
+                              <span className="youtube-iconbtn-lbl">{youtubeSearchLoading ? tr('Ищем…', 'Suchen…') : tr('Искать', 'Suchen')}</span>
+                            </button>
+                          )}
+                          <div className="youtube-dock-more">
+                            <button
+                              type="button"
+                              className={`youtube-iconbtn youtube-iconbtn-icon-only ${youtubeDockMoreOpen ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeDockMoreOpen((v) => !v)}
+                              title={tr('Ещё', 'Mehr')}
+                              aria-label={tr('Ещё', 'Mehr')}
+                              aria-expanded={youtubeDockMoreOpen}
+                            >
+                              <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="12" cy="19" r="1.6" /></svg>
+                            </button>
+                            {youtubeDockMoreOpen && (
+                              <div className="youtube-dock-popover" role="menu">
+                                {canManageYoutubeTranscripts && (
+                                  <button
+                                    type="button"
+                                    className={`youtube-dock-pi ${showManualTranscript ? 'is-active' : ''}`}
+                                    onClick={() => { setShowManualTranscript((prev) => !prev); setYoutubeDockMoreOpen(false); }}
+                                  >
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M8.5 13h7M8.5 17h4.5" /></svg>
+                                    {tr('Вставить транскрипцию', 'Transkript einfügen')}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="youtube-dock-pi"
+                                  onClick={() => { fetchTranscript(); setYoutubeDockMoreOpen(false); }}
+                                  disabled={youtubeLoadDisabled}
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v5h-5" /></svg>
+                                  {youtubeTranscriptLoading
+                                    ? tr('Загрузка…', 'Wird geladen…')
+                                    : youtubeSubtitlesReady
+                                      ? tr('Перезагрузить субтитры', 'Untertitel neu laden')
+                                      : tr('Загрузить субтитры', 'Untertitel laden')}
+                                </button>
+                              </div>
+                            )}
                           </div>
-                          <div className="youtube-desktop-status-chips" aria-live="polite">
+                        </div>
+
+                        <span className="youtube-dock-divider" aria-hidden="true" />
+
+                        {/* CENTER: заголовок (усечение) + таймер задачи */}
+                        <div className="youtube-dock-center">
+                          <h3>{youtubeNewsMode ? tr('Новость дня', 'News des Tages') : tr('Видео YouTube', 'YouTube Video')}</h3>
+                          {youtubeTaskDone && (
+                            <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
+                          )}
+                          {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
+                        </div>
+
+                        {/* RIGHT: статус + сегмент вида (RU/Overlay/Vollbild) + настройки */}
+                        <div className="youtube-dock-cr">
+                          <span className="youtube-desktop-status-chips" aria-live="polite">
                             {youtubeRecommendationLoading && (
                               <span className="youtube-status-chip is-loading">{youtubeRecommendationStatusLabel}</span>
                             )}
                             <span className={`youtube-status-chip ${youtubeSubtitleStatusClass}`}>{youtubeSubtitleStatusLabel}</span>
-                          </div>
-                        </div>
-                        <div className="youtube-desktop-command-row youtube-desktop-command-row-controls">
-                          <div className="youtube-desktop-control-group youtube-desktop-control-group-source">
-                            <span className="youtube-group-label">🎬 {tr('Видео', 'Video')}</span>
-                            {!youtubeNewsMode && (
-                              <button
-                                type="button"
-                                className="youtube-command-action"
-                                onClick={() => setYoutubeForceShowPanel(true)}
-                              >
-                                {tr('Сменить видео', 'Change video')}
-                              </button>
-                            )}
-                            {!youtubeNewsMode && (
-                              <button
-                                type="button"
-                                className="youtube-command-action"
-                                onClick={() => {
-                                  setYoutubeForceShowPanel(true);
-                                  searchYoutubeVideos();
-                                }}
-                                disabled={youtubeSearchLoading}
-                              >
-                                {youtubeSearchLoading ? tr('Ищем...', 'Searching...') : tr('Искать в YouTube', 'Search on YouTube')}
-                              </button>
-                            )}
-                            {canManageYoutubeTranscripts && (
-                              <button
-                                type="button"
-                                className={`youtube-command-action ${showManualTranscript ? 'is-active' : ''}`}
-                                onClick={() => setShowManualTranscript((prev) => !prev)}
-                              >
-                                {tr('Вставить транскрипцию', 'Paste transcript')}
-                              </button>
-                            )}
+                          </span>
+                          <div className="youtube-seg" role="group" aria-label={tr('Вид', 'Ansicht')}>
                             <button
                               type="button"
-                              className="youtube-command-action"
-                              onClick={() => fetchTranscript()}
-                              disabled={youtubeLoadDisabled}
-                            >
-                              {youtubeTranscriptLoading
-                                ? tr('Загрузка...', 'Loading...')
-                                : youtubeSubtitlesReady
-                                  ? tr('Перезагрузить субтитры', 'Reload subtitles')
-                                  : tr('Загрузить субтитры', 'Load subtitles')}
-                            </button>
-                          </div>
-                          <div className="youtube-desktop-control-group youtube-desktop-control-group-view">
-                            <span className="youtube-group-label">👁 {tr('Вид', 'Ansicht')}</span>
-                            <button
-                              type="button"
-                              className={`youtube-command-toggle ${youtubeTranslationEnabled ? 'is-active' : ''}`}
+                              className={`youtube-seg-btn ${youtubeTranslationEnabled ? 'on' : ''}`}
                               onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
                               disabled={!youtubeSubtitlesReady}
+                              title={tr('Показать русские субтитры', 'Russische Untertitel')}
                             >
-                              {tr('Показать RU', 'Show RU')}
+                              RU
                             </button>
                             <button
                               type="button"
-                              className={`youtube-command-toggle ${youtubeOverlayEnabled ? 'is-active' : ''}`}
+                              className={`youtube-seg-btn ${youtubeOverlayEnabled ? 'on' : ''}`}
                               onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
                               disabled={!youtubeSubtitlesReady}
+                              title="Overlay"
                             >
                               Overlay
                             </button>
                             <button
                               type="button"
-                              className={`youtube-command-toggle ${youtubeAppFullscreen ? 'is-active' : ''}`}
+                              className={`youtube-seg-btn ${youtubeAppFullscreen ? 'on' : ''}`}
                               onClick={() => setYoutubeAppFullscreen((prev) => !prev)}
                               disabled={!youtubeId}
+                              title={tr('Во весь экран', 'Vollbild')}
                             >
-                              {tr('Развернуть во весь экран', 'Full screen')}
+                              Vollbild
                             </button>
                           </div>
+                          <button
+                            type="button"
+                            className="youtube-iconbtn youtube-iconbtn-icon-only"
+                            onClick={() => setYoutubeSettingsOpen(true)}
+                            title={tr('Настройки', 'Einstellungen')}
+                            aria-label={tr('Настройки', 'Einstellungen')}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" /></svg>
+                          </button>
                         </div>
                         {canManageYoutubeTranscripts && showManualTranscript && (
                           <div className="webapp-subtitles-manual youtube-sheet-manual youtube-sheet-manual-desktop">
@@ -33741,7 +33788,9 @@ function AppInner() {
                         </div>
                       </div>
                     </div>
-                    {(youtubeOverlayEnabled || !youtubeSubtitlesReady) && renderYoutubeSentenceJumpBar()}
+                    {/* Premium Dock §2: ЕДИНСТВЕННЫЙ транспорт — по центру под видео,
+                        показывается всегда, когда есть субтитры (обычный вид + overlay). */}
+                    {youtubeSubtitlesReady && renderYoutubeSentenceJumpBar()}
                     </>
                     )}
                     {youtubeNewsMode && worldNewsLoading && !worldNewsData && (
@@ -34004,9 +34053,8 @@ function AppInner() {
                                   <span>{String(languageProfile?.learning_language || 'de').toUpperCase()}</span>
                                 )}
                               </div>
-                              <div className="youtube-subtitles-card-nav">
-                                {renderYoutubeSentenceJumpBar({ inline: true })}
-                              </div>
+                              {/* Premium Dock §2: the single transport lives centered under the
+                                  player; the inline duplicate in the subtitle head is removed. */}
                               <div className="youtube-subtitles-card-head-spacer">
                                 {youtubeNewsMode && (
                                   <button
