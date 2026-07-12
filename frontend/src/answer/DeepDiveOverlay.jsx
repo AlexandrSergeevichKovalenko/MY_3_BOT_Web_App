@@ -23,13 +23,13 @@ function getInitData() {
   return '';
 }
 
-// `dive_<id>` opens the overlay; the `_ask` suffix (dive_<id>_ask) additionally
-// auto-opens the "❓ Задать свой вопрос" panel on mount — so the DM "Задать вопрос"
-// button lands the user straight in the ask flow, in place, without a chat detour.
+// `dive_<id>` opens the overlay. The legacy `_ask` suffix (dive_<id>_ask) is still tolerated
+// for backward compatibility with links already sent, but it no longer auto-opens the ask
+// panel — the "❓ Задать свой вопрос" section opens only when the user taps its button.
 function parseStartParam(startParam) {
   const m = /^dive_(\d+)(?:_(ask))?$/.exec(String(startParam || '').trim().toLowerCase());
-  if (!m) return { id: null, autoAsk: false };
-  return { id: Number(m[1]), autoAsk: m[2] === 'ask' };
+  if (!m) return { id: null };
+  return { id: Number(m[1]) };
 }
 
 function haptic(type) {
@@ -201,7 +201,6 @@ function FeelCard({ card }) {
 export default function DeepDiveOverlay({ startParam }) {
   const parsed = useMemo(() => parseStartParam(startParam), [startParam]);
   const cardId = parsed.id;
-  const autoAsk = parsed.autoAsk;
   const [card, setCard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [fatal, setFatal] = useState('');
@@ -239,12 +238,6 @@ export default function DeepDiveOverlay({ startParam }) {
     })();
     return () => { cancelled = true; };
   }, [cardId]);
-
-  // Deeplinked straight into the ask flow (dive_<id>_ask): pop the ask window as
-  // soon as the card is ready, so the DM "Задать вопрос" button opens it in place.
-  useEffect(() => {
-    if (card && autoAsk) setAskOpen(true);
-  }, [card, autoAsk]);
 
   const close = useCallback(() => { try { tg?.close?.(); } catch (_e) { /* ignore */ } }, []);
 

@@ -210,6 +210,81 @@ const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'ha
 const PAID_FEATURE_ERROR_PREFIX = '__paid_feature_required__:';
 const TRANSLATION_LIMIT_NOTICE_PREFIX = '__translation_limit_notice__:';
 const YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX = '__youtube_transcript_library_notice__:';
+
+// De-roll YouTube auto-caption cues. Rolling ASR captions repeat the previous line (or its
+// tail) in each following cue as the text scrolls up, so the same words arrive 2+ times. For
+// each cue we find the largest word-overlap it shares with the previous kept cue and keep only
+// the new remainder; a cue whose words are wholly contained in the previous one is a duplicate
+// frame and is dropped (its timing folded into the previous cue). Comparison is case- and
+// punctuation-insensitive. Returns { items, indexMap } where indexMap[originalIndex] = new
+// position, so translations keyed by the original cue index can be re-aligned.
+const _derollNormWord = (w) => String(w || '')
+  .toLowerCase()
+  .replace(/^[^\p{L}\p{N}]+/u, '')
+  .replace(/[^\p{L}\p{N}]+$/u, '');
+
+function derollTranscriptCues(list) {
+  const out = [];
+  const indexMap = {};
+  const source = Array.isArray(list) ? list : [];
+  source.forEach((item, oldIdx) => {
+    if (!item || typeof item !== 'object' || item.text == null) {
+      indexMap[oldIdx] = out.length;
+      out.push(item);
+      return;
+    }
+    const text = String(item.text).replace(/\s+/g, ' ').trim();
+    if (!text) {
+      if (out.length) indexMap[oldIdx] = out.length - 1;
+      return;
+    }
+    if (!out.length) {
+      indexMap[oldIdx] = out.length;
+      out.push({ ...item, text });
+      return;
+    }
+    const prev = out[out.length - 1];
+    const prevWords = String(prev.text || '').split(/\s+/).filter(Boolean);
+    const curWords = text.split(/\s+/).filter(Boolean);
+    const prevNorm = prevWords.map(_derollNormWord);
+    const curNorm = curWords.map(_derollNormWord);
+    let overlap = 0;
+    const maxK = Math.min(prevWords.length, curWords.length);
+    for (let k = maxK; k >= 1; k -= 1) {
+      let match = true;
+      for (let j = 0; j < k; j += 1) {
+        if (prevNorm[prevNorm.length - k + j] !== curNorm[j]) { match = false; break; }
+      }
+      if (match) { overlap = k; break; }
+    }
+    // Whole cue already present as the previous cue's suffix → duplicate frame, drop it and
+    // stretch the previous cue's duration so seeking still lands on the right moment.
+    if (overlap === curWords.length) {
+      const prevStart = Number(prev.start ?? 0);
+      const curEnd = Number(item.start ?? 0) + Number(item.duration ?? 0);
+      if (Number.isFinite(prevStart) && Number.isFinite(curEnd) && curEnd > prevStart) {
+        prev.duration = Math.max(Number(prev.duration ?? 0), curEnd - prevStart);
+      }
+      indexMap[oldIdx] = out.length - 1;
+      return;
+    }
+    // Partial rolling overlap (2+ shared words) → keep only the new tail. A 1-word coincidence
+    // is left untouched to avoid corrupting genuinely distinct cues.
+    if (overlap >= 2) {
+      const remainder = curWords.slice(overlap).join(' ').trim();
+      if (remainder) {
+        indexMap[oldIdx] = out.length;
+        out.push({ ...item, text: remainder });
+      } else {
+        indexMap[oldIdx] = out.length - 1;
+      }
+      return;
+    }
+    indexMap[oldIdx] = out.length;
+    out.push({ ...item, text });
+  });
+  return { items: out, indexMap };
+}
 const EPUB_RUNTIME_CDN_URLS = [
   'https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js',
   'https://unpkg.com/epubjs/dist/epub.min.js',
@@ -26780,17 +26855,26 @@ function AppInner() {
     };
   }, [youtubeSubtitleDisplayRows]);
 
+  // Which merged display row (= one sentence in the panel) currently holds the active cue.
+  // Nav must move by these rows, not by raw cues: a sentence spans several cues, so stepping
+  // one raw cue would seek inside the same visible sentence and feel like nothing happened.
+  const getActiveSubtitleRowIndex = () => {
+    const rows = youtubeSubtitleDisplayRows;
+    if (!rows.length) return -1;
+    const activeCueIndex = getActiveSubtitleIndex();
+    if (activeCueIndex < 0) return -1;
+    return rows.findIndex((row) => Array.isArray(row.indices) && row.indices.includes(activeCueIndex));
+  };
+
   const jumpYoutubeBySubtitle = (direction) => {
     const step = Number(direction);
-    if (!step || !youtubeTranscript.length || !youtubePlayerRef.current?.seekTo) return;
-    const activeIndex = getActiveSubtitleIndex();
-    const fallbackIndex = step > 0 ? -1 : 0;
-    const baseIndex = activeIndex >= 0 ? activeIndex : fallbackIndex;
-    const nextIndex = Math.min(
-      youtubeTranscript.length - 1,
-      Math.max(0, baseIndex + step)
-    );
-    const nextStart = Math.max(0, Number(youtubeTranscript[nextIndex]?.start ?? 0));
+    const rows = youtubeSubtitleDisplayRows;
+    if (!step || !rows.length || !youtubePlayerRef.current?.seekTo) return;
+    const activeRow = getActiveSubtitleRowIndex();
+    const baseRow = activeRow >= 0 ? activeRow : (step > 0 ? -1 : 0);
+    const targetRow = Math.min(rows.length - 1, Math.max(0, baseRow + step));
+    const firstCueIndex = rows[targetRow]?.indices?.[0] ?? 0;
+    const nextStart = Math.max(0, Number(youtubeTranscript[firstCueIndex]?.start ?? 0));
     try {
       youtubePlayerRef.current.seekTo(nextStart, true);
       setYoutubeCurrentTime(nextStart);
@@ -26818,11 +26902,14 @@ function AppInner() {
   };
 
   const renderYoutubeSentenceJumpBar = ({ inline = false } = {}) => {
-    const activeSubtitleIndex = getActiveSubtitleIndex();
+    const rowCount = youtubeSubtitleDisplayRows.length;
+    const activeRowIndex = getActiveSubtitleRowIndex();
     const canControlPlayback = Boolean(youtubeId && youtubePlayerRef.current);
-    const canJump = Boolean(youtubeTranscript.length && youtubePlayerRef.current?.seekTo);
-    const canJumpPrev = canJump && activeSubtitleIndex > 0;
-    const canJumpNext = canJump && activeSubtitleIndex < youtubeTranscript.length - 1;
+    const canJump = Boolean(rowCount && youtubePlayerRef.current?.seekTo);
+    // When the active row is unknown (-1: no timing / before first cue) leave both enabled so
+    // the fallback in jumpYoutubeBySubtitle can still move to the first/last sentence.
+    const canJumpPrev = canJump && activeRowIndex !== 0;
+    const canJumpNext = canJump && activeRowIndex !== rowCount - 1;
     return (
       <div
         className={`youtube-sentence-jump-bar ${inline ? 'is-inline' : 'is-floating'}`}
@@ -29230,9 +29317,27 @@ function AppInner() {
         ? { ...item, text: decodeEntities(item.text) }
         : item
     ));
-    setYoutubeTranscript(items);
-    setYoutubeTranslations(data?.translations || {});
-    const hasTiming = items.some((item) => Number(item?.start) > 0);
+    // YouTube auto-generated captions are "rolling": each cue repeats the tail (often the
+    // whole line) of the previous cue as it scrolls up, so the same sentence arrives 2+ times.
+    // That is native to YouTube's ASR track, not a bug in the video — but if we render it raw
+    // every line shows up doubled. De-roll here (single choke point feeding the panel) by
+    // dropping the word-overlap each cue shares with the previous one. Returns an index map so
+    // any server-provided translations (keyed by original cue index) stay aligned.
+    const { items: dedupedItems, indexMap } = derollTranscriptCues(items);
+    setYoutubeTranscript(dedupedItems);
+    const srcTranslations = (data && typeof data.translations === 'object' && data.translations) || {};
+    let mappedTranslations = srcTranslations;
+    if (Object.keys(srcTranslations).length) {
+      mappedTranslations = {};
+      Object.entries(srcTranslations).forEach(([k, v]) => {
+        const ni = indexMap[Number(k)];
+        if (ni != null && mappedTranslations[String(ni)] == null) {
+          mappedTranslations[String(ni)] = v;
+        }
+      });
+    }
+    setYoutubeTranslations(mappedTranslations);
+    const hasTiming = dedupedItems.some((item) => Number(item?.start) > 0);
     setYoutubeTranscriptHasTiming(hasTiming);
     setManualTranscript('');
   };
