@@ -1,9 +1,12 @@
+import logging
 import os
 from dataclasses import dataclass
 from collections import defaultdict
 from functools import lru_cache
 from typing import Any
 from urllib.parse import quote, unquote
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -209,8 +212,11 @@ def r2_delete_prefix(prefix: str) -> int:
             batch = objs[i:i + 1000]
             if not batch:
                 continue
-            client.delete_objects(Bucket=cfg.bucket_name, Delete={"Objects": batch, "Quiet": True})
-            deleted += len(batch)
+            resp = client.delete_objects(Bucket=cfg.bucket_name, Delete={"Objects": batch, "Quiet": True})
+            errors = (resp or {}).get("Errors") or []
+            deleted += len(batch) - len(errors)  # count only what actually deleted
+            if errors:
+                logger.warning("r2_delete_prefix(%s): %d delete errors, e.g. %s", prefix, len(errors), errors[0])
     return deleted
 
 
@@ -239,8 +245,11 @@ def r2_delete_keys(keys) -> int:
     deleted = 0
     for i in range(0, len(key_list), 1000):  # delete_objects handles up to 1000 keys/call
         batch = [{"Key": k} for k in key_list[i:i + 1000]]
-        client.delete_objects(Bucket=cfg.bucket_name, Delete={"Objects": batch, "Quiet": True})
-        deleted += len(batch)
+        resp = client.delete_objects(Bucket=cfg.bucket_name, Delete={"Objects": batch, "Quiet": True})
+        errors = (resp or {}).get("Errors") or []
+        deleted += len(batch) - len(errors)  # count only what actually deleted
+        if errors:
+            logger.warning("r2_delete_keys: %d delete errors, e.g. %s", len(errors), errors[0])
     return deleted
 
 
