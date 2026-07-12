@@ -14790,6 +14790,16 @@ function AppInner() {
   );
   const youtubeSubtitlesReady = youtubeTranscript.length > 0;
   const youtubeLearningMode = Boolean((youtubePlaybackStarted || youtubeAppFullscreen) && !youtubeForceShowPanel);
+  // Focus mode: the video is ACTIVELY playing (started + not paused) and nothing is
+  // forcing the setup panel open. In this state we hide the whole command bar and
+  // let video + subtitles fill the screen; pausing brings the controls back.
+  const youtubePlayingFocus = Boolean(
+    youtubePlaybackStarted
+    && !youtubeIsPaused
+    && !youtubeForceShowPanel
+    && !youtubeSettingsOpen
+    && !youtubeAppFullscreen
+  );
   const youtubeSearchExpanded = !youtubeId || !youtubeLearningMode;
   const youtubeLoadDisabled = !youtubeId || youtubeTranscriptLoading || youtubeManualOverride;
   const youtubeSubtitleStatusClass = youtubeTranscriptLoading
@@ -33348,7 +33358,7 @@ function AppInner() {
                 {isSectionVisible('youtube') && (
                   <PerfProfiler id="section.youtube">
                     <section
-                      className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''} ${youtubeNewsMode ? 'is-worldnews' : ''}`}
+                      className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubePlayingFocus ? 'is-playing-focus' : ''} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''} ${youtubeNewsMode ? 'is-worldnews' : ''}`}
                       ref={youtubeRef}
                       data-no-edge-swipe="true"
                     >
@@ -33368,6 +33378,31 @@ function AppInner() {
                     )}
                     {(!youtubeNewsMode || worldNewsStage === 'video') && (
                     <>
+                    {youtubePlayingFocus && (
+                      <div className="youtube-focus-peek">
+                        <span className="youtube-focus-peek-dot" aria-hidden="true" />
+                        <span className="youtube-focus-peek-label">{tr('Идёт воспроизведение', 'Wird abgespielt')}</span>
+                        <span className="youtube-focus-peek-spacer" />
+                        <button
+                          type="button"
+                          className="youtube-focus-peek-btn"
+                          onClick={toggleYoutubePlayback}
+                          title={tr('Пауза — показать панель', 'Pause — Leiste zeigen')}
+                          aria-label={tr('Пауза', 'Pause')}
+                        >
+                          ⏸
+                        </button>
+                        <button
+                          type="button"
+                          className="youtube-focus-peek-btn"
+                          onClick={() => setYoutubeSettingsOpen(true)}
+                          title={tr('Настройки', 'Einstellungen')}
+                          aria-label={tr('Настройки', 'Einstellungen')}
+                        >
+                          ⚙
+                        </button>
+                      </div>
+                    )}
                     <div className="webapp-local-section-head youtube-player-first-head">
                       <div className="youtube-desktop-command-bar">
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
@@ -33388,16 +33423,11 @@ function AppInner() {
                               <span className="youtube-status-chip is-loading">{youtubeRecommendationStatusLabel}</span>
                             )}
                             <span className={`youtube-status-chip ${youtubeSubtitleStatusClass}`}>{youtubeSubtitleStatusLabel}</span>
-                            <span className={`youtube-status-chip ${youtubeTranslationEnabled ? 'is-ready' : 'is-empty'}`}>
-                              {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
-                            </span>
-                            <span className={`youtube-status-chip ${youtubeOverlayEnabled ? 'is-ready' : 'is-empty'}`}>
-                              {youtubeOverlayEnabled ? 'Overlay: ON' : 'Overlay: OFF'}
-                            </span>
                           </div>
                         </div>
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-controls">
                           <div className="youtube-desktop-control-group youtube-desktop-control-group-source">
+                            <span className="youtube-group-label">🎬 {tr('Видео', 'Video')}</span>
                             {!youtubeNewsMode && (
                               <button
                                 type="button"
@@ -33443,6 +33473,7 @@ function AppInner() {
                             </button>
                           </div>
                           <div className="youtube-desktop-control-group youtube-desktop-control-group-view">
+                            <span className="youtube-group-label">👁 {tr('Вид', 'Ansicht')}</span>
                             <button
                               type="button"
                               className={`youtube-command-toggle ${youtubeTranslationEnabled ? 'is-active' : ''}`}

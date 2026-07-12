@@ -14633,6 +14633,11 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
    only, в браузере не ставится). Планшет всегда ≥700, поэтому покрываем и его, и
    браузер; телефон <700 не затронут. Селекторы с .webapp-page бьют мобильные
    @media(max-width:900px) по специфичности в диапазоне 700–900. */
+
+/* Peek-плашка фокус-режима скрыта по умолчанию (в т.ч. на телефоне <700px):
+   показываем её только в планшетно-браузерном слое ниже. */
+.youtube-focus-peek { display: none; }
+
 @media (min-width: 700px) {
   /* 1. Секция и вложенные гриды — на всю ширину (иначе схлопываются по контенту). */
   .webapp-page .webapp-video-dictionary,
@@ -14684,6 +14689,90 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     max-width: 760px;
     width: 100%;
     margin: 0 auto;
+  }
+
+  /* 6. Панель управления — логичные группы «🎬 Видео» / «👁 Вид» + компактнее. */
+  /* статус-чип «Untertitel: …» — в строку заголовка справа, а не отдельным рядом */
+  .webapp-page .youtube-desktop-status-chips {
+    flex: 0 1 auto;
+    margin-left: auto;
+  }
+  .webapp-page .youtube-group-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--yt-text-muted, #8a8678);
+    margin-right: 2px;
+    white-space: nowrap;
+  }
+  .webapp-page .youtube-command-action,
+  .webapp-page .youtube-command-toggle {
+    min-height: 36px;
+    padding: 0 13px;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+  /* лёгкий разделитель между группами «Видео» и «Вид» */
+  .webapp-page .youtube-desktop-control-group-view {
+    padding-left: 12px;
+    border-left: 1px solid var(--yt-border-subtle, rgba(0,0,0,0.08));
+  }
+
+  /* 7. ФОКУС при воспроизведении: панель спрятана, показан peek, видео ниже,
+        субтитрам — заметно больше места. Класс is-playing-focus ставится на секцию
+        только когда видео реально играет (не пауза, не настройки, не fullscreen). */
+  .webapp-page .youtube-focus-peek {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-radius: 14px;
+    background: rgba(17, 24, 39, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #e7e6e2;
+    flex: 0 0 auto;
+  }
+  .webapp-page .youtube-focus-peek-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ff5b5b;
+    flex: 0 0 auto;
+    animation: yt-peek-pulse 1.8s ease-out infinite;
+  }
+  @keyframes yt-peek-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 91, 91, 0.5); }
+    70% { box-shadow: 0 0 0 7px rgba(255, 91, 91, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 91, 91, 0); }
+  }
+  .webapp-page .youtube-focus-peek-label { font-size: 13px; font-weight: 700; }
+  .webapp-page .youtube-focus-peek-spacer { flex: 1; }
+  .webapp-page .youtube-focus-peek-btn {
+    width: 38px;
+    height: 34px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 15px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .webapp-page .youtube-focus-peek-btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+  .webapp-page .is-playing-focus .webapp-local-section-head { display: none; }
+  .webapp-page .is-playing-focus .webapp-video-player-shell:not(.is-app-fullscreen) {
+    max-width: min(100%, calc(44vh * 16 / 9));
+  }
+  .webapp-page .is-playing-focus .webapp-subtitles-list,
+  .webapp-page .is-playing-focus .youtube-subtitles-block .webapp-subtitles-list {
+    max-height: min(48vh, 640px) !important;
   }
 }
 
