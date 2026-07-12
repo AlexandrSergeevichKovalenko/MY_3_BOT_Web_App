@@ -15178,13 +15178,30 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-dock-pi.is-active { color: var(--d-accent-2); }
 }
 
-/* Узкий док (901–1180px): убираем текст-подписи у иконок источника и лейбл
-   «Video», чтобы центру-заголовку хватало места и он не усекался/не наезжал. */
-@media (min-width: 901px) and (max-width: 1180px) {
+/* Источник — иконки-онли ВСЕГДА (≥901). Контент капнут max-width:1180 у
+   .webapp-main, поэтому сам док никогда не шире ~1080px — на текст-подписи
+   «Wechseln/Suchen» + лейбл «Video» места нет, они давили центр-заголовок и он
+   наезжал на «⋯». Иконки + тултипы (title) сохраняют смысл. */
+@media (min-width: 901px) {
   .webapp-page .youtube-dock2 .youtube-group-label { display: none; }
   .webapp-page .youtube-dock-cl .youtube-iconbtn-lbl { display: none; }
   .webapp-page .youtube-dock-cl .youtube-iconbtn { width: 40px; padding: 0; }
-  .webapp-page .youtube-dock2 { gap: 9px; padding: 10px 12px; }
+}
+/* Чип статуса («Untertitel: Noch nicht geladen» бывает длинным) не должен съедать
+   ширину у центра — ограничиваем и усекаем. */
+@media (min-width: 901px) {
+  .webapp-page .youtube-dock-cr .youtube-status-chip {
+    max-width: 190px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+    line-height: 28px;
+  }
+}
+@media (min-width: 901px) and (max-width: 1120px) {
+  /* совсем узко — прячем чип статуса целиком, статус виден по сегменту/кнопкам */
+  .webapp-page .youtube-dock-cr .youtube-desktop-status-chips { display: none; }
 }
 
 .youtube-command-action:hover:not(:disabled),
