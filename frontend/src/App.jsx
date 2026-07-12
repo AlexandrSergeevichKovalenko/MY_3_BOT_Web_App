@@ -14386,7 +14386,7 @@ function AppInner() {
       const blocks = readerDisplayPages[pageNumber - 1]?.blocks;
       if (!Array.isArray(blocks)) return;
       for (const b of blocks) {
-        if (b && (b.type === 'heading' || b.type === 'list-item')) {
+        if (b && (b.type === 'heading' || b.type === 'list-item' || b.type === 'quote')) {
           out.push({ start: base + Number(b.start || 0), end: base + Number(b.end || 0), type: b.type, level: Number(b.level || 0) });
         }
       }
@@ -14401,13 +14401,45 @@ function AppInner() {
   }, [readerWindowModel, readerDisplayPages, readerCurrentPage, readerPageCount]);
   const readerBlockTypeAt = useCallback((charStart) => {
     const blocks = readerVisibleBlocks;
-    // small linear scan is fine (few headings/list items per window)
+    // small linear scan is fine (few headings/list items/quotes per window)
     for (let i = 0; i < blocks.length; i += 1) {
       if (charStart >= blocks[i].start - 1 && charStart < blocks[i].end) return blocks[i];
       if (blocks[i].start > charStart) break;
     }
     return null;
   }, [readerVisibleBlocks]);
+  // Inline emphasis (bold / italic) ranges for the current window, window-global.
+  const readerVisibleEmphasis = useMemo(() => {
+    const out = [];
+    const pushPage = (pageNumber, base) => {
+      const blocks = readerDisplayPages[pageNumber - 1]?.blocks;
+      if (!Array.isArray(blocks)) return;
+      for (const b of blocks) {
+        if (b && (b.type === 'bold' || b.type === 'italic')) {
+          out.push({ start: base + Number(b.start || 0), end: base + Number(b.end || 0), type: b.type });
+        }
+      }
+    };
+    if (readerWindowModel && Array.isArray(readerWindowModel.offsets)) {
+      for (const off of readerWindowModel.offsets) pushPage(Number(off.page), Number(off.charStart || 0));
+    } else if (readerPageCount >= 1) {
+      pushPage(Number(readerCurrentPage || 1), 0);
+    }
+    out.sort((a, b) => a.start - b.start);
+    return out;
+  }, [readerWindowModel, readerDisplayPages, readerCurrentPage, readerPageCount]);
+  const readerEmphasisAt = useCallback((charStart) => {
+    const ranges = readerVisibleEmphasis;
+    let bold = false;
+    let italic = false;
+    for (let i = 0; i < ranges.length; i += 1) {
+      if (ranges[i].start > charStart) break;
+      if (charStart >= ranges[i].start - 1 && charStart < ranges[i].end) {
+        if (ranges[i].type === 'bold') bold = true; else italic = true;
+      }
+    }
+    return (bold || italic) ? { bold, italic } : null;
+  }, [readerVisibleEmphasis]);
   // Single-server-page sources (plain text / URL) have no page-based progress —
   // the engine reports its visual reading fraction so % + bookmark still work.
   const handleReaderVisualProgress = useCallback((pct) => {
@@ -23056,9 +23088,12 @@ function AppInner() {
         // (from the EPUB's own markup) gets the matching class so it renders like a
         // real heading / list item, Apple-Books style. Prose is the default.
         const block = readerBlockTypeAt(sentence.start);
-        const blockClass = block
-          ? (block.type === 'heading' ? ` reader-blk-heading reader-blk-h${Math.min(6, Math.max(1, block.level || 2))}` : ' reader-blk-li')
-          : '';
+        let blockClass = '';
+        if (block) {
+          if (block.type === 'heading') blockClass = ` reader-blk-heading reader-blk-h${Math.min(6, Math.max(1, block.level || 2))}`;
+          else if (block.type === 'list-item') blockClass = ' reader-blk-li';
+          else if (block.type === 'quote') blockClass = ' reader-blk-quote';
+        }
         return (
         <span
           key={sentence.sid}
@@ -23071,10 +23106,12 @@ function AppInner() {
             if (token.kind === 'word') {
               const wordId = String(token.wid || '');
               const isPlayingWord = readerAudioPlayingWid === wordId;
+              const emph = readerEmphasisAt(token.start);
+              const emphClass = emph ? `${emph.bold ? ' reader-em-bold' : ''}${emph.italic ? ' reader-em-italic' : ''}` : '';
               return (
                 <span
                   key={wordId || `${sentence.sid}-word-${tokenIndex}`}
-                  className={`reader-word ${selectedWordIds.has(wordId) ? 'is-selected' : ''}${isPlayingWord ? ' is-playing-word' : ''}`}
+                  className={`reader-word${emphClass} ${selectedWordIds.has(wordId) ? 'is-selected' : ''}${isPlayingWord ? ' is-playing-word' : ''}`}
                   data-wid={wordId}
                   data-sid={sentence.sid}
                   data-start={token.start}

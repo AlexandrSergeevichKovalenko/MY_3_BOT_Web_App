@@ -14872,17 +14872,47 @@ class _EpubStructureParser(_StructHTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.blocks: list[dict] = []
-        self._buf: list[str] = []
+        self._segs: list[tuple] = []  # (char, bold, italic) for the current block
         self._skip = 0
+        self._bold = 0
+        self._italic = 0
         self._pending_type = "paragraph"
         self._pending_level = 0
 
     def _flush(self, block_type: str, level: int = 0):
-        raw = "".join(self._buf)
-        self._buf = []
-        text = " ".join(raw.split())
-        if text:
-            self.blocks.append({"type": block_type, "level": level, "text": text})
+        segs = self._segs
+        self._segs = []
+        chars: list[str] = []
+        bolds: list[bool] = []
+        italics: list[bool] = []
+        prev_space = True  # drop leading whitespace
+        for ch, b, it in segs:
+            if ch.isspace():
+                if not prev_space:
+                    chars.append(" "); bolds.append(False); italics.append(False)
+                    prev_space = True
+            else:
+                chars.append(ch); bolds.append(b); italics.append(it)
+                prev_space = False
+        while chars and chars[-1] == " ":  # drop trailing whitespace
+            chars.pop(); bolds.pop(); italics.pop()
+        text = "".join(chars)
+        if not text:
+            return
+        emphasis: list[dict] = []
+        for flags, kind in ((bolds, "bold"), (italics, "italic")):
+            i = 0
+            n = len(flags)
+            while i < n:
+                if flags[i]:
+                    j = i
+                    while j < n and flags[j]:
+                        j += 1
+                    emphasis.append({"start": i, "end": j, "kind": kind})
+                    i = j
+                else:
+                    i += 1
+        self.blocks.append({"type": block_type, "level": level, "text": text, "emphasis": emphasis})
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
@@ -14890,7 +14920,13 @@ class _EpubStructureParser(_StructHTMLParser):
             self._skip += 1
             return
         if tag == "br":
-            self._buf.append(" ")
+            self._segs.append((" ", self._bold > 0, self._italic > 0))
+            return
+        if tag in ("b", "strong"):
+            self._bold += 1
+            return
+        if tag in ("i", "em"):
+            self._italic += 1
             return
         if tag in _EPUB_HEADING_TAGS:
             self._flush("paragraph")
@@ -14902,6 +14938,11 @@ class _EpubStructureParser(_StructHTMLParser):
             self._pending_type = "list-item"
             self._pending_level = 0
             return
+        if tag == "blockquote":
+            self._flush("paragraph")
+            self._pending_type = "quote"
+            self._pending_level = 0
+            return
         if tag in _EPUB_PARAGRAPH_TAGS:
             self._flush("paragraph")
 
@@ -14909,6 +14950,12 @@ class _EpubStructureParser(_StructHTMLParser):
         tag = tag.lower()
         if tag in _EPUB_SKIP_TAGS:
             self._skip = max(0, self._skip - 1)
+            return
+        if tag in ("b", "strong"):
+            self._bold = max(0, self._bold - 1)
+            return
+        if tag in ("i", "em"):
+            self._italic = max(0, self._italic - 1)
             return
         if tag in _EPUB_HEADING_TAGS:
             self._flush("heading", self._pending_level)
@@ -14919,12 +14966,19 @@ class _EpubStructureParser(_StructHTMLParser):
             self._flush("list-item")
             self._pending_type = "paragraph"
             return
+        if tag == "blockquote":
+            self._flush("quote")
+            self._pending_type = "paragraph"
+            return
         if tag in _EPUB_PARAGRAPH_TAGS:
             self._flush("paragraph")
 
     def handle_data(self, data):
         if self._skip <= 0 and data:
-            self._buf.append(data)
+            b = self._bold > 0
+            it = self._italic > 0
+            for ch in data:
+                self._segs.append((ch, b, it))
 
     def close(self):
         super().close()
@@ -14932,9 +14986,9 @@ class _EpubStructureParser(_StructHTMLParser):
 
 
 def _extract_structured_from_html(raw_html: str) -> tuple[str, list[dict]]:
-    """Return (text, blocks). text = block texts joined by blank lines; blocks marks
-    the char ranges that are HEADINGS or LIST ITEMS (paragraphs are the default and
-    need no marker), as {start, end, type, level} offsets into text."""
+    """Return (text, blocks). text = block texts joined by blank lines. blocks marks
+    char ranges over text: block-level HEADING / LIST-ITEM / QUOTE, and inline
+    BOLD / ITALIC emphasis. Paragraphs are the default and need no marker."""
     parser = _EpubStructureParser()
     try:
         parser.feed(str(raw_html or ""))
@@ -14950,8 +15004,13 @@ def _extract_structured_from_html(raw_html: str) -> tuple[str, list[dict]]:
             continue
         start = pos
         end = start + len(text)
-        if block["type"] in ("heading", "list-item"):
+        if block["type"] in ("heading", "list-item", "quote"):
             ranges.append({"start": start, "end": end, "type": block["type"], "level": int(block.get("level") or 0)})
+        for emp in block.get("emphasis") or []:
+            es = start + int(emp["start"])
+            ee = start + int(emp["end"])
+            if ee > es:
+                ranges.append({"start": es, "end": ee, "type": emp["kind"]})
         parts.append(text)
         pos = end + 2  # "\n\n" separator
     return "\n\n".join(parts), ranges
