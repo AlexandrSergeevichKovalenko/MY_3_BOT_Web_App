@@ -299,30 +299,32 @@ function normalizeReaderPaginationText(rawText) {
 
 function normalizeReaderVisiblePageText(rawText) {
   const paragraphs = String(rawText || '')
-    // Strip glyphs that render as empty "tofu" boxes: Private-Use-Area codepoints
-    // (font-specific dot-leaders baked into PDFs), the Unicode replacement /
-    // object-replacement chars, and non-printable control chars (keep \n, \t).
+    // Strip "tofu" glyphs: Private-Use-Area, replacement/object-replacement, and
+    // non-printable control chars (keep \n, \t).
     .replace(/[\uE000-\uF8FF\uFFFC\uFFFD]+/g, ' ')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]+/g, ' ')
-    // Collapse TABLE-OF-CONTENTS dot leaders ("Wiener Zeit....... 71"): runs of 4+
-    // dots/middots (optionally spaced) become one space so the entry reads cleanly.
-    // Prose (<=3 dots for an ellipsis) is untouched.
-    .replace(/(?:\s*[.\u00B7\u2022\u2219]\s*){4,}/g, ' ')
+    // TABLE OF CONTENTS: a run of 4+ dot leaders followed by a page number
+    // ("Wiener Zeit....... 71") is one entry — turn it into its OWN line ending
+    // "... \u00B7 71" so the TOC reads as a list instead of a wall. (4+ dots, so a
+    // 3-dot prose ellipsis is never caught.)
+    .replace(/(?:\s*[.\u00B7\u2022\u2219]\s*){4,}\s*([0-9]{1,4}|[IVXLCM]{1,7})\b/g, ' \u00B7 $1\n\n')
+    // Any remaining long dot-leader run \u2192 a single middot separator.
+    .replace(/(?:\s*[.\u00B7\u2022\u2219]\s*){4,}/g, ' \u00B7 ')
     .replace(/\u2026{2,}/g, ' ')
     .split(/\n\n+/)
     .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
     .filter(Boolean);
-  // Merge consecutive SHORT fragments that do NOT end a sentence — index/register
-  // pages extract each entry as its own paragraph, reflowing into a column of tiny
-  // lines with huge gaps. Merging short+short (never a heading followed by a long
-  // body paragraph) makes them read as flowing lines. Prose paragraphs are long, so
-  // they never merge.
+  // Merge consecutive SHORT fragments that are not already complete — index/register
+  // pages extract each entry as its own tiny paragraph (huge gaps). A paragraph that
+  // ends in sentence punctuation OR a page number is "complete" and never absorbs the
+  // next one, so TOC entries (\u2026 \u00B7 71) stay one-per-line while stray index bits
+  // flow together. Prose paragraphs are long, so they never merge.
   const SHORT = 48;
-  const endsSentence = (s) => /[.!?:\u00BB\u201D")\]]$/.test(s);
+  const isComplete = (t) => /[.!?:\u00BB\u201D")\]0-9]$/.test(t);
   const merged = [];
   for (const para of paragraphs) {
     const prev = merged.length ? merged[merged.length - 1] : null;
-    if (prev !== null && prev.length < SHORT && !endsSentence(prev) && para.length < SHORT) {
+    if (prev !== null && prev.length < SHORT && !isComplete(prev) && para.length < SHORT) {
       merged[merged.length - 1] = `${prev} ${para}`;
     } else {
       merged.push(para);
