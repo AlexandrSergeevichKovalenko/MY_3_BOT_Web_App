@@ -323,6 +323,7 @@ export default function ShortcutGuide() {
             <NavLangs ru="«Удаление без подтверждения» + «Удаление большого объёма»" de="«Löschen ohne Bestätigung» + «Löschen großer Datenmengen»" en="«Delete Without Confirmation» + «Delete Large Amounts»" />
             <PhotoLink src="/onboarding/shortcut/perm_settings_main.jpg">Фото 1 — переключатели в «Быстрые команды»</PhotoLink>
             <PhotoLink src="/onboarding/shortcut/perm_settings_advanced.jpg">Фото 2 — переключатели в «Дополнительно»</PhotoLink>
+            <MediaTile src="/onboarding/shortcut/perm_settings.mp4" type="video" caption="🎬 Как включить эти настройки в Настройках телефона" />
 
             <p className="sc-sub-h">Часть 2 — в приложении «Быстрые команды»</p>
             <p>Открой приложение <b>«Быстрые команды»</b> (🇩🇪 «Kurzbefehle» · 🇬🇧 «Shortcuts»), найди команду <b>«Ночной Переводчик»</b>, <b className="sc-key">нажми и подержи</b> по центру плитки — появится меню. Выбери «Детали»:</p>
