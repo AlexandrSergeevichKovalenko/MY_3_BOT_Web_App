@@ -14524,7 +14524,9 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
 
 .youtube-subtitles-card-head.youtube-subtitles-card-head-with-nav {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  /* Center transport moved under the player, so only two buttons remain:
+     Оригинал (left) + Русский (right). Two columns pin Русский to the edge. */
+  grid-template-columns: 1fr 1fr;
   align-items: center;
   column-gap: 10px;
 }
