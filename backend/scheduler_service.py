@@ -810,8 +810,12 @@ def _build_scheduler():
         )
 
     # -- Skill state V2 aggregation (interval) --
-    if _enabled("SKILL_STATE_V2_AGGREGATION_ENABLED", "0"):
-        interval_secs = max(10, _int_env("SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS", 60))
+    # ON by default: powers the "освоенность навыков" in personal analytics. Drains only
+    # the DIRTY skill-key queue in bounded batches, so work is proportional to activity,
+    # not a full per-user recompute. Interval 5 min (was 60s) — fresh enough for analytics
+    # while cutting scheduler wake-ups / DB ops / memory churn ~5×. Env still overrides both.
+    if _enabled("SKILL_STATE_V2_AGGREGATION_ENABLED", "1"):
+        interval_secs = max(10, _int_env("SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS", 300))
         scheduler.add_job(
             _dispatch_skill_state_v2_aggregation,
             "interval",

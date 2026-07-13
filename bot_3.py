@@ -7600,9 +7600,13 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("telemetry_retention", "Ретенция телеметрии (03:25)", 30, True, "guard"),
     # --- High-frequency internal plumbing (throttled liveness — 'жив/мёртв', time is noise) ---
     ("autosave_sweep", "Автосейв-свип (30с)", 1, True, "guard"),
-    ("skill_state_v2_aggregation", "Агрегация skill_state (60с)", 1, True, "guard"),
-    ("tts_prewarm", "TTS prewarm (30м)", 3, True, "guard"),
-    ("tts_generation_recovery", "Восстановление TTS (10м)", 3, True, "guard"),
+    ("skill_state_v2_aggregation", "Агрегация skill_state (5м)", 1, True, "guard"),
+    # OFF by design (env "0"): eager TTS pre-generation was retired in favour of lazy
+    # on-tap synth + direct R2 URLs (2026-07-10) — "предгенерация впустую". Recovery only
+    # re-queues stale mp3s into the cache; it does NOT re-deliver to the user, so it is
+    # not a "works now" guarantee. Both sit quietly under 💤 instead of a false ❌.
+    ("tts_prewarm", "TTS prewarm (30м)", 3, False, "guard"),
+    ("tts_generation_recovery", "Восстановление TTS (10м)", 3, False, "guard"),
 ]
 
 
