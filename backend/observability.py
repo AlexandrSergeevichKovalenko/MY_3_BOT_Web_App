@@ -11,8 +11,10 @@ Exported:
   _log_flow_observation
 """
 
+import itertools
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -20,6 +22,25 @@ from typing import Any
 from uuid import uuid4
 
 from flask import has_request_context, request
+
+# Dedicated logger so flow-observation volume can be tuned independently of the
+# rest of the app's logging. Set OBS_LOG_LEVEL=WARNING (or higher) on a service
+# to silence obs entirely — this is an instant, zero-cost kill switch because
+# _log_flow_observation short-circuits before building the event or serializing
+# it when the logger is not enabled for INFO.
+_OBS_LOGGER = logging.getLogger("flow_obs")
+try:
+    _OBS_LOGGER.setLevel(os.getenv("OBS_LOG_LEVEL", "INFO").upper())
+except (ValueError, TypeError):
+    _OBS_LOGGER.setLevel(logging.INFO)
+
+# Deterministic 1-in-N sampling. OBS_SAMPLE_RATE=1 keeps every observation (default);
+# =8 keeps ~1/8 and drops the rest before any serialization work. 0/invalid -> 1.
+try:
+    _OBS_SAMPLE_RATE = max(1, int(os.getenv("OBS_SAMPLE_RATE", "1")))
+except (ValueError, TypeError):
+    _OBS_SAMPLE_RATE = 1
+_OBS_COUNTER = itertools.count()
 
 
 def _sanitize_observability_id(value: Any, *, max_len: int = 128) -> str | None:
@@ -67,6 +88,14 @@ def _elapsed_ms_since(start_perf: float, end_perf: float | None = None) -> int:
 
 
 def _log_flow_observation(flow: str, stage: str, **fields: Any) -> None:
+    # Short-circuit BEFORE building the event dict / calling json.dumps. On the
+    # hot path (this is invoked from ~300 call sites, several times per request)
+    # the serialization is the real cost, not the log write — skip it entirely
+    # when obs is muted or when this observation is sampled out.
+    if not _OBS_LOGGER.isEnabledFor(logging.INFO):
+        return
+    if _OBS_SAMPLE_RATE > 1 and next(_OBS_COUNTER) % _OBS_SAMPLE_RATE != 0:
+        return
     event: dict[str, Any] = {
         "flow": str(flow or "").strip() or "unknown",
         "stage": str(stage or "").strip() or "unknown",
@@ -77,6 +106,6 @@ def _log_flow_observation(flow: str, stage: str, **fields: Any) -> None:
             continue
         event[str(key)] = value
     try:
-        logging.info("obs %s", json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str))
+        _OBS_LOGGER.info("obs %s", json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str))
     except Exception:
-        logging.info("obs flow=%s stage=%s fields=%s", event.get("flow"), event.get("stage"), fields)
+        _OBS_LOGGER.info("obs flow=%s stage=%s fields=%s", event.get("flow"), event.get("stage"), fields)

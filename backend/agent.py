@@ -59,23 +59,33 @@ def get_pipeline_components():
 
 
 # === НАСТРОЙКА ЛОГИРОВАНИЯ ===
-if not os.path.exists("logs"):
-    os.makedirs("logs")
-
 IS_LIVEKIT_DEV_PARENT = (os.getenv("LIVEKIT_WATCH_PARENT") == "1")
+
+# File logging (agent.log + conversation.txt) is OFF by default: on Railway it
+# only writes to the ephemeral container disk (lost on redeploy, never read back)
+# while at DEBUG it doubles I/O per line and can fill the container disk on a
+# long-running session. Set AGENT_FILE_LOG=1 for local debugging.
+AGENT_FILE_LOG = (os.getenv("AGENT_FILE_LOG", "").strip().lower() in {"1", "true", "yes", "on"})
+
+# Level is env-driven (default INFO) instead of a hardcoded DEBUG so the voice
+# worker can be quieted in prod without a code change. ~71 log sites live in this
+# file; at DEBUG every one of them materializes on every audio turn.
+_AGENT_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # Настройка логгера
 if not IS_LIVEKIT_DEV_PARENT:
+    _handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if AGENT_FILE_LOG:
+        if not os.path.exists("logs"):
+            os.makedirs("logs")
+        _handlers.append(logging.FileHandler("agent.log", encoding="utf-8"))
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=_AGENT_LOG_LEVEL,
         format="%(asctime)s [pid=%(process)d] - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler("agent.log", encoding="utf-8")
-        ],
+        handlers=_handlers,
         force=True
     )
-    logging.info("📢 TEST LOG ENTRY: Logging system initialized successfully!")
+    logging.info("📢 Agent logging initialized (level=%s, file_log=%s)", _AGENT_LOG_LEVEL, AGENT_FILE_LOG)
 else:
     # parent-процесс (watcher) — не настраиваем логирование и не шумим
     pass
@@ -95,8 +105,13 @@ logging.getLogger().addFilter(NoBinaryFilter())
 
 # === ФУНКЦИЯ ЗАПИСИ ТРАНСКРИПТА ===
 def save_transcript(role, text):
-    """Записывает реплики в файл conversation.txt"""
+    """Записывает реплики в файл conversation.txt (только при AGENT_FILE_LOG=1).
+    По умолчанию no-op: файл рос без границ и на Railway живёт лишь на эфемерном
+    диске контейнера, никем не читается."""
+    if not AGENT_FILE_LOG:
+        return
     try:
+        os.makedirs("logs", exist_ok=True)
         with open("logs/conversation.txt", "a", encoding="utf-8") as f:
             time_str = datetime.now().strftime("%H:%M:%S")
             f.write(f"[{time_str}] {role}: {text}\n")

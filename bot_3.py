@@ -220,6 +220,9 @@ from backend.database import (
     get_active_pending_telegram_quiz_followup_for_user,
     purge_old_pending_telegram_quiz_followup_requests,
     create_shortcut_pairing_code,
+    reset_shortcut_runs,
+    count_shortcut_runs_today,
+    count_shortcut_runs_total,
     upsert_pending_telegram_input_state,
     delete_pending_telegram_input_state,
     get_pending_telegram_input_state,
@@ -1282,9 +1285,11 @@ DICTIONARY_CARD_THEME = (os.getenv("DICTIONARY_CARD_THEME") or "classic").strip(
 
 
 # === Логирование ===
-# Настраиваем логгер глобально
+# Настраиваем логгер глобально. Уровень берём из LOG_LEVEL (default INFO), чтобы
+# можно было приглушить самый горячий процесс (bot) в проде без правки кода —
+# напр. LOG_LEVEL=WARNING на Railway режет объём stdout мгновенно и обратимо.
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout)  # вывод в stdout
@@ -2250,13 +2255,19 @@ async def log_all_messages(update: Update, context: CallbackContext):
 
 # Функция для добавления в словарь всех id Сообщений которые потом я буду удалять, Это служебные сообщения вспомогательные
 def add_service_msg_id(context, message_id):
-    context_id = id(context)
-    logging.info(f"DEBUG: context_id={context_id} в add_service_msg_id, добавляем message_id={message_id}")
+    # Lazy %-logging at DEBUG: these fire on every tracked service-message send
+    # (several times per user interaction). As eager INFO f-strings they always
+    # ran in prod, and the last one stringified the whole growing list on every
+    # append (O(n) per call). At DEBUG with %-args nothing is built unless DEBUG
+    # is enabled — silent and free in prod.
     if "service_message_ids" not in context.user_data:
-        logging.info(f"📝 Создаём service_message_ids для user_id={context._user_id}")
+        logging.debug("📝 Создаём service_message_ids для user_id=%s", context._user_id)
         context.user_data["service_message_ids"] = []
     context.user_data["service_message_ids"].append(message_id)
-    logging.info(f"DEBUG: Добавлен message_id: {message_id}, текущий список: {context.user_data['service_message_ids']}")
+    logging.debug(
+        "add_service_msg_id: context_id=%s message_id=%s count=%d",
+        id(context), message_id, len(context.user_data["service_message_ids"]),
+    )
 
 
 # NOTE: the old once-a-day "📋 Меню снова под рукой" refresh handler was removed —
@@ -3293,6 +3304,34 @@ async def _admin_shortcut_runs_command(update: Update, context: CallbackContext)
     text = await asyncio.to_thread(_build_shortcut_runs_report_text, days)
     for part in _split_telegram_text(text):
         await message.reply_text(part, parse_mode="HTML")
+
+
+async def _admin_shortcut_reset_command(update: Update, context: CallbackContext) -> None:
+    """/shortcut_reset <user_id> — wipe a user's «Ночной Переводчик» run rows so the
+    Free-total and Pro-daily quotas restart from zero (test utility). Shows before/after
+    counts. NOTE: does NOT reset the time-window grace — that's 24h since (re)install."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    if not args:
+        await message.reply_text("Использование: /shortcut_reset <user_id>"); return
+    try:
+        uid = int(str(args[0]).strip())
+    except Exception:
+        await message.reply_text("user_id — число."); return
+    today_before = await asyncio.to_thread(count_shortcut_runs_today, uid)
+    total_before = await asyncio.to_thread(count_shortcut_runs_total, uid)
+    deleted = await asyncio.to_thread(reset_shortcut_runs, uid)
+    await message.reply_text(
+        f"🧹 Сброс запусков Shortcut для <b>{uid}</b>\n"
+        f"Удалено строк: <b>{deleted}</b>\n"
+        f"Было: сегодня <b>{today_before}</b>, всего <b>{total_before}</b> → стало <b>0</b>.\n\n"
+        f"⚠️ Grace по окну (05:00–09:00) НЕ сброшен — он завязан на время установки "
+        f"(24ч с последней привязки). Для теста окна выйди из grace отдельно.",
+        parse_mode="HTML")
 
 
 async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> None:
@@ -35478,6 +35517,7 @@ def main():
     application.add_handler(CommandHandler("admin_reset_onboarding", _admin_reset_onboarding_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
     application.add_handler(CommandHandler("shortcut_runs", _admin_shortcut_runs_command))
+    application.add_handler(CommandHandler("shortcut_reset", _admin_shortcut_reset_command))
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))

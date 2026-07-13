@@ -23077,6 +23077,24 @@ def record_shortcut_run(user_id: int) -> bool:
     return record_shortcut_run_check(int(user_id), allowed=True)
 
 
+def reset_shortcut_runs(user_id: int) -> int:
+    """Delete ALL «Ночной Переводчик» run rows for a user (both approvals AND blocks) so
+    the Free-total and Pro-daily quotas start from zero again. Test/admin utility only —
+    returns the number of deleted rows. Does NOT touch installations / grace (grace is
+    time-since-install based, see _shortcut_setup_grace_active)."""
+    try:
+        _ensure_shortcut_runs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM bt_3_shortcut_runs WHERE user_id=%s;", (int(user_id),))
+                deleted = int(cur.rowcount or 0)
+            conn.commit()
+        return deleted
+    except Exception:
+        logging.warning("reset_shortcut_runs failed user=%s", user_id, exc_info=True)
+        return 0
+
+
 # ── Battle-create queue (Mini-App «⚔️ Battles» hub) ──────────────────────────
 # The Mini-App create endpoint ENQUEUES a battle-create request (instant response);
 # the bot drains this queue and runs the EXISTING _create_and_broadcast_* logic, so
@@ -32960,6 +32978,15 @@ TELEMETRY_RETENTION_TABLES: tuple[tuple[str, str], ...] = (
     ("bt_3_user_api_snapshots", "refreshed_at"),
     ("bt_3_limit_runtime_events", "created_at"),
     ("bt_3_telegram_system_messages", "created_at"),
+    # Per-event raw streams that grow one row per translation attempt / weak-topic
+    # detection. Both are consumed shortly after write and never read long-term:
+    # skill_events_v2 is folded into skill_state by the 5-min incremental aggregator
+    # (id > last_event_id) and the daily read only touches events since the user's
+    # reset; weak_topic_events is a `processed_at IS NULL` work queue. Old rows here
+    # are safe to drop and were the largest unbounded-growth gap after the 30.06
+    # disk-full incident (they were not covered by the original 4-table prune).
+    ("bt_3_skill_events_v2", "created_at"),
+    ("bt_3_weak_topic_events", "created_at"),
 )
 
 
