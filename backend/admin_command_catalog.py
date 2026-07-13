@@ -167,6 +167,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "example": '/shortcut_runs 3',
         },
         {
+            "cmd": '/shortcut_reset',
+            "desc": 'Обнуляет счётчик запусков «Ночного Переводчика» для юзера (удаляет строки bt_3_shortcut_runs) — Free-лимит (5 всего) и Pro-лимит (2/день) стартуют с нуля. Для повторных тестов. Grace по окну (24ч с установки) НЕ сбрасывает.',
+            "args": '<user_id>',
+            "example": '/shortcut_reset 117649764',
+        },
+        {
             "cmd": '/plan',
             "desc": 'Присылает в личку ссылку на живую таблицу плана рассылок в Mini-App.',
             "args": 'нет аргументов',

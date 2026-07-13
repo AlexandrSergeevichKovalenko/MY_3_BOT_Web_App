@@ -2293,10 +2293,11 @@ async def send_main_menu(update: Update, context: CallbackContext):
         if not bot_username:
             bot_info = await context.bot.get_me()
             bot_username = bot_info.username
-        guide_url = get_webapp_deeplink("guide", bot_username=bot_username)
+        onboarding_url = get_webapp_deeplink("onboarding", bot_username=bot_username)
         await update.message.reply_text(
             "👋 <b>С возвращением!</b>\n"
-            f"Меню ниже — задания, тренажёры, словарь. Как всё устроено: {guide_url}",
+            f"Меню ниже — задания, тренажёры, словарь. С чего начать и как всё "
+            f"настроить (словарь, Shortcut, темп заданий): {onboarding_url}",
             parse_mode="HTML",
             disable_web_page_preview=True,
             reply_markup=_build_private_language_tutor_reply_keyboard(
@@ -10127,16 +10128,19 @@ async def start(update: Update, context: CallbackContext):
 
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
     if update.effective_chat and update.effective_chat.type == "private":
-        # First-run onboarding gate (behind ONBOARDING_ENABLED): un-onboarded users
-        # get the «Пройти настройку» deeplink instead of the full menu.
+        # /start is an explicit "начни здесь" action → always route to the onboarding
+        # wizard (it holds the real setup: язык, словарь, установка Shortcut, иконка
+        # словаря, темп заданий), not the plain returning-user menu.
+        #
+        # We deliberately DO NOT check the server-side "completed" flag: it's keyed by
+        # user_id and survives deleting + re-installing the bot, so a returning user who
+        # reinstalls still reads as completed=True and the old gate bounced them to the
+        # bare menu instead of the setup they actually need again. New users, reinstalled
+        # users, everyone gets onboarding on /start. The onboarding card still delivers
+        # the DM menu keyboard (piggybacked by TrackingExtBot), so nobody loses buttons.
         if _onboarding_enabled() and user:
-            try:
-                _ob = await asyncio.to_thread(get_onboarding_state, int(user.id))
-            except Exception:
-                _ob = {"completed": True}
-            if not _ob.get("completed"):
-                await _send_onboarding_prompt(update, context)
-                return
+            await _send_onboarding_prompt(update, context)
+            return
         await send_main_menu(update, context)
 
 async def log_message(update: Update, context: CallbackContext):

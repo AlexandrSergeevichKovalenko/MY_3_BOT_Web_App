@@ -16059,11 +16059,28 @@ function AppInner() {
     setMenuOpen(false);
   }, [guideQuickCardStorageKey]);
 
-  const startOnboardingTour = useCallback(() => {
-    setOnboardingStep(0);
-    setOnboardingOpen(true);
+  const startOnboardingTour = useCallback(async () => {
     setMenuOpen(false);
-  }, []);
+    // Open the REAL onboarding wizard — the same standalone Mini-App the bot's /start
+    // deep-link opens (язык, словарь, установка Shortcut, иконка словаря, темп заданий),
+    // NOT the old lightweight slide carousel. It needs a fresh Telegram launch to carry
+    // initData (a plain /onboarding navigation drops the launch hash → public/no-save
+    // mode), so inside Telegram we re-launch it through the bot deep-link, exactly like
+    // the DM «🎬 Как пользоваться» button does.
+    if (telegramApp?.openTelegramLink) {
+      let botUrl = '';
+      try {
+        const r = await fetch('/api/public/tour-info');
+        const d = await r.json().catch(() => ({}));
+        botUrl = String(d.bot_url || '').trim();
+      } catch (_e) { /* noop */ }
+      if (botUrl) {
+        try { telegramApp.openTelegramLink(`${botUrl}?startapp=onboarding`); return; } catch (_e) { /* fall through */ }
+      }
+    }
+    // Plain browser (no Telegram): the /onboarding path serves the wizard as a public tour.
+    try { window.location.href = '/onboarding'; } catch (_e) { /* noop */ }
+  }, [telegramApp]);
 
   const dismissOnboarding = useCallback(() => {
     safeStorageSet(onboardingSeenStorageKey, '1');

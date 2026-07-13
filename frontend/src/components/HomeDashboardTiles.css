@@ -65,7 +65,7 @@
 
 .hdt-ic{ width:38px; height:38px; border-radius:12px; display:flex; align-items:center; justify-content:center; color:#fff; background:rgba(255,255,255,0.18); box-shadow:inset 0 1px 1px rgba(255,255,255,0.3); position:relative; z-index:1; }
 .hdt-ic svg{ display:block; }
-.hdt-bl{ font-size:11.5px; font-weight:700; color:#fff; line-height:1.18; margin-top:auto; letter-spacing:-0.01em; text-shadow:0 1px 2px rgba(0,0,0,0.18); white-space:pre-line; position:relative; z-index:1; }
+.hdt-bl{ font-size:13px; font-weight:800; color:#fff; line-height:1.16; margin-top:auto; letter-spacing:-0.015em; text-shadow:0 1px 3px rgba(0,0,0,0.24); white-space:pre-line; position:relative; z-index:1; word-break:break-word; hyphens:auto; }
 .hdt-bsub{ font-size:9.5px; font-weight:600; color:rgba(255,255,255,0.78); margin-top:3px; position:relative; z-index:1; }
 .hdt-bt-top{ display:flex; align-items:flex-start; justify-content:space-between; position:relative; z-index:1; }
 
