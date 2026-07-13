@@ -545,7 +545,11 @@ def _build_scheduler():
         )
 
     # -- Today plan --
-    if _enabled("TODAY_PLAN_SCHEDULER_ENABLED"):
+    # OFF by default (owner decision): the «Твои задачи на сегодня готовы» morning DM is
+    # not wanted. Default was "1", so the env kill-switch only worked if set on EVERY
+    # service — it wasn't, so the DM kept going out. Code-default OFF stops it everywhere
+    # without depending on env. Set TODAY_PLAN_SCHEDULER_ENABLED=1 to bring it back.
+    if _enabled("TODAY_PLAN_SCHEDULER_ENABLED", "0"):
         scheduler.add_job(
             _dispatch_today_plans,
             "cron",

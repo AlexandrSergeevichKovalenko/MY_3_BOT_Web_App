@@ -56905,7 +56905,11 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
-    today_plan_enabled = (os.getenv("TODAY_PLAN_SCHEDULER_ENABLED") or "1").strip().lower()
+    # OFF by default (owner decision): the «Твои задачи на сегодня готовы» morning DM is
+    # not wanted. Default was "1" here too, so the DM fired from this scheduler as well
+    # unless the env flag was set on this exact service. Code-default OFF stops it.
+    # Set TODAY_PLAN_SCHEDULER_ENABLED=1 to bring it back.
+    today_plan_enabled = (os.getenv("TODAY_PLAN_SCHEDULER_ENABLED") or "0").strip().lower()
     if today_plan_enabled in ("1", "true", "yes", "on"):
         today_hour = int((os.getenv("TODAY_PLAN_SCHEDULER_HOUR") or "7").strip())
         today_minute = int((os.getenv("TODAY_PLAN_SCHEDULER_MINUTE") or "0").strip())
