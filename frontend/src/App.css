@@ -15383,9 +15383,21 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     overflow: hidden;
     display: flex; flex-direction: column;
   }
-  /* видео заполняет левую колонку (сбрасываем фокус-кап высоты) */
+  /* видео заполняет левую колонку (сбрасываем фокус-кап ширины) */
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-player-shell:not(.is-app-fullscreen) {
     max-width: none !important;
+  }
+  /* ВИДЕО ВПИСЫВАЕТСЯ ПО ОБОИМ ИЗМЕРЕНИЯМ: aspect-ratio 16:9 + текучий max-height
+     в vh → на коротком окне видео уменьшается по высоте (и по ширине пропорц.),
+     субтитры не уезжают за экран; на широком/высоком — растёт до ширины колонки.
+     Никаких фикс-пикселей: max-height = % высоты экрана. */
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-frame {
+    aspect-ratio: 16 / 9;
+    padding-top: 0 !important;
+    width: 100%;
+    max-height: 62vh;
+    max-width: calc(62vh * 16 / 9);
+    margin: 0 auto;
   }
   /* сайдбар: DE над RU, обе половины равны, списки скроллятся */
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .youtube-subtitles-panel-content.is-dual {
