@@ -33443,6 +33443,23 @@ function AppInner() {
                       ref={youtubeRef}
                       data-no-edge-swipe="true"
                     >
+                    {/* TEMP DEBUG — remove after diagnosing the theater width */}
+                    <div
+                      style={{ position: 'fixed', top: 0, left: 0, zIndex: 999999, background: '#000', color: '#0f0', font: '10px monospace', padding: '3px 5px', pointerEvents: 'none', whiteSpace: 'pre' }}
+                      ref={(el) => {
+                        if (!el) return;
+                        requestAnimationFrame(() => {
+                          try {
+                            const q = (s) => document.querySelector(s);
+                            const bw = (e) => (e ? Math.round(e.getBoundingClientRect().width) : '—');
+                            const dp = (e) => (e ? getComputedStyle(e).display : '—');
+                            const sh = q('.webapp-shell'); const mn = q('.webapp-main');
+                            const vd = q('.webapp-video-dictionary'); const vv = q('.webapp-video.youtube-player-first');
+                            el.textContent = `win ${window.innerWidth} | shell ${bw(sh)} ${dp(sh)} | main ${bw(mn)} ${dp(mn)} | v-dict ${bw(vd)} ${dp(vd)} | video ${bw(vv)} ${dp(vv)}`;
+                          } catch (_e) { /* ignore */ }
+                        });
+                      }}
+                    />
                     {youtubeNewsMode && worldNewsData?.available && !(worldNewsStage === 'video' && youtubePlaybackStarted && !youtubeIsPaused) && (
                       <div className="worldnews-stepper">
                         {[['words', tr('Слова', 'Wörter')], ['video', tr('Видео', 'Video')], ['quiz', tr('Тест', 'Quiz')]].map(([key, label]) => (
