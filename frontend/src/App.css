@@ -15332,7 +15332,16 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
    субтитрами (Overlay OFF). Без пиннинга: сайдбар охватывает ряды видео+транспорт,
    поэтому по высоте = видео. Портрет (700–899) остаётся стопкой. */
 @media (min-width: 900px) {
+  /* Броня ширины: секция и родитель-контейнер — гарантированно на всю ширину
+     (иначе grid-контейнер схлопывается по контенту и всё вжимается влево). */
+  .webapp-page .webapp-video-dictionary:has(.youtube-subtitles-panel) {
+    width: 100% !important;
+    max-width: none !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) {
+    width: 100% !important;
+    max-width: none !important;
     display: grid !important;
     grid-template-columns: 1.62fr 1fr !important;
     grid-template-rows: auto auto auto;
