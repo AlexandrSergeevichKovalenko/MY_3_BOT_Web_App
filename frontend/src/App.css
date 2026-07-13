@@ -15332,6 +15332,24 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
    субтитрами (Overlay OFF). Без пиннинга: сайдбар охватывает ряды видео+транспорт,
    поэтому по высоте = видео. Портрет (700–899) остаётся стопкой. */
 @media (min-width: 900px) {
+  /* КОРЕНЬ узкого кинозала: .webapp-main капнут max-width:980px правилом
+     .is-telegram-tablet (класс ставится и в браузере — Telegram-скрипт создаёт
+     заглушку window.Telegram.WebApp). На широком экране 980px душит кинозал.
+     Для YouTube-страницы поднимаем до min(1600px,96vw), чтобы видео+субтитры
+     использовали ширину. (width:100% этого не лечит — max-width каповал раньше.) */
+  .webapp-page.is-telegram-tablet.is-youtube-active .webapp-shell,
+  .webapp-page.is-youtube-active .webapp-shell { width: min(1600px, 96vw) !important; max-width: none !important; }
+  .webapp-page.is-telegram-tablet.is-youtube-active .webapp-main,
+  .webapp-page.is-youtube-active .webapp-main { max-width: min(1600px, 96vw) !important; }
+
+  /* форма поиска/смены видео, если открыта в кинозале — на всю ширину снизу */
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-setup-form,
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .webapp-video-form {
+    grid-column: 1 / -1;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+
   /* Броня ширины: секция и родитель-контейнер — гарантированно на всю ширину
      (иначе grid-контейнер схлопывается по контенту и всё вжимается влево). */
   .webapp-page .webapp-video-dictionary:has(.youtube-subtitles-panel) {
