@@ -631,7 +631,9 @@ body {
   }
   .webapp-page.is-home-bento .hdt-ic svg { width: 56%; height: 56%; }
   .webapp-page.is-home-bento .hdt-bl {
-    font-size: clamp(9.5px, 1.5vh, 11.5px);
+    /* Slightly bolder + larger labels (weight 900 via base .hdt-bl), still
+       clamped so they scale with screen height and never overflow the tile. */
+    font-size: clamp(10.5px, 1.7vh, 12.8px);
     line-height: 1.1;
   }
   .webapp-page.is-home-bento .hdt-bt.hero .hdt-bl {
