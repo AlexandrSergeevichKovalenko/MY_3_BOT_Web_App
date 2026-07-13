@@ -7582,6 +7582,12 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("send_me_analytics_and_recommend_me", "Аналитика+совет (Пт 15:15)", 192, True, "guard"),
     ("_video_pool_biweekly_report_job", "Отчёт по видео-пулу (Сб, раз в 2 нед.)", 384, True, "guard"),
     ("remedial_video_materialization", "Доучивающее видео (05:30)", 30, True, "guard"),
+    # --- «Начни день с новостей» (added after the 2026-07-10..12 silent outage: the jobs were
+    # NOT catalogued, so 3 days of failed prep raised no alarm). These outcome heartbeats are
+    # recorded from the job bodies under dedicated keys, so status='failed' on a bad prep raises a
+    # ⚠️ alarm here, and a stalled/never-fired cron goes ПРОТУХЛО past 30h. ---
+    ("world_news_evening_result", "Новость дня — вечерняя подготовка (20:00)", 30, True, "guard"),
+    ("world_news_morning_result", "Новость дня — утренняя рассылка (6:30)", 30, True, "guard"),
     # --- Nightly maintenance / cleanups (heartbeat from the job body in backend_server) ---
     ("system_message_cleanup", "Чистка системных сообщений", 30, True, "guard"),
     ("flashcard_feel_cleanup", "Чистка flashcard-feel (мес.)", 800, True, "guard"),
@@ -8096,6 +8102,30 @@ async def handle_world_news_pin_callback(update: Update, context: CallbackContex
         await query.answer("❌ Ошибка", show_alert=True)
 
 
+# Hard ceiling on the (blocking) news generation. Before this, a stuck YouTube transcript fetch
+# (datacenter-IP block, 2026-07-10) left prepare_world_news awaiting a response that never came →
+# the coroutine never completed → no heartbeat, no ⚠️ alert → 3 silent days of no morning news
+# (2026-07-10..12). wait_for guarantees we always reach the alert + heartbeat path.
+_WORLD_NEWS_PREP_TIMEOUT_SEC = int((os.getenv("WORLD_NEWS_PREP_TIMEOUT_SEC") or "300").strip() or "300")
+
+
+async def _world_news_alert_admins(context: CallbackContext, admin_ids: list, text: str) -> int:
+    """Deliver a world-news failure alert that CANNOT be silently swallowed. DMs every admin;
+    returns how many were reached. If NOT a single admin got it (empty list / all sends failed),
+    logs at ERROR level so the failure still surfaces in Railway logs (the `world_news_evening_result`
+    heartbeat is the other, DM-independent, alarm channel via /scheduler_health)."""
+    reached = 0
+    for admin_id in admin_ids or []:
+        try:
+            await context.bot.send_message(chat_id=int(admin_id), text=text)
+            reached += 1
+        except Exception:
+            logging.debug("world_news alert: admin DM failed id=%s", admin_id, exc_info=True)
+    if not reached:
+        logging.error("world_news alert: NO admin reachable — alert not delivered by DM. Text: %s", text)
+    return reached
+
+
 async def run_world_news_evening_prep(context: CallbackContext):
     """Evening (≈20:00) prep of TOMORROW's news for admin review. DMs admins a preview with
     an «✅ Одобрить» button; only an approved (pinned) entry is broadcast next morning at 6:30.
@@ -8123,24 +8153,36 @@ async def run_world_news_evening_prep(context: CallbackContext):
                 )
             except Exception:
                 pass
+        _record_sched_heartbeat("world_news_evening_result", "completed",
+                                {"target": target, "mode": "already_approved"})
         return
     try:
         from backend.world_news_generator import prepare_world_news
-        entry = await asyncio.to_thread(prepare_world_news, target)
+        # Bounded so a blocked/slow transcript fetch can never hang the job forever (the exact
+        # 2026-07-10 failure). On timeout we fall through to the alert path like any other error.
+        entry = await asyncio.wait_for(
+            asyncio.to_thread(prepare_world_news, target),
+            timeout=_WORLD_NEWS_PREP_TIMEOUT_SEC,
+        )
     except Exception as exc:
-        logging.warning("world_news evening prep failed for %s: %s", target, exc)
-        for admin_id in admin_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=(
-                        f"⚠️ Новость на завтра ({target}) не подготовилась: {exc}\n"
-                        "Без одобрения утром рассылки не будет. "
-                        "Можно задать вручную: /worldnews <youtube_url> → /worldnews_card."
-                    ),
-                )
-            except Exception:
-                pass
+        is_timeout = isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+        reason = (
+            f"подготовка превысила {_WORLD_NEWS_PREP_TIMEOUT_SEC}s "
+            "(вероятно, недоступны субтитры/прокси)"
+            if is_timeout else str(exc)
+        )
+        logging.error("world_news evening prep FAILED for %s: %s", target, reason)
+        # Outcome heartbeat under a DEDICATED key (submit_async records the coroutine name as
+        # 'completed' on return, which would clobber a same-key 'failed'). status='failed' makes
+        # /scheduler_health raise a ⚠️ alarm even if every admin DM below fails.
+        _record_sched_heartbeat("world_news_evening_result", "failed",
+                                {"target": target, "timeout": is_timeout, "error": reason[:200]})
+        await _world_news_alert_admins(
+            context, admin_ids,
+            f"⚠️ Новость на завтра ({target}) не подготовилась: {reason}\n"
+            "Без одобрения утром рассылки не будет. "
+            "Можно задать вручную: /worldnews <youtube_url> → /worldnews_card.",
+        )
         return
     text = _world_news_preview_text(entry, header="🌙 <b>Новость на завтра — проверь и одобри</b>")
     kb = InlineKeyboardMarkup(_world_news_preview_keyboard_rows(entry))
@@ -8149,6 +8191,8 @@ async def run_world_news_evening_prep(context: CallbackContext):
             await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=kb)
         except Exception:
             pass
+    _record_sched_heartbeat("world_news_evening_result", "completed",
+                            {"target": target, "video_id": entry.get("video_id")})
 
 
 async def run_world_news_morning_broadcast(context: CallbackContext):
@@ -8163,9 +8207,13 @@ async def run_world_news_morning_broadcast(context: CallbackContext):
         entry = None
     if not entry or not entry.get("is_pinned"):
         logging.info("world_news morning: no APPROVED entry for %s — skip broadcast", today)
+        _record_sched_heartbeat("world_news_morning_result", "completed",
+                                {"date": today, "skipped": "no_approved"})
         return
     if str(entry.get("status") or "") == "sent":
         logging.info("world_news morning: %s already sent — skip", today)
+        _record_sched_heartbeat("world_news_morning_result", "completed",
+                                {"date": today, "skipped": "already_sent"})
         return
 
     caption = _world_news_morning_card_text(entry)
@@ -8214,6 +8262,8 @@ async def run_world_news_morning_broadcast(context: CallbackContext):
     except Exception:
         logging.debug("world_news morning: set status=sent failed", exc_info=True)
     logging.info("world_news morning broadcast %s: group=%s dm_sent=%d/%d", today, group_ok, sent, len(uids))
+    _record_sched_heartbeat("world_news_morning_result", "completed",
+                            {"date": today, "sent": sent, "total": len(uids), "group": group_ok})
 
 
 async def run_world_news_startup_catchup(context: CallbackContext):

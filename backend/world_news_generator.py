@@ -117,6 +117,12 @@ WORLD_NEWS_MIN_SECONDS = _env_int("WORLD_NEWS_MIN_SECONDS", 40)
 WORLD_NEWS_CANDIDATES = _env_int("WORLD_NEWS_CANDIDATES", 20)
 WORLD_NEWS_MIN_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MIN_TRANSCRIPT_CHARS", 300)
 WORLD_NEWS_MAX_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MAX_TRANSCRIPT_CHARS", 8000)
+# Wall-clock budget for the whole candidate sweep. Each transcript fetch has retries but NO hard
+# socket timeout, so a blocked IP (see the 2026-07-10 datacenter-block incident) could make the
+# loop crawl for many minutes. Cap it: once the budget is spent we stop trying more candidates and
+# return (None, diag) so the caller alerts fast instead of the worker thread lingering. The bot
+# also wraps prepare_world_news in its own wait_for as a second line of defence.
+WORLD_NEWS_PICK_BUDGET_SEC = _env_int("WORLD_NEWS_PICK_BUDGET_SEC", 210)
 
 
 def _model() -> str:
@@ -408,7 +414,16 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
         logger.warning("world_news: no candidates from YouTube search (diag=%s)", diag)
         return None, diag
     details_map = _yt_api_video_details([c["video_id"] for c in candidates])
+    _budget_started = time.monotonic()
     for cand in candidates:
+        if time.monotonic() - _budget_started > WORLD_NEWS_PICK_BUDGET_SEC:
+            diag["budget_exhausted"] = True
+            diag["reason"] = "pick_budget_exhausted"
+            logger.warning(
+                "world_news: candidate sweep exceeded %ds budget (diag=%s) — likely transcript "
+                "fetch is blocked/slow (proxy?)", WORLD_NEWS_PICK_BUDGET_SEC, diag,
+            )
+            return None, diag
         vid = cand["video_id"]
         if vid in exclude:
             diag["excluded"] += 1
