@@ -23,9 +23,11 @@ from backend.database import (
     get_admin_telegram_ids,
     get_db_connection_context,
     get_dict_dedup_report,
+    get_provider_budget_month_usage,
     list_admin_configurable_limits,
     resolve_entitlement,
 )
+from backend.database import _provider_budget_default_base_limit
 
 
 ADMIN_ECONOMICS_TZ = "Europe/Vienna"
@@ -55,6 +57,49 @@ _PROVIDER_LABELS: dict[str, str] = {
 # Providers that represent payments/bookkeeping, not content-generation spend —
 # excluded from the "Затраты" (cost) breakdown so it reflects real API/content cost.
 _NON_COST_PROVIDERS: tuple[str, ...] = ("stripe", "app_internal")
+
+# Providers that bill on a MONTHLY FREE ALLOWANCE (google_tts 1M chars/mo, etc.).
+# Their `cost_amount` in the ledger is the GROSS provider list-price on every unit —
+# including the free ones — so summing it verbatim over-states real spend massively.
+# We split it: while month-to-date usage sits under the free allowance, that money is
+# "псевдо" (free-tier), and REAL money only starts on the overage. Maps provider ->
+# the units_type its free allowance is measured in.
+_FREE_TIER_PROVIDERS: dict[str, str] = {
+    "google_tts": "chars",
+    "google_translate": "chars",
+    "deepl_free": "chars",
+    "azure_translator": "chars",
+    "cloudflare_r2_class_a": "operations",
+    "cloudflare_r2_class_b": "operations",
+}
+
+# Per-run cache so we hit the DB once per provider, not once per (action_type, provider) row.
+_real_money_fraction_cache: dict[str, float] = {}
+
+
+def _provider_real_money_fraction(provider: str) -> float:
+    """Fraction of a free-tier provider's cost that is REAL money this month.
+    0.0 while month-to-date usage is under the free allowance; ramps to 1.0 on overage.
+    Non-free-tier providers (openai, ...) always return 1.0 — every cent is real.
+    Fails safe to 1.0 (show the cost) if usage/limit can't be resolved."""
+    key = str(provider or "").strip().lower()
+    units_type = _FREE_TIER_PROVIDERS.get(key)
+    if units_type is None:
+        return 1.0
+    if key in _real_money_fraction_cache:
+        return _real_money_fraction_cache[key]
+    try:
+        mtd = float(get_provider_budget_month_usage(provider=key, units_type=units_type, tz=ADMIN_ECONOMICS_TZ))
+        if mtd <= 0:
+            frac = 0.0
+        else:
+            free = float(_provider_budget_default_base_limit(key))
+            overage = max(0.0, mtd - free)
+            frac = min(1.0, overage / mtd)
+    except Exception:
+        frac = 1.0
+    _real_money_fraction_cache[key] = frac
+    return frac
 
 # Dictionary rows we write FOR the user (starter "Базовый словарь" import, GPT seed
 # sentences), not actions the user took. Counted separately so a 1000-word starter
@@ -163,7 +208,6 @@ def _user_stats(target_day: date, tz_name: str) -> dict[str, Any]:
     active_ids = _fetch_active_user_ids(target_day, tz_name)
     free_count = 0
     pro_count = 0
-    trial_count = 0
     for user_id in active_ids:
         try:
             entitlement = resolve_entitlement(user_id=int(user_id), tz=tz_name)
@@ -172,8 +216,6 @@ def _user_stats(target_day: date, tz_name: str) -> dict[str, Any]:
             mode = "free"
         if mode == "pro":
             pro_count += 1
-        elif mode == "trial":
-            trial_count += 1
         else:
             free_count += 1
     with get_db_connection_context() as conn:
@@ -191,7 +233,6 @@ def _user_stats(target_day: date, tz_name: str) -> dict[str, Any]:
     return {
         "active_free_users": free_count,
         "active_pro_users": pro_count,
-        "active_trial_users": trial_count,
         "new_users_today": int((row or [0])[0] or 0),
         "total_active_users": len(active_ids),
     }
@@ -625,32 +666,50 @@ def cost_breakdown_by_activity(*, days: int = 7, limit: int = 40) -> dict[str, A
                 (cutoff_days, list(_NON_COST_PROVIDERS)),
             )
             rows = cursor.fetchall() or []
+    _real_money_fraction_cache.clear()
     total_cost = total_lib = total_usr = 0.0
+    total_real = total_free = 0.0
     for action_type, provider, lib_cost, usr_cost, reqs in rows:
-        slot = agg.setdefault(str(action_type), {"lib": 0.0, "usr": 0.0, "reqs": 0, "providers": set()})
-        slot["lib"] += float(lib_cost or 0.0)
-        slot["usr"] += float(usr_cost or 0.0)
+        slot = agg.setdefault(str(action_type), {"lib": 0.0, "usr": 0.0, "real": 0.0, "free": 0.0, "reqs": 0, "providers": set()})
+        lib_c = float(lib_cost or 0.0)
+        usr_c = float(usr_cost or 0.0)
+        # For free-tier providers only the overage beyond the monthly free allowance is
+        # real money; the rest is "псевдо" free-tier spend. openai & co. -> frac 1.0.
+        frac = _provider_real_money_fraction(str(provider or ""))
+        slot["lib"] += lib_c
+        slot["usr"] += usr_c
+        slot["real"] += (lib_c + usr_c) * frac
+        slot["free"] += (lib_c + usr_c) * (1.0 - frac)
         slot["reqs"] += int(reqs or 0)
         if provider:
             slot["providers"].add(str(provider))
     out_rows = []
     for action_type, v in agg.items():
         cost = float(v["lib"]) + float(v["usr"])
+        real_cost = float(v["real"])
+        free_cost = float(v["free"])
         total_cost += cost
         total_lib += float(v["lib"])
         total_usr += float(v["usr"])
+        total_real += real_cost
+        total_free += free_cost
         out_rows.append({
             "action_type": action_type,
             "cost": cost,
+            "real_cost": real_cost,
+            "free_cost": free_cost,
             "lib_cost": float(v["lib"]),
             "usr_cost": float(v["usr"]),
             "requests": int(v["reqs"]),
             "providers": sorted(v["providers"]),
         })
-    out_rows.sort(key=lambda r: r["cost"], reverse=True)
+    # Rank by REAL money first so genuine spenders float up, not free-tier list-price noise.
+    out_rows.sort(key=lambda r: (r["real_cost"], r["cost"]), reverse=True)
     return {
         "days": cutoff_days,
         "total_cost": total_cost,
+        "total_real_cost": total_real,
+        "total_free_cost": total_free,
         "library_cost": total_lib,
         "user_cost": total_usr,
         "rows": out_rows[: max(1, int(limit))],
@@ -661,10 +720,14 @@ def cost_breakdown_by_activity(*, days: int = 7, limit: int = 40) -> dict[str, A
 def build_cost_breakdown_text(*, days: int = 7, limit: int = 25) -> str:
     """HTML text of the per-activity cost breakdown for the admin DM / /costs."""
     data = cost_breakdown_by_activity(days=days, limit=limit)
+    real = float(data.get("total_real_cost", data["total_cost"]))
+    free = float(data.get("total_free_cost", 0.0))
     L = [
-        f"💸 <b>Затраты OpenAI по активностям</b> · {int(data['days'])}д",
-        f"Всего: <b>${data['total_cost']:.2f}</b> "
-        f"(🏭 под капотом ${data['library_cost']:.2f} · 👤 пользователи ${data['user_cost']:.2f})",
+        f"💸 <b>Затраты по активностям</b> · {int(data['days'])}д",
+        f"💶 Реально: <b>${real:.2f}</b>"
+        + (f"  ·  💚 в бесплатных лимитах: ~${free:.2f}" if free >= 0.005 else ""),
+        f"<i>🏭 под капотом ${data['library_cost']:.2f} · 👤 пользователи ${data['user_cost']:.2f} "
+        f"— по прайсу, до вычета бесплатных лимитов</i>",
         "",
     ]
     rows = [r for r in data["rows"] if r["cost"] > 0 or r["requests"] > 0]
@@ -673,12 +736,23 @@ def build_cost_breakdown_text(*, days: int = 7, limit: int = 25) -> str:
         return "\n".join(L)
     for r in rows:
         tag = "🏭" if r["lib_cost"] >= r["usr_cost"] else "👤"
-        L.append(f"{tag} <code>{html.escape(r['action_type'])}</code> — "
-                 f"<b>${r['cost']:.3f}</b> · {r['requests']} зап.")
+        real_c = float(r.get("real_cost", r["cost"]))
+        free_c = float(r.get("free_cost", 0.0))
+        reqs = int(r["requests"])
+        reqs_txt = f" · {reqs} зап." if reqs > 0 else ""
+        code = html.escape(r["action_type"])
+        if real_c < 0.0005 and free_c >= 0.0005:
+            # Полностью в бесплатном лимите провайдера — реальных денег нет.
+            L.append(f"{tag} <code>{code}</code> — 💚 ~$0 "
+                     f"<i>(в бесплатном лимите; по прайсу ${r['cost']:.3f})</i>{reqs_txt}")
+        else:
+            extra = f" <i>+ беспл. ~${free_c:.3f}</i>" if free_c >= 0.0005 else ""
+            L.append(f"{tag} <code>{code}</code> — <b>${real_c:.3f}</b>{extra}{reqs_txt}")
     L += [
         "",
         "🏭 = наша генерация/поддержание · 👤 = от пользователей",
-        "🖼 Картинки gpt-image-1 учитываются по оценке за изображение (*_image).",
+        "💶 Реально = сверх бесплатных месячных лимитов · 💚 = ещё в бесплатном лимите",
+        "🖼 Картинки gpt-image-1 — по оценке за изображение (*_image).",
     ]
     return "\n".join(L)[:4000]
 
@@ -756,8 +830,7 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
     L.append(
         f"👥 Активны: {_fmt_num(stats.get('total_active_users'))}  "
         f"(FREE {_fmt_num(stats.get('active_free_users'))} · "
-        f"PRO {_fmt_num(stats.get('active_pro_users'))} · "
-        f"TRIAL {_fmt_num(stats.get('active_trial_users'))})  ·  "
+        f"PRO {_fmt_num(stats.get('active_pro_users'))})  ·  "
         f"+{_fmt_num(stats.get('new_users_today'))} новых"
     )
 
@@ -817,10 +890,10 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
         L.append(f"🤖 OpenAI: {total_reqs} запросов · ${openai_cost:.4f}")
         try:
             top = cost_breakdown_by_activity(days=7, limit=3).get("rows") or []
-            top = [r for r in top if r.get("cost", 0) > 0]
+            top = [r for r in top if r.get("real_cost", r.get("cost", 0)) > 0]
             if top:
-                L.append("   💸 топ-3/7д: "
-                         + " · ".join(f"{html.escape(r['action_type'])} ${r['cost']:.2f}" for r in top)
+                L.append("   💸 топ-3/7д (реально): "
+                         + " · ".join(f"{html.escape(r['action_type'])} ${r.get('real_cost', r['cost']):.2f}" for r in top)
                          + "  (разбивка: /costs)")
         except Exception:
             pass
