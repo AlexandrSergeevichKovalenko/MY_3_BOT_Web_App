@@ -7555,7 +7555,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("image_quiz_r2_cleanup", "Чистка image-quiz (R2, Вс)", 192, True, "guard"),
     ("visual_riddle_r2_cleanup", "Чистка visual-riddle (R2, Вс)", 192, True, "guard"),
     ("weekly_r2_cleanup", "Чистка R2: книги + интерактивы (нед., отчёт в личку)", 192, True, "guard"),
-    ("app_spend_ceiling_tick", "Потолок затрат €10/нед — тик (10 мин)", 3, True, "guard"),
+    ("app_spend_ceiling_tick", "Потолок затрат €10/нед — тик (1 ч)", 4, True, "guard"),
     ("telemetry_retention", "Ретенция телеметрии (03:25)", 30, True, "guard"),
     # --- High-frequency internal plumbing (throttled liveness — 'жив/мёртв', time is noise) ---
     ("autosave_sweep", "Автосейв-свип (30с)", 1, True, "guard"),
@@ -35640,7 +35640,7 @@ def main():
                 application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
-                application.job_queue.run_repeating(_app_spend_ceiling_tick_job, interval=int(os.getenv("APP_SPEND_CEILING_TICK_SECONDS", "600") or 600), first=120),
+                application.job_queue.run_repeating(_app_spend_ceiling_tick_job, interval=int(os.getenv("APP_SPEND_CEILING_TICK_SECONDS", "3600") or 3600), first=180),
                 application.job_queue.run_repeating(_weekly_r2_cleanup_job, interval=int(os.getenv("WEEKLY_R2_CLEANUP_SECONDS", str(7 * 24 * 3600)) or 7 * 24 * 3600), first=600),
             ),
             enabled=True,
