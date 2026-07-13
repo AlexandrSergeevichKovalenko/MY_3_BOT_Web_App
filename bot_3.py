@@ -7423,6 +7423,41 @@ def _run_daily_audio_safe() -> None:
         logging.exception("daily audio (bot scheduler) inline failed")
 
 
+async def admin_send_analytics_command(update: Update, context: CallbackContext):
+    """Manually trigger the weekly analytics + YouTube video recommendation.
+    /admin_send_analytics       → test-send ONLY to you (the admin), even on a free plan
+    /admin_send_analytics all   → run the real weekly broadcast to all eligible users now
+    Normally this fires automatically every Friday 15:15 and is Pro-only (free users skipped)."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    arg = ((context.args or [None])[0] or "").strip().lower()
+    if arg in {"all", "все", "broadcast"}:
+        status = await message.reply_text("📊 Рассылаю недельную аналитику+видео всем подходящим пользователям…")
+        try:
+            await send_me_analytics_and_recommend_me(context)
+            await status.edit_text("✅ Готово. Ушло Pro-пользователям и админам; бесплатные и без активности за неделю — пропущены.")
+        except Exception as exc:
+            logging.exception("admin_send_analytics broadcast failed")
+            await status.edit_text(f"❌ Не удалось разослать (тех.детали в логах: {type(exc).__name__}).")
+        return
+    status = await message.reply_text("📊 Тест-отправка аналитики+видео лично тебе…")
+    try:
+        await send_me_analytics_and_recommend_me(context, only_user_id=int(sender.id))
+        await status.edit_text(
+            "✅ Тест-отправка выполнена.\n"
+            "Если сообщения нет — значит за последнюю неделю у тебя нет переводов/ошибок, "
+            "по которым подбирается видео (подробности в логах)."
+        )
+    except Exception as exc:
+        logging.exception("admin_send_analytics test failed")
+        await status.edit_text(f"❌ Не удалось (тех.детали в логах: {type(exc).__name__}).")
+
+
 async def admin_send_audio_command(update: Update, context: CallbackContext):
     """Manually dispatch the daily "mistakes audio" to users' private chats.
     /admin_send_audio            → for yesterday (default)
@@ -18943,22 +18978,26 @@ def _select_weekly_video_for_user(
 
 
 # 📌📌📌📌📌
-async def send_me_analytics_and_recommend_me(context: CallbackContext):
+async def send_me_analytics_and_recommend_me(context: CallbackContext, only_user_id: int | None = None):
     task_name = "send_me_analytics_and_recommend_me"
     system_instruction_key = "send_me_analytics_and_recommend_me"
     skipped_synthetic_users = 0
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT DISTINCT user_id
-                FROM bt_3_translations
-                WHERE timestamp >= NOW() - INTERVAL '6 days'
-                  AND user_id IS NOT NULL;
-                """
-            )
-            user_ids = cursor.fetchall()
+    if only_user_id is not None:
+        # Manual admin test-send: target just this user, bypassing the "active last 6 days" filter.
+        user_ids = [(int(only_user_id),)]
+    else:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT user_id
+                    FROM bt_3_translations
+                    WHERE timestamp >= NOW() - INTERVAL '6 days'
+                      AND user_id IS NOT NULL;
+                    """
+                )
+                user_ids = cursor.fetchall()
 
     if not user_ids:
         print("❌ Нет активных пользователей за последнюю неделю.")
@@ -18978,7 +19017,7 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
                 safe_user_id,
             )
             effective_mode = "free"
-        if effective_mode == "free":
+        if effective_mode == "free" and not _is_admin_user(safe_user_id):
             logging.info(
                 "weekly_youtube_recommendation_skipped_free user_id=%s effective_mode=%s",
                 safe_user_id,
@@ -35411,6 +35450,7 @@ def main():
     application.add_handler(CommandHandler("describe_new", admin_describe_new_command))
     application.add_handler(CommandHandler("worldnews_send_now", admin_world_news_send_now_command))
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
+    application.add_handler(CommandHandler("admin_send_analytics", admin_send_analytics_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("review_makedue", admin_review_makedue_command))
