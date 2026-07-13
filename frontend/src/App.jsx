@@ -14808,6 +14808,7 @@ function AppInner() {
     && !youtubeForceShowPanel
     && !youtubeSettingsOpen
     && !youtubeAppFullscreen
+    && !showManualTranscript
   );
   const youtubeSearchExpanded = !youtubeId || !youtubeLearningMode;
   const youtubeLoadDisabled = !youtubeId || youtubeTranscriptLoading || youtubeManualOverride;

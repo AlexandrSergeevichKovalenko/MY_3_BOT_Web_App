@@ -15096,8 +15096,19 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-player-first .youtube-mobile-head { display: none !important; }
   .webapp-page .youtube-player-first .youtube-desktop-command-bar.youtube-dock2 { display: flex !important; }
 
+  /* Редактор транскрипта (admin) рендерится ВНУТРИ дока — без wrap он вставал
+     4-м flex-элементом и ломал ряд. Разрешаем перенос и даём ему всю ширину
+     отдельной строкой ПОД кластерами. */
+  .webapp-page .youtube-dock2 .youtube-sheet-manual-desktop,
+  .webapp-page .youtube-dock2 .webapp-subtitles-manual {
+    flex: 1 0 100%;
+    width: 100%;
+    order: 9;
+    margin-top: 10px;
+  }
   .webapp-page .youtube-dock2 {
     display: flex;
+    flex-wrap: wrap;
     width: 100%;
     align-items: center;
     gap: 12px;
