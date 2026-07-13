@@ -7554,6 +7554,8 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("tts_r2_cache_cleanup", "Чистка TTS-кэша (R2)", 30, True, "guard"),
     ("image_quiz_r2_cleanup", "Чистка image-quiz (R2, Вс)", 192, True, "guard"),
     ("visual_riddle_r2_cleanup", "Чистка visual-riddle (R2, Вс)", 192, True, "guard"),
+    ("weekly_r2_cleanup", "Чистка R2: книги + интерактивы (нед., отчёт в личку)", 192, True, "guard"),
+    ("app_spend_ceiling_tick", "Потолок затрат €10/нед — тик (10 мин)", 3, True, "guard"),
     ("telemetry_retention", "Ретенция телеметрии (03:25)", 30, True, "guard"),
     # --- High-frequency internal plumbing (throttled liveness — 'жив/мёртв', time is noise) ---
     ("autosave_sweep", "Автосейв-свип (30с)", 1, True, "guard"),
@@ -8906,6 +8908,7 @@ async def _app_spend_ceiling_tick_job(context: CallbackContext) -> None:
         return
     if not isinstance(decision, dict) or decision.get("error"):
         return
+    _record_sched_heartbeat("app_spend_ceiling_tick", metadata={"pct": decision.get("pct"), "spent_eur": decision.get("spent_eur")})
     try:
         admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
     except Exception:
@@ -9125,6 +9128,7 @@ async def _weekly_r2_cleanup_job(context: CallbackContext) -> None:
             )
         except Exception:
             logging.debug("weekly R2 cleanup DM failed aid=%s", aid, exc_info=True)
+    _record_sched_heartbeat("weekly_r2_cleanup", metadata={"freed_mb": round(freed_mb, 1), "reader": reader_del, "pools": per_pool})
 
 
 async def pool_r2_orphans_command(update: Update, context: CallbackContext) -> None:
