@@ -15298,6 +15298,68 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   }
 }
 
+/* ═══ Этап 3 — раскладка «Кинозал/Стопка» + тонкий транспорт + равные DE/RU ═══ */
+/* Тонкий транспорт + плотная видео-карта + равные по высоте DE|RU (≥700). */
+@media (min-width: 700px) {
+  .webapp-page .youtube-player-first .youtube-player-card {
+    padding: 6px !important;
+    border-radius: 18px !important;
+    margin-top: 0 !important;
+  }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-bar { margin-top: 8px !important; gap: 10px; }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-btn { height: 38px !important; min-width: 46px !important; }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-btn.is-toggle { min-width: 60px !important; }
+  /* колонки DE|RU равной высоты (тянутся к более высокой), список скроллится внутри */
+  .webapp-page .youtube-player-first .youtube-subtitles-panel-content.is-dual { align-items: stretch; }
+  .webapp-page .youtube-player-first .youtube-subtitles-block { display: flex; flex-direction: column; min-height: 0; }
+  .webapp-page .youtube-player-first .youtube-subtitles-block .webapp-subtitles { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .webapp-page .youtube-player-first .youtube-subtitles-block .webapp-subtitles-list { flex: 1; min-height: 0; }
+}
+
+/* КИНОЗАЛ (≥900): видео+транспорт слева, сайдбар субтитров справа (DE над RU).
+   :has(.youtube-subtitles-panel) = включается только в режиме просмотра с
+   субтитрами (Overlay OFF). Без пиннинга: сайдбар охватывает ряды видео+транспорт,
+   поэтому по высоте = видео. Портрет (700–899) остаётся стопкой. */
+@media (min-width: 900px) {
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) {
+    display: grid !important;
+    grid-template-columns: 1.62fr 1fr !important;
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      "top       top"
+      "player    subs"
+      "transport subs";
+    column-gap: 16px;
+    row-gap: 10px;
+    align-items: start;
+  }
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-player-first-head,
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-focus-peek { grid-area: top; }
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-player-card { grid-area: player; }
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-sentence-jump-bar { grid-area: transport; }
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-subtitles-panel {
+    grid-area: subs; margin: 0;
+    /* height:0 + min-height:100% = сайдбар НЕ раздувает ряды сетки (высоту задаёт
+       левый столбец: видео+транспорт), но заполняет её и скроллит контент внутри. */
+    height: 0; min-height: 100%;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  /* видео заполняет левую колонку (сбрасываем фокус-кап высоты) */
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-player-shell:not(.is-app-fullscreen) {
+    max-width: none !important;
+  }
+  /* сайдбар: DE над RU, обе половины равны, списки скроллятся */
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .youtube-subtitles-panel-content.is-dual {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+    flex: 1; min-height: 0;
+  }
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .youtube-subtitles-block .webapp-subtitles-list {
+    max-height: none !important;
+  }
+}
+
 .youtube-command-action:hover:not(:disabled),
 .youtube-command-toggle:hover:not(:disabled) {
   background: var(--yt-bg-hover);
