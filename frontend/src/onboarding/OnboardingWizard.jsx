@@ -27,6 +27,23 @@ const LANG = (() => {
 })();
 const t = (ru, de) => (LANG === 'de' ? de : ru);
 
+// R2-hosted onboarding clips. Same insertion pattern as the existing tiles: a small,
+// neat inline <video> (capped at 60vh, letterboxed) with native controls → the
+// fullscreen button expands it. Each empty slot's MediaTile simply isn't rendered.
+const R2 = 'https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/onboarding_videos_r2';
+const MEDIA = {
+  forward_chat:  `${R2}/forward_from_chat_and_learning_words/forward_chat_razbor.mp4`, // howto_words
+  morning_words: `${R2}/morning_words_arrival/morning_words_arrival.mp4`,             // howto_morning
+  learn_words:   `${R2}/forward_from_chat_and_learning_words/learn_saved_words.mp4`,   // howto_learn
+  interactives: [                                                                     // howto_interactives
+    { src: `${R2}/interactives/interactive_1.mp4`, caption: t('🎥 Артикли der/die/das — Artikelquiz', '🎥 Artikel der/die/das — Artikelquiz') },
+    { src: `${R2}/interactives/interactive_2.mp4`, caption: t('🎥 Вопросы Wo-Fragen', '🎥 Wo-Fragen') },
+    { src: `${R2}/interactives/interactive_3.mp4`, caption: t('🎥 Окончания прилагательных', '🎥 Adjektivendungen') },
+    { src: `${R2}/interactives/interactive_4.mp4`, caption: t('🎥 Анаграммы — собери слово (Anagramm)', '🎥 Anagramm — Wort zusammensetzen') },
+    { src: `${R2}/interactives/interactive_5.mp4`, caption: t('🎥 Artikel Sprint — der/die/das на скорость', '🎥 Artikel Sprint — der/die/das auf Zeit') },
+  ],
+};
+
 // Switch the whole wizard language (reload so the module-level strings re-read).
 function switchLang() {
   try { localStorage.setItem('ui_lang', LANG === 'de' ? 'ru' : 'de'); } catch (_e) { /* noop */ }
@@ -59,6 +76,8 @@ const STEPS = [
   { id: 'howto_tools',        title: t('Ещё инструменты 🧰', 'Weitere Werkzeuge 🧰'),              kind: 'info' },
   { id: 'keyboard',   title: t('Меню бота — где нажимать ⌨️', 'Bot-Menü — wo man tippt ⌨️'), kind: 'info' },
   { id: 'shortcut',   title: t('Захват слов со скриншотов (iPhone) 📲', 'Wörter aus Screenshots (iPhone) 📲'), kind: 'opt' },
+  { id: 'howto_morning', title: t('Утром твои слова уже ждут 🌅', 'Morgens warten deine Wörter 🌅'), kind: 'info' },
+  { id: 'howto_learn',   title: t('А теперь — как их учить 🎓', 'Und jetzt — wie du sie lernst 🎓'), kind: 'info' },
   { id: 'finale',     title: t('Готово! ✅', 'Fertig! ✅'),                kind: 'finale' },
 ];
 
@@ -178,7 +197,7 @@ const PRO_TEASER = (
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
 const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows',
   'battles', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
-  'howto_tools', 'keyboard']);
+  'howto_tools', 'keyboard', 'howto_morning', 'howto_learn']);
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
@@ -394,6 +413,12 @@ function StepBody(props) {
               <i>{t('(как поставить иконку — покажем отдельно)', '(wie man das Symbol anlegt — zeigen wir separat)')}</i>
             </li>
           </ul>
+          <MediaTile
+            src={MEDIA.forward_chat}
+            type="video"
+            caption={t('🎥 Перешли боту сообщение из любого чата — он разберёт слова, а ты сохранишь их в свой словарь и выучишь позже прямо тут, в приложении.',
+                       '🎥 Leite dem Bot eine Nachricht aus einem beliebigen Chat weiter — er analysiert die Wörter, du speicherst sie in dein Wörterbuch und lernst sie später direkt hier in der App.')}
+          />
           <div className="ob-howbox">
             <p className="ob-howbox-title">{t('📌 Как вынести иконку переводчика на экран (iPhone)', '📌 Wie du das Übersetzer-Symbol auf den Bildschirm legst (iPhone)')}</p>
             <ol className="ob-steps">
@@ -460,6 +485,46 @@ function StepBody(props) {
                  ' — der Bot sammelt, wo du dich geirrt hast, und lässt dich wiederholen. Damit Fehler nicht zur Gewohnheit werden.')}
             </li>
           </ul>
+          <p className="ob-lead ob-muted-note">{t('Вот как некоторые из них выглядят:', 'So sehen einige davon aus:')}</p>
+          {MEDIA.interactives.map((v, i) => (
+            v.src ? <MediaTile key={i} src={v.src} type="video" caption={v.caption} /> : null
+          ))}
+        </div>
+      );
+    case 'howto_morning':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            {t('Если в предыдущем разделе ты всё установил и настроил верно — дальше всё идёт само. Каждое утро телефон автоматически обработает скриншоты из твоей папки (до 25 за раз) и пришлёт слова в удобном виде: немецкое слово и русский перевод рядом.',
+               'Wenn du im vorigen Abschnitt alles richtig eingerichtet hast — läuft alles von selbst. Jeden Morgen verarbeitet das Handy automatisch die Screenshots aus deinem Ordner (bis zu 25 auf einmal) und schickt die Wörter übersichtlich: deutsches Wort und russische Übersetzung nebeneinander.')}
+          </p>
+          <p className="ob-lead">
+            {t('Просто ставишь или снимаешь галочки-чекбоксы — так ты сам решаешь, какое слово сохранить в словарь, а какое нет. Посмотри на видео, как это делается.',
+               'Du setzt oder entfernst einfach die Häkchen — so entscheidest du selbst, welches Wort ins Wörterbuch kommt und welches nicht. Schau im Video, wie das geht.')}
+          </p>
+          <MediaTile
+            src={MEDIA.morning_words}
+            type="video"
+            caption={t('🎥 Так утром приходят слова — отметь галочками нужные и сохрани', '🎥 So kommen die Wörter morgens an — die passenden markieren und speichern')}
+          />
+        </div>
+      );
+    case 'howto_learn':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            {t('После того как сохранил слова, спокойно заходишь и учишь их в приложении — в разделе «Карточки» с интервальным повторением: система сама показывает слово тогда, когда его пора повторить, пока оно не осядет в памяти. Вот пример, как это делать — смотри на видео.',
+               'Sobald du die Wörter gespeichert hast, gehst du in Ruhe in die App und lernst sie — im Bereich «Karten» mit Spaced Repetition: das System zeigt dir ein Wort genau dann, wenn es Zeit zum Wiederholen ist, bis es sitzt. Hier ein Beispiel, wie das geht — schau im Video.')}
+          </p>
+          <MediaTile
+            src={MEDIA.learn_words}
+            type="video"
+            caption={t('🎥 А вот так ты учишь сохранённые слова — карточки, интервальное повторение', '🎥 Und so lernst du die gespeicherten Wörter — Karten, Spaced Repetition')}
+          />
+          <p className="ob-lead ob-muted-note">
+            {t('Твои слова всегда под рукой в разделе «Словарь» — а ещё их можно загрузить для офлайн-просмотра, чтобы учить даже без интернета.',
+               'Deine Wörter sind immer griffbereit im Bereich «Wörterbuch» — außerdem kannst du sie für die Offline-Ansicht herunterladen und sogar ohne Internet lernen.')}
+          </p>
         </div>
       );
     case 'howto_translations':
@@ -493,8 +558,13 @@ function StepBody(props) {
             </li>
             <li>
               <b>{t('📖 Читалка', '📖 Reader')}</b>
-              {t(' — загружаешь книгу и читаешь прямо в приложении. Каждое слово кликабельно: нажал — перевод и разбор, сохранил.',
-                 ' — du lädst ein Buch und liest direkt in der App. Jedes Wort ist anklickbar: getippt — Übersetzung und Analyse, gespeichert.')}
+              {t(' — загружаешь книгу и читаешь прямо в приложении. Каждое слово кликабельно: нажал — перевод и разбор; можно переводить и целыми предложениями. Что отметил — сохраняешь в словарь.',
+                 ' — du lädst ein Buch und liest direkt in der App. Jedes Wort ist anklickbar: getippt — Übersetzung und Analyse; auch ganze Sätze kannst du übersetzen. Was du markierst, speicherst du ins Wörterbuch.')}
+            </li>
+            <li>
+              <b>{t('📰 Новости прямо в читалке', '📰 Nachrichten direkt im Reader')}</b>
+              {t(' — ничего не нужно искать и копировать. Заходишь в читалку, в разделе «Источники» выбираешь свежую статью (Deutsche Welle, Tagesschau, Nachrichtenleicht — новости простым языком, A2–B1) — и она открывается прямо в читалке. Читаешь как книгу: нажимаешь на любое слово или целое предложение — получаешь перевод с разбором и сохраняешь нужное в словарь, чтобы выучить позже.',
+                 ' — du musst nichts suchen oder kopieren. Du gehst in den Reader, wählst im Bereich «Quellen» einen aktuellen Artikel (Deutsche Welle, Tagesschau, Nachrichtenleicht — Nachrichten in einfacher Sprache, A2–B1) — und er öffnet sich direkt im Reader. Du liest wie ein Buch: tippe auf jedes Wort oder einen ganzen Satz — du bekommst die Übersetzung mit Analyse und speicherst, was du brauchst, ins Wörterbuch, um es später zu lernen.')}
             </li>
           </ul>
         </div>
@@ -703,7 +773,15 @@ export default function OnboardingWizard() {
       await api('/api/webapp/onboarding/complete');
       setDone(true);
       try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
-      setTimeout(() => { try { tg?.close?.(); } catch (_e) { /* ignore */ } }, 1400);
+      // Single «Перейти в приложение» endpoint (moved here from the Shortcut screen):
+      // open the main Mini-App. If the deep link isn't ready, fall back to closing to chat.
+      setTimeout(() => {
+        const url = botUrl ? `${botUrl}?startapp=webapp` : '';
+        try {
+          if (url && tg?.openTelegramLink) tg.openTelegramLink(url);
+          else tg?.close?.();
+        } catch (_e) { try { tg?.close?.(); } catch (_e2) { /* ignore */ } }
+      }, 900);
     } catch (_e) {
       setFinishing(false);
     }
@@ -879,7 +957,7 @@ export default function OnboardingWizard() {
           >
             {done ? t('✅ Готово', '✅ Fertig')
               : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
-              : isLast ? (IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 К заданиям', '🎯 Zu den Aufgaben'))
+              : isLast ? (IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Перейти в приложение', '🎯 Zur App'))
               : t('Далее →', 'Weiter →')}
           </button>
         </footer>

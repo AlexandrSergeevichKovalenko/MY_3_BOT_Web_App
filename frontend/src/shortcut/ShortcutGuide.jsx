@@ -120,7 +120,6 @@ export default function ShortcutGuide() {
   const [pairing, setPairing] = useState(null);     // {pairing_code, expires_at}
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingErr, setPairingErr] = useState('');
-  const [botUrl, setBotUrl] = useState('');
 
   useEffect(() => {
     try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
@@ -140,27 +139,12 @@ export default function ShortcutGuide() {
     return () => { off = true; };
   }, []);
 
-  // Bot link — for the «перейти в приложение» button at the end.
-  useEffect(() => {
-    let off = false;
-    (async () => {
-      try {
-        const r = await fetch('/api/public/tour-info');
-        const d = await r.json().catch(() => ({}));
-        if (!off && d.bot_url) setBotUrl(d.bot_url);
-      } catch (_e) { /* button falls back to closing the screen */ }
-    })();
-    return () => { off = true; };
+  // The single «Перейти в приложение» CTA now lives at the onboarding finale. Here
+  // we just return the user to the bot chat, where their tasks are already waiting —
+  // so this deep setup screen never ends in a dead end.
+  const closeGuide = useCallback(() => {
+    try { tg?.close?.(); } catch (_e) { /* noop */ }
   }, []);
-
-  const openApp = useCallback(() => {
-    const url = botUrl ? `${botUrl}?startapp=webapp` : '';
-    try {
-      if (url && tg?.openTelegramLink) tg.openTelegramLink(url);
-      else if (url) window.location.href = url;
-      else tg?.close?.();
-    } catch (_e) { try { tg?.close?.(); } catch (_e2) { /* noop */ } }
-  }, [botUrl]);
 
   const getCode = useCallback(async () => {
     if (pairingBusy) return;
@@ -441,8 +425,8 @@ export default function ShortcutGuide() {
           немецкий текст или вставляйте целый кусок текста: бот сам выберет слова под ваш уровень.</p>
       </section>
 
-      <button type="button" className="sc-btn primary sc-goapp" onClick={openApp}>
-        🎯 Перейти в приложение
+      <button type="button" className="sc-btn primary sc-goapp" onClick={closeGuide}>
+        ✅ Готово — вернуться в бот
       </button>
     </div>
   );
