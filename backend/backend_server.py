@@ -580,6 +580,12 @@ from backend.database import (
     finish_reader_session,
     touch_reader_session,
     upsert_reader_library_document,
+    upsert_public_library_document,
+    list_public_library_documents,
+    get_public_library_document,
+    get_google_tts_standard_monthly_budget_status,
+    PUBLIC_LIBRARY_OWNER_ID,
+    PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION,
     create_reader_library_document_placeholder,
     list_reader_library_documents,
     get_reader_library_document,
@@ -16002,6 +16008,271 @@ def _resolve_reader_ingest_content(
         resolved_url = input_url
 
     return normalized_text, content_pages, source_type, resolved_url
+
+
+def _ingest_public_library_book(book, *, source_lang: str = "ru", target_lang: str = "de", dry_run: bool = False) -> dict:
+    """Resolve one catalog book on Project Gutenberg, extract it, and store it as a
+    shared public-domain document. Returns a per-book result dict."""
+    from backend.public_library_catalog import resolve_gutendex, download_book_bytes
+
+    resolved = resolve_gutendex(book)
+    if not resolved:
+        return {"slug": book.slug, "ok": False, "error": "gutendex_not_found"}
+    try:
+        raw = download_book_bytes(resolved["download_url"])
+    except Exception as exc:
+        logging.exception("public library download failed slug=%s", book.slug)
+        return {"slug": book.slug, "ok": False, "error": f"download_failed: {exc}"}
+    if not raw:
+        return {"slug": book.slug, "ok": False, "error": "download_empty"}
+
+    is_epub = resolved["source_type"] == "epub"
+    file_ext = ".epub" if is_epub else ".txt"
+    file_mime = "application/epub+zip" if is_epub else "text/plain"
+    normalized_text, content_pages, source_type, _url = _resolve_reader_ingest_content(
+        input_text="",
+        input_url="",
+        file_name=f"{book.slug}{file_ext}",
+        file_mime=file_mime,
+        file_content_b64=base64.b64encode(raw).decode("ascii"),
+    )
+    if not normalized_text or len(normalized_text) < 500:
+        return {"slug": book.slug, "ok": False, "error": "extract_too_short", "chars": len(normalized_text or "")}
+
+    gutenberg_id = resolved.get("gutenberg_id")
+    source_url = f"https://www.gutenberg.org/ebooks/{gutenberg_id}" if gutenberg_id else None
+    if dry_run:
+        return {
+            "slug": book.slug, "ok": True, "dry_run": True, "chars": len(normalized_text),
+            "source_type": source_type, "gutenberg_id": gutenberg_id, "matched_title": resolved.get("matched_title"),
+        }
+    document = upsert_public_library_document(
+        slug=book.slug,
+        title=book.title,
+        author=book.author,
+        sort=book.sort,
+        source_type=source_type,
+        content_text=normalized_text,
+        content_pages=content_pages,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_url=source_url,
+    )
+    return {
+        "slug": book.slug, "ok": True, "document_id": document["id"], "chars": document["total_chars"],
+        "source_type": source_type, "gutenberg_id": gutenberg_id,
+    }
+
+
+def ingest_public_library_catalog(
+    *, slugs: list[str] | None = None, source_lang: str = "ru", target_lang: str = "de", dry_run: bool = False
+) -> dict:
+    """Ingest the whole curated catalog (or a subset by slug). Best-effort per book:
+    one failure does not abort the rest."""
+    from backend.public_library_catalog import PUBLIC_LIBRARY_CATALOG, CATALOG_BY_SLUG
+
+    if slugs:
+        books = [CATALOG_BY_SLUG[s] for s in slugs if s in CATALOG_BY_SLUG]
+    else:
+        books = list(PUBLIC_LIBRARY_CATALOG)
+
+    results: list[dict] = []
+    for book in books:
+        try:
+            results.append(
+                _ingest_public_library_book(book, source_lang=source_lang, target_lang=target_lang, dry_run=dry_run)
+            )
+        except Exception as exc:
+            logging.exception("public library ingest failed slug=%s", book.slug)
+            results.append({"slug": book.slug, "ok": False, "error": str(exc)})
+    ok = sum(1 for r in results if r.get("ok"))
+    return {"total": len(results), "ok": ok, "failed": len(results) - ok, "results": results}
+
+
+# Shared voice for the public-domain library: a Google Standard German voice, billed
+# from its own ~4M-char/month free tier. BOTH the on-demand audio endpoint and the
+# nightly pre-gen job must use this exact voice + rate so their cache keys line up and
+# one synthesized mp3 serves every reader.
+PUBLIC_LIBRARY_TTS_VOICE = os.getenv("PUBLIC_LIBRARY_TTS_VOICE", "de-DE-Standard-C").strip() or "de-DE-Standard-C"
+PUBLIC_LIBRARY_TTS_RATE = 1.0
+
+
+def run_public_library_audio_pregen(
+    *, target_lang: str = "de", max_pages: int | None = None, dry_run: bool = False
+) -> dict:
+    """Pre-generate shared audio for the public-domain library in the Standard voice,
+    spending only what the separate Standard free bucket allows (× the safety
+    fraction). Idempotent: already-cached pages are skipped, so it can run daily and
+    simply resumes where the budget ran out. One synthesized mp3 serves every reader.
+    """
+    status = get_google_tts_standard_monthly_budget_status() or {}
+    remaining_units = 0.0 if status.get("is_blocked") else float(status.get("remaining_units") or 0.0)
+    budget_chars = int(remaining_units * float(PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION))
+
+    spent_chars = 0
+    generated_pages = 0
+    skipped_cached = 0
+    pages_visited = 0
+    stopped: str | None = None
+    if budget_chars <= 0:
+        stopped = "no_budget"
+
+    docs = list_public_library_documents(target_lang=target_lang) if stopped is None else []
+    for doc in docs:
+        if stopped:
+            break
+        full = get_public_library_document(document_id=int(doc["id"]), include_content=True)
+        if not full:
+            continue
+        pages = full.get("content_pages") if isinstance(full.get("content_pages"), list) else []
+        lang_short = _normalize_short_lang_code(str(full.get("target_lang") or target_lang), fallback="de")
+        google_lang = _TTS_LANG_CODES.get(lang_short, "de-DE")
+        for page_obj in pages:
+            try:
+                page_no = int(page_obj.get("page_number") or 0)
+            except Exception:
+                page_no = 0
+            if page_no <= 0:
+                continue
+            page_text, text_hash = _reader_audio_page_text_and_hash(str(page_obj.get("text") or ""))
+            if not page_text:
+                continue
+            pages_visited += 1
+            cached = get_cached_reader_audio_page(
+                document_id=int(doc["id"]),
+                page_number=page_no,
+                voice_name=PUBLIC_LIBRARY_TTS_VOICE,
+                speaking_rate=PUBLIC_LIBRARY_TTS_RATE,
+                text_hash=text_hash,
+            )
+            if cached:
+                skipped_cached += 1
+                continue
+            need = len(page_text)
+            if spent_chars + need > budget_chars:
+                stopped = "budget_exhausted"
+                break
+            if max_pages is not None and generated_pages >= max_pages:
+                stopped = "max_pages"
+                break
+            if dry_run:
+                spent_chars += need
+                generated_pages += 1
+                continue
+            try:
+                _generate_and_cache_reader_audio_page(
+                    user_id_int=int(PUBLIC_LIBRARY_OWNER_ID),
+                    document_id_int=int(doc["id"]),
+                    page_int=page_no,
+                    page_source="pregen",
+                    page_text=page_text,
+                    text_hash=text_hash,
+                    voice_name=PUBLIC_LIBRARY_TTS_VOICE,
+                    rate_float=PUBLIC_LIBRARY_TTS_RATE,
+                    google_lang_code=google_lang,
+                    language_for_tts=lang_short,
+                    source_lang=str(full.get("source_lang") or "ru"),
+                    target_lang=str(full.get("target_lang") or target_lang),
+                    document_title=str(full.get("title") or "reader"),
+                    budget_provider="google_tts_standard",
+                    billing_provider="google_tts_standard",
+                )
+                spent_chars += need
+                generated_pages += 1
+            except GoogleTTSBudgetBlockedError:
+                stopped = "provider_blocked"
+                break
+            except Exception:
+                logging.exception("public library pregen failed doc=%s page=%s", doc["id"], page_no)
+        if stopped:
+            break
+
+    summary = {
+        "ok": True,
+        "target_lang": target_lang,
+        "budget_chars": budget_chars,
+        "spent_chars": spent_chars,
+        "generated_pages": generated_pages,
+        "skipped_cached": skipped_cached,
+        "pages_visited": pages_visited,
+        "stopped": stopped,
+        "dry_run": dry_run,
+    }
+    logging.info("[PUBLIC_LIBRARY_PREGEN] %s", summary)
+    return summary
+
+
+def _run_public_library_audio_pregen_job() -> None:
+    """Scheduler entry: pre-generate public-library audio for each configured study
+    language. Never raises (scheduler-safe)."""
+    try:
+        target_langs = [
+            s.strip().lower()
+            for s in (os.getenv("PUBLIC_LIBRARY_PREGEN_TARGET_LANGS") or "de").split(",")
+            if s.strip()
+        ] or ["de"]
+        max_pages_env = (os.getenv("PUBLIC_LIBRARY_PREGEN_MAX_PAGES") or "").strip()
+        max_pages = int(max_pages_env) if max_pages_env.isdigit() else None
+        for target_lang in target_langs:
+            run_public_library_audio_pregen(target_lang=target_lang, max_pages=max_pages)
+    except Exception:
+        logging.exception("public library audio pregen job failed")
+
+
+def _list_public_library_items(*, target_lang: str = "de") -> list[dict]:
+    """Public-library items for the reader shelf, enriched with the catalog CEFR
+    level. Never raises — a failure here must not break the personal library list."""
+    try:
+        items = list_public_library_documents(target_lang=target_lang)
+    except Exception:
+        logging.exception("public library list failed target_lang=%s", target_lang)
+        return []
+    try:
+        from backend.public_library_catalog import CATALOG_BY_SLUG
+        for item in items:
+            entry = CATALOG_BY_SLUG.get(str(item.get("public_slug") or ""))
+            if entry is not None:
+                item["level"] = entry.level
+    except Exception:
+        logging.exception("public library level enrichment failed")
+    return items
+
+
+def _resolve_reader_document_for_user(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    include_content: bool = True,
+    pages_only: bool = False,
+) -> tuple[dict | None, bool]:
+    """Resolve a reader document the user is allowed to open: first their own row,
+    then the shared public-domain library. Returns (document, is_public)."""
+    if pages_only:
+        document = get_reader_library_document_pages_only(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    else:
+        document = get_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            include_content=include_content,
+        )
+    if document:
+        return document, False
+    public_document = get_public_library_document(
+        document_id=int(document_id),
+        include_content=include_content or pages_only,
+    )
+    if public_document:
+        return public_document, True
+    return None, False
 
 
 def _build_reader_processing_payload(document: dict | None, *, polling_delay_ms: int | None = None) -> dict[str, Any]:
@@ -48737,9 +49008,13 @@ def reader_library_list():
                 expired, expires_at = _is_reader_doc_expired_for_free(item)
                 item["is_free_storage_expired"] = bool(expired)
                 item["free_storage_expires_at"] = expires_at
+        # Curated public-domain "Классика" shelf — shared, free to read for everyone,
+        # never subject to free-storage expiry (not the user's personal data).
+        public_items = _list_public_library_items(target_lang=target_lang)
         response_payload = {
             "ok": True,
             "items": items,
+            "public_items": public_items,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
         _log_flow_observation(
@@ -48887,7 +49162,7 @@ def reader_library_open():
         language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
         doc_started_perf = time.perf_counter()
         try:
-            doc = get_reader_library_document(
+            doc, doc_is_public = _resolve_reader_document_for_user(
                 user_id=int(user_id),
                 document_id=int(document_id),
                 source_lang=source_lang,
@@ -48929,13 +49204,14 @@ def reader_library_open():
             )
             return jsonify({"error": "Книга не найдена"}), 404
         try:
-            doc = _resume_reader_library_document_processing_if_stale(
-                user_id=int(user_id),
-                document_id=int(document_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
-                document=doc,
-            ) or doc
+            if not doc_is_public:
+                doc = _resume_reader_library_document_processing_if_stale(
+                    user_id=int(user_id),
+                    document_id=int(document_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    document=doc,
+                ) or doc
         except Exception:
             logging.exception(
                 "reader open stale recovery failed user_id=%s document_id=%s",
@@ -49159,11 +49435,12 @@ def reader_library_pages():
         return jsonify({"error": "user_id отсутствует"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
-        doc = get_reader_library_document_pages_only(
+        doc, _doc_is_public = _resolve_reader_document_for_user(
             user_id=int(user_id),
             document_id=int(document_id),
             source_lang=source_lang,
             target_lang=target_lang,
+            pages_only=True,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка загрузки страниц: {exc}"}), 500
@@ -49241,11 +49518,12 @@ def reader_library_toc():
         return jsonify({"error": "user_id отсутствует"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
-        doc = get_reader_library_document_pages_only(
+        doc, _doc_is_public = _resolve_reader_document_for_user(
             user_id=int(user_id),
             document_id=int(document_id),
             source_lang=source_lang,
             target_lang=target_lang,
+            pages_only=True,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка загрузки: {exc}"}), 500
@@ -49793,6 +50071,18 @@ def _build_reader_audio_page_ready_response(
     return payload
 
 
+def _reader_audio_page_text_and_hash(raw_text: str) -> tuple[str, str]:
+    """Normalize a raw reader page exactly like the frontend's readerVisibleText and
+    derive its cache text_hash. Single source of truth so the audio endpoint and the
+    public-library pre-gen job produce identical cache keys for the same page.
+    JS: raw.split(/\\n\\n+/).map(p => p.replace(/\\n/g,' ').replace(/ {2,}/g,' ').trim()).filter(Boolean).join('\\n\\n')"""
+    paras = re.split(r'\n\n+', str(raw_text or ""))
+    paras = [re.sub(r'  +', ' ', p.replace('\n', ' ')).strip() for p in paras]
+    page_text = '\n\n'.join(p for p in paras if p)
+    text_hash = (hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v6") if page_text else ""
+    return page_text, text_hash
+
+
 def _generate_and_cache_reader_audio_page(
     *,
     user_id_int: int,
@@ -49808,6 +50098,8 @@ def _generate_and_cache_reader_audio_page(
     source_lang: str,
     target_lang: str,
     document_title: str,
+    budget_provider: str = "google_tts",
+    billing_provider: str = "google_tts",
 ) -> dict:
     logging.info(
         "[READER_AUDIO] SYNTHESIZING user=%s doc=%s page=%s source=%s voice=%s lang=%s text_preview=%r",
@@ -49818,6 +50110,7 @@ def _generate_and_cache_reader_audio_page(
         lang_code=google_lang_code,
         voice_name=voice_name,
         speaking_rate=rate_float,
+        budget_provider=budget_provider,
     )
 
     timing_sample = result["word_timings"][:5] if result.get("word_timings") else []
@@ -49855,7 +50148,7 @@ def _generate_and_cache_reader_audio_page(
     _billing_log_event_safe(
         user_id=user_id_int,
         action_type="reader_audio_tts",
-        provider="google_tts",
+        provider=billing_provider,
         units_type="chars",
         units_value=float(len(page_text)),
         source_lang=source_lang,
@@ -50021,18 +50314,8 @@ def reader_audio_page():
 
     now_utc = datetime.now(timezone.utc)
     source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
-    entitlement, _subscription = _resolve_user_entitlement(
-        user_id=user_id_int, now_ts_utc=now_utc, tz="Europe/Vienna"
-    )
-    effective_mode = str(entitlement.get("effective_mode") or "free").lower()
-    if effective_mode not in {"pro", "trial"}:
-        return jsonify({
-            "error": "Аудио-чтение с подсветкой доступно только на премиум подписке.",
-            "error_code": "reader_audio_premium_required",
-            "upgrade": {"available": True, "plan_code": "pro"},
-        }), 403
 
-    document = get_reader_library_document(
+    document, document_is_public = _resolve_reader_document_for_user(
         user_id=user_id_int,
         document_id=document_id_int,
         source_lang=source_lang,
@@ -50040,6 +50323,20 @@ def reader_audio_page():
     )
     if not document:
         return jsonify({"error": "Книга не найдена"}), 404
+
+    # Public-domain "Классика" audio is free for everyone (shared, pre-generated from
+    # the free Standard bucket). Personal-book audio stays a premium feature.
+    if not document_is_public:
+        entitlement, _subscription = _resolve_user_entitlement(
+            user_id=user_id_int, now_ts_utc=now_utc, tz="Europe/Vienna"
+        )
+        effective_mode = str(entitlement.get("effective_mode") or "free").lower()
+        if effective_mode not in {"pro", "trial"}:
+            return jsonify({
+                "error": "Аудио-чтение с подсветкой доступно только на премиум подписке.",
+                "error_code": "reader_audio_premium_required",
+                "upgrade": {"available": True, "plan_code": "pro"},
+            }), 403
 
     pages = document.get("content_pages") if isinstance(document.get("content_pages"), list) else []
     raw_text = page_text_override_raw
@@ -50060,10 +50357,7 @@ def reader_audio_page():
 
     # Normalize exactly like the frontend does for readerVisibleText so that
     # char_start values in word_timings align with token.start on the frontend.
-    # JS: raw.split(/\n\n+/).map(p => p.replace(/\n/g,' ').replace(/ {2,}/g,' ').trim()).filter(Boolean).join('\n\n')
-    _paras = re.split(r'\n\n+', raw_text)
-    _paras = [re.sub(r'  +', ' ', p.replace('\n', ' ')).strip() for p in _paras]
-    page_text = '\n\n'.join(p for p in _paras if p)
+    page_text, page_text_hash = _reader_audio_page_text_and_hash(raw_text)
 
     if not page_text:
         return jsonify({"error": "Страница пустая"}), 422
@@ -50084,11 +50378,19 @@ def reader_audio_page():
         )
     google_lang_code = _TTS_LANG_CODES.get(language_for_tts, "de-DE")
     default_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
-    voice_name = voice_raw if voice_raw else default_voice
+    if document_is_public:
+        # Pin voice + rate so the shared cache key is identical for every reader and
+        # matches what the nightly pre-gen job writes. Client voice/rate ignored.
+        language_for_tts = _normalize_short_lang_code(target_lang, fallback="de")
+        google_lang_code = _TTS_LANG_CODES.get(language_for_tts, "de-DE")
+        voice_name = PUBLIC_LIBRARY_TTS_VOICE
+        rate_float = PUBLIC_LIBRARY_TTS_RATE
+    else:
+        voice_name = voice_raw if voice_raw else default_voice
 
     # v6: frontend may send the visible reader page text directly so tapped-word
     # audio always aligns with the page the user currently sees.
-    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v6"
+    text_hash = page_text_hash
 
     logging.info(
         "[READER_AUDIO] user=%s doc=%s page=%s source=%s voice=%s rate=%s raw_len=%s norm_len=%s hash=%s",
@@ -50139,14 +50441,15 @@ def reader_audio_page():
                 "error": str(job_status.get("error") or "reader_audio_page_generation_failed"),
             }), 200
 
-        reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
-            user_id=user_id_int,
-            requested_units=float(len(page_text)),
-            now_ts_utc=now_utc,
-            tz="Europe/Vienna",
-        )
-        if reader_audio_limit_error:
-            return jsonify(reader_audio_limit_error), 429
+        if not document_is_public:
+            reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
+                user_id=user_id_int,
+                requested_units=float(len(page_text)),
+                now_ts_utc=now_utc,
+                tz="Europe/Vienna",
+            )
+            if reader_audio_limit_error:
+                return jsonify(reader_audio_limit_error), 429
 
         enqueue_result = enqueue_reader_audio_page_job(
             {
@@ -50235,14 +50538,15 @@ def reader_audio_page():
                 "retry_after_ms": int(_READER_AUDIO_PAGE_PENDING_RETRY_MS),
             }), 202
 
-    reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
-        user_id=user_id_int,
-        requested_units=float(len(page_text)),
-        now_ts_utc=now_utc,
-        tz="Europe/Vienna",
-    )
-    if reader_audio_limit_error:
-        return jsonify(reader_audio_limit_error), 429
+    if not document_is_public:
+        reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
+            user_id=user_id_int,
+            requested_units=float(len(page_text)),
+            now_ts_utc=now_utc,
+            tz="Europe/Vienna",
+        )
+        if reader_audio_limit_error:
+            return jsonify(reader_audio_limit_error), 429
     try:
         try:
             ready_payload = _generate_and_cache_reader_audio_page(
@@ -56424,6 +56728,13 @@ def _dispatch_today_plans(target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_T
 
 
 def _run_today_plan_scheduler_job() -> None:
+    # HARD-DISABLED (owner decision): the «Твои задачи на сегодня готовы» morning DM must never
+    # go out. The cron registrations are already gated off, but a message may still be sitting
+    # in the dramatiq queue from an earlier fire — a restarted worker would process it late and
+    # the DM would resurface at an odd hour. This early return makes any such lingering queued
+    # message a no-op. To bring the feature back, remove this guard AND the `if False` gates.
+    logging.info("today_plan morning DM is hard-disabled — skipping run")
+    return
     tz_name = (os.getenv("TODAY_PLAN_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)
     run_period = target_date.isoformat()
@@ -57053,6 +57364,20 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=21600,
         )
+    # Daily pre-generation of the shared public-domain library audio, funded only by
+    # the separate Standard-voice free bucket. Idempotent + budget-capped, so it just
+    # tops up a bit each night and stops when the safe budget runs out.
+    public_library_pregen_enabled = (os.getenv("PUBLIC_LIBRARY_PREGEN_ENABLED") or "1").strip().lower()
+    if public_library_pregen_enabled in ("1", "true", "yes", "on"):
+        _audio_scheduler.add_job(
+            _run_public_library_audio_pregen_job,
+            "cron",
+            hour=int((os.getenv("PUBLIC_LIBRARY_PREGEN_HOUR") or "4").strip() or "4"),
+            minute=int((os.getenv("PUBLIC_LIBRARY_PREGEN_MINUTE") or "45").strip() or "45"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=21600,
+        )
     analytics_enabled = (os.getenv("ANALYTICS_PRIVATE_SCHEDULER_ENABLED") or "1").strip().lower()
     if analytics_enabled in ("1", "true", "yes", "on"):
         analytics_hour = int((os.getenv("ANALYTICS_PRIVATE_SCHEDULER_HOUR") or "19").strip())
@@ -57108,12 +57433,12 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
-    # OFF by default (owner decision): the «Твои задачи на сегодня готовы» morning DM is
-    # not wanted. Default was "1" here too, so the DM fired from this scheduler as well
-    # unless the env flag was set on this exact service. Code-default OFF stops it.
-    # Set TODAY_PLAN_SCHEDULER_ENABLED=1 to bring it back.
-    today_plan_enabled = (os.getenv("TODAY_PLAN_SCHEDULER_ENABLED") or "0").strip().lower()
-    if today_plan_enabled in ("1", "true", "yes", "on"):
+    # HARD-DISABLED in code (owner decision): the «Твои задачи на сегодня готовы» morning DM
+    # must NEVER go out. We intentionally no longer honor TODAY_PLAN_SCHEDULER_ENABLED — a
+    # leftover env=1 on some service kept the cron alive, and a queued run got processed late
+    # by a restarted worker, so it resurfaced at odd hours (e.g. 14:42). No env can revive it
+    # now; to truly bring it back, remove this `if False` guard.
+    if False:  # was: (os.getenv("TODAY_PLAN_SCHEDULER_ENABLED") or "0") in {"1","true","yes","on"}
         today_hour = int((os.getenv("TODAY_PLAN_SCHEDULER_HOUR") or "7").strip())
         today_minute = int((os.getenv("TODAY_PLAN_SCHEDULER_MINUTE") or "0").strip())
         _audio_scheduler.add_job(

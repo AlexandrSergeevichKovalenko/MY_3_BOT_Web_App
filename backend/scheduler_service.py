@@ -545,11 +545,12 @@ def _build_scheduler():
         )
 
     # -- Today plan --
-    # OFF by default (owner decision): the «Твои задачи на сегодня готовы» morning DM is
-    # not wanted. Default was "1", so the env kill-switch only worked if set on EVERY
-    # service — it wasn't, so the DM kept going out. Code-default OFF stops it everywhere
-    # without depending on env. Set TODAY_PLAN_SCHEDULER_ENABLED=1 to bring it back.
-    if _enabled("TODAY_PLAN_SCHEDULER_ENABLED", "0"):
+    # HARD-DISABLED in code (owner decision): the «Твои задачи на сегодня готовы» morning DM
+    # must NEVER go out. We intentionally no longer honor TODAY_PLAN_SCHEDULER_ENABLED — a
+    # leftover env=1 on this service kept the cron alive, and because dispatch goes through a
+    # dramatiq queue, a queued run was processed LATE by a restarted worker and resurfaced at
+    # odd hours (e.g. 14:42). No env can revive it now; remove this `if False` to bring it back.
+    if False:  # was: _enabled("TODAY_PLAN_SCHEDULER_ENABLED", "0")
         scheduler.add_job(
             _dispatch_today_plans,
             "cron",
