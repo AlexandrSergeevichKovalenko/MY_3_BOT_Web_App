@@ -759,6 +759,35 @@ html[data-scheme="light"] .au-word.picked .au-word-badge { color: #1d4ed8; }
 .au-fix-empty { font-style: italic; }
 html[data-scheme="light"] .au-fix-input { color: #0f172a; background: #f4f6fa; border-color: #c9d2e0; }
 html[data-scheme="light"] .au-fix-word { color: #475569; }
+
+/* "Finde den Fehler" result: per-error breakdown (fixed / wrong / missed + rule). */
+.au-err-list { display: flex; flex-direction: column; gap: 8px; }
+.au-err-item {
+  padding: 10px 12px; border-radius: 12px;
+  background: rgba(148,163,184,0.08); border: 1px solid var(--dmps-border, #334155);
+  border-left: 3px solid var(--dmps-border, #334155);
+}
+.au-err-item.fixed { border-left-color: #22c55e; }
+.au-err-item.wrong_fix { border-left-color: #ef4444; }
+.au-err-item.missed { border-left-color: #f59e0b; }
+.au-err-item.extra { border-left-color: #f59e0b; opacity: 0.9; }
+.au-err-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 15px; }
+.au-err-icon { flex: 0 0 auto; }
+.au-err-word { text-decoration: line-through; color: var(--dmps-text-muted, #94A3B8); font-weight: 600; }
+.au-err-arrow { color: var(--dmps-text-muted, #94A3B8); }
+.au-err-correct { color: var(--dmps-text-primary, #F8FAFC); font-weight: 800; }
+.au-err-mine { font-size: 13px; color: #ef4444; }
+.au-err-tag {
+  font-size: 12px; font-weight: 700; color: var(--dmps-text-muted, #94A3B8);
+  background: rgba(148,163,184,0.14); border-radius: 6px; padding: 1px 6px;
+}
+.au-err-explain {
+  margin-top: 5px; font-size: 13.5px; line-height: 1.45;
+  color: var(--dmps-text-secondary, #CBD5E1);
+}
+.au-err-hint { margin-top: 4px; font-size: 13px; color: var(--dmps-text-muted, #94A3B8); }
+html[data-scheme="light"] .au-err-correct { color: #0f172a; }
+html[data-scheme="light"] .au-err-explain { color: #334155; }
 .au-question { font-size: 16px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); margin: 0; }
 .pin-wrap {
   position: relative; width: 100%; border-radius: var(--dmps-radius-inner, 20px);

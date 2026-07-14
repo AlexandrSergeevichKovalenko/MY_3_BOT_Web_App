@@ -1340,6 +1340,46 @@ def _display_user_answer(fmt: str, raw: str, payload: dict) -> str:
     return s
 
 
+def _error_result_breakdown(payload: dict, raw_input: str) -> tuple:
+    """Per-error breakdown for the 'Finde den Fehler' result card. For EACH real error in
+    the answer key returns {word, correct, erklaerung, hint_ru, status, user}:
+      - 'fixed'     the learner tapped it AND typed a correct form
+      - 'wrong_fix' tapped it but the correction is wrong (user = what they typed)
+      - 'missed'    a real error they never tapped
+    Plus extra_taps = words they tapped that were ALREADY correct. Returns
+    (errors, extra_taps, correct_join)."""
+    from backend.database import normalize_error_payload
+    key = normalize_error_payload(payload)
+    woerter = payload.get("woerter") if isinstance(payload.get("woerter"), list) else []
+    subs = {}
+    for idx, corr in _parse_error_submission(raw_input):
+        subs[idx] = corr
+    key_idx = {e["index"] for e in key}
+
+    def _word(i):
+        return str(woerter[i]) if 0 <= i < len(woerter) else ""
+
+    errors = []
+    for e in key:
+        i = e["index"]
+        entry = {"word": _word(i), "correct": e["correct_word"],
+                 "erklaerung": e["erklaerung"], "hint_ru": e["hint_ru"], "user": ""}
+        if i not in subs:
+            entry["status"] = "missed"
+        else:
+            corr = subs[i]
+            entry["user"] = corr
+            cands = [e["correct_word"]] + list(e["aliases"])
+            ok = any(check_quiz_freeform_deterministic(user_text=corr, correct_text=c)
+                     for c in cands if str(c).strip())
+            entry["status"] = "fixed" if ok else "wrong_fix"
+        errors.append(entry)
+
+    extra = [{"word": _word(i), "user": corr} for i, corr in subs.items() if i not in key_idx]
+    correct_join = " · ".join(e["correct_word"] for e in key)
+    return errors, extra, correct_join
+
+
 def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answered: bool,
                            user_answer: str = "", wrong_reason: str = "") -> dict:
     payload = dispatch.get("payload") or {}
@@ -1359,7 +1399,7 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
                                   resolve_article(payload.get("wort"), payload.get("correct")))
     else:
         tip = str(payload.get("tip") or "")
-    return {
+    result = {
         "kind": "aufgabe",
         "format": fmt,
         "is_correct": bool(is_correct),
@@ -1374,6 +1414,18 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
         "already_answered": bool(already_answered),
         "saveable_words": [],
     }
+    if fmt == "error":
+        # Per-error breakdown drives the result card (✅ fixed / ❌ wrong / 🔎 missed +
+        # per-error rule). The generic correct/explanation/hint lines would duplicate it,
+        # so fold them into the breakdown and blank the top-level ones.
+        errors, extra, correct_join = _error_result_breakdown(payload, user_answer)
+        result["errors"] = errors
+        result["extra_taps"] = extra
+        result["correct_word"] = correct_join
+        result["explanation"] = ""
+        result["hint_ru"] = ""
+        result["tip"] = ""
+    return result
 
 
 def aufgabe_client_meta(fmt: str, payload: dict) -> dict:

@@ -381,13 +381,41 @@ function AufgabeResult({ result }) {
   const good = !!result.is_correct;
   const correct = result.correct_word || '';
   const mine = result.user_answer || '';
+  const isErr = result.format === 'error' && Array.isArray(result.errors);
   const showDiff = !good && result.is_sentence && !!mine && !!correct;
   const diff = showDiff ? wordDiff(mine, correct) : null;
   const saveable = result.saveable || [];
+  const ERR_ICON = { fixed: '✅', wrong_fix: '❌', missed: '🔎' };
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
-      {good ? (
+      {isErr ? (
+        <div className="au-err-list">
+          {result.errors.map((e, i) => (
+            <div className={`au-err-item ${e.status}`} key={i}>
+              <div className="au-err-head">
+                <span className="au-err-icon">{ERR_ICON[e.status] || '•'}</span>
+                {e.word ? <span className="au-err-word">{e.word}</span> : null}
+                <span className="au-err-arrow">→</span>
+                <b className="au-err-correct">{e.correct}</b>
+                {e.status === 'wrong_fix' && e.user ? <span className="au-err-mine">du: {e.user}</span> : null}
+                {e.status === 'missed' ? <span className="au-err-tag">nicht gefunden</span> : null}
+              </div>
+              {e.erklaerung ? <div className="au-err-explain">{e.erklaerung}</div> : null}
+              {e.hint_ru ? <div className="au-err-hint">💡 {e.hint_ru}</div> : null}
+            </div>
+          ))}
+          {(result.extra_taps || []).map((x, i) => (
+            <div className="au-err-item extra" key={`x${i}`}>
+              <div className="au-err-head">
+                <span className="au-err-icon">⚠️</span>
+                <span className="au-err-word">{x.word}</span>
+                <span className="au-err-tag">war schon richtig</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : good ? (
         <div className="ans-answer"><b>{correct}</b></div>
       ) : showDiff ? (
         <div className="au-diff">
@@ -410,8 +438,8 @@ function AufgabeResult({ result }) {
           {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
         </div>
       )}
-      {good && result.hint_ru ? <div className="ans-meaning">{result.hint_ru}</div> : null}
-      {!good && result.wrong_reason ? (
+      {!isErr && good && result.hint_ru ? <div className="ans-meaning">{result.hint_ru}</div> : null}
+      {!isErr && !good && result.wrong_reason ? (
         <div className="ans-why-wrong">⚠️ Твой ответ{mine ? <> «{mine}»</> : null}: {result.wrong_reason}</div>
       ) : null}
       {saveable.length ? (
