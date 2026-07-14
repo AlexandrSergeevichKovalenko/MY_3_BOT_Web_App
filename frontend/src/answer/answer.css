@@ -720,6 +720,45 @@ html[data-scheme="light"] .au-satz { background: #f4f6fa; }
 html[data-scheme="light"] .au-orig { background: #eef1f7; }
 html[data-scheme="light"] .au-word { background: #ffffff; border-color: #c9d2e0; }
 html[data-scheme="light"] .au-word.picked { background: #dfe9fd; color: #0f172a; }
+
+/* "Finde den Fehler" multi-select: numbered badge on each tapped chip + one
+   correction row per tapped word (badge · word → input · remove). */
+.au-word-badge {
+  display: inline-block; margin-right: 5px; font-size: 13px; font-weight: 800;
+  color: var(--dmps-primary, #2563EB); vertical-align: 1px;
+}
+.au-word.picked .au-word-badge { color: #fff; }
+html[data-scheme="light"] .au-word.picked .au-word-badge { color: #1d4ed8; }
+.au-fixes { display: flex; flex-direction: column; gap: 8px; }
+.au-fix-row { display: flex; align-items: center; gap: 8px; }
+.au-fix-badge {
+  flex: 0 0 auto; font-size: 15px; font-weight: 800;
+  color: var(--dmps-primary, #2563EB);
+}
+.au-fix-word {
+  flex: 0 0 auto; max-width: 40%; font-size: 15px; font-weight: 700;
+  color: var(--dmps-text-secondary, #CBD5E1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.au-fix-arrow { flex: 0 0 auto; color: var(--dmps-text-muted, #94A3B8); font-weight: 700; }
+.au-fix-input {
+  flex: 1 1 auto; min-width: 0; padding: 8px 10px;
+  font-family: inherit; font-size: 16px; font-weight: 600;
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: var(--dmps-card-alt, #0B1220);
+  border: 1.5px solid var(--dmps-border, #334155); border-radius: 10px; outline: none;
+}
+.au-fix-input:focus { border-color: var(--dmps-primary, #2563EB); }
+.au-fix-input::placeholder { color: var(--dmps-text-subtle, #64748B); font-weight: 500; }
+.au-fix-remove {
+  flex: 0 0 auto; width: 28px; height: 28px; padding: 0; cursor: pointer;
+  font-size: 18px; line-height: 1; color: var(--dmps-text-muted, #94A3B8);
+  background: transparent; border: none; border-radius: 8px;
+}
+.au-fix-remove:active { transform: scale(0.9); }
+.au-fix-empty { font-style: italic; }
+html[data-scheme="light"] .au-fix-input { color: #0f172a; background: #f4f6fa; border-color: #c9d2e0; }
+html[data-scheme="light"] .au-fix-word { color: #475569; }
 .au-question { font-size: 16px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); margin: 0; }
 .pin-wrap {
   position: relative; width: 100%; border-radius: var(--dmps-radius-inner, 20px);

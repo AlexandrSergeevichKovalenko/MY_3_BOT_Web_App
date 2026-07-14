@@ -96,31 +96,80 @@ function AufgabeText({ task, onSubmit, submitting }) {
   );
 }
 
+const CIRCLED = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'];
+const circled = (n) => CIRCLED[n - 1] || `(${n})`;
+
 function AufgabeError({ task, onSubmit, submitting }) {
+  // A sentence may hold 1–3 errors; the learner decides how many. Tap every word you
+  // think is wrong (each gets a number in tap order), then type its correction in the
+  // matching row. The count is NOT revealed — figuring it out is part of the task, so
+  // we intentionally show no "how many errors" hint here. Submit = "i1|c1;i2|c2" in tap
+  // order (a single tap → "i|c", still accepted by the grader).
   const woerter = task.woerter || [];
-  const [picked, setPicked] = useState(null);
-  const [fix, setFix] = useState('');
-  const ready = picked != null && fix.trim();
-  const submit = () => { if (ready) onSubmit(`${picked}|${fix.trim()}`); };
+  const [picks, setPicks] = useState([]);   // selected indices, in tap order
+  const [fixes, setFixes] = useState({});   // index -> correction text
+  const toggle = (i) => {
+    tapHaptic();
+    if (picks.includes(i)) {
+      setPicks((prev) => prev.filter((x) => x !== i));
+      setFixes((f) => { const n = { ...f }; delete n[i]; return n; });
+    } else {
+      setPicks((prev) => [...prev, i]);
+      setFixes((f) => (i in f ? f : { ...f, [i]: '' }));
+    }
+  };
+  const setFix = (i, v) => setFixes((f) => ({ ...f, [i]: v }));
+  const ready = picks.length > 0 && picks.every((i) => String(fixes[i] || '').trim());
+  const submit = () => {
+    if (!ready) return;
+    onSubmit(picks.map((i) => `${i}|${String(fixes[i]).trim()}`).join(';'));
+  };
   return (
     <>
-      <p className="au-hint">Tippe das <b>falsche</b> Wort an und korrigiere es:</p>
+      <p className="au-hint">Tippe <b>jedes falsche</b> Wort an und korrigiere es:</p>
       <div className="au-words">
-        {woerter.map((w, i) => (
-          <button
-            key={i}
-            className={`au-word${picked === i ? ' picked' : ''}`}
-            onClick={() => { setPicked(i); tapHaptic(); }}
-          >{w}</button>
-        ))}
+        {woerter.map((w, i) => {
+          const n = picks.indexOf(i);
+          return (
+            <button
+              key={i} type="button"
+              className={`au-word${n >= 0 ? ' picked' : ''}`}
+              onClick={() => toggle(i)} disabled={submitting}
+            >
+              {n >= 0 ? <span className="au-word-badge">{circled(n + 1)}</span> : null}
+              {w}
+            </button>
+          );
+        })}
       </div>
+      {picks.length ? (
+        <div className="au-fixes">
+          {picks.map((i, n) => (
+            <div className="au-fix-row" key={i}>
+              <span className="au-fix-badge">{circled(n + 1)}</span>
+              <span className="au-fix-word">{woerter[i]}</span>
+              <span className="au-fix-arrow">→</span>
+              <input
+                className="au-fix-input" value={fixes[i] || ''}
+                onChange={(e) => setFix(i, e.target.value)}
+                placeholder="richtige Form …"
+                autoFocus={n === picks.length - 1}
+                autoCapitalize="off" autoCorrect="off"
+                enterKeyHint={n === picks.length - 1 ? 'send' : 'next'}
+                onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+                disabled={submitting}
+              />
+              <button
+                type="button" className="au-fix-remove" aria-label="entfernen"
+                onClick={() => toggle(i)} disabled={submitting}
+              >×</button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="au-hint au-fix-empty">☝️ Tippe ein oder mehrere Wörter an.</p>
+      )}
       {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
-      <input
-        className="ans-input" value={fix} onChange={(e) => setFix(e.target.value)}
-        placeholder={picked == null ? 'erst ein Wort antippen …' : 'richtige Form …'}
-        autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
-        onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
-      />
       <PrüfenButton disabled={!ready} submitting={submitting} onClick={submit} />
     </>
   );
