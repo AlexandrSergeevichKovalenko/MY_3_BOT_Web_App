@@ -171,6 +171,7 @@ export default function ReaderSection(props) {
     readerAudioPlayingWid = null,
     readerAudioAwaitingWordTap = false,
     onReaderAudioPlayBtn = () => {},
+    readerIsArticle = false, // web articles are read-only — no narration button
     playReaderAudioPage = () => {},
     pauseReaderAudioPlay = () => {},
     resumeReaderAudioPlay = () => {},
@@ -1574,6 +1575,7 @@ export default function ReaderSection(props) {
                       <svg viewBox="0 0 18 18" fill="none"><path d="M9 3.5v8M9 11.5 6.4 8.9M9 11.5l2.6-2.6M4.5 14h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
                     </button>
                   )}
+                  {!readerIsArticle && (
                   <button
                     type="button"
                     className={`reader-dock-play-flat${readerAudioAwaitingWordTap ? ' is-awaiting' : ''}`}
@@ -1593,6 +1595,7 @@ export default function ReaderSection(props) {
                       </>
                     )}
                   </button>
+                  )}
                   {(readerUsesOriginalEpubLayout || readerPageCount > 0) && (
                     <button
                       type="button"
@@ -1620,7 +1623,7 @@ export default function ReaderSection(props) {
             <audio ref={readerAudioPreloadElementRef} preload="auto" playsInline style={{ display: 'none' }} />
 
             {/* ── Audio error (shown even when player not yet active) ── */}
-            {readerAudioPlayError && !readerAudioPlayActive && (
+            {readerAudioPlayError && !readerAudioPlayActive && !readerIsArticle && (
               <div className="reader-audio-error-bar">
                 {readerAudioPlayError === 'reader_audio_monthly_limit_exceeded'
                   ? tr('Лимит аудио на этот месяц исчерпан. Попробуй в следующем месяце или улучши план.',

@@ -36564,6 +36564,7 @@ function AppInner() {
                   readerAudioStartWid={readerAudioStartWid}
                   readerAudioAwaitingWordTap={readerAudioAwaitingWordTap}
                   onReaderAudioPlayBtn={handleReaderAudioPlayBtn}
+                  readerIsArticle={readerSourceType === 'html' || readerSourceType === 'url'}
                   playReaderAudioPage={playReaderAudioPage}
                   pauseReaderAudioPlay={pauseReaderAudioPlay}
                   resumeReaderAudioPlay={resumeReaderAudioPlay}
