@@ -3960,6 +3960,33 @@ GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_STAND
 # (0.9 = keep a 10% safety margin so a mid-month spike never tips into paid).
 PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION = _env_decimal("PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION", "0.9") or Decimal("0.9")
 
+# ---- Audio wallet & per-book paid narration (Phase 2) ----------------------
+# Prepaid EUR balance funds one-time per-book audio unlocks. Price = book chars ×
+# per-tier rate (passthrough of the provider's price, no markup). Cents throughout.
+AUDIO_WALLET_CURRENCY = "EUR"
+# Price per 1,000,000 characters, in EUR cents, per voice tier.
+# neural ≈ Google Neural2/Polyglot ($16/1M), standard ≈ Google Standard ($4/1M),
+# eleven = ElevenLabs (Phase 3). Env-overridable.
+AUDIO_PRICE_PER_1M_MINOR: dict[str, int] = {
+    "neural": max(0, _env_int("AUDIO_PRICE_NEURAL_PER_1M_EUR_CENTS", 1600)),
+    "standard": max(0, _env_int("AUDIO_PRICE_STANDARD_PER_1M_EUR_CENTS", 400)),
+    "eleven": max(0, _env_int("AUDIO_PRICE_ELEVEN_PER_1M_EUR_CENTS", 20000)),
+}
+AUDIO_DEFAULT_VOICE_TIER = (os.getenv("AUDIO_DEFAULT_VOICE_TIER", "neural").strip().lower() or "neural")
+# Minimum wallet top-up (amortize the Stripe fee) and a per-unlock price floor.
+AUDIO_MIN_TOPUP_MINOR = max(100, _env_int("AUDIO_MIN_TOPUP_EUR_CENTS", 300))
+AUDIO_MIN_UNLOCK_MINOR = max(0, _env_int("AUDIO_MIN_UNLOCK_EUR_CENTS", 10))
+
+
+def estimate_book_audio_price_minor(chars: int, voice_tier: str | None = None) -> int:
+    """One-time unlock price (EUR cents) to narrate a book of `chars` characters in
+    the given voice tier. Ceiled to the cent, with a small floor."""
+    import math
+    tier = (voice_tier or AUDIO_DEFAULT_VOICE_TIER).strip().lower()
+    per_1m = AUDIO_PRICE_PER_1M_MINOR.get(tier) or AUDIO_PRICE_PER_1M_MINOR.get("neural", 1600)
+    raw = int(math.ceil(max(0, int(chars or 0)) * per_1m / 1_000_000))
+    return max(AUDIO_MIN_UNLOCK_MINOR, raw)
+
 
 def convert_cost_to_eur(amount, currency: str | None) -> float:
     try:
@@ -8408,6 +8435,56 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_reader_audio_pages_doc_page
                 ON bt_3_reader_audio_pages (document_id, page_number);
+            """)
+            # ── Audio wallet: prepaid EUR balance that funds per-book audio unlocks.
+            # Top up once (one Stripe fee), unlock many books from the balance.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_audio_wallet (
+                    user_id       BIGINT PRIMARY KEY,
+                    balance_minor BIGINT NOT NULL DEFAULT 0,
+                    currency      TEXT NOT NULL DEFAULT 'EUR',
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            # Immutable ledger of every wallet movement (+topup / -unlock / +refund).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_audio_wallet_ledger (
+                    id                         BIGSERIAL PRIMARY KEY,
+                    user_id                    BIGINT NOT NULL,
+                    delta_minor                BIGINT NOT NULL,
+                    balance_after_minor        BIGINT NOT NULL,
+                    currency                   TEXT NOT NULL DEFAULT 'EUR',
+                    kind                       TEXT NOT NULL,
+                    document_id                BIGINT,
+                    voice_tier                 TEXT,
+                    stripe_checkout_session_id TEXT UNIQUE,
+                    note                       TEXT,
+                    created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_audio_wallet_ledger_user
+                ON bt_3_audio_wallet_ledger (user_id, created_at DESC);
+            """)
+            # Per-book audio unlock: user paid once to narrate this book in a voice
+            # tier → listen forever, unlimited (audio is generated once and cached).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_book_audio_unlocks (
+                    id          BIGSERIAL PRIMARY KEY,
+                    user_id     BIGINT NOT NULL,
+                    document_id BIGINT NOT NULL REFERENCES bt_3_reader_library(id) ON DELETE CASCADE,
+                    voice_tier  TEXT NOT NULL,
+                    price_minor BIGINT NOT NULL,
+                    chars       INTEGER NOT NULL DEFAULT 0,
+                    currency    TEXT NOT NULL DEFAULT 'EUR',
+                    unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, document_id, voice_tier)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_book_audio_unlocks_user
+                ON bt_3_book_audio_unlocks (user_id);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_active
@@ -28481,6 +28558,141 @@ def get_public_library_document(
     if not row:
         return None
     return _public_library_row_to_dict(row, include_content=include_content)
+
+
+# ── Audio wallet & per-book unlock helpers (Phase 2) ─────────────────────────
+
+def get_audio_wallet(user_id: int) -> dict:
+    """Return {user_id, balance_minor, currency}, creating an empty wallet row on
+    first access."""
+    uid = int(user_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_audio_wallet (user_id) VALUES (%s)
+                ON CONFLICT (user_id) DO UPDATE SET updated_at = bt_3_audio_wallet.updated_at
+                RETURNING user_id, balance_minor, currency;
+                """,
+                (uid,),
+            )
+            row = cursor.fetchone()
+    return {"user_id": int(row[0]), "balance_minor": int(row[1] or 0), "currency": str(row[2] or "EUR")}
+
+
+def credit_audio_wallet(
+    *,
+    user_id: int,
+    delta_minor: int,
+    kind: str = "topup",
+    note: str | None = None,
+    stripe_checkout_session_id: str | None = None,
+) -> dict:
+    """Add funds to the wallet (top-up / refund / admin adjust). Idempotent when a
+    stripe_checkout_session_id is supplied — a repeated webhook is a no-op. Returns
+    {ok, credited, duplicate, balance_minor}."""
+    uid = int(user_id)
+    delta = int(delta_minor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if stripe_checkout_session_id:
+                cursor.execute(
+                    "SELECT balance_after_minor FROM bt_3_audio_wallet_ledger WHERE stripe_checkout_session_id = %s LIMIT 1;",
+                    (stripe_checkout_session_id,),
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    cursor.execute("SELECT balance_minor FROM bt_3_audio_wallet WHERE user_id = %s;", (uid,))
+                    bal = cursor.fetchone()
+                    return {"ok": True, "credited": False, "duplicate": True, "balance_minor": int((bal or [0])[0] or 0)}
+            cursor.execute(
+                """
+                INSERT INTO bt_3_audio_wallet (user_id, balance_minor) VALUES (%s, %s)
+                ON CONFLICT (user_id) DO UPDATE
+                    SET balance_minor = bt_3_audio_wallet.balance_minor + EXCLUDED.balance_minor,
+                        updated_at = NOW()
+                RETURNING balance_minor;
+                """,
+                (uid, delta),
+            )
+            new_balance = int(cursor.fetchone()[0] or 0)
+            cursor.execute(
+                """
+                INSERT INTO bt_3_audio_wallet_ledger
+                    (user_id, delta_minor, balance_after_minor, kind, stripe_checkout_session_id, note)
+                VALUES (%s, %s, %s, %s, %s, %s);
+                """,
+                (uid, delta, new_balance, str(kind or "topup"), stripe_checkout_session_id, note),
+            )
+    return {"ok": True, "credited": True, "duplicate": False, "balance_minor": new_balance}
+
+
+def unlock_book_audio(
+    *, user_id: int, document_id: int, voice_tier: str, price_minor: int, chars: int = 0
+) -> dict:
+    """Atomically debit the wallet and record a per-book audio unlock. Idempotent:
+    an existing unlock (same user/doc/tier) is free. Row-locks the wallet to prevent
+    double-spend. Returns {ok, already_unlocked?, insufficient?, charged_minor,
+    balance_minor, price_minor, shortfall_minor?}."""
+    uid = int(user_id)
+    doc = int(document_id)
+    tier = str(voice_tier or "").strip().lower()
+    price = max(0, int(price_minor))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_book_audio_unlocks WHERE user_id=%s AND document_id=%s AND voice_tier=%s LIMIT 1;",
+                (uid, doc, tier),
+            )
+            if cursor.fetchone():
+                cursor.execute("SELECT balance_minor FROM bt_3_audio_wallet WHERE user_id=%s;", (uid,))
+                bal = cursor.fetchone()
+                return {"ok": True, "already_unlocked": True, "charged_minor": 0, "balance_minor": int((bal or [0])[0] or 0), "price_minor": price}
+            cursor.execute("INSERT INTO bt_3_audio_wallet (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING;", (uid,))
+            cursor.execute("SELECT balance_minor FROM bt_3_audio_wallet WHERE user_id=%s FOR UPDATE;", (uid,))
+            balance = int((cursor.fetchone() or [0])[0] or 0)
+            if balance < price:
+                return {"ok": False, "insufficient": True, "balance_minor": balance, "price_minor": price, "shortfall_minor": price - balance}
+            new_balance = balance - price
+            cursor.execute("UPDATE bt_3_audio_wallet SET balance_minor=%s, updated_at=NOW() WHERE user_id=%s;", (new_balance, uid))
+            cursor.execute(
+                """
+                INSERT INTO bt_3_book_audio_unlocks (user_id, document_id, voice_tier, price_minor, chars)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, document_id, voice_tier) DO NOTHING;
+                """,
+                (uid, doc, tier, price, int(chars or 0)),
+            )
+            cursor.execute(
+                """
+                INSERT INTO bt_3_audio_wallet_ledger
+                    (user_id, delta_minor, balance_after_minor, kind, document_id, voice_tier)
+                VALUES (%s, %s, %s, 'unlock', %s, %s);
+                """,
+                (uid, -price, new_balance, doc, tier),
+            )
+    return {"ok": True, "already_unlocked": False, "charged_minor": price, "balance_minor": new_balance, "price_minor": price}
+
+
+def is_book_audio_unlocked(user_id: int, document_id: int, voice_tier: str) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_book_audio_unlocks WHERE user_id=%s AND document_id=%s AND voice_tier=%s LIMIT 1;",
+                (int(user_id), int(document_id), str(voice_tier or "").strip().lower()),
+            )
+            return cursor.fetchone() is not None
+
+
+def list_book_audio_unlocked_tiers(user_id: int, document_id: int) -> list[str]:
+    """Voice tiers the user has already unlocked for a book (for price/status UI)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT voice_tier FROM bt_3_book_audio_unlocks WHERE user_id=%s AND document_id=%s;",
+                (int(user_id), int(document_id)),
+            )
+            return [str(r[0]) for r in cursor.fetchall()]
 
 
 def update_reader_library_state(
