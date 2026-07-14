@@ -122,7 +122,7 @@ function MediaTile({ src, type = 'video', caption }) {
   return (
     <figure className="ob-media">
       {type === 'video' ? (
-        <video src={src} controls playsInline preload="metadata" onError={() => setHidden(true)} />
+        <video src={src} controls playsInline preload="none" onError={() => setHidden(true)} />
       ) : (
         <img src={src} alt={caption || ''} loading="lazy" onError={() => setHidden(true)} />
       )}
@@ -396,6 +396,12 @@ function StepBody(props) {
               <b>{t('📩 Перешли боту', '📩 Leite dem Bot')}</b>
               {t(' любое сообщение с немецким текстом — из Telegram, WhatsApp, откуда угодно. Он достанет оттуда слова и фразы для сохранения.',
                  ' jede Nachricht mit deutschem Text weiter — aus Telegram, WhatsApp, egal woher. Er holt daraus Wörter und Sätze zum Speichern.')}
+              <MediaTile
+                src={MEDIA.forward_chat}
+                type="video"
+                caption={t('🎥 Перешли боту сообщение из любого чата — он разберёт слова, а ты сохранишь их в свой словарь и выучишь позже прямо тут, в приложении.',
+                           '🎥 Leite dem Bot eine Nachricht aus einem beliebigen Chat weiter — er analysiert die Wörter, du speicherst sie in dein Wörterbuch und lernst sie später direkt hier in der App.')}
+              />
             </li>
             <li>
               <b>{t('📋 Вставь большой текст', '📋 Füge einen langen Text ein')}</b>
@@ -413,12 +419,6 @@ function StepBody(props) {
               <i>{t('(как поставить иконку — покажем отдельно)', '(wie man das Symbol anlegt — zeigen wir separat)')}</i>
             </li>
           </ul>
-          <MediaTile
-            src={MEDIA.forward_chat}
-            type="video"
-            caption={t('🎥 Перешли боту сообщение из любого чата — он разберёт слова, а ты сохранишь их в свой словарь и выучишь позже прямо тут, в приложении.',
-                       '🎥 Leite dem Bot eine Nachricht aus einem beliebigen Chat weiter — er analysiert die Wörter, du speicherst sie in dein Wörterbuch und lernst sie später direkt hier in der App.')}
-          />
           <div className="ob-howbox">
             <p className="ob-howbox-title">{t('📌 Как вынести иконку переводчика на экран (iPhone)', '📌 Wie du das Übersetzer-Symbol auf den Bildschirm legst (iPhone)')}</p>
             <ol className="ob-steps">
@@ -456,10 +456,13 @@ function StepBody(props) {
               <b>{t('🔵 Артикли der/die/das', '🔵 Artikel der/die/das')}</b>
               {t(' — угадываешь род слова. Спокойная тренировка или дуэль на скорость с другим учеником. База, которую надо держать всегда.',
                  ' — du errätst das Geschlecht des Wortes. Ruhiges Training oder ein Duell auf Zeit mit einem anderen Lernenden. Die Basis, die man immer halten muss.')}
+              {MEDIA.interactives[0]?.src ? <MediaTile src={MEDIA.interactives[0].src} type="video" caption={MEDIA.interactives[0].caption} /> : null}
+              {MEDIA.interactives[4]?.src ? <MediaTile src={MEDIA.interactives[4].src} type="video" caption={MEDIA.interactives[4].caption} /> : null}
             </li>
             <li>
               <b>{t('🟢 Окончания прилагательных', '🟢 Adjektivendungen')}</b>
               {t(' — самая частая ошибка в немецком. Тренировка и дуэль.', ' — der häufigste Fehler im Deutschen. Training und Duell.')}
+              {MEDIA.interactives[2]?.src ? <MediaTile src={MEDIA.interactives[2].src} type="video" caption={MEDIA.interactives[2].caption} /> : null}
             </li>
             <li>
               <b>🔢 Zahlendiktat</b>
@@ -469,6 +472,7 @@ function StepBody(props) {
               <b>❓ Wo-Fragen</b>
               {t(' — вопросы (wo / wohin / woher…): учишься правильно спрашивать. Тренировка и дуэль.',
                  ' — Fragen (wo / wohin / woher…): du lernst richtig zu fragen. Training und Duell.')}
+              {MEDIA.interactives[1]?.src ? <MediaTile src={MEDIA.interactives[1].src} type="video" caption={MEDIA.interactives[1].caption} /> : null}
             </li>
             <li>
               <b>{t('🧩 Кроссворды', '🧩 Kreuzworträtsel')}</b>
@@ -485,10 +489,12 @@ function StepBody(props) {
                  ' — der Bot sammelt, wo du dich geirrt hast, und lässt dich wiederholen. Damit Fehler nicht zur Gewohnheit werden.')}
             </li>
           </ul>
-          <p className="ob-lead ob-muted-note">{t('Вот как некоторые из них выглядят:', 'So sehen einige davon aus:')}</p>
-          {MEDIA.interactives.map((v, i) => (
-            v.src ? <MediaTile key={i} src={v.src} type="video" caption={v.caption} /> : null
-          ))}
+          <p className="ob-lead">
+            <b>{t('🔤 Анаграммы', '🔤 Anagramme')}</b>
+            {t(' — собери слово из перемешанных букв. Тренирует правописание и словарный запас.',
+               ' — setze das Wort aus gemischten Buchstaben zusammen. Übt Rechtschreibung und Wortschatz.')}
+          </p>
+          {MEDIA.interactives[3]?.src ? <MediaTile src={MEDIA.interactives[3].src} type="video" caption={MEDIA.interactives[3].caption} /> : null}
         </div>
       );
     case 'howto_morning':
@@ -744,19 +750,28 @@ export default function OnboardingWizard() {
   // pages (with an install button / more info below) are actually read to the end.
   const bodyRef = useRef(null);
   const [atBottom, setAtBottom] = useState(false);
+  // «Далее» must not unlock on a still-blank page (slow first paint) — otherwise the
+  // user swipes past content they never saw. Gate on the body having actually rendered
+  // text. Sticky per step (only ever flips ON) so a later scroll can't re-lock it.
+  const [contentReady, setContentReady] = useState(false);
   const checkScrollBottom = useCallback(() => {
     const el = bodyRef.current;
     if (!el) { setAtBottom(true); return; }
+    const hasContent = (el.textContent || '').trim().length > 0 && el.scrollHeight > 24;
+    if (hasContent) setContentReady(true);
     const fits = el.scrollHeight <= el.clientHeight + 6;
     const scrolledEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
     setAtBottom(fits || scrolledEnd);
   }, []);
   useEffect(() => {
     setAtBottom(false);
+    setContentReady(false);
     const r = requestAnimationFrame(checkScrollBottom);
     const t1 = setTimeout(checkScrollBottom, 350);
     const t2 = setTimeout(checkScrollBottom, 900);
-    return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); };
+    // Safety net: never leave «Далее» permanently blocked if the check ever misfires.
+    const tSafe = setTimeout(() => setContentReady(true), 4000);
+    return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); clearTimeout(tSafe); };
   }, [idx, checkScrollBottom]);
 
   const goNext = useCallback(async () => {
@@ -953,9 +968,10 @@ export default function OnboardingWizard() {
             type="button"
             className="ob-btn ob-next"
             onClick={goNext}
-            disabled={!canNext || finishing || done || !atBottom}
+            disabled={!canNext || finishing || done || !contentReady || !atBottom}
           >
             {done ? t('✅ Готово', '✅ Fertig')
+              : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
               : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
               : isLast ? (IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Перейти в приложение', '🎯 Zur App'))
               : t('Далее →', 'Weiter →')}
