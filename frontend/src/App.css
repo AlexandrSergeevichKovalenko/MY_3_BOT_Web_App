@@ -15302,7 +15302,10 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
 
   /* транспорт под видео — единый .tbtn, центр (is-toggle) — бронза */
   .webapp-page .youtube-player-first .youtube-sentence-jump-bar {
-    display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px;
+    display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 10px; margin-top: 16px;
+  }
+  .webapp-page .youtube-player-first .youtube-transport-buttons {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
   }
   .webapp-page .youtube-player-first .youtube-sentence-jump-btn {
     height: 44px; min-width: 52px; padding: 0 16px; border-radius: 14px;
@@ -15350,6 +15353,27 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page.is-telegram-tablet.is-youtube-active .webapp-main,
   .webapp-page.is-youtube-active .webapp-main { max-width: min(1600px, 96vw) !important; }
 
+  /* ПИН ВЫСОТЫ кинозала: страница = высота экрана, без прокрутки. Цепочка
+     flex-fill доводит высоту до grid-контейнера, чтобы средний ряд (видео|субтитры)
+     занял всё оставшееся место — видео и субтитры одной высоты, низы на одной линии,
+     транспорт во всю ширину снизу. Только для YouTube-страницы с субтитрами. */
+  .webapp-page.is-youtube-active:has(.youtube-subtitles-panel) {
+    height: var(--app-height, 100dvh) !important;
+    overflow: hidden !important;
+  }
+  .webapp-page.is-youtube-active:has(.youtube-subtitles-panel) .webapp-shell {
+    height: 100%; display: flex; flex-direction: column; min-height: 0;
+  }
+  .webapp-page.is-youtube-active:has(.youtube-subtitles-panel) .webapp-main {
+    height: 100%; display: flex; flex-direction: column; min-height: 0;
+  }
+  .webapp-page.is-youtube-active:has(.youtube-subtitles-panel) .webapp-video-dictionary {
+    flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+  }
+  .webapp-page.is-youtube-active:has(.youtube-subtitles-panel) .youtube-player-first {
+    flex: 1 1 auto; min-height: 0;
+  }
+
   /* форма поиска/смены видео, если открыта в кинозале — на всю ширину снизу */
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-setup-form,
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .webapp-video-form {
@@ -15369,15 +15393,17 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     width: 100% !important;
     max-width: none !important;
     display: grid !important;
-    grid-template-columns: 1.62fr 1fr !important;
-    grid-template-rows: auto auto auto;
+    grid-template-columns: 1.3fr minmax(400px, 1fr) !important;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       "top       top"
       "player    subs"
-      "transport subs";
+      "transport transport";
     column-gap: 16px;
     row-gap: 10px;
-    align-items: start;
+    align-items: stretch;
+    height: 100%;
+    min-height: 0;
   }
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-player-first-head,
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-focus-peek { grid-area: top; }
@@ -15395,17 +15421,32 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-player-shell:not(.is-app-fullscreen) {
     max-width: none !important;
   }
-  /* ВИДЕО ВПИСЫВАЕТСЯ ПО ОБОИМ ИЗМЕРЕНИЯМ: aspect-ratio 16:9 + текучий max-height
-     в vh → на коротком окне видео уменьшается по высоте (и по ширине пропорц.),
-     субтитры не уезжают за экран; на широком/высоком — растёт до ширины колонки.
-     Никаких фикс-пикселей: max-height = % высоты экрана. */
+  /* карта, шелл и кадр видео заполняют ячейку (ряд player × левая колонка).
+     Кадр = размер ячейки на чёрном фоне; YouTube-плеер сам вписывает видео 16:9
+     внутрь (леттербокс невиден на чёрном). Низ видео = низ ячейки = низ субтитров
+     на ЛЮБОМ соотношении окна, без горизонтального переполнения. */
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) > .youtube-player-card {
+    height: 100%; min-height: 0; width: 100%; display: flex; align-items: stretch; justify-content: center;
+  }
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-player-shell {
+    height: 100%; width: 100%; display: flex; align-items: stretch; justify-content: center;
+  }
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-frame {
-    aspect-ratio: 16 / 9;
+    aspect-ratio: auto !important;
     padding-top: 0 !important;
+    height: 100%;
     width: 100%;
-    max-height: 62vh;
-    max-width: calc(62vh * 16 / 9);
-    margin: 0 auto;
+    max-width: 100%;
+    background: #0b0c10;
+    margin: 0;
+  }
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-frame iframe,
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-frame > * {
+    width: 100% !important; height: 100% !important;
+  }
+  /* значки DE/RU в браузере лишние (и так видно язык) — убираем ради 2 лишних строк */
+  .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .youtube-subtitles-card-head {
+    display: none !important;
   }
   /* сайдбар: DE над RU, обе половины равны, списки скроллятся */
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .youtube-subtitles-panel-content.is-dual {
@@ -16033,8 +16074,9 @@ body.worldnews-active .webapp-topbar {
 
 .youtube-sentence-jump-bar {
   display: flex;
+  flex-direction: column;
   justify-content: center;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
   margin-top: -4px;
 }
@@ -16042,8 +16084,118 @@ body.worldnews-active .webapp-topbar {
 .youtube-sentence-jump-bar.is-inline {
   margin-top: 0;
   margin-left: 0;
-  justify-content: center;
 }
+
+.youtube-transport-buttons {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Draggable scrubber / progress bar (планшет/браузер; телефон не трогаем) ── */
+.youtube-scrubber {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+}
+@media (min-width: 700px) {
+  .youtube-scrubber { display: flex; }
+}
+
+.youtube-scrubber-time {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--yt-text-muted);
+  min-width: 38px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.youtube-scrubber-time.is-total { color: var(--yt-text-secondary); }
+
+.youtube-scrubber-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 18px;
+  display: flex;
+  align-items: center;
+}
+
+.youtube-scrubber-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 6px;
+  border-radius: 999px;
+  background: var(--yt-border-default);
+  opacity: 0.6;
+}
+
+.youtube-scrubber-fill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--d-accent, #c1873f), var(--d-accent-2, #a76f2c));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.youtube-scrubber-input {
+  position: relative;
+  z-index: 2;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.youtube-scrubber-input::-webkit-slider-runnable-track {
+  height: 18px;
+  background: transparent;
+}
+.youtube-scrubber-input::-moz-range-track {
+  height: 18px;
+  background: transparent;
+}
+
+.youtube-scrubber-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--d-accent, #c1873f);
+  border: 2.5px solid #fff;
+  box-shadow: 0 2px 6px rgba(111, 84, 52, 0.45);
+  margin-top: 1px;
+  transition: transform 0.12s ease;
+}
+.youtube-scrubber-input::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--d-accent, #c1873f);
+  border: 2.5px solid #fff;
+  box-shadow: 0 2px 6px rgba(111, 84, 52, 0.45);
+}
+
+.youtube-scrubber-input:hover::-webkit-slider-thumb,
+.youtube-scrubber-input:active::-webkit-slider-thumb { transform: scale(1.18); }
+.youtube-scrubber-input:focus-visible { outline: none; }
 
 .youtube-sentence-jump-btn {
   width: 38px;
