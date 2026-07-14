@@ -15276,28 +15276,47 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     font-size: 11px; font-weight: 900; letter-spacing: .04em; white-space: nowrap;
     background: var(--d-accent-soft); color: var(--d-accent-2); border: 1px solid var(--d-accent-line);
   }
-  /* тело — список строк */
+  /* ── Субтитры: чистая читаемая типографика (без бурого), крупный шрифт ──
+     Контекстные строки приглушены серым; активная строка почти-чёрная и большая;
+     активное слово — жёлтый «маркер» как в учебнике. Цвета заданы явно (не через
+     бронзовые --d-* токены) и разведены по темам, чтобы не было «какашки». */
   .webapp-page .youtube-player-first .youtube-subtitles-block .webapp-subtitles-list {
     max-height: min(46vh, 620px) !important; border: 0 !important; background: transparent !important;
-    padding: 16px 24px 22px !important; border-radius: 0 !important;
+    padding: 10px 22px 14px !important; border-radius: 0 !important;
   }
   .webapp-page .youtube-player-first .youtube-subtitles-block .webapp-subtitles-list p {
-    font-size: 16px; line-height: 1.5; color: var(--d-subtle); font-weight: 600;
-    padding: 7px 0; margin: 0; transition: color .15s; background: transparent !important;
+    font-family: 'Onest', 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+    font-size: 18px; line-height: 1.5; font-weight: 500; letter-spacing: -.006em;
+    color: #7b8a9c !important; padding: 5px 0; margin: 0; background: transparent !important;
+    transition: color .15s ease, background .15s ease;
   }
-  /* активная строка DE — крупная, кинематографичная */
+  /* активная строка DE — крупная, кинематографичная, чистый почти-чёрный */
   .webapp-page .youtube-player-first .youtube-subtitles-block-de .webapp-subtitles-list p.is-active {
-    font-size: clamp(22px, 1.7vw, 26px) !important; line-height: 1.34; font-weight: 750;
-    color: var(--d-title) !important; letter-spacing: -.012em; padding: 10px 12px !important; margin: 4px -12px;
+    font-size: clamp(25px, 1.95vw, 34px) !important; line-height: 1.28; font-weight: 700;
+    color: #eef2f7 !important; letter-spacing: -.02em; padding: 8px 12px !important; margin: 5px -12px;
+    background: rgba(255, 255, 255, .06) !important; border-radius: 14px;
   }
-  .webapp-page .youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p { color: var(--d-muted) !important; font-weight: 500; }
+  .webapp-page .youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p { color: #7b8a9c !important; font-weight: 500; }
   .webapp-page .youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p.is-active {
-    font-size: 21px !important; line-height: 1.36; font-weight: 650; color: var(--d-accent-2) !important; padding: 9px 0 !important;
+    font-size: clamp(19px, 1.4vw, 24px) !important; line-height: 1.34; font-weight: 600;
+    color: #cbd5e3 !important; padding: 7px 12px !important; margin: 3px -12px;
+    background: rgba(255, 255, 255, .05) !important; border-radius: 12px;
   }
-  /* караоке — активное слово бронзовой заливкой */
+  /* караоке — активное слово: жёлтый маркер (НЕ бурый), высокий контраст */
   .webapp-page .youtube-player-first .webapp-subtitles-list p.is-active .is-cue-active {
-    color: var(--d-on-accent) !important; font-weight: 800; background: var(--d-accent);
-    border-radius: 6px; padding: 1px 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone;
+    color: #201c00 !important; font-weight: 800; background: #ffdd57;
+    border-radius: 6px; padding: 1px 6px; box-decoration-break: clone; -webkit-box-decoration-break: clone;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
+  }
+
+  /* СВЕТЛАЯ тема: тёмный текст на кремовой карточке (тёмные значения выше — для тёмной темы) */
+  .webapp-page.is-theme-light .youtube-player-first .youtube-subtitles-block .webapp-subtitles-list p { color: #9aa1ad !important; }
+  .webapp-page.is-theme-light .youtube-player-first .youtube-subtitles-block-de .webapp-subtitles-list p.is-active {
+    color: #14161c !important; background: rgba(17, 20, 28, .045) !important;
+  }
+  .webapp-page.is-theme-light .youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p { color: #9aa1ad !important; }
+  .webapp-page.is-theme-light .youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p.is-active {
+    color: #465061 !important; background: rgba(70, 80, 97, .06) !important;
   }
 
   /* транспорт под видео — единый .tbtn, центр (is-toggle) — бронза */
@@ -15328,9 +15347,9 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     border-radius: 18px !important;
     margin-top: 0 !important;
   }
-  .webapp-page .youtube-player-first .youtube-sentence-jump-bar { margin-top: 8px !important; gap: 10px; }
-  .webapp-page .youtube-player-first .youtube-sentence-jump-btn { height: 38px !important; min-width: 46px !important; }
-  .webapp-page .youtube-player-first .youtube-sentence-jump-btn.is-toggle { min-width: 60px !important; }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-bar { margin-top: 6px !important; gap: 7px; }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-btn { height: 32px !important; min-width: 42px !important; }
+  .webapp-page .youtube-player-first .youtube-sentence-jump-btn.is-toggle { min-width: 54px !important; }
   /* колонки DE|RU равной высоты (тянутся к более высокой), список скроллится внутри */
   .webapp-page .youtube-player-first .youtube-subtitles-panel-content.is-dual { align-items: stretch; }
   .webapp-page .youtube-player-first .youtube-subtitles-block { display: flex; flex-direction: column; min-height: 0; }
@@ -15393,7 +15412,7 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     width: 100% !important;
     max-width: none !important;
     display: grid !important;
-    grid-template-columns: 1.3fr minmax(400px, 1fr) !important;
+    grid-template-columns: 1.85fr minmax(300px, 1fr) !important;
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       "top       top"
@@ -15421,6 +15440,10 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   .webapp-page .youtube-player-first:has(.youtube-subtitles-panel) .webapp-video-player-shell:not(.is-app-fullscreen) {
     max-width: none !important;
   }
+  /* ВИДЕО ВПИСЫВАЕТСЯ ПО ОБОИМ ИЗМЕРЕНИЯМ: aspect-ratio 16:9 + текучий max-height
+     в vh → на коротком окне видео уменьшается по высоте (и по ширине пропорц.),
+     субтитры не уезжают за экран; на широком/высоком — растёт до ширины колонки.
+     Никаких фикс-пикселей: max-height = % высоты экрана. */
   /* карта, шелл и кадр видео заполняют ячейку (ряд player × левая колонка).
      Кадр = размер ячейки на чёрном фоне; YouTube-плеер сам вписывает видео 16:9
      внутрь (леттербокс невиден на чёрном). Низ видео = низ ячейки = низ субтитров
