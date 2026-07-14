@@ -3956,6 +3956,9 @@ PUBLIC_LIBRARY_OWNER_ID = _env_int("PUBLIC_LIBRARY_OWNER_ID", 0)
 # Standard voice from its own 4M bucket so it never starves the premium tier the
 # app uses for dictionary/SRS/paid reader audio.
 GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS", 4_000_000))
+# Personal paid narration bucket — high runaway backstop, not a real cap (revenue
+# from per-book unlocks covers the spend). Keeps paid audio off the free 1M bucket.
+GOOGLE_TTS_PAID_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_PAID_MONTHLY_BASE_LIMIT_CHARS", 50_000_000))
 # Fraction of the remaining Standard free budget the daily pre-gen job may spend
 # (0.9 = keep a 10% safety margin so a mid-month spike never tips into paid).
 PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION = _env_decimal("PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION", "0.9") or Decimal("0.9")
@@ -30817,6 +30820,12 @@ def _provider_budget_default_base_limit(provider: str) -> int:
         # used only to pre-generate the public-domain library so it never competes
         # with the premium google_tts bucket the app relies on.
         return int(GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS)
+    if normalized == "google_tts_paid":
+        # Personal-book paid narration: the user paid (per-book unlock) so we are
+        # happy to pay Google beyond the free tier. High ceiling (runaway backstop
+        # only) so paid synthesis is never blocked by the free bucket, and it is
+        # tracked separately from free usage.
+        return int(GOOGLE_TTS_PAID_MONTHLY_BASE_LIMIT_CHARS)
     if normalized == "google_translate":
         return int(GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS)
     if normalized == "deepl_free":

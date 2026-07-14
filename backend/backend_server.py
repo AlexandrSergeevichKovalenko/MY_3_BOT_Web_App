@@ -16153,6 +16153,16 @@ PUBLIC_LIBRARY_TTS_VOICE = os.getenv("PUBLIC_LIBRARY_TTS_VOICE", "de-DE-Standard
 PUBLIC_LIBRARY_TTS_RATE = 1.0
 
 
+def _voice_tier_to_voice(voice_tier: str, lang_short: str = "de") -> str:
+    """Map a paid voice tier to a concrete provider voice name. 'standard' = cheap
+    Google Standard; 'neural' = the premium default voice (Polyglot for de).
+    ('eleven' = ElevenLabs, Phase 3.)"""
+    tier = (voice_tier or AUDIO_DEFAULT_VOICE_TIER).strip().lower()
+    if tier == "standard":
+        return PUBLIC_LIBRARY_TTS_VOICE
+    return _TTS_VOICES.get(lang_short, _TTS_VOICES["de"])
+
+
 def run_public_library_audio_pregen(
     *, target_lang: str = "de", max_pages: int | None = None, dry_run: bool = False
 ) -> dict:
@@ -50280,14 +50290,20 @@ def _generate_and_cache_reader_audio_page(
     budget_provider: str = "google_tts",
     billing_provider: str = "google_tts",
 ) -> dict:
-    # The public-library Standard voice always bills from its own free bucket, whoever
-    # triggers it (nightly pre-gen, or a reader opening a not-yet-cached public page) —
-    # so on-demand public synthesis never draws down the premium google_tts budget.
+    # Route reader-audio synthesis off the free google_tts bucket (which the
+    # dictionary/SRS rely on): the public-library Standard voice bills its own free
+    # Standard bucket; personal paid narration bills the paid bucket (revenue from the
+    # per-book unlock covers it, so it is never blocked by the free tier).
     if voice_name == PUBLIC_LIBRARY_TTS_VOICE:
         if budget_provider == "google_tts":
             budget_provider = "google_tts_standard"
         if billing_provider == "google_tts":
             billing_provider = "google_tts_standard"
+    else:
+        if budget_provider == "google_tts":
+            budget_provider = "google_tts_paid"
+        if billing_provider == "google_tts":
+            billing_provider = "google_tts_paid"
     logging.info(
         "[READER_AUDIO] SYNTHESIZING user=%s doc=%s page=%s source=%s voice=%s lang=%s text_preview=%r",
         user_id_int, document_id_int, page_int, page_source, voice_name, google_lang_code, page_text[:80],
@@ -50439,6 +50455,72 @@ def _run_reader_audio_page_generation_job(
         raise
 
 
+@app.route("/api/webapp/reader/audio/unlock", methods=["POST"])
+def reader_audio_unlock():
+    """Pay once (from the audio wallet) to narrate a personal book in a voice tier →
+    listen forever, unlimited. Lightweight: a wallet debit + a record row, no TTS
+    here (synthesis stays lazy/per-page/cached). Returns 402 with the price when the
+    balance is short so the client can prompt a top-up."""
+    payload = request.get_json(silent=True) or {}
+    init_data = str(payload.get("initData") or "").strip()
+    if not init_data:
+        init_data = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id_int = int(user_id)
+
+    try:
+        document_id_int = int(payload.get("document_id"))
+    except (ValueError, TypeError):
+        return jsonify({"error": "document_id обязателен"}), 400
+    voice_tier = str(payload.get("voice_tier") or "").strip().lower() or AUDIO_DEFAULT_VOICE_TIER
+    if voice_tier not in AUDIO_PRICE_PER_1M_MINOR:
+        return jsonify({"error": "Неизвестный голос", "error_code": "unknown_voice_tier"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+    document, document_is_public = _resolve_reader_document_for_user(
+        user_id=user_id_int, document_id=document_id_int,
+        source_lang=source_lang, target_lang=target_lang, include_content=False,
+    )
+    if not document:
+        return jsonify({"error": "Книга не найдена"}), 404
+    if document_is_public:
+        # Classics are already free — nothing to buy.
+        return jsonify({"ok": True, "already_unlocked": True, "free": True, "voice_tier": voice_tier})
+
+    chars = int(document.get("total_chars") or 0)
+    price_minor = estimate_book_audio_price_minor(chars, voice_tier)
+    result = unlock_book_audio(
+        user_id=user_id_int, document_id=document_id_int,
+        voice_tier=voice_tier, price_minor=price_minor, chars=chars,
+    )
+    if not result.get("ok") and result.get("insufficient"):
+        return jsonify({
+            "error": "Недостаточно средств на балансе.",
+            "error_code": "insufficient_balance",
+            "voice_tier": voice_tier,
+            "price_minor": int(price_minor),
+            "balance_minor": int(result.get("balance_minor") or 0),
+            "shortfall_minor": int(result.get("shortfall_minor") or 0),
+            "currency": "EUR",
+        }), 402
+    return jsonify({
+        "ok": True,
+        "voice_tier": voice_tier,
+        "already_unlocked": bool(result.get("already_unlocked")),
+        "charged_minor": int(result.get("charged_minor") or 0),
+        "price_minor": int(price_minor),
+        "balance_minor": int(result.get("balance_minor") or 0),
+        "currency": "EUR",
+    })
+
+
 @app.route("/api/webapp/reader/audio/page", methods=["GET", "POST"])
 def reader_audio_page():
     """
@@ -50512,18 +50594,25 @@ def reader_audio_page():
         return jsonify({"error": "Книга не найдена"}), 404
 
     # Public-domain "Классика" audio is free for everyone (shared, pre-generated from
-    # the free Standard bucket). Personal-book audio stays a premium feature.
-    if not document_is_public:
-        entitlement, _subscription = _resolve_user_entitlement(
-            user_id=user_id_int, now_ts_utc=now_utc, tz="Europe/Vienna"
-        )
-        effective_mode = str(entitlement.get("effective_mode") or "free").lower()
-        if effective_mode not in {"pro", "trial"}:
-            return jsonify({
-                "error": "Аудио-чтение с подсветкой доступно только на премиум подписке.",
-                "error_code": "reader_audio_premium_required",
-                "upgrade": {"available": True, "plan_code": "pro"},
-            }), 403
+    # the free Standard bucket). Personal-book audio is paid per-book: the user must
+    # have unlocked THIS book in the requested voice tier (one-time wallet charge) —
+    # then it plays forever, unlimited. No subscription tier includes narration.
+    voice_tier = str(payload.get("voice_tier") or "").strip().lower() or AUDIO_DEFAULT_VOICE_TIER
+    if not document_is_public and not is_book_audio_unlocked(user_id_int, document_id_int, voice_tier):
+        price_minor = estimate_book_audio_price_minor(int(document.get("total_chars") or 0), voice_tier)
+        balance_minor = get_audio_wallet_balance_minor(user_id_int)
+        return jsonify({
+            "error": "Озвучка этой книги ещё не оплачена.",
+            "error_code": "audio_unlock_required",
+            "unlock": {
+                "document_id": document_id_int,
+                "voice_tier": voice_tier,
+                "price_minor": int(price_minor),
+                "currency": "EUR",
+                "balance_minor": int(balance_minor),
+                "sufficient": bool(balance_minor >= price_minor),
+            },
+        }), 402
 
     pages = document.get("content_pages") if isinstance(document.get("content_pages"), list) else []
     raw_text = page_text_override_raw
@@ -50573,7 +50662,9 @@ def reader_audio_page():
         voice_name = PUBLIC_LIBRARY_TTS_VOICE
         rate_float = PUBLIC_LIBRARY_TTS_RATE
     else:
-        voice_name = voice_raw if voice_raw else default_voice
+        # Personal paid book — voice is fixed by the unlocked tier (keeps the cache
+        # key consistent with what the user paid for).
+        voice_name = _voice_tier_to_voice(voice_tier, language_for_tts)
 
     # v6: frontend may send the visible reader page text directly so tapped-word
     # audio always aligns with the page the user currently sees.
@@ -50628,16 +50719,9 @@ def reader_audio_page():
                 "error": str(job_status.get("error") or "reader_audio_page_generation_failed"),
             }), 200
 
-        if not document_is_public:
-            reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
-                user_id=user_id_int,
-                requested_units=float(len(page_text)),
-                now_ts_utc=now_utc,
-                tz="Europe/Vienna",
-            )
-            if reader_audio_limit_error:
-                return jsonify(reader_audio_limit_error), 429
-
+        # No per-user monthly char cap here: personal audio is paid per-book (unlock
+        # gate above) → unlimited replays; public audio is free. Provider budget is
+        # still enforced inside synthesis (paid/standard buckets).
         enqueue_result = enqueue_reader_audio_page_job(
             {
                 "job_key": reader_audio_singleflight_key,
@@ -50725,15 +50809,7 @@ def reader_audio_page():
                 "retry_after_ms": int(_READER_AUDIO_PAGE_PENDING_RETRY_MS),
             }), 202
 
-    if not document_is_public:
-        reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
-            user_id=user_id_int,
-            requested_units=float(len(page_text)),
-            now_ts_utc=now_utc,
-            tz="Europe/Vienna",
-        )
-        if reader_audio_limit_error:
-            return jsonify(reader_audio_limit_error), 429
+    # (No per-user char cap — personal audio is paid per-book, public is free.)
     try:
         try:
             ready_payload = _generate_and_cache_reader_audio_page(
