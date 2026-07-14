@@ -3652,37 +3652,34 @@ Du erstellst deutsche "Finde den Fehler"-Aufgaben für fortgeschrittene Lernende
 
 Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
 
-Jede Aufgabe: EIN deutscher Satz mit GENAU EINEM klaren Fehler an EINEM EINZIGEN
-Wort, der sich behebt, indem man GENAU DIESES eine Wort an DERSELBEN Stelle durch
-die richtige Form ERSETZT. Erlaubte Fehlertypen: falscher Kasus, falsche
-Adjektivendung, falsche Verbform/Konjugation, falsche Präposition, falscher
-Artikel, falsches Genus, falsches Hilfsverb, Rechtschreib-/Wortformfehler.
-Der Rest des Satzes ist korrekt.
+Jede Aufgabe: EIN deutscher Satz mit 1 ODER 2 Fehlern (variiere bewusst — mal genau ein
+Fehler, mal zwei). JEDER Fehler sitzt an EINEM EINZIGEN Wort und wird behoben, indem man
+GENAU DIESES Wort an DERSELBEN Stelle durch die richtige Form ERSETZT. Bei 2 Fehlern müssen
+es ZWEI VERSCHIEDENE Wörter sein, und beide Fehler sind voneinander unabhängig. Erlaubte
+Fehlertypen: falscher Kasus, falsche Adjektivendung, falsche Verbform/Konjugation, falsche
+Präposition, falscher Artikel, falsches Genus, falsches Hilfsverb, Rechtschreib-/Wortformfehler.
+ALLE nicht markierten Wörter sind korrekt.
 
-STRENG VERBOTEN (mit diesem Antwortformat — der Lernende tippt nur EIN Wort an und
-schreibt dessen korrekte Form — NICHT lösbar):
-- Wortstellungs-/Satzstellungsfehler JEDER Art: trennbares Präfix, Partizip II oder
-  Infinitiv NICHT am Satzende, Verbstellung im Neben-/Hauptsatz, ein Wort an der
-  falschen Position. Dort ist das Wort nur am falschen PLATZ, nicht falsch
-  geschrieben — das lässt sich durch Neutippen eines Wortes NICHT korrigieren.
+STRENG VERBOTEN (mit diesem Antwortformat — der Lernende tippt Wörter an und schreibt ihre
+korrekte Form — NICHT lösbar):
+- Wortstellungs-/Satzstellungsfehler JEDER Art: trennbares Präfix, Partizip II oder Infinitiv
+  NICHT am Satzende, Verbstellung im Neben-/Hauptsatz, ein Wort an der falschen Position. Dort
+  ist das Wort nur am falschen PLATZ, nicht falsch geschrieben — durch Neutippen NICHT korrigierbar.
 - Fehlende oder überzählige Wörter.
 
-PFLICHT: Das Wort an "error_index" (ohne Satzzeichen) und "correct_word" MÜSSEN
-unterschiedliche Wortformen sein. Ist das angezeigte Wort bereits korrekt, gibt es
-keinen findbaren Fehler — eine solche Aufgabe ist UNGÜLTIG und darf nicht erzeugt
-werden.
+PFLICHT: Das Wort an jedem "index" (ohne Satzzeichen) und sein "correct_word" MÜSSEN
+unterschiedliche Wortformen sein. Ist ein angezeigtes Wort bereits korrekt, gibt es dort keinen
+findbaren Fehler — eine solche Markierung ist UNGÜLTIG.
 
 Regeln:
-- "woerter" = der fehlerhafte Satz als Liste von Tokens (Wörter inkl. anhängender
-  Satzzeichen, z. B. ["Ich","gehe","mit","dem","Auto","zur","Arbeit."]).
-- "error_index" = Index (0-basiert) des EINEN falschen Tokens in "woerter".
-- "correct_word" = das korrigierte Token (nur dieses eine Wort).
-- "aliases" = echte gleichwertige Korrekturvarianten, sonst [].
-- Es darf NUR EINEN eindeutigen Fehler geben; alle anderen Wörter sind korrekt.
-- "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): warum das Wort falsch
-  ist, welche Regel greift und wie die richtige Form lautet. Verständlich, nicht trocken.
-- "tip" = EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Faustregel). Ohne Emoji.
-- "hint_ru" = sehr kurzer russischer Hinweis (z. B. "падеж после предлога").
+- "woerter" = der fehlerhafte Satz als Liste von Tokens (Wörter inkl. anhängender Satzzeichen,
+  z. B. ["Ich","gehe","mit","dem","Auto","zur","Arbeit."]).
+- "errors" = Liste von 1–2 Fehlern, je {"index":<int, 0-basiert>, "correct_word":"<Korrektur,
+  nur dieses eine Wort>", "aliases":[…echte gleichwertige Varianten, sonst []],
+  "erklaerung":"<RU>", "hint_ru":"<RU>"}.
+- "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (1–2 Sätze) NUR zu DIESEM Fehler: warum
+  das Wort falsch ist, welche Regel greift und wie die richtige Form lautet. Verständlich, nicht trocken.
+- "hint_ru" = sehr kurzer russischer Hinweis zu DIESEM Fehler (z. B. "падеж после предлога").
 
 KRITISCHE FEHLERQUELLEN (unbedingt vermeiden — sonst ist die Aufgabe UNGÜLTIG):
 - Erfinde KEINEN Kasusfehler, wo der Kasus bereits RICHTIG ist. Bei Verb+Präposition
@@ -3690,15 +3687,15 @@ KRITISCHE FEHLERQUELLEN (unbedingt vermeiden — sonst ist die Aufgabe UNGÜLTIG
   teilnehmen AN + Dativ …) ist der vorhandene Kasus oft schon korrekt — dann gibt es
   dort KEINEN Fehler und du darfst ihn NICHT als falsch markieren (z. B. "sich ärgern
   über DIE Fehler" ist als Akkusativ korrekt; "über DEN Fehlern" wäre falsch).
-- Der GESAMTE übrige Satz MUSS fehlerfrei sein — es darf NUR den einen markierten Fehler
-  geben. Besonders die Verbform prüfen: im Perfekt steht das Partizip II ("Er hat sich
-  geärgert"), NIEMALS der Infinitiv ("Er hat sich … ärgern" ist ein ZWEITER Fehler!).
-- Selbstprüfung vor der Ausgabe: Ergibt der Satz mit correct_word an error_index einen
-  rundum korrekten, natürlichen Satz? Ist WIRKLICH nur dieses eine Wort falsch und sind
-  alle anderen richtig? Wenn nein — erzeuge diese Aufgabe NICHT.
+- JEDES nicht in "errors" gelistete Wort MUSS fehlerfrei sein. Besonders die Verbform prüfen:
+  im Perfekt steht das Partizip II ("Er hat sich geärgert"), NIEMALS der Infinitiv ("Er hat sich
+  … ärgern" wäre ein Fehler — dann entweder als eigenen Eintrag markieren ODER korrekt schreiben).
+- Selbstprüfung vor der Ausgabe: Ersetzt man ALLE gelisteten Tokens durch ihr correct_word, ist der
+  Satz rundum korrekt und natürlich? Sind WIRKLICH nur die gelisteten Wörter falsch und alle anderen
+  richtig? Wenn nein — erzeuge diese Aufgabe NICHT.
 
 Gib NUR STRICT JSON:
-{"items":[{"woerter":["Ich","vertraue","auf","meinem","Freund."],"error_index":3,"correct_word":"meinen","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
+{"items":[{"woerter":["Ich","vertraue","auf","meinem","Freund."],"errors":[{"index":3,"correct_word":"meinen","aliases":[],"erklaerung":"…","hint_ru":"…"}]}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "verify_aufgabe_error": """

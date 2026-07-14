@@ -29880,27 +29880,56 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
                 "full": full, "aliases": [], **common}
     if fmt == "error":
         woerter = [str(w) for w in (it.get("woerter") or []) if str(w).strip()]
-        correct_word = str(it.get("correct_word") or "").strip()
-        try:
-            error_index = int(it.get("error_index"))
-        except (TypeError, ValueError):
+        if len(woerter) < 3:
             return None
-        if len(woerter) < 3 or not correct_word or not (0 <= error_index < len(woerter)):
-            return None
-        aliases = [str(a) for a in (it.get("aliases") or []) if str(a).strip()]
-        # Quality gate: the shown token at error_index MUST actually be wrong —
-        # i.e. differ from the correction. If it already equals correct_word (or
-        # an alias), the displayed sentence is already correct and there is NO
-        # findable error (the "Infinitiv am Ende / Wortstellung" failure mode,
-        # where the word is only at the wrong place, not misspelled, so it can't
-        # be fixed by retyping one token). Skip such impossible items.
+
         def _bare(s: str) -> str:
             return str(s or "").strip().strip(".,;:!?»«„“\"'()").casefold()
-        shown = _bare(woerter[error_index])
-        if shown and (shown == _bare(correct_word) or any(shown == _bare(a) for a in aliases)):
+
+        # v2: the item carries an "errors" list (1–2 independent single-word errors).
+        # Defensive fallback: an older single-shape item becomes a 1-element list.
+        raw_errors = it.get("errors")
+        if not isinstance(raw_errors, list) or not raw_errors:
+            raw_errors = [{
+                "index": it.get("error_index"), "correct_word": it.get("correct_word"),
+                "aliases": it.get("aliases"), "erklaerung": it.get("erklaerung"),
+                "hint_ru": it.get("hint_ru"),
+            }]
+
+        errors, seen = [], set()
+        for e in raw_errors:
+            if not isinstance(e, dict):
+                continue
+            try:
+                idx = int(e.get("index"))
+            except (TypeError, ValueError):
+                continue
+            correct_word = str(e.get("correct_word") or "").strip()
+            if not correct_word or not (0 <= idx < len(woerter)) or idx in seen:
+                continue
+            aliases = [str(a) for a in (e.get("aliases") or []) if str(a).strip()]
+            # Per-error quality gate: the shown token MUST actually be wrong — i.e. differ
+            # from its correction. If it already equals correct_word (or an alias), the slot
+            # is already correct and there is NO findable error there (the "Infinitiv am Ende
+            # / Wortstellung" failure mode, where the word is only misplaced, not misspelled).
+            shown = _bare(woerter[idx])
+            if shown and (shown == _bare(correct_word) or any(shown == _bare(a) for a in aliases)):
+                continue
+            seen.add(idx)
+            errors.append({
+                "index": idx, "correct_word": correct_word, "aliases": aliases,
+                "erklaerung": str(e.get("erklaerung") or "").strip(),
+                "hint_ru": str(e.get("hint_ru") or "").strip(),
+            })
+            if len(errors) >= 3:
+                break
+        if not errors:
             return None
-        return {"woerter": woerter, "error_index": error_index, "correct_word": correct_word,
-                "aliases": aliases, **common}
+        errors.sort(key=lambda x: x["index"])
+        # NOTE: no **common — per-error erklaerung/hint_ru live inside `errors`; keeping the
+        # top level clean is what hides the error COUNT before answering (the FE only shows a
+        # pre-answer 💡 when a top-level hint_ru exists).
+        return {"woerter": woerter, "errors": errors}
     if fmt == "satzbau":
         satz = str(it.get("satz") or "").strip()
         woerter = [str(w) for w in (it.get("woerter") or []) if str(w).strip()]
