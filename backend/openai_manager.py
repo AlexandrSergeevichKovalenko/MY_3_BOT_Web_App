@@ -3652,10 +3652,10 @@ Du erstellst deutsche "Finde den Fehler"-Aufgaben für fortgeschrittene Lernende
 
 Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
 
-Jede Aufgabe: EIN deutscher Satz mit 1 ODER 2 Fehlern (variiere bewusst — mal genau ein
-Fehler, mal zwei). JEDER Fehler sitzt an EINEM EINZIGEN Wort und wird behoben, indem man
-GENAU DIESES Wort an DERSELBEN Stelle durch die richtige Form ERSETZT. Bei 2 Fehlern müssen
-es ZWEI VERSCHIEDENE Wörter sein, und beide Fehler sind voneinander unabhängig. Erlaubte
+Jede Aufgabe: EIN deutscher Satz mit 1, 2 ODER 3 Fehlern (variiere bewusst — mal genau ein
+Fehler, mal zwei, mal drei). JEDER Fehler sitzt an EINEM EINZIGEN Wort und wird behoben, indem
+man GENAU DIESES Wort an DERSELBEN Stelle durch die richtige Form ERSETZT. Bei mehreren Fehlern
+müssen es VERSCHIEDENE Wörter sein, und die Fehler sind voneinander unabhängig. Erlaubte
 Fehlertypen: falscher Kasus, falsche Adjektivendung, falsche Verbform/Konjugation, falsche
 Präposition, falscher Artikel, falsches Genus, falsches Hilfsverb, Rechtschreib-/Wortformfehler.
 ALLE nicht markierten Wörter sind korrekt.
@@ -3674,7 +3674,7 @@ findbaren Fehler — eine solche Markierung ist UNGÜLTIG.
 Regeln:
 - "woerter" = der fehlerhafte Satz als Liste von Tokens (Wörter inkl. anhängender Satzzeichen,
   z. B. ["Ich","gehe","mit","dem","Auto","zur","Arbeit."]).
-- "errors" = Liste von 1–2 Fehlern, je {"index":<int, 0-basiert>, "correct_word":"<Korrektur,
+- "errors" = Liste von 1–3 Fehlern, je {"index":<int, 0-basiert>, "correct_word":"<Korrektur,
   nur dieses eine Wort>", "aliases":[…echte gleichwertige Varianten, sonst []],
   "erklaerung":"<RU>", "hint_ru":"<RU>"}.
 - "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (1–2 Sätze) NUR zu DIESEM Fehler: warum
