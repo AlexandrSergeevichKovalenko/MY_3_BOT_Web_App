@@ -851,6 +851,32 @@
   border-radius: 0;
 }
 
+.webapp-reader .reader-library-public {
+  margin-top: 20px;
+}
+
+.webapp-reader .reader-lib-public-hint {
+  font-size: 13px;
+  font-weight: 600;
+  color: #5b6474;
+  white-space: nowrap;
+}
+
+.webapp-reader .reader-library-level-chip {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 4;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: rgba(8, 12, 26, 0.55);
+  backdrop-filter: blur(4px);
+}
+
 .webapp-reader .reader-library-cover-loading {
   position: absolute;
   inset: 0;

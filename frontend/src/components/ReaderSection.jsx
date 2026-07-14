@@ -767,7 +767,7 @@ export default function ReaderSection(props) {
                                   <button
                                     type="button"
                                     className="reader-source-item"
-                                    onClick={() => openReaderSourceArticle(a.url)}
+                                    onClick={() => openReaderSourceArticle(a)}
                                     disabled={readerLoading}
                                   >
                                     {a.image ? (

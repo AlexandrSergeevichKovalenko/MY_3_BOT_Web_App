@@ -3947,6 +3947,19 @@ def _reader_audio_unlimited_user_ids() -> frozenset[int]:
 
 READER_AUDIO_UNLIMITED_USER_IDS: frozenset[int] = _reader_audio_unlimited_user_ids()
 
+# ---- Public-domain shared library -------------------------------------------
+# Reserved owner id for curated public-domain books (no real Telegram user has
+# id 0). One shared row per book; its page audio is shared across all users.
+PUBLIC_LIBRARY_OWNER_ID = _env_int("PUBLIC_LIBRARY_OWNER_ID", 0)
+# Google gives SEPARATE monthly free tiers per voice class: Standard ~4M chars,
+# WaveNet/Neural2/Polyglot ~1M chars. We pre-generate public-library audio with a
+# Standard voice from its own 4M bucket so it never starves the premium tier the
+# app uses for dictionary/SRS/paid reader audio.
+GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS", 4_000_000))
+# Fraction of the remaining Standard free budget the daily pre-gen job may spend
+# (0.9 = keep a 10% safety margin so a mid-month spike never tips into paid).
+PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION = _env_decimal("PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION", "0.9") or Decimal("0.9")
+
 
 def convert_cost_to_eur(amount, currency: str | None) -> float:
     try:
@@ -8333,6 +8346,41 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_reader_library_user_pair
                 ON bt_3_reader_library (user_id, source_lang, target_lang, updated_at DESC);
+            """)
+            # Public-domain shared library: curated books owned by the system user
+            # (PUBLIC_LIBRARY_OWNER_ID) and readable by every user. One shared row per
+            # book → its page audio in bt_3_reader_audio_pages is shared across all users.
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS public_slug TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS public_author TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS public_sort INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_reader_library_public_slug
+                ON bt_3_reader_library (public_slug)
+                WHERE public_slug IS NOT NULL;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_library_public
+                ON bt_3_reader_library (source_lang, target_lang, public_sort)
+                WHERE is_public IS TRUE AND is_archived IS FALSE;
+            """)
+            # Cover image (lead image of a web article / journal) → shown on the
+            # library card instead of a bare letter tile. Nullable, no rewrite.
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS cover_image_url TEXT;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_reader_audio_pages (
@@ -27608,9 +27656,16 @@ def _reader_library_row_to_dict(row: tuple, *, include_content: bool = False) ->
         "created_at": row[19].isoformat() if row[19] else None,
         "updated_at": row[20].isoformat() if row[20] else None,
     }
+    # cover_image_url, when a query selects it, is ALWAYS the last column (index 21
+    # for base selects, 23 when content_text/content_pages precede it). Read it
+    # defensively so queries that don't select it simply yield None (never crash).
+    cover_idx = 23 if include_content else 21
     if include_content:
         payload["content_text"] = str(row[21] or "")
         payload["content_pages"] = row[22] if isinstance(row[22], list) else []
+    payload["cover_image_url"] = (
+        str(row[cover_idx]).strip() if len(row) > cover_idx and row[cover_idx] else None
+    )
     return payload
 
 
@@ -27711,12 +27766,14 @@ def create_reader_library_document_placeholder(
     title: str,
     source_type: str,
     source_url: str | None,
+    cover_image_url: str | None = None,
 ) -> dict:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
     resolved_title = str(title or "Untitled").strip() or "Untitled"
     resolved_source_type = str(source_type or "text").strip().lower() or "text"
     resolved_source_url = str(source_url or "").strip() or None
+    resolved_cover = str(cover_image_url or "").strip() or None
     placeholder_hash = f"pending:{uuid4().hex}"
 
     with get_db_connection_context() as conn:
@@ -27730,6 +27787,7 @@ def create_reader_library_document_placeholder(
                     title,
                     source_type,
                     source_url,
+                    cover_image_url,
                     text_hash,
                     content_text,
                     content_pages,
@@ -27741,12 +27799,12 @@ def create_reader_library_document_placeholder(
                     processing_started_at,
                     processing_finished_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, '', '[]'::jsonb, 0, NULL, NOW(), 'pending', NULL, NULL, NULL)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, '', '[]'::jsonb, 0, NULL, NOW(), 'pending', NULL, NULL, NULL)
                 RETURNING
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
                     processing_status, processing_error, processing_started_at, processing_finished_at,
-                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                    is_archived, archived_at, last_opened_at, created_at, updated_at, cover_image_url;
                 """,
                 (
                     int(user_id),
@@ -27755,6 +27813,7 @@ def create_reader_library_document_placeholder(
                     resolved_title,
                     resolved_source_type,
                     resolved_source_url,
+                    resolved_cover,
                     placeholder_hash,
                 ),
             )
@@ -27988,12 +28047,14 @@ def finalize_reader_library_document_processing(
     source_url: str | None,
     content_text: str,
     content_pages: list | None = None,
+    cover_image_url: str | None = None,
 ) -> dict | None:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
     resolved_title = str(title or "Untitled").strip() or "Untitled"
     resolved_source_type = str(source_type or "text").strip().lower() or "text"
     resolved_source_url = str(source_url or "").strip() or None
+    resolved_cover = str(cover_image_url or "").strip() or None
     resolved_content = str(content_text or "").strip()
     resolved_pages = content_pages if isinstance(content_pages, list) else []
     total_chars = len(resolved_content)
@@ -28053,6 +28114,7 @@ def finalize_reader_library_document_processing(
                     title = %s,
                     source_type = %s,
                     source_url = %s,
+                    cover_image_url = COALESCE(%s, cover_image_url),
                     text_hash = %s,
                     content_text = %s,
                     content_pages = %s::jsonb,
@@ -28077,12 +28139,13 @@ def finalize_reader_library_document_processing(
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
                     processing_status, processing_error, processing_started_at, processing_finished_at,
-                    is_archived, archived_at, last_opened_at, created_at, updated_at, content_text, content_pages;
+                    is_archived, archived_at, last_opened_at, created_at, updated_at, content_text, content_pages, cover_image_url;
                 """,
                 (
                     resolved_title,
                     resolved_source_type,
                     resolved_source_url,
+                    resolved_cover,
                     text_hash,
                     resolved_content,
                     json.dumps(resolved_pages, ensure_ascii=False),
@@ -28121,7 +28184,7 @@ def list_reader_library_documents(
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
                     processing_status, processing_error, processing_started_at, processing_finished_at,
-                    is_archived, archived_at, last_opened_at, created_at, updated_at
+                    is_archived, archived_at, last_opened_at, created_at, updated_at, cover_image_url
                 FROM bt_3_reader_library
                 WHERE user_id = %s
                   AND source_lang = %s
@@ -28134,6 +28197,40 @@ def list_reader_library_documents(
             )
             rows = cursor.fetchall()
     return [_reader_library_row_to_dict(row, include_content=False) for row in rows]
+
+
+def prune_old_reader_articles(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    keep: int = 20,
+) -> int:
+    """Auto-clean: web articles are read-once, so keep only the newest `keep` of them
+    per user/pair and delete the rest (books/PDF/EPUB are never touched). Returns the
+    number of deleted rows. Articles = source_type 'html' with a source_url."""
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    safe_keep = max(1, min(200, int(keep or 20)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_reader_library
+                WHERE id IN (
+                    SELECT id FROM bt_3_reader_library
+                    WHERE user_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s
+                      AND source_type = 'html'
+                      AND source_url IS NOT NULL
+                    ORDER BY COALESCE(last_opened_at, updated_at, created_at) DESC
+                    OFFSET %s
+                );
+                """,
+                (int(user_id), normalized_source, normalized_target, safe_keep),
+            )
+            return int(cursor.rowcount or 0)
 
 
 def get_reader_library_document(
@@ -28214,6 +28311,176 @@ def get_reader_library_document_pages_only(
             if not row:
                 return None
     return _reader_library_row_to_dict(row, include_content=True)
+
+
+def _public_library_row_to_dict(row: tuple, *, include_content: bool = False) -> dict:
+    """Map a public-library row (21 base cols + is_public, public_slug,
+    public_author, public_sort [+ content_text, content_pages]) to a dict."""
+    base_len = 21
+    payload = _reader_library_row_to_dict(row[:base_len], include_content=False)
+    payload["is_public"] = bool(row[base_len])
+    payload["public_slug"] = str(row[base_len + 1] or "") or None
+    payload["public_author"] = str(row[base_len + 2] or "") or None
+    payload["public_sort"] = int(row[base_len + 3] or 0)
+    if include_content:
+        payload["content_text"] = str(row[base_len + 4] or "")
+        payload["content_pages"] = row[base_len + 5] if isinstance(row[base_len + 5], list) else []
+    return payload
+
+
+_PUBLIC_LIBRARY_SELECT_COLS = """
+    id, user_id, source_lang, target_lang, title, source_type, source_url,
+    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+    processing_status, processing_error, processing_started_at, processing_finished_at,
+    is_archived, archived_at, last_opened_at, created_at, updated_at,
+    is_public, public_slug, public_author, public_sort
+"""
+
+
+def upsert_public_library_document(
+    *,
+    slug: str,
+    title: str,
+    author: str,
+    sort: int,
+    source_type: str,
+    content_text: str,
+    content_pages: list | None = None,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    source_url: str | None = None,
+) -> dict:
+    """Insert/refresh a curated public-domain book, owned by PUBLIC_LIBRARY_OWNER_ID
+    and visible to every user. Idempotent by public_slug: unchanged content only
+    refreshes display metadata (preserving cached shared audio); changed content
+    replaces the row (its shared audio cascades away and will be re-generated)."""
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_slug = str(slug or "").strip().lower()
+    if not resolved_slug:
+        raise ValueError("public_slug is required")
+    resolved_title = str(title or "Untitled").strip() or "Untitled"
+    resolved_author = str(author or "").strip() or None
+    resolved_source_type = str(source_type or "text").strip().lower() or "text"
+    resolved_source_url = str(source_url or "").strip() or None
+    resolved_content = str(content_text or "").strip()
+    resolved_pages = content_pages if isinstance(content_pages, list) else []
+    text_hash = hashlib.sha256(resolved_content.encode("utf-8")).hexdigest()
+    total_chars = len(resolved_content)
+    owner_id = int(PUBLIC_LIBRARY_OWNER_ID)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, text_hash FROM bt_3_reader_library WHERE public_slug = %s LIMIT 1;",
+                (resolved_slug,),
+            )
+            existing = cursor.fetchone()
+            if existing and str(existing[1] or "") == text_hash:
+                cursor.execute(
+                    f"""
+                    UPDATE bt_3_reader_library
+                    SET title = %s, public_author = %s, public_sort = %s,
+                        is_public = TRUE, is_archived = FALSE, archived_at = NULL,
+                        processing_status = 'ready', updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING {_PUBLIC_LIBRARY_SELECT_COLS};
+                    """,
+                    (resolved_title, resolved_author, int(sort or 0), int(existing[0])),
+                )
+                return _public_library_row_to_dict(cursor.fetchone())
+            if existing:
+                cursor.execute("DELETE FROM bt_3_reader_library WHERE id = %s;", (int(existing[0]),))
+            cursor.execute(
+                f"""
+                INSERT INTO bt_3_reader_library (
+                    user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, content_text, content_pages, total_chars,
+                    processing_status, processing_finished_at, updated_at,
+                    is_public, public_slug, public_author, public_sort
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
+                        'ready', NOW(), NOW(), TRUE, %s, %s, %s)
+                RETURNING {_PUBLIC_LIBRARY_SELECT_COLS};
+                """,
+                (
+                    owner_id, normalized_source, normalized_target, resolved_title,
+                    resolved_source_type, resolved_source_url, text_hash, resolved_content,
+                    json.dumps(resolved_pages, ensure_ascii=False), total_chars,
+                    resolved_slug, resolved_author, int(sort or 0),
+                ),
+            )
+            return _public_library_row_to_dict(cursor.fetchone())
+
+
+def list_public_library_documents(
+    *,
+    target_lang: str = "de",
+    source_lang: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Curated public-domain books for a study language, in shelf order. Filtered by
+    target_lang only by default so every learner of that language sees them
+    regardless of their native (source) language; pass source_lang to also filter."""
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    normalized_source = str(source_lang).strip().lower() if source_lang else None
+    safe_limit = max(1, min(300, int(limit or 100)))
+    params: list = [normalized_target]
+    source_clause = ""
+    if normalized_source:
+        source_clause = "AND source_lang = %s"
+        params.append(normalized_source)
+    params.append(safe_limit)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT {_PUBLIC_LIBRARY_SELECT_COLS}
+                FROM bt_3_reader_library
+                WHERE is_public IS TRUE
+                  AND COALESCE(is_archived, FALSE) = FALSE
+                  AND target_lang = %s
+                  {source_clause}
+                ORDER BY public_sort ASC, title ASC
+                LIMIT %s;
+                """,
+                tuple(params),
+            )
+            rows = cursor.fetchall()
+    return [_public_library_row_to_dict(row, include_content=False) for row in rows]
+
+
+def get_public_library_document(
+    *,
+    document_id: int | None = None,
+    slug: str | None = None,
+    include_content: bool = True,
+) -> dict | None:
+    """Fetch a single public book by id or slug (no user scoping — public)."""
+    resolved_slug = str(slug or "").strip().lower() or None
+    if document_id is None and not resolved_slug:
+        return None
+    content_select = ", content_text, content_pages" if include_content else ""
+    if document_id is not None:
+        where_clause, where_arg = "id = %s", int(document_id)
+    else:
+        where_clause, where_arg = "public_slug = %s", resolved_slug
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT {_PUBLIC_LIBRARY_SELECT_COLS} {content_select}
+                FROM bt_3_reader_library
+                WHERE {where_clause}
+                  AND is_public IS TRUE
+                LIMIT 1;
+                """,
+                (where_arg,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _public_library_row_to_dict(row, include_content=include_content)
 
 
 def update_reader_library_state(
@@ -30320,6 +30587,11 @@ def _provider_budget_default_base_limit(provider: str) -> int:
     normalized = str(provider or "").strip().lower()
     if normalized == "google_tts":
         return int(GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS)
+    if normalized == "google_tts_standard":
+        # Google's Standard voices bill from a separate ~4M-char/month free tier,
+        # used only to pre-generate the public-domain library so it never competes
+        # with the premium google_tts bucket the app relies on.
+        return int(GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS)
     if normalized == "google_translate":
         return int(GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS)
     if normalized == "deepl_free":
@@ -30982,6 +31254,22 @@ def get_google_tts_monthly_budget_status(
 ) -> dict | None:
     return get_provider_monthly_budget_status(
         provider="google_tts",
+        units_type="chars",
+        unit_label="chars",
+        period_month=period_month,
+        tz=tz,
+    )
+
+
+def get_google_tts_standard_monthly_budget_status(
+    *,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    """Budget status for the Standard-voice bucket used by the public-domain library
+    pre-generation job (separate from the premium google_tts bucket)."""
+    return get_provider_monthly_budget_status(
+        provider="google_tts_standard",
         units_type="chars",
         unit_label="chars",
         period_month=period_month,

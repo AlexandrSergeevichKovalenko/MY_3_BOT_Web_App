@@ -31,6 +31,7 @@ from pydub import AudioSegment
 from backend.database import (
     get_admin_telegram_ids,
     get_google_tts_monthly_budget_status,
+    get_provider_monthly_budget_status,
     mark_provider_budget_threshold_notified,
     mark_tts_object_failed,
     mark_tts_object_ready,
@@ -363,6 +364,47 @@ def _enforce_google_tts_monthly_budget(requested_chars: int) -> dict:
     return status
 
 
+def _enforce_tts_monthly_budget(requested_chars: int, *, provider: str = "google_tts") -> dict:
+    """Provider-parameterized monthly char budget guard. `provider="google_tts"` is
+    the app's premium bucket (delegates to the specialized guard above, keeping its
+    threshold alerts). Other providers (e.g. `google_tts_standard`, the public-domain
+    library's separate Standard-voice free tier) are enforced generically so they
+    never draw down the premium bucket."""
+    normalized = str(provider or "google_tts").strip().lower() or "google_tts"
+    if normalized == "google_tts":
+        return _enforce_google_tts_monthly_budget(requested_chars)
+
+    requested_value = max(0, int(requested_chars or 0))
+    status = get_provider_monthly_budget_status(provider=normalized, units_type="chars", unit_label="chars")
+    if not status:
+        return {"provider": normalized, "unit": "chars", "used_units": 0.0, "effective_limit_units": 0, "is_blocked": False}
+
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    used_units = float(status.get("used_units") or 0.0)
+    payload = {
+        "provider": normalized,
+        "unit": "chars",
+        "used": int(round(used_units)),
+        "requested": requested_value,
+        "limit": effective_limit,
+        "remaining": max(0, int(round(effective_limit - used_units))),
+        "period_month": status.get("period_month"),
+        "is_blocked": bool(status.get("is_blocked")),
+    }
+    if bool(status.get("is_blocked")):
+        reason = str(status.get("block_reason") or "").strip() or f"{normalized} monthly budget is blocked"
+        raise GoogleTTSBudgetBlockedError(reason, payload=payload)
+    if effective_limit > 0 and used_units + requested_value > effective_limit:
+        over_reason = f"{normalized} monthly limit reached: {int(round(used_units))} + {requested_value} > {effective_limit} chars"
+        try:
+            set_provider_budget_block_state(provider=normalized, is_blocked=True, block_reason=over_reason)
+        except Exception:
+            logging.warning("Failed to persist %s budget block state", normalized, exc_info=True)
+        payload["is_blocked"] = True
+        raise GoogleTTSBudgetBlockedError(over_reason, payload=payload)
+    return status
+
+
 # ---------------------------------------------------------------------------
 # Google TTS synthesis
 # ---------------------------------------------------------------------------
@@ -506,6 +548,7 @@ def synthesize_page_with_timings(
     lang_code: str = "de-DE",
     voice_name: str | None = None,
     speaking_rate: float = 1.0,
+    budget_provider: str = "google_tts",
 ) -> dict:
     """
     Synthesize one reader page with natural prosody plus word-level timings.
@@ -544,7 +587,7 @@ def synthesize_page_with_timings(
         raise RuntimeError("Страница не содержит слов")
     resolved_voice_name = str(voice_name or _TTS_VOICES["de"]).strip() or _TTS_VOICES["de"]
 
-    _enforce_google_tts_monthly_budget(_estimate_reader_page_tts_budget_chars(page_text))
+    _enforce_tts_monthly_budget(_estimate_reader_page_tts_budget_chars(page_text), provider=budget_provider)
 
     tts_client = _get_tts_beta_client()
     voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=resolved_voice_name)

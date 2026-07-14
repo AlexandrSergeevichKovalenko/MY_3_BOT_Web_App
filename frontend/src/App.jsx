@@ -23681,12 +23681,14 @@ function AppInner() {
     void fetchReaderSourceArticles(id);
   }, [fetchReaderSourceArticles]);
 
-  const openReaderSourceArticle = useCallback((url) => {
-    const clean = String(url || '').trim();
+  const openReaderSourceArticle = useCallback((article) => {
+    // Accepts either the article object {url,title,image} or a bare url string.
+    const a = (article && typeof article === 'object') ? article : { url: article };
+    const clean = String(a.url || '').trim();
     if (!clean) return;
     setReaderSourcesOpen(false);
     setReaderInput(clean);
-    void handleReaderIngest(null, clean);
+    void handleReaderIngest(null, clean, { title: a.title, image: a.image });
   }, []);
 
   // Once the catalogue arrives (first open), auto-select the first source.
@@ -25223,11 +25225,15 @@ function AppInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readerDocumentId]);
 
-  async function handleReaderIngest(event, inputOverride) {
+  async function handleReaderIngest(event, inputOverride, metaOverride) {
     event?.preventDefault?.();
     // inputOverride lets callers (e.g. "open this URL from the clipboard") ingest a
     // URL directly, without waiting for the setReaderInput state to settle.
+    // metaOverride carries a known title/cover (feed "Источники" opens) so the
+    // library card shows the real headline + image immediately.
     const rawInput = String(inputOverride != null ? inputOverride : (readerInput || '')).trim();
+    const ingestMetaTitle = String(metaOverride?.title || '').trim();
+    const ingestMetaCover = String(metaOverride?.image || metaOverride?.cover_image_url || '').trim();
     const liveSelectedFile = readerFileInputRef.current?.files?.[0] || null;
     const selectedFile = liveSelectedFile || null;
     const looksLikeLocalReaderFileName = /^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(rawInput);
@@ -25322,6 +25328,8 @@ function AppInner() {
             initData,
             url: looksLikeUrl ? rawInput : '',
             text: looksLikeUrl ? '' : rawInput,
+            title: ingestMetaTitle,
+            cover_image_url: ingestMetaCover,
           }),
         });
         if (!response.ok) {
