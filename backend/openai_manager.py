@@ -3704,22 +3704,25 @@ Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 "verify_aufgabe_error": """
 Du bist ein sehr strenger Deutschlehrer (C2) und PRÜFST eine "Finde den Fehler"-Aufgabe auf Gültigkeit.
 
-Eingabe-JSON: {"woerter":[Tokens des ANGEZEIGTEN Satzes], "error_index": <int>, "correct_word": "<Korrektur>", "aliases":[...]}.
+Eingabe-JSON: {"woerter":[Tokens des ANGEZEIGTEN Satzes], "errors":[{"index":<int>,"correct_word":"<Korrektur>","aliases":[...]}, …]}.
 Der ANGEZEIGTE Satz = alle Tokens der Reihe nach zusammengefügt. Die Aufgabe behauptet:
-das Token an "error_index" ist das EINZIGE falsche Wort, und "correct_word" ist die richtige Form.
+GENAU die Tokens an den aufgeführten "index"-Positionen sind falsch — und NUR diese —, und jedes
+wird durch sein "correct_word" korrigiert. Es können 1, 2 oder 3 Fehler sein.
 
 Die Aufgabe ist NUR gültig ("valid": true), wenn ALLE vier Punkte zutreffen:
-1) Der angezeigte Satz enthält GENAU EINEN Grammatikfehler, und dieser liegt am Token an error_index.
-2) Ersetzt man NUR dieses eine Token durch correct_word (an derselben Stelle), ist der GANZE
-   Satz grammatisch vollständig korrekt und natürlich.
-3) JEDES andere Token ist bereits korrekt — es gibt KEINEN zweiten Fehler irgendwo (auch nicht
-   bei Verbform/Partizip/Hilfsverb, Kasus, Adjektivendung, Präposition, Artikel, Genus).
-4) Das Token an error_index ist WIRKLICH falsch. Bei Verb+Präposition muss der geforderte Kasus
+1) Der angezeigte Satz enthält GENAU SO VIELE Grammatikfehler, wie "errors" Einträge hat, und
+   diese liegen an GENAU diesen index-Positionen (nicht mehr, nicht weniger, nicht woanders).
+2) Ersetzt man JEDES aufgeführte Token durch sein correct_word (an derselben Stelle), ist der
+   GANZE Satz grammatisch vollständig korrekt und natürlich.
+3) JEDES NICHT aufgeführte Token ist bereits korrekt — es gibt KEINEN weiteren Fehler irgendwo
+   (auch nicht bei Verbform/Partizip/Hilfsverb, Kasus, Adjektivendung, Präposition, Artikel, Genus).
+4) JEDES aufgeführte Token ist WIRKLICH falsch. Bei Verb+Präposition muss der geforderte Kasus
    tatsächlich falsch sein — ein bereits korrekter Kasus ist KEIN Fehler (z. B. "sich ärgern über
    die Fehler" ist als Akkusativ korrekt → dann "valid": false).
 
-"valid": false, wenn: das angezeigte Wort schon korrekt ist; es einen zweiten Fehler im Satz gibt;
-correct_word den Satz nicht vollständig korrekt macht oder unnatürlich ist.
+"valid": false, wenn: ein aufgeführtes Wort schon korrekt ist; es einen NICHT aufgeführten Fehler
+gibt; die Zahl/Positionen der Fehler nicht exakt stimmen; ein correct_word den Satz nicht
+vollständig korrekt macht oder unnatürlich ist.
 
 "reason" = ein kurzer russischer Grund (bei false: was genau nicht stimmt).
 Gib NUR STRICT JSON: {"valid": true, "reason": "…"}
@@ -6913,13 +6916,28 @@ async def run_check_satzbau(*, reference: str, user: str) -> dict:
         return {"match": False}
 
 
-async def run_verify_aufgabe_error(*, woerter: list, error_index: int, correct_word: str, aliases: list | None = None) -> dict:
-    """Bounded LLM validity check for a generated 'Finde den Fehler' item. Confirms the
-    shown sentence has EXACTLY ONE error at error_index, that correct_word fixes it, and
-    that NO other word is wrong (catches the fake-case-error and hidden-second-error slips
-    the deterministic gate can't see). Returns {'valid': bool, 'reason': str}.
-    Fail-CLOSED ({'valid': False}) on error/timeout — never serve an unverified error item;
-    the pool top-up retries, so a transient miss just regenerates later."""
+async def run_verify_aufgabe_error(*, woerter: list, errors: list) -> dict:
+    """Bounded LLM validity check for a generated 'Finde den Fehler' item (single OR multi).
+    `errors` = [{'index':int,'correct_word':str,'aliases':[str]}, …]. Confirms the shown
+    sentence has EXACTLY as many errors as listed, at exactly those positions, that each
+    correct_word fixes its slot, and that NO other word is wrong (catches the fake-case-error
+    and hidden-extra-error slips the deterministic gate can't see). Returns {'valid': bool,
+    'reason': str}. Fail-CLOSED ({'valid': False}) on error/timeout — never serve an
+    unverified error item; the pool top-up retries, so a transient miss regenerates later."""
+    norm_errors = []
+    for e in (errors or []):
+        if not isinstance(e, dict):
+            continue
+        try:
+            norm_errors.append({
+                "index": int(e.get("index")),
+                "correct_word": str(e.get("correct_word") or ""),
+                "aliases": [str(a) for a in (e.get("aliases") or [])],
+            })
+        except (TypeError, ValueError):
+            continue
+    if not norm_errors:
+        return {"valid": False, "reason": "no_errors_listed"}
     try:
         content = await llm_execute(
             task_name="verify_aufgabe_error",
@@ -6927,9 +6945,7 @@ async def run_verify_aufgabe_error(*, woerter: list, error_index: int, correct_w
             user_message=json.dumps(
                 {
                     "woerter": [str(w) for w in (woerter or [])],
-                    "error_index": int(error_index),
-                    "correct_word": str(correct_word or ""),
-                    "aliases": [str(a) for a in (aliases or [])],
+                    "errors": norm_errors,
                 },
                 ensure_ascii=False,
             ),

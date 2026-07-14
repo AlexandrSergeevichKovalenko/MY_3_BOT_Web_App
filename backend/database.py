@@ -1365,6 +1365,51 @@ def _word_after_gap(satz) -> str:
     return toks[0] if toks else ""
 
 
+def normalize_error_payload(payload) -> list:
+    """Single source of truth for a 'Finde den Fehler' payload — normalize BOTH shapes to a
+    list of error dicts [{'index':int,'correct_word':str,'aliases':[str],'erklaerung':str,
+    'hint_ru':str}] sorted by index:
+      - v2 multi:   payload['errors'] = [{index, correct_word, aliases, erklaerung, hint_ru}, …]
+      - v1 single (legacy): top-level error_index/correct_word/aliases/erklaerung/hint_ru
+    Malformed entries are dropped; a legacy single-error item becomes a 1-element list, so
+    grading / degeneracy / the verifier can treat every item uniformly."""
+    payload = payload if isinstance(payload, dict) else {}
+
+    def _mk(idx_raw, correct_raw, aliases_raw, erk_raw, hint_raw):
+        try:
+            idx = int(idx_raw)
+        except (TypeError, ValueError):
+            return None
+        cw = str(correct_raw or "").strip()
+        if not cw:
+            return None
+        return {
+            "index": idx,
+            "correct_word": cw,
+            "aliases": [str(a) for a in (aliases_raw or []) if str(a).strip()],
+            "erklaerung": str(erk_raw or "").strip(),
+            "hint_ru": str(hint_raw or "").strip(),
+        }
+
+    out = []
+    raw = payload.get("errors")
+    if isinstance(raw, list) and raw:
+        for e in raw:
+            if not isinstance(e, dict):
+                continue
+            got = _mk(e.get("index"), e.get("correct_word"), e.get("aliases"),
+                      e.get("erklaerung"), e.get("hint_ru"))
+            if got:
+                out.append(got)
+    else:
+        got = _mk(payload.get("error_index"), payload.get("correct_word"),
+                  payload.get("aliases"), payload.get("erklaerung"), payload.get("hint_ru"))
+        if got:
+            out.append(got)
+    out.sort(key=lambda e: e["index"])
+    return out
+
+
 def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
     """True for a meaningless item that should never be served/reviewed:
     - wortbildung: the derived noun == the stem (no real word-formation, e.g.
@@ -1395,17 +1440,20 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
                 return True
         return False
     if fmt == "error":
-        woerter = payload.get("woerter") or []
-        try:
-            idx = int(payload.get("error_index", -1))
-        except (TypeError, ValueError):
-            return False
-        if not isinstance(woerter, list) or not (0 <= idx < len(woerter)):
-            return False
-        correct_word = str(payload.get("correct_word") or "").strip()
-        if not correct_word:
-            return False
-        return _norm_degenerate_token(woerter[idx]) == _norm_degenerate_token(correct_word)
+        # Degenerate iff there are no parseable errors, OR any error points outside the
+        # sentence, OR any tapped token already EQUALS its correction (no real error at that
+        # slot — e.g. "zumachen?"→"zumachen"). Covers single AND multi via normalization.
+        woerter = payload.get("woerter")
+        errs = normalize_error_payload(payload)
+        if not isinstance(woerter, list) or not woerter or not errs:
+            return True
+        for e in errs:
+            idx = e["index"]
+            if not (0 <= idx < len(woerter)):
+                return True
+            if _norm_degenerate_token(woerter[idx]) == _norm_degenerate_token(e["correct_word"]):
+                return True
+        return False
     if fmt == "wortgruppe":
         # Unanswerable without the base-form lemmas shown to the learner → it
         # becomes synonym-guessing (only the RU meaning is given). Old pre-change

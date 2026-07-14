@@ -1288,25 +1288,50 @@ def _aufgabe_correct_answer(payload: dict) -> str:
     return str(accepted[0]) if accepted else ""
 
 
+def _parse_error_submission(raw_input) -> list:
+    """Parse a 'Finde den Fehler' answer string into [(index, correction), …] in tap order.
+    v2 multi: 'i1|c1;i2|c2' (one pair per tapped word). v1 single: 'i|c' → one pair. So the
+    old single-tap client keeps working against the multi-aware grader. Malformed pairs are
+    skipped; order is preserved for the result card."""
+    out = []
+    for chunk in str(raw_input or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk or "|" not in chunk:
+            continue
+        idx_str, _, corr = chunk.partition("|")
+        try:
+            idx = int(idx_str.strip())
+        except ValueError:
+            continue
+        out.append((idx, corr.strip()))
+    return out
+
+
 def _display_user_answer(fmt: str, raw: str, payload: dict) -> str:
     """Human-readable form of a composite answer for the result card, so the learner
     never sees the internal encoding (e.g. '2|das'). For the `error` format it shows
-    «tapped → correction» so a wrong TAP (not a wrong word) is visible; for `pin` the
-    typed article; for `hoerluecke` the gaps joined. Other formats pass through."""
+    «tapped → correction» for EACH tapped word (joined) so a wrong TAP (not a wrong word)
+    is visible; for `pin` the typed article; for `hoerluecke` the gaps joined. Other
+    formats pass through."""
     s = str(raw or "").strip()
     if not s:
         return ""
     if fmt == "error":
-        idx_str, sep, correction = s.partition("|")
-        if not sep:
+        subs = _parse_error_submission(s)
+        if not subs:
             return s
-        correction = correction.strip()
         woerter = payload.get("woerter") if isinstance(payload.get("woerter"), list) else []
-        try:
-            tapped = str(woerter[int(idx_str)])
-        except (ValueError, IndexError, TypeError):
-            return correction or s
-        return f"{tapped} → {correction}" if correction else tapped
+        parts = []
+        for idx, corr in subs:
+            try:
+                tapped = str(woerter[idx])
+            except (IndexError, TypeError):
+                tapped = ""
+            if tapped and corr:
+                parts.append(f"{tapped} → {corr}")
+            elif tapped or corr:
+                parts.append(tapped or corr)
+        return "; ".join(parts) if parts else s
     if fmt == "pin":
         _coords, sep, article = s.partition("|")
         return article.strip() if sep else s   # show the article they typed (not the tap coords)
@@ -1801,25 +1826,37 @@ def _error_judge_full(woerter: list, tapped_index: int, correction: str) -> dict
 
 
 def _grade_error(payload: dict, raw_input: str) -> tuple:
-    """Grade an 'error' answer with tolerance. Deterministic exact match first (tapped ==
-    error_index AND correction matches correct_word/aliases — the hot path). On a miss, ONE
-    bounded LLM judge credits a learner who tapped a GENUINELY wrong word and fixed it — so
-    a real error other than the intended one (or a valid variant) is accepted instead of
-    being flatly rejected. Returns (is_correct, wrong_reason)."""
+    """Grade a 'Finde den Fehler' answer (single OR multi) all-or-nothing, with tolerance.
+    Deterministic first (index set == answer key AND every correction matches — the hot
+    path). If the index sets match but a correction misses the accepted list, ONE bounded
+    LLM judge per un-matched token credits a valid variant German allows in that exact slot.
+    A WRONG index set (a real error missed, or a correct word tapped) can't be rescued — the
+    verifier guarantees no other errors exist, so the detailed per-word breakdown is left to
+    the result card. Returns (is_correct, wrong_reason)."""
     if _check_aufgabe("error", payload, raw_input):
         return True, ""
-    answer = str(raw_input or "").strip()
-    idx_str, _, correction = answer.partition("|")
-    if not str(correction or "").strip():
+    from backend.database import normalize_error_payload
+    key = {e["index"]: e for e in normalize_error_payload(payload)}
+    subs = _parse_error_submission(raw_input)
+    if not key or not subs:
         return False, ""
-    try:
-        tapped = int(idx_str)
-    except ValueError:
+    sub = {}
+    for idx, corr in subs:
+        if not corr:
+            return False, ""
+        sub[idx] = corr
+    if set(sub) != set(key):
         return False, ""
-    judged = _error_judge_full(payload.get("woerter") or [], tapped, correction)
-    if bool(judged.get("match")):
-        return True, ""
-    return False, str(judged.get("reason_ru") or "")
+    woerter = payload.get("woerter") or []
+    for idx, corr in sub.items():
+        candidates = [str(key[idx]["correct_word"])] + [str(a) for a in key[idx]["aliases"]]
+        if any(check_quiz_freeform_deterministic(user_text=corr, correct_text=c)
+               for c in candidates if str(c).strip()):
+            continue
+        judged = _error_judge_full(woerter, idx, corr)
+        if not bool(judged.get("match")):
+            return False, str(judged.get("reason_ru") or "")
+    return True, ""
 
 
 def _wortgruppe_judge_full(satz: str, correct: str, user: str) -> dict:
@@ -1927,16 +1964,29 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
         na = _norm_sentence(answer)
         return any(na and na == _norm_sentence(c) for c in accepted)
     if fmt == "error":
-        # raw_input = "{tapped_index}|{correction}"
-        idx_str, _, correction = answer.partition("|")
-        try:
-            tapped = int(idx_str)
-        except ValueError:
+        # raw_input = "i1|c1;i2|c2" (v2 multi) or "i|c" (v1 single). All-or-nothing: the
+        # tapped-index set MUST equal the answer key's (found every error, no extra taps on
+        # already-correct words), and EVERY correction must match its slot deterministically.
+        # The verifier guarantees exactly these errors and nothing else, so a strict index
+        # match is right. Correction-text variants get the LLM fallback in _grade_error.
+        from backend.database import normalize_error_payload
+        key = {e["index"]: e for e in normalize_error_payload(payload)}
+        subs = _parse_error_submission(answer)
+        if not key or not subs:
             return False
-        if tapped != int(payload.get("error_index", -1)):
+        sub = {}
+        for idx, corr in subs:
+            if not corr:
+                return False
+            sub[idx] = corr
+        if set(sub) != set(key):
             return False
-        candidates = [str(payload.get("correct_word") or "")] + [str(a) for a in (payload.get("aliases") or [])]
-        return any(check_quiz_freeform_deterministic(user_text=correction, correct_text=c) for c in candidates if str(c).strip())
+        for idx, corr in sub.items():
+            candidates = [str(key[idx]["correct_word"])] + [str(a) for a in key[idx]["aliases"]]
+            if not any(check_quiz_freeform_deterministic(user_text=corr, correct_text=c)
+                       for c in candidates if str(c).strip()):
+                return False
+        return True
     if fmt == "pin":
         # raw_input = "x,y" or "x,y|article": tap inside the bbox AND (if required) the article.
         coords, _, article = answer.partition("|")

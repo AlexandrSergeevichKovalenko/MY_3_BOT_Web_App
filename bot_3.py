@@ -30052,17 +30052,16 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
             # deterministic gate can't see. Fail-closed: drop the item if not verified.
             try:
                 from backend.openai_manager import run_verify_aufgabe_error
+                from backend.database import normalize_error_payload
                 verdict = await run_verify_aufgabe_error(
                     woerter=payload.get("woerter") or [],
-                    error_index=int(payload.get("error_index", -1)),
-                    correct_word=str(payload.get("correct_word") or ""),
-                    aliases=payload.get("aliases"),
+                    errors=normalize_error_payload(payload),
                 )
                 if not verdict.get("valid"):
                     logging.info(
-                        "aufgabe_pool: 'error' item rejected by verifier (%s) woerter=%s idx=%s correct=%s",
+                        "aufgabe_pool: 'error' item rejected by verifier (%s) woerter=%s errors=%s",
                         verdict.get("reason"), payload.get("woerter"),
-                        payload.get("error_index"), payload.get("correct_word"),
+                        normalize_error_payload(payload),
                     )
                     continue
             except Exception:
@@ -33235,7 +33234,7 @@ async def _run_error_verify_sweep(tables, *, on_progress=None, limit: int = 300)
     those with an EXPLICIT 'invalid' verdict — never on a verifier error/timeout (fail-safe:
     a transient miss keeps the item). `on_progress(done, total)` is awaited per item if given.
     Returns (total_removed, [per-table report lines])."""
-    from backend.database import fetch_aufgabe_error_items, delete_aufgabe_items
+    from backend.database import fetch_aufgabe_error_items, delete_aufgabe_items, normalize_error_payload
     from backend.openai_manager import run_verify_aufgabe_error
     sem = asyncio.Semaphore(8)  # bound OpenAI concurrency; ~600 items finish in ~1–2 min
     progress = {"done": 0, "total": 0}
@@ -33249,9 +33248,7 @@ async def _run_error_verify_sweep(tables, *, on_progress=None, limit: int = 300)
         async with sem:
             verdict = await run_verify_aufgabe_error(
                 woerter=payload.get("woerter") or [],
-                error_index=int(payload.get("error_index", -1)),
-                correct_word=str(payload.get("correct_word") or ""),
-                aliases=payload.get("aliases"),
+                errors=normalize_error_payload(payload),
             )
         progress["done"] += 1
         if on_progress is not None:
