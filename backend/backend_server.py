@@ -16027,9 +16027,37 @@ def _clean_book_title(raw: str, fallback: str = "") -> str:
     return t[:200]
 
 
+def _pdf_first_page_title(page) -> str:
+    """The most prominent text on a PDF's first page — the largest-font, reasonably
+    short block near the top (the title on a cover/title page). Empty if none fits."""
+    try:
+        info = page.get_text("dict")
+    except Exception:
+        return ""
+    best_text = ""
+    best_size = 0.0
+    best_y = 1e18
+    for b in info.get("blocks") or []:
+        if int(b.get("type", -1)) != 0:
+            continue
+        spans = [s for line in (b.get("lines") or []) for s in (line.get("spans") or [])]
+        if not spans:
+            continue
+        text = " ".join(" ".join((s.get("text") or "").split()) for s in spans).strip()
+        if len(text) < 3 or len(text) > 120 or not re.search(r"[A-Za-zÀ-ÿ]", text):
+            continue
+        size = max(float(s.get("size", 0) or 0) for s in spans)
+        y = float((b.get("bbox") or [0, 0, 0, 0])[1])
+        # Largest font wins; on a near-tie, prefer the higher block (smaller y).
+        if size > best_size + 0.5 or (abs(size - best_size) <= 0.5 and y < best_y):
+            best_text, best_size, best_y = text, size, y
+    return best_text
+
+
 def _extract_pdf_title_and_cover(data: bytes, *, user_id: int, document_id: int) -> tuple[str, str]:
-    """(title, cover_image_url): title from the PDF's metadata, cover = its first page
-    rendered to a JPEG and stored in R2. Best-effort — never raises."""
+    """(title, cover_image_url): title from the PDF's metadata (falling back to the
+    biggest heading on page 1), cover = its first page rendered to a JPEG and stored
+    in R2. Best-effort — never raises."""
     title = ""
     cover_url = ""
     if _pymupdf is None or not data:
@@ -16037,6 +16065,10 @@ def _extract_pdf_title_and_cover(data: bytes, *, user_id: int, document_id: int)
     try:
         with _pymupdf.open(stream=data, filetype="pdf") as doc:
             title = _clean_book_title((doc.metadata or {}).get("title") or "")
+            if not title and doc.page_count > 0:
+                # No usable metadata title → use the prominent heading on page 1
+                # (like an article's <h1>) instead of falling back to the filename.
+                title = _clean_book_title(_pdf_first_page_title(doc[0]))
             if doc.page_count > 0 and user_id and document_id:
                 pix = doc[0].get_pixmap(matrix=_pymupdf.Matrix(2, 2), alpha=False)
                 img_bytes = pix.tobytes("jpg", jpg_quality=82)
