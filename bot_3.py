@@ -29925,6 +29925,17 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
                 break
         if not errors:
             return None
+        # Deterministic structural guard (free, before any LLM): a preposition+article
+        # CONTRACTION immediately followed by a bare article ("im das", "ins den", "am der" …)
+        # is a broken construction whose only fix merges two tokens into one ("im das"→"ins") —
+        # the tap-one-word format can't express that, so drop the item outright.
+        _CONTRACT = {"im", "ins", "am", "ans", "beim", "zum", "zur", "vom", "aufs", "fürs",
+                     "durchs", "ums", "überm", "unterm", "vorm", "hinterm", "aufm"}
+        _ARTIKEL = {"der", "die", "das", "dem", "den", "des",
+                    "ein", "eine", "einen", "einem", "einer", "eines"}
+        low = [_bare(w) for w in woerter]
+        if any(low[k] in _CONTRACT and low[k + 1] in _ARTIKEL for k in range(len(low) - 1)):
+            return None
         errors.sort(key=lambda x: x["index"])
         # NOTE: no **common — per-error erklaerung/hint_ru live inside `errors`; keeping the
         # top level clean is what hides the error COUNT before answering (the FE only shows a
@@ -30093,6 +30104,17 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
                         normalize_error_payload(payload),
                     )
                     continue
+                # Second gate: the item's OWN key must produce a perfect sentence (catches
+                # coupled prep/case + contraction merges the verifier slips on). Fail-closed:
+                # a non-'correct' verdict (incl. transient error) drops the item — pool top-up
+                # just regenerates, so no bad item is served.
+                sc = await _error_key_selfcheck(payload)
+                if not sc.get("correct"):
+                    logging.info(
+                        "aufgabe_pool: 'error' item rejected — key fix not perfect (%s) woerter=%s",
+                        sc.get("reason"), payload.get("woerter"),
+                    )
+                    continue
             except Exception:
                 logging.warning("aufgabe_pool: 'error' verifier failed, skipping item", exc_info=True)
                 continue
@@ -30129,7 +30151,9 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     # flag stops it from re-spending ~600 gpt-4.1-mini calls on every startup/nightly tick.
     try:
         from backend.database import one_shot_flag_done, mark_one_shot_flag
-        _ERR_VERIFY_FLAG = "error_review_queue_llm_verify_once_v1"
+        # v2: re-run once with the stronger gate (the key-self-check now also drops items whose
+        # own answer key doesn't yield a perfect sentence — coupled case / contraction merges).
+        _ERR_VERIFY_FLAG = "error_review_queue_llm_verify_once_v2"
         if not await asyncio.to_thread(one_shot_flag_done, _ERR_VERIFY_FLAG):
             # Generous limit: this runs ONCE, silently, so sweep the whole legacy backlog
             # (not the manual command's 300-item slice). gpt-4.1-mini is cheap and one-time.
@@ -33256,6 +33280,35 @@ async def admin_clean_bad_reviews_command(update: Update, context: CallbackConte
         f"• из очереди ошибок: {m}\n• из пула заданий: {b}")
 
 
+async def _error_key_selfcheck(payload) -> dict:
+    """Focused second gate for a 'Finde den Fehler' item: does the item's OWN answer key
+    actually produce a PERFECT sentence? Apply every correct_word to the tokens and check the
+    result holistically. Catches what the 4-point verifier slips on: coupled prep/case ("auf
+    dem" after warten) and unrepresentable contraction merges ("im das"→"ins", where the key's
+    fix leaves a broken sentence). Returns {'correct': bool, 'errored': bool, 'reason': str} —
+    'errored' distinguishes a transient LLM failure (never delete on that) from a definite no."""
+    from backend.database import normalize_error_payload
+    from backend.openai_manager import run_check_error_full
+    woerter = [str(w) for w in (payload.get("woerter") or [])]
+    errs = normalize_error_payload(payload)
+    if not woerter or not errs:
+        return {"correct": False, "errored": False, "reason": "no_errors"}
+    original = " ".join(woerter)
+    w2 = list(woerter)
+    for e in errs:
+        i = e["index"]
+        if 0 <= i < len(w2):
+            w2[i] = e["correct_word"]
+    corrected = " ".join(w2)
+    try:
+        res = await run_check_error_full(original=original, corrected=corrected)
+        return {"correct": bool(res.get("correct")), "errored": False,
+                "reason": str(res.get("reason_ru") or "")}
+    except Exception:
+        logging.warning("_error_key_selfcheck failed", exc_info=True)
+        return {"correct": False, "errored": True, "reason": ""}
+
+
 async def _run_error_verify_sweep(tables, *, on_progress=None, limit: int = 300) -> tuple:
     """Shared LLM re-verify of existing 'Finde den Fehler' items, used by BOTH the manual
     /admin_verify_errors and the automatic one-shot startup sweep. For each (table, label),
@@ -33279,17 +33332,25 @@ async def _run_error_verify_sweep(tables, *, on_progress=None, limit: int = 300)
                 woerter=payload.get("woerter") or [],
                 errors=normalize_error_payload(payload),
             )
+            # Delete on an EXPLICIT invalid verdict (never on the fail-closed
+            # 'verifier_error'/'unparseable' sentinel — a transient miss must not delete).
+            invalid = (not verdict.get("valid")) and verdict.get("reason") not in (
+                "verifier_error", "unparseable_verifier_output", "",
+            )
+            # Second gate: even a 'valid' item is broken if its OWN answer key doesn't yield a
+            # perfect sentence (coupled case / contraction merge). Delete only on a DEFINITE
+            # no — never on a transient LLM error.
+            if not invalid:
+                sc = await _error_key_selfcheck(payload)
+                if (not sc.get("correct")) and not sc.get("errored"):
+                    invalid = True
         progress["done"] += 1
         if on_progress is not None:
             try:
                 await on_progress(progress["done"], progress["total"])
             except Exception:
                 pass
-        # Delete ONLY on an EXPLICIT invalid verdict, never on the fail-closed
-        # 'verifier_error'/'unparseable' sentinel (a transient miss must not delete).
-        return (not verdict.get("valid")) and verdict.get("reason") not in (
-            "verifier_error", "unparseable_verifier_output", "",
-        )
+        return invalid
 
     total_removed = 0
     lines: list[str] = []
