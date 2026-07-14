@@ -826,6 +826,7 @@ export default function ReaderSection(props) {
             const initials = getReaderCoverInitials(item?.title);
             const gradient = getReaderCoverGradient(item);
             const isOpening = Number(readerOpeningDocumentId) === Number(item.id);
+            const pubProgress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
             return (
               <div
                 key={`reader-public-${item.id}`}
@@ -845,6 +846,9 @@ export default function ReaderSection(props) {
                     <span className="reader-archive-cover-fallback">{initials}</span>
                   )}
                   {item.level && <span className="reader-library-level-chip">{item.level}</span>}
+                  {pubProgress > 0 && (
+                    <div className="reader-library-cover-progress" style={{ width: `${pubProgress}%` }} />
+                  )}
                   {isOpening && (
                     <div className="reader-library-cover-loading">
                       <span className="reader-library-cover-spinner" />
@@ -854,6 +858,7 @@ export default function ReaderSection(props) {
                 <div className="reader-library-card-body" style={{ cursor: 'pointer' }}>
                   <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
                   <div className="reader-library-meta">
+                    {pubProgress > 0 && <span>{Math.round(pubProgress)}%</span>}
                     {item.public_author && <span>{item.public_author}</span>}
                   </div>
                 </div>
@@ -1155,17 +1160,24 @@ export default function ReaderSection(props) {
               {/* ── Overview only: Hero «Продолжаешь читать» ──── */}
               {!activeShelf && !readerArchiveOpen && (() => {
                 let candidate = null;
+                // Classics count too — but only once the user actually STARTED one
+                // (progress > 0), so a never-opened classic can't hijack the hero.
+                const startedPublic = publicItems.filter((d) =>
+                  Number(d?.progress_percent || 0) > 0 && Number(d?.progress_percent || 0) < 100
+                );
                 if (readerDocumentId) {
-                  candidate = readerDocuments.find(
+                  candidate = [...readerDocuments, ...publicItems].find(
                     (d) => Number(d?.id) === Number(readerDocumentId) && !d?.is_archived
                   );
                 }
                 if (!candidate) {
-                  const notFinished = readerDocuments
-                    .filter((d) =>
+                  const notFinished = [
+                    ...readerDocuments.filter((d) =>
                       !d?.is_archived &&
                       Number(d?.progress_percent || 0) < 100
-                    )
+                    ),
+                    ...startedPublic,
+                  ]
                     .sort((a, b) => {
                       const ta = new Date(a?.last_opened_at || a?.updated_at || a?.created_at || 0).getTime();
                       const tb = new Date(b?.last_opened_at || b?.updated_at || b?.created_at || 0).getTime();

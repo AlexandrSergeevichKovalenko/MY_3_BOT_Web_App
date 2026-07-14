@@ -8409,6 +8409,27 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_reader_library (source_lang, target_lang, public_sort)
                 WHERE is_public IS TRUE AND is_archived IS FALSE;
             """)
+            # Per-user reading position in the SHARED public books. The public row is
+            # owned by PUBLIC_LIBRARY_OWNER_ID, so progress can't live on it (it would be
+            # shared across everyone). This side table keeps each user's own progress +
+            # bookmark for a public document.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_reader_public_progress (
+                    user_id          BIGINT NOT NULL,
+                    document_id      BIGINT NOT NULL REFERENCES bt_3_reader_library(id) ON DELETE CASCADE,
+                    progress_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    bookmark_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    reading_mode     TEXT NOT NULL DEFAULT 'vertical',
+                    last_opened_at   TIMESTAMPTZ,
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, document_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_public_progress_user
+                ON bt_3_reader_public_progress (user_id, updated_at DESC);
+            """)
             # Cover image (lead image of a web article / journal) → shown on the
             # library card instead of a bare letter tile. Nullable, no rewrite.
             cursor.execute("""
@@ -28621,6 +28642,88 @@ def get_public_library_diagnostics() -> dict:
                 out["de_shelf"] = int(cursor.fetchone()[0])
     except Exception as exc:
         out["error"] = str(exc)
+    return out
+
+
+def upsert_public_reader_progress(
+    *,
+    user_id: int,
+    document_id: int,
+    progress_percent: float | None = None,
+    bookmark_percent: float | None = None,
+    reading_mode: str | None = None,
+) -> dict:
+    """Save THIS user's reading position in a shared public book. COALESCE semantics:
+    only the fields you pass are updated (a bookmark-only save keeps the progress)."""
+    resolved_progress = None if progress_percent is None else max(0.0, min(100.0, float(progress_percent)))
+    resolved_bookmark = None if bookmark_percent is None else max(0.0, min(100.0, float(bookmark_percent)))
+    resolved_mode = str(reading_mode or "").strip().lower()
+    if resolved_mode not in {"", "vertical", "horizontal"}:
+        resolved_mode = ""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_reader_public_progress
+                    (user_id, document_id, progress_percent, bookmark_percent, reading_mode,
+                     last_opened_at, created_at, updated_at)
+                VALUES (%s, %s, COALESCE(%s, 0), COALESCE(%s, 0),
+                        COALESCE(NULLIF(%s, ''), 'vertical'), NOW(), NOW(), NOW())
+                ON CONFLICT (user_id, document_id) DO UPDATE SET
+                    progress_percent = COALESCE(%s, bt_3_reader_public_progress.progress_percent),
+                    bookmark_percent = COALESCE(%s, bt_3_reader_public_progress.bookmark_percent),
+                    reading_mode = COALESCE(NULLIF(%s, ''), bt_3_reader_public_progress.reading_mode),
+                    last_opened_at = NOW(),
+                    updated_at = NOW()
+                RETURNING progress_percent, bookmark_percent, reading_mode;
+                """,
+                (
+                    int(user_id), int(document_id),
+                    resolved_progress, resolved_bookmark, resolved_mode,
+                    resolved_progress, resolved_bookmark, resolved_mode,
+                ),
+            )
+            row = cursor.fetchone()
+    return {
+        "progress_percent": round(float(row[0] or 0.0), 2),
+        "bookmark_percent": round(float(row[1] or 0.0), 2),
+        "reading_mode": str(row[2] or "vertical"),
+    }
+
+
+def get_public_reader_progress_map(user_id: int, document_ids: list[int] | None = None) -> dict[int, dict]:
+    """This user's saved progress for public books, keyed by document_id. Pass a list
+    of ids to fetch just those, or None for all of the user's public progress rows."""
+    ids = [int(d) for d in (document_ids or []) if d is not None]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if ids:
+                cursor.execute(
+                    """
+                    SELECT document_id, progress_percent, bookmark_percent, reading_mode, last_opened_at
+                    FROM bt_3_reader_public_progress
+                    WHERE user_id = %s AND document_id = ANY(%s);
+                    """,
+                    (int(user_id), ids),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT document_id, progress_percent, bookmark_percent, reading_mode, last_opened_at
+                    FROM bt_3_reader_public_progress
+                    WHERE user_id = %s;
+                    """,
+                    (int(user_id),),
+                )
+            rows = cursor.fetchall()
+    out: dict[int, dict] = {}
+    for r in rows:
+        out[int(r[0])] = {
+            "progress_percent": round(float(r[1] or 0.0), 2),
+            "bookmark_percent": round(float(r[2] or 0.0), 2),
+            "reading_mode": str(r[3] or "vertical"),
+            "last_opened_at": r[4].isoformat() if r[4] else None,
+        }
     return out
 
 

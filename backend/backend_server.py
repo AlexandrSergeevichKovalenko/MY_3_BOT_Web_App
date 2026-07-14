@@ -610,6 +610,8 @@ from backend.database import (
     finalize_reader_library_document_processing,
     prune_old_reader_articles,
     update_reader_library_state,
+    upsert_public_reader_progress,
+    get_public_reader_progress_map,
     rename_reader_library_document,
     archive_reader_library_document,
     delete_reader_library_document,
@@ -16456,9 +16458,11 @@ def _run_public_library_audio_pregen_job() -> None:
         logging.exception("public library audio pregen job failed")
 
 
-def _list_public_library_items(*, target_lang: str = "de") -> list[dict]:
+def _list_public_library_items(*, target_lang: str = "de", user_id: int | None = None) -> list[dict]:
     """Public-library items for the reader shelf, enriched with the catalog CEFR
-    level. Never raises — a failure here must not break the personal library list."""
+    level and (when user_id is given) THIS user's saved reading progress so the
+    classics cards show a % and resume where they left off. Never raises — a failure
+    here must not break the personal library list."""
     try:
         items = list_public_library_documents(target_lang=target_lang)
     except Exception:
@@ -16472,6 +16476,17 @@ def _list_public_library_items(*, target_lang: str = "de") -> list[dict]:
                 item["level"] = entry.level
     except Exception:
         logging.exception("public library level enrichment failed")
+    if user_id is not None and items:
+        try:
+            progress_map = get_public_reader_progress_map(int(user_id), [int(it.get("id") or 0) for it in items])
+            for item in items:
+                saved = progress_map.get(int(item.get("id") or 0))
+                if saved:
+                    item["progress_percent"] = saved.get("progress_percent", 0.0)
+                    item["bookmark_percent"] = saved.get("bookmark_percent", 0.0)
+                    item["last_opened_at"] = saved.get("last_opened_at") or item.get("last_opened_at")
+        except Exception:
+            logging.exception("public library progress merge failed user=%s", user_id)
     return items
 
 
@@ -49388,7 +49403,7 @@ def reader_library_list():
             wallet_balance_minor = 0
         # Curated public-domain "Классика" shelf — shared, free to read for everyone,
         # never subject to free-storage expiry (not the user's personal data).
-        public_items = _list_public_library_items(target_lang=target_lang)
+        public_items = _list_public_library_items(target_lang=target_lang, user_id=int(user_id))
         response_payload = {
             "ok": True,
             "items": items,
@@ -49597,6 +49612,21 @@ def reader_library_open():
                 user_id,
                 document_id,
             )
+        # Public books are shared (owner=0) so their row carries no per-user progress —
+        # overlay THIS user's saved position so a classic resumes where they left off.
+        if doc_is_public:
+            try:
+                saved = get_public_reader_progress_map(int(user_id), [int(document_id)]).get(int(document_id))
+                if saved:
+                    doc["progress_percent"] = saved.get("progress_percent", 0.0)
+                    doc["bookmark_percent"] = saved.get("bookmark_percent", 0.0)
+                    if saved.get("reading_mode"):
+                        doc["reading_mode"] = saved["reading_mode"]
+            except Exception:
+                logging.exception(
+                    "public reader progress overlay failed user_id=%s document_id=%s",
+                    user_id, document_id,
+                )
         processing_status = str(doc.get("processing_status") or "ready").strip().lower() or "ready"
         if processing_status != "ready":
             response_payload = _build_reader_processing_payload(doc)
@@ -49972,6 +50002,30 @@ def reader_library_state():
     except Exception as exc:
         return jsonify({"error": f"Ошибка обновления прогресса чтения: {exc}"}), 500
     if not doc:
+        # No personal row — this may be a shared public book. Save THIS user's own
+        # position into the per-user side table so classics resume where they stopped.
+        try:
+            public_doc = get_public_library_document(document_id=int(document_id), include_content=False)
+        except Exception:
+            public_doc = None
+        if public_doc:
+            try:
+                saved = upsert_public_reader_progress(
+                    user_id=int(user_id),
+                    document_id=int(document_id),
+                    progress_percent=progress_val,
+                    bookmark_percent=bookmark_val,
+                    reading_mode=str(reading_mode or "").strip().lower() or None,
+                )
+            except Exception as exc:
+                return jsonify({"error": f"Ошибка обновления прогресса чтения: {exc}"}), 500
+            return jsonify({"ok": True, "document": {
+                "id": int(document_id),
+                "is_public": True,
+                "progress_percent": saved["progress_percent"],
+                "bookmark_percent": saved["bookmark_percent"],
+                "reading_mode": saved["reading_mode"],
+            }})
         return jsonify({"error": "Книга не найдена"}), 404
     return jsonify({"ok": True, "document": doc})
 
