@@ -6521,6 +6521,79 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
   font-size: 18px;
 }
 
+.webapp-inline-toast.is-maintenance {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 440px);
+  padding: 12px 14px;
+  text-align: left;
+  background:
+    linear-gradient(135deg, rgba(63, 166, 242, 0.24), rgba(45, 127, 224, 0.16)),
+    rgba(15, 23, 42, 0.92);
+  border-color: rgba(63, 166, 242, 0.42);
+  color: #eff6ff;
+  box-shadow: 0 18px 36px rgba(8, 11, 26, 0.3);
+  animation-name: webappInlineLimitToastFade;
+}
+
+.webapp-inline-toast.is-maintenance::before {
+  content: "🔒";
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(63, 166, 242, 0.2);
+  border: 1px solid rgba(63, 166, 242, 0.34);
+  font-size: 18px;
+}
+
+/* Заглушка секции «Голосовой ассистент», пока раздел на доработке. */
+.voice-assistant-under-construction {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 26px 20px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  background:
+    linear-gradient(150deg, rgba(63, 166, 242, 0.12), rgba(45, 127, 224, 0.05)),
+    rgba(15, 23, 42, 0.5);
+}
+.voice-assistant-under-construction .vauc-lock {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  font-size: 26px;
+  background: rgba(63, 166, 242, 0.16);
+  border: 1px solid rgba(63, 166, 242, 0.3);
+}
+.voice-assistant-under-construction .vauc-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: #e8f1ff;
+}
+.voice-assistant-under-construction .vauc-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.78);
+  max-width: 340px;
+}
+.voice-assistant-under-construction.is-theme-light {
+  background:
+    linear-gradient(150deg, rgba(63, 166, 242, 0.12), rgba(45, 127, 224, 0.04)),
+    #ffffff;
+  border-color: rgba(45, 127, 224, 0.2);
+}
+.voice-assistant-under-construction.is-theme-light .vauc-title { color: #0f2744; }
+.voice-assistant-under-construction.is-theme-light .vauc-text { color: rgba(30, 41, 59, 0.72); }
+
 .dictionary-save-limit-notice {
   margin: 12px 0;
 }

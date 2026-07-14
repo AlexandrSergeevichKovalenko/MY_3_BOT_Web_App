@@ -162,6 +162,10 @@ function LibraryWordDetail({ item }) {
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
 const loadLiveKitRuntime = () => import('./components/LiveKitRuntime');
 const LazyLiveKitRuntime = lazy(loadLiveKitRuntime);
+// Голосовой ассистент (LiveKit) ещё не запущен на проде — раздел «Разговор» помечен «на доработке».
+// Поставить false, когда LiveKit-сервис будет включён. См. память project_api_token_livekit_auth_hole
+// (перед включением надо закрыть auth-дыру /api/token).
+const ASSISTANT_UNDER_CONSTRUCTION = true;
 const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const SINGLE_INSTANCE_STALE_MS = 5000;
@@ -15334,7 +15338,19 @@ function AppInner() {
     }, 80);
   };
 
+  const showAssistantUnderConstructionToast = () => {
+    showInlineToast(
+      tr('Раздел «Разговор» на доработке — скоро откроем 🔒', 'Bereich „Sprechen“ ist in Arbeit — bald verfügbar 🔒'),
+      5000,
+      'maintenance'
+    );
+  };
+
   const openSingleSectionAndScroll = (key, ref) => {
+    if (key === 'assistant' && ASSISTANT_UNDER_CONSTRUCTION) {
+      showAssistantUnderConstructionToast();
+      return;
+    }
     if (isKnownFreePaidSurfaceMode && ['home_today', 'home_weekly_plan', 'home_skills'].includes(key)) {
       showInlineToast(
         tr('Доступно по подписке', 'Nur im Abo verfügbar.'),
@@ -15760,6 +15776,10 @@ function AppInner() {
   }, [dismissWeeklySummaryModal, menuMultiSelect]);
 
   const handleMenuSelection = (key, ref) => {
+    if (key === 'assistant' && ASSISTANT_UNDER_CONSTRUCTION) {
+      showAssistantUnderConstructionToast();
+      return;
+    }
     if (key === 'economics' && !canViewEconomics) return;
     if (key === 'youtube' && !menuMultiSelect) {
       const backCandidate = Array.from(selectedSections).find((item) => item && item !== 'youtube') || '';
@@ -32892,6 +32912,7 @@ function AppInner() {
                 openSection={openSingleSectionAndScroll}
                 onOpenMore={openMoreFunctionsPanel}
                 canViewEconomics={canViewEconomics}
+                lockedSections={ASSISTANT_UNDER_CONSTRUCTION ? ['assistant'] : []}
                 refs={{
                   translationsRef,
                   flashcardsRef,
@@ -37810,7 +37831,13 @@ function AppInner() {
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 
-                {assistantSurfaceProRequired ? (
+                {ASSISTANT_UNDER_CONSTRUCTION ? (
+                  <div className={`voice-assistant-under-construction ${isLightTheme ? 'is-theme-light' : ''}`}>
+                    <div className="vauc-lock">🔒</div>
+                    <div className="vauc-title">{tr('Раздел на доработке', 'Bereich in Arbeit')}</div>
+                    <div className="vauc-text">{tr('Голосовой ассистент временно недоступен — мы его дорабатываем и скоро откроем.', 'Der Sprachassistent ist vorübergehend nicht verfügbar — wir arbeiten daran und öffnen ihn bald.')}</div>
+                  </div>
+                ) : assistantSurfaceProRequired ? (
                   renderAppPaidFeatureNotice(assistantPaidFeatureTitle)
                 ) : !assistantToken ? (
                   <div className={`voice-assistant-join ${isLightTheme ? 'is-theme-light' : ''}`}>

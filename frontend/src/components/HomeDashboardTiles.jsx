@@ -245,6 +245,7 @@ export default function HomeDashboardTiles({
   showBadges = true,
   showMetrics = true,
   canViewEconomics = false,
+  lockedSections = [],
 }) {
   const currentUiLang = uiLang === 'de' ? 'de' : 'ru';
   const badges = {
@@ -276,13 +277,15 @@ export default function HomeDashboardTiles({
           const label = currentUiLang === 'de' ? def.de : def.ru;
           const ref = refs[def.refKey] || null;
           const onClick = () => { if (def.sectionKey && openSection) openSection(def.sectionKey, ref); };
+          const locked = Array.isArray(lockedSections) && lockedSections.includes(def.sectionKey);
 
           if (def.hero) {
             const badge = badges[def.k];
             const pct = pctFromBadge(badge);
             return (
               <button key={def.k} type="button" onClick={onClick}
-                className={`hdt-bt hero hdt-a-${def.k} hdt-c-${def.k}`} aria-label={label}>
+                className={`hdt-bt hero hdt-a-${def.k} hdt-c-${def.k} ${locked ? 'hdt-locked' : ''}`} aria-label={label}>
+                {locked && <span className="hdt-lock" aria-hidden="true">🔒</span>}
                 <div className="hdt-bt-top">
                   <div className="hdt-ic"><Icon name={def.k} size={24} /></div>
                   {badge && <div className="hdt-ring"><Ring pct={pct} /><div className="hdt-rp">{badge.text}</div></div>}
@@ -300,7 +303,8 @@ export default function HomeDashboardTiles({
           const badge = badges[def.k];
           return (
             <button key={def.k} type="button" onClick={onClick}
-              className={`hdt-bt hdt-a-${def.k} hdt-c-${def.k}`} aria-label={label}>
+              className={`hdt-bt hdt-a-${def.k} hdt-c-${def.k} ${locked ? 'hdt-locked' : ''}`} aria-label={label}>
+              {locked && <span className="hdt-lock" aria-hidden="true">🔒</span>}
               {showBadges && badge && <span className="hdt-badge">{badge.text}</span>}
               <div className="hdt-bt-top">
                 <div className="hdt-ic"><Icon name={def.k} size={20} /></div>

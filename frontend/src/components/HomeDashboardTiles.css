@@ -72,6 +72,14 @@
 .hdt-bt.hero .hdt-ic{ width:44px; height:44px; border-radius:14px; }
 .hdt-bt.hero .hdt-bl{ font-family:var(--hdt-disp); font-size:15px; font-weight:600; }
 
+/* «На доработке» — приглушённый тон плитки + аккуратный замок в углу. */
+.hdt-bt.hdt-locked{ filter:grayscale(0.5) brightness(0.82) saturate(0.85); }
+.hdt-bt.hdt-locked .hdt-ic,.hdt-bt.hdt-locked .hdt-bl{ opacity:0.74; }
+.hdt-lock{ position:absolute; top:7px; right:7px; z-index:3; width:22px; height:22px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center; font-size:11px; line-height:1;
+  background:rgba(2,6,18,0.42); border:1px solid rgba(255,255,255,0.42);
+  box-shadow:0 2px 6px rgba(0,0,0,0.32); }
+
 /* Section (non-hero) tile labels ALWAYS stay on one line; on phones their
    size adapts to screen width (see App.css phone media query) so the longest
    label (e.g. «Аналитика» / «Sprechen») fits a single column and never wraps. */
