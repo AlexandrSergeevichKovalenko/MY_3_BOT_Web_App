@@ -28566,6 +28566,64 @@ def get_public_library_document(
     return _public_library_row_to_dict(row, include_content=include_content)
 
 
+def get_public_library_diagnostics() -> dict:
+    """READ-ONLY diagnosis of why the «Классика» shelf may show 0: whether the
+    is_public column exists, how many public rows there are, their target_lang
+    spread, archived count, and how many actually match the shelf query
+    (is_public AND not archived AND target_lang='de'). Never raises."""
+    out = {
+        "column_exists": False,
+        "total_public": 0,
+        "by_target_lang": {},
+        "archived_public": 0,
+        "de_shelf": 0,
+        "error": None,
+    }
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'bt_3_reader_library'
+                          AND column_name = 'is_public'
+                    );
+                    """
+                )
+                out["column_exists"] = bool(cursor.fetchone()[0])
+                if not out["column_exists"]:
+                    return out
+                cursor.execute("SELECT COUNT(*) FROM bt_3_reader_library WHERE is_public IS TRUE;")
+                out["total_public"] = int(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    SELECT COALESCE(NULLIF(TRIM(target_lang), ''), '∅') AS tl, COUNT(*)
+                    FROM bt_3_reader_library
+                    WHERE is_public IS TRUE
+                    GROUP BY 1 ORDER BY 2 DESC;
+                    """
+                )
+                out["by_target_lang"] = {str(r[0]): int(r[1]) for r in cursor.fetchall()}
+                cursor.execute(
+                    "SELECT COUNT(*) FROM bt_3_reader_library "
+                    "WHERE is_public IS TRUE AND COALESCE(is_archived, FALSE) = TRUE;"
+                )
+                out["archived_public"] = int(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM bt_3_reader_library
+                    WHERE is_public IS TRUE
+                      AND COALESCE(is_archived, FALSE) = FALSE
+                      AND LOWER(TRIM(target_lang)) = 'de';
+                    """
+                )
+                out["de_shelf"] = int(cursor.fetchone()[0])
+    except Exception as exc:
+        out["error"] = str(exc)
+    return out
+
+
 # ── Audio wallet & per-book unlock helpers (Phase 2) ─────────────────────────
 
 def get_audio_wallet(user_id: int) -> dict:

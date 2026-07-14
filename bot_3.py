@@ -33185,6 +33185,65 @@ async def admin_crossword_health_command(update: Update, context: CallbackContex
     await message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
+async def admin_reader_public_status_command(update: Update, context: CallbackContext) -> None:
+    """Diagnose WHY the reader «Классика» shelf shows 0 books: is the is_public column
+    present, how many public rows exist, their target_lang spread, and how many match
+    the shelf query (is_public · not archived · target_lang=de). Read-only.
+    Pass 'ingest' to re-ingest the whole public-domain catalog: /reader_public_status ingest"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    arg = (context.args[0].strip().lower() if context.args else "")
+
+    from backend.database import get_public_library_diagnostics
+    diag = await asyncio.to_thread(get_public_library_diagnostics)
+    if diag.get("error"):
+        await message.reply_text(f"❌ status failed: {diag['error']}")
+        return
+
+    langs = ", ".join(f"{k}:{v}" for k, v in (diag.get("by_target_lang") or {}).items()) or "—"
+    lines = [
+        "🏛️ <b>Классика — статус</b>",
+        f"• колонка is_public: {'✅ есть' if diag['column_exists'] else '❌ НЕТ'}",
+        f"• всего публичных строк: <b>{diag['total_public']}</b>",
+        f"• по target_lang: {langs}",
+        f"• архивных публичных: {diag['archived_public']}",
+        f"• попадает в полку (de, не архив): <b>{diag['de_shelf']}</b>",
+    ]
+    if diag["de_shelf"] == 0:
+        if not diag["column_exists"]:
+            lines.append("\n⚠️ Нет колонки is_public — схема не применилась. Перезапусти сервис, затем ingest.")
+        else:
+            lines.append("\n⚠️ Полка пуста. Залить каталог: <code>/reader_public_status ingest</code>")
+    await message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    if arg == "ingest":
+        await message.reply_text("⏳ Заливаю каталог классики (скачивание с Gutenberg) — это до пары минут…")
+        try:
+            from backend.backend_server import ingest_public_library_catalog
+            res = await asyncio.to_thread(ingest_public_library_catalog, dry_run=False)
+        except Exception as exc:
+            logging.exception("public library ingest via bot failed")
+            await message.reply_text(f"❌ ingest failed: {exc}")
+            return
+        failed = [r for r in (res.get("results") or []) if not r.get("ok")]
+        tail = ""
+        if failed:
+            names = ", ".join(str(r.get("slug")) for r in failed[:8])
+            tail = f"\n❌ не удалось: {names}"
+        after = await asyncio.to_thread(get_public_library_diagnostics)
+        await message.reply_text(
+            f"✅ Ingest готов: {res.get('ok')}/{res.get('total')} книг."
+            f"\nСейчас в полке (de): <b>{after.get('de_shelf')}</b>." + tail
+            + "\n\nОткрой читалку заново — «Классика» должна заполниться.",
+            parse_mode="HTML",
+        )
+
+
 async def admin_crossword_revive_command(update: Update, context: CallbackContext) -> None:
     """Un-retire every crossword whose image is still ready (resets fail_count) so they
     re-enter rotation. Recovers cards that were auto-retired by transient send outages —
@@ -35920,6 +35979,7 @@ def main():
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("cw_health", admin_crossword_health_command))
+    application.add_handler(CommandHandler("reader_public_status", admin_reader_public_status_command))
     application.add_handler(CommandHandler("admin_cw_revive", admin_crossword_revive_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
     application.add_handler(CommandHandler("admin_ls_pool", admin_listening_pool_command))
