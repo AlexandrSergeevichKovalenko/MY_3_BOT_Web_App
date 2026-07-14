@@ -618,7 +618,7 @@ body {
      screen height (the pinned Bento fills the viewport, so tile height ∝ vh) and
      are clamped to safe min/max — so labels fit and never clip on short phones,
      while staying full-size on tall ones. */
-  .webapp-page.is-home-bento .hdt-bt { padding: clamp(8px, 1.4vh, 13px); }
+  .webapp-page.is-home-bento .hdt-bt { padding: clamp(7px, 1.2vh, 12px); }
   .webapp-page.is-home-bento .hdt-ic {
     width: clamp(26px, 4vh, 38px);
     height: clamp(26px, 4vh, 38px);
@@ -630,11 +630,15 @@ body {
     border-radius: 13px;
   }
   .webapp-page.is-home-bento .hdt-ic svg { width: 56%; height: 56%; }
-  .webapp-page.is-home-bento .hdt-bl {
-    /* Slightly bolder + larger labels (weight 900 via base .hdt-bl), still
-       clamped so they scale with screen height and never overflow the tile. */
-    font-size: clamp(10.5px, 1.7vh, 12.8px);
+  /* Section-tile labels: ALWAYS one line, sized by screen WIDTH so the longest
+     label (e.g. «Аналитика» / «Sprechen») fits a single column on any phone and
+     shrinks gracefully on narrow screens. Bold (weight 900 via base .hdt-bl) so
+     they stay clearly visible. Hero tiles keep their own height-based sizing. */
+  .webapp-page.is-home-bento .hdt-bt:not(.hero) .hdt-bl {
+    white-space: nowrap;
+    font-size: clamp(9px, 2.9vw, 12.8px);
     line-height: 1.1;
+    letter-spacing: -0.02em;
   }
   .webapp-page.is-home-bento .hdt-bt.hero .hdt-bl {
     font-size: clamp(12px, 1.95vh, 15px);

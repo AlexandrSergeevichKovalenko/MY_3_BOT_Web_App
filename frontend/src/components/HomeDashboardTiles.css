@@ -72,6 +72,11 @@
 .hdt-bt.hero .hdt-ic{ width:44px; height:44px; border-radius:14px; }
 .hdt-bt.hero .hdt-bl{ font-family:var(--hdt-disp); font-size:15px; font-weight:600; }
 
+/* Section (non-hero) tile labels ALWAYS stay on one line; on phones their
+   size adapts to screen width (see App.css phone media query) so the longest
+   label (e.g. «Аналитика» / «Sprechen») fits a single column and never wraps. */
+.hdt-bt:not(.hero) .hdt-bl{ white-space:nowrap; letter-spacing:-0.02em; }
+
 .hdt-ring{ position:relative; }
 .hdt-ring .hdt-rp{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--hdt-disp); font-size:11px; font-weight:600; color:#fff; }
 .hdt-bars{ display:flex; align-items:flex-end; gap:3.5px; height:26px; margin-top:9px; position:relative; z-index:1; }
