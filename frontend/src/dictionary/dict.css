@@ -124,6 +124,62 @@
   cursor: pointer;
 }
 .dict-translate-primary:disabled { opacity: 0.5; box-shadow: none; cursor: default; }
+
+/* ── Return-to-bot gate: shown when the user blocked/deleted the bot. Same brand
+   card + indigo gradient as the rest of the dictionary — never a raw error. ──── */
+.dq-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 34px 20px 30px;
+}
+.dq-gate-badge {
+  width: 78px;
+  height: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 38px;
+  border-radius: 22px;
+  margin-bottom: 16px;
+  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  box-shadow: 0 12px 26px rgba(79, 70, 229, 0.36);
+}
+.dq-gate-title {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.3;
+  margin: 0 0 12px;
+}
+.dq-gate-text {
+  font-size: 15px;
+  line-height: 1.55;
+  max-width: 330px;
+  margin: 0 0 10px;
+  color: var(--dmps-text-secondary, #64748b);
+}
+.dq-gate-btn {
+  margin-top: 16px;
+  height: 50px;
+  padding: 0 32px;
+  border: none;
+  border-radius: 16px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(180deg, #6366F1, #4f46e5);
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.3);
+  cursor: pointer;
+  transition: transform 0.08s ease;
+}
+.dq-gate-btn:active { transform: translateY(1px); }
+.dq-gate-hint {
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--dmps-text-secondary, #94a3b8);
+}
 /* «Подробный разбор» — lazy streamed breakdown trigger under the quick translation. */
 .dict-breakdown-cta { margin: 10px 0 2px; }
 .dict-breakdown-button {

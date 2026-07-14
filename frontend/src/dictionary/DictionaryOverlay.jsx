@@ -94,6 +94,48 @@ function bumpChipHintCount() {
   try { localStorage.setItem(CHIP_HINT_KEY, String(chipHintCount() + 1)); } catch (_e) { /* ignore */ }
 }
 
+// Full-screen "return to bot" gate shown when the user has blocked/deleted the bot. The
+// standalone home-screen dictionary is part of the bot; leaving the bot turns it off. A return
+// (press «Запустить» in the bot) clears the server-side flag, so the next translate just works.
+function DictBlockedGate({ botUsername }) {
+  const uname = String(botUsername || '').replace(/^@/, '').trim();
+  const openBot = () => {
+    if (!uname) return;
+    const link = `https://t.me/${uname}`;
+    const tg = window?.Telegram?.WebApp;
+    try {
+      if (typeof tg?.openTelegramLink === 'function') { tg.openTelegramLink(link); return; }
+    } catch (_e) { /* fall through to plain navigation */ }
+    window.location.href = link;
+  };
+  return (
+    <div className="ans-root dq-scroll">
+      <div className="ans-card dq-card">
+        <div className="dq-gate">
+          <div className="dq-gate-badge">📖</div>
+          <h2 className="dq-gate-title">Словарь работает вместе с ботом</h2>
+          <p className="dq-gate-text">
+            Похоже, бот удалён или заблокирован. Быстрый словарь — часть бота, поэтому переводы
+            доступны, пока бот у тебя запущен.
+          </p>
+          <p className="dq-gate-text">
+            Вернись в бота и нажми «Запустить» — словарь тут же снова заработает.
+          </p>
+          {uname ? (
+            <button type="button" className="dq-gate-btn" onClick={openBot}>
+              Открыть бота
+            </button>
+          ) : (
+            <p className="dq-gate-hint">
+              Открой Telegram и запусти бота, из которого добавил словарь.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DictionaryOverlay() {
   const [query, setQuery] = useState('');
   const [phase, setPhase] = useState('idle'); // idle|loading|done|error
@@ -114,6 +156,7 @@ export default function DictionaryOverlay() {
     try { return localStorage.getItem('dq_auto') !== '0'; } catch (_e) { return true; }
   });
   const [chipHint, setChipHint] = useState(false); // brief "tap a synonym to save it" toast
+  const [blocked, setBlocked] = useState(null); // {botUsername} when the user left the bot → gate screen
   const lastAutoRef = useRef(''); // text already auto/manually translated (debounce dedupe)
   const chipHintDoneRef = useRef(false); // shown for the current breakdown already
   const seqRef = useRef(0);
@@ -260,6 +303,13 @@ export default function DictionaryOverlay() {
       }
     } catch (e) {
       if (mySeq !== seqRef.current) return;
+      // The user blocked/deleted the bot → the dictionary is gated. Show the return screen
+      // instead of a raw error; a return to the bot unlocks it again on the next translate.
+      if (e && e.status === 403 && (e.payload?.blocked || e.payload?.reason === 'bot_blocked')) {
+        setBlocked({ botUsername: String(e.payload?.bot_username || '').trim() });
+        setPhase('idle'); haptic('bad');
+        return;
+      }
       setError(friendlyError(e)); setPhase('error'); haptic('bad');
     }
   }, [query, phase, tts, forcedDir]);
@@ -674,6 +724,10 @@ export default function DictionaryOverlay() {
   const onKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); translate(); }
   };
+
+  if (blocked) {
+    return <DictBlockedGate botUsername={blocked.botUsername} />;
+  }
 
   return (
     <div className="ans-root dq-scroll">

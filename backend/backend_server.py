@@ -4010,6 +4010,56 @@ def _resolve_webapp_user_id(payload: dict | None = None) -> int | None:
     return None
 
 
+# Standalone-dictionary abandonment gate. Someone who BLOCKED/DELETED the bot must not keep
+# using the detached home-screen dictionary. We never check per-request against Telegram: the
+# "blocked" flag is event-driven (my_chat_member / Forbidden), and we cache the yes/no decision
+# in Redis for a day so a lookup only reads a single key. Fails OPEN — a Redis/DB hiccup never
+# wrongly locks anyone out. A block/return event busts this key so a return unlocks promptly.
+_DICT_GATE_CACHE_TTL_SEC = max(
+    60, int(str(os.getenv("DICT_GATE_CACHE_TTL_SEC") or "86400").strip() or "86400")
+)
+
+
+def _dict_user_has_left_bot(user_id: int | None) -> bool:
+    if not user_id or int(user_id) <= 0:
+        return False
+    key = f"dict:gate:{int(user_id)}"
+    try:
+        client = get_redis_client()
+    except Exception:
+        client = None
+    if client is not None:
+        try:
+            cached = client.get(key)
+            if cached is not None:
+                return str(cached) == "1"
+        except Exception:
+            pass
+    blocked = False
+    try:
+        from backend.database import is_user_bot_blocked
+        blocked = bool(is_user_bot_blocked(int(user_id)))
+    except Exception:
+        blocked = False
+    if client is not None:
+        try:
+            client.setex(key, _DICT_GATE_CACHE_TTL_SEC, "1" if blocked else "0")
+        except Exception:
+            pass
+    return blocked
+
+
+def _dict_gate_response():
+    """The 403 the standalone dictionary renders as a full-screen 'return to bot' screen.
+    Carries the bot username so its button can deep-link straight back to the bot."""
+    return jsonify({
+        "blocked": True,
+        "reason": "bot_blocked",
+        "bot_username": TELEGRAM_BOT_USERNAME,
+        "message": "Чтобы пользоваться словарём, вернись в бота.",
+    }), 403
+
+
 def _extract_webapp_instance_id(payload: dict | None = None) -> str | None:
     body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
     raw = str(
@@ -32593,6 +32643,16 @@ def translate_quick():
         except Exception:
             user_id_for_billing = None
 
+    # Standalone-dictionary abandonment gate. This is the FIRST call the detached home-screen
+    # dictionary makes, and it otherwise never consults the browser token — so resolve the acting
+    # user (initData OR durable browser token) and refuse if they left the bot. Only a resolved,
+    # blocked user is gated; anonymous/in-app callers pass through untouched.
+    acting_user_id = _resolve_webapp_user_id(payload) or user_id_for_billing
+    if acting_user_id and _dict_user_has_left_bot(acting_user_id):
+        return _dict_gate_response()
+    if user_id_for_billing is None and acting_user_id:
+        user_id_for_billing = int(acting_user_id)
+
     cache_key = _build_quick_translate_cache_key(text=text, source_lang=source_lang, target_lang=target_lang)
     cached_payload = _get_cached_quick_translate(cache_key)
     if isinstance(cached_payload, dict) and str(cached_payload.get("translation") or "").strip():
@@ -32934,6 +32994,8 @@ def lookup_webapp_dictionary():
     user_id = _resolve_webapp_user_id(payload)
     if not user_id:
         return jsonify({"error": "initData не прошёл проверку"}), 401
+    if _dict_user_has_left_bot(user_id):
+        return _dict_gate_response()
     mark("validated")
 
     user_id_for_log = int(user_id)

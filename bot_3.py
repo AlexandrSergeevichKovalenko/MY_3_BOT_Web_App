@@ -6171,6 +6171,50 @@ async def handle_bot_group_membership(update: Update, context: CallbackContext) 
         logging.warning("⚠️ Не удалось отправить enrollment prompt в chat_id=%s: %s", getattr(chat, "id", None), exc)
 
 
+def _mark_user_bot_blocked(user_id: int, blocked: bool) -> None:
+    """Persist that a user blocked/returned to the bot AND bust the standalone-dictionary
+    day-cache so the change takes effect promptly (a return → the dictionary unlocks at once,
+    without waiting out the ~24h gate cache). Safe to call from any thread."""
+    try:
+        from backend.database import set_user_bot_blocked
+        set_user_bot_blocked(int(user_id), bool(blocked))
+    except Exception:
+        logging.warning("⚠️ set_user_bot_blocked failed user_id=%s", user_id, exc_info=True)
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is not None:
+            client.delete(f"dict:gate:{int(user_id)}")
+    except Exception:
+        logging.debug("dict gate cache bust failed user_id=%s", user_id, exc_info=True)
+
+
+async def handle_private_bot_block_status(update: Update, context: CallbackContext) -> None:
+    """Track when a user blocks/deletes the bot (or returns) in a PRIVATE chat. This is the
+    signal that lets us gate the standalone home-screen dictionary — see _mark_user_bot_blocked.
+    Runs in its own handler group so it never competes with the group-membership handler."""
+    membership_update = getattr(update, "my_chat_member", None)
+    if not membership_update:
+        return
+    chat = membership_update.chat
+    if str(getattr(chat, "type", "") or "").strip().lower() != "private":
+        return
+    uid = getattr(chat, "id", None)
+    if uid is None:
+        return
+    new_status = str(getattr(membership_update.new_chat_member, "status", "") or "").strip().lower()
+    old_status = str(getattr(membership_update.old_chat_member, "status", "") or "").strip().lower()
+    # In a private chat with a bot, blocking/deleting flips the bot member to "kicked";
+    # unblocking / pressing Start flips it back to "member". We deliberately match ONLY
+    # "kicked" — a plain "left"→"member" is an ordinary first /start, not a return-from-block.
+    if new_status == "kicked":
+        await asyncio.to_thread(_mark_user_bot_blocked, int(uid), True)
+        logging.info("🚫 user_id=%s заблокировал/удалил бота", int(uid))
+    elif new_status == "member" and old_status == "kicked":
+        await asyncio.to_thread(_mark_user_bot_blocked, int(uid), False)
+        logging.info("✅ user_id=%s вернулся в бота", int(uid))
+
+
 async def track_group_member_context(update: Update, context: CallbackContext) -> None:
     membership_update = getattr(update, "chat_member", None)
     if not membership_update:
@@ -34811,6 +34855,14 @@ async def _send_poll_quiz_for_target(
                 "⚠️ suppressing scheduled quiz target chat_id=%s for %ss after permanent send failure: %s",
                 int(target_chat_id), QUIZ_DELIVERY_SUPPRESS_SECONDS, exc,
             )
+            # Backlog harvest: a private-chat Forbidden means this user blocked/deleted the bot.
+            # (chat_id > 0 ⇒ private user; groups are negative.) Catches people who left BEFORE
+            # this feature shipped, so their standalone dictionary also gets gated.
+            try:
+                if isinstance(exc, Forbidden) and int(target_chat_id) > 0:
+                    await asyncio.to_thread(_mark_user_bot_blocked, int(target_chat_id), True)
+            except Exception:
+                logging.debug("forbidden-harvest mark blocked failed chat_id=%s", target_chat_id, exc_info=True)
         logging.warning("⚠️ Не удалось отправить mc-квиз в chat_id=%s: %s", target_chat_id, exc)
         return False
 
@@ -35636,6 +35688,8 @@ def main():
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
     application.add_handler(ChatMemberHandler(handle_bot_group_membership, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-4)
+    # Private-chat block/return detection (separate group so both my_chat_member handlers run).
+    application.add_handler(ChatMemberHandler(handle_private_bot_block_status, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-5)
     application.add_handler(ChatMemberHandler(track_group_member_context, chat_member_types=ChatMemberHandler.CHAT_MEMBER), group=-3)
     application.add_handler(TypeHandler(Update, enforce_user_access, block=True), group=-2)
     # Attribute any OpenAI usage during this update to the acting user (bot tier).

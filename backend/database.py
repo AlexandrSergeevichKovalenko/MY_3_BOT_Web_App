@@ -19896,6 +19896,88 @@ def revoke_dict_browser_tokens_for_user(user_id: int) -> int:
         return 0
 
 
+_BOT_BLOCKED_SCHEMA_READY = False
+_BOT_BLOCKED_SCHEMA_LOCK = threading.Lock()
+
+
+def ensure_bot_blocked_table() -> None:
+    """User-level 'has this person blocked/deleted the bot' flag. Populated event-driven from
+    Telegram my_chat_member updates (and Forbidden send-failures) — never by polling. Used to
+    gate the standalone home-screen dictionary so someone who left the bot can't keep using it."""
+    global _BOT_BLOCKED_SCHEMA_READY
+    if _BOT_BLOCKED_SCHEMA_READY:
+        return
+    with _BOT_BLOCKED_SCHEMA_LOCK:
+        if _BOT_BLOCKED_SCHEMA_READY:
+            return
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_xact_lock(%s);", (94081100,))
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_bot_blocked_users (
+                        user_id BIGINT PRIMARY KEY,
+                        is_blocked BOOLEAN NOT NULL DEFAULT TRUE,
+                        blocked_at TIMESTAMPTZ,
+                        unblocked_at TIMESTAMPTZ,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                conn.commit()
+        _BOT_BLOCKED_SCHEMA_READY = True
+
+
+def set_user_bot_blocked(user_id: int, blocked: bool) -> None:
+    """Record that a user blocked (or returned to) the bot. Idempotent upsert."""
+    ensure_bot_blocked_table()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                if blocked:
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_bot_blocked_users (user_id, is_blocked, blocked_at, updated_at)
+                        VALUES (%s, TRUE, NOW(), NOW())
+                        ON CONFLICT (user_id) DO UPDATE
+                        SET is_blocked = TRUE, blocked_at = NOW(), updated_at = NOW();
+                        """,
+                        (int(user_id),),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_bot_blocked_users (user_id, is_blocked, unblocked_at, updated_at)
+                        VALUES (%s, FALSE, NOW(), NOW())
+                        ON CONFLICT (user_id) DO UPDATE
+                        SET is_blocked = FALSE, unblocked_at = NOW(), updated_at = NOW();
+                        """,
+                        (int(user_id),),
+                    )
+                conn.commit()
+    except Exception:
+        logging.warning("set_user_bot_blocked failed user_id=%s", user_id, exc_info=True)
+
+
+def is_user_bot_blocked(user_id: int) -> bool:
+    """True only when we hold a positive record that the user blocked/deleted the bot.
+    Fails OPEN (returns False) on any error — we never wrongly lock out a paying user
+    because of a DB hiccup."""
+    try:
+        ensure_bot_blocked_table()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT is_blocked FROM bt_3_bot_blocked_users WHERE user_id = %s;",
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+        return bool(row and row[0])
+    except Exception:
+        logging.debug("is_user_bot_blocked failed user_id=%s", user_id, exc_info=True)
+        return False
+
+
 def get_shortcut_installations_for_user(user_id: int, *, active_only: bool = True) -> list[dict]:
     ensure_shortcut_tables()
     query = """
