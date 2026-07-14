@@ -215,6 +215,8 @@ export default function ReaderSection(props) {
   // Which library book has its action menu (⋯) expanded — Apple-Books style, one
   // quiet corner button instead of a permanent 4-button row on every cover.
   const [readerLibActionsOpenId, setReaderLibActionsOpenId] = React.useState(null);
+  // Library overview vs a single shelf detail: null | 'mine' | 'classics' | 'articles'
+  const [readerLibraryShelf, setReaderLibraryShelf] = React.useState(null);
   const readerColIndexRef = React.useRef(0);
   const readerColCountRef = React.useRef(1);
   const readerColGoLastRef = React.useRef(false);
@@ -781,16 +783,152 @@ export default function ReaderSection(props) {
 
         if (showLibraryMode) {
           // ════════════════════════════════════════════════════════════════
-          //  LIBRARY MODE
+          //  LIBRARY MODE — 3 shelves overview → tap → category grid
           // ════════════════════════════════════════════════════════════════
-          return (
-            <div className="reader-library-mode">
+          const notArchivedBase = readerDocuments.filter((item) => {
+            if (!readerIncludeArchived && Boolean(item?.is_archived)) return false;
+            return true;
+          });
+          const allBooks = notArchivedBase.filter((it) => String(it?.source_type || '') !== 'html');
+          const allArticles = notArchivedBase.filter((it) => String(it?.source_type || '') === 'html');
+          const publicItems = Array.isArray(readerPublicDocuments) ? readerPublicDocuments : [];
+          const shelfDefs = [
+            {
+              key: 'mine', accent: 'mine', emoji: '📚',
+              name: tr('Мои книги', 'Meine Bücher'),
+              desc: tr('Загруженные книги и PDF', 'Hochgeladene Bücher & PDFs'),
+              items: allBooks,
+            },
+            {
+              key: 'classics', accent: 'classics', emoji: '🏛️',
+              name: tr('Классика', 'Klassiker'),
+              desc: tr('Бесплатно, с озвучкой', 'Kostenlos, mit Audio'),
+              items: publicItems,
+            },
+            {
+              key: 'articles', accent: 'articles', emoji: '📰',
+              name: tr('Статьи', 'Artikel'),
+              desc: tr('Из интернета, очищаются сами', 'Aus dem Web, selbstreinigend'),
+              items: allArticles,
+            },
+          ];
+          const activeShelf = readerLibraryShelf
+            ? (shelfDefs.find((s) => s.key === readerLibraryShelf) || null)
+            : null;
+          const backToShelves = () => { setReaderLibraryShelf(null); setReaderLibActionsOpenId(null); };
 
-              {/* ── Library header ─────────────────────────────────── */}
+          // Public-domain «Классика» card (read-only, level chip, no ⋯ actions).
+          const renderReaderPublicCard = (item) => {
+            const coverUrl = getReaderCoverUrl(item);
+            const initials = getReaderCoverInitials(item?.title);
+            const gradient = getReaderCoverGradient(item);
+            const isOpening = Number(readerOpeningDocumentId) === Number(item.id);
+            return (
+              <div
+                key={`reader-public-${item.id}`}
+                className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}${isOpening ? ' is-opening' : ''}`}
+                onClick={() => openReaderDocument(item.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
+              >
+                <div
+                  className="reader-library-cover"
+                  style={{ background: `linear-gradient(150deg, ${gradient[0]} 0%, ${gradient[1]} 100%)` }}
+                >
+                  {coverUrl ? (
+                    <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
+                  ) : (
+                    <span className="reader-archive-cover-fallback">{initials}</span>
+                  )}
+                  {item.level && <span className="reader-library-level-chip">{item.level}</span>}
+                  {isOpening && (
+                    <div className="reader-library-cover-loading">
+                      <span className="reader-library-cover-spinner" />
+                    </div>
+                  )}
+                </div>
+                <div className="reader-library-card-body" style={{ cursor: 'pointer' }}>
+                  <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
+                  <div className="reader-library-meta">
+                    {item.public_author && <span>{item.public_author}</span>}
+                  </div>
+                </div>
+              </div>
+            );
+          };
+
+          // One wide tappable shelf card with a fanned preview of real covers.
+          const renderShelfCard = (shelf, idx) => {
+            const covers = (shelf.items || []).slice(0, 3);
+            const count = (shelf.items || []).length;
+            return (
+              <button
+                key={shelf.key}
+                type="button"
+                className={`reader-shelf-card is-${shelf.accent}`}
+                style={{ animationDelay: `${idx * 70}ms` }}
+                onClick={() => { setReaderLibraryShelf(shelf.key); setReaderLibActionsOpenId(null); }}
+              >
+                <span className="reader-shelf-stack" aria-hidden="true">
+                  {covers.length ? covers.map((it, i) => {
+                    const url = getReaderCoverUrl(it);
+                    const grad = getReaderCoverGradient(it);
+                    const initials = getReaderCoverInitials(it?.title);
+                    return (
+                      <span
+                        key={it.id}
+                        className="reader-shelf-mini"
+                        style={{ background: `linear-gradient(150deg, ${grad[0]} 0%, ${grad[1]} 100%)`, zIndex: 5 - i }}
+                      >
+                        {url ? <img src={url} alt="" loading="lazy" /> : <span className="reader-shelf-mini-ini">{initials}</span>}
+                      </span>
+                    );
+                  }) : (
+                    <span className="reader-shelf-emoji">{shelf.emoji}</span>
+                  )}
+                </span>
+                <span className="reader-shelf-main">
+                  <span className="reader-shelf-name">
+                    <span className="reader-shelf-badge" aria-hidden="true">{shelf.emoji}</span>
+                    {shelf.name}
+                    <span className="reader-shelf-count">{count}</span>
+                  </span>
+                  <span className="reader-shelf-desc">{shelf.desc}</span>
+                </span>
+                <svg className="reader-shelf-chev" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            );
+          };
+
+          return (
+            <div className="reader-library-mode" data-shelf={activeShelf ? activeShelf.key : 'overview'}>
+
+              {/* ── Library header — shelf-aware (back + dynamic title) ── */}
               <div className="reader-lib-header">
-                <h2 className="reader-lib-header-title">
-                  {readerArchiveOpen ? tr('Архив', 'Archiv') : tr('Моя библиотека', 'Meine Bibliothek')}
-                </h2>
+                <div className="reader-lib-header-lead">
+                  {activeShelf && (
+                    <button
+                      type="button"
+                      className="reader-shelf-back"
+                      onClick={backToShelves}
+                      aria-label={tr('К полкам', 'Zu den Regalen')}
+                      title={tr('К полкам', 'Zu den Regalen')}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  )}
+                  <h2 className="reader-lib-header-title">
+                    {activeShelf
+                      ? activeShelf.name
+                      : (readerArchiveOpen ? tr('Архив', 'Archiv') : tr('Моя библиотека', 'Meine Bibliothek'))}
+                  </h2>
+                  {activeShelf && <span className="reader-shelf-title-count">{(activeShelf.items || []).length}</span>}
+                </div>
                 <div className="reader-lib-header-actions">
                   <button
                     type="button"
@@ -809,18 +947,20 @@ export default function ReaderSection(props) {
                       <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
                     </svg>
                   </button>
-                  <button
-                    type="button"
-                    className={`reader-lib-add-btn${readerAddOpen ? ' is-open' : ''}`}
-                    onClick={() => setReaderAddOpen((prev) => !prev)}
-                  >
-                    {readerAddOpen ? tr('✕ Скрыть', '✕ Schließen') : tr('+ Добавить', '+ Hinzufügen')}
-                  </button>
+                  {activeShelf?.key !== 'classics' && (
+                    <button
+                      type="button"
+                      className={`reader-lib-add-btn${readerAddOpen ? ' is-open' : ''}`}
+                      onClick={() => setReaderAddOpen((prev) => !prev)}
+                    >
+                      {readerAddOpen ? tr('✕ Скрыть', '✕ Schließen') : tr('+ Добавить', '+ Hinzufügen')}
+                    </button>
+                  )}
                 </div>
               </div>
 
               {/* ── Add form: paste URL/text → Открыть, OR pick a file → opens instantly ── */}
-              {readerAddOpen && (
+              {readerAddOpen && activeShelf?.key !== 'classics' && (
                 <div className="reader-add-form-wrap">
                   <form className="reader-add-form" onSubmit={handleReaderIngest}>
                     <textarea
@@ -996,8 +1136,8 @@ export default function ReaderSection(props) {
                 </div>
               )}
 
-              {/* ── Phase 2.1: Hero-карточка «Продолжаешь читать» ──── */}
-              {(() => {
+              {/* ── Overview only: Hero «Продолжаешь читать» ──── */}
+              {!activeShelf && !readerArchiveOpen && (() => {
                 let candidate = null;
                 if (readerDocumentId) {
                   candidate = readerDocuments.find(
@@ -1072,104 +1212,126 @@ export default function ReaderSection(props) {
                 );
               })()}
 
-              {/* ── Library section ────────────────────────────────── */}
-              <section className="reader-library">
-                <div className="reader-lib-controls">
-                  <div className="reader-lib-search-wrap">
-                    <svg className="reader-lib-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
-                      <path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                    </svg>
-                    <input
-                      type="text"
-                      className="reader-lib-search"
-                      value={readerLibrarySearch}
-                      onChange={(event) => setReaderLibrarySearch(event.target.value)}
-                      placeholder={tr('Поиск по библиотеке…', 'Suche in Bibliothek…')}
-                    />
-                  </div>
-                  <label className="reader-lib-archive-toggle">
-                    <input
-                      type="checkbox"
-                      checked={readerIncludeArchived}
-                      onChange={(event) => setReaderIncludeArchived(event.target.checked)}
-                    />
-                    <span>{tr('Архив', 'Archiv')}</span>
-                  </label>
+              {/* ── Overview: three tappable shelves ──────────────── */}
+              {!activeShelf && !readerArchiveOpen && (
+                <div className="reader-shelves">
+                  {shelfDefs.map(renderShelfCard)}
                 </div>
+              )}
 
-                {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
-                {!readerLibraryError && visibleLibraryItems.length === 0 && (
-                  <div className="webapp-muted">{tr('Библиотека пока пуста.', 'Bibliothek ist noch leer.')}</div>
-                )}
-
-                {libraryBooks.length > 0 && (
-                  <div className="reader-library-grid">
-                    {libraryBooks.map(renderReaderLibCard)}
-                  </div>
-                )}
-
-                {libraryArticles.length > 0 && (
-                  <>
-                    <div className="reader-lib-subhead">
-                      <span>{tr('Недавние статьи', 'Zuletzt gelesen')}</span>
-                      <span className="reader-lib-subhead-hint">{tr('очищаются автоматически', 'werden automatisch geleert')}</span>
+              {/* ── Archive view: flat grid (opened via «Архив») ──── */}
+              {readerArchiveOpen && (
+                <section className="reader-library reader-shelf-detail">
+                  <div className="reader-lib-controls">
+                    <div className="reader-lib-search-wrap">
+                      <svg className="reader-lib-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
+                        <path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      </svg>
+                      <input
+                        type="text"
+                        className="reader-lib-search"
+                        value={readerLibrarySearch}
+                        onChange={(event) => setReaderLibrarySearch(event.target.value)}
+                        placeholder={tr('Поиск по библиотеке…', 'Suche in Bibliothek…')}
+                      />
                     </div>
+                  </div>
+                  {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
+                  {!readerLibraryError && visibleLibraryItems.length === 0 && (
+                    <div className="webapp-muted">{tr('Архив пуст.', 'Archiv ist leer.')}</div>
+                  )}
+                  {visibleLibraryItems.length > 0 && (
+                    <div className="reader-library-grid">
+                      {visibleLibraryItems.map(renderReaderLibCard)}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* ── Shelf detail: Мои книги ───────────────────────── */}
+              {activeShelf?.key === 'mine' && (
+                <section className="reader-library reader-shelf-detail">
+                  <div className="reader-lib-controls">
+                    <div className="reader-lib-search-wrap">
+                      <svg className="reader-lib-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
+                        <path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      </svg>
+                      <input
+                        type="text"
+                        className="reader-lib-search"
+                        value={readerLibrarySearch}
+                        onChange={(event) => setReaderLibrarySearch(event.target.value)}
+                        placeholder={tr('Поиск по книгам…', 'Bücher durchsuchen…')}
+                      />
+                    </div>
+                    <label className="reader-lib-archive-toggle">
+                      <input
+                        type="checkbox"
+                        checked={readerIncludeArchived}
+                        onChange={(event) => setReaderIncludeArchived(event.target.checked)}
+                      />
+                      <span>{tr('Архив', 'Archiv')}</span>
+                    </label>
+                  </div>
+
+                  {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
+                  {!readerLibraryError && libraryBooks.length === 0 && (
+                    <div className="reader-shelf-empty">
+                      <span className="reader-shelf-empty-emoji" aria-hidden="true">📚</span>
+                      <span>{tr('Здесь появятся ваши книги. Нажмите «+ Добавить».',
+                              'Hier erscheinen deine Bücher. Tippe auf «+ Hinzufügen».')}</span>
+                    </div>
+                  )}
+                  {libraryBooks.length > 0 && (
+                    <div className="reader-library-grid">
+                      {libraryBooks.map(renderReaderLibCard)}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* ── Shelf detail: Классика (public-domain, free) ──── */}
+              {activeShelf?.key === 'classics' && (
+                <section className="reader-library reader-shelf-detail reader-library-public">
+                  <div className="reader-shelf-hint">
+                    <span className="reader-shelf-hint-badge is-classics" aria-hidden="true">🏛️</span>
+                    <span>{tr('Классика в свободном доступе — читай и слушай бесплатно.',
+                            'Gemeinfreie Klassiker — kostenlos lesen und hören.')}</span>
+                  </div>
+                  {publicItems.length === 0 ? (
+                    <div className="reader-shelf-empty">
+                      <span className="reader-shelf-empty-emoji" aria-hidden="true">🏛️</span>
+                      <span>{tr('Коллекция скоро появится.', 'Die Sammlung erscheint bald.')}</span>
+                    </div>
+                  ) : (
+                    <div className="reader-library-grid">
+                      {publicItems.map(renderReaderPublicCard)}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* ── Shelf detail: Статьи (web, auto-cleaning) ─────── */}
+              {activeShelf?.key === 'articles' && (
+                <section className="reader-library reader-shelf-detail">
+                  <div className="reader-shelf-hint">
+                    <span className="reader-shelf-hint-badge is-articles" aria-hidden="true">📰</span>
+                    <span>{tr('Статьи из интернета. Хранятся недолго и очищаются автоматически.',
+                            'Web-Artikel. Werden nur kurz gespeichert und automatisch geleert.')}</span>
+                  </div>
+                  {libraryArticles.length === 0 ? (
+                    <div className="reader-shelf-empty">
+                      <span className="reader-shelf-empty-emoji" aria-hidden="true">📰</span>
+                      <span>{tr('Откройте статью из «Источников» — она появится здесь.',
+                              'Öffne einen Artikel aus «Quellen» — er erscheint hier.')}</span>
+                    </div>
+                  ) : (
                     <div className="reader-library-grid">
                       {libraryArticles.map(renderReaderLibCard)}
                     </div>
-                  </>
-                )}
-              </section>
-
-              {/* ── Классика: shared public-domain shelf, free to read & listen ── */}
-              {Array.isArray(readerPublicDocuments) && readerPublicDocuments.length > 0 && !readerArchiveOpen && (
-                <section className="reader-library reader-library-public">
-                  <div className="reader-lib-header">
-                    <h2 className="reader-lib-header-title">{tr('Классика', 'Klassiker')}</h2>
-                    <span className="reader-lib-public-hint">{tr('Бесплатно · с озвучкой', 'Kostenlos · mit Audio')}</span>
-                  </div>
-                  <div className="reader-library-grid">
-                    {readerPublicDocuments.map((item) => {
-                      const coverUrl = getReaderCoverUrl(item);
-                      const initials = getReaderCoverInitials(item?.title);
-                      const gradient = getReaderCoverGradient(item);
-                      const isOpening = Number(readerOpeningDocumentId) === Number(item.id);
-                      return (
-                        <div
-                          key={`reader-public-${item.id}`}
-                          className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}${isOpening ? ' is-opening' : ''}`}
-                          onClick={() => openReaderDocument(item.id)}
-                          role="button"
-                          tabIndex={0}
-                          onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
-                        >
-                          <div
-                            className="reader-library-cover"
-                            style={{ background: `linear-gradient(150deg, ${gradient[0]} 0%, ${gradient[1]} 100%)` }}
-                          >
-                            {coverUrl ? (
-                              <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
-                            ) : (
-                              <span className="reader-archive-cover-fallback">{initials}</span>
-                            )}
-                            {item.level && <span className="reader-library-level-chip">{item.level}</span>}
-                            {isOpening && (
-                              <div className="reader-library-cover-loading">
-                                <span className="reader-library-cover-spinner" />
-                              </div>
-                            )}
-                          </div>
-                          <div className="reader-library-card-body" style={{ cursor: 'pointer' }}>
-                            <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
-                            <div className="reader-library-meta">
-                              {item.public_author && <span>{item.public_author}</span>}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  )}
                 </section>
               )}
 
@@ -1626,8 +1788,8 @@ export default function ReaderSection(props) {
             {readerAudioPlayError && !readerAudioPlayActive && !readerIsArticle && (
               <div className="reader-audio-error-bar">
                 {readerAudioPlayError === 'reader_audio_monthly_limit_exceeded'
-                  ? tr('Лимит аудио на этот месяц исчерпан. Попробуй в следующем месяце или улучши план.',
-                       'Monatliches Audio-Limit erreicht. Nächsten Monat oder Plan upgraden.')
+                  ? tr('Лимит бесплатной озвучки на этот месяц исчерпан. Попробуй в следующем месяце.',
+                       'Monatliches Limit der kostenlosen Vertonung erreicht. Versuch es nächsten Monat.')
                   : readerAudioPlayError}
               </div>
             )}

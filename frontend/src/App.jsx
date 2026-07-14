@@ -8046,7 +8046,6 @@ function AppInner() {
     const paidCommon = [
       tr('Переводы: безлимитно.', 'Übersetzungen: unbegrenzt.'),
       tr('Читалка: безлимитно.', 'Reader: unbegrenzt.'),
-      tr('Скачивание аудио из читалки: до 10 страниц за 7 дней.', 'Audio-Export aus dem Reader: bis zu 10 Seiten in 7 Tagen.'),
       tr('Карточки: безлимитно.', 'Karteikarten: unbegrenzt.'),
       tr('«Почувствуй слово»: безлимитно.', '„Wort fühlen“: unbegrenzt.'),
       tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.'),
@@ -15374,15 +15373,15 @@ function AppInner() {
     // (from the fullscreen reader it opened with no back button and wouldn't scroll).
     setProFeatureModal({
       emoji: '🎧',
-      title: tr('Аудиокнига — функция Pro', 'Hörbuch — eine Pro-Funktion'),
+      title: tr('Озвучка книги — отдельная опция', 'Buch-Vertonung — separate Option'),
       intro: tr(
-        'Озвучка книг доступна по подписке Pro. Само чтение, перевод по тапу и словарь остаются бесплатными.',
-        'Das Vorlesen von Büchern gibt es mit Pro. Lesen, Tippen-Übersetzung und Wörterbuch bleiben kostenlos.'
+        'Озвучка НЕ входит в Pro — это отдельная опция по желанию. «Классика» уже озвучена бесплатно для всех, а любую свою книгу можно озвучить: платишь один раз за книгу и слушаешь сколько угодно.',
+        'Vertonung gehört NICHT zu Pro — es ist eine optionale Zusatzfunktion. «Klassik» ist für alle gratis vertont, jedes eigene Buch kannst du vertonen: einmal pro Buch zahlen und beliebig oft hören.'
       ),
       bullets: [
-        tr('Озвучка любой книги приятным голосом', 'Jedes Buch mit angenehmer Stimme'),
-        tr('Подсветка слов во время чтения', 'Wort-Highlight beim Vorlesen'),
-        tr('Плюс безлимит на переводы, читалку и карточки', 'Dazu unbegrenzt Übersetzungen, Reader und Karten'),
+        tr('«Классика» — бесплатная озвучка для всех', '«Klassik» — kostenlose Vertonung für alle'),
+        tr('Своя книга — оплата один раз за книгу, слушаешь навсегда', 'Eigenes Buch — einmal pro Buch, für immer hörbar'),
+        tr('Обычный или премиум-голос на выбор', 'Standard- oder Premium-Stimme zur Wahl'),
       ],
     });
   }
