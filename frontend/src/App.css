@@ -16747,12 +16747,40 @@ body.worldnews-active .webapp-topbar {
 }
 
 .youtube-sheet-manual {
+  position: relative;
   border: 1px solid var(--yt-border-default);
   border-radius: 20px;
   background: var(--yt-bg-panel);
   box-shadow: none;
   padding: 16px;
 }
+
+/* «✕» — закрыть/скрыть поле вставки транскрипции (если открыли случайно) */
+.youtube-sheet-manual-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--yt-border-default);
+  border-radius: 9px;
+  background: var(--yt-bg-card-alt);
+  color: var(--yt-text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.youtube-sheet-manual-close:hover {
+  background: var(--yt-bg-hover);
+  color: var(--yt-text-primary);
+}
+/* чтобы текст не залезал под крестик */
+.youtube-sheet-manual textarea { padding-right: 44px; }
 
 .webapp-video.youtube-player-first .youtube-sheet-manual textarea {
   border: 1px solid var(--yt-border-default);

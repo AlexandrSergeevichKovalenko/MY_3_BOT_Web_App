@@ -33819,6 +33819,15 @@ function AppInner() {
                         </div>
                         {canManageYoutubeTranscripts && showManualTranscript && (
                           <div className="webapp-subtitles-manual youtube-sheet-manual youtube-sheet-manual-desktop">
+                            <button
+                              type="button"
+                              className="youtube-sheet-manual-close"
+                              onClick={() => setShowManualTranscript(false)}
+                              aria-label={tr('Закрыть поле транскрипции', 'Transkriptfeld schließen')}
+                              title={tr('Закрыть', 'Schließen')}
+                            >
+                              <span aria-hidden="true">✕</span>
+                            </button>
                             <textarea
                               rows={6}
                               value={manualTranscript}
@@ -33939,6 +33948,15 @@ function AppInner() {
                         </div>
                         {canManageYoutubeTranscripts && showManualTranscript && (
                           <div className="webapp-subtitles-manual youtube-sheet-manual youtube-mobile-transcript-panel">
+                            <button
+                              type="button"
+                              className="youtube-sheet-manual-close"
+                              onClick={() => setShowManualTranscript(false)}
+                              aria-label={tr('Закрыть поле транскрипции', 'Transkriptfeld schließen')}
+                              title={tr('Закрыть', 'Schließen')}
+                            >
+                              <span aria-hidden="true">✕</span>
+                            </button>
                             <textarea
                               rows={5}
                               value={manualTranscript}
@@ -34503,6 +34521,15 @@ function AppInner() {
                           </div>
                           {canManageYoutubeTranscripts && showManualTranscript && (
                             <div className="webapp-subtitles-manual youtube-sheet-manual">
+                              <button
+                                type="button"
+                                className="youtube-sheet-manual-close"
+                                onClick={() => setShowManualTranscript(false)}
+                                aria-label={tr('Закрыть поле транскрипции', 'Transkriptfeld schließen')}
+                                title={tr('Закрыть', 'Schließen')}
+                              >
+                                <span aria-hidden="true">✕</span>
+                              </button>
                               <textarea
                                 rows={6}
                                 value={manualTranscript}
