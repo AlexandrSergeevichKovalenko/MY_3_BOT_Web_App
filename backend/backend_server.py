@@ -586,6 +586,18 @@ from backend.database import (
     get_google_tts_standard_monthly_budget_status,
     PUBLIC_LIBRARY_OWNER_ID,
     PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION,
+    get_audio_wallet,
+    get_audio_wallet_balance_minor,
+    credit_audio_wallet,
+    unlock_book_audio,
+    is_book_audio_unlocked,
+    list_book_audio_unlocked_tiers,
+    estimate_book_audio_price_minor,
+    AUDIO_MIN_TOPUP_MINOR,
+    AUDIO_TOPUP_MAX_MINOR,
+    AUDIO_TOPUP_PRESETS_MINOR,
+    AUDIO_DEFAULT_VOICE_TIER,
+    AUDIO_PRICE_PER_1M_MINOR,
     create_reader_library_document_placeholder,
     list_reader_library_documents,
     get_reader_library_document,
@@ -32409,6 +32421,87 @@ def billing_telegram_return():
     }
 
 
+@app.route("/api/webapp/wallet", methods=["POST"])
+def wallet_get():
+    """Audio-wallet balance + top-up options. Read-only hot path (single indexed
+    SELECT, no write) so it is cheap to poll."""
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    balance_minor = get_audio_wallet_balance_minor(int(user_id))
+    return jsonify({
+        "ok": True,
+        "balance_minor": int(balance_minor),
+        "currency": "EUR",
+        "min_topup_minor": int(AUDIO_MIN_TOPUP_MINOR),
+        "max_topup_minor": int(AUDIO_TOPUP_MAX_MINOR),
+        "topup_presets_minor": list(AUDIO_TOPUP_PRESETS_MINOR),
+    })
+
+
+@app.route("/api/webapp/wallet/topup", methods=["POST"])
+def wallet_topup():
+    """Create a Stripe checkout session (mode=payment) to add funds to the audio
+    wallet. Uses dynamic price_data — no pre-created Stripe prices needed. The
+    credit itself lands via the webhook (background), keeping this path light."""
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+    config_error = _require_stripe_config(require_webhook_secret=False)
+    if config_error:
+        return jsonify({"error": config_error}), 500
+    if not APP_BASE_URL:
+        return jsonify({"error": "APP_BASE_URL не задан"}), 500
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        amount_minor = int(payload.get("amount_minor") or 0)
+    except (ValueError, TypeError):
+        amount_minor = 0
+    if amount_minor < AUDIO_MIN_TOPUP_MINOR:
+        return jsonify({
+            "error": f"Минимальная сумма пополнения — €{AUDIO_MIN_TOPUP_MINOR / 100:.2f}.",
+            "error_code": "amount_too_small",
+            "min_topup_minor": int(AUDIO_MIN_TOPUP_MINOR),
+        }), 400
+    if amount_minor > AUDIO_TOPUP_MAX_MINOR:
+        return jsonify({
+            "error": f"Максимальная сумма за раз — €{AUDIO_TOPUP_MAX_MINOR / 100:.2f}.",
+            "error_code": "amount_too_large",
+            "max_topup_minor": int(AUDIO_TOPUP_MAX_MINOR),
+        }), 400
+
+    try:
+        stripe_customer_id = _get_or_create_stripe_customer_id(int(user_id), username=username)
+        metadata = {"user_id": str(int(user_id)), "purpose": "audio_topup", "amount_minor": str(int(amount_minor))}
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            customer=stripe_customer_id,
+            client_reference_id=str(int(user_id)),
+            metadata=metadata,
+            payment_intent_data={"metadata": dict(metadata)},
+            line_items=[{
+                "quantity": 1,
+                "price_data": {
+                    "currency": "eur",
+                    "unit_amount": int(amount_minor),
+                    "product_data": {"name": "Баланс озвучки — пополнение"},
+                },
+            }],
+            success_url=_build_billing_telegram_return_url("success", include_session_id=True),
+            cancel_url=_build_billing_telegram_return_url("cancel"),
+        )
+        checkout_url = str(getattr(session, "url", "") or "")
+        if not checkout_url:
+            return jsonify({"error": "Stripe checkout session URL отсутствует"}), 500
+        return jsonify({"ok": True, "url": checkout_url, "amount_minor": int(amount_minor)})
+    except Exception:
+        logging.exception("wallet topup checkout failed user=%s", user_id)
+        return jsonify({"error": "Не удалось создать оплату. Попробуйте ещё раз чуть позже."}), 500
+
+
 @app.route("/api/billing/webhook", methods=["POST"])
 def stripe_billing_webhook():
     config_error = _require_stripe_config(require_webhook_secret=True)
@@ -32458,6 +32551,21 @@ def stripe_billing_webhook():
                         amount_total_minor = int(_stripe_object_value(data_object, "amount_total") or 0) or None
                     except Exception:
                         amount_total_minor = None
+                    # Audio-wallet top-up (mode=payment, purpose=audio_topup): credit the
+                    # prepaid balance. Idempotent on the checkout session id, so a
+                    # replayed webhook is a safe no-op — no double credit.
+                    purpose = str(_stripe_object_value(metadata, "purpose", "") or "").strip().lower()
+                    if purpose == "audio_topup":
+                        session_id = str(_stripe_object_value(data_object, "id", "") or "") or None
+                        result = credit_audio_wallet(
+                            user_id=int(user_id),
+                            delta_minor=int(amount_total_minor or 0),
+                            kind="topup",
+                            note="stripe_topup",
+                            stripe_checkout_session_id=session_id,
+                        )
+                        _invalidate_billing_front_caches_for_user(int(user_id))
+                        return jsonify({"ok": True, "wallet_topup": True, "balance_minor": result.get("balance_minor")}), 200
                     record_sponsorship(
                         int(user_id),
                         plan_code,

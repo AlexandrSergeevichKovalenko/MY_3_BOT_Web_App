@@ -3976,6 +3976,9 @@ AUDIO_DEFAULT_VOICE_TIER = (os.getenv("AUDIO_DEFAULT_VOICE_TIER", "neural").stri
 # Minimum wallet top-up (amortize the Stripe fee) and a per-unlock price floor.
 AUDIO_MIN_TOPUP_MINOR = max(100, _env_int("AUDIO_MIN_TOPUP_EUR_CENTS", 300))
 AUDIO_MIN_UNLOCK_MINOR = max(0, _env_int("AUDIO_MIN_UNLOCK_EUR_CENTS", 10))
+AUDIO_TOPUP_MAX_MINOR = max(AUDIO_MIN_TOPUP_MINOR, _env_int("AUDIO_TOPUP_MAX_EUR_CENTS", 20000))
+# Quick-pick top-up amounts (EUR cents) shown as buttons: €3 / €5 / €10 / €20.
+AUDIO_TOPUP_PRESETS_MINOR = [300, 500, 1000, 2000]
 
 
 def estimate_book_audio_price_minor(chars: int, voice_tier: str | None = None) -> int:
@@ -28578,6 +28581,16 @@ def get_audio_wallet(user_id: int) -> dict:
             )
             row = cursor.fetchone()
     return {"user_id": int(row[0]), "balance_minor": int(row[1] or 0), "currency": str(row[2] or "EUR")}
+
+
+def get_audio_wallet_balance_minor(user_id: int) -> int:
+    """Read-only balance in cents (0 if no wallet yet). Cheap hot-path read — no
+    write, so it is safe to call on every balance poll."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT balance_minor FROM bt_3_audio_wallet WHERE user_id=%s;", (int(user_id),))
+            row = cursor.fetchone()
+    return int((row or [0])[0] or 0)
 
 
 def credit_audio_wallet(
