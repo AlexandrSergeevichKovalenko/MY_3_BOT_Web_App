@@ -460,6 +460,34 @@
 .webapp-page.is-theme-light .webapp-reader .reader-shelf-card.is-classics { --shelf-tint: rgba(191,138,52,0.18); }
 .webapp-page.is-theme-light .webapp-reader .reader-shelf-card.is-articles { --shelf-tint: rgba(56,132,232,0.14); }
 
+/* «Как читать и слушать?» — quiet discoverable link under the shelves */
+.webapp-reader .reader-shelf-guide-link {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 4px;
+  padding: 9px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--rd-border);
+  background: var(--rd-bg-elev);
+  color: var(--rd-text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .15s, color .15s, border-color .15s, transform .12s;
+}
+.webapp-reader .reader-shelf-guide-link:hover {
+  background: var(--rd-bg-elev-2);
+  color: var(--rd-text);
+  border-color: var(--rd-border-hi);
+}
+.webapp-reader .reader-shelf-guide-link:active { transform: scale(.97); }
+.webapp-reader .reader-shelf-guide-emoji { font-size: 15px; line-height: 1; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-shelf-guide-link { font-size: 16px; padding: 12px 22px; margin-top: 8px; }
+.webapp-page.is-telegram-tablet .webapp-reader .reader-shelf-guide-emoji { font-size: 18px; }
+
 
 /* ╭───────────────────────────────────────────────────────────────────────╮
    │  ADD FORM (URL / file / submit)                                        │

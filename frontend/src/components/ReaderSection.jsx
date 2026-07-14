@@ -16,6 +16,7 @@
  * См. READER_INTEGRATION.md → раздел «Полный JSX-вынос (Phase B)».
  */
 import React from 'react';
+import ReaderGuideModal from './ReaderGuideModal';
 
 export default function ReaderSection(props) {
   const {
@@ -217,6 +218,8 @@ export default function ReaderSection(props) {
   const [readerLibActionsOpenId, setReaderLibActionsOpenId] = React.useState(null);
   // Library overview vs a single shelf detail: null | 'mine' | 'classics' | 'articles'
   const [readerLibraryShelf, setReaderLibraryShelf] = React.useState(null);
+  // «Как читать и слушать» grandma-proof explainer.
+  const [readerGuideOpen, setReaderGuideOpen] = React.useState(false);
   const readerColIndexRef = React.useRef(0);
   const readerColCountRef = React.useRef(1);
   const readerColGoLastRef = React.useRef(false);
@@ -932,6 +935,19 @@ export default function ReaderSection(props) {
                 <div className="reader-lib-header-actions">
                   <button
                     type="button"
+                    className="reader-lib-icon-btn reader-lib-help-btn"
+                    onClick={() => setReaderGuideOpen(true)}
+                    title={tr('Как читать и слушать', 'Lesen & Hören')}
+                    aria-label={tr('Как читать и слушать', 'Lesen & Hören')}
+                  >
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="9.2" />
+                      <path d="M9.4 9.2a2.7 2.7 0 0 1 5.2.9c0 1.8-2.6 2.4-2.6 3.9" />
+                      <circle cx="12" cy="17.4" r="0.15" fill="currentColor" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
                     className="reader-lib-icon-btn"
                     onClick={() => loadReaderLibrary()}
                     title={tr('Обновить', 'Aktualisieren')}
@@ -1216,6 +1232,14 @@ export default function ReaderSection(props) {
               {!activeShelf && !readerArchiveOpen && (
                 <div className="reader-shelves">
                   {shelfDefs.map(renderShelfCard)}
+                  <button
+                    type="button"
+                    className="reader-shelf-guide-link"
+                    onClick={() => setReaderGuideOpen(true)}
+                  >
+                    <span className="reader-shelf-guide-emoji" aria-hidden="true">💡</span>
+                    {tr('Как читать и слушать?', 'Wie lese & höre ich?')}
+                  </button>
                 </div>
               )}
 
@@ -1336,6 +1360,12 @@ export default function ReaderSection(props) {
               )}
 
               {/* Offline whole-document audio panel removed — we don't offer that. */}
+
+              <ReaderGuideModal
+                isOpen={readerGuideOpen}
+                onClose={() => setReaderGuideOpen(false)}
+                tr={tr}
+              />
             </div>
           );
         }
