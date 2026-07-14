@@ -309,6 +309,38 @@
 .ob-actions-col { flex-direction: column; align-items: stretch; }
 .ob-confirm.ob-alt { background: #fff8e6; border-color: #e0b84a; color: #8a5a00; }
 
+/* Subscription / plans cards (Free · Pro · audio add-on) */
+.ob-plan {
+  width: 100%;
+  box-sizing: border-box;
+  background: #f7faff;
+  border: 1px solid var(--ob-line);
+  border-radius: 16px;
+  padding: 14px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ob-plan-pro {
+  background: linear-gradient(180deg, #eef5ff 0%, #f7faff 100%);
+  border-color: #bcd6fb;
+  box-shadow: 0 8px 22px rgba(58, 123, 213, 0.10);
+}
+.ob-plan-title { margin: 0; font-size: 16px; font-weight: 700; color: var(--ob-ink); }
+.ob-price {
+  display: inline-block;
+  background: var(--ob-accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.ob-sublist { margin-top: 0; }
+.ob-sublist li { color: var(--ob-muted); font-size: 14px; }
+.ob-sublist li::before { background: var(--ob-accent); }
+
 /* Language toggle (in-wizard RU/DE switch) */
 .ob-topbar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
 .ob-lang {

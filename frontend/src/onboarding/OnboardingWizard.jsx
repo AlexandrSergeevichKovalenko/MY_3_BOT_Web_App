@@ -78,6 +78,7 @@ const STEPS = [
   { id: 'shortcut',   title: t('Захват слов со скриншотов (iPhone) 📲', 'Wörter aus Screenshots (iPhone) 📲'), kind: 'opt' },
   { id: 'howto_morning', title: t('Утром твои слова уже ждут 🌅', 'Morgens warten deine Wörter 🌅'), kind: 'info' },
   { id: 'howto_learn',   title: t('А теперь — как их учить 🎓', 'Und jetzt — wie du sie lernst 🎓'), kind: 'info' },
+  { id: 'plans',      title: t('Тарифы: Free и Pro 💎', 'Tarife: Free und Pro 💎'), kind: 'info' },
   { id: 'finale',     title: t('Готово! ✅', 'Fertig! ✅'),                kind: 'finale' },
 ];
 
@@ -197,11 +198,11 @@ const PRO_TEASER = (
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
 const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows',
   'battles', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
-  'howto_tools', 'keyboard', 'howto_morning', 'howto_learn']);
+  'howto_tools', 'keyboard', 'howto_morning', 'howto_learn', 'plans']);
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
-    onShortcutSetup, shortcutOpening } = props;
+    onShortcutSetup, shortcutOpening, proPrice, onOpenSubscription } = props;
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
     case 'welcome':
@@ -533,6 +534,68 @@ function StepBody(props) {
           </p>
         </div>
       );
+    case 'plans':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            {t('Ты увидел, что умеет бот. Теперь — тарифы. Их два: Free и Pro. Плюс отдельная опция — озвучка книг (о ней ниже).',
+               'Du hast gesehen, was der Bot kann. Jetzt die Tarife. Es gibt zwei: Free und Pro. Dazu eine separate Option — Buch-Vertonung (dazu unten mehr).')}
+          </p>
+
+          <div className="ob-plan">
+            <p className="ob-plan-title">🆓 <b>Free</b> — {t('бесплатно, навсегда', 'kostenlos, für immer')}</p>
+            <p className="ob-muted-note">{t('Полноценно учишься каждый день, но с дневными лимитами:', 'Du lernst voll mit, aber mit Tageslimits:')}</p>
+            <ul className="ob-list">
+              <li>{t('📝 Переводы с разбором — 1 подход в день', '📝 Übersetzungen mit Analyse — 1 Runde/Tag')}</li>
+              <li>{t('📖 Словарь — сохранять до 20 слов и смотреть до 30 переводов в день', '📖 Wörterbuch — bis 20 Wörter speichern und bis 30 Übersetzungen/Tag')}</li>
+              <li>{t('📲 Захват слов (Shortcut/пересылка) — до 15 сообщений и до 20 сохранений в день', '📲 Worterfassung (Shortcut/Weiterleitung) — bis 15 Nachrichten und 20 Speicherungen/Tag')}</li>
+              <li>{t('🃏 Карточки — до 20 повторений в день', '🃏 Karten — bis 20 Wiederholungen/Tag')}</li>
+              <li>{t('🤖 «Спроси GPT» — 5 вопросов в день', '🤖 «Frag GPT» — 5 Fragen/Tag')}</li>
+              <li>{t('🎙 Разговорная практика — 3 минуты в день', '🎙 Sprechpraxis — 3 Minuten/Tag')}</li>
+              <li>{t('📚 Читалка — 1 книга/документ, хранится 30 дней', '📚 Reader — 1 Buch/Dokument, 30 Tage gespeichert')}</li>
+              <li>{t('🎮 Игры-тренировки, дуэли, новости, кроссворды — да, входят', '🎮 Übungsspiele, Duelle, News, Kreuzworträtsel — ja, inklusive')}</li>
+            </ul>
+          </div>
+
+          <div className="ob-plan ob-plan-pro">
+            <p className="ob-plan-title">💎 <b>Pro</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : null}</p>
+            <p className="ob-muted-note">{t('Всё то же самое, но без дневных лимитов — и с бесплатным пробным периодом на 3 дня:', 'Alles dasselbe, aber ohne Tageslimits — und mit 3 Tagen kostenlos zum Testen:')}</p>
+            <ul className="ob-list">
+              <li>{t('♾ Переводы, словарь, карточки, «Почувствуй слово» — без лимитов', '♾ Übersetzungen, Wörterbuch, Karten, «Fühl das Wort» — ohne Limit')}</li>
+              <li>{t('📚 Читалка — без лимитов: сколько угодно книг, хранятся сколько нужно', '📚 Reader — ohne Limit: beliebig viele Bücher, bleiben so lange du willst')}</li>
+              <li>{t('🎙 Разговорная практика — 15 минут в день', '🎙 Sprechpraxis — 15 Minuten/Tag')}</li>
+              <li>{t('📲 Захват слов и все тренажёры — без ограничений', '📲 Worterfassung und alle Übungen — ohne Beschränkung')}</li>
+              <li>{t('⚡ Приоритетная обработка и настройка расписания заданий (сколько и когда присылать)', '⚡ Priorisierte Verarbeitung und einstellbarer Aufgabenplan (wie viel und wann)')}</li>
+            </ul>
+            <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
+              {t('✨ Оформить Pro', '✨ Pro holen')}
+            </button>
+            <span className="ob-muted-note">{t('Кнопка откроет экран «Подписка» — там видна актуальная цена и оплата. Открыть его можно в любой момент из меню бота.', 'Der Knopf öffnet den «Abo»-Bildschirm — dort siehst du den aktuellen Preis und zahlst. Erreichbar jederzeit über das Bot-Menü.')}</span>
+          </div>
+
+          <div className="ob-plan">
+            <p className="ob-plan-title">🎧 <b>{t('Озвучка книг — отдельная опция', 'Buch-Vertonung — separate Option')}</b></p>
+            <p className="ob-lead">
+              {t('Качественная озвучка стоит дорого и нужна не всем — поэтому мы убрали её из цены Pro, чтобы не заставлять платить тех, кому она не нужна. Это отдельная опция по желанию.',
+                 'Hochwertige Vertonung ist teuer und nicht für jeden nötig — deshalb haben wir sie aus dem Pro-Preis herausgenommen, damit niemand dafür zahlt, der sie nicht braucht. Eine optionale Zusatzfunktion.')}
+            </p>
+            <ul className="ob-list">
+              <li>{t('✅ Доступно всем — и на Free, и на Pro. Выбираешь любую свою книгу, озвучиваешь её и читаешь, одновременно слушая.', '✅ Für alle — Free wie Pro. Wähle ein beliebiges Buch, vertone es und lies, während du zuhörst.')}</li>
+              <li>{t('🆓 Классика уже озвучена бесплатно: набор классических книг («Классика») можно слушать в базовом голосе — всем и без оплаты.', '🆓 Klassiker sind schon kostenlos vertont: die «Klassik»-Sammlung hörst du in der Standard-Stimme — für alle, gratis.')}</li>
+              <li>{t('🎚 Хочешь озвучить свою книгу — выбираешь голос, от него зависит цена:', '🎚 Willst du dein eigenes Buch vertonen — du wählst die Stimme, danach richtet sich der Preis:')}</li>
+            </ul>
+            <ul className="ob-list ob-sublist">
+              <li>{t('Обычный голос — €4 за 1 млн символов', 'Standard-Stimme — €4 pro 1 Mio. Zeichen')}</li>
+              <li>{t('Премиум-голос — €16 за 1 млн символов', 'Premium-Stimme — €16 pro 1 Mio. Zeichen')}</li>
+            </ul>
+            <p className="ob-muted-note">
+              {t('Например, книга ~300 000 символов: Обычный ≈ €1,2, Премиум ≈ €4,8. Точная цена показывается перед покупкой. Платишь один раз за книгу — слушаешь сколько угодно, навсегда. Кошелёк для озвучки пополняется от €3.',
+                 'Beispiel: ein Buch mit ~300 000 Zeichen — Standard ≈ €1,2, Premium ≈ €4,8. Der genaue Preis wird vor dem Kauf angezeigt. Du zahlst einmal pro Buch — und hörst so oft du willst, für immer. Vertonungs-Guthaben ab €3 aufladbar.')}
+            </p>
+            <p className="ob-muted-note">{t('Озвучить книгу можно прямо в Читалке: открываешь книгу → кнопка озвучки.', 'Ein Buch vertonst du direkt im Reader: Buch öffnen → Vertonungs-Knopf.')}</p>
+          </div>
+        </div>
+      );
     case 'howto_translations':
       return (
         <div className="ob-stub">
@@ -694,6 +757,7 @@ export default function OnboardingWizard() {
   const [selBattle, setSelBattle] = useState(null);       // battle readiness: null|'yes'|'no'
   const [botUrl, setBotUrl] = useState('');               // install link (public tour only)
   const [shortcutOpening, setShortcutOpening] = useState(false); // «Настроить сейчас» in flight
+  const [proPrice, setProPrice] = useState('');           // live Pro price label (Stripe-configured)
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
@@ -833,6 +897,51 @@ export default function OnboardingWizard() {
     setShortcutOpening(false);
   }, [botUrl, shortcutOpening]);
 
+  // «Оформить Pro» on the plans step → open the Mini-App «Подписка» screen, where the
+  // live Stripe price and checkout live (startapp=subscription; mirrors the DM upsell).
+  const openSubscription = useCallback(async () => {
+    try { tg?.HapticFeedback?.impactOccurred?.('medium'); } catch (_e) { /* noop */ }
+    let base = botUrl;
+    if (!base) {
+      try {
+        const r = await fetch('/api/public/tour-info');
+        const d = await r.json().catch(() => ({}));
+        base = d.bot_url || '';
+        if (base) setBotUrl(base);
+      } catch (_e) { /* noop */ }
+    }
+    const url = base ? `${base}?startapp=subscription` : '';
+    try {
+      if (url && tg?.openTelegramLink) tg.openTelegramLink(url);
+      else if (url) window.location.href = url;
+    } catch (_e) { /* noop */ }
+  }, [botUrl]);
+
+  // Pull the LIVE Pro price (Stripe-configured, not hard-coded) when the user reaches
+  // the plans step, so the tariff card never shows a stale amount. Failure is fine —
+  // the price just stays hidden and the CTA still leads to the up-to-date paywall.
+  useEffect(() => {
+    if (loading || step.id !== 'plans' || proPrice) return;
+    let off = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/billing/plans');
+        const d = await r.json().catch(() => ({}));
+        const pro = (Array.isArray(d.plans) ? d.plans : []).find((p) => p.plan_code === 'pro');
+        const amount = pro && pro.amount_value != null ? Number(pro.amount_value) : null;
+        if (!off && amount != null && !Number.isNaN(amount)) {
+          const cur = String(pro.currency || 'EUR').toUpperCase();
+          const per = pro.recurring_interval === 'year' ? t('год', 'Jahr')
+            : pro.recurring_interval === 'week' ? t('неделя', 'Woche')
+            : t('месяц', 'Monat');
+          const amtStr = Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+          setProPrice(`${amtStr} ${cur} / ${per}`);
+        }
+      } catch (_e) { /* price hidden; CTA still opens the live paywall */ }
+    })();
+    return () => { off = true; };
+  }, [step.id, loading, proPrice]);
+
   const confirmStep = useCallback(async () => {
     setStepErr('');
     // Steps that persist something confirm asynchronously (save → then unlock).
@@ -957,6 +1066,8 @@ export default function OnboardingWizard() {
             onPickBattle={pickBattle}
             onShortcutSetup={openShortcutSetup}
             shortcutOpening={shortcutOpening}
+            proPrice={proPrice}
+            onOpenSubscription={openSubscription}
           />
         </main>
 

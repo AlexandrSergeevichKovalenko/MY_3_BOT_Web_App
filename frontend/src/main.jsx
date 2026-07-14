@@ -241,8 +241,25 @@ async function bootstrapPlanTable() {
   );
 }
 
+// Light-theme boot spinner painted into #root BEFORE the async chunk import — so the
+// onboarding / shortcut screens never show a bare white page while the JS downloads
+// over a slow connection. React's first render replaces it.
+function showBootSpinner() {
+  try {
+    const root = document.getElementById('root');
+    if (!root || root.childElementCount > 0) return;
+    root.innerHTML =
+      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;'
+      + 'background:linear-gradient(180deg,#f6f9ff 0%,#eef3fb 100%)">'
+      + '<div style="width:34px;height:34px;border-radius:50%;border:3px solid #d5e2f5;'
+      + 'border-top-color:#3a7bd5;animation:obspin .8s linear infinite"></div></div>'
+      + '<style>@keyframes obspin{to{transform:rotate(360deg)}}</style>';
+  } catch (_e) { /* noop */ }
+}
+
 async function bootstrapShortcutGuide() {
   try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  showBootSpinner();
   const { default: ShortcutGuide } = await import('./shortcut/ShortcutGuide.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
@@ -253,6 +270,7 @@ async function bootstrapShortcutGuide() {
 
 async function bootstrapOnboarding() {
   try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  showBootSpinner();
   const { default: OnboardingWizard } = await import('./onboarding/OnboardingWizard.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
