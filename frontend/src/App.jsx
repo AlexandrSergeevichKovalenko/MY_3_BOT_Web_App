@@ -5821,6 +5821,7 @@ function AppInner() {
   const [readerDetectedLanguage, setReaderDetectedLanguage] = useState('');
   const [readerDocumentId, setReaderDocumentId] = useState(null);
   const [readerDocuments, setReaderDocuments] = useState([]);
+  const [readerPublicDocuments, setReaderPublicDocuments] = useState([]);
   const [readerLibraryLoading, setReaderLibraryLoading] = useState(false);
   const [readerLibraryError, setReaderLibraryError] = useState('');
   const [readerIncludeArchived, setReaderIncludeArchived] = useState(false);
@@ -14633,10 +14634,14 @@ function AppInner() {
     }
     return ids;
   }, [youtubeDragSelectionMeta]);
+  const hasReaderBookmark = Number(readerBookmarkPercent || 0) > 0;
   const readerBookmarkPage = readerPageCount > 0
     ? Math.max(1, Math.min(readerPageCount, Math.round((Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0))) / 100) * readerPageCount) || 1))
     : 0;
-  const isCurrentReaderPageBookmarked = readerPageCount > 0 && readerBookmarkPage === Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
+  // Ribbon only when the user actually set a bookmark AND we're on that page —
+  // guards against the phantom "page 1" the |0→||1 fallback would otherwise mark.
+  const isCurrentReaderPageBookmarked = hasReaderBookmark && readerPageCount > 0
+    && readerBookmarkPage === Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
 
   // ── Audio-sync: positional-index ↔ frontend wid maps ───────────────────
   const readerAudioWidMap = useMemo(() => {
@@ -23429,6 +23434,7 @@ function AppInner() {
       }
       const data = await response.json();
       setReaderDocuments(Array.isArray(data?.items) ? data.items : []);
+      setReaderPublicDocuments(Array.isArray(data?.public_items) ? data.public_items : []);
     } catch (error) {
       if (showError && (!Array.isArray(readerDocuments) || readerDocuments.length === 0)) {
         setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить библиотеку.', 'Bibliothek konnte nicht geladen werden.'));
@@ -23940,14 +23946,19 @@ function AppInner() {
         ? 1
         : (exactBookmarkPage || pageFromProgress);
       setReaderCurrentPage(initialPage);
+      // The bookmark ribbon must reflect ONLY a bookmark the user actually set —
+      // never the opening/reading position. Seeding it from the initial page (a
+      // phantom bookmark) made the ribbon appear on every page of web articles.
+      // "Resume where I left off" uses reading progress (initialPage), untouched.
+      const hasStoredBookmark = Number(bookmark || 0) > 0 || Number(exactBookmarkPage || 0) > 0;
       setReaderBookmarkPercent(
-        usesOriginalEpub
-          ? Number((bookmark > 0 ? bookmark : progress).toFixed(2))
+        !hasStoredBookmark
+          ? 0
+          : Number(bookmark || 0) > 0
+          ? Number(Number(bookmark).toFixed(2))
           : resolvedTotalPages > 0
-          ? Number((preferredLayoutMode === 'custom'
-            ? (bookmark > 0 ? bookmark : progress)
-            : ((initialPage / resolvedTotalPages) * 100)).toFixed(2))
-          : bookmark
+          ? Number(((exactBookmarkPage / resolvedTotalPages) * 100).toFixed(2))
+          : 0
       );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
@@ -25393,14 +25404,16 @@ function AppInner() {
         ? 1
         : (exactBookmarkPage || pageFromProgress);
       setReaderCurrentPage(initialPage);
+      // Ribbon reflects only a real user-set bookmark (see the other open path).
+      const hasStoredBookmark = Number(bookmark || 0) > 0 || Number(exactBookmarkPage || 0) > 0;
       setReaderBookmarkPercent(
-        usesOriginalEpub
-          ? Number((bookmark || progress || 0).toFixed(2))
+        !hasStoredBookmark
+          ? 0
+          : Number(bookmark || 0) > 0
+          ? Number(Number(bookmark).toFixed(2))
           : resolvedTotalPages > 0
-          ? Number((preferredLayoutMode === 'custom'
-            ? (bookmark || progress || 0)
-            : ((initialPage / resolvedTotalPages) * 100)).toFixed(2))
-          : bookmark
+          ? Number(((exactBookmarkPage / resolvedTotalPages) * 100).toFixed(2))
+          : 0
       );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
@@ -36182,6 +36195,7 @@ function AppInner() {
                   readerFileInputRef={readerFileInputRef}
 
                   readerDocuments={readerDocuments}
+                  readerPublicDocuments={readerPublicDocuments}
                   readerLibrarySearch={readerLibrarySearch}           setReaderLibrarySearch={setReaderLibrarySearch}
                   readerIncludeArchived={readerIncludeArchived}       setReaderIncludeArchived={setReaderIncludeArchived}
                   readerLibraryLoading={readerLibraryLoading}

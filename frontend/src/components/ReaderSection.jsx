@@ -35,6 +35,7 @@ export default function ReaderSection(props) {
 
     // ── library state ────────────────────────────────────────────
     readerDocuments,
+    readerPublicDocuments = [],
     readerLibrarySearch, setReaderLibrarySearch,
     readerIncludeArchived, setReaderIncludeArchived,
     readerLibraryLoading, readerLibraryError,
@@ -391,7 +392,16 @@ export default function ReaderSection(props) {
     const vp = readerColViewportRef.current;
     const track = readerColTrackRef.current;
     if (!vp || !track) return undefined;
-    const raf = window.requestAnimationFrame(() => {
+    let cancelled = false;
+    const rafs = [];
+    const timers = [];
+
+    // Measure the columns and land on the anchor column. Safe to run repeatedly —
+    // it just re-measures + re-positions to the same reading anchor.
+    const place = () => {
+      if (cancelled) return;
+      const v = readerColViewportRef.current;
+      if (!v || v.clientWidth <= 0) return;
       const { n } = measureReaderColGeometry();
       let target;
       if (readerWindowModel) {
@@ -424,8 +434,27 @@ export default function ReaderSection(props) {
       readerColIndexRef.current = target;
       readerColCountRef.current = n;
       applyReaderColTransform(-target * readerColStep(), false);
-    });
-    return () => window.cancelAnimationFrame(raf);
+    };
+
+    rafs.push(window.requestAnimationFrame(place));
+    // Web fonts change text metrics → column count/positions. If the first pass
+    // measured against fallback-font geometry (before the reading font loaded),
+    // the track paginates wrong and later pages render blank until a re-open.
+    // Re-place once fonts settle, plus a short safety-net pass for late layout.
+    if (typeof document !== 'undefined' && document.fonts && document.fonts.ready) {
+      document.fonts.ready
+        .then(() => { if (!cancelled) rafs.push(window.requestAnimationFrame(place)); })
+        .catch(() => {});
+    }
+    timers.push(window.setTimeout(() => {
+      if (!cancelled) rafs.push(window.requestAnimationFrame(place));
+    }, 240));
+
+    return () => {
+      cancelled = true;
+      rafs.forEach((id) => window.cancelAnimationFrame(id));
+      timers.forEach((id) => window.clearTimeout(id));
+    };
   }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Animate the turn + record the new reading position.
@@ -1058,6 +1087,57 @@ export default function ReaderSection(props) {
                   </div>
                 )}
               </section>
+
+              {/* ── Классика: shared public-domain shelf, free to read & listen ── */}
+              {Array.isArray(readerPublicDocuments) && readerPublicDocuments.length > 0 && !readerArchiveOpen && (
+                <section className="reader-library reader-library-public">
+                  <div className="reader-lib-header">
+                    <h2 className="reader-lib-header-title">{tr('Классика', 'Klassiker')}</h2>
+                    <span className="reader-lib-public-hint">{tr('Бесплатно · с озвучкой', 'Kostenlos · mit Audio')}</span>
+                  </div>
+                  <div className="reader-library-grid">
+                    {readerPublicDocuments.map((item) => {
+                      const coverUrl = getReaderCoverUrl(item);
+                      const initials = getReaderCoverInitials(item?.title);
+                      const gradient = getReaderCoverGradient(item);
+                      const isOpening = Number(readerOpeningDocumentId) === Number(item.id);
+                      return (
+                        <div
+                          key={`reader-public-${item.id}`}
+                          className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}${isOpening ? ' is-opening' : ''}`}
+                          onClick={() => openReaderDocument(item.id)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
+                        >
+                          <div
+                            className="reader-library-cover"
+                            style={{ background: `linear-gradient(150deg, ${gradient[0]} 0%, ${gradient[1]} 100%)` }}
+                          >
+                            {coverUrl ? (
+                              <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
+                            ) : (
+                              <span className="reader-archive-cover-fallback">{initials}</span>
+                            )}
+                            {item.level && <span className="reader-library-level-chip">{item.level}</span>}
+                            {isOpening && (
+                              <div className="reader-library-cover-loading">
+                                <span className="reader-library-cover-spinner" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="reader-library-card-body" style={{ cursor: 'pointer' }}>
+                            <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
+                            <div className="reader-library-meta">
+                              {item.public_author && <span>{item.public_author}</span>}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
 
               {/* Offline whole-document audio panel removed — we don't offer that. */}
             </div>
