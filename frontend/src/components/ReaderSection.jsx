@@ -464,13 +464,18 @@ export default function ReaderSection(props) {
     readerColSyncPosition();
   }, [readerColIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-measure on viewport resize (rotation / chrome toggle / keyboard).
+  // Re-measure on viewport resize (rotation / chrome toggle / keyboard) AND on
+  // TRACK growth. The track grows when lazily-loaded pages arrive or late assets
+  // reflow the text — without re-measuring then, the extra columns stay blank
+  // (the "first page full, rest empty until re-open" bug). Observing the track
+  // makes the pagination self-heal the moment more content lands.
   React.useEffect(() => {
     if (!readerColUsesEngine) return undefined;
     const vp = readerColViewportRef.current;
     if (!vp || typeof ResizeObserver === 'undefined') return undefined;
     let raf = 0;
-    const ro = new ResizeObserver(() => {
+    let lastW = 0;
+    const remeasure = () => {
       window.cancelAnimationFrame(raf);
       raf = window.requestAnimationFrame(() => {
         const track = readerColTrackRef.current;
@@ -483,8 +488,19 @@ export default function ReaderSection(props) {
         setReaderColIndex(i);
         applyReaderColTransform(-i * readerColStep(), false);
       });
+    };
+    const ro = new ResizeObserver((entries) => {
+      // Ignore no-op fires (the track reports its own size on observe start).
+      let changed = false;
+      for (const e of entries) {
+        const w = e.contentRect ? Math.round(e.contentRect.width) : 0;
+        if (e.target === vp || Math.abs(w - lastW) > 1) { changed = true; lastW = w; }
+      }
+      if (changed) remeasure();
     });
     ro.observe(vp);
+    const track = readerColTrackRef.current;
+    if (track) ro.observe(track);
     return () => { ro.disconnect(); window.cancelAnimationFrame(raf); };
   }, [readerColUsesEngine]); // eslint-disable-line react-hooks/exhaustive-deps
 
