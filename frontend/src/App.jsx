@@ -5765,6 +5765,8 @@ function AppInner() {
   const [youtubeTranscriptLoading, setYoutubeTranscriptLoading] = useState(false);
   const [youtubePlayerReady, setYoutubePlayerReady] = useState(false);
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
+  const [youtubeDuration, setYoutubeDuration] = useState(0);
+  const youtubeScrubbingRef = useRef(false); // true while the user drags the scrubber
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeTranslationEnabled, setYoutubeTranslationEnabled] = useState(false);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
@@ -27115,11 +27117,58 @@ function AppInner() {
     // the fallback in jumpYoutubeBySubtitle can still move to the first/last sentence.
     const canJumpPrev = canJump && activeRowIndex !== 0;
     const canJumpNext = canJump && activeRowIndex !== rowCount - 1;
+    const canScrub = Boolean(youtubeDuration > 0 && youtubePlayerRef.current?.seekTo);
+    const clampedTime = Math.max(0, Math.min(youtubeCurrentTime || 0, youtubeDuration || 0));
+    const formatClock = (secs) => {
+      const total = Math.max(0, Math.floor(Number(secs) || 0));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      const pad = (n) => String(n).padStart(2, '0');
+      return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+    };
+    const seekToScrub = (rawValue, commit) => {
+      const next = Math.max(0, Math.min(Number(rawValue) || 0, youtubeDuration || 0));
+      setYoutubeCurrentTime(next);
+      try {
+        youtubePlayerRef.current?.seekTo?.(next, commit === true);
+      } catch (error) {
+        // ignore
+      }
+    };
+    const scrubPercent = youtubeDuration > 0 ? (clampedTime / youtubeDuration) * 100 : 0;
     return (
       <div
         className={`youtube-sentence-jump-bar ${inline ? 'is-inline' : 'is-floating'}`}
         aria-label={tr('Навигация по предложениям', 'Navigation zwischen Sätzen')}
       >
+        {canScrub && (
+          <div className="youtube-scrubber">
+            <span className="youtube-scrubber-time">{formatClock(clampedTime)}</span>
+            <div className="youtube-scrubber-track">
+              <div className="youtube-scrubber-fill" style={{ width: `${scrubPercent}%` }} />
+              <input
+                type="range"
+                className="youtube-scrubber-input"
+                min={0}
+                max={youtubeDuration}
+                step="any"
+                value={clampedTime}
+                onPointerDown={() => { youtubeScrubbingRef.current = true; }}
+                onPointerUp={() => { youtubeScrubbingRef.current = false; }}
+                onPointerCancel={() => { youtubeScrubbingRef.current = false; }}
+                onKeyDown={() => { youtubeScrubbingRef.current = true; }}
+                onKeyUp={(e) => { youtubeScrubbingRef.current = false; seekToScrub(e.target.value, true); }}
+                onChange={(e) => seekToScrub(e.target.value, false)}
+                onMouseUp={(e) => { youtubeScrubbingRef.current = false; seekToScrub(e.target.value, true); }}
+                onTouchEnd={(e) => { youtubeScrubbingRef.current = false; }}
+                aria-label={tr('Перемотка видео', 'Video vorspulen')}
+              />
+            </div>
+            <span className="youtube-scrubber-time is-total">{formatClock(youtubeDuration)}</span>
+          </div>
+        )}
+        <div className="youtube-transport-buttons">
         <button
           type="button"
           className="youtube-sentence-jump-btn is-prev"
@@ -27162,6 +27211,7 @@ function AppInner() {
             </svg>
           </span>
         </button>
+        </div>
       </div>
     );
   };
@@ -29996,9 +30046,16 @@ function AppInner() {
             }
             youtubeTimeIntervalRef.current = setInterval(() => {
               try {
-                const time = youtubePlayerRef.current?.getCurrentTime?.();
-                if (typeof time === 'number' && !Number.isNaN(time)) {
-                  setYoutubeCurrentTime(time);
+                // Don't fight the user's finger while they drag the scrubber.
+                if (!youtubeScrubbingRef.current) {
+                  const time = youtubePlayerRef.current?.getCurrentTime?.();
+                  if (typeof time === 'number' && !Number.isNaN(time)) {
+                    setYoutubeCurrentTime(time);
+                  }
+                }
+                const dur = youtubePlayerRef.current?.getDuration?.();
+                if (typeof dur === 'number' && !Number.isNaN(dur) && dur > 0) {
+                  setYoutubeDuration((prev) => (Math.abs(prev - dur) > 0.5 ? dur : prev));
                 }
               } catch (error) {
                 // ignore
