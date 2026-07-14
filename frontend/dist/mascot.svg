@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="Mascot">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#ffd166"/>
+      <stop offset="1" stop-color="#ff8fab"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#fef9c3"/>
+      <stop offset="1" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="shirt" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#5ddcff"/>
+      <stop offset="1" stop-color="#7c5cff"/>
+    </linearGradient>
+  </defs>
+  <circle cx="120" cy="120" r="108" fill="url(#bg)" opacity="0.9"/>
+  <circle cx="120" cy="110" r="64" fill="url(#face)" stroke="#fbbf24" stroke-width="6"/>
+  <circle cx="92" cy="105" r="10" fill="#1f2937"/>
+  <circle cx="148" cy="105" r="10" fill="#1f2937"/>
+  <circle cx="92" cy="102" r="3" fill="#ffffff"/>
+  <circle cx="148" cy="102" r="3" fill="#ffffff"/>
+  <path d="M96 132c12 12 36 12 48 0" fill="none" stroke="#1f2937" stroke-width="6" stroke-linecap="round"/>
+  <path d="M60 86c-10-22 8-44 32-42" fill="none" stroke="#f472b6" stroke-width="8" stroke-linecap="round"/>
+  <path d="M180 86c10-22-8-44-32-42" fill="none" stroke="#f472b6" stroke-width="8" stroke-linecap="round"/>
+  <path d="M70 182c18-18 82-18 100 0" fill="none" stroke="#0f172a" stroke-width="10" stroke-linecap="round"/>
+  <path d="M70 178c18-12 82-12 100 0" fill="none" stroke="url(#shirt)" stroke-width="26" stroke-linecap="round"/>
+</svg>

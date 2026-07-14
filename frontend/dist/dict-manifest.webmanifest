@@ -1,0 +1,21 @@
+{
+  "name": "Wörterbuch",
+  "short_name": "Wörterbuch",
+  "start_url": "/dict",
+  "scope": "/dict",
+  "display": "standalone",
+  "background_color": "#3a7bd5",
+  "theme_color": "#3a7bd5",
+  "icons": [
+    {
+      "src": "/icons/dict-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/dict-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
