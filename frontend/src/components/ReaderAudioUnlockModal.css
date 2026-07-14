@@ -1,0 +1,178 @@
+/* «Озвучить книгу» plaque — matches ProFeatureModal shell, adds voice-choice,
+   wallet balance and inline top-up. */
+.rau-card {
+  max-width: 372px;
+}
+
+.rau-badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #0a6b5e;
+  background: #d9f5ee;
+  padding: 5px 12px;
+  border-radius: 999px;
+  margin-bottom: 12px;
+}
+
+.rau-book-title {
+  margin: -2px 0 12px;
+  font-size: 14px;
+  font-weight: 700;
+  font-style: italic;
+  color: #8a94a6;
+}
+
+/* ── Voice tiers ─────────────────────────────────────────── */
+.rau-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 2px 0 14px;
+  text-align: left;
+}
+.rau-tier {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1.5px solid #e6e9f0;
+  border-radius: 14px;
+  background: #fafbfe;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.rau-tier:active { transform: scale(0.99); }
+.rau-tier.is-selected {
+  border-color: #3a7bd5;
+  background: #f1f5fe;
+  box-shadow: 0 4px 14px rgba(58, 123, 213, 0.16);
+}
+.rau-tier-main {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+.rau-tier-radio {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #c3cad8;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.rau-tier.is-selected .rau-tier-radio {
+  border-color: #3a7bd5;
+  box-shadow: inset 0 0 0 4px #3a7bd5;
+}
+.rau-tier-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1c2536;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rau-tier-price {
+  flex: 0 0 auto;
+  font-size: 15px;
+  font-weight: 800;
+  color: #2a3650;
+}
+.rau-tier-owned { color: #1ea672; font-weight: 800; font-size: 13.5px; }
+.rau-tier.is-unlocked { border-color: #bfead6; background: #f2fbf6; }
+
+/* ── Wallet balance ──────────────────────────────────────── */
+.rau-balance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  background: #f4f6fb;
+  font-size: 14px;
+  color: #5d6b82;
+}
+.rau-balance b { color: #1c2536; font-size: 15px; font-weight: 800; }
+
+/* ── Primary purchase CTA ────────────────────────────────── */
+.rau-primary {
+  display: block;
+  width: 100%;
+  border: none;
+  border-radius: 14px;
+  padding: 15px 16px;
+  margin-bottom: 8px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, #1fb87a, #0e9e8e);
+  box-shadow: 0 10px 22px rgba(15, 158, 130, 0.28);
+  transition: transform 0.1s ease, opacity 0.15s ease;
+}
+.rau-primary:active { transform: scale(0.985); }
+.rau-primary:disabled { opacity: 0.6; cursor: default; }
+.rau-primary.is-owned {
+  background: #eef1f6;
+  color: #1ea672;
+  box-shadow: none;
+}
+
+/* ── Inline top-up ───────────────────────────────────────── */
+.rau-topup { margin-bottom: 6px; }
+.rau-shortfall {
+  font-size: 14px;
+  color: #b4453a;
+  margin-bottom: 10px;
+}
+.rau-shortfall b { font-weight: 800; }
+.rau-presets {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.rau-preset {
+  border: 1.5px solid #e6e9f0;
+  border-radius: 12px;
+  padding: 11px 4px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #2a3650;
+  background: #fff;
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.rau-preset:active { transform: scale(0.97); }
+.rau-preset.is-suggested {
+  border-color: #3a7bd5;
+  background: linear-gradient(135deg, #3a7bd5, #5b34d5);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(58, 52, 213, 0.24);
+}
+.rau-preset:disabled { opacity: 0.55; cursor: default; }
+.rau-refresh {
+  display: block;
+  width: 100%;
+  border: none;
+  background: #f4f6fb;
+  border-radius: 12px;
+  padding: 11px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #5d6b82;
+  cursor: pointer;
+}
+.rau-refresh:disabled { opacity: 0.6; cursor: default; }
+
+.rau-error { margin: 8px 0 0; font-size: 13.5px; font-weight: 700; color: #b4453a; }
+.rau-fineprint { margin: 12px 0 4px; font-size: 12.5px; line-height: 1.45; color: #9aa4b8; }
+
+/* Dark reader themes: the plaque stays a light card (like ProFeatureModal) for
+   consistency, so no per-theme overrides needed. */

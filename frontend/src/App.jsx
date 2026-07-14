@@ -11,6 +11,7 @@ import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
+import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -5883,6 +5884,14 @@ function AppInner() {
   // "try again in a couple seconds" toast, plus a one-tap "ask admin for more" action.
   const [readerAudioLimitInfo, setReaderAudioLimitInfo] = useState(null);
   const [readerAudioLimitRequestState, setReaderAudioLimitRequestState] = useState('idle'); // idle | sending | sent | error
+  // Per-book paid-audio unlock (Phase 2): wallet balance + the opened book's audio
+  // pricing, and the unlock modal.
+  const [walletBalanceMinor, setWalletBalanceMinor] = useState(0);
+  const [walletTopupPresets, setWalletTopupPresets] = useState([300, 500, 1000, 2000]);
+  const [readerDocAudio, setReaderDocAudio] = useState(null); // { tiers:[...], default_tier, ... }
+  const [readerAudioUnlockInfo, setReaderAudioUnlockInfo] = useState(null); // null | { documentId, bookTitle, tiers, balanceMinor, defaultTier, topupPresets }
+  const [readerAudioUnlockState, setReaderAudioUnlockState] = useState('idle'); // idle | unlocking | error
+  const [readerAudioTopupState, setReaderAudioTopupState] = useState('idle'); // idle | opening
   const [readerAudioPlayData, setReaderAudioPlayData] = useState(null);
   const [readerAudioPlayPosition, setReaderAudioPlayPosition] = useState(0);
   const [readerAudioVoice, setReaderAudioVoice] = useState('');
@@ -15398,6 +15407,108 @@ function AppInner() {
     setReaderAudioLimitInfo(null);
   }
 
+  // ── Per-book audio unlock (paid narration) ──────────────────────────────
+  function openReaderAudioUnlockModal(payload) {
+    const unlock = (payload && payload.unlock) || {};
+    const audio = readerDocAudio || {};
+    const defTier = String(unlock.voice_tier || audio.default_tier || 'neural');
+    const allTiers = Array.isArray(audio.tiers) && audio.tiers.length
+      ? audio.tiers
+      : [{ tier: defTier, label: {}, price_minor: Number(unlock.price_minor || 0), unlocked: false }];
+    // Phase 2 offers a single premium voice (matches the tier `play` requests by
+    // default). The multi-voice picker + samples is Phase 3.
+    const tiers = allTiers.filter((t) => t.tier === defTier).length
+      ? allTiers.filter((t) => t.tier === defTier)
+      : allTiers.slice(0, 1);
+    if (readerAudioPlayActive) stopReaderAudioPlay();
+    setReaderAudioUnlockState('idle');
+    setReaderAudioTopupState('idle');
+    setReaderAudioUnlockInfo({
+      documentId: Number(unlock.document_id || readerDocumentId || 0),
+      bookTitle: String(readerTitle || ''),
+      tiers,
+      defaultTier: String(unlock.voice_tier || audio.default_tier || 'neural'),
+      balanceMinor: Number(unlock.balance_minor != null ? unlock.balance_minor : walletBalanceMinor) || 0,
+      topupPresets: Array.isArray(walletTopupPresets) && walletTopupPresets.length ? walletTopupPresets : [300, 500, 1000, 2000],
+    });
+  }
+
+  function closeReaderAudioUnlockModal() {
+    setReaderAudioUnlockInfo(null);
+    setReaderAudioUnlockState('idle');
+  }
+
+  const refreshWalletBalance = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/webapp/wallet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data?.ok) {
+        const bal = Number(data.balance_minor || 0);
+        setWalletBalanceMinor(bal);
+        setReaderAudioUnlockInfo((cur) => (cur ? { ...cur, balanceMinor: bal } : cur));
+        if (Array.isArray(data.topup_presets_minor) && data.topup_presets_minor.length) {
+          setWalletTopupPresets(data.topup_presets_minor);
+        }
+      }
+    } catch (_e) { /* silent — балансы не критичны к моменту */ }
+  }, [initData]);
+
+  const doUnlockBookAudio = useCallback(async (voiceTier) => {
+    const info = readerAudioUnlockInfo;
+    if (!info || !info.documentId) return;
+    setReaderAudioUnlockState('unlocking');
+    try {
+      const resp = await fetch('/api/webapp/reader/audio/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, document_id: info.documentId, voice_tier: voiceTier }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data?.ok) {
+        // Optimistic: reflect balance + mark this tier owned, then close.
+        const newBal = Number(data.balance_minor || 0);
+        setWalletBalanceMinor(newBal);
+        setReaderDocAudio((cur) => {
+          if (!cur || !Array.isArray(cur.tiers)) return cur;
+          return { ...cur, any_unlocked: true, tiers: cur.tiers.map((t) => (t.tier === voiceTier ? { ...t, unlocked: true } : t)) };
+        });
+        setReaderAudioUnlockState('idle');
+        closeReaderAudioUnlockModal();
+        return;
+      }
+      if (resp.status === 402) {
+        // Not enough balance — keep the modal open, refresh to the shortfall view.
+        setReaderAudioUnlockState('idle');
+        setReaderAudioUnlockInfo((cur) => (cur ? { ...cur, balanceMinor: Number(data.balance_minor || cur.balanceMinor || 0) } : cur));
+        return;
+      }
+      setReaderAudioUnlockState('error');
+    } catch (_e) {
+      setReaderAudioUnlockState('error');
+    }
+  }, [readerAudioUnlockInfo, initData]);
+
+  const doWalletTopup = useCallback(async (amountMinor) => {
+    setReaderAudioTopupState('opening');
+    try {
+      const resp = await fetch('/api/webapp/wallet/topup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, amount_minor: amountMinor }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data?.url) {
+        if (telegramApp?.openLink) telegramApp.openLink(data.url);
+        else window.open(data.url, '_blank');
+      }
+    } catch (_e) { /* ignore — user can retry */ }
+    setReaderAudioTopupState('idle');
+  }, [initData]);
+
   const requestReaderAudioLimitIncrease = useCallback(async () => {
     if (readerAudioLimitRequestState === 'sending' || readerAudioLimitRequestState === 'sent') return;
     setReaderAudioLimitRequestState('sending');
@@ -23920,6 +24031,11 @@ function AppInner() {
       setReaderDocumentId(Number(doc?.id || safeDocumentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(resolvedText);
+      // Paid-audio pricing + wallet balance for THIS book (Phase 2) — drives the
+      // "Озвучить: €X" state and the unlock modal. Reset any stale unlock plaque.
+      setReaderDocAudio(data?.audio && !data.audio.free ? data.audio : (data?.audio || null));
+      setWalletBalanceMinor(Number(data?.wallet?.balance_minor || 0));
+      setReaderAudioUnlockInfo(null);
       const totalPages = Number(data?.total_pages || pages.length || 0);
       let sparsePages;
       if (totalPages > pages.length && pages.length > 0) {
@@ -24414,6 +24530,12 @@ function AppInner() {
             });
             const payload = await resp.json().catch(() => ({}));
             if (!resp.ok && resp.status !== 202) {
+              // Personal book not yet paid for: show the unlock plaque (never on a
+              // background prefetch — it would pop while the user just reads).
+              if (resp.status === 402 && String(payload?.error_code || '').trim() === 'audio_unlock_required') {
+                if (!prefetchOnly) openReaderAudioUnlockModal(payload);
+                return null;
+              }
               if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
                 openReaderAudioPremiumPaywall();
                 return null;
@@ -24830,6 +24952,10 @@ function AppInner() {
         });
         const payload = await resp.json().catch(() => ({}));
         if (!resp.ok && resp.status !== 202) {
+          if (resp.status === 402 && String(payload?.error_code || '').trim() === 'audio_unlock_required') {
+            openReaderAudioUnlockModal(payload);
+            return null;
+          }
           if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
             openReaderAudioPremiumPaywall();
             return null;
@@ -33614,6 +33740,18 @@ function AppInner() {
               requestState={readerAudioLimitRequestState}
               onRequestIncrease={requestReaderAudioLimitIncrease}
               onClose={closeReaderAudioLimitModal}
+              tr={tr}
+            />
+
+            <ReaderAudioUnlockModal
+              isOpen={!!readerAudioUnlockInfo}
+              info={readerAudioUnlockInfo}
+              unlockState={readerAudioUnlockState}
+              topupState={readerAudioTopupState}
+              onUnlock={doUnlockBookAudio}
+              onTopup={doWalletTopup}
+              onRefreshBalance={refreshWalletBalance}
+              onClose={closeReaderAudioUnlockModal}
               tr={tr}
             />
 
