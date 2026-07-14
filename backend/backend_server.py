@@ -4049,13 +4049,39 @@ def _dict_user_has_left_bot(user_id: int | None) -> bool:
     return blocked
 
 
+_RESOLVED_BOT_USERNAME_CACHE: dict[str, str] = {}
+
+
+def _resolve_bot_username() -> str:
+    """The bot's @username for deep links. Prefer the env var, but the WEB service often
+    doesn't have TELEGRAM_BOT_USERNAME set (only the bot service does) — so fall back to
+    deriving it once from the bot token via getMe and caching it. Never returns a bare host."""
+    if TELEGRAM_BOT_USERNAME:
+        return TELEGRAM_BOT_USERNAME
+    cached = _RESOLVED_BOT_USERNAME_CACHE.get("value")
+    if cached:
+        return cached
+    try:
+        if TELEGRAM_Deutsch_BOT_TOKEN:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/getMe", timeout=5,
+            )
+            uname = str(((resp.json() or {}).get("result") or {}).get("username") or "").strip().lstrip("@")
+            if uname:
+                _RESOLVED_BOT_USERNAME_CACHE["value"] = uname
+                return uname
+    except Exception:
+        logging.debug("getMe bot-username resolve failed", exc_info=True)
+    return ""
+
+
 def _dict_gate_response():
     """The 403 the standalone dictionary renders as a full-screen 'return to bot' screen.
     Carries the bot username so its button can deep-link straight back to the bot."""
     return jsonify({
         "blocked": True,
         "reason": "bot_blocked",
-        "bot_username": TELEGRAM_BOT_USERNAME,
+        "bot_username": _resolve_bot_username(),
         "message": "Чтобы пользоваться словарём, вернись в бота.",
     }), 403
 

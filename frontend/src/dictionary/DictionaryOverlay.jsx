@@ -104,7 +104,12 @@ function DictBlockedGate({ botUsername }) {
     const link = `https://t.me/${uname}`;
     const tg = window?.Telegram?.WebApp;
     try {
-      if (typeof tg?.openTelegramLink === 'function') { tg.openTelegramLink(link); return; }
+      // Only use the native opener when actually running INSIDE Telegram (initData present).
+      // The detached home-screen PWA has no Telegram context, so plain navigation is correct.
+      if (tg && tg.initData && typeof tg.openTelegramLink === 'function') {
+        tg.openTelegramLink(link);
+        return;
+      }
     } catch (_e) { /* fall through to plain navigation */ }
     window.location.href = link;
   };
