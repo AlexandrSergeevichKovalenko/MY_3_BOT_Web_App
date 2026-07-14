@@ -33,8 +33,12 @@ _BROWSER_UA = (
 
 # ── Curated publishers ─────────────────────────────────────────────────────
 # level     — rough CEFR band, shown to the learner as a hint.
+# mode      — "feed" (RSS/RDF/Atom) or "scrape" (parse the homepage teasers, for
+#             publishers that don't expose a usable feed but DO server-render).
 # via_proxy — fetch through the residential proxy (some publishers block
 #             datacenter IPs). Only honoured when a proxy is configured.
+# Only publishers whose ARTICLE pages server-render text belong here — a page
+# that renders client-side (JS SPA) would open blank in the reader.
 READER_SOURCES: list[dict] = [
     {
         "id": "dw",
@@ -43,6 +47,7 @@ READER_SOURCES: list[dict] = [
         "level": "B1–C1",
         "homepage": "https://www.dw.com/de/",
         "feed_url": "https://rss.dw.com/rdf/rss-de-all",
+        "mode": "feed",
         "via_proxy": False,
     },
     {
@@ -52,6 +57,7 @@ READER_SOURCES: list[dict] = [
         "level": "B1–C1",
         "homepage": "https://www.dw.com/de/themen/",
         "feed_url": "https://rss.dw.com/rdf/rss-de-top",
+        "mode": "feed",
         "via_proxy": False,
     },
     {
@@ -61,17 +67,20 @@ READER_SOURCES: list[dict] = [
         "level": "B2+",
         "homepage": "https://www.tagesschau.de/",
         "feed_url": "https://www.tagesschau.de/index~rss2.xml",
+        "mode": "feed",
         "via_proxy": False,
     },
     {
-        # Einfache Sprache — the most valuable band for learners (A2–B1), but the
-        # publisher bot-blocks datacenter IPs, so we route it through the proxy.
+        # Einfache Sprache — the most valuable band for learners (A2–B1). Its RSS
+        # endpoint serves an SPA shell, but the homepage server-renders article
+        # teasers and the article pages render text, so we scrape the homepage.
         "id": "nachrichtenleicht",
         "name": "Nachrichtenleicht",
         "section": "Einfache Sprache",
         "level": "A2–B1",
         "homepage": "https://www.nachrichtenleicht.de/",
-        "feed_url": "https://www.nachrichtenleicht.de/nachrichtenleicht-nachrichten-100.rss",
+        "feed_url": "https://www.nachrichtenleicht.de/",
+        "mode": "scrape",
         "via_proxy": True,
     },
 ]
@@ -214,6 +223,46 @@ def _parse_feed(xml_bytes: bytes) -> list[dict]:
     return articles
 
 
+def _scrape_homepage_articles(html_bytes: bytes, base_url: str) -> list[dict]:
+    """Extract article teasers (title/link/image) from a server-rendered homepage.
+
+    Used for publishers without a usable feed. Reads <article> teaser blocks and
+    keeps the ones with a heading and an article-looking link."""
+    from urllib.parse import urljoin
+    from bs4 import BeautifulSoup
+
+    try:
+        soup = BeautifulSoup(html_bytes, "lxml")
+    except Exception:
+        soup = BeautifulSoup(html_bytes, "html.parser")
+
+    link_re = re.compile(r"/[a-z0-9-]+-\d+\.html($|\?)")
+    articles: list[dict] = []
+    seen: set[str] = set()
+    for block in soup.find_all("article"):
+        anchor = block.find("a", href=link_re)
+        if not anchor:
+            continue
+        href = urljoin(base_url, (anchor.get("href") or "").strip())
+        if not href or href in seen:
+            continue
+        heading = block.find(["h1", "h2", "h3", "h4"])
+        title = _clean_text(heading.get_text(" ", strip=True) if heading else anchor.get_text(" ", strip=True))
+        if not title:
+            continue
+        seen.add(href)
+        img = block.find("img")
+        image = ""
+        if img is not None:
+            image = (img.get("src") or img.get("data-src") or "").strip()
+            if not image and img.get("srcset"):
+                image = img.get("srcset").split(",")[0].strip().split(" ")[0]
+            if image:
+                image = urljoin(base_url, image)
+        articles.append({"title": title, "url": href, "image": image, "summary": "", "published_ts": 0})
+    return articles
+
+
 def fetch_reader_source_articles(
     source_id: str,
     *,
@@ -237,29 +286,38 @@ def fetch_reader_source_articles(
     if source.get("via_proxy") and proxy_url:
         proxies = {"http": proxy_url, "https": proxy_url}
 
+    mode = source.get("mode") or "feed"
     response = requests.get(
         source["feed_url"],
         timeout=15,
         allow_redirects=True,
         headers={
             "User-Agent": _BROWSER_UA,
-            "Accept": "application/rss+xml, application/rdf+xml, application/xml, text/xml, */*",
+            "Accept": (
+                "text/html,application/xhtml+xml,*/*" if mode == "scrape"
+                else "application/rss+xml, application/rdf+xml, application/xml, text/xml, */*"
+            ),
         },
         proxies=proxies,
     )
     response.raise_for_status()
     body = response.content or b""
-    # Bot-blocked publishers answer with an HTML page instead of XML.
-    head = body[:200].lstrip().lower()
-    if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
-        raise ValueError("publisher returned HTML instead of a feed (likely bot-blocked)")
 
-    articles = _parse_feed(body)
+    if mode == "scrape":
+        articles = _scrape_homepage_articles(body, response.url or source["feed_url"])
+    else:
+        # Bot-blocked publishers answer with an HTML page instead of XML.
+        head = body[:200].lstrip().lower()
+        if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+            raise ValueError("publisher returned HTML instead of a feed (likely bot-blocked)")
+        articles = _parse_feed(body)
+
     with _CACHE_LOCK:
         _CACHE[source["id"]] = (now, articles)
     logger.info(
-        "reader_sources fetched source=%s count=%s via_proxy=%s",
+        "reader_sources fetched source=%s mode=%s count=%s via_proxy=%s",
         source["id"],
+        mode,
         len(articles),
         bool(proxies),
     )
