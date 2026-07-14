@@ -375,6 +375,21 @@
     }
   }
 
+  /* 7b. ПЛАНШЕТ в ГОРИЗОНТАЛЬНОЙ ориентации: экран широкий и НИЗКИЙ, поэтому
+        высокая сетка 3×4 не помещается по высоте — 4-й ряд уходил под экран и
+        появлялся скролл (см. п.1: overflow-y:auto был лишь запасным вариантом).
+        Как и в браузере выше, делаем сетку низкой и широкой — 4 колонки × 3 ряда:
+        все 12 плиток попадают в один экран без прокрутки. Портрет (узкий и
+        высокий) НЕ трогаем — там 3×4 остаётся правильной раскладкой.
+        orientation:landscape вложен в @media (min-width:700px), поэтому телефон
+        (<700px) и портретный планшет не затронуты. */
+  @media (orientation: landscape) {
+    .webapp-page.is-home-bento.is-telegram-tablet .hdt-bento {
+      grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+      grid-template-rows: repeat(3, minmax(0, 1fr)) !important;
+    }
+  }
+
   /* ============ СЕТКА РАЗДЕЛОВ (legacy — теперь только HomeMoreTiles) ============ */
   .hdt-grid {
     grid-template-columns: repeat(5, 1fr) !important;

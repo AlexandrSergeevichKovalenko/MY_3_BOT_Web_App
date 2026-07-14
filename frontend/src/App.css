@@ -18707,6 +18707,17 @@ body.worldnews-active .webapp-topbar {
   max-width: none;
   border-radius: 0;
   padding-top: var(--telegram-tablet-top-safe-offset);
+  /* The section is the top, edge-to-edge layer here, so it MUST paint the book
+     background itself — elsewhere it's left transparent (base .is-immersive rule)
+     and relied on the page/body behind it. On tablet that page is the Telegram
+     LIGHT theme, so any part of this fixed panel not covered by the dark article
+     (the top safe-area padding, the collapsed peek strip, the bottom dock) showed
+     a light band — visible the moment centre-tap fades the bars. Paint the reader
+     bg here so those zones match the book in every theme (--rd-bg = dark/sepia/cream).
+     `!important`: the base `.webapp-reader.is-immersive{background:transparent}` wins
+     in the bundled cascade (a plain higher-specificity override is dropped there),
+     so force it — the book surface must be opaque under the chrome. */
+  background: var(--rd-bg) !important;
 }
 
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-article {
