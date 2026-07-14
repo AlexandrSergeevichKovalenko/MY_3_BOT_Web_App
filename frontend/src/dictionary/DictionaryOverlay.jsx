@@ -97,21 +97,31 @@ function bumpChipHintCount() {
 // Full-screen "return to bot" gate shown when the user has blocked/deleted the bot. The
 // standalone home-screen dictionary is part of the bot; leaving the bot turns it off. A return
 // (press «Запустить» in the bot) clears the server-side flag, so the next translate just works.
+// Hardcoded final fallback so the button always has a real handle even if the API omits it.
+const DICT_BOT_USERNAME_FALLBACK = 'Ich_Deutsch_bot';
+
 function DictBlockedGate({ botUsername }) {
-  const uname = String(botUsername || '').replace(/^@/, '').trim();
+  const uname = (String(botUsername || '').replace(/^@/, '').trim()) || DICT_BOT_USERNAME_FALLBACK;
   const openBot = () => {
-    if (!uname) return;
-    const link = `https://t.me/${uname}`;
+    const https = `https://t.me/${uname}`;
     const tg = window?.Telegram?.WebApp;
     try {
-      // Only use the native opener when actually running INSIDE Telegram (initData present).
-      // The detached home-screen PWA has no Telegram context, so plain navigation is correct.
+      // Inside Telegram (initData present) → native opener. Otherwise we're the detached PWA.
       if (tg && tg.initData && typeof tg.openTelegramLink === 'function') {
-        tg.openTelegramLink(link);
+        tg.openTelegramLink(https);
         return;
       }
-    } catch (_e) { /* fall through to plain navigation */ }
-    window.location.href = link;
+    } catch (_e) { /* fall through */ }
+    // Detached home-screen PWA: jump straight into the Telegram app via the tg:// scheme.
+    // If that scheme isn't handled (no app), fall back to the universal https link — but skip
+    // the fallback if the app actually opened (page went hidden), so we don't also load t.me.
+    let done = false;
+    try { window.location.href = `tg://resolve?domain=${uname}`; } catch (_e) { /* ignore */ }
+    setTimeout(() => {
+      if (done || document.hidden) return;
+      done = true;
+      try { window.location.href = https; } catch (_e) { /* ignore */ }
+    }, 800);
   };
   return (
     <div className="ans-root dq-scroll">
@@ -126,15 +136,9 @@ function DictBlockedGate({ botUsername }) {
           <p className="dq-gate-text">
             Вернись в бота и нажми «Запустить» — словарь тут же снова заработает.
           </p>
-          {uname ? (
-            <button type="button" className="dq-gate-btn" onClick={openBot}>
-              Открыть бота
-            </button>
-          ) : (
-            <p className="dq-gate-hint">
-              Открой Telegram и запусти бота, из которого добавил словарь.
-            </p>
-          )}
+          <button type="button" className="dq-gate-btn" onClick={openBot}>
+            Открыть бота
+          </button>
         </div>
       </div>
     </div>

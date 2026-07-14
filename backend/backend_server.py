@@ -4072,7 +4072,9 @@ def _resolve_bot_username() -> str:
                 return uname
     except Exception:
         logging.debug("getMe bot-username resolve failed", exc_info=True)
-    return ""
+    # Last-resort constant so the return-to-bot button is NEVER a bare t.me, even on a service
+    # that has neither the username env nor the bot token. Env-overridable if the handle changes.
+    return (os.getenv("TELEGRAM_BOT_USERNAME_FALLBACK") or "Ich_Deutsch_bot").strip().lstrip("@")
 
 
 def _dict_gate_response():
