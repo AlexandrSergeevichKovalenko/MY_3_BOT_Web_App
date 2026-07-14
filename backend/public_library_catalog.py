@@ -38,26 +38,33 @@ class CatalogBook:
     level: str         # rough CEFR hint: A2 / B1 / B2 / C1
     query: str         # Gutendex search string (title + author keywords)
     sort: int          # display order in the "Классика" shelf (ascending)
+    gutenberg_id: int | None = None  # pin an exact Project Gutenberg id when search
+                                     # is ambiguous (partial/split/wrong editions)
 
 
 # Ordered easy → hard so the shelf reads as a gentle ramp for learners.
 PUBLIC_LIBRARY_CATALOG: list[CatalogBook] = [
     CatalogBook("heidi", "Heidi", "Johanna Spyri", "A2", "Heidi Spyri", 10),
-    CatalogBook("maerchen-grimm", "Kinder- und Hausmärchen", "Brüder Grimm", "A2", "Kinder und Hausmärchen Grimm", 20),
+    # DEFERRED — no clean single-file German Gutenberg edition found (search returns
+    # nothing in German; needs a hand-picked id or an alternate source). Revisit.
+    # CatalogBook("maerchen-grimm", "Kinder- und Hausmärchen", "Brüder Grimm", "A2", "Kinder und Hausmärchen Grimm", 20),
     CatalogBook("maerchen-hauff", "Märchen", "Wilhelm Hauff", "A2", "Märchen Hauff", 30),
     CatalogBook("taugenichts", "Aus dem Leben eines Taugenichts", "Joseph von Eichendorff", "B1", "Aus dem Leben eines Taugenichts Eichendorff", 40),
-    CatalogBook("schimmelreiter", "Der Schimmelreiter", "Theodor Storm", "B1", "Der Schimmelreiter Storm", 50),
+    CatalogBook("schimmelreiter", "Der Schimmelreiter", "Theodor Storm", "B1", "Der Schimmelreiter Storm", 50, gutenberg_id=74008),
     CatalogBook("kleider-machen-leute", "Kleider machen Leute", "Gottfried Keller", "B1", "Kleider machen Leute Keller", 60),
     CatalogBook("peter-schlemihl", "Peter Schlemihls wundersame Geschichte", "Adelbert von Chamisso", "B1", "Peter Schlemihl Chamisso", 70),
-    CatalogBook("winnetou-1", "Winnetou I", "Karl May", "B1", "Winnetou May", 80),
-    CatalogBook("sandmann", "Der Sandmann", "E. T. A. Hoffmann", "B2", "Der Sandmann Hoffmann", 90),
+    # DEFERRED — Gutenberg id 21798 exposes only a README stub, no full German text.
+    # CatalogBook("winnetou-1", "Winnetou I", "Karl May", "B1", "Winnetou Karl May", 80, gutenberg_id=21798),
+    CatalogBook("sandmann", "Der Sandmann (Nachtstücke)", "E. T. A. Hoffmann", "B2", "Nachtstücke Hoffmann", 90, gutenberg_id=6341),
     CatalogBook("verwandlung", "Die Verwandlung", "Franz Kafka", "B2", "Die Verwandlung Kafka", 100),
-    CatalogBook("werther", "Die Leiden des jungen Werther", "Johann Wolfgang von Goethe", "B2", "Die Leiden des jungen Werther Goethe", 110),
+    # DEFERRED — full Werther is split into Band 1 (id 2407) + Band 2 (id 2408); the
+    # single-file id 19794 is only a README stub. Needs multi-id concat support.
+    # CatalogBook("werther", "Die Leiden des jungen Werther", "Johann Wolfgang von Goethe", "B2", "Die Leiden des jungen Werthers", 110, gutenberg_id=2407),
     CatalogBook("effi-briest", "Effi Briest", "Theodor Fontane", "B2", "Effi Briest Fontane", 120),
     CatalogBook("wilhelm-tell", "Wilhelm Tell", "Friedrich Schiller", "B2", "Wilhelm Tell Schiller", 130),
     CatalogBook("die-raeuber", "Die Räuber", "Friedrich Schiller", "B2", "Die Räuber Schiller", 140),
     CatalogBook("wintermaerchen", "Deutschland. Ein Wintermärchen", "Heinrich Heine", "B2", "Deutschland Ein Wintermärchen Heine", 150),
-    CatalogBook("prozess", "Der Process", "Franz Kafka", "C1", "Der Process Kafka", 160),
+    CatalogBook("prozess", "Der Prozess", "Franz Kafka", "C1", "Der Prozess Kafka", 160, gutenberg_id=69327),
     CatalogBook("nathan-der-weise", "Nathan der Weise", "Gotthold Ephraim Lessing", "C1", "Nathan der Weise Lessing", 170),
     CatalogBook("faust-1", "Faust — Der Tragödie erster Teil", "Johann Wolfgang von Goethe", "C1", "Faust Erster Teil Goethe", 180),
     CatalogBook("zarathustra", "Also sprach Zarathustra", "Friedrich Nietzsche", "C1", "Also sprach Zarathustra Nietzsche", 190),
@@ -85,14 +92,26 @@ def resolve_gutendex(book: CatalogBook, *, timeout: int = 30) -> dict | None:
         {slug, gutenberg_id, matched_title, matched_author, source_type, download_url}
     or None if nothing suitable was found. Network call — used only at ingest.
     """
-    params = urllib.parse.urlencode({"search": book.query, "languages": "de"})
-    req = urllib.request.Request(f"{GUTENDEX_API}?{params}", headers={"User-Agent": _HTTP_USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        logger.exception("gutendex lookup failed slug=%s query=%r", book.slug, book.query)
-        return None
+    # Exact-id path: fetch the single book (bypasses ambiguous search that can pick a
+    # partial/split/wrong edition). Gutendex single-book endpoint is /books/{id}.
+    if book.gutenberg_id:
+        req = urllib.request.Request(f"{GUTENDEX_API}/{int(book.gutenberg_id)}", headers={"User-Agent": _HTTP_USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            payload = {"results": [result]}
+        except Exception:
+            logger.exception("gutendex id fetch failed slug=%s id=%s", book.slug, book.gutenberg_id)
+            payload = {"results": []}
+    else:
+        params = urllib.parse.urlencode({"search": book.query, "languages": "de"})
+        req = urllib.request.Request(f"{GUTENDEX_API}?{params}", headers={"User-Agent": _HTTP_USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            logger.exception("gutendex lookup failed slug=%s query=%r", book.slug, book.query)
+            return None
 
     results = payload.get("results") or []
     if not results:

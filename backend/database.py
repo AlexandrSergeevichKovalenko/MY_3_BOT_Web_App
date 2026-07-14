@@ -28253,7 +28253,7 @@ def get_reader_library_document(
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
                     processing_status, processing_error, processing_started_at, processing_finished_at,
                     is_archived, archived_at, last_opened_at, created_at, updated_at
-                    {content_select}
+                    {content_select}, cover_image_url
                 FROM bt_3_reader_library
                 WHERE id = %s
                   AND user_id = %s

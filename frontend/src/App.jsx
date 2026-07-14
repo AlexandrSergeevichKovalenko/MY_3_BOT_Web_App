@@ -23358,6 +23358,10 @@ function AppInner() {
   };
 
   const getReaderCoverUrl = (item) => {
+    // cover_image_url is the article's lead image (og:image), already validated
+    // server-side — accept any https URL (many CMS image URLs have no extension).
+    const primary = String(item?.cover_image_url || '').trim();
+    if (/^https:\/\//i.test(primary)) return primary;
     const candidates = [
       item?.cover_url,
       item?.thumbnail,

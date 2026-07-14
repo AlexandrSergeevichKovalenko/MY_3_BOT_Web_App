@@ -373,13 +373,12 @@
   background: rgba(0,0,0,0.14);
   animation: rd-fade-in .15s ease;
 }
+/* Wrap so EVERY source is visible at once (no hidden horizontal scroll). */
 .webapp-reader .reader-sources-tabs {
-  display: flex; gap: 7px; min-width: 0; max-width: 100%; overflow-x: auto; padding-bottom: 2px;
-  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; max-width: 100%; padding-bottom: 2px;
 }
-.webapp-reader .reader-sources-tabs::-webkit-scrollbar { display: none; }
 .webapp-reader .reader-sources-tab {
-  flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px;
+  flex: 0 1 auto; display: inline-flex; align-items: center; gap: 6px;
   height: 32px; padding: 0 12px; border-radius: 999px;
   border: 1px solid var(--rd-border-hi); background: transparent;
   color: var(--rd-text-muted); font-size: 12.5px; font-weight: 600;
@@ -689,6 +688,17 @@
   padding: 6px 0 24px;
   align-items: start;
 }
+
+/* «Недавние статьи» group divider inside the library. */
+.webapp-reader .reader-lib-subhead {
+  display: flex; align-items: baseline; gap: 9px;
+  margin: 6px 0 -8px; padding-top: 8px;
+  border-top: 1px solid var(--rd-border);
+}
+.webapp-reader .reader-lib-subhead > span:first-child {
+  font-size: 13px; font-weight: 800; letter-spacing: 0.02em; color: var(--rd-text);
+}
+.webapp-reader .reader-lib-subhead-hint { font-size: 10.5px; font-weight: 500; color: var(--rd-text-faint); }
 
 @media (min-width: 760px) {
   .webapp-reader .reader-library-grid {
