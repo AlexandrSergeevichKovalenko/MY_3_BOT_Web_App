@@ -636,9 +636,9 @@ body {
      they stay clearly visible. Hero tiles keep their own height-based sizing. */
   .webapp-page.is-home-bento .hdt-bt:not(.hero) .hdt-bl {
     white-space: nowrap;
-    font-size: clamp(9px, 2.9vw, 12.8px);
+    font-size: clamp(8px, 2.6vw, 12.5px);
     line-height: 1.1;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.03em;
   }
   .webapp-page.is-home-bento .hdt-bt.hero .hdt-bl {
     font-size: clamp(12px, 1.95vh, 15px);
