@@ -43473,7 +43473,12 @@ def _start_shortcut_lookup_enqueue_runner(
         # a digest only when the SPLIT yields > _SHORTCUT_CARD_OVERFLOW_UNITS real units (decided
         # post-split on actual units, not OCR lines — so a single Reel screenshot stays as cards).
         autosave_on = _autosave_toggle_cached(safe_user_id)  # 30s cache, no DB hit per request
-        if autosave_on:
+        # A live forward (origin="forwarded") is INTERACTIVE: the user pasted one thing and is
+        # waiting on the 🔍 for an answer NOW. Never park it in the debounce window — that's for
+        # the background screenshot collector (origin="shortcut"), where a burst of photos should
+        # coalesce into ONE split+digest. So forwards always deliver inline, even with autosave ON;
+        # only the collector path keeps the batch behaviour.
+        if autosave_on and origin != "forwarded":
             # Nightly auto-save: append raw text + arm debounce (pure Redis); the worker flush
             # does the heavy split/translate later. Keeps this request path light at scale.
             try:
