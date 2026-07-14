@@ -16011,6 +16011,101 @@ def _render_reader_pdf_page(user_id: int, document_id: int, page: int, zoom: int
         return None, page_count
 
 
+def _reader_cover_object_key(user_id: int, document_id: int, ext: str = "jpg") -> str:
+    safe_ext = re.sub(r"[^a-z0-9]", "", str(ext or "jpg").lower()) or "jpg"
+    return f"reader_covers/{int(user_id)}/{int(document_id)}/cover.{safe_ext}"
+
+
+def _clean_book_title(raw: str, fallback: str = "") -> str:
+    """Trim a book's embedded title; reject junk metadata (empty / 'untitled' / a
+    filename) so we fall back to the inferred title instead of showing garbage."""
+    t = re.sub(r"\s+", " ", str(raw or "")).strip()
+    low = t.lower()
+    if (not t or len(t) < 2 or low in {"untitled", "unknown", "title", "cover", "document"}
+            or low.endswith((".pdf", ".epub", ".txt"))):
+        return fallback
+    return t[:200]
+
+
+def _extract_pdf_title_and_cover(data: bytes, *, user_id: int, document_id: int) -> tuple[str, str]:
+    """(title, cover_image_url): title from the PDF's metadata, cover = its first page
+    rendered to a JPEG and stored in R2. Best-effort — never raises."""
+    title = ""
+    cover_url = ""
+    if _pymupdf is None or not data:
+        return title, cover_url
+    try:
+        with _pymupdf.open(stream=data, filetype="pdf") as doc:
+            title = _clean_book_title((doc.metadata or {}).get("title") or "")
+            if doc.page_count > 0 and user_id and document_id:
+                pix = doc[0].get_pixmap(matrix=_pymupdf.Matrix(2, 2), alpha=False)
+                img_bytes = pix.tobytes("jpg", jpg_quality=82)
+                key = _reader_cover_object_key(user_id, document_id, "jpg")
+                r2_put_bytes(key, img_bytes, content_type="image/jpeg")
+                cover_url = r2_public_url(key)
+    except Exception:
+        logging.warning("reader PDF cover/title extract failed document_id=%s", document_id, exc_info=True)
+    return title, cover_url
+
+
+def _extract_epub_title_and_cover(data: bytes, *, user_id: int, document_id: int) -> tuple[str, str]:
+    """(title, cover_image_url): title from DC metadata, cover image pulled from the EPUB
+    itself and stored in R2. Best-effort — never raises."""
+    title = ""
+    cover_url = ""
+    if not data:
+        return title, cover_url
+    try:
+        ebooklib_epub, _item_doc = _load_ebooklib_runtime()
+        import ebooklib
+        book = ebooklib_epub.read_epub(BytesIO(data), options={"ignore_ncx": True})
+        try:
+            dc = book.get_metadata("DC", "title")
+            if dc and dc[0] and dc[0][0]:
+                title = _clean_book_title(dc[0][0])
+        except Exception:
+            pass
+        # Cover image: prefer a declared ITEM_COVER, then the <meta name="cover"> item,
+        # then any image whose filename looks like a cover.
+        cover_item = None
+        try:
+            covers = list(book.get_items_of_type(getattr(ebooklib, "ITEM_COVER", -1)))
+            if covers:
+                cover_item = covers[0]
+        except Exception:
+            pass
+        if cover_item is None:
+            try:
+                cover_id = ""
+                for _v, attrs in (book.get_metadata("OPF", "cover") or []):
+                    cover_id = str((attrs or {}).get("content") or "").strip()
+                    if cover_id:
+                        break
+                if cover_id:
+                    cover_item = book.get_item_with_id(cover_id)
+            except Exception:
+                pass
+        if cover_item is None:
+            try:
+                for it in book.get_items_of_type(getattr(ebooklib, "ITEM_IMAGE", -1)):
+                    if "cover" in str(getattr(it, "file_name", "")).lower():
+                        cover_item = it
+                        break
+            except Exception:
+                pass
+        if cover_item is not None and user_id and document_id:
+            img_bytes = cover_item.get_content()
+            if img_bytes:
+                mime = str(getattr(cover_item, "media_type", "") or "image/jpeg").lower()
+                ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
+                key = _reader_cover_object_key(user_id, document_id, ext)
+                r2_put_bytes(key, img_bytes, content_type=mime or "image/jpeg")
+                cover_url = r2_public_url(key)
+    except Exception:
+        logging.warning("reader EPUB cover/title extract failed document_id=%s", document_id, exc_info=True)
+    return title, cover_url
+
+
 def _resolve_reader_ingest_content(
     *,
     input_text: str,
@@ -16020,6 +16115,8 @@ def _resolve_reader_ingest_content(
     file_content_b64: str,
     upload_tmp_path: str = "",
     upload_r2_object_key: str = "",
+    user_id: int = 0,
+    document_id: int = 0,
 ) -> tuple[str, list[dict], str, str | None, dict]:
     normalized_text = ""
     content_pages: list[dict] = []
@@ -16050,9 +16147,19 @@ def _resolve_reader_ingest_content(
         if is_pdf:
             normalized_text, content_pages = _extract_pdf_content_from_bytes(raw_bytes)
             source_type = "pdf"
+            _bt, _bc = _extract_pdf_title_and_cover(raw_bytes, user_id=int(user_id or 0), document_id=int(document_id or 0))
+            if _bt:
+                meta["title"] = _bt
+            if _bc:
+                meta["cover_image_url"] = _bc
         elif is_epub:
             normalized_text, content_pages = _extract_epub_content_from_bytes(raw_bytes)
             source_type = "epub"
+            _bt, _bc = _extract_epub_title_and_cover(raw_bytes, user_id=int(user_id or 0), document_id=int(document_id or 0))
+            if _bt:
+                meta["title"] = _bt
+            if _bc:
+                meta["cover_image_url"] = _bc
         else:
             decoded_text = raw_bytes.decode("utf-8", errors="ignore")
             normalized_text = _normalize_reader_text(decoded_text)
@@ -16521,6 +16628,8 @@ def _process_reader_library_ingest_job(
             file_content_b64=file_content_b64,
             upload_tmp_path=upload_tmp_path,
             upload_r2_object_key=upload_r2_object_key,
+            user_id=int(user_id),
+            document_id=int(document_id),
         )
         if not normalized_text:
             raise ValueError("Не удалось извлечь текст")
