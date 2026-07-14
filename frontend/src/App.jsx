@@ -5802,6 +5802,14 @@ function AppInner() {
   // link from the clipboard when the user returns and offer to open it.
   const [readerArticleClipUrl, setReaderArticleClipUrl] = useState('');
   const readerArticleSearchPendingRef = useRef(false);
+  // "Источники" — curated in-app feed of fresh German articles (DW, Tagesschau…).
+  // Tap an article → opens straight through the normal reader ingest flow.
+  const [readerSourcesOpen, setReaderSourcesOpen] = useState(false);
+  const [readerSources, setReaderSources] = useState([]);
+  const [readerSourceId, setReaderSourceId] = useState('');
+  const [readerSourceArticles, setReaderSourceArticles] = useState([]);
+  const [readerSourcesLoading, setReaderSourcesLoading] = useState(false);
+  const [readerSourcesError, setReaderSourcesError] = useState('');
   const [readerLoading, setReaderLoading] = useState(false);
   const [readerOpeningDocumentId, setReaderOpeningDocumentId] = useState(0);
   const [readerError, setReaderError] = useState('');
@@ -23608,6 +23616,82 @@ function AppInner() {
     void handleReaderIngest(null, url);
   }, [readerArticleClipUrl]);
 
+  // ── "Источники": curated in-app article feed → open directly in the reader ──
+  const fetchReaderSourceArticles = useCallback(async (sourceId) => {
+    if (!initData) {
+      setReaderSourcesError(initDataMissingMsg);
+      return;
+    }
+    setReaderSourcesLoading(true);
+    setReaderSourcesError('');
+    try {
+      const response = await fetch('/api/webapp/reader/sources', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, source_id: sourceId || '' }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (Array.isArray(data?.sources) && data.sources.length) {
+        setReaderSources(data.sources);
+      }
+      if (sourceId) {
+        setReaderSourceArticles(Array.isArray(data?.articles) ? data.articles : []);
+      }
+    } catch (_e) {
+      setReaderSourcesError(tr(
+        'Не удалось загрузить список статей. Попробуйте позже.',
+        'Artikelliste konnte nicht geladen werden. Bitte später erneut.'
+      ));
+      if (sourceId) setReaderSourceArticles([]);
+    } finally {
+      setReaderSourcesLoading(false);
+    }
+  }, [initData, initDataMissingMsg, tr]);
+
+  const openReaderSourcesPanel = useCallback(() => {
+    setReaderSourcesOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        if (!readerSources.length) {
+          // First open: load the catalogue; the effect auto-selects source #1.
+          void fetchReaderSourceArticles('');
+        } else {
+          // Re-opening: refresh the current (or first) source's articles.
+          const target = readerSourceId || readerSources[0].id;
+          setReaderSourceId(target);
+          void fetchReaderSourceArticles(target);
+        }
+      }
+      return next;
+    });
+  }, [readerSources, readerSourceId, fetchReaderSourceArticles]);
+
+  const selectReaderSource = useCallback((sourceId) => {
+    const id = String(sourceId || '').trim();
+    if (!id) return;
+    setReaderSourceId(id);
+    setReaderSourceArticles([]);
+    void fetchReaderSourceArticles(id);
+  }, [fetchReaderSourceArticles]);
+
+  const openReaderSourceArticle = useCallback((url) => {
+    const clean = String(url || '').trim();
+    if (!clean) return;
+    setReaderSourcesOpen(false);
+    setReaderInput(clean);
+    void handleReaderIngest(null, clean);
+  }, []);
+
+  // Once the catalogue arrives (first open), auto-select the first source.
+  useEffect(() => {
+    if (readerSourcesOpen && readerSources.length && !readerSourceId) {
+      const firstId = readerSources[0].id;
+      setReaderSourceId(firstId);
+      void fetchReaderSourceArticles(firstId);
+    }
+  }, [readerSourcesOpen, readerSources, readerSourceId, fetchReaderSourceArticles]);
+
   // On returning from the browser search, auto-detect a copied article link.
   useEffect(() => {
     const tryPickup = () => {
@@ -36119,6 +36203,15 @@ function AppInner() {
                   openReaderArticleClipUrl={openReaderArticleClipUrl}
                   dismissReaderArticleClip={() => setReaderArticleClipUrl('')}
                   pasteReaderClipboardUrl={() => readReaderClipboardForUrl({ autoOpen: true, manual: true })}
+                  readerSourcesOpen={readerSourcesOpen}
+                  openReaderSourcesPanel={openReaderSourcesPanel}
+                  readerSources={readerSources}
+                  readerSourceId={readerSourceId}
+                  selectReaderSource={selectReaderSource}
+                  readerSourceArticles={readerSourceArticles}
+                  readerSourcesLoading={readerSourcesLoading}
+                  readerSourcesError={readerSourcesError}
+                  openReaderSourceArticle={openReaderSourceArticle}
                   readerLoading={readerLoading}
                   readerError={readerError}
                   readerErrorCode={readerErrorCode}

@@ -52,6 +52,16 @@ export default function ReaderSection(props) {
     openReaderArticleClipUrl = () => {},
     dismissReaderArticleClip = () => {},
     pasteReaderClipboardUrl = () => {},
+    // ── "Источники": curated in-app article feed ─────────────────
+    readerSourcesOpen = false,
+    openReaderSourcesPanel = () => {},
+    readerSources = [],
+    readerSourceId = '',
+    selectReaderSource = () => {},
+    readerSourceArticles = [],
+    readerSourcesLoading = false,
+    readerSourcesError = '',
+    openReaderSourceArticle = () => {},
     readerLoading, readerError, readerErrorCode,
 
     // ── reading state ────────────────────────────────────────────
@@ -680,6 +690,85 @@ export default function ReaderSection(props) {
                     </div>
                     <button
                       type="button"
+                      className={`reader-add-sources${readerSourcesOpen ? ' is-open' : ''}`}
+                      onClick={openReaderSourcesPanel}
+                    >
+                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                        <circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M2.8 10h14.4M10 2.8c2 2 2 12.4 0 14.4M10 2.8c-2 2-2 12.4 0 14.4" stroke="currentColor" strokeWidth="1.3" />
+                      </svg>
+                      <span className="reader-add-sources-label">
+                        {tr('Источники', 'Quellen')}
+                        <span className="reader-add-sources-sub">{tr('DW, Tagesschau — открыть статью сразу', 'DW, Tagesschau — Artikel direkt öffnen')}</span>
+                      </span>
+                      <svg className="reader-add-sources-chev" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                        <path d="M6 8l4 4 4-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+
+                    {readerSourcesOpen && (
+                      <div className="reader-sources-panel">
+                        <div className="reader-sources-tabs">
+                          {readerSources.map((s) => (
+                            <button
+                              key={s.id}
+                              type="button"
+                              className={`reader-sources-tab${s.id === readerSourceId ? ' is-active' : ''}`}
+                              onClick={() => selectReaderSource(s.id)}
+                            >
+                              <span className="reader-sources-tab-name">{s.name}</span>
+                              {s.level ? <span className="reader-sources-tab-level">{s.level}</span> : null}
+                            </button>
+                          ))}
+                        </div>
+                        {readerSourcesError ? (
+                          <div className="reader-sources-empty">{readerSourcesError}</div>
+                        ) : readerSourcesLoading ? (
+                          <div className="reader-sources-empty">{tr('Загружаем свежие статьи…', 'Frische Artikel werden geladen…')}</div>
+                        ) : readerSourceArticles.length ? (
+                          <ul className="reader-sources-list">
+                            {readerSourceArticles.map((a) => {
+                              const d = a.published_ts ? new Date(a.published_ts * 1000) : null;
+                              const when = d
+                                ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`
+                                : '';
+                              const activeName = (readerSources.find((s) => s.id === readerSourceId) || {}).name || '';
+                              return (
+                                <li key={a.url}>
+                                  <button
+                                    type="button"
+                                    className="reader-source-item"
+                                    onClick={() => openReaderSourceArticle(a.url)}
+                                    disabled={readerLoading}
+                                  >
+                                    {a.image ? (
+                                      <img className="reader-source-thumb" src={a.image} alt="" loading="lazy" />
+                                    ) : (
+                                      <span className="reader-source-thumb reader-source-thumb-letter">{(activeName || '?').slice(0, 1)}</span>
+                                    )}
+                                    <span className="reader-source-text">
+                                      <span className="reader-source-title">{a.title}</span>
+                                      <span className="reader-source-meta">
+                                        {activeName}{when ? ` · ${when}` : ''}
+                                      </span>
+                                      {a.summary ? <span className="reader-source-summary">{a.summary}</span> : null}
+                                    </span>
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <div className="reader-sources-empty">
+                            {tr('Пока нет статей из этого источника. Попробуйте другой.',
+                                'Aktuell keine Artikel aus dieser Quelle. Versuche eine andere.')}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
                       className="reader-add-search"
                       onClick={openReaderArticleSearch}
                     >
@@ -687,7 +776,7 @@ export default function ReaderSection(props) {
                         <circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.5" />
                         <path d="M2.8 10h14.4M10 2.8c2 2 2 12.4 0 14.4M10 2.8c-2 2-2 12.4 0 14.4" stroke="currentColor" strokeWidth="1.3" />
                       </svg>
-                      {tr('Найти статью в интернете', 'Artikel im Internet finden')}
+                      {tr('Другой сайт — найти в интернете', 'Andere Seite — im Internet finden')}
                     </button>
                     {readerArticleClipUrl && (
                       <div className="reader-add-clip">

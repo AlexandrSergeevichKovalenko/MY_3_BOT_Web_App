@@ -14597,6 +14597,61 @@ def _extract_text_from_html(html_content: str) -> str:
     return _normalize_reader_text(content)
 
 
+def _extract_readable_article_from_html(html_content: str) -> str:
+    """Readability-style extraction: pull the main article body out of a web page,
+    dropping navigation / headers / footers / cookie banners / share widgets.
+
+    Picks the container with the most paragraph text (preferring <article>/<main>),
+    then keeps only headings, paragraphs, list items and quotes. Falls back to the
+    whole-page strip when nothing article-like is found (or bs4 is unavailable)."""
+    raw = str(html_content or "")
+    try:
+        from bs4 import BeautifulSoup
+    except Exception:
+        return _extract_text_from_html(raw)
+
+    try:
+        soup = BeautifulSoup(raw, "lxml")
+    except Exception:
+        try:
+            soup = BeautifulSoup(raw, "html.parser")
+        except Exception:
+            return _extract_text_from_html(raw)
+
+    for tag in soup(["script", "style", "noscript", "nav", "header", "footer",
+                     "aside", "form", "figure", "figcaption", "iframe", "svg", "button"]):
+        tag.decompose()
+
+    text_tags = ("p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote")
+
+    def _container_score(node) -> int:
+        return sum(len(p.get_text(" ", strip=True)) for p in node.find_all("p"))
+
+    candidates = soup.find_all("article") or soup.find_all("main") or []
+    if not candidates:
+        # No semantic wrapper — score common content containers by paragraph text.
+        candidates = soup.find_all(["div", "section"])
+    best = None
+    best_score = 0
+    for node in candidates:
+        score = _container_score(node)
+        if score > best_score:
+            best, best_score = node, score
+
+    root = best if (best is not None and best_score >= 200) else soup.body or soup
+    parts: list[str] = []
+    for el in root.find_all(text_tags):
+        piece = el.get_text(" ", strip=True)
+        if piece:
+            parts.append(piece)
+
+    joined = "\n\n".join(parts).strip()
+    # If the structured pass produced too little, fall back to the flat strip.
+    if len(joined) < 200:
+        return _extract_text_from_html(raw)
+    return _normalize_reader_text(joined)
+
+
 def _extract_text_from_pdf_bytes(data: bytes) -> str:
     text, _pages = _extract_pdf_content_from_bytes(data)
     return text
@@ -15505,7 +15560,14 @@ def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str, list[dict]]:
         raw_url,
         timeout=20,
         allow_redirects=True,
-        headers={"User-Agent": "DeutschFlow-Reader/1.0"},
+        headers={
+            # Browser UA — many publishers serve an empty shell to unknown agents.
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/pdf,*/*",
+        },
     )
     response.raise_for_status()
     content_type = str(response.headers.get("Content-Type") or "").lower()
@@ -15514,7 +15576,7 @@ def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str, list[dict]]:
     if is_pdf:
         text, pages = _extract_pdf_content_from_bytes(response.content)
         return text, "pdf", pages
-    return _extract_text_from_html(response.text), "html", []
+    return _extract_readable_article_from_html(response.text), "html", []
 
 
 def _guess_reader_source_type(*, input_url: str = "", file_name: str = "", file_mime: str = "") -> str:
@@ -48050,6 +48112,57 @@ def translate_youtube_subtitles():
             **summarize_db_acquire_events(db_acquire_events),
         )
         return jsonify(response_payload)
+
+
+@app.route("/api/webapp/reader/sources", methods=["POST"])
+def reader_sources_endpoint():
+    """List curated reading sources and, on demand, one source's fresh articles.
+
+    Body: {initData, source_id?, limit?}. Without source_id → just the source
+    catalogue. With source_id → that source's live article list (cached ~10 min),
+    which the client opens straight through the normal reader ingest flow.
+    """
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    from backend import reader_sources as _reader_sources
+
+    sources_meta = _reader_sources.list_reader_sources()
+    source_id = str(payload.get("source_id") or "").strip()
+    if not source_id:
+        return jsonify({"sources": sources_meta})
+
+    try:
+        limit = max(1, min(int(payload.get("limit") or 25), 40))
+    except Exception:
+        limit = 25
+    proxy_url = (
+        (os.getenv("WEBSHARE_PROXY_URL") or "").strip()
+        or (os.getenv("YOUTUBE_TRANSCRIPT_WEBSHARE_PROXY_URL") or "").strip()
+        or (os.getenv("YOUTUBE_TRANSCRIPT_PROXY_DE") or "").strip()
+        or (os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or "").strip()
+    )
+    try:
+        articles = _reader_sources.fetch_reader_source_articles(
+            source_id, limit=limit, proxy_url=proxy_url
+        )
+    except KeyError:
+        return jsonify({"error": "Неизвестный источник"}), 404
+    except Exception as exc:
+        logging.warning("reader_sources fetch failed source=%s: %s", source_id, exc)
+        # A publisher being temporarily unreachable/bot-blocked is not a server
+        # error — return an empty list so the client shows a friendly empty state.
+        return jsonify({"sources": sources_meta, "source_id": source_id, "articles": []})
+
+    return jsonify({"sources": sources_meta, "source_id": source_id, "articles": articles})
 
 
 @app.route("/api/webapp/reader/ingest", methods=["POST"])
