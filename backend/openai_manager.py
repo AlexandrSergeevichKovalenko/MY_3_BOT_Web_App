@@ -3690,6 +3690,11 @@ KRITISCHE FEHLERQUELLEN (unbedingt vermeiden — sonst ist die Aufgabe UNGÜLTIG
 - JEDES nicht in "errors" gelistete Wort MUSS fehlerfrei sein. Besonders die Verbform prüfen:
   im Perfekt steht das Partizip II ("Er hat sich geärgert"), NIEMALS der Infinitiv ("Er hat sich
   … ärgern" wäre ein Fehler — dann entweder als eigenen Eintrag markieren ODER korrekt schreiben).
+- Präposition + Kasus sind GEKOPPELT: Markierst du einen Präpositionsfehler, prüfe den Kasus des
+  folgenden Artikels/Adjektivs für die KORRIGIERTE Präposition. Beispiel: "Ich warte an dem Bus" —
+  nach an→auf verlangt "warten auf" Akkusativ, also ist AUCH dem→den falsch. Entweder BEIDE Fehler
+  auflisten oder das Artikelwort von vornherein korrekt schreiben — NIE nur die Präposition markieren
+  und den falschen Kasus stehen lassen.
 - Selbstprüfung vor der Ausgabe: Ersetzt man ALLE gelisteten Tokens durch ihr correct_word, ist der
   Satz rundum korrekt und natürlich? Sind WIRKLICH nur die gelisteten Wörter falsch und alle anderen
   richtig? Wenn nein — erzeuge diese Aufgabe NICHT.
@@ -3716,6 +3721,13 @@ Die Aufgabe ist NUR gültig ("valid": true), wenn ALLE vier Punkte zutreffen:
 4) JEDES aufgeführte Token ist WIRKLICH falsch. Bei Verb+Präposition muss der geforderte Kasus
    tatsächlich falsch sein — ein bereits korrekter Kasus ist KEIN Fehler (z. B. "sich ärgern über
    die Fehler" ist als Akkusativ korrekt → dann "valid": false).
+
+WICHTIG — Präposition + Kasus sind GEKOPPELT: Wenn eine Korrektur die Präposition ändert, MUSS der
+Kasus des folgenden Artikels/Adjektivs zur NEUEN Präposition passen. Ist das folgende Artikelwort
+dann im falschen Kasus, ist das ein ZWEITER, nicht aufgeführter Fehler → "valid": false. Beispiel:
+"Ich warte an dem Bus" — korrigiert man nur an→auf, entsteht "auf dem Bus", aber "warten auf"
+verlangt AKKUSATIV ("auf den Bus"). Also sind es ZWEI Fehler (an→auf UND dem→den); ist nur EINER
+aufgeführt, ist die Aufgabe UNGÜLTIG.
 
 "valid": false, wenn: ein aufgeführtes Wort schon korrekt ist; es einen NICHT aufgeführten Fehler
 gibt; die Zahl/Positionen der Fehler nicht exakt stimmen; ein correct_word den Satz nicht

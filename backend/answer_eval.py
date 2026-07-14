@@ -1340,44 +1340,118 @@ def _display_user_answer(fmt: str, raw: str, payload: dict) -> str:
     return s
 
 
-def _error_result_breakdown(payload: dict, raw_input: str) -> tuple:
-    """Per-error breakdown for the 'Finde den Fehler' result card. For EACH real error in
-    the answer key returns {word, correct, erklaerung, hint_ru, status, user}:
-      - 'fixed'     the learner tapped it AND typed a correct form
-      - 'wrong_fix' tapped it but the correction is wrong (user = what they typed)
-      - 'missed'    a real error they never tapped
-    Plus extra_taps = words they tapped that were ALREADY correct. Returns
-    (errors, extra_taps, correct_join)."""
+_ERROR_EVAL_CACHE = {}  # bounded memo so grade + result reuse ONE (possibly LLM-backed) eval
+
+
+def _error_eval_signature(payload: dict, raw_input: str, judge: bool) -> str:
     from backend.database import normalize_error_payload
     key = normalize_error_payload(payload)
     woerter = payload.get("woerter") if isinstance(payload.get("woerter"), list) else []
-    subs = {}
+    return "¶".join([
+        "1" if judge else "0", str(raw_input or ""),
+        "·".join(str(w) for w in woerter),
+        ";".join(f"{e['index']}:{e['correct_word']}" for e in key),
+    ])
+
+
+def _evaluate_error(payload: dict, raw_input: str, *, judge: bool = True) -> dict:
+    """Single source of truth for BOTH grading and the result breakdown of a 'Finde den
+    Fehler' answer, so the verdict and the per-error card can never disagree. Memoized on
+    content so the grade call and the result call in one request don't double-run the judge.
+
+    Rule = all-or-nothing on WHICH words, tolerant on HOW: correct iff EVERY real error was
+    fixed AND every EXTRA word tapped was itself a genuine error the learner also fixed (a
+    word tapped but already correct fails). Each correction is checked deterministically
+    first, then (judge=True) by ONE bounded LLM judge that sees the token IN CONTEXT of the
+    learner's OTHER corrections — so COUPLED errors ("warten an dem Bus" → both an→auf AND
+    dem→den, where 'dem' is only wrong once 'auf' is in) grade right, and a learner who spots
+    a real error the generator MISSED is CREDITED (status 'bonus'), not punished."""
+    sig = _error_eval_signature(payload, raw_input, judge)
+    cached = _ERROR_EVAL_CACHE.get(sig)
+    if cached is not None:
+        return cached
+
+    from backend.database import normalize_error_payload
+    key = normalize_error_payload(payload)
+    key_by_idx = {e["index"]: e for e in key}
+    woerter = payload.get("woerter") if isinstance(payload.get("woerter"), list) else []
+    subs, order = {}, []
     for idx, corr in _parse_error_submission(raw_input):
+        if idx not in subs:
+            order.append(idx)
         subs[idx] = corr
-    key_idx = {e["index"] for e in key}
 
     def _word(i):
         return str(woerter[i]) if 0 <= i < len(woerter) else ""
 
-    errors = []
+    def _context(exclude_i):
+        # the sentence with the learner's OTHER corrections applied, so a token is judged
+        # against the fixes it depends on (coupled preposition/case, agreement, …).
+        w = list(woerter)
+        for j, c in subs.items():
+            if j != exclude_i and 0 <= j < len(w) and c:
+                w[j] = c
+        return w
+
+    def _deterministic(corr, e):
+        cands = [e["correct_word"]] + list(e["aliases"])
+        return any(check_quiz_freeform_deterministic(user_text=corr, correct_text=c)
+                   for c in cands if str(c).strip())
+
+    reasons = []
+
+    def _judged(i, corr):
+        if not judge:
+            return False
+        res = _error_judge_full(_context(i), i, corr)
+        if not res.get("match") and res.get("reason_ru"):
+            reasons.append(str(res.get("reason_ru")))
+        return bool(res.get("match"))
+
+    errors, all_key_ok = [], True
     for e in key:
         i = e["index"]
         entry = {"word": _word(i), "correct": e["correct_word"],
                  "erklaerung": e["erklaerung"], "hint_ru": e["hint_ru"], "user": ""}
         if i not in subs:
-            entry["status"] = "missed"
+            entry["status"] = "missed"; all_key_ok = False
         else:
-            corr = subs[i]
-            entry["user"] = corr
-            cands = [e["correct_word"]] + list(e["aliases"])
-            ok = any(check_quiz_freeform_deterministic(user_text=corr, correct_text=c)
-                     for c in cands if str(c).strip())
+            corr = subs[i]; entry["user"] = corr
+            ok = bool(corr) and (_deterministic(corr, e) or _judged(i, corr))
             entry["status"] = "fixed" if ok else "wrong_fix"
+            all_key_ok = all_key_ok and ok
         errors.append(entry)
 
-    extra = [{"word": _word(i), "user": corr} for i, corr in subs.items() if i not in key_idx]
-    correct_join = " · ".join(e["correct_word"] for e in key)
-    return errors, extra, correct_join
+    extra_taps, extra_ok = [], True
+    for i in order:
+        if i in key_by_idx:
+            continue
+        corr = subs.get(i, "")
+        ok = bool(corr) and _judged(i, corr)
+        extra_taps.append({"word": _word(i), "user": corr,
+                           "status": "bonus" if ok else "already_correct"})
+        extra_ok = extra_ok and ok
+
+    is_correct = bool(key) and bool(subs) and all_key_ok and extra_ok
+    ev = {
+        "is_correct": is_correct,
+        "wrong_reason": "" if is_correct else (reasons[0] if reasons else ""),
+        "errors": errors,
+        "extra_taps": extra_taps,
+        "correct_join": " · ".join(e["correct_word"] for e in key),
+    }
+    if len(_ERROR_EVAL_CACHE) > 512:
+        _ERROR_EVAL_CACHE.clear()
+    _ERROR_EVAL_CACHE[sig] = ev
+    return ev
+
+
+def _error_result_breakdown(payload: dict, raw_input: str, *, judge: bool = True) -> tuple:
+    """Per-error breakdown for the result card (errors[] + extra_taps[] + correct_join),
+    from the single evaluator so it always matches the verdict. On an already-answered
+    re-render pass judge=False (deterministic only, no LLM re-spend)."""
+    ev = _evaluate_error(payload, raw_input, judge=judge)
+    return ev["errors"], ev["extra_taps"], ev["correct_join"]
 
 
 def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answered: bool,
@@ -1415,10 +1489,12 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
         "saveable_words": [],
     }
     if fmt == "error":
-        # Per-error breakdown drives the result card (✅ fixed / ❌ wrong / 🔎 missed +
-        # per-error rule). The generic correct/explanation/hint lines would duplicate it,
-        # so fold them into the breakdown and blank the top-level ones.
-        errors, extra, correct_join = _error_result_breakdown(payload, user_answer)
+        # Per-error breakdown drives the result card (✅ fixed / ❌ wrong / 🔎 missed / ✅ bonus
+        # + per-error rule). The generic correct/explanation/hint lines would duplicate it, so
+        # fold them into the breakdown and blank the top-level ones. On a re-render of an
+        # already-answered task, grade deterministically (judge=False) — no LLM re-spend.
+        errors, extra, correct_join = _error_result_breakdown(
+            payload, user_answer, judge=not already_answered)
         result["errors"] = errors
         result["extra_taps"] = extra
         result["correct_word"] = correct_join
@@ -1878,37 +1954,13 @@ def _error_judge_full(woerter: list, tapped_index: int, correction: str) -> dict
 
 
 def _grade_error(payload: dict, raw_input: str) -> tuple:
-    """Grade a 'Finde den Fehler' answer (single OR multi) all-or-nothing, with tolerance.
-    Deterministic first (index set == answer key AND every correction matches — the hot
-    path). If the index sets match but a correction misses the accepted list, ONE bounded
-    LLM judge per un-matched token credits a valid variant German allows in that exact slot.
-    A WRONG index set (a real error missed, or a correct word tapped) can't be rescued — the
-    verifier guarantees no other errors exist, so the detailed per-word breakdown is left to
-    the result card. Returns (is_correct, wrong_reason)."""
-    if _check_aufgabe("error", payload, raw_input):
-        return True, ""
-    from backend.database import normalize_error_payload
-    key = {e["index"]: e for e in normalize_error_payload(payload)}
-    subs = _parse_error_submission(raw_input)
-    if not key or not subs:
-        return False, ""
-    sub = {}
-    for idx, corr in subs:
-        if not corr:
-            return False, ""
-        sub[idx] = corr
-    if set(sub) != set(key):
-        return False, ""
-    woerter = payload.get("woerter") or []
-    for idx, corr in sub.items():
-        candidates = [str(key[idx]["correct_word"])] + [str(a) for a in key[idx]["aliases"]]
-        if any(check_quiz_freeform_deterministic(user_text=corr, correct_text=c)
-               for c in candidates if str(c).strip()):
-            continue
-        judged = _error_judge_full(woerter, idx, corr)
-        if not bool(judged.get("match")):
-            return False, str(judged.get("reason_ru") or "")
-    return True, ""
+    """Grade a 'Finde den Fehler' answer via the single evaluator (see _evaluate_error):
+    all-or-nothing on WHICH words are wrong, tolerant on HOW they're fixed — every real error
+    must be fixed, and any EXTRA word tapped must itself be a genuine error the learner also
+    fixed (credited in context, so coupled errors / a generator-missed error aren't punished).
+    Returns (is_correct, wrong_reason)."""
+    ev = _evaluate_error(payload, raw_input, judge=True)
+    return ev["is_correct"], ev["wrong_reason"]
 
 
 def _wortgruppe_judge_full(satz: str, correct: str, user: str) -> dict:

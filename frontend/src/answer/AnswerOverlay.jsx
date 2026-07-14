@@ -405,15 +405,24 @@ function AufgabeResult({ result }) {
               {e.hint_ru ? <div className="au-err-hint">💡 {e.hint_ru}</div> : null}
             </div>
           ))}
-          {(result.extra_taps || []).map((x, i) => (
-            <div className="au-err-item extra" key={`x${i}`}>
-              <div className="au-err-head">
-                <span className="au-err-icon">⚠️</span>
-                <span className="au-err-word">{x.word}</span>
-                <span className="au-err-tag">war schon richtig</span>
+          {(result.extra_taps || []).map((x, i) => {
+            const bonus = x.status === 'bonus';
+            return (
+              <div className={`au-err-item ${bonus ? 'fixed' : 'extra'}`} key={`x${i}`}>
+                <div className="au-err-head">
+                  <span className="au-err-icon">{bonus ? '✅' : '⚠️'}</span>
+                  <span className="au-err-word">{x.word}</span>
+                  {bonus && x.user ? (
+                    <>
+                      <span className="au-err-arrow">→</span>
+                      <b className="au-err-correct">{x.user}</b>
+                    </>
+                  ) : null}
+                  <span className="au-err-tag">{bonus ? 'auch erkannt 👏' : 'war schon richtig'}</span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : good ? (
         <div className="ans-answer"><b>{correct}</b></div>
