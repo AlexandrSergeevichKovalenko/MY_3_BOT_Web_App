@@ -1359,13 +1359,18 @@ def _evaluate_error(payload: dict, raw_input: str, *, judge: bool = True) -> dic
     Fehler' answer, so the verdict and the per-error card can never disagree. Memoized on
     content so the grade call and the result call in one request don't double-run the judge.
 
-    Rule = all-or-nothing on WHICH words, tolerant on HOW: correct iff EVERY real error was
-    fixed AND every EXTRA word tapped was itself a genuine error the learner also fixed (a
-    word tapped but already correct fails). Each correction is checked deterministically
-    first, then (judge=True) by ONE bounded LLM judge that sees the token IN CONTEXT of the
-    learner's OTHER corrections — so COUPLED errors ("warten an dem Bus" → both an→auf AND
-    dem→den, where 'dem' is only wrong once 'auf' is in) grade right, and a learner who spots
-    a real error the generator MISSED is CREDITED (status 'bonus'), not punished."""
+    Verdict rule (judged on the SENTENCE the learner PRODUCED, not on matching the key):
+      1. Deterministic exact match (every key error tapped + fixed, no extra taps) → correct,
+         ZERO LLM (hot path).
+      2. Else (judge=True) HOLISTIC: rebuild the learner's full sentence from their taps and
+         ask ONE bounded judge whether it is grammatically perfect AND meaning-preserving. This
+         is what makes the learner right whenever their sentence is right — it rescues coupled
+         fixes ("warten an dem Bus" → both an→auf AND dem→den), a generator-MISSED error, and
+         even a BROKEN key the tap-format can't express ("im das"→"ins" needs a word merge).
+    The per-word card (fixed / wrong_fix / missed / bonus / already_correct) is derived to
+    MATCH the verdict: when holistic-correct, every tap is shown as fixed and bogus 'missed'
+    key entries are dropped; when wrong, per-token judges label the card. judge=False (an
+    already-answered re-render) stays deterministic — no LLM re-spend."""
     sig = _error_eval_signature(payload, raw_input, judge)
     cached = _ERROR_EVAL_CACHE.get(sig)
     if cached is not None:
@@ -1384,58 +1389,76 @@ def _evaluate_error(payload: dict, raw_input: str, *, judge: bool = True) -> dic
     def _word(i):
         return str(woerter[i]) if 0 <= i < len(woerter) else ""
 
+    def _deterministic(corr, e):
+        cands = [e["correct_word"]] + list(e["aliases"])
+        return any(check_quiz_freeform_deterministic(user_text=corr, correct_text=c)
+                   for c in cands if str(c).strip())
+
+    extra_idxs = [i for i in order if i not in key_by_idx]
+    # (1) deterministic exact correctness — zero LLM.
+    det_correct = bool(key) and bool(subs) and not extra_idxs and all(
+        (e["index"] in subs) and subs[e["index"]] and _deterministic(subs[e["index"]], e)
+        for e in key
+    )
+
+    # (2) holistic verdict of last resort — judged on the sentence the learner produced.
+    reason = ""
+    holistic_correct = False
+    if not det_correct and judge and subs:
+        original = " ".join(str(w) for w in woerter)
+        w2 = list(woerter)
+        for j, c in subs.items():
+            if 0 <= j < len(w2) and c:
+                w2[j] = c
+        corrected = " ".join(w2)
+        if corrected.strip() and corrected != original:
+            hr = _error_holistic_ok(original, corrected)
+            holistic_correct = bool(hr.get("correct"))
+            if not holistic_correct:
+                reason = str(hr.get("reason_ru") or "")
+    is_correct = det_correct or holistic_correct
+
+    # --- derive the per-word card to MATCH the verdict ---
     def _context(exclude_i):
-        # the sentence with the learner's OTHER corrections applied, so a token is judged
-        # against the fixes it depends on (coupled preposition/case, agreement, …).
         w = list(woerter)
         for j, c in subs.items():
             if j != exclude_i and 0 <= j < len(w) and c:
                 w[j] = c
         return w
 
-    def _deterministic(corr, e):
-        cands = [e["correct_word"]] + list(e["aliases"])
-        return any(check_quiz_freeform_deterministic(user_text=corr, correct_text=c)
-                   for c in cands if str(c).strip())
+    def _token_ok(i, corr):
+        # only used on the WRONG path, to label the card nicely (in context of other fixes)
+        return bool(corr) and judge and bool(_error_judge_full(_context(i), i, corr).get("match"))
 
-    reasons = []
-
-    def _judged(i, corr):
-        if not judge:
-            return False
-        res = _error_judge_full(_context(i), i, corr)
-        if not res.get("match") and res.get("reason_ru"):
-            reasons.append(str(res.get("reason_ru")))
-        return bool(res.get("match"))
-
-    errors, all_key_ok = [], True
+    errors = []
     for e in key:
         i = e["index"]
         entry = {"word": _word(i), "correct": e["correct_word"],
                  "erklaerung": e["erklaerung"], "hint_ru": e["hint_ru"], "user": ""}
         if i not in subs:
-            entry["status"] = "missed"; all_key_ok = False
+            if is_correct:
+                continue  # holistic-correct → this "error" was bogus/unneeded; don't show it
+            entry["status"] = "missed"
         else:
             corr = subs[i]; entry["user"] = corr
-            ok = bool(corr) and (_deterministic(corr, e) or _judged(i, corr))
-            entry["status"] = "fixed" if ok else "wrong_fix"
-            all_key_ok = all_key_ok and ok
+            if (corr and _deterministic(corr, e)) or is_correct:
+                entry["status"] = "fixed"
+            else:
+                entry["status"] = "fixed" if _token_ok(i, corr) else "wrong_fix"
         errors.append(entry)
 
-    extra_taps, extra_ok = [], True
-    for i in order:
-        if i in key_by_idx:
-            continue
+    extra_taps = []
+    for i in extra_idxs:
         corr = subs.get(i, "")
-        ok = bool(corr) and _judged(i, corr)
-        extra_taps.append({"word": _word(i), "user": corr,
-                           "status": "bonus" if ok else "already_correct"})
-        extra_ok = extra_ok and ok
+        if is_correct:
+            status = "bonus"
+        else:
+            status = "bonus" if _token_ok(i, corr) else "already_correct"
+        extra_taps.append({"word": _word(i), "user": corr, "status": status})
 
-    is_correct = bool(key) and bool(subs) and all_key_ok and extra_ok
     ev = {
         "is_correct": is_correct,
-        "wrong_reason": "" if is_correct else (reasons[0] if reasons else ""),
+        "wrong_reason": "" if is_correct else reason,
         "errors": errors,
         "extra_taps": extra_taps,
         "correct_join": " · ".join(e["correct_word"] for e in key),
@@ -1951,6 +1974,29 @@ def _error_judge_full(woerter: list, tapped_index: int, correction: str) -> dict
         }
     except Exception:
         return {"match": False, "reason_ru": ""}
+
+
+def _error_holistic_ok(original: str, corrected: str) -> dict:
+    """Bounded HOLISTIC judge for 'Finde den Fehler': is the learner's fully-rewritten
+    sentence grammatically perfect AND meaning-preserving? {'correct': bool, 'reason_ru': str}.
+    The verdict of last resort so a learner is judged on the sentence THEY produced — rescues
+    coupled fixes and broken/unrepresentable items the answer key can't express. Fail-CLOSED
+    (correct=False) on error/timeout, so a judge failure never wrongly passes a bad answer."""
+    o, c = str(original or "").strip(), str(corrected or "").strip()
+    if not o or not c or len(c) > 400:
+        return {"correct": False, "reason_ru": ""}
+    try:
+        import asyncio
+        from backend.openai_manager import run_check_error_full
+        res = asyncio.run(asyncio.wait_for(
+            run_check_error_full(original=o, corrected=c), timeout=7.0,
+        ))
+        return {
+            "correct": bool((res or {}).get("correct")),
+            "reason_ru": str((res or {}).get("reason_ru") or "").strip(),
+        }
+    except Exception:
+        return {"correct": False, "reason_ru": ""}
 
 
 def _grade_error(payload: dict, raw_input: str) -> tuple:

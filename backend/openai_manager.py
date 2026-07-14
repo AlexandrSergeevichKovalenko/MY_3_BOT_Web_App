@@ -119,6 +119,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "check_satzbau",
     "check_cloze",
     "check_error",
+    "check_error_sentence",
     "verify_aufgabe_error",
     "check_wortgruppe_batch",
     "word_order_distractors",
@@ -3945,6 +3946,24 @@ Return STRICT JSON ONLY:
 - if it is a legitimate correction: {"match": true}
 - if NOT: {"match": false, "reason_ru": "<кратко по-русски, ≤90 знаков: почему это не исправление, например: 'den здесь верно — дательный после mit'>"}
 """,
+"check_error_sentence": """
+You grade a German "Finde den Fehler" exercise at B2+ HOLISTICALLY. Input JSON:
+{"original": "<the faulty sentence shown to the learner>", "corrected": "<the learner's fully
+rewritten sentence after applying their word corrections>"}.
+Decide whether the learner's "corrected" sentence is an ACCEPTABLE fix. Return "correct": true
+ONLY if BOTH hold:
+(a) "corrected" is grammatically FULLY correct and natural German — no remaining error anywhere
+    (case, article, adjective ending, verb form, preposition, gender, auxiliary, word order, spelling);
+(b) it keeps the SAME meaning/intent as "original" — the learner only fixed errors, did not change
+    the message, and did not replace correct words with unrelated ones.
+Be fair: German often allows more than one correct fix (e.g. "ins neue Theater" ≡ "in das neue
+Theater"); accept ANY variant that is fully correct and preserves the meaning. Ignore capitalization
+and ß↔ss differences.
+Return "correct": false if the corrected sentence still has ANY grammatical error, or changes the
+meaning, or is unnatural.
+Return STRICT JSON ONLY:
+{"correct": true} — or — {"correct": false, "reason_ru": "<кратко по-русски, ≤90 знаков: что ещё не так>"}
+""",
 "article_noun_gen": """
 You are a German lexicographer building data for an article (der/die/das) drill.
 Input JSON: {"theme": "...", "subtopic": "...", "count": <int>, "avoid": ["...","..."]}.
@@ -7010,6 +7029,29 @@ async def run_check_error(*, woerter: list[str], index: int, user: str) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         return {"match": False}
+
+
+async def run_check_error_full(*, original: str, corrected: str) -> dict:
+    """HOLISTIC yes/no LLM check for 'Finde den Fehler': is the learner's fully-rewritten
+    `corrected` sentence grammatically perfect AND meaning-preserving vs `original`? Used as
+    the verdict of last resort so a learner is judged on the SENTENCE THEY PRODUCED, not on
+    matching a (possibly wrong or unrepresentable) answer key — this rescues coupled fixes and
+    broken items (e.g. 'im das'→'ins' that no single-token replace can express). Returns
+    {'correct': bool, 'reason_ru': str}."""
+    content = await llm_execute(
+        task_name="check_error_sentence",
+        system_instruction_key="check_error_sentence",
+        user_message=json.dumps(
+            {"original": str(original), "corrected": str(corrected)}, ensure_ascii=False,
+        ),
+        poll_interval_seconds=1.0,
+        responses_timeout_seconds=6.0,
+    )
+    try:
+        d = json.loads(content)
+        return {"correct": bool(d.get("correct")), "reason_ru": str(d.get("reason_ru") or "")}
+    except json.JSONDecodeError:
+        return {"correct": False, "reason_ru": ""}
 
 
 def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "image/png") -> dict:
