@@ -30093,6 +30093,29 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
                          removed_bank, removed_rev)
     except Exception:
         logging.warning("aufgabe_pool: degenerate purge failed", exc_info=True)
+    # One-shot LLM re-verify of the pool + review queue: the deterministic purge above only
+    # catches tapped==correction. It CANNOT see the fake-case-error ("über die Fehler" is
+    # already correct Akkusativ) or the hidden-second-error ("hat … ärgern" instead of
+    # "geärgert") baked into old items that predate the pool-topup verifier. New items are
+    # verified at topup, so this legacy cleanup only needs to run ONCE — a schema-migration
+    # flag stops it from re-spending ~600 gpt-4.1-mini calls on every startup/nightly tick.
+    try:
+        from backend.database import one_shot_flag_done, mark_one_shot_flag
+        _ERR_VERIFY_FLAG = "error_review_queue_llm_verify_once_v1"
+        if not await asyncio.to_thread(one_shot_flag_done, _ERR_VERIFY_FLAG):
+            # Generous limit: this runs ONCE, silently, so sweep the whole legacy backlog
+            # (not the manual command's 300-item slice). gpt-4.1-mini is cheap and one-time.
+            removed, lines = await _run_error_verify_sweep(
+                (("bt_3_aufgabe_bank", "пул"), ("bt_3_aufgabe_mistakes", "повторы")),
+                limit=5000,
+            )
+            # Mark done only AFTER a clean run, so a crash mid-sweep re-runs next startup
+            # (deletes are idempotent, verify is read-only per item → safe to repeat).
+            await asyncio.to_thread(mark_one_shot_flag, _ERR_VERIFY_FLAG)
+            logging.info("aufgabe_pool: one-shot error verify sweep done — removed=%s (%s)",
+                         removed, "; ".join(lines))
+    except Exception:
+        logging.warning("aufgabe_pool: one-shot error verify sweep failed", exc_info=True)
     per_format = AUFGABE_PER_FORMAT_TARGET
     total_made = 0
     for fmt, level in _AUFGABE_FORMATS:
@@ -33205,6 +33228,61 @@ async def admin_clean_bad_reviews_command(update: Update, context: CallbackConte
         f"• из очереди ошибок: {m}\n• из пула заданий: {b}")
 
 
+async def _run_error_verify_sweep(tables, *, on_progress=None, limit: int = 300) -> tuple:
+    """Shared LLM re-verify of existing 'Finde den Fehler' items, used by BOTH the manual
+    /admin_verify_errors and the automatic one-shot startup sweep. For each (table, label),
+    fetch up to `limit` error items, LLM-verify each (bounded concurrency), and delete ONLY
+    those with an EXPLICIT 'invalid' verdict — never on a verifier error/timeout (fail-safe:
+    a transient miss keeps the item). `on_progress(done, total)` is awaited per item if given.
+    Returns (total_removed, [per-table report lines])."""
+    from backend.database import fetch_aufgabe_error_items, delete_aufgabe_items
+    from backend.openai_manager import run_verify_aufgabe_error
+    sem = asyncio.Semaphore(8)  # bound OpenAI concurrency; ~600 items finish in ~1–2 min
+    progress = {"done": 0, "total": 0}
+    fetched = []
+    for table, label in tables:
+        rows = await asyncio.to_thread(fetch_aufgabe_error_items, table, limit=int(limit))
+        fetched.append((table, label, rows))
+        progress["total"] += len(rows)
+
+    async def _verify_one(payload) -> bool:
+        async with sem:
+            verdict = await run_verify_aufgabe_error(
+                woerter=payload.get("woerter") or [],
+                error_index=int(payload.get("error_index", -1)),
+                correct_word=str(payload.get("correct_word") or ""),
+                aliases=payload.get("aliases"),
+            )
+        progress["done"] += 1
+        if on_progress is not None:
+            try:
+                await on_progress(progress["done"], progress["total"])
+            except Exception:
+                pass
+        # Delete ONLY on an EXPLICIT invalid verdict, never on the fail-closed
+        # 'verifier_error'/'unparseable' sentinel (a transient miss must not delete).
+        return (not verdict.get("valid")) and verdict.get("reason") not in (
+            "verifier_error", "unparseable_verifier_output", "",
+        )
+
+    total_removed = 0
+    lines: list[str] = []
+    for table, label, rows in fetched:
+        if not rows:
+            lines.append(f"• {label}: проверено 0, удалено 0")
+            continue
+        # return_exceptions=True → a stray error yields a non-True result, so it is never
+        # treated as 'invalid' and the item is kept (fail-safe preserved).
+        results = await asyncio.gather(
+            *[_verify_one(pl) for _rid, pl in rows], return_exceptions=True
+        )
+        bad_ids = [rid for (rid, _pl), res in zip(rows, results) if res is True]
+        removed = await asyncio.to_thread(delete_aufgabe_items, table, bad_ids) if bad_ids else 0
+        total_removed += removed
+        lines.append(f"• {label}: проверено {len(rows)}, удалено {removed}")
+    return total_removed, lines
+
+
 # In-memory guard so only ONE /admin_verify_errors runs at a time: each run makes up to
 # ~600 gpt-4.1-mini calls, so a second press while one is in flight would just double the
 # token spend for nothing. Resets on process restart (a crashed run must not lock forever).
@@ -33232,57 +33310,21 @@ async def admin_verify_errors_command(update: Update, context: CallbackContext) 
     _VERIFY_ERRORS_INFLIGHT["active"] = True
     status = await message.reply_text("🔎 Проверяю «Fehler-finden» верификатором… (займёт ~минуту)")
     try:
-        from backend.database import fetch_aufgabe_error_items, delete_aufgabe_items
-        from backend.openai_manager import run_verify_aufgabe_error
-        sem = asyncio.Semaphore(8)  # bound OpenAI concurrency; ~600 items finish in ~1–2 min
-        lines: list[str] = []
-        total_removed = 0
-        progress = {"done": 0, "total": 0, "last_shown": 0}
+        last_shown = {"n": 0}
 
-        tables = (("bt_3_aufgabe_bank", "пул"), ("bt_3_aufgabe_mistakes", "повторы"))
-        fetched = []
-        for table, label in tables:
-            rows = await asyncio.to_thread(fetch_aufgabe_error_items, table, limit=300)
-            fetched.append((table, label, rows))
-            progress["total"] += len(rows)
-
-        async def _verify_one(payload) -> bool:
-            async with sem:
-                verdict = await run_verify_aufgabe_error(
-                    woerter=payload.get("woerter") or [],
-                    error_index=int(payload.get("error_index", -1)),
-                    correct_word=str(payload.get("correct_word") or ""),
-                    aliases=payload.get("aliases"),
-                )
-            progress["done"] += 1
+        async def _on_progress(done: int, total: int) -> None:
             # Throttled progress ping (~every 40 items) so the user sees it's alive.
-            if progress["done"] - progress["last_shown"] >= 40:
-                progress["last_shown"] = progress["done"]
+            if done - last_shown["n"] >= 40:
+                last_shown["n"] = done
                 try:
-                    await status.edit_text(
-                        f"🔎 Проверяю «Fehler-finden»… {progress['done']}/{progress['total']}"
-                    )
+                    await status.edit_text(f"🔎 Проверяю «Fehler-finden»… {done}/{total}")
                 except Exception:
                     pass
-            # Delete ONLY on an EXPLICIT invalid verdict, never on the fail-closed
-            # 'verifier_error'/'unparseable' sentinel (a transient miss must not delete).
-            return (not verdict.get("valid")) and verdict.get("reason") not in (
-                "verifier_error", "unparseable_verifier_output", "",
-            )
 
-        for table, label, rows in fetched:
-            if not rows:
-                lines.append(f"• {label}: проверено 0, удалено 0")
-                continue
-            # return_exceptions=True → a stray error yields a non-True result, so it is
-            # never treated as 'invalid' and the item is kept (fail-safe preserved).
-            results = await asyncio.gather(
-                *[_verify_one(pl) for _rid, pl in rows], return_exceptions=True
-            )
-            bad_ids = [rid for (rid, _pl), res in zip(rows, results) if res is True]
-            removed = await asyncio.to_thread(delete_aufgabe_items, table, bad_ids) if bad_ids else 0
-            total_removed += removed
-            lines.append(f"• {label}: проверено {len(rows)}, удалено {removed}")
+        total_removed, lines = await _run_error_verify_sweep(
+            (("bt_3_aufgabe_bank", "пул"), ("bt_3_aufgabe_mistakes", "повторы")),
+            on_progress=_on_progress,
+        )
 
         await status.edit_text(
             "✅ <b>Верификация «Fehler-finden» завершена</b>\n" + "\n".join(lines) +

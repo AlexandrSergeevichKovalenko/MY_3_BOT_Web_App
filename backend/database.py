@@ -1499,6 +1499,39 @@ def delete_aufgabe_items(table: str, ids: list) -> int:
         return 0
 
 
+def one_shot_flag_done(key: str) -> bool:
+    """True iff a one-shot maintenance flag (stored in bt_3_schema_migrations) has already
+    been applied — lets a background job run an expensive cleanup EXACTLY ONCE across the
+    fleet instead of on every startup/nightly tick. Fail-safe: on a store error, report
+    'done' so a broken flag store can never loop an expensive (token-spending) job."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM bt_3_schema_migrations WHERE migration_key = %s LIMIT 1;",
+                    (str(key),),
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        logging.warning("one_shot_flag_done failed key=%s (fail-safe: done)", key, exc_info=True)
+        return True
+
+
+def mark_one_shot_flag(key: str) -> None:
+    """Persist a one-shot maintenance flag so it never runs again (idempotent)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bt_3_schema_migrations (migration_key) VALUES (%s) "
+                    "ON CONFLICT DO NOTHING;",
+                    (str(key),),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("mark_one_shot_flag failed key=%s", key, exc_info=True)
+
+
 def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
                            correct_answer: str, wrong_answer: str) -> None:
     """Store (or refresh) a wrong answer for spaced-repetition review. Best-effort;
@@ -1629,14 +1662,33 @@ def get_next_due_mistake(user_id: int, *, family: str | None = None) -> dict | N
                        FROM bt_3_aufgabe_mistakes
                        WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() """
                     + _mistake_family_clause(family) +
-                    """ ORDER BY due_at ASC, id ASC LIMIT 1;""",
+                    """ ORDER BY due_at ASC, id ASC LIMIT 12;""",
                     (int(user_id),),
                 )
-                row = cur.fetchone()
-        if not row:
-            return None
-        return {"id": int(row[0]), "format": str(row[1]),
-                "payload": row[2] or {}, "correct_answer": str(row[3] or "")}
+                rows = cur.fetchall() or []
+                # Serve-time self-heal (mirrors pick_next_aufgabe for the pool): the review
+                # queue keeps its OWN copy of each task, so a degenerate item that was purged
+                # from the bank can still linger here until the next nightly purge. Skip +
+                # DELETE any degenerate row so it never reaches the learner again, and serve
+                # the first clean one. (This is the deterministic class — the tapped token
+                # already equals the correction; the fake-case / hidden-second-error class is
+                # cleaned by the one-shot LLM sweep in prepare_aufgabe_pool_job.)
+                picked = None
+                bad_ids = []
+                for row in rows:
+                    payload = row[2] if isinstance(row[2], dict) else {}
+                    if is_degenerate_aufgabe(str(row[1]), payload, row[3]):
+                        bad_ids.append(row[0])
+                        continue
+                    picked = {"id": int(row[0]), "format": str(row[1]),
+                              "payload": payload, "correct_answer": str(row[3] or "")}
+                    break
+                if bad_ids:
+                    cur.execute(
+                        "DELETE FROM bt_3_aufgabe_mistakes WHERE id = ANY(%s);", (bad_ids,)
+                    )
+                    conn.commit()
+        return picked
     except Exception:
         logging.warning("get_next_due_mistake failed user_id=%s", user_id, exc_info=True)
         return None
