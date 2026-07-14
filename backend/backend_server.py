@@ -592,6 +592,7 @@ from backend.database import (
     unlock_book_audio,
     is_book_audio_unlocked,
     list_book_audio_unlocked_tiers,
+    get_user_book_audio_unlocks_map,
     estimate_book_audio_price_minor,
     AUDIO_MIN_TOPUP_MINOR,
     AUDIO_TOPUP_MAX_MINOR,
@@ -16151,6 +16152,37 @@ def ingest_public_library_catalog(
 # one synthesized mp3 serves every reader.
 PUBLIC_LIBRARY_TTS_VOICE = os.getenv("PUBLIC_LIBRARY_TTS_VOICE", "de-DE-Standard-C").strip() or "de-DE-Standard-C"
 PUBLIC_LIBRARY_TTS_RATE = 1.0
+
+
+# Voice tiers offered for paid personal-book narration (order = display order).
+# 'eleven' (ElevenLabs) is Phase 3 — not offered yet.
+AUDIO_OFFERED_VOICE_TIERS = ("neural", "standard")
+_AUDIO_TIER_LABELS = {
+    "neural": {"ru": "Премиум-голос", "de": "Premium-Stimme"},
+    "standard": {"ru": "Обычный голос", "de": "Standard-Stimme"},
+}
+
+
+def _book_audio_pricing_payload(document: dict, unlocked_tiers: list[str] | None) -> dict:
+    """Per-book audio price + unlock status for the reader UI. Price is pure
+    computation from total_chars (no DB) — cheap to attach to every list item."""
+    chars = int((document or {}).get("total_chars") or 0)
+    unlocked = set(unlocked_tiers or [])
+    tiers = []
+    for tier in AUDIO_OFFERED_VOICE_TIERS:
+        tiers.append({
+            "tier": tier,
+            "label": _AUDIO_TIER_LABELS.get(tier, {}),
+            "price_minor": int(estimate_book_audio_price_minor(chars, tier)),
+            "unlocked": tier in unlocked,
+        })
+    return {
+        "chars": chars,
+        "currency": "EUR",
+        "default_tier": AUDIO_DEFAULT_VOICE_TIER,
+        "any_unlocked": bool(unlocked),
+        "tiers": tiers,
+    }
 
 
 def _voice_tier_to_voice(voice_tier: str, lang_short: str = "de") -> str:
@@ -49197,6 +49229,17 @@ def reader_library_list():
                 expired, expires_at = _is_reader_doc_expired_for_free(item)
                 item["is_free_storage_expired"] = bool(expired)
                 item["free_storage_expires_at"] = expires_at
+        # Per-book paid-audio price + unlock status for the shelf. Two cheap queries
+        # for the WHOLE list (all unlocks batched + one balance read); price itself is
+        # computed from total_chars in memory — no per-book query.
+        try:
+            unlocks_map = get_user_book_audio_unlocks_map(int(user_id))
+            for item in items:
+                item["audio"] = _book_audio_pricing_payload(item, unlocks_map.get(int(item.get("id") or 0), []))
+            wallet_balance_minor = get_audio_wallet_balance_minor(int(user_id))
+        except Exception:
+            logging.exception("reader library audio pricing failed user=%s", user_id)
+            wallet_balance_minor = 0
         # Curated public-domain "Классика" shelf — shared, free to read for everyone,
         # never subject to free-storage expiry (not the user's personal data).
         public_items = _list_public_library_items(target_lang=target_lang)
@@ -49204,6 +49247,7 @@ def reader_library_list():
             "ok": True,
             "items": items,
             "public_items": public_items,
+            "wallet": {"balance_minor": int(wallet_balance_minor), "currency": "EUR"},
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
         _log_flow_observation(
@@ -49495,6 +49539,20 @@ def reader_library_open():
         document_payload = dict(doc)
         document_payload.pop("content_text", None)
         document_payload.pop("content_pages", None)
+        # Paid-audio price + unlock status for the opened book — cheap (one unlock
+        # query + one balance read); personal books only, classics are free.
+        if doc_is_public:
+            audio_pricing = {"free": True}
+            wallet_balance_minor = 0
+        else:
+            try:
+                unlocked_tiers = list_book_audio_unlocked_tiers(int(user_id), int(document_id))
+                audio_pricing = _book_audio_pricing_payload(doc, unlocked_tiers)
+                wallet_balance_minor = get_audio_wallet_balance_minor(int(user_id))
+            except Exception:
+                logging.exception("reader open audio pricing failed user=%s doc=%s", user_id, document_id)
+                audio_pricing = {"free": False}
+                wallet_balance_minor = 0
         response_payload = {
             "ok": True,
             "document": document_payload,
@@ -49502,6 +49560,8 @@ def reader_library_open():
             "total_pages": total_pages,
             "pages_start": pages_start,
             "pages_end": pages_end,
+            "audio": audio_pricing,
+            "wallet": {"balance_minor": int(wallet_balance_minor), "currency": "EUR"},
             # Custom-layout sources (epub/html/text) need the full normalized text.
             # Returning only a 50-page content_pages window makes the frontend think
             # the book starts from that slice, which breaks pagination/bookmarks.

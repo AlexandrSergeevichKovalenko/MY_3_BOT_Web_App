@@ -28711,6 +28711,21 @@ def list_book_audio_unlocked_tiers(user_id: int, document_id: int) -> list[str]:
             return [str(r[0]) for r in cursor.fetchall()]
 
 
+def get_user_book_audio_unlocks_map(user_id: int) -> dict[int, list[str]]:
+    """ALL of a user's book-audio unlocks in ONE query → {document_id: [voice_tier,…]}.
+    Lets a whole library list attach unlock status without a per-book query."""
+    result: dict[int, list[str]] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT document_id, voice_tier FROM bt_3_book_audio_unlocks WHERE user_id=%s;",
+                (int(user_id),),
+            )
+            for doc_id, tier in cursor.fetchall():
+                result.setdefault(int(doc_id), []).append(str(tier))
+    return result
+
+
 def update_reader_library_state(
     *,
     user_id: int,
