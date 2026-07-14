@@ -37845,7 +37845,12 @@ function AppInner() {
                       <span>{tr('Пользователь', 'Nutzer')}: {assistantIdentity.displayName || '—'}</span>
                       <span>ID: {assistantIdentity.userId || '—'}</span>
                     </div>
-                    {assistantError && <div className="webapp-error">{assistantError}</div>}
+                    {assistantError && (
+                      <div className="voice-assistant-error-notice" role="alert">
+                        <span className="vaen-icon" aria-hidden="true">⚠️</span>
+                        <span className="vaen-text">{assistantError}</span>
+                      </div>
+                    )}
                     <button
                       type="button"
                       className="primary-button"

@@ -6594,6 +6594,47 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
 .voice-assistant-under-construction.is-theme-light .vauc-title { color: #0f2744; }
 .voice-assistant-under-construction.is-theme-light .vauc-text { color: rgba(30, 41, 59, 0.72); }
 
+/* Ошибка подключения ассистента — аккуратная плашка вместо сырого красного блока. */
+.voice-assistant-error-notice {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 2px;
+  padding: 11px 13px;
+  border-radius: 14px;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #fee2e2;
+  background:
+    linear-gradient(135deg, rgba(248, 113, 113, 0.2), rgba(239, 68, 68, 0.12)),
+    rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(248, 113, 113, 0.38);
+}
+.voice-assistant-error-notice .vaen-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  font-size: 16px;
+  background: rgba(248, 113, 113, 0.18);
+  border: 1px solid rgba(248, 113, 113, 0.32);
+}
+.voice-assistant-error-notice .vaen-text { word-break: break-word; }
+.webapp-page.is-theme-light .voice-assistant-error-notice {
+  color: #7f1d1d;
+  background:
+    linear-gradient(135deg, rgba(248, 113, 113, 0.16), rgba(239, 68, 68, 0.08)),
+    #ffffff;
+  border-color: rgba(239, 68, 68, 0.28);
+}
+.webapp-page.is-theme-light .voice-assistant-error-notice .vaen-icon {
+  background: rgba(248, 113, 113, 0.14);
+  border-color: rgba(239, 68, 68, 0.24);
+}
+
 .dictionary-save-limit-notice {
   margin: 12px 0;
 }
