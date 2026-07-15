@@ -32,7 +32,7 @@ const t = (ru, de) => (LANG === 'de' ? de : ru);
 // fullscreen button expands it. Each empty slot's MediaTile simply isn't rendered.
 const R2 = 'https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/onboarding_videos_r2';
 const MEDIA = {
-  install_ios:     `${R2}/install_app_home_screen/install_app_ios.mp4`,     // install_app (iPhone) — set to the real R2 URL once uploaded
+  install_ios:     `${R2}/how_to_setup_app_icon_on_a_screenphone/install_app_ios.mp4`, // install_app (iPhone)
   forward_chat:  `${R2}/forward_from_chat_and_learning_words/forward_chat_razbor.mp4`, // howto_words
   morning_words: `${R2}/morning_words_arrival/morning_words_arrival.mp4`,             // howto_morning
   learn_words:   `${R2}/forward_from_chat_and_learning_words/learn_saved_words.mp4`,   // howto_learn
