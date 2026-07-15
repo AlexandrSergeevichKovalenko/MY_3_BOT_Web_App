@@ -32,8 +32,7 @@ const t = (ru, de) => (LANG === 'de' ? de : ru);
 // fullscreen button expands it. Each empty slot's MediaTile simply isn't rendered.
 const R2 = 'https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/onboarding_videos_r2';
 const MEDIA = {
-  install_ios:     `${R2}/install_app_home_screen/install_app_ios.mp4`,     // install_app (iPhone)
-  install_android: `${R2}/install_app_home_screen/install_app_android.mp4`, // install_app (Android)
+  install_ios:     `${R2}/install_app_home_screen/install_app_ios.mp4`,     // install_app (iPhone) — set to the real R2 URL once uploaded
   forward_chat:  `${R2}/forward_from_chat_and_learning_words/forward_chat_razbor.mp4`, // howto_words
   morning_words: `${R2}/morning_words_arrival/morning_words_arrival.mp4`,             // howto_morning
   learn_words:   `${R2}/forward_from_chat_and_learning_words/learn_saved_words.mp4`,   // howto_learn
@@ -245,6 +244,12 @@ function StepBody(props) {
             {t('Открывается оно в браузере как самостоятельное приложение (Telegram при этом не запускается). Это заметно удобнее и ощущается как настоящее приложение. Сделать это стоит один раз — дальше пользуешься с рабочего стола.',
                'Es öffnet sich im Browser als eigenständige App (Telegram startet dabei nicht). Das ist deutlich bequemer und fühlt sich wie eine echte App an. Einmal einrichten — danach nutzt du sie vom Startbildschirm.')}
           </p>
+          <p className="ob-lead">
+            <b>{t('⚠️ Обязательное условие: у тебя должен быть установлен наш бот в Telegram.',
+                  '⚠️ Voraussetzung: Unser Bot muss in deinem Telegram installiert sein.')}</b>
+            {t(' Именно через него идёт вся коммуникация и приходят все интерактивы — задания, разборы, аудио. Без установленного бота иконка работать не будет.',
+               ' Über ihn läuft die gesamte Kommunikation und kommen alle interaktiven Inhalte — Aufgaben, Analysen, Audio. Ohne installierten Bot funktioniert das Symbol nicht.')}
+          </p>
           <div className="ob-howbox">
             <p className="ob-howbox-title">{t('📌 iPhone (Safari)', '📌 iPhone (Safari)')}</p>
             <ol className="ob-steps">
@@ -268,7 +273,10 @@ function StepBody(props) {
               <li>{t('Подтверди «Добавить» — иконка появится на экране.', 'Bestätige «Hinzufügen» — das Symbol erscheint auf dem Bildschirm.')}</li>
               <li>{t('Готово! Открывай приложение прямо с рабочего стола.', 'Fertig! Öffne die App direkt vom Startbildschirm.')}</li>
             </ol>
-            <MediaTile src={MEDIA.install_android} type="video" caption={t('🎥 Как вынести иконку на экран (Android)', '🎥 Wie man das Symbol anlegt (Android)')} />
+            <p className="ob-muted-note">
+              {t('🤖 Шаги могут немного отличаться — у Android очень много версий и оболочек. Но смысл везде один: меню браузера → «Добавить на главный экран».',
+                 '🤖 Die Schritte können leicht abweichen — Android hat sehr viele Versionen und Oberflächen. Der Kern ist überall gleich: Browser-Menü → «Zum Startbildschirm hinzufügen».')}
+            </p>
           </div>
           <p className="ob-lead ob-muted-note">
             {t('Иконка привязана к твоему аккаунту и работает, пока бот у тебя не удалён. Если удалишь бота — приложение попросит вернуть его.',
