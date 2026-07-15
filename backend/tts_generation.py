@@ -249,11 +249,24 @@ class GoogleTTSBudgetBlockedError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _notify_google_tts_budget_thresholds(
+# Friendly per-bucket names for admin alerts (which bucket is filling up).
+_TTS_BUDGET_LABELS = {
+    "google_tts": "Google TTS — премиум (WaveNet): словарь/SRS/игры",
+    "google_tts_standard": "Google TTS — Standard: библиотека классики",
+    "google_tts_paid": "Google TTS — платная озвучка книг",
+}
+
+
+def _notify_tts_budget_thresholds(
     *,
+    provider: str,
     status: dict,
     requested_chars: int,
 ) -> None:
+    """Pre-threshold (50/75/90%) admin DM for ANY TTS bucket. Deduped per row via
+    notified_thresholds. The paid bucket gets an 'extend from /budgets' hint since
+    its spend is revenue-covered and the admin may legitimately raise it."""
+    provider_value = str(provider or "").strip().lower() or "google_tts"
     effective_limit = int(status.get("effective_limit_units") or 0)
     if effective_limit <= 0:
         return
@@ -263,6 +276,14 @@ def _notify_google_tts_budget_thresholds(
     thresholds = [50, 75, 90]
     notified = status.get("notified_thresholds") if isinstance(status.get("notified_thresholds"), dict) else {}
     period_month = status.get("period_month")
+    label = _TTS_BUDGET_LABELS.get(provider_value, provider_value)
+    if provider_value == "google_tts_paid":
+        tail = (
+            "\nЭто платная полка — озвучку книг оплачивают пользователи. "
+            "Если спрос честный, продли лимит кнопками в /budgets."
+        )
+    else:
+        tail = "\nЕсли нужно, подними месячный лимит до жёсткого стопа."
 
     for threshold in thresholds:
         threshold_key = str(threshold)
@@ -276,14 +297,14 @@ def _notify_google_tts_budget_thresholds(
         projected_out = int(round(projected_used))
         remaining_out = max(0, effective_limit - projected_out)
         message_text = (
-            "⚠️ Google TTS budget alert\n\n"
-            f"Threshold: {threshold}%\n"
-            f"Month: {period_month or '—'}\n"
-            f"Used now: {used_out} chars\n"
-            f"Projected after current request: {projected_out} chars\n"
-            f"Limit: {effective_limit} chars\n"
-            f"Remaining after request: {remaining_out} chars\n\n"
-            "Budget tracking is active. If needed, increase the monthly limit before the hard stop is reached."
+            f"⚠️ Бюджет озвучки — {label}\n\n"
+            f"Порог: {threshold}%\n"
+            f"Месяц: {period_month or '—'}\n"
+            f"Сейчас: {used_out} симв.\n"
+            f"После текущего запроса: {projected_out} симв.\n"
+            f"Лимит: {effective_limit} симв.\n"
+            f"Останется: {remaining_out} симв.\n"
+            f"{tail}"
         )
 
         admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
@@ -293,12 +314,12 @@ def _notify_google_tts_budget_thresholds(
                 _send_private_message(int(admin_id), message_text, disable_web_page_preview=True)
                 sent = True
             except Exception:
-                logging.warning("Failed to send Google TTS budget alert to admin_id=%s", admin_id, exc_info=True)
+                logging.warning("Failed to send TTS budget alert provider=%s admin_id=%s", provider_value, admin_id, exc_info=True)
 
         if sent:
             try:
                 updated = mark_provider_budget_threshold_notified(
-                    provider="google_tts",
+                    provider=provider_value,
                     threshold_percent=threshold,
                     metadata={
                         "last_threshold_alert": threshold,
@@ -309,7 +330,16 @@ def _notify_google_tts_budget_thresholds(
                 if isinstance(updated, dict):
                     notified = updated.get("notified_thresholds") if isinstance(updated.get("notified_thresholds"), dict) else notified
             except Exception:
-                logging.warning("Failed to mark Google TTS threshold=%s as notified", threshold, exc_info=True)
+                logging.warning("Failed to mark %s threshold=%s as notified", provider_value, threshold, exc_info=True)
+
+
+def _notify_google_tts_budget_thresholds(
+    *,
+    status: dict,
+    requested_chars: int,
+) -> None:
+    """Premium-bucket wrapper kept for existing call sites."""
+    _notify_tts_budget_thresholds(provider="google_tts", status=status, requested_chars=requested_chars)
 
 
 def _enforce_google_tts_monthly_budget(requested_chars: int) -> dict:
@@ -396,6 +426,10 @@ def _enforce_tts_monthly_budget(requested_chars: int, *, provider: str = "google
     status["used_units"] = tts_budget_counter.get_used(
         normalized, period_month, fallback=status.get("used_units")
     )
+
+    # Pre-threshold DM alerts for these buckets too (esp. the paid one, so the admin
+    # is pinged and can extend from /budgets before the hard stop).
+    _notify_tts_budget_thresholds(provider=normalized, status=status, requested_chars=requested_value)
 
     effective_limit = int(status.get("effective_limit_units") or 0)
     used_units = float(status.get("used_units") or 0.0)
