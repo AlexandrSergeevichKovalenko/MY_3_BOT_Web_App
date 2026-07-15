@@ -16358,6 +16358,7 @@ def _ingest_public_library_book(book, *, source_lang: str = "ru", target_lang: s
         source_lang=source_lang,
         target_lang=target_lang,
         source_url=source_url,
+        cover_image_url=resolved.get("cover_url"),
     )
     return {
         "slug": book.slug, "ok": True, "document_id": document["id"], "chars": document["total_chars"],

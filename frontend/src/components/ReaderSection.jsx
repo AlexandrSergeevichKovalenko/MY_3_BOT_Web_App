@@ -917,11 +917,19 @@ export default function ReaderSection(props) {
               {/* ── Library header — shelf-aware (back + dynamic title) ── */}
               <div className="reader-lib-header">
                 <div className="reader-lib-header-lead">
-                  {activeShelf && (
+                  {(activeShelf || readerArchiveOpen) && (
                     <button
                       type="button"
                       className="reader-shelf-back"
-                      onClick={backToShelves}
+                      onClick={() => {
+                        if (readerArchiveOpen) {
+                          setReaderArchiveOpen(false);
+                          setReaderIncludeArchived(false);
+                          loadReaderLibrary();
+                        } else {
+                          backToShelves();
+                        }
+                      }}
                       aria-label={tr('К полкам', 'Zu den Regalen')}
                       title={tr('К полкам', 'Zu den Regalen')}
                     >

@@ -129,6 +129,9 @@ def resolve_gutendex(book: CatalogBook, *, timeout: int = 30) -> dict | None:
             continue
         authors = result.get("authors") or []
         matched_author = authors[0].get("name") if authors and isinstance(authors[0], dict) else book.author
+        # Gutenberg ships a cover image for (almost) every book — a direct, stable
+        # public URL. Use it as the book cover instead of a bare letter tile.
+        cover_url = _pick_format(formats, ("image/jpeg", "image/png"))
         return {
             "slug": book.slug,
             "gutenberg_id": result.get("id"),
@@ -136,6 +139,7 @@ def resolve_gutendex(book: CatalogBook, *, timeout: int = 30) -> dict | None:
             "matched_author": matched_author,
             "source_type": source_type,
             "download_url": download_url,
+            "cover_url": cover_url,
         }
 
     logger.warning("gutendex: no downloadable format for slug=%s query=%r", book.slug, book.query)

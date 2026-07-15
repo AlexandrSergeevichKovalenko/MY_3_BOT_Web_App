@@ -28562,16 +28562,20 @@ def get_reader_library_document_pages_only(
 
 def _public_library_row_to_dict(row: tuple, *, include_content: bool = False) -> dict:
     """Map a public-library row (21 base cols + is_public, public_slug,
-    public_author, public_sort [+ content_text, content_pages]) to a dict."""
+    public_author, public_sort, cover_image_url [+ content_text, content_pages]) to
+    a dict."""
     base_len = 21
     payload = _reader_library_row_to_dict(row[:base_len], include_content=False)
     payload["is_public"] = bool(row[base_len])
     payload["public_slug"] = str(row[base_len + 1] or "") or None
     payload["public_author"] = str(row[base_len + 2] or "") or None
     payload["public_sort"] = int(row[base_len + 3] or 0)
+    payload["cover_image_url"] = (
+        str(row[base_len + 4]).strip() if len(row) > base_len + 4 and row[base_len + 4] else None
+    )
     if include_content:
-        payload["content_text"] = str(row[base_len + 4] or "")
-        payload["content_pages"] = row[base_len + 5] if isinstance(row[base_len + 5], list) else []
+        payload["content_text"] = str(row[base_len + 5] or "")
+        payload["content_pages"] = row[base_len + 6] if isinstance(row[base_len + 6], list) else []
     return payload
 
 
@@ -28580,7 +28584,7 @@ _PUBLIC_LIBRARY_SELECT_COLS = """
     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
     processing_status, processing_error, processing_started_at, processing_finished_at,
     is_archived, archived_at, last_opened_at, created_at, updated_at,
-    is_public, public_slug, public_author, public_sort
+    is_public, public_slug, public_author, public_sort, cover_image_url
 """
 
 
@@ -28596,6 +28600,7 @@ def upsert_public_library_document(
     source_lang: str = "ru",
     target_lang: str = "de",
     source_url: str | None = None,
+    cover_image_url: str | None = None,
 ) -> dict:
     """Insert/refresh a curated public-domain book, owned by PUBLIC_LIBRARY_OWNER_ID
     and visible to every user. Idempotent by public_slug: unchanged content only
@@ -28610,6 +28615,7 @@ def upsert_public_library_document(
     resolved_author = str(author or "").strip() or None
     resolved_source_type = str(source_type or "text").strip().lower() or "text"
     resolved_source_url = str(source_url or "").strip() or None
+    resolved_cover = str(cover_image_url or "").strip() or None
     resolved_content = str(content_text or "").strip()
     resolved_pages = content_pages if isinstance(content_pages, list) else []
     text_hash = hashlib.sha256(resolved_content.encode("utf-8")).hexdigest()
@@ -28628,12 +28634,13 @@ def upsert_public_library_document(
                     f"""
                     UPDATE bt_3_reader_library
                     SET title = %s, public_author = %s, public_sort = %s,
+                        cover_image_url = COALESCE(%s, cover_image_url),
                         is_public = TRUE, is_archived = FALSE, archived_at = NULL,
                         processing_status = 'ready', updated_at = NOW()
                     WHERE id = %s
                     RETURNING {_PUBLIC_LIBRARY_SELECT_COLS};
                     """,
-                    (resolved_title, resolved_author, int(sort or 0), int(existing[0])),
+                    (resolved_title, resolved_author, int(sort or 0), resolved_cover, int(existing[0])),
                 )
                 return _public_library_row_to_dict(cursor.fetchone())
             if existing:
@@ -28644,17 +28651,17 @@ def upsert_public_library_document(
                     user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, content_text, content_pages, total_chars,
                     processing_status, processing_finished_at, updated_at,
-                    is_public, public_slug, public_author, public_sort
+                    is_public, public_slug, public_author, public_sort, cover_image_url
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
-                        'ready', NOW(), NOW(), TRUE, %s, %s, %s)
+                        'ready', NOW(), NOW(), TRUE, %s, %s, %s, %s)
                 RETURNING {_PUBLIC_LIBRARY_SELECT_COLS};
                 """,
                 (
                     owner_id, normalized_source, normalized_target, resolved_title,
                     resolved_source_type, resolved_source_url, text_hash, resolved_content,
                     json.dumps(resolved_pages, ensure_ascii=False), total_chars,
-                    resolved_slug, resolved_author, int(sort or 0),
+                    resolved_slug, resolved_author, int(sort or 0), resolved_cover,
                 ),
             )
             return _public_library_row_to_dict(cursor.fetchone())
