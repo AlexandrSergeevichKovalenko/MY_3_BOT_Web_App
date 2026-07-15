@@ -33655,6 +33655,30 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
             parse_mode="HTML",
         )
 
+    if arg == "pregen":
+        await message.reply_text(
+            "⏳ Прогреваю аудио классики (Standard-голос, из бесплатного бакета) — "
+            "это делает проигрывание мгновенным без холодного синтеза. Может занять минуты…"
+        )
+        try:
+            from backend.backend_server import run_public_library_audio_pregen
+            res = await asyncio.to_thread(run_public_library_audio_pregen, dry_run=False)
+        except Exception as exc:
+            logging.exception("public library audio pregen via bot failed")
+            await message.reply_text(f"❌ pregen failed: {exc}")
+            return
+        await message.reply_text(
+            "🎧 <b>Прогрев аудио классики</b>\n"
+            f"• озвучено новых страниц: <b>{res.get('generated_pages')}</b>\n"
+            f"• уже было в кэше: {res.get('skipped_cached')}\n"
+            f"• просмотрено страниц: {res.get('pages_visited')}\n"
+            f"• потрачено символов: {res.get('spent_chars')} из бюджета {res.get('budget_chars')}\n"
+            f"• остановка: {res.get('stopped') or 'дошло до конца бюджета/страниц'}\n\n"
+            "Если бюджет Standard закончился — запусти ещё раз завтра (пополняется помесячно), "
+            "или прогрев идёт сам ночью в 04:45.",
+            parse_mode="HTML",
+        )
+
 
 # ── Telegram Stars payments (Mini App digital purchases) ─────────────────────
 async def on_stars_pre_checkout(update: Update, context: CallbackContext) -> None:
