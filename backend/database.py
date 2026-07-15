@@ -3938,7 +3938,10 @@ FLASHCARD_RECENT_SEEN_HOURS = max(1, _env_int("FLASHCARD_RECENT_SEEN_HOURS", 24)
 FX_USD_TO_EUR = _env_decimal("FX_USD_TO_EUR", "0.92") or Decimal("0.92")
 TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
 TRIAL_POLICY_TZ = "Europe/Vienna"
-GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS", 1_000_000))
+# Google's WaveNet/Neural2/Polyglot free tier is ~1M chars/mo; hold the guard at 900k
+# so it trips with a safety margin BELOW Google's real free line (our counter lags the
+# provider meter slightly, and background/prewarm synth can nudge us over unnoticed).
+GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_MONTHLY_BASE_LIMIT_CHARS", 900_000))
 GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TRANSLATE_MONTHLY_BASE_LIMIT_CHARS", 500_000))
 DEEPL_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("DEEPL_MONTHLY_BASE_LIMIT_CHARS", 500_000))
 AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("AZURE_TRANSLATOR_MONTHLY_BASE_LIMIT_CHARS", 2_000_000))
@@ -3974,9 +3977,12 @@ PUBLIC_LIBRARY_OWNER_ID = _env_int("PUBLIC_LIBRARY_OWNER_ID", 0)
 # Standard voice from its own 4M bucket so it never starves the premium tier the
 # app uses for dictionary/SRS/paid reader audio.
 GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_STANDARD_MONTHLY_BASE_LIMIT_CHARS", 4_000_000))
-# Personal paid narration bucket — high runaway backstop, not a real cap (revenue
-# from per-book unlocks covers the spend). Keeps paid audio off the free 1M bucket.
-GOOGLE_TTS_PAID_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_PAID_MONTHLY_BASE_LIMIT_CHARS", 50_000_000))
+# Personal paid narration bucket. Real protection against a runaway/bug is PER-BOOK
+# (each unlock is bounded to the book's own chars + slack — see _enforce_book_audio_*),
+# so this global monthly figure only needs to be a modest anomaly-catcher that pings the
+# admin (who can extend it from the report buttons). 3M ≈ a couple of full books; a bug
+# can waste at most ~$48 before it stops and alerts, instead of ~$800 at the old 50M.
+GOOGLE_TTS_PAID_MONTHLY_BASE_LIMIT_CHARS = max(1, _env_int("GOOGLE_TTS_PAID_MONTHLY_BASE_LIMIT_CHARS", 3_000_000))
 # Fraction of the remaining Standard free budget the daily pre-gen job may spend
 # (0.9 = keep a 10% safety margin so a mid-month spike never tips into paid).
 PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION = _env_decimal("PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION", "0.9") or Decimal("0.9")
@@ -9145,6 +9151,52 @@ def ensure_webapp_tables() -> None:
 
                         INSERT INTO bt_3_schema_migrations (migration_key)
                         VALUES ('2026_03_22_provider_budget_limit_correction')
+                        ON CONFLICT (migration_key) DO NOTHING;
+                    END IF;
+                END $$;
+                """
+            )
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM bt_3_schema_migrations
+                        WHERE migration_key = '2026_07_15_tts_budget_tighten'
+                    ) THEN
+                        -- Premium WaveNet bucket: 1M -> 900k safety margin below Google's
+                        -- real free tier. Only rows still at the old default (no admin raise).
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 900000,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{tts_budget_tighten_2026_07_15}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'google_tts'
+                          AND base_limit_units = 1000000
+                          AND extra_limit_units = 0;
+
+                        -- Personal paid narration: kill the absurd 50M ($800) backstop.
+                        -- Per-book bound is the real guard; this is just an anomaly ping.
+                        UPDATE bt_3_provider_budget_controls
+                        SET base_limit_units = 3000000,
+                            updated_at = NOW(),
+                            metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{tts_budget_tighten_2026_07_15}',
+                                'true'::jsonb,
+                                true
+                            )
+                        WHERE provider = 'google_tts_paid'
+                          AND base_limit_units = 50000000
+                          AND extra_limit_units = 0;
+
+                        INSERT INTO bt_3_schema_migrations (migration_key)
+                        VALUES ('2026_07_15_tts_budget_tighten')
                         ON CONFLICT (migration_key) DO NOTHING;
                     END IF;
                 END $$;
