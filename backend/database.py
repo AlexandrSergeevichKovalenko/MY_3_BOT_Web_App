@@ -34924,6 +34924,25 @@ def resolve_entitlement(
         # Paid plan with a Stripe card-added trial (status 'trialing') stays Pro — KEEP.
         effective_mode = "pro"
         source_of_entitlement = "paid_subscription"
+        # Telegram Stars subscriptions have no cancel/renewal-failure webhook, so a
+        # lapsed one would otherwise read 'active' forever. Lapse it on read once the
+        # paid period is well past (2-day grace covers auto-renewal timing). Strictly
+        # guarded to stars_-sourced subs — Stripe subs stay current via webhooks.
+        _sub_id = str(subscription.get("stripe_subscription_id") or "")
+        if _sub_id.startswith("stars_"):
+            _cpe = subscription.get("current_period_end")
+            _cpe_dt = None
+            try:
+                if isinstance(_cpe, datetime):
+                    _cpe_dt = _to_aware_datetime(_cpe)
+                elif _cpe:
+                    _cpe_dt = _to_aware_datetime(datetime.fromisoformat(str(_cpe)))
+            except Exception:
+                _cpe_dt = None
+            _now_ref = now_utc or datetime.now(timezone.utc)
+            if _cpe_dt is not None and _now_ref > _cpe_dt + timedelta(days=2):
+                effective_mode = "free"
+                source_of_entitlement = "stars_subscription_lapsed"
     else:
         # Free-plan product trial is discontinued: 'trialing' on the free plan = just Free.
         effective_mode = "free"
