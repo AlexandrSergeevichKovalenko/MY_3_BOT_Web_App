@@ -840,7 +840,14 @@ export default function OnboardingWizard() {
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
-    try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
+    try {
+      tg?.ready?.();
+      tg?.expand?.();
+      // Lock the sheet vertically: a careless swipe-down must NOT close/minimize the wizard
+      // (Bot API 7.7+). Without this the long, scrollable steps slide the whole sheet away on
+      // any downward drag. Closing stays possible only via the header. Same as the other overlays.
+      tg?.disableVerticalSwipes?.();
+    } catch (_e) { /* ignore */ }
     try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* ignore */ }
   }, []);
 
