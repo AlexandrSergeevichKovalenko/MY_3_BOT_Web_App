@@ -20,6 +20,7 @@ import asyncio
 import contextvars
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
+from telegram.ext import PreCheckoutQueryHandler
 import hashlib
 import hmac
 import base64
@@ -33244,6 +33245,68 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
         )
 
 
+# ── Telegram Stars payments (Mini App digital purchases) ─────────────────────
+async def on_stars_pre_checkout(update: Update, context: CallbackContext) -> None:
+    """Approve the Stars pre-checkout. We validated price + payload when the invoice
+    link was created, so accept; Telegram needs an answer within 10 seconds."""
+    q = getattr(update, "pre_checkout_query", None)
+    if not q:
+        return
+    try:
+        await q.answer(ok=True)
+    except Exception:
+        logging.exception("stars pre_checkout answer failed")
+
+
+async def on_stars_successful_payment(update: Update, context: CallbackContext) -> None:
+    """Fulfil a completed Telegram Stars purchase. Idempotent by charge id, so a
+    re-delivered update never double-grants. The invoice_payload tells us what was
+    bought (purpose)."""
+    msg = update.effective_message
+    sp = getattr(msg, "successful_payment", None) if msg else None
+    if not sp:
+        return
+    user = update.effective_user
+    uid = int(getattr(user, "id", 0) or 0)
+    charge_id = str(getattr(sp, "telegram_payment_charge_id", "") or "")
+    stars = int(getattr(sp, "total_amount", 0) or 0)  # XTR total = number of Stars
+    try:
+        payload = json.loads(getattr(sp, "invoice_payload", "") or "{}")
+    except Exception:
+        payload = {}
+    purpose = str(payload.get("purpose") or "").strip().lower()
+
+    from backend.database import record_star_payment_once, grant_book_audio_unlock
+    try:
+        is_new = record_star_payment_once(
+            telegram_payment_charge_id=charge_id, user_id=uid, purpose=purpose, stars=stars, payload=payload,
+        )
+    except Exception:
+        logging.exception("record_star_payment_once failed charge=%s", charge_id)
+        is_new = True  # fail-open: better to grant than to silently drop a paid purchase
+    if not is_new:
+        return  # already fulfilled
+
+    if purpose == "book_audio":
+        try:
+            grant_book_audio_unlock(
+                user_id=int(payload.get("user_id") or uid),
+                document_id=int(payload.get("document_id") or 0),
+                voice_tier=str(payload.get("voice_tier") or "neural"),
+                currency="XTR",
+            )
+            await msg.reply_text(
+                "✅ Озвучка книги открыта! Вернись в читалку и нажми ▶ — теперь эту книгу можно слушать всегда, без ограничений."
+            )
+        except Exception:
+            logging.exception("book_audio grant failed charge=%s", charge_id)
+    elif purpose == "pro":
+        # Stage 3: Pro subscription grant lands here.
+        logging.info("stars pro payment received (grant TBD) charge=%s user=%s stars=%s", charge_id, uid, stars)
+    else:
+        logging.warning("stars payment with unknown purpose=%r charge=%s", purpose, charge_id)
+
+
 async def admin_crossword_revive_command(update: Update, context: CallbackContext) -> None:
     """Un-retire every crossword whose image is still ready (resets fail_count) so they
     re-enter rotation. Recovers cards that were auto-retired by transient send outages —
@@ -35980,6 +36043,9 @@ def main():
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("cw_health", admin_crossword_health_command))
     application.add_handler(CommandHandler("reader_public_status", admin_reader_public_status_command))
+    # Telegram Stars payments (Mini App digital purchases): approve pre-checkout + fulfil.
+    application.add_handler(PreCheckoutQueryHandler(on_stars_pre_checkout))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_stars_successful_payment), group=-1)
     application.add_handler(CommandHandler("admin_cw_revive", admin_crossword_revive_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
     application.add_handler(CommandHandler("admin_ls_pool", admin_listening_pool_command))

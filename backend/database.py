@@ -8513,6 +8513,25 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_book_audio_unlocks_user
                 ON bt_3_book_audio_unlocks (user_id);
             """)
+            # Telegram Stars payments ledger — the authoritative record of every
+            # successful in-app Stars purchase (book audio, Pro, …). Keyed by the
+            # Telegram charge id for idempotency (a retried successful_payment is a
+            # no-op) and kept for audit + refunds.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_star_payments (
+                    id                         BIGSERIAL PRIMARY KEY,
+                    telegram_payment_charge_id TEXT UNIQUE NOT NULL,
+                    user_id                    BIGINT NOT NULL,
+                    purpose                    TEXT NOT NULL,
+                    stars                      BIGINT NOT NULL DEFAULT 0,
+                    payload                    JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_star_payments_user
+                ON bt_3_star_payments (user_id, created_at DESC);
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_active
                 ON bt_3_agent_voice_sessions (user_id, source_lang, target_lang, started_at DESC)
@@ -28999,6 +29018,53 @@ def unlock_book_audio(
                 (uid, -price, new_balance, doc, tier),
             )
     return {"ok": True, "already_unlocked": False, "charged_minor": price, "balance_minor": new_balance, "price_minor": price}
+
+
+def record_star_payment_once(
+    *, telegram_payment_charge_id: str, user_id: int, purpose: str, stars: int, payload: dict | None = None
+) -> bool:
+    """Record a Telegram Stars payment. Returns True if this is a NEW charge (caller
+    should fulfil it), False if it was already recorded (duplicate — do nothing).
+    The UNIQUE charge id makes fulfilment idempotent under retried updates."""
+    charge = str(telegram_payment_charge_id or "").strip()
+    if not charge:
+        return False
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_star_payments (telegram_payment_charge_id, user_id, purpose, stars, payload)
+                VALUES (%s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (telegram_payment_charge_id) DO NOTHING
+                RETURNING id;
+                """,
+                (charge, int(user_id), str(purpose or "").strip().lower(),
+                 max(0, int(stars or 0)), json.dumps(payload or {}, ensure_ascii=False)),
+            )
+            return cursor.fetchone() is not None
+
+
+def grant_book_audio_unlock(
+    *, user_id: int, document_id: int, voice_tier: str, price_minor: int = 0, chars: int = 0, currency: str = "XTR"
+) -> dict:
+    """Record a per-book audio unlock WITHOUT touching any wallet (paid directly via
+    Telegram Stars). Idempotent on (user, document, tier). Returns {ok, already_unlocked}."""
+    uid = int(user_id)
+    doc = int(document_id)
+    tier = str(voice_tier or "").strip().lower()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_book_audio_unlocks (user_id, document_id, voice_tier, price_minor, chars, currency)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, document_id, voice_tier) DO NOTHING
+                RETURNING id;
+                """,
+                (uid, doc, tier, max(0, int(price_minor or 0)), int(chars or 0), str(currency or "XTR")),
+            )
+            inserted = cursor.fetchone() is not None
+    return {"ok": True, "already_unlocked": not inserted}
 
 
 def is_book_audio_unlocked(user_id: int, document_id: int, voice_tier: str) -> bool:

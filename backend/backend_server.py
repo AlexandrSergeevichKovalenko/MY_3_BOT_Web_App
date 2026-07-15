@@ -16416,6 +16416,65 @@ _AUDIO_TIER_LABELS = {
     "standard": {"ru": "Обычный голос", "de": "Standard-Stimme"},
 }
 
+# ── Telegram Stars pricing ──────────────────────────────────────────────────
+# Digital goods in a Mini App must be sold in Telegram Stars (XTR). We price in EUR
+# internally, then convert: Stars = ceil(eur × MARKUP × RATE). MARKUP (~1.30) covers
+# Telegram's ~30% cut so our net ≈ the EUR price. RATE is Stars per €1 — env-tunable
+# once we see Telegram's real conversion. Both configurable without a redeploy.
+STARS_PER_EUR = float(os.getenv("STARS_PER_EUR") or "50")
+STARS_MARKUP = float(os.getenv("STARS_MARKUP") or "1.30")
+
+
+def eur_minor_to_stars(eur_minor: int) -> int:
+    """Convert an internal EUR price (cents) to a whole number of Telegram Stars,
+    applying the commission markup. Always at least 1 Star for a paid item."""
+    eur = max(0.0, float(eur_minor or 0) / 100.0)
+    stars = math.ceil(eur * STARS_MARKUP * STARS_PER_EUR)
+    return max(1, int(stars))
+
+
+def _book_audio_stars_price(document: dict, voice_tier: str) -> int:
+    """Whole-book narration price in Telegram Stars for a given voice tier."""
+    chars = int((document or {}).get("total_chars") or 0)
+    eur_minor = int(estimate_book_audio_price_minor(chars, voice_tier))
+    return eur_minor_to_stars(eur_minor)
+
+
+def create_stars_invoice_link(
+    *, title: str, description: str, payload_obj: dict, stars: int, subscription_period: int | None = None
+) -> str | None:
+    """Create a Telegram Stars invoice link (currency XTR, no provider token) the
+    Mini App opens with WebApp.openInvoice. `payload_obj` is echoed back verbatim in
+    the successful_payment update so the bot knows what was bought. Returns the link
+    or None on failure. `subscription_period` (seconds, only 2592000 supported) makes
+    it a recurring Stars subscription (Pro)."""
+    token = TELEGRAM_Deutsch_BOT_TOKEN
+    if not token:
+        logging.error("create_stars_invoice_link: bot token missing")
+        return None
+    body = {
+        "title": str(title or "")[:32],
+        "description": str(description or "")[:255],
+        "payload": json.dumps(payload_obj, ensure_ascii=False)[:128],
+        "currency": "XTR",
+        "prices": [{"label": str(title or "Zahlung")[:32], "amount": max(1, int(stars))}],
+    }
+    if subscription_period:
+        body["subscription_period"] = int(subscription_period)
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/createInvoiceLink",
+            json=body, timeout=15,
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            logging.error("createInvoiceLink failed: %s", data)
+            return None
+        return str(data.get("result") or "") or None
+    except Exception:
+        logging.exception("createInvoiceLink request failed")
+        return None
+
 
 def _book_audio_pricing_payload(document: dict, unlocked_tiers: list[str] | None) -> dict:
     """Per-book audio price + unlock status for the reader UI. Price is pure
@@ -50901,6 +50960,59 @@ def _run_reader_audio_page_generation_job(
             source="worker",
         )
         raise
+
+
+@app.route("/api/webapp/reader/audio/stars_invoice", methods=["POST"])
+def reader_audio_stars_invoice():
+    """Create a Telegram Stars invoice link to narrate a personal book in a voice
+    tier. The Mini App opens it with WebApp.openInvoice → native in-app payment; the
+    bot grants the unlock on successful_payment. No wallet, no external browser."""
+    payload = request.get_json(silent=True) or {}
+    init_data = str(payload.get("initData") or "").strip()
+    if not init_data or not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id_int = int(user_id)
+    try:
+        document_id_int = int(payload.get("document_id"))
+    except (ValueError, TypeError):
+        return jsonify({"error": "document_id обязателен"}), 400
+    voice_tier = str(payload.get("voice_tier") or "").strip().lower() or AUDIO_DEFAULT_VOICE_TIER
+    if voice_tier not in AUDIO_PRICE_PER_1M_MINOR:
+        return jsonify({"error": "Неизвестный голос", "error_code": "unknown_voice_tier"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+    document, document_is_public = _resolve_reader_document_for_user(
+        user_id=user_id_int, document_id=document_id_int,
+        source_lang=source_lang, target_lang=target_lang, include_content=False,
+    )
+    if not document:
+        return jsonify({"error": "Книга не найдена"}), 404
+    if document_is_public:
+        return jsonify({"ok": True, "already_unlocked": True, "free": True, "voice_tier": voice_tier})
+    if is_book_audio_unlocked(user_id_int, document_id_int, voice_tier):
+        return jsonify({"ok": True, "already_unlocked": True, "voice_tier": voice_tier})
+
+    stars = _book_audio_stars_price(document, voice_tier)
+    tier_label = (_AUDIO_TIER_LABELS.get(voice_tier, {}) or {}).get("ru", "Голос")
+    book_title = str(document.get("title") or "книга")[:48]
+    link = create_stars_invoice_link(
+        title=f"Озвучка: {book_title}",
+        description=f"{tier_label} · слушать эту книгу всегда, без ограничений.",
+        payload_obj={
+            "purpose": "book_audio",
+            "user_id": user_id_int,
+            "document_id": document_id_int,
+            "voice_tier": voice_tier,
+        },
+        stars=stars,
+    )
+    if not link:
+        return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз."}), 502
+    return jsonify({"ok": True, "invoice_link": link, "stars": int(stars), "voice_tier": voice_tier})
 
 
 @app.route("/api/webapp/reader/audio/unlock", methods=["POST"])
