@@ -16591,7 +16591,14 @@ def run_public_library_audio_pregen(
                 page_no = 0
             if page_no <= 0:
                 continue
-            page_text, text_hash = _reader_audio_page_text_and_hash(str(page_obj.get("text") or ""))
+            # Match the client's on-demand request EXACTLY: the reader sends a page as
+            # normalizeReaderVisiblePageText(page) → the endpoint hashes that. Pre-gen
+            # runs off the RAW stored page, so it MUST apply the same full normalization
+            # first, otherwise its text_hash differs and the warm cache is never hit
+            # (the bug that made every classic play a cold on-demand synth).
+            page_text, text_hash = _reader_audio_page_text_and_hash(
+                _normalize_reader_visible_page_text_full(str(page_obj.get("text") or ""))
+            )
             if not page_text:
                 continue
             pages_visited += 1
@@ -50778,6 +50785,43 @@ def _build_reader_audio_page_ready_response(
     if deduped:
         payload["deduped"] = True
     return payload
+
+
+def _normalize_reader_visible_page_text_full(raw_text: str) -> str:
+    """Python mirror of the frontend `normalizeReaderVisiblePageText` (App.jsx): strip
+    PUA/"tofu" glyphs and control chars, collapse TOC dot-leaders and ellipsis runs,
+    then reflow paragraphs — EXACTLY the transform the reader applies to on-screen page
+    text before it hits `getReaderDisplayPageText`.
+
+    Why this must exist server-side: a single classic page the client asks to voice is
+    sent as `normalizeReaderVisiblePageText(page)`. The public-library pre-gen job runs
+    server-side off the RAW stored page text, so unless it applies the SAME full
+    normalization its cache key (text_hash) never matches the on-demand request — which
+    is exactly why pre-generated classics audio was never being hit and every play did a
+    cold on-demand synth. Keep this byte-compatible with the JS version.
+    JS regex order:
+      .replace(/[\\uE000-\\uF8FF\\uFFFC\\uFFFD]+/g,' ')
+      .replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]+/g,' ')
+      .replace(/(?:\\s*[.\\u00B7\\u2022\\u2219]\\s*){4,}\\s*([0-9]{1,4}|[IVXLCM]{1,7})\\b/g,' \\u00B7 $1\\n\\n')
+      .replace(/(?:\\s*[.\\u00B7\\u2022\\u2219]\\s*){4,}/g,' \\u00B7 ')
+      .replace(/\\u2026{2,}/g,' ')
+      .split(/\\n\\n+/).map(p=>p.replace(/\\n/g,' ').replace(/ {2,}/g,' ').trim()).filter(Boolean).join('\\n\\n')
+    """
+    s = str(raw_text or "")
+    # Strip PUA/tofu glyphs (U+E000..U+F8FF, U+FFFC, U+FFFD) and control chars
+    # (U+0000..U+0008, U+000B, U+000C, U+000E..U+001F, U+007F) — normal strings so the
+    # \uXXXX escapes are interpreted (raw strings would keep them literal).
+    s = re.sub("[\ue000-\uf8ff\ufffc\ufffd]+", " ", s)
+    s = re.sub("[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+", " ", s)
+    # TOC dot-leaders: 4+ of [. \u00B7 \u2022 \u2219] then a page number -> " \u00B7 N\n\n".
+    dots = ".\u00b7\u2022\u2219"
+    s = re.sub(r"(?:\s*[" + dots + r"]\s*){4,}\s*([0-9]{1,4}|[IVXLCM]{1,7})\b",
+               " \u00b7 " + r"\1" + "\n\n", s)
+    s = re.sub(r"(?:\s*[" + dots + r"]\s*){4,}", " \u00b7 ", s)
+    s = re.sub("\u2026{2,}", " ", s)
+    paras = re.split(r"\n\n+", s)
+    paras = [re.sub(r" {2,}", " ", p.replace("\n", " ")).strip() for p in paras]
+    return "\n\n".join(p for p in paras if p)
 
 
 def _reader_audio_page_text_and_hash(raw_text: str) -> tuple[str, str]:

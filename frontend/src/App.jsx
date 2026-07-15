@@ -5823,6 +5823,12 @@ function AppInner() {
   const [walletBalanceMinor, setWalletBalanceMinor] = useState(0);
   const [walletTopupPresets, setWalletTopupPresets] = useState([300, 500, 1000, 2000]);
   const [readerDocAudio, setReaderDocAudio] = useState(null); // { tiers:[...], default_tier, ... }
+  // True for shared public-domain "Классика" books. Their audio is PRE-GENERATED
+  // per single page in the pinned Standard voice, so for these docs we voice ONE page
+  // per request (not a multi-page window): every request then hits the warm pre-gen
+  // cache and plays instantly, instead of a cold on-demand synth. Read via a ref so
+  // the play/prefetch callbacks always see the current book without re-memoizing.
+  const readerDocIsPublicRef = useRef(false);
   const [readerAudioUnlockInfo, setReaderAudioUnlockInfo] = useState(null); // null | { documentId, bookTitle, tiers, balanceMinor, defaultTier, topupPresets }
   const [readerAudioUnlockState, setReaderAudioUnlockState] = useState('idle'); // idle | unlocking | error
   const [readerAudioTopupState, setReaderAudioTopupState] = useState('idle'); // idle | opening
@@ -14254,6 +14260,19 @@ function AppInner() {
       segments,
     };
   }, [getReaderDisplayPageText, readerPageCount]);
+  // Pick the audio clip window for a given start page. Personal books use multi-page
+  // windows (fewer boundaries = fewer audible pauses); the first clip is a small
+  // cold-start window so playback begins fast. Classics (public) instead voice ONE
+  // page per clip so every request lands on the warm per-page pre-gen cache (instant)
+  // and starts exactly on the tapped page — see readerDocIsPublicRef.
+  const buildReaderAudioPlaybackWindow = useCallback((startPage, mode = 'full') => {
+    if (readerDocIsPublicRef.current) {
+      return buildReaderAudioWindow(startPage, 1, READER_AUDIO_WINDOW_MAX_CHARS);
+    }
+    return mode === 'first'
+      ? buildReaderAudioWindow(startPage, READER_AUDIO_FIRST_WINDOW_MAX_PAGES, READER_AUDIO_FIRST_WINDOW_MAX_CHARS)
+      : buildReaderAudioWindow(startPage);
+  }, [buildReaderAudioWindow]);
   const persistReaderExactBookmark = useCallback((page) => {
     if (!readerDocumentId || readerPageCount <= 0) return;
     const safePage = Math.max(1, Math.min(readerPageCount, Number(page || 1)));
@@ -24063,6 +24082,8 @@ function AppInner() {
       // Paid-audio pricing + wallet balance for THIS book (Phase 2) — drives the
       // "Озвучить: €X" state and the unlock modal. Reset any stale unlock plaque.
       setReaderDocAudio(data?.audio && !data.audio.free ? data.audio : (data?.audio || null));
+      // Classics (public shared library) → free, pre-generated per-page audio.
+      readerDocIsPublicRef.current = data?.audio?.free === true || data?.is_public === true;
       setWalletBalanceMinor(Number(data?.wallet?.balance_minor || 0));
       setReaderAudioUnlockInfo(null);
       const totalPages = Number(data?.total_pages || pages.length || 0);
@@ -24452,9 +24473,7 @@ function AppInner() {
     setReaderAudioPlayError('');
     try {
       const voice = readerAudioVoice || '';
-      const playbackWindow = isContinuation
-        ? buildReaderAudioWindow(page)
-        : buildReaderAudioWindow(page, READER_AUDIO_FIRST_WINDOW_MAX_PAGES, READER_AUDIO_FIRST_WINDOW_MAX_CHARS);
+      const playbackWindow = buildReaderAudioPlaybackWindow(page, isContinuation ? 'full' : 'first');
       if (!playbackWindow?.combinedText) {
         throw new Error('Reader audio page text is empty');
       }
@@ -24635,7 +24654,7 @@ function AppInner() {
       // Defer the next-window prefetch to ~60% of THIS clip (via the gate), and only
       // ONE window ahead (dropped the 2nd/trailing prefetch) — cuts TTS spent on audio
       // the reader may never reach.
-      const nextWindow = buildReaderAudioWindow((playbackWindow.endPage || page) + 1);
+      const nextWindow = buildReaderAudioPlaybackWindow((playbackWindow.endPage || page) + 1, 'full');
       readerAudioPrefetchGateRef.current = {
         fired: false,
         run: () => {
@@ -24832,7 +24851,7 @@ function AppInner() {
       setReaderAudioPlayLoading(false);
     }
   }, [
-    buildReaderAudioWindow,
+    buildReaderAudioPlaybackWindow,
     initData,
     openReaderAudioPremiumPaywall,
     readerAudioPremiumEnabled,
@@ -25054,9 +25073,7 @@ function AppInner() {
     const rate = readerAudioRate || 1;
     // Small fast-start window on a user-initiated start/jump; continuation clips
     // are built full-size by prefetchNextWindow, so only the first win shrinks.
-    const win = opts?.continuation
-      ? buildReaderAudioWindow(page)
-      : buildReaderAudioWindow(page, READER_AUDIO_FIRST_WINDOW_MAX_PAGES, READER_AUDIO_FIRST_WINDOW_MAX_CHARS);
+    const win = buildReaderAudioPlaybackWindow(page, opts?.continuation ? 'full' : 'first');
     if (!win?.combinedText) return;
 
     // Engine + context (this runs inside a user-gesture-initiated call chain).
@@ -25113,7 +25130,7 @@ function AppInner() {
       throw err;
     }
   }, [
-    buildReaderAudioWindow, initData, openReaderAudioPremiumPaywall, readerAudioRate,
+    buildReaderAudioPlaybackWindow, initData, openReaderAudioPremiumPaywall, readerAudioRate,
     readerAudioVoice, readerAudioWidToCharStart, readerDetectedLanguage, readerDocumentId,
     stopReaderAudioPlay,
   ]);
@@ -25163,7 +25180,7 @@ function AppInner() {
       const engine = readerAudioWebEngineRef.current;
       if (!engine || !readerAudioWebActiveRef.current) return;
       if ((win.endPage || 0) >= readerPageCount) return; // book end
-      const nextWin = buildReaderAudioWindow(win.endPage + 1);
+      const nextWin = buildReaderAudioPlaybackWindow(win.endPage + 1, 'full');
       if (!nextWin?.combinedText) return;
       const webKey = (tp, tv, tr2, tt) => {
         const raw = `${String(readerDocumentId || '')}|${String(tp || '')}|${String(tv || '')}|${String(tr2 || '')}|${String(tt || '')}`;
