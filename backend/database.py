@@ -32097,6 +32097,22 @@ def get_google_tts_standard_monthly_budget_status(
     )
 
 
+def get_google_tts_paid_monthly_budget_status(
+    *,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    """Budget status for the paid book-narration bucket (Stars-unlocked audio),
+    kept off the free tier and separate from the premium/standard buckets."""
+    return get_provider_monthly_budget_status(
+        provider="google_tts_paid",
+        units_type="chars",
+        unit_label="chars",
+        period_month=period_month,
+        tz=tz,
+    )
+
+
 def get_google_translate_monthly_budget_status(
     *,
     period_month: date | datetime | None = None,

@@ -199,6 +199,8 @@ from backend.database import (
     mark_admin_scheduler_run,
     get_google_translate_monthly_budget_status,
     get_google_tts_monthly_budget_status,
+    get_google_tts_standard_monthly_budget_status,
+    get_google_tts_paid_monthly_budget_status,
     set_provider_budget_extra_limit,
     set_provider_budget_block_state,
     get_tts_prewarm_settings,
@@ -7326,9 +7328,31 @@ def _format_budget_command_help_lines() -> list[str]:
     ]
 
 
+def _format_tts_bucket_short_line(label: str, status: dict | None) -> str:
+    """One-line summary of a secondary TTS bucket (Standard / paid), showing the
+    block state at a glance so the admin can see what a kill-switch tap did."""
+    if not status:
+        return f"• {label}: ❌ статус недоступен"
+    used_units = int(round(float(status.get("used_units") or 0.0)))
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    is_blocked = bool(status.get("is_blocked"))
+    state = "🛑 ЗАБЛОКИРОВАН" if is_blocked else "✅ активен"
+    return f"• {label}: {state} — {used_units}/{effective_limit} chars"
+
+
 async def _format_all_translation_budget_status_text(*, period_month: date | None = None, tz_name: str = "Europe/Vienna") -> str:
     tts_status = await asyncio.to_thread(
         get_google_tts_monthly_budget_status,
+        period_month=period_month,
+        tz=tz_name,
+    )
+    tts_standard_status = await asyncio.to_thread(
+        get_google_tts_standard_monthly_budget_status,
+        period_month=period_month,
+        tz=tz_name,
+    )
+    tts_paid_status = await asyncio.to_thread(
+        get_google_tts_paid_monthly_budget_status,
         period_month=period_month,
         tz=tz_name,
     )
@@ -7342,6 +7366,12 @@ async def _format_all_translation_budget_status_text(*, period_month: date | Non
         parts.append(_format_google_tts_budget_status_text(tts_status))
     else:
         parts.append("❌ Не удалось получить статус бюджета Google TTS.")
+    parts.append(
+        "🎙 Остальные голоса TTS:\n"
+        + _format_tts_bucket_short_line("Standard (классика, дешёвый)", tts_standard_status)
+        + "\n"
+        + _format_tts_bucket_short_line("Платная озвучка книг", tts_paid_status)
+    )
     if google_translate_status:
         parts.append(_format_google_translate_budget_status_text(google_translate_status))
     else:
@@ -7440,14 +7470,30 @@ def _build_tts_budget_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📊 Status All", callback_data="ttsbudget:status"),
                 InlineKeyboardButton("🔄 Refresh", callback_data="ttsbudget:refresh"),
             ],
+            # Master kill-switch: one tap blocks/unblocks ALL TTS voice buckets.
             [
-                InlineKeyboardButton("➕ TTS +200k", callback_data="ttsbudget:add:200000"),
-                InlineKeyboardButton("➕ TTS +500k", callback_data="ttsbudget:add:500000"),
+                InlineKeyboardButton("🛑 СТОП вся озвучка", callback_data="ttsbudget:allblock"),
+                InlineKeyboardButton("✅ Включить всю озвучку", callback_data="ttsbudget:allunblock"),
             ],
-            [InlineKeyboardButton("➕ TTS custom", callback_data="ttsbudget:addcustom")],
+            # WaveNet — the expensive voice (dictionary/SRS/games/news), the one billing now.
             [
-                InlineKeyboardButton("⛔ TTS Block", callback_data="ttsbudget:block"),
-                InlineKeyboardButton("✅ TTS Unblock", callback_data="ttsbudget:unblock"),
+                InlineKeyboardButton("➕ WaveNet +200k", callback_data="ttsbudget:add:200000"),
+                InlineKeyboardButton("➕ WaveNet +500k", callback_data="ttsbudget:add:500000"),
+            ],
+            [InlineKeyboardButton("➕ WaveNet custom", callback_data="ttsbudget:addcustom")],
+            [
+                InlineKeyboardButton("⛔ Блок WaveNet (дорогой)", callback_data="ttsbudget:block"),
+                InlineKeyboardButton("✅ Разблок WaveNet", callback_data="ttsbudget:unblock"),
+            ],
+            # Standard — the cheap voice for the classics library.
+            [
+                InlineKeyboardButton("⛔ Блок Standard (классика)", callback_data="ttsbudget:stdblock"),
+                InlineKeyboardButton("✅ Разблок Standard", callback_data="ttsbudget:stdunblock"),
+            ],
+            # Paid — Stars-unlocked book narration (off the free tier).
+            [
+                InlineKeyboardButton("⛔ Блок платной озвучки", callback_data="ttsbudget:paidblock"),
+                InlineKeyboardButton("✅ Разблок платной", callback_data="ttsbudget:paidunblock"),
             ],
             [
                 InlineKeyboardButton("➕ Translate +200k", callback_data="ttsbudget:translateadd:200000"),
@@ -7513,6 +7559,53 @@ async def tts_prewarm_quota_command(update: Update, context: CallbackContext):
     await message.reply_text(text, reply_markup=_build_tts_prewarm_quota_keyboard(current_limit))
 
 
+async def send_tts_prewarm_quota_morning_report(context: CallbackContext):
+    """Daily 08:00 DM to admins: the same TTS-prewarm quota control panel as
+    /ttsprewarmquota, pushed automatically so the admin sees the current warm-up
+    quota and last-run fit every morning without having to remember the command.
+    Per-admin daily run-guard so a restart/redeploy near 08:00 can't double-send."""
+    if not context or not context.bot:
+        return
+    tz_name = (os.getenv("TTS_PREWARM_QUOTA_REPORT_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+    try:
+        now_local = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        tz_name = "UTC"
+        now_local = datetime.now(timezone.utc)
+    run_period = now_local.strftime("%Y-%m-%d")
+    admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    if not admin_ids:
+        logging.warning("⚠️ Нет admin ID для TTS prewarm quota morning report.")
+        return
+    current_limit = await asyncio.to_thread(_get_current_tts_prewarm_quota_limit)
+    body = await asyncio.to_thread(_build_tts_prewarm_quota_control_text)
+    message_text = "🔥 Утренний отчёт: квота TTS-прогрева\n\n" + body
+    for admin_id in admin_ids:
+        already_sent = await asyncio.to_thread(
+            has_admin_scheduler_run,
+            job_key="tts_prewarm_quota_morning_report",
+            run_period=run_period,
+            target_chat_id=int(admin_id),
+        )
+        if already_sent:
+            continue
+        try:
+            await context.bot.send_message(
+                chat_id=int(admin_id),
+                text=message_text,
+                reply_markup=_build_tts_prewarm_quota_keyboard(current_limit),
+            )
+            await asyncio.to_thread(
+                mark_admin_scheduler_run,
+                job_key="tts_prewarm_quota_morning_report",
+                run_period=run_period,
+                target_chat_id=int(admin_id),
+                metadata={"tz": tz_name, "source": "scheduler"},
+            )
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось отправить TTS prewarm quota morning report admin_id=%s: %s", admin_id, exc)
+
+
 async def _execute_tts_budget_action(
     *,
     action: str,
@@ -7520,8 +7613,32 @@ async def _execute_tts_budget_action(
     delta_units: int | None = None,
 ) -> str:
     normalized_action = str(action or "status").strip().lower()
+
+    # Master kill-switch: block/unblock every TTS voice bucket in one tap.
+    if normalized_action in {"allblock", "allunblock"}:
+        make_blocked = normalized_action == "allblock"
+        tts_buckets = ("google_tts", "google_tts_standard", "google_tts_paid")
+        failed: list[str] = []
+        for bucket_provider in tts_buckets:
+            ok = await asyncio.to_thread(
+                set_provider_budget_block_state,
+                provider=bucket_provider,
+                is_blocked=make_blocked,
+                block_reason=(f"Manual ALL-TTS block by admin {int(admin_user_id)}" if make_blocked else None),
+            )
+            if not ok:
+                failed.append(bucket_provider)
+        header = (
+            "🛑 Вся озвучка TTS ОСТАНОВЛЕНА (WaveNet + Standard + платная)."
+            if make_blocked
+            else "✅ Вся озвучка TTS снова включена."
+        )
+        if failed:
+            header += f"\n⚠️ Не удалось изменить: {', '.join(failed)}"
+        return header + "\n\n" + await _format_all_translation_budget_status_text()
+
     provider = "google_tts"
-    provider_label = "Google TTS"
+    provider_label = "Google TTS (WaveNet, дорогой)"
     status_loader = get_google_tts_monthly_budget_status
 
     if normalized_action.startswith("translate_"):
@@ -7529,6 +7646,16 @@ async def _execute_tts_budget_action(
         provider_label = "Google Translate"
         status_loader = get_google_translate_monthly_budget_status
         normalized_action = normalized_action[len("translate_"):]
+    elif normalized_action.startswith("std_"):
+        provider = "google_tts_standard"
+        provider_label = "Google TTS Standard (классика)"
+        status_loader = get_google_tts_standard_monthly_budget_status
+        normalized_action = normalized_action[len("std_"):]
+    elif normalized_action.startswith("paid_"):
+        provider = "google_tts_paid"
+        provider_label = "Google TTS — платная озвучка книг"
+        status_loader = get_google_tts_paid_monthly_budget_status
+        normalized_action = normalized_action[len("paid_"):]
 
     if normalized_action == "status":
         return await _format_all_translation_budget_status_text()
@@ -7578,7 +7705,7 @@ async def _execute_tts_budget_action(
         )
         if not updated:
             return f"❌ Не удалось вручную заблокировать {provider_label}."
-        return await _format_all_translation_budget_status_text()
+        return f"🛑 Заблокировано: {provider_label}.\n\n" + await _format_all_translation_budget_status_text()
 
     if normalized_action == "unblock":
         updated = await asyncio.to_thread(
@@ -7589,7 +7716,7 @@ async def _execute_tts_budget_action(
         )
         if not updated:
             return f"❌ Не удалось снять блокировку {provider_label}."
-        return await _format_all_translation_budget_status_text()
+        return f"✅ Разблокировано: {provider_label}.\n\n" + await _format_all_translation_budget_status_text()
 
     return (
         "Использование:\n"
@@ -8081,6 +8208,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     # normal (they fire only when there's something to send / on a rare calendar day).
     ("weekly_user_removal_digest", "Дайджест удаления неактивных", 192, True, "admin"),
     ("monthly_budget_report", "Месячный бюджет-отчёт", 768, True, "admin"),
+    ("tts_prewarm_quota_morning_report", "Квота TTS-прогрева в личку (08:00)", 30, True, "admin"),
     ("group_enrollment_prompt", "Приглашение в группу", 192, True, "admin"),
     # Now instrumented: the scheduler entry records a guard with the result
     # (generated/upserted) — shown inline below. Pool CONTENT health is still /poolreport.
@@ -9857,7 +9985,7 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
         user_id=int(admin.id),
         state_type=PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM,
     )
-    match = re.match(r"^ttsbudget:(status|refresh|block|unblock|add|addcustom|translateblock|translateunblock|translateadd|translateaddcustom)(?::(\d+))?$", query.data or "")
+    match = re.match(r"^ttsbudget:(status|refresh|block|unblock|allblock|allunblock|stdblock|stdunblock|paidblock|paidunblock|add|addcustom|translateblock|translateunblock|translateadd|translateaddcustom)(?::(\d+))?$", query.data or "")
     if not match:
         await query.answer("Некорректная кнопка.", show_alert=True)
         return
@@ -9865,12 +9993,16 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
     action = str(match.group(1) or "status").strip().lower()
     if action == "refresh":
         action = "status"
-    if action == "translateblock":
-        action = "translate_block"
-    if action == "translateunblock":
-        action = "translate_unblock"
-    if action == "translateadd":
-        action = "translate_add"
+    _callback_action_aliases = {
+        "translateblock": "translate_block",
+        "translateunblock": "translate_unblock",
+        "translateadd": "translate_add",
+        "stdblock": "std_block",
+        "stdunblock": "std_unblock",
+        "paidblock": "paid_block",
+        "paidunblock": "paid_unblock",
+    }
+    action = _callback_action_aliases.get(action, action)
     if action == "addcustom":
         pending_payload = {
             "provider": "google_tts",
@@ -36891,6 +37023,20 @@ def main():
             hour=int((os.getenv("CLASSICS_AUDIO_REPORT_HOUR") or "8").strip() or "8"),
             minute=int((os.getenv("CLASSICS_AUDIO_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Morning DM: TTS prewarm quota control panel (08:00 Europe/Vienna) --
+        # Pushes the same panel as /ttsprewarmquota automatically each morning so the
+        # admin sees the current warm-up quota + last-run fit and can react with the
+        # ±100…400 buttons, without needing to remember the command. Own per-day guard.
+        scheduler.add_job(
+            lambda: submit_async(send_tts_prewarm_quota_morning_report, CallbackContext(application=application)),
+            "cron",
+            hour=int((os.getenv("TTS_PREWARM_QUOTA_REPORT_HOUR") or "8").strip() or "8"),
+            minute=int((os.getenv("TTS_PREWARM_QUOTA_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("TTS_PREWARM_QUOTA_REPORT_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,
