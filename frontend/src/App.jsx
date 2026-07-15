@@ -6082,6 +6082,21 @@ function AppInner() {
   const [selectionGptOpen, setSelectionGptOpen] = useState(false);
   const [selectionGptLoading, setSelectionGptLoading] = useState(false);
   const [selectionGptError, setSelectionGptError] = useState('');
+  // Lightweight app toast: a soft, self-dismissing message (7s) in our style —
+  // replaces raw red error banners for transient/limit messages.
+  const [appToast, setAppToast] = useState(null); // null | { message }
+  const appToastTimerRef = useRef(null);
+  const showAppToast = useCallback((message) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    setAppToast({ message: text });
+    if (appToastTimerRef.current) clearTimeout(appToastTimerRef.current);
+    appToastTimerRef.current = setTimeout(() => setAppToast(null), 7000);
+  }, []);
+  const dismissAppToast = useCallback(() => {
+    if (appToastTimerRef.current) clearTimeout(appToastTimerRef.current);
+    setAppToast(null);
+  }, []);
   const [selectionGptData, setSelectionGptData] = useState({ translation: '', notes: '', examples: [] });
   const [selectionGptSaveOriginalChecked, setSelectionGptSaveOriginalChecked] = useState(true);
   const [selectionGptSaveExamplesChecked, setSelectionGptSaveExamplesChecked] = useState({});
@@ -8468,12 +8483,9 @@ function AppInner() {
       if (!payload || typeof payload !== 'object') return '';
       const errorCode = String(payload.error || '').trim();
       if (errorCode === 'cost_cap_exceeded') {
-        const spent = Number(payload.spent_eur || 0);
-        const cap = Number(payload.cap_eur || 0);
-        const resetAt = String(payload.reset_at || '');
         return tr(
-          `Дневной лимит расходов исчерпан: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Сброс: ${resetAt}`,
-          `Tägliches Kostenlimit erreicht: ${spent.toFixed(2)} / ${cap.toFixed(2)} EUR. Reset: ${resetAt}`
+          'На сегодня дневной лимит запросов исчерпан. Попробуй, пожалуйста, завтра 🙌',
+          'Das Tageslimit für Anfragen ist erreicht. Bitte versuche es morgen wieder 🙌'
         );
       }
       if (errorCode === 'feature_limit_exceeded') {
@@ -22960,7 +22972,12 @@ function AppInner() {
         provider: quick.provider || '',
       });
     } catch (error) {
-      setSelectionGptError(String(error?.message || tr('Ошибка GPT-объяснения', 'GPT-Erklärungsfehler')));
+      // Soft toast instead of a raw red banner inside the sheet — there's nothing to
+      // show on error, so close the sheet and float a friendly self-dismissing message.
+      const msg = String(error?.message || tr('Не удалось получить объяснение. Попробуй ещё раз.', 'Erklärung fehlgeschlagen. Bitte nochmal versuchen.'));
+      setSelectionGptOpen(false);
+      resetSelectionGptSaveState();
+      showAppToast(msg);
     } finally {
       setSelectionGptLoading(false);
     }
@@ -39845,6 +39862,52 @@ function AppInner() {
                       : (selectionInlineLookup.translation || '—')}
                   </div>
                 )}
+              </div>
+            )}
+            {appToast && (
+              <div
+                style={{
+                  position: 'fixed',
+                  top: 'calc(env(safe-area-inset-top, 0px) + 14px)',
+                  left: 0, right: 0,
+                  zIndex: 300,
+                  display: 'flex',
+                  justifyContent: 'center',
+                  padding: '0 16px',
+                  pointerEvents: 'none',
+                }}
+              >
+                <div
+                  className="app-toast-pop"
+                  role="status"
+                  style={{
+                    pointerEvents: 'auto',
+                    maxWidth: 440,
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 10,
+                    padding: '13px 12px 13px 15px',
+                    borderRadius: 15,
+                    background: isLightTheme ? 'rgba(253, 247, 236, 0.99)' : 'rgba(22, 30, 49, 0.99)',
+                    border: isLightTheme ? '1px solid rgba(171, 139, 98, 0.30)' : '1px solid rgba(148, 163, 184, 0.28)',
+                    boxShadow: isLightTheme ? '0 12px 30px rgba(105, 78, 47, 0.24)' : '0 12px 34px rgba(2, 6, 23, 0.6)',
+                    color: isLightTheme ? '#2a1d0e' : '#eef2fb',
+                  }}
+                >
+                  <span style={{ fontSize: 17, lineHeight: 1.25, flexShrink: 0 }} aria-hidden="true">💡</span>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, lineHeight: 1.45, fontWeight: 500 }}>{appToast.message}</span>
+                  <button
+                    type="button"
+                    onClick={dismissAppToast}
+                    aria-label={tr('Закрыть', 'Schließen')}
+                    style={{
+                      flexShrink: 0, width: 24, height: 24, border: 'none', background: 'transparent',
+                      color: isLightTheme ? 'rgba(42,29,14,0.5)' : 'rgba(238,242,251,0.55)',
+                      fontSize: 19, lineHeight: 1, cursor: 'pointer', borderRadius: 6, padding: 0,
+                    }}
+                  >×</button>
+                </div>
               </div>
             )}
             {selectionGptOpen && (

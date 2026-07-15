@@ -4768,3 +4768,10 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 }
 .webapp-reader .reader-word.reader-em-bold { font-weight: 700; }
 .webapp-reader .reader-word.reader-em-italic { font-style: italic; }
+
+/* App toast (soft self-dismissing message, our style) — pop-in animation. */
+.app-toast-pop { animation: app-toast-pop-in .26s cubic-bezier(.2,.7,.3,1) both; }
+@keyframes app-toast-pop-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.97); }
+  to   { opacity: 1; transform: none; }
+}
