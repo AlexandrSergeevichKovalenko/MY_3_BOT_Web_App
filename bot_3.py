@@ -4009,6 +4009,333 @@ async def handle_shortcut_connect_callback(update: Update, context: CallbackCont
         await _deliver_shortcut_connect_flow(int(user.id), _reply)
 
 
+# ===== Semi-annual "Классика" (public library) audit → admin DM + checkbox delete ======
+# Twice a year the admin gets a readership report of the public-domain shelf and can
+# prune books nobody reads. Selection state lives in Redis (Pattern A, mirrors the
+# autosave digest below); deleting a book removes its row (cascades audio-page +
+# progress rows), the book text/pages (columns), and its R2 mp3 objects.
+
+def _pubaudit_digest_redis_key(digest_id: str) -> str:
+    return f"pubaudit_digest:{digest_id}"
+
+
+def _pubaudit_read_digest(digest_id: str) -> dict | None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is None:
+        return None
+    raw = client.get(_pubaudit_digest_redis_key(digest_id))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except Exception:
+        return None
+
+
+def _pubaudit_write_digest(digest_id: str, state: dict, ttl: int = 604800) -> None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is None:
+        return
+    client.setex(_pubaudit_digest_redis_key(digest_id), ttl, json.dumps(state, ensure_ascii=False))
+
+
+def _pubaudit_delete_digest(digest_id: str) -> None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is not None:
+        try:
+            client.delete(_pubaudit_digest_redis_key(digest_id))
+        except Exception:
+            pass
+
+
+def _pubaudit_build_keyboard(digest_id: str, items: list, selected: list) -> InlineKeyboardMarkup:
+    """Number-toggle checkboxes (the book titles live in the message body), 5 per row.
+    Nothing is pre-selected — the admin opts IN the books to delete. The delete footer
+    appears only once ≥1 book is checked (so an empty tap can't trigger anything)."""
+    rows = []
+    row = []
+    for idx in range(len(items)):
+        on = idx < len(selected) and selected[idx]
+        row.append(InlineKeyboardButton(
+            f"{'☑️' if on else '⬜️'} {idx + 1}",
+            callback_data=f"pubaud_tog:{digest_id}:{idx}",
+        ))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    count = sum(1 for s in selected if s)
+    if count > 0:
+        rows.append([InlineKeyboardButton(
+            f"🗑 Удалить выбранные ({count})", callback_data=f"pubaud_del:{digest_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _pubaudit_build_confirm_keyboard(digest_id: str, count: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"⚠️ Да, удалить {count} — навсегда", callback_data=f"pubaud_go:{digest_id}")],
+        [InlineKeyboardButton("↩️ Отмена", callback_data=f"pubaud_cancel:{digest_id}")],
+    ])
+
+
+def _pubaudit_format_report(rows: list, period_months: int) -> str:
+    lines = [
+        f"📚 <b>Аудит «Классики» за {period_months} мес.</b>",
+        "Кто сколько читал + вес аудио. Отметь книги галочками и нажми «Удалить».",
+        "",
+    ]
+    for idx, r in enumerate(rows):
+        title = html.escape(str(r.get("title") or "—"))
+        author = html.escape(str(r.get("public_author") or "").strip())
+        who = f" — {author}" if author else ""
+        readers = int(r.get("readers_period") or 0)
+        fin = int(r.get("finishers_period") or 0)
+        avg = float(r.get("avg_progress") or 0)
+        allr = int(r.get("readers_all") or 0)
+        mb = float(r.get("audio_bytes") or 0) / (1024 * 1024)
+        pages = int(r.get("pages_cached") or 0)
+        lines.append(
+            f"<b>{idx + 1}. {title}</b>{who}\n"
+            f"   👥 читали: {readers} · дочитали: {fin} · ср. {avg:.0f}% · за всё время: {allr}\n"
+            f"   🎧 аудио: {pages} стр (~{mb:.0f} МБ)"
+        )
+    lines.append("")
+    lines.append("Ничего не выбрано → ничего не удаляется. Кнопка удаления появится после выбора.")
+    return "\n".join(lines)
+
+
+async def send_public_library_audit_report(application, *, period_months: int = 6) -> dict:
+    """DM every admin the Классика readership audit with a checkbox keyboard to prune
+    unread books. Scheduled twice a year (1 Jan / 1 Jul); also on-demand via
+    /reader_public_audit. Each admin gets their own Redis-backed digest."""
+    from backend.database import get_admin_telegram_ids, get_public_library_audit_rows
+    try:
+        rows = await asyncio.to_thread(get_public_library_audit_rows, period_months)
+    except Exception:
+        logging.exception("public library audit: fetch rows failed")
+        rows = []
+    try:
+        admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    except Exception:
+        admin_ids = []
+    if not admin_ids:
+        return {"ok": False, "error": "no_admins"}
+    if not rows:
+        for admin_id in admin_ids:
+            try:
+                await application.bot.send_message(
+                    chat_id=admin_id, text="📚 <b>Аудит «Классики»</b>\n\nВ полке пока нет книг.",
+                    parse_mode="HTML")
+            except Exception:
+                logging.warning("public library audit: empty DM failed admin=%s", admin_id, exc_info=True)
+        return {"ok": True, "books": 0}
+
+    text = _pubaudit_format_report(rows, period_months)
+    items = [{"document_id": int(r.get("id")), "title": str(r.get("title") or "")} for r in rows]
+    sent = 0
+    for admin_id in admin_ids:
+        digest_id = hashlib.sha1(os.urandom(16)).hexdigest()[:16]
+        state = {"user_id": int(admin_id), "items": items, "selected": [False] * len(items)}
+        _pubaudit_write_digest(digest_id, state)
+        try:
+            await application.bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=_pubaudit_build_keyboard(digest_id, items, state["selected"]),
+            )
+            sent += 1
+        except Exception:
+            logging.warning("public library audit: DM failed admin=%s", admin_id, exc_info=True)
+    return {"ok": True, "books": len(items), "sent": sent}
+
+
+async def _public_library_audit_report_job(context: CallbackContext) -> None:
+    """Scheduler entry (twice a year). Kept tiny; the real work is in the sender."""
+    try:
+        result = await send_public_library_audit_report(context.application, period_months=6)
+        logging.info("public library audit report result=%s", result)
+    except Exception:
+        logging.exception("public library audit report job failed")
+
+
+async def handle_pubaudit_toggle_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    if len(parts) != 3:
+        await query.answer("Неверный формат.")
+        return
+    digest_id = parts[1]
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        await query.answer("Неверный индекс.")
+        return
+    state = _pubaudit_read_digest(digest_id)
+    if not state:
+        await query.answer("Отчёт устарел.", show_alert=True)
+        return
+    if int(state.get("user_id", 0)) != int(query.from_user.id):
+        await query.answer("Доступно только администратору.", show_alert=True)
+        return
+    selected = state.get("selected") or []
+    items = state.get("items") or []
+    if idx < 0 or idx >= len(selected):
+        await query.answer("Книга не найдена.")
+        return
+    selected[idx] = not bool(selected[idx])
+    state["selected"] = selected
+    _pubaudit_write_digest(digest_id, state)
+    try:
+        await query.edit_message_reply_markup(
+            reply_markup=_pubaudit_build_keyboard(digest_id, items, selected))
+    except Exception:
+        pass
+    await query.answer("Отмечена к удалению ☑️" if selected[idx] else "Снята")
+
+
+async def handle_pubaudit_delete_callback(update: Update, context: CallbackContext) -> None:
+    """First tap on «Удалить» → show a confirm keyboard (deletion is irreversible)."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    digest_id = parts[1] if len(parts) >= 2 else ""
+    state = _pubaudit_read_digest(digest_id)
+    if not state:
+        await query.answer("Отчёт устарел.", show_alert=True)
+        return
+    if int(state.get("user_id", 0)) != int(query.from_user.id):
+        await query.answer("Доступно только администратору.", show_alert=True)
+        return
+    count = sum(1 for s in (state.get("selected") or []) if s)
+    if count <= 0:
+        await query.answer("Отметьте хотя бы одну книгу.", show_alert=True)
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=_pubaudit_build_confirm_keyboard(digest_id, count))
+    except Exception:
+        pass
+    await query.answer()
+
+
+async def handle_pubaudit_cancel_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    digest_id = parts[1] if len(parts) >= 2 else ""
+    state = _pubaudit_read_digest(digest_id)
+    if not state:
+        await query.answer("Отчёт устарел.", show_alert=True)
+        return
+    try:
+        await query.edit_message_reply_markup(
+            reply_markup=_pubaudit_build_keyboard(digest_id, state.get("items") or [], state.get("selected") or []))
+    except Exception:
+        pass
+    await query.answer("Отменено")
+
+
+async def handle_pubaudit_go_callback(update: Update, context: CallbackContext) -> None:
+    """Confirmed delete: purge each selected public book fully (row + cascaded audio/
+    progress rows + R2 mp3 objects). Consumes the digest so a stray tap can't re-run."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    digest_id = parts[1] if len(parts) >= 2 else ""
+    state = _pubaudit_read_digest(digest_id)
+    if not state:
+        await query.answer("Отчёт устарел.", show_alert=True)
+        return
+    if int(state.get("user_id", 0)) != int(query.from_user.id) or not _is_admin_user(query.from_user.id):
+        await query.answer("Доступно только администратору.", show_alert=True)
+        return
+    items = state.get("items") or []
+    selected = state.get("selected") or []
+    chosen = [items[i] for i in range(len(items)) if i < len(selected) and selected[i]]
+    if not chosen:
+        await query.answer("Ничего не выбрано.", show_alert=True)
+        return
+    try:
+        await query.answer("Удаляю…")
+    except Exception:
+        pass
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    _pubaudit_delete_digest(digest_id)  # consume → no double-processing
+
+    from backend.database import delete_public_library_document
+    from backend.r2_storage import r2_delete_prefix, r2_delete_object, r2_key_from_public_url
+
+    deleted_titles: list[str] = []
+    failed: list[str] = []
+    for it in chosen:
+        doc_id = int(it.get("document_id") or 0)
+        if doc_id <= 0:
+            continue
+        try:
+            res = await asyncio.to_thread(delete_public_library_document, doc_id)
+        except Exception:
+            logging.exception("public audit delete: DB delete failed doc=%s", doc_id)
+            res = {"ok": False}
+        if not res.get("ok"):
+            failed.append(str(it.get("title") or doc_id))
+            continue
+        # R2 mp3s are NOT FK-cascaded — remove the whole per-book prefix, then mop up any
+        # stragglers by their stored URLs (belt-and-suspenders; the prefix should cover all).
+        try:
+            await asyncio.to_thread(r2_delete_prefix, f"reader-audio-pages/0/{doc_id}/")
+        except Exception:
+            logging.warning("public audit delete: R2 prefix delete failed doc=%s", doc_id, exc_info=True)
+        for url in (res.get("audio_urls") or []):
+            key = r2_key_from_public_url(url)
+            if key:
+                try:
+                    await asyncio.to_thread(r2_delete_object, key)
+                except Exception:
+                    pass
+        deleted_titles.append(str(res.get("title") or doc_id))
+
+    lines = [f"🗑 <b>Удалено книг: {len(deleted_titles)}</b>"]
+    for t in deleted_titles:
+        lines.append(f"• {html.escape(str(t))}")
+    if failed:
+        lines.append("")
+        lines.append(f"⚠️ Не удалось: {html.escape(', '.join(str(f) for f in failed))}")
+    lines.append("")
+    lines.append("Чтобы книга не вернулась при ручном ре-ингесте, убери её slug из PUBLIC_LIBRARY_CATALOG.")
+    try:
+        await query.edit_message_text("\n".join(lines), parse_mode="HTML")
+    except Exception:
+        try:
+            await context.bot.send_message(chat_id=query.from_user.id, text="\n".join(lines), parse_mode="HTML")
+        except Exception:
+            pass
+
+
+async def reader_public_audit_command(update: Update, context: CallbackContext) -> None:
+    """Admin: send the Классика readership audit on demand (same as the twice-a-year DM)."""
+    user = update.effective_user
+    if not user or not _is_admin_user(int(user.id)):
+        return
+    result = await send_public_library_audit_report(context.application, period_months=6)
+    if not result.get("ok"):
+        try:
+            await context.bot.send_message(chat_id=user.id, text="Не удалось собрать аудит (нет админов/ошибка).")
+        except Exception:
+            pass
+
+
 # ===== Nightly auto-save: settings toggle + multi-select digest =========================
 
 def _autosave_digest_redis_key(digest_id: str) -> str:
@@ -35902,6 +36229,10 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_world_news_regen_callback, pattern=r"^wn_regen:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
+    application.add_handler(CallbackQueryHandler(handle_pubaudit_toggle_callback, pattern=r"^pubaud_tog:"))
+    application.add_handler(CallbackQueryHandler(handle_pubaudit_delete_callback, pattern=r"^pubaud_del:"))
+    application.add_handler(CallbackQueryHandler(handle_pubaudit_go_callback, pattern=r"^pubaud_go:"))
+    application.add_handler(CallbackQueryHandler(handle_pubaudit_cancel_callback, pattern=r"^pubaud_cancel:"))
     application.add_handler(CallbackQueryHandler(handle_artikel_settheme_callback, pattern=r"^art_st:"))
     application.add_handler(CallbackQueryHandler(_next_task_chooser_callback, pattern=r"^nxt:"))
     application.add_handler(CallbackQueryHandler(_schedule_preset_callback, pattern=r"^pset:"))
@@ -36062,6 +36393,7 @@ def main():
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("cw_health", admin_crossword_health_command))
     application.add_handler(CommandHandler("reader_public_status", admin_reader_public_status_command))
+    application.add_handler(CommandHandler("reader_public_audit", reader_public_audit_command))
     # Telegram Stars payments (Mini App digital purchases): approve pre-checkout + fulfil.
     application.add_handler(PreCheckoutQueryHandler(on_stars_pre_checkout))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_stars_successful_payment), group=-1)
@@ -36389,6 +36721,22 @@ def main():
             coalesce=True,
             max_instances=1,
             misfire_grace_time=1800,
+        )
+        # -- Semi-annual "Классика" audit → admin DM with checkbox delete (1 Jan / 1 Jul) --
+        # Twice a year: readership of every public-domain book + audio weight, with a
+        # checkbox keyboard to prune books nobody reads (removes row + cascaded audio/
+        # progress + R2 mp3s). On-demand anytime via /reader_public_audit.
+        scheduler.add_job(
+            lambda: submit_async(_public_library_audit_report_job, CallbackContext(application=application)),
+            "cron",
+            month=os.getenv("PUBLIC_LIBRARY_AUDIT_MONTHS") or "1,7",
+            day=int((os.getenv("PUBLIC_LIBRARY_AUDIT_DAY") or "1").strip() or "1"),
+            hour=int((os.getenv("PUBLIC_LIBRARY_AUDIT_HOUR") or "9").strip() or "9"),
+            minute=int((os.getenv("PUBLIC_LIBRARY_AUDIT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("PUBLIC_LIBRARY_AUDIT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
         )
         # -- Weekly «Ночной Переводчик» run-check report (Fri 19:00 Europe/Vienna) --
         scheduler.add_job(

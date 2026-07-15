@@ -29335,6 +29335,94 @@ def delete_reader_library_document(
     return bool(deleted)
 
 
+def get_public_library_audit_rows(period_months: int = 6) -> list[dict]:
+    """Per public-domain ("Классика") book: readership over the last `period_months`
+    plus its cached-audio footprint. Powers the semi-annual admin audit so books nobody
+    reads can be spotted and pruned. Ordered least-read first (deletion candidates on
+    top). Readership source = bt_3_reader_public_progress (one row per user per book;
+    updated_at refreshed on every open/save)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT rl.id, rl.title, rl.public_author, rl.public_slug,
+                           COALESCE(rl.total_chars, 0)                       AS total_chars,
+                           COALESCE(rd.readers, 0)                           AS readers_period,
+                           COALESCE(rd.finishers, 0)                         AS finishers_period,
+                           COALESCE(rd.avg_progress, 0)                      AS avg_progress,
+                           COALESCE(rall.readers_all, 0)                     AS readers_all,
+                           COALESCE(ap.pages_cached, 0)                      AS pages_cached,
+                           COALESCE(ap.audio_bytes, 0)                       AS audio_bytes
+                    FROM bt_3_reader_library rl
+                    LEFT JOIN (
+                        SELECT document_id,
+                               COUNT(*)                                        AS readers,
+                               COUNT(*) FILTER (WHERE progress_percent >= 90)  AS finishers,
+                               AVG(progress_percent)                           AS avg_progress
+                        FROM bt_3_reader_public_progress
+                        WHERE updated_at >= NOW() - (%s * INTERVAL '1 month')
+                        GROUP BY document_id
+                    ) rd ON rd.document_id = rl.id
+                    LEFT JOIN (
+                        SELECT document_id, COUNT(*) AS readers_all
+                        FROM bt_3_reader_public_progress
+                        GROUP BY document_id
+                    ) rall ON rall.document_id = rl.id
+                    LEFT JOIN (
+                        SELECT document_id,
+                               COUNT(*)                              AS pages_cached,
+                               COALESCE(SUM(audio_bytes_len), 0)     AS audio_bytes
+                        FROM bt_3_reader_audio_pages
+                        GROUP BY document_id
+                    ) ap ON ap.document_id = rl.id
+                    WHERE rl.is_public IS TRUE AND rl.is_archived IS FALSE
+                    ORDER BY readers_period ASC, rl.public_sort ASC, rl.title ASC
+                    """,
+                    (int(period_months),),
+                )
+                cols = [d[0] for d in cursor.description]
+                return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    except Exception:
+        logging.exception("get_public_library_audit_rows failed")
+        return []
+
+
+def delete_public_library_document(document_id: int) -> dict:
+    """Fully remove ONE public-domain ("Классика") book. Returns
+    {ok, title, audio_urls:[...]} — the CALLER must delete those R2 mp3 objects (they are
+    NOT FK-cascaded). Deleting the bt_3_reader_library row cascades its audio-page rows
+    (bt_3_reader_audio_pages) and per-user progress (bt_3_reader_public_progress); the
+    book text/pages are columns on the row, so they die with it. Scoped to is_public so
+    this can never touch a personal book. NOTE: to keep a deletion permanent, also remove
+    the slug from PUBLIC_LIBRARY_CATALOG, else a manual re-ingest resurrects it."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT title FROM bt_3_reader_library WHERE id = %s AND is_public IS TRUE",
+                    (int(document_id),),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {"ok": False, "error": "not_found", "title": "", "audio_urls": []}
+                title = str(row[0] or "")
+                cursor.execute(
+                    "SELECT audio_url FROM bt_3_reader_audio_pages WHERE document_id = %s",
+                    (int(document_id),),
+                )
+                audio_urls = [str(r[0]) for r in cursor.fetchall() if r and r[0]]
+                cursor.execute(
+                    "DELETE FROM bt_3_reader_library WHERE id = %s AND is_public IS TRUE",
+                    (int(document_id),),
+                )
+                ok = cursor.rowcount > 0
+                return {"ok": bool(ok), "title": title, "audio_urls": audio_urls}
+    except Exception:
+        logging.exception("delete_public_library_document failed doc=%s", document_id)
+        return {"ok": False, "error": "exception", "title": "", "audio_urls": []}
+
+
 def get_daily_plan(user_id: int, plan_date: date) -> dict | None:
     _cache_key = (int(user_id), plan_date)
     _cached = _DAILY_PLAN_CACHE.get(_cache_key)
@@ -35288,7 +35376,13 @@ def delete_stale_reader_audio_pages(older_than_days: int = 90, limit: int = 5000
     NEVER evict "Классика" (public shared library) audio: it's a small, fixed corpus
     (~1 GB for the whole shelf → ~cents/year in R2) that is expensive to re-warm from
     the free Standard bucket, and it's meant to play instantly for everyone. Keeping it
-    forever is far cheaper than the regeneration churn. Personal books still cycle."""
+    forever is far cheaper than the regeneration churn.
+
+    NEVER evict PAID personal audio either (a book someone unlocked with Stars): the
+    per-page regen cost (Neural2 ≈ €16/1M chars) is ~thousands of times a month of R2
+    storage — break-even is centuries, so evicting a paid book just to re-synthesise it
+    later burns OUR money. Only truly free/legacy rows with NO unlock still cycle at the
+    idle TTL. (Reclaiming a churned user's audio is a separate, activity-based job.)"""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -35300,6 +35394,10 @@ def delete_stale_reader_audio_pages(older_than_days: int = 90, limit: int = 5000
                         JOIN bt_3_reader_library rl ON rl.id = ap.document_id
                         WHERE COALESCE(ap.last_played_at, ap.created_at) < NOW() - (%s * INTERVAL '1 day')
                           AND rl.is_public = FALSE
+                          AND NOT EXISTS (
+                              SELECT 1 FROM bt_3_book_audio_unlocks u
+                              WHERE u.document_id = ap.document_id
+                          )
                         LIMIT %s
                     )
                     RETURNING audio_url
