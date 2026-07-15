@@ -34,6 +34,7 @@ const R2 = 'https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/onboarding_video
 const MEDIA = {
   install_ios:     `${R2}/how_to_setup_app_icon_on_a_screenphone/install_app_ios.mp4`, // install_app (iPhone)
   forward_chat:  `${R2}/forward_from_chat_and_learning_words/forward_chat_razbor.mp4`, // howto_words
+  forward_selection: `${R2}/forward_from_chat_and_learning_words/forward_word_demo.mp4`, // howto_words — выделил текст в браузере/книге → «Поделиться» → бот
   morning_words: `${R2}/morning_words_arrival/morning_words_arrival.mp4`,             // howto_morning
   learn_words:   `${R2}/forward_from_chat_and_learning_words/learn_saved_words.mp4`,   // howto_learn
   interactives: [                                                                     // howto_interactives
@@ -491,6 +492,12 @@ function StepBody(props) {
               <b>{t('🔗 Выделил текст', '🔗 Text markiert')}</b>
               {t(' в браузере или книге → «Поделиться» → выбери бота. Текст улетит ему, а ты потом спокойно посмотришь перевод с разбором и сохранишь, что нужно.',
                  ' im Browser oder Buch → «Teilen» → wähle den Bot. Der Text geht an ihn, und du siehst später in Ruhe die Übersetzung mit Analyse und speicherst, was du brauchst.')}
+              <MediaTile
+                src={MEDIA.forward_selection}
+                type="video"
+                caption={t('🎥 Понравилось слово или фраза при чтении в браузере? Выдели её → «Поделиться» → выбери бота. Текст улетит ему, а ты потом посмотришь перевод с разбором и сохранишь в свой словарь.',
+                           '🎥 Ein Wort oder ein Satz beim Lesen im Browser gefällt dir? Markiere ihn → «Teilen» → wähle den Bot. Der Text geht an ihn, und du siehst später die Übersetzung mit Analyse und speicherst sie in dein Wörterbuch.')}
+              />
             </li>
             <li>
               <b>{t('⭐ Быстрый словарь-переводчик — прямо на рабочем столе.', '⭐ Schneller Wörterbuch-Übersetzer — direkt auf dem Startbildschirm.')}</b>
@@ -708,6 +715,8 @@ function StepBody(props) {
               <b>{t('📖 Читалка', '📖 Reader')}</b>
               {t(' — загружаешь книгу и читаешь прямо в приложении. Каждое слово кликабельно: нажал — перевод и разбор; можно переводить и целыми предложениями. Что отметил — сохраняешь в словарь.',
                  ' — du lädst ein Buch und liest direkt in der App. Jedes Wort ist anklickbar: getippt — Übersetzung und Analyse; auch ganze Sätze kannst du übersetzen. Was du markierst, speicherst du ins Wörterbuch.')}
+              {t(' 🎧 Книги можно не только читать, но и слушать: у базовых книг озвучка доступна бесплатно. А если хочешь послушать свою книгу — её озвучку можно заказать отдельно, по желанию и за небольшую доплату.',
+                 ' 🎧 Bücher kannst du nicht nur lesen, sondern auch hören: bei den Basis-Büchern ist die Audio-Vertonung kostenlos. Und wenn du dein eigenes Buch anhören möchtest — die Vertonung dafür kannst du separat auf Wunsch gegen einen kleinen Aufpreis bestellen.')}
             </li>
             <li>
               <b>{t('📰 Новости прямо в читалке', '📰 Nachrichten direkt im Reader')}</b>
