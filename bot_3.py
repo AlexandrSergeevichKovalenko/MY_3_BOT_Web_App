@@ -8034,20 +8034,22 @@ def _run_classics_audio_readiness_report_safe() -> None:
         return
     if not rows:
         return
+    def _esc(s):  # titles can contain & / < / > → escape for parse_mode=HTML
+        return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     ready = [r for r in rows if r["ready"]]
     partial = sorted([r for r in rows if not r["ready"]], key=lambda x: -x["pct"])
     lines = ["🎧 <b>Аудио классики — готовность</b>", ""]
     if ready:
         lines.append(f"✅ <b>Готовы полностью ({len(ready)}) — можно тестировать:</b>")
         for r in ready:
-            lines.append(f"• {r['title']} — {r['total_pages']} стр.")
+            lines.append(f"• {_esc(r['title'])} — {r['total_pages']} стр.")
         lines.append("")
     else:
         lines.append("Пока ни одна книга не прогрета полностью — идёт постепенный прогрев в рамках бесплатного бакета.\n")
     if partial:
         lines.append("🟡 <b>Догреваются (топ-6):</b>")
         for r in partial[:6]:
-            lines.append(f"• {r['title']} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
+            lines.append(f"• {_esc(r['title'])} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
     text = "\n".join(lines)
     token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
     admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
@@ -33785,7 +33787,8 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    arg = (context.args[0].strip().lower() if context.args else "")
+    # Tolerate trailing punctuation / whitespace (e.g. iOS autocorrect adds a ".").
+    arg = (context.args[0].strip().strip(".!,;:").lower() if context.args else "")
 
     from backend.database import get_public_library_diagnostics
     diag = await asyncio.to_thread(get_public_library_diagnostics)
@@ -33832,26 +33835,37 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
         )
 
     if arg == "pregen":
+        # Cap per-invocation so the command RETURNS promptly with progress instead of
+        # appearing hung while it synthesizes thousands of pages. Re-run to continue;
+        # the nightly 04:45 job also keeps warming.
+        pregen_cap = int((os.getenv("PUBLIC_LIBRARY_PREGEN_BOT_MAX_PAGES") or "120").strip() or "120")
         await message.reply_text(
-            "⏳ Прогреваю аудио классики (Standard-голос, из бесплатного бакета) — "
-            "это делает проигрывание мгновенным без холодного синтеза. Может занять минуты…"
+            f"⏳ Прогреваю аудио классики (Standard-голос, из бесплатного бакета), "
+            f"до {pregen_cap} страниц за запуск. Мгновенное проигрывание без холодного синтеза. "
+            "Может занять пару минут — дождись отчёта…"
         )
         try:
             from backend.backend_server import run_public_library_audio_pregen
-            res = await asyncio.to_thread(run_public_library_audio_pregen, dry_run=False)
+            res = await asyncio.to_thread(run_public_library_audio_pregen, max_pages=pregen_cap, dry_run=False)
         except Exception as exc:
             logging.exception("public library audio pregen via bot failed")
             await message.reply_text(f"❌ pregen failed: {exc}")
             return
+        stopped = res.get("stopped")
+        stopped_txt = {
+            "budget_exhausted": "бюджет Standard на этот месяц исчерпан",
+            "max_pages": f"дошёл до лимита {pregen_cap} стр. за запуск — запусти ещё раз, чтобы продолжить",
+            "provider_blocked": "провайдер заблокировал синтез (бюджет)",
+        }.get(stopped, "дошёл до конца — всё, что можно, прогрето")
         await message.reply_text(
             "🎧 <b>Прогрев аудио классики</b>\n"
             f"• озвучено новых страниц: <b>{res.get('generated_pages')}</b>\n"
             f"• уже было в кэше: {res.get('skipped_cached')}\n"
             f"• просмотрено страниц: {res.get('pages_visited')}\n"
             f"• потрачено символов: {res.get('spent_chars')} из бюджета {res.get('budget_chars')}\n"
-            f"• остановка: {res.get('stopped') or 'дошло до конца бюджета/страниц'}\n\n"
-            "Если бюджет Standard закончился — запусти ещё раз завтра (пополняется помесячно), "
-            "или прогрев идёт сам ночью в 04:45.",
+            f"• итог: {stopped_txt}\n\n"
+            "Проверить готовность книг: <code>/reader_public_status audio</code>. "
+            "Прогрев идёт и сам ночью в 04:45.",
             parse_mode="HTML",
         )
 
@@ -33863,18 +33877,20 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
         except Exception as exc:
             await message.reply_text(f"❌ audio-status failed: {exc}")
             return
+        def _esc(s):  # titles can contain & / < / > → escape for parse_mode=HTML
+            return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         ready = [r for r in rows if r["ready"]]
         partial = sorted([r for r in rows if not r["ready"]], key=lambda x: -x["pct"])
         lines = ["🎧 <b>Готовность аудио классики</b> (Standard-голос)", ""]
         if ready:
             lines.append(f"✅ <b>Готовы полностью — можно тестировать ({len(ready)}):</b>")
             for r in ready:
-                lines.append(f"• {r['title']} — {r['total_pages']} стр.")
+                lines.append(f"• {_esc(r['title'])} — {r['total_pages']} стр.")
             lines.append("")
         if partial:
             lines.append("🟡 <b>Догреваются:</b>")
             for r in partial:
-                lines.append(f"• {r['title']} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
+                lines.append(f"• {_esc(r['title'])} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
         if not rows:
             lines.append("Пока нет данных (нет публичных книг?).")
         await message.reply_text("\n".join(lines), parse_mode="HTML")
