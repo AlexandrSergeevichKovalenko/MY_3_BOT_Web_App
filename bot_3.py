@@ -4336,6 +4336,90 @@ async def reader_public_audit_command(update: Update, context: CallbackContext) 
             pass
 
 
+# ===== Churn cleanup PREVIEW (read-only dry-run of the paid-audio reclaim) ==============
+# The weekly job silently reclaims paid audio of gone users. This preview shows WHAT it
+# would delete WITHOUT deleting — DM'd monthly + on-demand via /reader_audio_churn_preview
+# — so the admin can trust the automation.
+
+def _churn_preview_format(data: dict) -> str:
+    months = int(data.get("inactive_months") or 12)
+    users = int(data.get("users") or 0)
+    pages = int(data.get("pages") or 0)
+    mb = float(data.get("bytes") or 0) / (1024 * 1024)
+    lines = [
+        f"🧹 <b>Превью чистки платного аудио ушедших</b> (порог {months} мес.)",
+        "Это <b>только показ</b> — ничего не удалено. Столько освободилось бы, запусти чистку сейчас:",
+        "",
+        f"👤 пользователей: <b>{users}</b> · 🎧 страниц: <b>{pages}</b> · 💾 ~<b>{mb:.0f} МБ</b>",
+    ]
+    rows = data.get("rows") or []
+    if not rows:
+        lines.append("")
+        lines.append("✅ Сейчас удалять некого — ни один платный пользователь не подходит под условия.")
+        return "\n".join(lines)
+    lines.append("")
+    lines.append("<b>Кто попал бы (топ по объёму):</b>")
+    for r in rows[:20]:
+        reason = "заблокировал бота" if r.get("blocked") else "неактивен"
+        la = str(r.get("last_active") or "")[:10] or "нет данных"
+        titles = r.get("titles") or ["—"]
+        title = html.escape(str(titles[0]))
+        extra = f" +{int(r.get('books') or 1) - 1}" if int(r.get("books") or 0) > 1 else ""
+        mbu = float(r.get("bytes") or 0) / (1024 * 1024)
+        lines.append(
+            f"• id <code>{r.get('user_id')}</code> — {reason} (актив: {la}) · "
+            f"{r.get('books')} кн{extra} · ~{mbu:.0f} МБ · «{title}»"
+        )
+    if len(rows) > 20:
+        lines.append(f"… и ещё {len(rows) - 20} польз.")
+    lines.append("")
+    lines.append("Автоочистка идёт сама раз в неделю (Вс 04:30). Разблокировка остаётся — вернётся, озвучит бесплатно.")
+    return "\n".join(lines)
+
+
+async def send_churn_audio_preview(application) -> dict:
+    """DM admins the read-only dry-run of the churned-user paid-audio reclaim."""
+    from backend.database import get_admin_telegram_ids, preview_churned_user_reader_audio
+    months = int((os.getenv("READER_AUDIO_CHURN_INACTIVE_MONTHS") or "12").strip() or "12")
+    try:
+        data = await asyncio.to_thread(preview_churned_user_reader_audio, months)
+    except Exception:
+        logging.exception("churn preview: fetch failed")
+        data = {"inactive_months": months, "users": 0, "pages": 0, "bytes": 0, "rows": []}
+    try:
+        admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    except Exception:
+        admin_ids = []
+    text = _churn_preview_format(data)
+    if len(text) > 4000:  # Telegram 4096-char cap safety
+        text = text[:3990] + "\n…"
+    sent = 0
+    for admin_id in admin_ids:
+        try:
+            await application.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            logging.warning("churn preview: DM failed admin=%s", admin_id, exc_info=True)
+    return {"ok": True, "users": int(data.get("users") or 0), "sent": sent}
+
+
+async def _churn_audio_preview_job(context: CallbackContext) -> None:
+    """Monthly reminder DM (contains the numbers, so nothing to run manually)."""
+    try:
+        result = await send_churn_audio_preview(context.application)
+        logging.info("churn audio preview report result=%s", result)
+    except Exception:
+        logging.exception("churn audio preview job failed")
+
+
+async def reader_audio_churn_preview_command(update: Update, context: CallbackContext) -> None:
+    """Admin: dry-run of the paid-audio churn cleanup (read-only, deletes nothing)."""
+    user = update.effective_user
+    if not user or not _is_admin_user(int(user.id)):
+        return
+    await send_churn_audio_preview(context.application)
+
+
 # ===== Nightly auto-save: settings toggle + multi-select digest =========================
 
 def _autosave_digest_redis_key(digest_id: str) -> str:
@@ -36394,6 +36478,7 @@ def main():
     application.add_handler(CommandHandler("cw_health", admin_crossword_health_command))
     application.add_handler(CommandHandler("reader_public_status", admin_reader_public_status_command))
     application.add_handler(CommandHandler("reader_public_audit", reader_public_audit_command))
+    application.add_handler(CommandHandler("reader_audio_churn_preview", reader_audio_churn_preview_command))
     # Telegram Stars payments (Mini App digital purchases): approve pre-checkout + fulfil.
     application.add_handler(PreCheckoutQueryHandler(on_stars_pre_checkout))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_stars_successful_payment), group=-1)
@@ -36734,6 +36819,20 @@ def main():
             hour=int((os.getenv("PUBLIC_LIBRARY_AUDIT_HOUR") or "9").strip() or "9"),
             minute=int((os.getenv("PUBLIC_LIBRARY_AUDIT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("PUBLIC_LIBRARY_AUDIT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Monthly churn-cleanup PREVIEW → admin DM (1st of each month 09:30) --
+        # Read-only dry-run of the weekly paid-audio reclaim: shows how many gone users /
+        # pages / MB WOULD be freed, so the admin sees the numbers without running anything.
+        scheduler.add_job(
+            lambda: submit_async(_churn_audio_preview_job, CallbackContext(application=application)),
+            "cron",
+            day=int((os.getenv("READER_AUDIO_CHURN_PREVIEW_DAY") or "1").strip() or "1"),
+            hour=int((os.getenv("READER_AUDIO_CHURN_PREVIEW_HOUR") or "9").strip() or "9"),
+            minute=int((os.getenv("READER_AUDIO_CHURN_PREVIEW_MINUTE") or "30").strip() or "30"),
+            timezone=ZoneInfo(os.getenv("READER_AUDIO_CHURN_PREVIEW_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,

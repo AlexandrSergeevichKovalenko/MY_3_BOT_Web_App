@@ -35516,6 +35516,73 @@ def delete_churned_user_reader_audio_pages(inactive_months: int = 12, limit: int
         return []
 
 
+def preview_churned_user_reader_audio(inactive_months: int = 12) -> dict:
+    """Read-only DRY-RUN of delete_churned_user_reader_audio_pages: what WOULD be
+    reclaimed right now, WITHOUT deleting anything. Same triple gate, grouped per user so
+    the admin can eyeball it before trusting the weekly job. Returns
+    {inactive_months, users, pages, bytes, rows:[{user_id, pages, bytes, books, titles,
+    blocked, last_active, last_audio}, ...]} ordered by freed bytes desc."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT ap.user_id,
+                           COUNT(*)                                        AS pages,
+                           COALESCE(SUM(ap.audio_bytes_len), 0)            AS bytes,
+                           COUNT(DISTINCT ap.document_id)                  AS books,
+                           (array_agg(DISTINCT rl.title))[1:5]             AS titles,
+                           BOOL_OR(b.user_id IS NOT NULL)                  AS blocked,
+                           MAX(s.last_active_date)                         AS last_active,
+                           MAX(COALESCE(ap.last_played_at, ap.created_at)) AS last_audio
+                    FROM bt_3_reader_audio_pages ap
+                    JOIN bt_3_reader_library rl ON rl.id = ap.document_id
+                    LEFT JOIN bt_3_bot_blocked_users b
+                           ON b.user_id = ap.user_id AND b.is_blocked = TRUE
+                    LEFT JOIN bt_3_user_streaks s ON s.user_id = ap.user_id
+                    WHERE rl.is_public = FALSE
+                      AND ap.user_id > 0
+                      AND COALESCE(ap.last_played_at, ap.created_at)
+                          < NOW() - (%s * INTERVAL '1 month')
+                      AND (
+                          b.user_id IS NOT NULL
+                          OR s.last_active_date < (CURRENT_DATE - (%s * INTERVAL '1 month'))
+                      )
+                    GROUP BY ap.user_id
+                    ORDER BY bytes DESC
+                    """,
+                    (int(inactive_months), int(inactive_months)),
+                )
+                rows = []
+                total_pages = 0
+                total_bytes = 0
+                for r in cursor.fetchall():
+                    pages = int(r[1] or 0)
+                    byts = int(r[2] or 0)
+                    total_pages += pages
+                    total_bytes += byts
+                    rows.append({
+                        "user_id": int(r[0]),
+                        "pages": pages,
+                        "bytes": byts,
+                        "books": int(r[3] or 0),
+                        "titles": [str(t) for t in (r[4] or []) if t],
+                        "blocked": bool(r[5]),
+                        "last_active": r[6].isoformat() if r[6] else None,
+                        "last_audio": r[7].isoformat() if r[7] else None,
+                    })
+                return {
+                    "inactive_months": int(inactive_months),
+                    "users": len(rows),
+                    "pages": total_pages,
+                    "bytes": total_bytes,
+                    "rows": rows,
+                }
+    except Exception:
+        logging.exception("preview_churned_user_reader_audio failed")
+        return {"inactive_months": int(inactive_months), "users": 0, "pages": 0, "bytes": 0, "rows": []}
+
+
 def enforce_reader_audio_pro_monthly_limit(
     user_id: int,
     *,
