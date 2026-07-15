@@ -450,8 +450,150 @@ function installDictTokenAuthShim() {
   };
 }
 
+// --- Standalone MAIN app (home-screen icon, opened OUTSIDE Telegram) -----------------------
+// Mirror of the dictionary's token plumbing, but for the WHOLE app: a durable app-browser
+// token (minted in onboarding) rides in the launch URL and is attached to every /api/ call so
+// the detached icon stays logged in without Telegram initData. Keys are app-specific ('aqt',
+// 'X-App-Token', localStorage 'app_browser_token_v1') so they never collide with the dict token.
+function appTokenFromLaunch() {
+  try {
+    const pm = String(window.location.pathname || '').match(/^\/webapp\/t\/([^/]+)/);
+    if (pm && pm[1]) return decodeURIComponent(pm[1]);
+    return String(new URLSearchParams(window.location.search || '').get('aqt') || '').trim();
+  } catch (_e) { return ''; }
+}
+
+function getAppToken() {
+  try {
+    return appTokenFromLaunch() || String(localStorage.getItem('app_browser_token_v1') || '').trim();
+  } catch (_e) { return ''; }
+}
+
+function applyAppHomeScreenMeta() {
+  // Bake the durable app token into the manifest link so iOS "Add to Home Screen" captures a
+  // start_url that carries it (iOS reads the manifest when the user taps install — after JS ran,
+  // so this runtime href wins over the static one). A standalone PWA has its own storage
+  // partition, so a tokenless start_url would cold-launch unauthenticated and every /api/ 401s.
+  try {
+    const token = getAppToken();
+    if (!token) return; // no token → leave the static /manifest.webmanifest (plain browser user)
+    const head = document.head;
+    const setLink = (rel, href) => {
+      let el = head.querySelector(`link[rel="${rel}"]`);
+      if (!el) { el = document.createElement('link'); el.setAttribute('rel', rel); head.appendChild(el); }
+      el.setAttribute('href', href);
+    };
+    setLink('manifest', `/app-manifest.webmanifest?aqt=${encodeURIComponent(token)}`);
+    setLink('apple-touch-icon', '/icons/apple-touch-icon.png');
+    const setMeta = (name, content) => {
+      let m = head.querySelector(`meta[name="${name}"]`);
+      if (!m) { m = document.createElement('meta'); m.setAttribute('name', name); head.appendChild(m); }
+      m.setAttribute('content', content);
+    };
+    setMeta('apple-mobile-web-app-capable', 'yes');
+    setMeta('apple-mobile-web-app-title', 'Schlümpfchen');
+  } catch (_e) { /* non-fatal */ }
+}
+
+let __appBlockedGateShown = false;
+function showAppBlockedGate(botUsername) {
+  if (__appBlockedGateShown) return;
+  __appBlockedGateShown = true;
+  const uname = String(botUsername || 'Ich_Deutsch_bot').trim().replace(/^@/, '') || 'Ich_Deutsch_bot';
+  const de = (() => { try { return (localStorage.getItem('ui_lang') || '').toLowerCase() === 'de'; } catch (_e) { return false; } })();
+  const title = de ? 'Die App arbeitet zusammen mit dem Bot' : 'Приложение работает вместе с ботом';
+  const body = de
+    ? 'Es sieht so aus, als hättest du den Bot entfernt. Hol ihn zurück — dann funktioniert das Icon sofort wieder.'
+    : 'Похоже, ты удалил бота. Верни его — и иконка снова заработает сразу.';
+  const btn = de ? 'Bot öffnen' : 'Открыть бота';
+  const openBot = () => {
+    const https = `https://t.me/${uname}`;
+    let done = false;
+    try { window.location.href = `tg://resolve?domain=${uname}`; } catch (_e) { /* ignore */ }
+    setTimeout(() => { if (done || document.hidden) return; done = true; try { window.location.href = https; } catch (_e) { /* ignore */ } }, 800);
+  };
+  try {
+    const wrap = document.createElement('div');
+    wrap.setAttribute('style', [
+      'position:fixed', 'inset:0', 'z-index:2147483647', 'display:flex',
+      'align-items:center', 'justify-content:center', 'padding:24px', 'box-sizing:border-box',
+      'background:linear-gradient(160deg,#6366F1 0%,#4f46e5 100%)', 'color:#fff',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', 'text-align:center',
+    ].join(';'));
+    wrap.innerHTML = `
+      <div style="max-width:340px;display:flex;flex-direction:column;align-items:center;gap:16px">
+        <div style="font-size:56px;line-height:1">📚</div>
+        <div style="font-size:22px;font-weight:700;line-height:1.25">${title}</div>
+        <div style="font-size:15px;line-height:1.5;opacity:.92">${body}</div>
+        <button type="button" style="margin-top:8px;border:0;border-radius:14px;padding:14px 22px;font-size:16px;font-weight:600;background:#fff;color:#4f46e5;cursor:pointer">${btn}</button>
+      </div>`;
+    wrap.querySelector('button').addEventListener('click', openBot);
+    document.body.appendChild(wrap);
+  } catch (_e) { /* ignore */ }
+}
+
+function installAppTokenAuthShim() {
+  if (typeof window === 'undefined' || typeof window.fetch !== 'function') return;
+  if (window.__appAuthShimInstalled) return;
+  window.__appAuthShimInstalled = true;
+  try {
+    const urlTok = appTokenFromLaunch();
+    if (urlTok) { try { localStorage.setItem('app_browser_token_v1', urlTok); } catch (_e) { /* ignore */ } }
+  } catch (_e) { /* ignore */ }
+  const inTelegram = () => { try { return Boolean(window.Telegram?.WebApp?.initData); } catch (_e) { return false; } };
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      if (typeof input !== 'string') return origFetch(input, init);
+      const token = getAppToken();
+      if (!token || inTelegram()) return origFetch(input, init);
+      let u;
+      try { u = new URL(input, window.location.origin); } catch (_e) { return origFetch(input, init); }
+      if (u.origin !== window.location.origin || !u.pathname.startsWith('/api/')) return origFetch(input, init);
+      const opts = { ...(init || {}) };
+      const method = String(opts.method || 'GET').toUpperCase();
+      const headers = new Headers(opts.headers || {});
+      if (!headers.has('X-App-Token')) headers.set('X-App-Token', token);
+      opts.headers = headers;
+      // JSON POST bodies: add aqt so body-based resolvers see it (never overwrite an existing one).
+      if (method !== 'GET' && method !== 'HEAD' && typeof opts.body === 'string' && opts.body.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(opts.body);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && !('aqt' in parsed)) {
+            parsed.aqt = token;
+            opts.body = JSON.stringify(parsed);
+          }
+        } catch (_e) { /* leave body untouched */ }
+      }
+      let out;
+      if ((method === 'GET' || method === 'HEAD') && !u.searchParams.has('aqt')) {
+        u.searchParams.set('aqt', token);
+        out = origFetch(u.toString(), opts);
+      } else {
+        out = origFetch(input, opts);
+      }
+      // Bot-left gate: the server 403s with {blocked:true, bot_username} once the user removed
+      // the bot. Detect it centrally here (the full App has ~15 scattered fetches) and show the
+      // branded return-to-bot screen. Only inspect 403s, and only clone then (cheap, rare).
+      return out.then((resp) => {
+        try {
+          if (resp && resp.status === 403) {
+            resp.clone().json().then((j) => {
+              if (j && (j.blocked || j.reason === 'bot_blocked')) showAppBlockedGate(j.bot_username);
+            }).catch(() => {});
+          }
+        } catch (_e) { /* ignore */ }
+        return resp;
+      });
+    } catch (_e) {
+      return origFetch(input, init);
+    }
+  };
+}
+
 async function bootstrapApp() {
   installDictTokenAuthShim();
+  installAppTokenAuthShim();
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
     await bootstrapAnswerOverlay(answerStartParam);
@@ -497,6 +639,9 @@ async function bootstrapApp() {
     await bootstrapLeaderboard(answerStartParam);
     return;
   }
+  // Full app path. If launched as the standalone home-screen icon (app token in the URL,
+  // outside Telegram), bake the token into the manifest link so a re-install stays authed.
+  applyAppHomeScreenMeta();
   const canRender = await ensureFreshTelegramBundle();
   if (!canRender) return;
   const App = await loadAppComponent();

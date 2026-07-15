@@ -345,6 +345,8 @@ from backend.database import (
     revoke_shortcut_installation,
     create_dict_browser_token,
     resolve_dict_browser_token,
+    create_app_browser_token,
+    resolve_app_browser_token,
     purge_expired_shortcut_pairing_codes,
     get_missing_phase1_shadow_schema_objects,
     claim_skill_state_v2_dirty_keys,
@@ -3177,6 +3179,29 @@ def enforce_webapp_access():
             except Exception:
                 logging.debug("dict browser token resolve in access guard failed", exc_info=True)
 
+    # Full standalone app (home-screen icon opened OUTSIDE Telegram): no initData, only a
+    # durable APP-browser token. Unlike the narrow dict token (allowlisted paths only), this
+    # one authorizes EVERY protected /api/webapp/* path — it is the user's durable login for
+    # the detached app. Consulted only when initData didn't already authenticate.
+    resolved_via_app_token = False
+    if not resolved_user_id:
+        app_token = _extract_app_browser_token(payload)
+        if app_token:
+            try:
+                rec = resolve_app_browser_token(app_token)
+                if rec and int(rec.get("user_id") or 0) > 0:
+                    resolved_user_id = int(rec["user_id"])
+                    resolved_via_app_token = True
+            except Exception:
+                logging.debug("app browser token resolve in access guard failed", exc_info=True)
+
+    # Someone who blocked/deleted the bot must not keep using the detached home-screen app —
+    # the app token is durable and Telegram block events never invalidate it. Same event-driven,
+    # day-cached gate the standalone dictionary uses. Only for token auth (an in-Telegram
+    # initData user cannot have blocked the bot and still be here), so the in-app path is untouched.
+    if resolved_via_app_token and _dict_user_has_left_bot(resolved_user_id):
+        return _dict_gate_response()
+
     if not resolved_user_id:
         if not init_data:
             return jsonify({"error": "initData обязателен"}), 400
@@ -3313,6 +3338,62 @@ def serve_dict_manifest():
         manifest["start_url"] = f"/dict/t/{quote(token, safe='')}"
     elif launch_init:
         manifest["start_url"] = f"/dict?initData={quote(launch_init, safe='')}"
+    response = Response(json.dumps(manifest, ensure_ascii=False), mimetype="application/manifest+json")
+    # A per-user start_url must never be shared/cached across users or launches.
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+def _serve_app_entry_html(token: str = ""):
+    """Serve the MAIN app's index.html with its manifest link rewritten to carry the durable
+    app token, so iOS "Add to Home Screen" captures a start_url that authenticates the icon.
+
+    Same iOS gotcha as the dictionary: a home-screen start_url DROPS query strings but KEEPS a
+    path segment, so the token arrives via the PATH (/webapp/t/<token>) and we forward it to the
+    dynamic manifest as ?aqt= (a normal resource fetch, where the query IS honored) which bakes
+    it into a PATH-based start_url. Unlike the dict entry we keep the app's own apple-touch-icon
+    (this IS the app, not the dictionary)."""
+    tok = str(token or request.args.get("aqt") or "").strip()
+    launch_init = str(request.args.get("initData") or "").strip()
+    manifest_href = "/app-manifest.webmanifest"
+    if tok:
+        manifest_href += f"?aqt={quote(tok, safe='')}"
+    elif launch_init:
+        manifest_href += f"?initData={quote(launch_init, safe='')}"
+    try:
+        html = (FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
+        html = html.replace('href="/manifest.webmanifest"', f'href="{manifest_href}"')
+        response = Response(html, mimetype="text/html")
+    except Exception:
+        response = send_from_directory(FRONTEND_DIST, "index.html")
+    return _apply_webapp_entry_cache_headers(response)
+
+
+@app.route("/webapp/t/<token>")
+def serve_app_entry_with_token(token):
+    """Path-token entry for the home-screen MAIN app: /webapp/t/<token>. iOS preserves a PATH
+    segment in a home-screen start_url (unlike a ?query=), so the installed icon cold-launches
+    authenticated. Serves the app HTML with the token folded into the manifest link."""
+    return _serve_app_entry_html(token=str(token or "").strip())
+
+
+@app.route("/app-manifest.webmanifest")
+def serve_app_manifest():
+    """MAIN app PWA manifest. When fetched with an app token (?aqt=) or ?initData=, bake it into
+    a PATH-based start_url ("/webapp/t/<token>") so the installed home-screen icon cold-launches
+    AUTHENTICATED (iOS uses the manifest's start_url for the icon and DROPS query strings from it,
+    so the token must live in the path). Without a token, serve the static app manifest unchanged.
+    Reuses the app's own manifest.webmanifest (name/icons/theme); only start_url is rewritten."""
+    token = str(request.args.get("aqt") or "").strip()
+    launch_init = str(request.args.get("initData") or "").strip()
+    try:
+        manifest = json.loads((FRONTEND_DIST / "manifest.webmanifest").read_text(encoding="utf-8"))
+    except Exception:
+        return send_from_directory(FRONTEND_DIST, "manifest.webmanifest")
+    if token:
+        manifest["start_url"] = f"/webapp/t/{quote(token, safe='')}"
+    elif launch_init:
+        manifest["start_url"] = f"/webapp?initData={quote(launch_init, safe='')}"
     response = Response(json.dumps(manifest, ensure_ascii=False), mimetype="application/manifest+json")
     # A per-user start_url must never be shared/cached across users or launches.
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -4007,11 +4088,25 @@ def _extract_dict_browser_token(payload: dict | None = None) -> str:
     ).strip()
 
 
+def _extract_app_browser_token(payload: dict | None = None) -> str:
+    """The durable APP-browser token from header/body/query — used by the standalone
+    home-screen main app, which has no Telegram initData. Distinct from the dict token
+    (different header/keys) so the two scopes never collide."""
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    return str(
+        request.headers.get("X-App-Token")
+        or (body.get("app_token") if isinstance(body, dict) else "")
+        or (body.get("aqt") if isinstance(body, dict) else "")
+        or request.args.get("aqt")
+        or ""
+    ).strip()
+
+
 def _resolve_webapp_user_id(payload: dict | None = None) -> int | None:
-    """Resolve the acting user's Telegram id from EITHER a valid Telegram initData OR a
-    durable browser-dictionary token. Returns None when neither authenticates. Lets the
-    standalone browser dictionary work past initData's 30-day TTL (deep breakdown / save
-    / TTS) without weakening the in-Telegram initData path."""
+    """Resolve the acting user's Telegram id from a valid Telegram initData, a durable
+    browser-dictionary token, OR a durable app-browser token. Returns None when none
+    authenticates. Lets both the standalone dictionary and the standalone home-screen app
+    work past initData's 30-day TTL without weakening the in-Telegram initData path."""
     body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
     init_data = _extract_request_init_data(body)
     if init_data and _telegram_hash_is_valid(init_data):
@@ -4029,6 +4124,14 @@ def _resolve_webapp_user_id(payload: dict | None = None) -> int | None:
                 return int(rec["user_id"])
         except Exception:
             logging.debug("dict browser token resolve failed", exc_info=True)
+    app_token = _extract_app_browser_token(body)
+    if app_token:
+        try:
+            rec = resolve_app_browser_token(app_token)
+            if rec and int(rec.get("user_id") or 0) > 0:
+                return int(rec["user_id"])
+        except Exception:
+            logging.debug("app browser token resolve failed", exc_info=True)
     return None
 
 
@@ -34138,6 +34241,28 @@ def issue_dict_browser_token():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     token = create_dict_browser_token(
+        user_id=int(user_id),
+        user_agent=str(request.headers.get("User-Agent") or "")[:300],
+    )
+    if not token:
+        return jsonify({"error": "Не удалось создать токен"}), 500
+    return jsonify({"ok": True, "token": token})
+
+
+@app.route("/api/webapp/app/token", methods=["POST"])
+def issue_app_browser_token():
+    """Mint a durable, revocable APP-browser token for the authenticated Telegram user, so the
+    standalone home-screen main app (opened OUTSIDE Telegram, no initData) stays logged in.
+    Requires a valid initData — you can only bootstrap the token from INSIDE the Mini-App."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData") or _extract_request_init_data(payload)
+    if not init_data or not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    token = create_app_browser_token(
         user_id=int(user_id),
         user_agent=str(request.headers.get("User-Agent") or "")[:300],
     )

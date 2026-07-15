@@ -20048,6 +20048,149 @@ def revoke_dict_browser_tokens_for_user(user_id: int) -> int:
         return 0
 
 
+# === App-browser token (durable login for the STANDALONE home-screen main app) ==============
+# Mirrors the dict-browser token above, but is a SEPARATE, broader-scoped credential: the dict
+# token authorizes only the dictionary/TTS endpoints, whereas this token is the user's durable
+# login for the whole detached app (icon on the home screen, opened OUTSIDE Telegram, where
+# there is no initData). Kept as its own table + cache so the two scopes never blur into one:
+# a dict token can never reach the full app, and revoking one never touches the other.
+_APP_BROWSER_TOKEN_SCHEMA_READY = False
+_APP_BROWSER_TOKEN_SCHEMA_LOCK = threading.Lock()
+_APP_BROWSER_TOKEN_RESOLVE_CACHE: dict[str, tuple[int, float]] = {}
+_APP_BROWSER_TOKEN_RESOLVE_CACHE_LOCK = threading.Lock()
+_APP_BROWSER_TOKEN_CACHE_TTL_SEC = max(
+    0, int(str(os.getenv("APP_BROWSER_TOKEN_CACHE_TTL_SEC") or "21600").strip() or "21600")
+)
+
+
+def ensure_app_browser_token_table() -> None:
+    global _APP_BROWSER_TOKEN_SCHEMA_READY
+    if _APP_BROWSER_TOKEN_SCHEMA_READY:
+        return
+    with _APP_BROWSER_TOKEN_SCHEMA_LOCK:
+        if _APP_BROWSER_TOKEN_SCHEMA_READY:
+            return
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_xact_lock(%s);", (94081100,))
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_app_browser_tokens (
+                        id BIGSERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        last_used_at TIMESTAMPTZ,
+                        revoked_at TIMESTAMPTZ,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        user_agent TEXT
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_app_browser_tokens_user_active
+                    ON bt_3_app_browser_tokens (user_id, is_active, created_at DESC);
+                    """
+                )
+                conn.commit()
+        _APP_BROWSER_TOKEN_SCHEMA_READY = True
+
+
+def create_app_browser_token(*, user_id: int, user_agent: str | None = None) -> str | None:
+    """Mint a durable, revocable app-browser token for a user; returns the RAW token once
+    (only its hash is stored). None on failure. This authorizes the FULL standalone app."""
+    ensure_app_browser_token_table()
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _dict_browser_token_hash(raw_token)  # generic sha256, shared with the dict path
+    ua = str(user_agent or "").strip()[:300] or None
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_app_browser_tokens (user_id, token_hash, user_agent, created_at, is_active)
+                    VALUES (%s, %s, %s, NOW(), TRUE);
+                    """,
+                    (int(user_id), token_hash, ua),
+                )
+                conn.commit()
+        return raw_token
+    except Exception:
+        logging.warning("create_app_browser_token failed", exc_info=True)
+        return None
+
+
+def resolve_app_browser_token(raw_token: str) -> dict | None:
+    """Return {"user_id": int} for a valid, non-revoked app token, else None.
+
+    HOT PATH — cached in-process (see _APP_BROWSER_TOKEN_RESOLVE_CACHE), same throttling as
+    the dict token: a hit does NO DB work, a miss refreshes last_used_at at most once per TTL."""
+    token = str(raw_token or "").strip()
+    if not token:
+        return None
+    token_hash = _dict_browser_token_hash(token)
+    if _APP_BROWSER_TOKEN_CACHE_TTL_SEC > 0:
+        now = time.time()
+        with _APP_BROWSER_TOKEN_RESOLVE_CACHE_LOCK:
+            hit = _APP_BROWSER_TOKEN_RESOLVE_CACHE.get(token_hash)
+            if hit and hit[1] > now:
+                return {"user_id": int(hit[0])}
+    ensure_app_browser_token_table()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_app_browser_tokens
+                    SET last_used_at = NOW()
+                    WHERE token_hash = %s AND is_active = TRUE AND revoked_at IS NULL
+                    RETURNING user_id;
+                    """,
+                    (token_hash,),
+                )
+                row = cursor.fetchone()
+                conn.commit()
+    except Exception:
+        logging.warning("resolve_app_browser_token failed", exc_info=True)
+        return None
+    if not row:
+        return None
+    user_id = int(row[0])
+    if _APP_BROWSER_TOKEN_CACHE_TTL_SEC > 0:
+        with _APP_BROWSER_TOKEN_RESOLVE_CACHE_LOCK:
+            _APP_BROWSER_TOKEN_RESOLVE_CACHE[token_hash] = (
+                user_id, time.time() + _APP_BROWSER_TOKEN_CACHE_TTL_SEC,
+            )
+    return {"user_id": user_id}
+
+
+def revoke_app_browser_tokens_for_user(user_id: int) -> int:
+    """Revoke ALL active app-browser tokens for a user (lost device / left the bot).
+    Returns how many were revoked."""
+    ensure_app_browser_token_table()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_app_browser_tokens
+                    SET is_active = FALSE, revoked_at = NOW()
+                    WHERE user_id = %s AND is_active = TRUE;
+                    """,
+                    (int(user_id),),
+                )
+                revoked = cursor.rowcount
+                conn.commit()
+        with _APP_BROWSER_TOKEN_RESOLVE_CACHE_LOCK:
+            for h in [k for k, v in _APP_BROWSER_TOKEN_RESOLVE_CACHE.items() if int(v[0]) == int(user_id)]:
+                _APP_BROWSER_TOKEN_RESOLVE_CACHE.pop(h, None)
+        return int(revoked or 0)
+    except Exception:
+        logging.warning("revoke_app_browser_tokens_for_user failed", exc_info=True)
+        return 0
+
+
 _BOT_BLOCKED_SCHEMA_READY = False
 _BOT_BLOCKED_SCHEMA_LOCK = threading.Lock()
 

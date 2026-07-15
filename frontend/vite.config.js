@@ -98,7 +98,10 @@ export default defineConfig(async () => {
           // serves its precached index.html instead, that link is the tokenless hero
           // manifest and the installed icon cold-launches unauthenticated (only the
           // no-auth quick translate works — audio / breakdown / save all 401).
-          navigateFallbackDenylist: [/^\/api\//, /^\/dict(\/|$|\?)/, /^\/d(\/|$|\?)/],
+          // Same reason for the MAIN app's token entry /webapp/t/<token> (and /webapp): the
+          // server rewrites the manifest link to carry the app token (…?aqt=…), so the
+          // installed home-screen icon cold-launches authenticated instead of logged out.
+          navigateFallbackDenylist: [/^\/api\//, /^\/dict(\/|$|\?)/, /^\/d(\/|$|\?)/, /^\/webapp(\/|$|\?)/],
           runtimeCaching: [
             {
               urlPattern: ({ url, request }) => {

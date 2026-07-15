@@ -32,6 +32,8 @@ const t = (ru, de) => (LANG === 'de' ? de : ru);
 // fullscreen button expands it. Each empty slot's MediaTile simply isn't rendered.
 const R2 = 'https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/onboarding_videos_r2';
 const MEDIA = {
+  install_ios:     `${R2}/install_app_home_screen/install_app_ios.mp4`,     // install_app (iPhone)
+  install_android: `${R2}/install_app_home_screen/install_app_android.mp4`, // install_app (Android)
   forward_chat:  `${R2}/forward_from_chat_and_learning_words/forward_chat_razbor.mp4`, // howto_words
   morning_words: `${R2}/morning_words_arrival/morning_words_arrival.mp4`,             // howto_morning
   learn_words:   `${R2}/forward_from_chat_and_learning_words/learn_saved_words.mp4`,   // howto_learn
@@ -65,6 +67,7 @@ async function api(path, extra) {
 // kind: 'welcome' | 'core' (mandatory) | 'pro' (teaser for Free) | 'opt' | 'info' | 'finale'
 const STEPS = [
   { id: 'welcome',    title: t('Willkommen! 👋', 'Willkommen! 👋'),            kind: 'welcome' },
+  { id: 'install_app', title: t('Вынеси приложение на экран 📲', 'Leg die App auf den Startbildschirm 📲'), kind: 'info' },
   { id: 'language',   title: t('Твоя языковая пара 🌍', 'Dein Sprachpaar 🌍'),     kind: 'core' },
   { id: 'dictionary', title: t('Базовый словарь 📚', 'Basis-Wörterbuch 📚'),        kind: 'core' },
   { id: 'intensity',  title: t('Сколько заданий в день 🔥', 'Wie viele Aufgaben pro Tag 🔥'), kind: 'pro' },
@@ -164,6 +167,32 @@ async function openDictInBrowser() {
   }
 }
 
+async function openAppInBrowser() {
+  // Open the FULL app in the browser and set it up for "Add to Home Screen". Outside Telegram
+  // there is no initData, so mint a DURABLE, revocable APP token (never expires) and carry it in
+  // the launch URL — the fetch shim then attaches it to every /api/ call so the detached icon
+  // stays logged in. Open the QUERY form /webapp?aqt=<token> in Safari (routed by every bundle);
+  // the manifest bakes the iOS-safe PATH form /webapp/t/<token> into the installed icon's start_url.
+  const initData = tg?.initData || '';
+  const origin = window.location.origin;
+  let url = initData ? `${origin}/webapp?initData=${encodeURIComponent(initData)}` : `${origin}/webapp`;
+  try {
+    const res = await fetch('/api/webapp/app/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-InitData': initData },
+      body: JSON.stringify({ initData }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.token) url = `${origin}/webapp?aqt=${encodeURIComponent(String(data.token))}`;
+  } catch (_e) { /* keep the initData fallback URL */ }
+  try {
+    if (tg?.openLink) tg.openLink(url);
+    else window.open(url, '_blank');
+  } catch (_e) {
+    try { window.open(url, '_blank'); } catch (_e2) { /* ignore */ }
+  }
+}
+
 function OptionList({ options, selected, onPick }) {
   return (
     <div className="ob-options">
@@ -196,7 +225,7 @@ const PRO_TEASER = (
 );
 
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
-const REAL_STEPS = new Set(['language', 'dictionary', 'intensity', 'windows',
+const REAL_STEPS = new Set(['install_app', 'language', 'dictionary', 'intensity', 'windows',
   'battles', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
   'howto_tools', 'keyboard', 'howto_morning', 'howto_learn', 'plans']);
 function StepBody(props) {
@@ -205,6 +234,48 @@ function StepBody(props) {
     onShortcutSetup, shortcutOpening, proPrice, onOpenSubscription } = props;
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
+    case 'install_app':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            {t('Наше приложение можно вынести иконкой прямо на рабочий стол телефона — и открывать одним касанием, как обычное приложение. Не нужно заходить в Telegram, искать чат и меню: тапнул по иконке — и ты сразу в приложении.',
+               'Unsere App kannst du als Symbol direkt auf den Startbildschirm legen — und mit einem Tipp öffnen, wie eine normale App. Du musst nicht erst Telegram öffnen, den Chat und das Menü suchen: Symbol antippen — und du bist sofort drin.')}
+          </p>
+          <p className="ob-lead">
+            {t('Открывается оно в браузере как самостоятельное приложение (Telegram при этом не запускается). Это заметно удобнее и ощущается как настоящее приложение. Сделать это стоит один раз — дальше пользуешься с рабочего стола.',
+               'Es öffnet sich im Browser als eigenständige App (Telegram startet dabei nicht). Das ist deutlich bequemer und fühlt sich wie eine echte App an. Einmal einrichten — danach nutzt du sie vom Startbildschirm.')}
+          </p>
+          <div className="ob-howbox">
+            <p className="ob-howbox-title">{t('📌 iPhone (Safari)', '📌 iPhone (Safari)')}</p>
+            <ol className="ob-steps">
+              <li>{t('Открой приложение в браузере Safari — кнопкой ниже.', 'Öffne die App im Safari-Browser — mit dem Knopf unten.')}</li>
+              <li>{t('Внизу нажми «Поделиться» (квадрат со стрелкой вверх).', 'Tippe unten auf «Teilen» (Quadrat mit Pfeil nach oben).')}</li>
+              <li>{t('Пролистай список и выбери «На экран „Домой"».', 'Scrolle die Liste und wähle «Zum Home-Bildschirm».')}</li>
+              <li>{t('Нажми «Добавить» — иконка появится на рабочем столе.', 'Tippe «Hinzufügen» — das Symbol erscheint auf dem Startbildschirm.')}</li>
+              <li>{t('Готово! Теперь открывай приложение как обычное — одним касанием.', 'Fertig! Öffne die App jetzt wie eine normale — mit einem Tipp.')}</li>
+            </ol>
+            <button type="button" className="ob-confirm" onClick={openAppInBrowser}>
+              {t('🌐 Открыть приложение в Safari', '🌐 App in Safari öffnen')}
+            </button>
+            <MediaTile src={MEDIA.install_ios} type="video" caption={t('🎥 Как вынести иконку на экран (iPhone)', '🎥 Wie man das Symbol anlegt (iPhone)')} />
+          </div>
+          <div className="ob-howbox">
+            <p className="ob-howbox-title">{t('📌 Android (Chrome)', '📌 Android (Chrome)')}</p>
+            <ol className="ob-steps">
+              <li>{t('Открой приложение в браузере Chrome (кнопкой выше — она откроет ссылку в браузере).', 'Öffne die App im Chrome-Browser (mit dem Knopf oben — er öffnet den Link im Browser).')}</li>
+              <li>{t('Вверху справа нажми на три точки ⋮ (меню).', 'Tippe oben rechts auf die drei Punkte ⋮ (Menü).')}</li>
+              <li>{t('Выбери «Добавить на главный экран» (или «Установить приложение»).', 'Wähle «Zum Startbildschirm hinzufügen» (oder «App installieren»).')}</li>
+              <li>{t('Подтверди «Добавить» — иконка появится на экране.', 'Bestätige «Hinzufügen» — das Symbol erscheint auf dem Bildschirm.')}</li>
+              <li>{t('Готово! Открывай приложение прямо с рабочего стола.', 'Fertig! Öffne die App direkt vom Startbildschirm.')}</li>
+            </ol>
+            <MediaTile src={MEDIA.install_android} type="video" caption={t('🎥 Как вынести иконку на экран (Android)', '🎥 Wie man das Symbol anlegt (Android)')} />
+          </div>
+          <p className="ob-lead ob-muted-note">
+            {t('Иконка привязана к твоему аккаунту и работает, пока бот у тебя не удалён. Если удалишь бота — приложение попросит вернуть его.',
+               'Das Symbol ist mit deinem Konto verknüpft und funktioniert, solange der Bot nicht entfernt ist. Wenn du den Bot löschst, bittet die App dich, ihn zurückzuholen.')}
+          </p>
+        </div>
+      );
     case 'welcome':
       return IS_PUBLIC ? (
         <p className="ob-lead">
