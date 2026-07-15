@@ -3306,21 +3306,76 @@
   white-space: nowrap;
 }
 
-.reader-audio-error-bar {
-  margin: 6px 16px 0;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: rgb(239, 68, 68);
-  font-size: 12px;
-  line-height: 1.4;
+/* Soft, closable audio-error banner — token-driven so it adapts to every reader
+   theme (no more hardcoded red bar). */
+.webapp-reader .reader-audio-banner {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin: 8px 16px 0;
+  padding: 12px 10px 12px 13px;
+  border-radius: 14px;
+  background: var(--rd-bg-elev-2);
+  border: 1px solid var(--rd-border-hi);
+  box-shadow: 0 8px 22px -14px rgba(0,0,0,0.5), inset 3px 0 0 var(--rd-warn);
+  animation: rd-fade-in .2s ease both;
 }
-.webapp-reader[data-reader-theme="sepia"] .reader-audio-error-bar,
-.webapp-reader[data-reader-theme="cream"] .reader-audio-error-bar {
-  background: rgba(180, 30, 30, 0.08);
-  border-color: rgba(180, 30, 30, 0.25);
-  color: rgb(180, 30, 30);
+.webapp-reader .reader-audio-banner.is-limit {
+  box-shadow: 0 8px 22px -14px rgba(0,0,0,0.5), inset 3px 0 0 var(--rd-accent);
+}
+.webapp-reader .reader-audio-banner-icon {
+  font-size: 18px;
+  line-height: 1.25;
+  flex-shrink: 0;
+}
+.webapp-reader .reader-audio-banner-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.webapp-reader .reader-audio-banner-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--rd-text);
+}
+.webapp-reader .reader-audio-banner-text {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--rd-text-muted);
+}
+.webapp-reader .reader-audio-banner-retry {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 7px 13px;
+  border-radius: 10px;
+  border: none;
+  background: var(--rd-accent-soft);
+  color: var(--rd-accent);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform .12s, background .15s;
+}
+.webapp-reader .reader-audio-banner-retry:active { transform: scale(.95); }
+.webapp-reader .reader-audio-banner-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--rd-text-faint);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: color .15s, background .15s;
+}
+.webapp-reader .reader-audio-banner-close:hover {
+  color: var(--rd-text-muted);
+  background: var(--rd-bg-elev);
 }
 
 

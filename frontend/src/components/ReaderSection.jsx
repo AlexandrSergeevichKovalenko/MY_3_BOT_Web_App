@@ -164,6 +164,7 @@ export default function ReaderSection(props) {
     readerAudioPlayActive = false,
     readerAudioPlayLoading = false,
     readerAudioPlayError = '',
+    dismissReaderAudioPlayError = () => {},
     readerAudioPlayData = null,
     readerAudioPlayPosition = 0,
     readerAudioPaused = false,
@@ -1848,15 +1849,41 @@ export default function ReaderSection(props) {
             <audio ref={audioElementRef} preload="metadata" playsInline style={{ display: 'none' }} />
             <audio ref={readerAudioPreloadElementRef} preload="auto" playsInline style={{ display: 'none' }} />
 
-            {/* ── Audio error (shown even when player not yet active) ── */}
-            {readerAudioPlayError && !readerAudioPlayActive && !readerIsArticle && (
-              <div className="reader-audio-error-bar">
-                {readerAudioPlayError === 'reader_audio_monthly_limit_exceeded'
-                  ? tr('Лимит бесплатной озвучки на этот месяц исчерпан. Попробуй в следующем месяце.',
-                       'Monatliches Limit der kostenlosen Vertonung erreicht. Versuch es nächsten Monat.')
-                  : readerAudioPlayError}
-              </div>
-            )}
+            {/* ── Audio error — soft, closable banner (our style) ── */}
+            {readerAudioPlayError && !readerAudioPlayActive && !readerIsArticle && (() => {
+              const isLimit = readerAudioPlayError === 'reader_audio_monthly_limit_exceeded';
+              const title = isLimit
+                ? tr('Лимит озвучки', 'Vertonungslimit')
+                : tr('Не удалось озвучить', 'Vertonung fehlgeschlagen');
+              const text = isLimit
+                ? tr('Бесплатная озвучка на этот месяц закончилась. Попробуй в следующем месяце.',
+                     'Die kostenlose Vertonung für diesen Monat ist aufgebraucht. Versuch es nächsten Monat.')
+                : readerAudioPlayError;
+              return (
+                <div className={`reader-audio-banner${isLimit ? ' is-limit' : ''}`} role="alert">
+                  <span className="reader-audio-banner-icon" aria-hidden="true">{isLimit ? '🎧' : '⚠️'}</span>
+                  <span className="reader-audio-banner-body">
+                    <span className="reader-audio-banner-title">{title}</span>
+                    <span className="reader-audio-banner-text">{text}</span>
+                  </span>
+                  {!isLimit && typeof onReaderAudioPlayBtn === 'function' && (
+                    <button
+                      type="button"
+                      className="reader-audio-banner-retry"
+                      onClick={() => { dismissReaderAudioPlayError(); onReaderAudioPlayBtn(); }}
+                    >
+                      {tr('Ещё раз', 'Nochmal')}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="reader-audio-banner-close"
+                    onClick={dismissReaderAudioPlayError}
+                    aria-label={tr('Закрыть', 'Schließen')}
+                  >×</button>
+                </div>
+              );
+            })()}
 
             {/* ── Page jump dialog ────────────────────────────────── */}
             {readerShowPageJump && (

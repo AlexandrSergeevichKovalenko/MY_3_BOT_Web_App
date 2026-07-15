@@ -36973,6 +36973,7 @@ function AppInner() {
                   readerAudioPlayActive={readerAudioPlayActive}
                   readerAudioPlayLoading={readerAudioPlayLoading}
                   readerAudioPlayError={readerAudioPlayError}
+                  dismissReaderAudioPlayError={() => setReaderAudioPlayError('')}
                   readerAudioPlayData={readerAudioPlayData}
                   readerAudioPlayPosition={readerAudioPlayPosition}
                   readerAudioPaused={readerAudioPaused}
