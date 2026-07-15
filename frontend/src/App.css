@@ -15277,6 +15277,12 @@ body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
     color: var(--d-subtle); border: 0; padding: 0; margin: 0;
   }
 
+  /* мини-подписи групп на доке («Экран», «Субтитры») — связывают кнопки в блоки */
+  .webapp-page .youtube-dock2 .youtube-group-cap {
+    font-size: 10px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase;
+    color: var(--d-subtle); white-space: nowrap; margin: 0 1px 0 3px; user-select: none;
+  }
+
   .webapp-page .youtube-dock-cr .youtube-desktop-status-chips {
     display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; margin: 0; width: auto;
   }
@@ -15773,6 +15779,11 @@ body.worldnews-active .webapp-topbar {
 /* When original subtitles are toggled off, hide the DE lines but keep the control row. */
 .youtube-subtitles-panel.wn-hide-de .youtube-subtitles-block-de .webapp-subtitles {
   display: none;
+}
+/* DE-тумблер на доке (обычный кинозал): скрываем ВЕСЬ немецкий блок, чтобы RU занял всё
+   место сайдбара (grid → is-single). Только вне режима новостей. */
+.youtube-subtitles-panel.yt-hide-de .youtube-subtitles-block-de {
+  display: none !important;
 }
 /* Recolor the tan playback/nav controls to the cool scheme in news mode. */
 .youtube-player-first.is-worldnews .youtube-subtitles-card-nav button {

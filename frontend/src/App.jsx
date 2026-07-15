@@ -5774,6 +5774,8 @@ function AppInner() {
   const youtubeScrubbingRef = useRef(false); // true while the user drags the scrubber
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeTranslationEnabled, setYoutubeTranslationEnabled] = useState(false);
+  // DE (оригинальные субтитры) — реальный вкл/выкл, как RU. По умолчанию показаны.
+  const [youtubeOriginalEnabled, setYoutubeOriginalEnabled] = useState(true);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
   const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
   const [youtubeIsPaused, setYoutubeIsPaused] = useState(false);
@@ -25446,7 +25448,9 @@ function AppInner() {
       const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
       const shouldUseAsyncReaderFlow = Boolean(selectedFile || looksLikeUrl);
       if (shouldUseAsyncReaderFlow) {
-        setReaderArchiveOpen(true);
+        // Land on the library shelves (NOT the flat archive view) while the book
+        // processes; it auto-opens when ready via pollReaderDocumentStatus below.
+        setReaderArchiveOpen(false);
         setReaderImmersive(false);
         setReaderSettingsOpen(false);
         setReaderAddOpen(false);
@@ -25511,7 +25515,7 @@ function AppInner() {
         setReaderTimerPaused(false);
         setReaderImmersive(false);
         setReaderTopbarCollapsed(false);
-        setReaderArchiveOpen(true);
+        setReaderArchiveOpen(false);
         setReaderSettingsOpen(false);
         setReaderAddOpen(false);
         setSelectedSections(new Set(['reader']));
@@ -33867,54 +33871,18 @@ function AppInner() {
                               <span className="youtube-iconbtn-lbl">{youtubeSearchLoading ? tr('Ищем…', 'Suchen…') : tr('Искать', 'Suchen')}</span>
                             </button>
                           )}
-                          <div className="youtube-dock-more">
-                            <button
-                              type="button"
-                              className={`youtube-iconbtn youtube-iconbtn-icon-only ${youtubeDockMoreOpen ? 'is-active' : ''}`}
-                              onClick={() => setYoutubeDockMoreOpen((v) => !v)}
-                              title={tr('Ещё', 'Mehr')}
-                              aria-label={tr('Ещё', 'Mehr')}
-                              aria-expanded={youtubeDockMoreOpen}
-                            >
-                              <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="12" cy="19" r="1.6" /></svg>
-                            </button>
-                            {youtubeDockMoreOpen && (
-                              <div className="youtube-dock-popover" role="menu">
-                                {canManageYoutubeTranscripts && (
-                                  <button
-                                    type="button"
-                                    className={`youtube-dock-pi ${showManualTranscript ? 'is-active' : ''}`}
-                                    onClick={() => { setShowManualTranscript((prev) => !prev); setYoutubeDockMoreOpen(false); }}
-                                  >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M8.5 13h7M8.5 17h4.5" /></svg>
-                                    {tr('Вставить транскрипцию', 'Transkript einfügen')}
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  className="youtube-dock-pi"
-                                  onClick={() => { fetchTranscript(); setYoutubeDockMoreOpen(false); }}
-                                  disabled={youtubeLoadDisabled}
-                                >
-                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v5h-5" /></svg>
-                                  {youtubeTranscriptLoading
-                                    ? tr('Загрузка…', 'Wird geladen…')
-                                    : youtubeSubtitlesReady
-                                      ? tr('Перезагрузить субтитры', 'Untertitel neu laden')
-                                      : tr('Загрузить субтитры', 'Untertitel laden')}
-                                </button>
-                                <div className="youtube-dock-pi-sep" aria-hidden="true" />
-                                <button
-                                  type="button"
-                                  className={`youtube-dock-pi ${youtubeDictOpen ? 'is-active' : ''}`}
-                                  onClick={() => { setYoutubeDictOpen((prev) => !prev); setYoutubeDockMoreOpen(false); }}
-                                >
-                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
-                                  {tr('Словарь рядом', 'Wörterbuch daneben')}
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                          <span className="youtube-dock-divider" aria-hidden="true" />
+                          {/* Словарь — прямой доступ (переехал из старого «⋯») */}
+                          <button
+                            type="button"
+                            className={`youtube-iconbtn youtube-dock-dict-btn ${youtubeDictOpen ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeDictOpen((prev) => !prev)}
+                            title={tr('Словарь рядом', 'Wörterbuch daneben')}
+                            aria-label={tr('Словарь рядом', 'Wörterbuch daneben')}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+                            <span className="youtube-iconbtn-lbl">{tr('Словарь', 'Wörterbuch')}</span>
+                          </button>
                         </div>
 
                         <span className="youtube-dock-divider" aria-hidden="true" />
@@ -33928,7 +33896,8 @@ function AppInner() {
                           {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
                         </div>
 
-                        {/* RIGHT: статус + сегмент вида (RU/Overlay/Vollbild) + настройки */}
+                        {/* RIGHT: Экран (Overlay/Vollbild) · Субтитры (DE/RU) · Обновить · Транскрипт · Настройки.
+                             Всё в открытую — «⋯» больше нет; свёрнутыми остаются только Настройки. */}
                         <div className="youtube-dock-cr">
                           <span className="youtube-desktop-status-chips" aria-live="polite">
                             {youtubeRecommendationLoading && (
@@ -33936,22 +33905,16 @@ function AppInner() {
                             )}
                             <span className={`youtube-status-chip ${youtubeSubtitleStatusClass}`}>{youtubeSubtitleStatusLabel}</span>
                           </span>
-                          <div className="youtube-seg" role="group" aria-label={tr('Вид', 'Ansicht')}>
-                            <button
-                              type="button"
-                              className={`youtube-seg-btn ${youtubeTranslationEnabled ? 'on' : ''}`}
-                              onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
-                              disabled={!youtubeSubtitlesReady}
-                              title={tr('Показать русские субтитры', 'Russische Untertitel')}
-                            >
-                              RU
-                            </button>
+
+                          {/* Группа «Экран»: Overlay + Vollbild */}
+                          <span className="youtube-group-cap">{tr('Экран', 'Bild')}</span>
+                          <div className="youtube-seg" role="group" aria-label={tr('Экран', 'Bild')}>
                             <button
                               type="button"
                               className={`youtube-seg-btn ${youtubeOverlayEnabled ? 'on' : ''}`}
                               onClick={() => setYoutubeOverlayEnabled((prev) => !prev)}
                               disabled={!youtubeSubtitlesReady}
-                              title="Overlay"
+                              title={tr('Субтитры поверх видео', 'Untertitel über dem Video')}
                             >
                               Overlay
                             </button>
@@ -33965,6 +33928,58 @@ function AppInner() {
                               Vollbild
                             </button>
                           </div>
+
+                          <span className="youtube-dock-divider" aria-hidden="true" />
+
+                          {/* Группа «Субтитры»: DE (оригинал) + RU (перевод) — независимые тумблеры */}
+                          <span className="youtube-group-cap">{tr('Субтитры', 'Untertitel')}</span>
+                          <div className="youtube-seg" role="group" aria-label={tr('Субтитры', 'Untertitel')}>
+                            <button
+                              type="button"
+                              className={`youtube-seg-btn ${youtubeOriginalEnabled ? 'on' : ''}`}
+                              onClick={() => setYoutubeOriginalEnabled((prev) => !prev)}
+                              disabled={!youtubeSubtitlesReady}
+                              title={tr('Немецкие субтитры', 'Deutsche Untertitel')}
+                            >
+                              DE
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-seg-btn ${youtubeTranslationEnabled ? 'on' : ''}`}
+                              onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
+                              disabled={!youtubeSubtitlesReady}
+                              title={tr('Русские субтитры', 'Russische Untertitel')}
+                            >
+                              RU
+                            </button>
+                          </div>
+
+                          {/* Обновить субтитры + Вставить транскрипцию (были под «⋯») */}
+                          <button
+                            type="button"
+                            className="youtube-iconbtn"
+                            onClick={() => fetchTranscript()}
+                            disabled={youtubeLoadDisabled}
+                            title={youtubeSubtitlesReady ? tr('Перезагрузить субтитры', 'Untertitel neu laden') : tr('Загрузить субтитры', 'Untertitel laden')}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v5h-5" /></svg>
+                            <span className="youtube-iconbtn-lbl">{youtubeTranscriptLoading ? tr('Загрузка…', 'Lädt…') : youtubeSubtitlesReady ? tr('Обновить', 'Neu laden') : tr('Загрузить', 'Laden')}</span>
+                          </button>
+                          {canManageYoutubeTranscripts && (
+                            <button
+                              type="button"
+                              className={`youtube-iconbtn ${showManualTranscript ? 'is-active' : ''}`}
+                              onClick={() => setShowManualTranscript((prev) => !prev)}
+                              title={tr('Вставить транскрипцию', 'Transkript einfügen')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M8.5 13h7M8.5 17h4.5" /></svg>
+                              <span className="youtube-iconbtn-lbl">{tr('Транскрипт', 'Transkript')}</span>
+                            </button>
+                          )}
+
+                          <span className="youtube-dock-divider" aria-hidden="true" />
+
+                          {/* Настройки — единственная «свёрнутая» кнопка, крайняя справа */}
                           <button
                             type="button"
                             className="youtube-iconbtn youtube-iconbtn-icon-only"
@@ -34471,7 +34486,7 @@ function AppInner() {
                       </div>
                     )}
                     {(!youtubeNewsMode || worldNewsStage === 'video') && !youtubeOverlayEnabled && youtubeSubtitlesReady && (
-                      <div className={`youtube-subtitles-card youtube-subtitles-panel ${youtubeNewsMode && !worldNewsShowOriginal ? 'wn-hide-de' : ''}`}>
+                      <div className={`youtube-subtitles-card youtube-subtitles-panel ${(youtubeNewsMode ? !worldNewsShowOriginal : !youtubeOriginalEnabled) ? 'wn-hide-de yt-hide-de' : ''}`}>
                         {!youtubeNewsMode && (
                           <div className="youtube-subtitles-panel-head">
                             <div className="youtube-subtitles-panel-copy">
@@ -34480,7 +34495,7 @@ function AppInner() {
                             </div>
                           </div>
                         )}
-                        <div className={`youtube-subtitles-panel-content ${(youtubeTranslationEnabled || worldNewsRuLockedNotice) ? 'is-dual' : 'is-single'}`}>
+                        <div className={`youtube-subtitles-panel-content ${((youtubeNewsMode ? worldNewsShowOriginal : youtubeOriginalEnabled) && (youtubeTranslationEnabled || worldNewsRuLockedNotice)) ? 'is-dual' : 'is-single'}`}>
                           <div className="youtube-subtitles-block youtube-subtitles-block-de">
                             <div className="youtube-subtitles-card-head youtube-subtitles-card-head-with-nav">
                               <div className="youtube-subtitles-card-badge">
