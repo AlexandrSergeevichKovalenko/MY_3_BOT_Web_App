@@ -53273,6 +53273,24 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         except Exception:
             logging.debug("mistakes-audio hero card failed", exc_info=True)
 
+    # #8 — the morning mistakes-audio DM is a Pro perk. Free users don't receive it.
+    # Gate here ONCE (both delivery paths + the hero card read from these dicts) so we
+    # also skip the expensive audio render for non-Pro users. Reversible via env.
+    skipped_free = 0
+    if (os.getenv("MISTAKES_AUDIO_PRO_ONLY") or "1").strip().lower() in ("1", "true", "yes", "on"):
+        from backend.database import is_user_pro
+        _pro_cache: dict[int, bool] = {}
+
+        def _mistakes_audio_is_pro(uid: int) -> bool:
+            if uid not in _pro_cache:
+                _pro_cache[uid] = is_user_pro(int(uid))
+            return _pro_cache[uid]
+
+        _before = len(daily_by_user_pair) + len(story_by_user_pair)
+        daily_by_user_pair = {k: v for k, v in daily_by_user_pair.items() if _mistakes_audio_is_pro(k[0])}
+        story_by_user_pair = {k: v for k, v in story_by_user_pair.items() if _mistakes_audio_is_pro(k[0])}
+        skipped_free = _before - (len(daily_by_user_pair) + len(story_by_user_pair))
+
     sent_daily = 0
     sent_story = 0
     errors: list[str] = []
@@ -53363,6 +53381,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         "date": target_date.isoformat(),
         "sent_daily": sent_daily,
         "sent_story": sent_story,
+        "skipped_free": skipped_free,
         "group_targets": len(group_chat_ids),
         "errors": errors,
     }
