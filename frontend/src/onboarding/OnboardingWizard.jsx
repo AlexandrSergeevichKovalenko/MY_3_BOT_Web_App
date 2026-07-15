@@ -11,6 +11,21 @@ const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 // initData → free navigation, no saving, install-the-bot CTA at the finale.
 const IS_PUBLIC = !(tg && tg.initData);
 
+// Opened from the app's own home-screen icon (standalone PWA), outside Telegram. This
+// viewer ALREADY has the bot — the Telegram SDK is loaded on every page so there's no
+// initData here (→ IS_PUBLIC), but pitching «install the bot» at the finale would be
+// nonsense. So a PWA tour ends with a plain «Закрыть» that returns to the app instead.
+const IS_STANDALONE_PWA = (() => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const byMedia = typeof window.matchMedia === 'function'
+      && window.matchMedia('(display-mode: standalone)').matches;
+    const byNav = window.navigator?.standalone === true;
+    return Boolean(byMedia || byNav);
+  } catch (_e) { return false; }
+})();
+const IS_PWA_TOUR = IS_PUBLIC && IS_STANDALONE_PWA;
+
 // UI language — same source of truth as the main app (localStorage 'ui_lang').
 // Fresh users (never opened the main app) have nothing stored → fall back to the
 // Telegram interface language, else Russian. Switchable in-wizard (see LangToggle).
@@ -811,7 +826,12 @@ function StepBody(props) {
     case 'info':
       return <p className="ob-lead">Короткое объяснение + медиа. Пока — заглушка каркаса.</p>;
     case 'finale':
-      return IS_PUBLIC ? (
+      return IS_PWA_TOUR ? (
+        <p className="ob-lead">
+          {t('Вот и весь обзор 🎉 Это был краткий тур по возможностям бота. Закрой его — и продолжай пользоваться приложением.',
+             'Das war der Überblick 🎉 Ein kurzer Rundgang durch die Möglichkeiten des Bots. Schließe ihn — und nutze die App weiter.')}
+        </p>
+      ) : IS_PUBLIC ? (
         <p className="ob-lead">
           {t('Вот и всё, что умеет бот 🎉 Понравилось? Установи его и начни учить немецкий по-настоящему — каждый день. Жми кнопку ниже 👇',
              'Das war alles, was der Bot kann 🎉 Gefällt es dir? Installiere ihn und lerne Deutsch richtig — jeden Tag. Tippe auf die Taste unten 👇')}
@@ -937,7 +957,16 @@ export default function OnboardingWizard() {
     if (!canNext) return;
     try { tg?.HapticFeedback?.impactOccurred?.('light'); } catch (_e) { /* noop */ }
     if (!isLast) { setIdx((i) => Math.min(i + 1, STEPS.length - 1)); return; }
-    // Finale. Public tour → send the viewer to install the bot; in Telegram → complete.
+    // Finale. Standalone PWA → viewer already has the bot: just close the tour and
+    // return to the app. Public browser tour → send the viewer to install the bot.
+    // In Telegram → complete + open the main Mini-App.
+    if (IS_PWA_TOUR) {
+      try {
+        if (window.history.length > 1) window.history.back();
+        else window.location.href = '/';
+      } catch (_e) { try { window.location.href = '/'; } catch (_e2) { /* ignore */ } }
+      return;
+    }
     if (IS_PUBLIC) {
       if (botUrl) { try { window.location.href = botUrl; } catch (_e) { /* ignore */ } }
       return;
@@ -1179,7 +1208,7 @@ export default function OnboardingWizard() {
             {done ? t('✅ Готово', '✅ Fertig')
               : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
               : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
-              : isLast ? (IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Перейти в приложение', '🎯 Zur App'))
+              : isLast ? (IS_PWA_TOUR ? t('Закрыть', 'Schließen') : IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Перейти в приложение', '🎯 Zur App'))
               : t('Далее →', 'Weiter →')}
           </button>
         </footer>

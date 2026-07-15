@@ -16318,7 +16318,19 @@ function AppInner() {
     // initData (a plain /onboarding navigation drops the launch hash → public/no-save
     // mode), so inside Telegram we re-launch it through the bot deep-link, exactly like
     // the DM «🎬 Как пользоваться» button does.
-    if (telegramApp?.openTelegramLink) {
+    //
+    // BUT: the Telegram SDK (telegram-web-app.js) is loaded on EVERY page, so
+    // `telegramApp.openTelegramLink` also exists when the app runs as a standalone
+    // home-screen PWA — outside Telegram entirely. Bouncing that user out to the
+    // Telegram client just to show the tour is jarring. So only take the deep-link
+    // route on a genuine Telegram launch (real, non-empty initData) that is NOT a
+    // standalone PWA; otherwise open the wizard in place via the /onboarding route.
+    const isStandalonePwa =
+      (typeof window.matchMedia === 'function'
+        && window.matchMedia('(display-mode: standalone)').matches)
+      || window.navigator?.standalone === true;
+    const inRealTelegram = Boolean(telegramApp?.initData) && !isStandalonePwa;
+    if (inRealTelegram && telegramApp?.openTelegramLink) {
       let botUrl = '';
       try {
         const r = await fetch('/api/public/tour-info');
@@ -16329,7 +16341,8 @@ function AppInner() {
         try { telegramApp.openTelegramLink(`${botUrl}?startapp=onboarding`); return; } catch (_e) { /* fall through */ }
       }
     }
-    // Plain browser (no Telegram): the /onboarding path serves the wizard as a public tour.
+    // Standalone PWA or plain browser (no live Telegram session): the /onboarding path
+    // serves the same wizard in place as a public tour — no bounce out to Telegram.
     try { window.location.href = '/onboarding'; } catch (_e) { /* noop */ }
   }, [telegramApp]);
 
