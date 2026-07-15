@@ -35,27 +35,75 @@
 .rau-tier {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  padding: 12px 14px;
+  padding: 8px 12px 8px 8px;
   border: 1.5px solid #e6e9f0;
   border-radius: 14px;
   background: #fafbfe;
-  cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
-.rau-tier:active { transform: scale(0.99); }
 .rau-tier.is-selected {
   border-color: #3a7bd5;
   background: #f1f5fe;
   box-shadow: 0 4px 14px rgba(58, 123, 213, 0.16);
 }
-.rau-tier-main {
+/* The selectable area (radio + name) is its own button so the preview button can
+   sit beside it without nesting buttons. */
+.rau-tier-select {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 11px;
-  min-width: 0;
+  padding: 4px 2px 4px 6px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.rau-tier-select:active { transform: scale(0.99); }
+/* Round play/stop button — listen before pay */
+.rau-tier-preview {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: #eaf1fd;
+  color: #3a7bd5;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+}
+.rau-tier-preview svg { width: 17px; height: 17px; }
+.rau-tier-preview:active { transform: scale(0.92); }
+.rau-tier-preview.is-playing {
+  background: #3a7bd5;
+  color: #fff;
+  box-shadow: 0 0 0 4px rgba(58, 123, 213, 0.18);
+  animation: rauPreviewPulse 1.4s ease-in-out infinite;
+}
+@keyframes rauPreviewPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(58, 123, 213, 0.16); }
+  50%      { box-shadow: 0 0 0 7px rgba(58, 123, 213, 0.06); }
+}
+.rau-tier-preview.is-loading {
+  border: 2.5px solid #d7e0f2;
+  border-top-color: #3a7bd5;
+  border-radius: 50%;
+  background: transparent;
+  animation: rauSpin 0.8s linear infinite;
+}
+@keyframes rauSpin { to { transform: rotate(360deg); } }
+.rau-preview-hint {
+  margin: -6px 0 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #7c8aa5;
+  text-align: center;
 }
 .rau-tier-radio {
   flex: 0 0 auto;

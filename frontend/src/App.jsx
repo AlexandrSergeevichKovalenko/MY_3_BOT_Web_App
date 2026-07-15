@@ -5898,6 +5898,9 @@ function AppInner() {
   const [readerAudioUnlockInfo, setReaderAudioUnlockInfo] = useState(null); // null | { documentId, bookTitle, tiers, balanceMinor, defaultTier, topupPresets }
   const [readerAudioUnlockState, setReaderAudioUnlockState] = useState('idle'); // idle | unlocking | error
   const [readerAudioTopupState, setReaderAudioTopupState] = useState('idle'); // idle | opening
+  // Phase 3: voice-preview clips ({ neural: url, standard: url }) — listen before pay.
+  const [readerVoiceSamples, setReaderVoiceSamples] = useState(null);
+  const [readerVoiceSamplesLoading, setReaderVoiceSamplesLoading] = useState(false);
   const [readerAudioPlayData, setReaderAudioPlayData] = useState(null);
   const [readerAudioPlayPosition, setReaderAudioPlayPosition] = useState(0);
   const [readerAudioVoice, setReaderAudioVoice] = useState('');
@@ -15432,12 +15435,10 @@ function AppInner() {
     const allTiers = Array.isArray(audio.tiers) && audio.tiers.length
       ? audio.tiers
       : [{ tier: defTier, label: {}, price_minor: Number(unlock.price_minor || 0), unlocked: false }];
-    // Phase 2 offers a single premium voice (matches the tier `play` requests by
-    // default). The multi-voice picker + samples is Phase 3.
-    const tiers = allTiers.filter((t) => t.tier === defTier).length
-      ? allTiers.filter((t) => t.tier === defTier)
-      : allTiers.slice(0, 1);
+    // Phase 3: show ALL voice tiers so the user can pick + preview before paying.
+    const tiers = allTiers;
     if (readerAudioPlayActive) stopReaderAudioPlay();
+    void loadReaderVoiceSamples();
     setReaderAudioUnlockState('idle');
     setReaderAudioTopupState('idle');
     setReaderAudioUnlockInfo({
@@ -15453,6 +15454,28 @@ function AppInner() {
   function closeReaderAudioUnlockModal() {
     setReaderAudioUnlockInfo(null);
     setReaderAudioUnlockState('idle');
+  }
+
+  // Voice-preview clips are global (per voice), so fetch once and reuse. The backend
+  // generates+caches them lazily on first request.
+  async function loadReaderVoiceSamples() {
+    if (readerVoiceSamples || readerVoiceSamplesLoading || !initData) return;
+    setReaderVoiceSamplesLoading(true);
+    try {
+      const resp = await fetch('/api/webapp/reader/audio/samples', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data?.ok && data.samples && typeof data.samples === 'object') {
+        setReaderVoiceSamples(data.samples);
+      }
+    } catch (_e) {
+      // non-fatal — the picker just won't offer previews
+    } finally {
+      setReaderVoiceSamplesLoading(false);
+    }
   }
 
   const refreshWalletBalance = useCallback(async () => {
@@ -33772,6 +33795,8 @@ function AppInner() {
               info={readerAudioUnlockInfo}
               unlockState={readerAudioUnlockState}
               topupState={readerAudioTopupState}
+              samples={readerVoiceSamples}
+              samplesLoading={readerVoiceSamplesLoading}
               onUnlock={doUnlockBookAudio}
               onTopup={doWalletTopup}
               onRefreshBalance={refreshWalletBalance}

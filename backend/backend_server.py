@@ -16449,6 +16449,39 @@ def _voice_tier_to_voice(voice_tier: str, lang_short: str = "de") -> str:
     return _TTS_VOICES.get(lang_short, _TTS_VOICES["de"])
 
 
+# A fixed German passage voiced in EVERY tier so the user hears the SAME text in each
+# voice and can compare before paying. Short → cheap to synth once, cached in R2 forever.
+_READER_VOICE_SAMPLE_TEXT = (
+    "Es war einmal ein kleines Mädchen, das lebte in einem Dorf am Rande des großen "
+    "Waldes. Jeden Morgen öffnete es das Fenster und lauschte dem Gesang der Vögel."
+)
+
+
+def _reader_voice_sample_key(voice_name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(voice_name or "voice"))
+    return f"reader_voice_samples/{safe}.mp3"
+
+
+def _get_or_create_voice_sample_url(tier: str, lang_short: str = "de") -> str | None:
+    """Public URL of a short voice-preview clip for a paid tier. Synthesized once
+    (the fixed sample passage) and cached in R2 forever — every reader shares it, so
+    the marketing cost is a handful of characters, once per voice. Never raises."""
+    try:
+        voice = _voice_tier_to_voice(tier, lang_short)
+        key = _reader_voice_sample_key(voice)
+        if r2_exists(key):
+            return r2_public_url(key)
+        from backend.tts_generation import _synthesize_mp3
+        mp3 = _synthesize_mp3(_READER_VOICE_SAMPLE_TEXT, language="de-DE", voice=voice, speed=0.95)
+        if not mp3:
+            return None
+        r2_put_bytes(key, mp3, content_type="audio/mpeg")
+        return r2_public_url(key)
+    except Exception:
+        logging.exception("voice sample generation failed tier=%s", tier)
+        return None
+
+
 def run_public_library_audio_pregen(
     *, target_lang: str = "de", max_pages: int | None = None, dry_run: bool = False
 ) -> dict:
@@ -50914,6 +50947,22 @@ def reader_audio_unlock():
         "balance_minor": int(result.get("balance_minor") or 0),
         "currency": "EUR",
     })
+
+
+@app.route("/api/webapp/reader/audio/samples", methods=["POST"])
+def reader_audio_samples():
+    """Short voice-preview clips (same passage in each paid tier) so the user can
+    listen BEFORE paying. Generated once per voice + cached in R2; cheap to call."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    if not init_data or not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    samples = {}
+    for tier in AUDIO_OFFERED_VOICE_TIERS:
+        url = _get_or_create_voice_sample_url(tier)
+        if url:
+            samples[tier] = url
+    return jsonify({"ok": True, "samples": samples, "sample_text": _READER_VOICE_SAMPLE_TEXT})
 
 
 @app.route("/api/webapp/reader/audio/page", methods=["GET", "POST"])
