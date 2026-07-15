@@ -15800,6 +15800,126 @@ body.worldnews-active .webapp-topbar {
 .youtube-subtitles-panel.yt-hide-de .youtube-subtitles-block-de {
   display: none !important;
 }
+
+/* ═══════════════ Puzzle-режим (≥700): overlay-only + панель под видео ═══════════════ */
+@media (min-width: 700px) {
+  /* ПИН высоты страницы под экран — видео заполняет всё, панель снизу, без прокрутки */
+  .webapp-page.is-youtube-active:has(.youtube-player-first.is-puzzle-mode) {
+    height: var(--app-height, 100dvh) !important;
+    overflow: hidden !important;
+  }
+  .webapp-page.is-youtube-active:has(.youtube-player-first.is-puzzle-mode) .webapp-shell,
+  .webapp-page.is-youtube-active:has(.youtube-player-first.is-puzzle-mode) .webapp-main {
+    height: 100%; display: flex; flex-direction: column; min-height: 0;
+    width: min(1600px, 96vw) !important; max-width: none !important;
+  }
+  .webapp-page.is-youtube-active:has(.youtube-player-first.is-puzzle-mode) .webapp-video-dictionary {
+    flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+  }
+  .youtube-player-first.is-puzzle-mode {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column; gap: 12px;
+    width: 100%; max-width: none; padding: 0 !important;
+    background: transparent !important; border: 0 !important; box-shadow: none !important;
+  }
+  /* верхняя панель (dock)/peek/mobile-head в puzzle-режиме не нужны — всё под видео */
+  .youtube-player-first.is-puzzle-mode > .youtube-player-first-head,
+  .youtube-player-first.is-puzzle-mode > .youtube-mobile-head,
+  .youtube-player-first.is-puzzle-mode > .youtube-focus-peek { display: none !important; }
+  /* видео заполняет всё оставшееся место (леттербокс на чёрном) */
+  .youtube-player-first.is-puzzle-mode > .youtube-player-card {
+    flex: 1 1 auto; min-height: 0; width: 100%; margin: 0 !important;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0 !important; background: transparent !important; border: 0 !important; box-shadow: none !important;
+  }
+  .youtube-player-first.is-puzzle-mode .webapp-video-player-shell {
+    height: 100%; width: 100%; max-width: none !important;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* видео = чистое 16:9, вписанное по ширине И высоте, по центру (портрет — без полос) */
+  .youtube-player-first.is-puzzle-mode .webapp-video-frame {
+    aspect-ratio: 16 / 9 !important; padding-top: 0 !important;
+    width: 100%; height: auto; max-width: 100%; max-height: 100%; margin: auto;
+    border-radius: 18px; overflow: hidden; background: #05070f;
+    box-shadow: 0 24px 56px rgba(0, 0, 0, .5);
+  }
+  .youtube-player-first.is-puzzle-mode .webapp-video-frame iframe,
+  .youtube-player-first.is-puzzle-mode .webapp-video-frame .youtube-player-host {
+    width: 100% !important; height: 100% !important;
+  }
+  .youtube-player-first.is-puzzle-mode > .youtube-puzzle-bar { flex: 0 0 auto; }
+
+  /* кнопка «Назад» в углу видео (dock скрыт) */
+  .youtube-video-back {
+    position: absolute; top: 14px; left: 14px; z-index: 8;
+    width: 42px; height: 42px; border-radius: 12px; border: 0; cursor: pointer;
+    background: rgba(15, 18, 26, .5); color: #fff; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .youtube-video-back svg { width: 22px; height: 22px; }
+  .youtube-video-back:hover { background: rgba(15, 18, 26, .72); }
+
+  /* ===== панель управления (Puzzle) ===== */
+  .youtube-puzzle-bar {
+    display: flex; align-items: center; gap: 9px;
+    padding: 8px 12px; border-radius: 18px;
+    background: var(--d-panel); border: 1px solid var(--d-border); box-shadow: var(--d-shadow);
+    flex-wrap: nowrap;
+  }
+  .youtube-puzzle-bar .ypb-divider { flex: 0 0 auto; width: 1px; height: 26px; background: var(--d-border); }
+
+  .youtube-puzzle-bar .ypb-font {
+    display: inline-flex; align-items: center; flex: 0 0 auto;
+    border: 1px solid var(--d-border); border-radius: 12px; background: var(--d-chip); overflow: hidden;
+  }
+  .youtube-puzzle-bar .ypb-font b { padding: 0 9px; height: 38px; display: inline-flex; align-items: center; font-size: 12.5px; font-weight: 800; color: var(--d-subtle); }
+  .youtube-puzzle-bar .ypb-font button { width: 34px; height: 38px; border: 0; background: transparent; color: var(--d-muted); font-size: 18px; font-weight: 800; cursor: pointer; transition: .15s; }
+  .youtube-puzzle-bar .ypb-font button:hover:not(:disabled) { background: var(--d-accent-soft); color: var(--d-accent-2); }
+  .youtube-puzzle-bar .ypb-font button:disabled { opacity: .4; cursor: default; }
+
+  .youtube-puzzle-bar .ypb-seg { display: inline-flex; gap: 3px; padding: 4px; border-radius: 13px; background: var(--d-chip); border: 1px solid var(--d-border-soft); flex: 0 0 auto; }
+  .youtube-puzzle-bar .ypb-seg button { height: 32px; padding: 0 13px; border: 0; border-radius: 9px; cursor: pointer; background: transparent; color: var(--d-muted); font-size: 13px; font-weight: 800; font-family: inherit; transition: .15s; }
+  .youtube-puzzle-bar .ypb-seg button:hover:not(:disabled) { color: var(--d-title); }
+  .youtube-puzzle-bar .ypb-seg button:disabled { opacity: .45; cursor: default; }
+  .youtube-puzzle-bar .ypb-seg button.on { background: var(--d-accent); color: var(--d-on-accent); box-shadow: 0 4px 12px var(--d-accent-soft); }
+
+  .youtube-puzzle-bar .ypb-nav { width: 36px; height: 38px; flex: 0 0 auto; border: 1px solid var(--d-border); border-radius: 11px; background: var(--d-card); color: var(--d-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: .15s; }
+  .youtube-puzzle-bar .ypb-nav:hover:not(:disabled) { background: var(--d-hover); color: var(--d-title); }
+  .youtube-puzzle-bar .ypb-nav:disabled { opacity: .4; cursor: default; }
+  .youtube-puzzle-bar .ypb-nav svg { width: 17px; height: 17px; }
+  .youtube-puzzle-bar .ypb-play { width: 44px; height: 44px; flex: 0 0 auto; border: 0; border-radius: 50%; cursor: pointer; background: var(--d-accent); color: var(--d-on-accent); display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px var(--d-accent-soft); transition: .15s; }
+  .youtube-puzzle-bar .ypb-play:disabled { opacity: .5; cursor: default; }
+  .youtube-puzzle-bar .ypb-play svg { width: 20px; height: 20px; }
+
+  .youtube-puzzle-bar .ypb-scrub { position: relative; flex: 1 1 auto; min-width: 60px; height: 18px; display: flex; align-items: center; }
+  .youtube-puzzle-bar .ypb-scrub::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 6px; border-radius: 999px; background: var(--d-border); opacity: .7; }
+  .youtube-puzzle-bar .ypb-scrub-fill { position: absolute; left: 0; top: 50%; transform: translateY(-50%); height: 6px; border-radius: 999px; background: linear-gradient(90deg, var(--d-accent), var(--d-accent-2)); pointer-events: none; z-index: 1; }
+  .youtube-puzzle-bar .ypb-scrub-input { position: relative; z-index: 2; -webkit-appearance: none; appearance: none; width: 100%; height: 18px; margin: 0; background: transparent; cursor: pointer; }
+  .youtube-puzzle-bar .ypb-scrub-input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%; background: var(--d-accent); border: 2.5px solid #fff; box-shadow: 0 2px 6px rgba(111, 84, 52, .45); }
+  .youtube-puzzle-bar .ypb-scrub-input::-moz-range-thumb { width: 15px; height: 15px; border-radius: 50%; background: var(--d-accent); border: 2.5px solid #fff; }
+  .youtube-puzzle-bar .ypb-scrub-input:disabled { opacity: .5; }
+
+  .youtube-puzzle-bar .ypb-time { flex: 0 0 auto; font-size: 12.5px; font-weight: 600; color: var(--d-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .youtube-puzzle-bar .ypb-icon { width: 40px; height: 40px; flex: 0 0 auto; border: 1px solid var(--d-border); border-radius: 12px; background: var(--d-card); color: var(--d-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: .15s; }
+  .youtube-puzzle-bar .ypb-icon:hover:not(:disabled) { background: var(--d-hover); color: var(--d-title); }
+  .youtube-puzzle-bar .ypb-icon:disabled { opacity: .45; cursor: default; }
+  .youtube-puzzle-bar .ypb-icon.is-active { background: var(--d-accent-soft); border-color: var(--d-accent-line); color: var(--d-accent-2); }
+  .youtube-puzzle-bar .ypb-icon svg { width: 20px; height: 20px; }
+
+  .youtube-puzzle-bar .ypb-menu-wrap, .youtube-puzzle-bar .ypb-vol-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+  .youtube-puzzle-bar .ypb-menu { position: absolute; z-index: 40; bottom: calc(100% + 8px); right: 0; width: 262px; background: var(--d-card); border: 1px solid var(--d-border); border-radius: 16px; box-shadow: 0 26px 54px rgba(0, 0, 0, .28); padding: 8px; }
+  .youtube-puzzle-bar .ypb-menu-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border-radius: 12px; border: 0; background: transparent; color: var(--d-secondary); font-size: 14px; font-weight: 650; cursor: pointer; text-align: left; font-family: inherit; }
+  .youtube-puzzle-bar .ypb-menu-item:hover:not(:disabled) { background: var(--d-hover); color: var(--d-title); }
+  .youtube-puzzle-bar .ypb-menu-item:disabled { opacity: .5; cursor: default; }
+  .youtube-puzzle-bar .ypb-menu-item.is-active { color: var(--d-accent-2); }
+  .youtube-puzzle-bar .ypb-menu-item svg { width: 18px; height: 18px; color: var(--d-muted); flex: 0 0 auto; }
+  .youtube-puzzle-bar .ypb-menu-sep { height: 1px; background: var(--d-border-soft); margin: 6px 8px; }
+
+  .youtube-puzzle-bar .ypb-vol-pop { position: absolute; z-index: 40; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: var(--d-card); border: 1px solid var(--d-border); border-radius: 14px; box-shadow: 0 20px 44px rgba(0, 0, 0, .24); padding: 14px 12px; }
+  .youtube-puzzle-bar .ypb-vol-slider { width: 120px; accent-color: var(--d-accent); cursor: pointer; }
+}
+
 /* Recolor the tan playback/nav controls to the cool scheme in news mode. */
 .youtube-player-first.is-worldnews .youtube-subtitles-card-nav button {
   background: #f1f4f9 !important;
@@ -16555,14 +16675,14 @@ body.worldnews-active .webapp-topbar {
 .webapp-video.youtube-player-first .youtube-subtitles-overlay-line.is-target-language,
 .webapp-video.youtube-player-first .youtube-subtitles-overlay-line.is-de {
   color: #f8fafc;
-  font-size: clamp(26px, 2.2vw, 40px);
+  font-size: calc(clamp(26px, 2.2vw, 40px) * var(--yt-overlay-scale, 1));
   font-weight: 700;
 }
 
 .webapp-video.youtube-player-first .youtube-subtitles-overlay-line.is-user-language,
 .webapp-video.youtube-player-first .youtube-subtitles-overlay-line.is-translation {
   color: var(--yt-text-translation);
-  font-size: clamp(24px, 2vw, 36px);
+  font-size: calc(clamp(24px, 2vw, 36px) * var(--yt-overlay-scale, 1));
   font-weight: 600;
 }
 

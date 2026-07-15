@@ -5706,6 +5706,62 @@ function AppInner() {
   const [youtubeOriginalEnabled, setYoutubeOriginalEnabled] = useState(true);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
   const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
+  // ── Puzzle-стиль панель под видео (≥700: планшет + браузер) ──
+  // Ширина ≥700 → overlay-only + нижняя панель управления (как Puzzle English).
+  const [isWideLayout, setIsWideLayout] = useState(
+    () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 700px)').matches
+      : false,
+  );
+  // Размер overlay-субтитров: шаг 0..4 (2 = как сейчас). Масштаб → --yt-overlay-scale.
+  const YT_SUB_SCALES = [0.8, 0.9, 1, 1.15, 1.32];
+  const [youtubeSubFontStep, setYoutubeSubFontStep] = useState(() => {
+    if (typeof window === 'undefined') return 2;
+    const saved = Number(window.localStorage?.getItem('yt_sub_font_step'));
+    return Number.isFinite(saved) && saved >= 0 && saved <= 4 ? saved : 2;
+  });
+  const [youtubeVolume, setYoutubeVolume] = useState(100); // 0..100
+  const [youtubeMuted, setYoutubeMuted] = useState(false);
+  const [youtubeVolumeOpen, setYoutubeVolumeOpen] = useState(false); // всплывающий ползунок
+  const [youtubeBarMenuOpen, setYoutubeBarMenuOpen] = useState(false); // ⚙ поповер в панели
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const mq = window.matchMedia('(min-width: 700px)');
+    const onChange = () => setIsWideLayout(mq.matches);
+    onChange();
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else mq.removeListener(onChange);
+    };
+  }, []);
+  useEffect(() => {
+    try { window.localStorage?.setItem('yt_sub_font_step', String(youtubeSubFontStep)); } catch (e) { /* ignore */ }
+  }, [youtubeSubFontStep]);
+  // Применить громкость к плееру YouTube (IFrame API)
+  const applyYoutubeVolume = (vol, muted) => {
+    const p = youtubePlayerRef.current;
+    if (!p) return;
+    try {
+      if (muted) { p.mute?.(); }
+      else { p.unMute?.(); p.setVolume?.(Math.max(0, Math.min(100, Math.round(vol)))); }
+    } catch (e) { /* ignore */ }
+  };
+  const handleYoutubeVolumeChange = (vol) => {
+    const v = Math.max(0, Math.min(100, Math.round(vol)));
+    setYoutubeVolume(v);
+    const muted = v === 0;
+    setYoutubeMuted(muted);
+    applyYoutubeVolume(v, muted);
+  };
+  const toggleYoutubeMute = () => {
+    setYoutubeMuted((prev) => {
+      const next = !prev;
+      applyYoutubeVolume(youtubeVolume || 60, next);
+      return next;
+    });
+  };
   const [youtubeIsPaused, setYoutubeIsPaused] = useState(false);
   const [youtubePlaybackStarted, setYoutubePlaybackStarted] = useState(false);
   const [youtubeForceShowPanel, setYoutubeForceShowPanel] = useState(false);
@@ -15475,10 +15531,20 @@ function AppInner() {
         closeReaderAudioUnlockModal();
         return;
       }
-      if (!resp.ok || !data.invoice_link || !telegramApp?.openInvoice) {
+      if (!resp.ok || !data.invoice_link) {
+        // Invoice could NOT be created — surface the exact Telegram reason so we can
+        // diagnose (payment/testing phase).
         setReaderAudioUnlockState('error');
+        try {
+          telegramApp?.showPopup?.({
+            title: tr('Счёт не создан', 'Rechnung fehlgeschlagen'),
+            message: String(data.detail || data.error || 'unknown'),
+            buttons: [{ type: 'ok' }],
+          });
+        } catch (_e) { /* popup optional */ }
         return;
       }
+      if (!telegramApp?.openInvoice) { setReaderAudioUnlockState('error'); return; }
       telegramApp.openInvoice(data.invoice_link, (status) => {
         if (status === 'paid') {
           markReaderTierUnlocked(voiceTier);
@@ -15492,9 +15558,19 @@ function AppInner() {
               buttons: [{ type: 'ok' }],
             });
           } catch (_e) { /* popup optional */ }
+        } else if (status === 'failed') {
+          // Payment itself failed on Telegram's side.
+          setReaderAudioUnlockState('error');
+          try {
+            telegramApp.showPopup?.({
+              title: tr('Оплата не прошла', 'Zahlung fehlgeschlagen'),
+              message: tr('Telegram отклонил оплату. Попробуй ещё раз.', 'Telegram hat die Zahlung abgelehnt. Nochmal versuchen.'),
+              buttons: [{ type: 'ok' }],
+            });
+          } catch (_e) { /* popup optional */ }
         } else {
-          // cancelled | failed | pending — stay on the modal so they can retry.
-          setReaderAudioUnlockState(status === 'failed' ? 'error' : 'idle');
+          // cancelled | pending — no error, just let them retry.
+          setReaderAudioUnlockState('idle');
         }
       });
     } catch (_e) {
@@ -27282,6 +27358,150 @@ function AppInner() {
     }
   };
 
+  // ── Panel «Puzzle English»: одна строка управления под видео (≥700). ──
+  const renderYoutubePuzzleBar = () => {
+    const canControlPlayback = Boolean(youtubeId && youtubePlayerRef.current);
+    const rowCount = youtubeSubtitleDisplayRows.length;
+    const activeRowIndex = getActiveSubtitleRowIndex();
+    const canJump = Boolean(rowCount && youtubePlayerRef.current?.seekTo);
+    const canJumpPrev = canJump && activeRowIndex !== 0;
+    const canJumpNext = canJump && activeRowIndex !== rowCount - 1;
+    const dur = youtubeDuration || 0;
+    const cur = Math.max(0, Math.min(youtubeCurrentTime || 0, dur));
+    const canScrub = Boolean(dur > 0 && youtubePlayerRef.current?.seekTo);
+    const subsReady = youtubeSubtitlesReady;
+    const fmt = (secs) => {
+      const t = Math.max(0, Math.floor(Number(secs) || 0));
+      const h = Math.floor(t / 3600); const m = Math.floor((t % 3600) / 60); const s = t % 60;
+      const pad = (n) => String(n).padStart(2, '0');
+      return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+    };
+    const doSeek = (val, commit) => {
+      const next = Math.max(0, Math.min(Number(val) || 0, dur));
+      setYoutubeCurrentTime(next);
+      try { youtubePlayerRef.current?.seekTo?.(next, commit === true); } catch (e) { /* ignore */ }
+    };
+    const scrubPct = dur > 0 ? (cur / dur) * 100 : 0;
+    const isMuted = youtubeMuted || youtubeVolume === 0;
+    return (
+      <div className="youtube-puzzle-bar" role="group" aria-label={tr('Управление видео', 'Videosteuerung')}>
+        {/* размер субтитров */}
+        <div className="ypb-font" title={tr('Размер субтитров', 'Untertitelgröße')}>
+          <button type="button" onClick={() => setYoutubeSubFontStep((s) => Math.max(0, s - 1))} disabled={youtubeSubFontStep <= 0} aria-label={tr('Меньше', 'Kleiner')}>−</button>
+          <b>Aa</b>
+          <button type="button" onClick={() => setYoutubeSubFontStep((s) => Math.min(4, s + 1))} disabled={youtubeSubFontStep >= 4} aria-label={tr('Больше', 'Größer')}>+</button>
+        </div>
+        {/* языки субтитров */}
+        <div className="ypb-seg" role="group" aria-label={tr('Субтитры', 'Untertitel')}>
+          <button type="button" className={youtubeOriginalEnabled ? 'on' : ''} onClick={() => setYoutubeOriginalEnabled((v) => !v)} disabled={!subsReady} title={tr('Немецкие субтитры', 'Deutsche Untertitel')}>DE</button>
+          <button type="button" className={youtubeTranslationEnabled ? 'on' : ''} onClick={() => setYoutubeTranslationEnabled((v) => !v)} disabled={!subsReady} title={tr('Русские субтитры', 'Russische Untertitel')}>RU</button>
+        </div>
+        <span className="ypb-divider" aria-hidden="true" />
+        {/* предыдущее предложение · play · следующее */}
+        <button type="button" className="ypb-nav" onClick={() => jumpYoutubeBySubtitle(-1)} disabled={!canJumpPrev} aria-label={tr('Предыдущее предложение', 'Vorheriger Satz')} title={tr('Предыдущее предложение', 'Vorheriger Satz')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="19 20 9 12 19 4" /><line x1="5" y1="4" x2="5" y2="20" /></svg>
+        </button>
+        <button type="button" className="ypb-play" onClick={toggleYoutubePlayback} disabled={!canControlPlayback} aria-label={youtubeIsPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause')}>
+          {youtubeIsPaused
+            ? <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4" /></svg>
+            : <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>}
+        </button>
+        <button type="button" className="ypb-nav" onClick={() => jumpYoutubeBySubtitle(1)} disabled={!canJumpNext} aria-label={tr('Следующее предложение', 'Nächster Satz')} title={tr('Следующее предложение', 'Nächster Satz')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 4 15 12 5 20" /><line x1="19" y1="4" x2="19" y2="20" /></svg>
+        </button>
+        {/* полоса прокрутки */}
+        <div className="ypb-scrub">
+          <div className="ypb-scrub-fill" style={{ width: `${scrubPct}%` }} />
+          <input
+            type="range"
+            className="ypb-scrub-input"
+            min={0}
+            max={dur || 0}
+            step="any"
+            value={cur}
+            disabled={!canScrub}
+            onPointerDown={() => { youtubeScrubbingRef.current = true; }}
+            onPointerUp={() => { youtubeScrubbingRef.current = false; }}
+            onPointerCancel={() => { youtubeScrubbingRef.current = false; }}
+            onChange={(e) => doSeek(e.target.value, false)}
+            onMouseUp={(e) => { youtubeScrubbingRef.current = false; doSeek(e.target.value, true); }}
+            onTouchEnd={() => { youtubeScrubbingRef.current = false; }}
+            aria-label={tr('Перемотка видео', 'Video vorspulen')}
+          />
+        </div>
+        <span className="ypb-time">{fmt(cur)} / {fmt(dur)}</span>
+        <span className="ypb-divider" aria-hidden="true" />
+        {/* словарь */}
+        <button type="button" className={`ypb-icon ${youtubeDictOpen ? 'is-active' : ''}`} onClick={() => setYoutubeDictOpen((v) => !v)} title={tr('Словарь', 'Wörterbuch')} aria-label={tr('Словарь', 'Wörterbuch')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+        </button>
+        {/* настройки (меню: сменить видео / поиск / субтитры / транскрипт / все настройки) */}
+        <div className="ypb-menu-wrap">
+          <button type="button" className={`ypb-icon ${youtubeBarMenuOpen ? 'is-active' : ''}`} onClick={() => setYoutubeBarMenuOpen((v) => !v)} title={tr('Настройки', 'Einstellungen')} aria-label={tr('Настройки', 'Einstellungen')} aria-expanded={youtubeBarMenuOpen}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+          </button>
+          {youtubeBarMenuOpen && (
+            <div className="ypb-menu" role="menu">
+              {!youtubeNewsMode && (
+                <button type="button" className="ypb-menu-item" onClick={() => { setYoutubeForceShowPanel(true); setYoutubeBarMenuOpen(false); }}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2.5" /><path d="M7 4v16M17 4v16" /></svg>
+                  {tr('Сменить видео', 'Video wechseln')}
+                </button>
+              )}
+              {!youtubeNewsMode && (
+                <button type="button" className="ypb-menu-item" onClick={() => { setYoutubeForceShowPanel(true); searchYoutubeVideos(); setYoutubeBarMenuOpen(false); }} disabled={youtubeSearchLoading}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.5-4.5" /></svg>
+                  {youtubeSearchLoading ? tr('Ищем…', 'Suchen…') : tr('Искать в YouTube', 'Auf YouTube suchen')}
+                </button>
+              )}
+              <button type="button" className="ypb-menu-item" onClick={() => { fetchTranscript(); setYoutubeBarMenuOpen(false); }} disabled={youtubeLoadDisabled}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v5h-5" /></svg>
+                {youtubeTranscriptLoading ? tr('Загрузка…', 'Lädt…') : youtubeSubtitlesReady ? tr('Обновить субтитры', 'Untertitel neu laden') : tr('Загрузить субтитры', 'Untertitel laden')}
+              </button>
+              {canManageYoutubeTranscripts && (
+                <button type="button" className={`ypb-menu-item ${showManualTranscript ? 'is-active' : ''}`} onClick={() => { setShowManualTranscript((v) => !v); setYoutubeBarMenuOpen(false); }}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M8.5 13h7M8.5 17h4.5" /></svg>
+                  {tr('Вставить транскрипцию', 'Transkript einfügen')}
+                </button>
+              )}
+              <div className="ypb-menu-sep" aria-hidden="true" />
+              <button type="button" className="ypb-menu-item" onClick={() => { setYoutubeSettingsOpen(true); setYoutubeBarMenuOpen(false); }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></svg>
+                {tr('Все настройки', 'Alle Einstellungen')}
+              </button>
+            </div>
+          )}
+        </div>
+        {/* громкость */}
+        <div className="ypb-vol-wrap">
+          {youtubeVolumeOpen && (
+            <div className="ypb-vol-pop">
+              <input
+                type="range"
+                className="ypb-vol-slider"
+                min={0}
+                max={100}
+                step={1}
+                value={isMuted ? 0 : youtubeVolume}
+                onChange={(e) => handleYoutubeVolumeChange(Number(e.target.value))}
+                aria-label={tr('Громкость', 'Lautstärke')}
+              />
+            </div>
+          )}
+          <button type="button" className={`ypb-icon ${youtubeVolumeOpen ? 'is-active' : ''}`} onClick={() => setYoutubeVolumeOpen((v) => !v)} title={tr('Громкость', 'Lautstärke')} aria-label={tr('Громкость', 'Lautstärke')}>
+            {isMuted
+              ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></svg>
+              : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" /></svg>}
+          </button>
+        </div>
+        {/* во весь экран */}
+        <button type="button" className={`ypb-icon ${youtubeAppFullscreen ? 'is-active' : ''}`} onClick={() => setYoutubeAppFullscreen((v) => !v)} disabled={!youtubeId} title={tr('Во весь экран', 'Vollbild')} aria-label={tr('Во весь экран', 'Vollbild')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
+        </button>
+      </div>
+    );
+  };
+
   const renderYoutubeSentenceJumpBar = ({ inline = false } = {}) => {
     const rowCount = youtubeSubtitleDisplayRows.length;
     const activeRowIndex = getActiveSubtitleRowIndex();
@@ -33844,7 +34064,7 @@ function AppInner() {
                 {isSectionVisible('youtube') && (
                   <PerfProfiler id="section.youtube">
                     <section
-                      className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubePlayingFocus ? 'is-playing-focus' : ''} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''} ${youtubeNewsMode ? 'is-worldnews' : ''}`}
+                      className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubePlayingFocus ? 'is-playing-focus' : ''} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''} ${youtubeNewsMode ? 'is-worldnews' : ''} ${isWideLayout && !youtubeNewsMode ? 'is-puzzle-mode' : ''}`}
                       ref={youtubeRef}
                       data-no-edge-swipe="true"
                     >
@@ -34237,7 +34457,18 @@ function AppInner() {
                             {tr('Свернуть', 'Minimieren')}
                           </button>
                         )}
-                        <div className={`webapp-video-frame youtube-player-frame ${videoExpanded ? 'is-expanded' : ''} ${youtubeOverlayEnabled ? 'has-overlay' : ''}`}>
+                        <div className={`webapp-video-frame youtube-player-frame ${videoExpanded ? 'is-expanded' : ''} ${(youtubeOverlayEnabled || isWideLayout) ? 'has-overlay' : ''}`}>
+                          {isWideLayout && (
+                            <button
+                              type="button"
+                              className="youtube-video-back"
+                              onClick={goHomeScreen}
+                              title={tr('На главную', 'Startseite')}
+                              aria-label={tr('На главную', 'Startseite')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
+                            </button>
+                          )}
                           <div
                             id="youtube-player"
                             className="youtube-player-host"
@@ -34260,26 +34491,32 @@ function AppInner() {
                               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                             />
                           )}
-                          {youtubeOverlayEnabled && youtubeTranscript.length > 0 && (() => {
+                          {(youtubeOverlayEnabled || isWideLayout) && youtubeTranscript.length > 0 && (() => {
                             const activeIndex = getActiveSubtitleIndex();
                             const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
                             const showPausedHistory = youtubeAppFullscreen && youtubeIsPaused;
                             const overlayIndexes = showPausedHistory
                               ? [resolvedIndex - 2, resolvedIndex - 1, resolvedIndex].filter((idx) => idx >= 0)
                               : [resolvedIndex];
+                            const overlayDeVisible = youtubeOriginalEnabled;
+                            const overlayRuVisible = youtubeTranslationEnabled;
                             return (
-                              <div className={`youtube-subtitles-overlay ${showPausedHistory ? 'is-paused-history' : ''}`} aria-hidden="true">
+                              <div
+                                className={`youtube-subtitles-overlay ${showPausedHistory ? 'is-paused-history' : ''}`}
+                                style={{ '--yt-overlay-scale': YT_SUB_SCALES[youtubeSubFontStep] }}
+                                aria-hidden="true"
+                              >
                                 {overlayIndexes.map((idx) => {
                                   const item = youtubeTranscript[idx];
                                   const overlayDeText = normalizeSubtitleText(item?.text || '');
                                   const overlayTranslationText = (youtubeTranslations[String(idx)] || '').trim();
-                                  if (!overlayDeText && !(youtubeTranslationEnabled && overlayTranslationText)) {
+                                  if (!(overlayDeVisible && overlayDeText) && !(overlayRuVisible && overlayTranslationText)) {
                                     return null;
                                   }
                                   const isCurrent = idx === resolvedIndex;
                                   return (
                                     <div key={`overlay-line-${idx}`} className={`youtube-subtitles-overlay-row ${isCurrent ? 'is-current' : 'is-history'}`}>
-                                      {overlayDeText && (
+                                      {overlayDeVisible && overlayDeText && (
                                         <p
                                           className="youtube-subtitles-overlay-line is-target-language"
                                           onClick={(event) => openYoutubeSentenceSelection(event, overlayDeText, 'youtube_overlay_sentence')}
@@ -34294,7 +34531,7 @@ function AppInner() {
                                           })}
                                         </p>
                                       )}
-                                      {youtubeTranslationEnabled && overlayTranslationText && (
+                                      {overlayRuVisible && overlayTranslationText && (
                                         <p className="youtube-subtitles-overlay-line is-user-language">{overlayTranslationText}</p>
                                       )}
                                     </div>
@@ -34308,7 +34545,7 @@ function AppInner() {
                     </div>
                     {/* Premium Dock §2: ЕДИНСТВЕННЫЙ транспорт — по центру под видео,
                         показывается всегда, когда есть субтитры (обычный вид + overlay). */}
-                    {youtubeSubtitlesReady && renderYoutubeSentenceJumpBar()}
+                    {youtubeSubtitlesReady && (isWideLayout ? renderYoutubePuzzleBar() : renderYoutubeSentenceJumpBar())}
                     </>
                     )}
                     {youtubeNewsMode && worldNewsLoading && !worldNewsData && (
@@ -34545,7 +34782,7 @@ function AppInner() {
                         )}
                       </div>
                     )}
-                    {(!youtubeNewsMode || worldNewsStage === 'video') && !youtubeOverlayEnabled && youtubeSubtitlesReady && (
+                    {(!youtubeNewsMode || worldNewsStage === 'video') && !youtubeOverlayEnabled && !(isWideLayout && !youtubeNewsMode) && youtubeSubtitlesReady && (
                       <div className={`youtube-subtitles-card youtube-subtitles-panel ${(youtubeNewsMode ? !worldNewsShowOriginal : !youtubeOriginalEnabled) ? 'wn-hide-de yt-hide-de' : ''}`}>
                         {!youtubeNewsMode && (
                           <div className="youtube-subtitles-panel-head">
