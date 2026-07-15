@@ -651,7 +651,9 @@ body {
      they stay clearly visible. Hero tiles keep their own height-based sizing. */
   .webapp-page.is-home-bento .hdt-bt:not(.hero) .hdt-bl {
     white-space: nowrap;
-    font-size: clamp(8px, 2.6vw, 12.5px);
+    /* +20% over the previous clamp(8px, 2.6vw, 12.5px). Still width-scaled (vw), so the
+       label-to-tile ratio is unchanged across phones and it never wraps or overflows. */
+    font-size: clamp(9.6px, 3.12vw, 15px);
     line-height: 1.1;
     letter-spacing: -0.03em;
   }

@@ -5559,16 +5559,35 @@ function AppInner() {
     let frameId = null;
     const settleTimers = [];
 
+    const isStandalonePwa = () =>
+      (typeof window.matchMedia === 'function'
+        && window.matchMedia('(display-mode: standalone)').matches)
+      || window.navigator?.standalone === true;
+
+    const isEditableFocused = () => {
+      const el = typeof document !== 'undefined' ? document.activeElement : null;
+      if (!el) return false;
+      return /^(input|textarea|select)$/i.test(el.tagName || '') || el.isContentEditable === true;
+    };
+
     const applyViewportHeight = () => {
       frameId = null;
       const visualHeight = Number(viewport?.height || 0);
       const innerHeight = Number(window.innerHeight || 0);
       const clientHeight = Number(document.documentElement?.clientHeight || 0);
-      const nextHeight = Math.round(
-        visualHeight > 0
-          ? visualHeight
-          : Math.max(innerHeight, clientHeight, 0)
-      );
+      const fullHeight = Math.max(innerHeight, clientHeight, 0);
+
+      // In a standalone home-screen PWA the ONLY thing that should shrink the app below
+      // the full screen is the keyboard. The iOS share sheet / app switcher also shrink
+      // visualViewport.height transiently, and honoring that latched a half-height page
+      // ("split screen", black bottom). So in standalone, when no editable field is
+      // focused (keyboard down), fill the full layout viewport and ignore the shrink.
+      let nextHeight;
+      if (isStandalonePwa() && !isEditableFocused() && fullHeight > 0) {
+        nextHeight = Math.round(Math.max(fullHeight, visualHeight));
+      } else {
+        nextHeight = Math.round(visualHeight > 0 ? visualHeight : fullHeight);
+      }
       if (nextHeight > 0) {
         rootStyle?.setProperty('--app-height', `${nextHeight}px`);
       }
