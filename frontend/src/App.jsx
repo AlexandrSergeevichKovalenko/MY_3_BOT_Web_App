@@ -16372,9 +16372,19 @@ function AppInner() {
         try { telegramApp.openTelegramLink(`${botUrl}?startapp=onboarding`); return; } catch (_e) { /* fall through */ }
       }
     }
-    // Standalone PWA or plain browser (no live Telegram session): the /onboarding path
-    // serves the same wizard in place as a public tour — no bounce out to Telegram.
-    try { window.location.href = '/onboarding'; } catch (_e) { /* noop */ }
+    // Standalone PWA or plain browser (no live Telegram session): open the wizard in
+    // place as a public tour — no bounce out to Telegram. Do NOT navigate to a bare
+    // «/onboarding» path: the standalone launch runs from a served, token-bearing entry
+    // (e.g. /webapp/t/<token>) and that bare path isn't served on this origin → 404.
+    // Instead re-launch the SAME current URL with ?startapp=onboarding, which the SPA
+    // router reads (main.jsx getAnswerStartParam) to boot the onboarding wizard.
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('startapp', 'onboarding');
+      window.location.assign(url.toString());
+    } catch (_e) {
+      try { window.location.href = '/onboarding'; } catch (_e2) { /* noop */ }
+    }
   }, [telegramApp]);
 
   const dismissOnboarding = useCallback(() => {
