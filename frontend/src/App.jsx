@@ -5574,7 +5574,8 @@ function AppInner() {
     const params = new URLSearchParams(window.location.search);
     const isWebappPath =
       window.location.pathname === '/webapp' ||
-      window.location.pathname === '/webapp/review';
+      window.location.pathname === '/webapp/review' ||
+      window.location.pathname.startsWith('/webapp/t/'); // standalone home-screen icon launch
     return Boolean(telegramApp?.initData || initData) || params.get('mode') === 'webapp' || isWebappPath;
   }, [telegramApp, initData]);
   const billingReturnContext = useMemo(() => {
@@ -5689,6 +5690,11 @@ function AppInner() {
   const [browserAuthError, setBrowserAuthError] = useState('');
   const [browserAuthBotUsername, setBrowserAuthBotUsername] = useState('');
   const [sessionId, setSessionId] = useState(null);
+  // Standalone home-screen app: authenticated by a durable app-browser token (minted in
+  // onboarding, carried in the icon's launch URL) instead of the Telegram Login Widget. While
+  // we exchange that token for a signed session we suppress the login form (avoids a flash).
+  const [appSessionExchanging, setAppSessionExchanging] = useState(false);
+  const appSessionExchangeStartedRef = useRef(false);
   const [webappUser, setWebappUser] = useState(null);
   const [webappChatType, setWebappChatType] = useState('');
   const [results, setResults] = useState([]);
@@ -13196,7 +13202,9 @@ function AppInner() {
   }, [flashcardsOnly, selectedSections]);
   const isHomeRouteActive = isHomeScreen || Boolean(activeHomeSubsectionKey);
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
-  const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
+  // Only for authenticated users on the home screen. The tokenless login screen must stay a
+  // bare login form — the "how to use the app" content lives in onboarding, not here.
+  const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed && Boolean(initData);
   /* Legacy guide/onboarding copy removed from runtime path.
   const _legacyOnboardingSlides = useMemo(() => ([
     {
@@ -17362,6 +17370,40 @@ function AppInner() {
 
   useEffect(() => {
     if (telegramApp?.initData) return;
+    if (initData) return;
+    // Priority 1: a durable app-browser token (standalone home-screen icon) → exchange it for a
+    // fresh signed session so the app boots like a logged-in user, with NO login screen. This is
+    // the whole point of the home-screen icon: tap → straight into the app, no Telegram, no form.
+    const readAppToken = () => {
+      try {
+        const pm = String(window.location?.pathname || '').match(/^\/webapp\/t\/([^/]+)/);
+        if (pm && pm[1]) return decodeURIComponent(pm[1]);
+        const q = new URLSearchParams(window.location?.search || '').get('aqt');
+        return String(q || localStorage.getItem('app_browser_token_v1') || '').trim();
+      } catch (_e) { return ''; }
+    };
+    const appToken = readAppToken();
+    if (appToken && !appSessionExchangeStartedRef.current) {
+      appSessionExchangeStartedRef.current = true;
+      setAppSessionExchanging(true);
+      (async () => {
+        try {
+          const res = await fetch('/api/webapp/app/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-App-Token': appToken },
+            body: JSON.stringify({ app_token: appToken }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data?.initData) {
+            safeStorageSet('browser_init_data', data.initData);
+            setInitData(data.initData);
+          }
+        } catch (_e) { /* fall through to stored/login below on next render */ }
+        finally { setAppSessionExchanging(false); }
+      })();
+      return;
+    }
+    // Priority 2: a previously stored browser-login session (Telegram Login Widget users).
     const stored = safeStorageGet('browser_init_data');
     if (stored && !initData) {
       setInitData(stored);
@@ -32215,6 +32257,7 @@ function AppInner() {
                       </button>
                     </div>
                   </div>
+                  {(telegramApp?.initData || initData || appSessionExchanging) && (
                   <div className="topbar-row topbar-row-controls">
                     <div className="topbar-controls">
                       {telegramTabletLike && !telegramFullscreenMode && typeof telegramApp?.requestFullscreen === 'function' && (
@@ -32261,6 +32304,7 @@ function AppInner() {
                       </button>
                     </div>
                   </div>
+                  )}
                 </>
               )}
             </div>
@@ -32741,8 +32785,8 @@ function AppInner() {
 
             
 
-            {!telegramApp?.initData && isHomeScreen && (
-              <section className={`webapp-browser-auth ${initData ? 'is-compact' : ''}`}>
+            {!telegramApp?.initData && !initData && !appSessionExchanging && isHomeScreen && (
+              <section className="webapp-browser-auth">
                 <div className="webapp-browser-auth-head">
                   <strong>{t('browser_login_title')}</strong>
                   {initData ? (

@@ -34314,6 +34314,26 @@ def issue_app_browser_token():
     return jsonify({"ok": True, "token": token})
 
 
+@app.route("/api/webapp/app/session", methods=["POST"])
+def issue_app_browser_session():
+    """Exchange a durable app-browser token for a freshly server-signed initData, so the
+    standalone home-screen app boots EXACTLY like a browser-logged-in user — every existing
+    initData-gated data path (bootstrap, tiles, loaders) lights up unchanged, no client-side
+    special-casing. The access guard already resolved the user (from the app token OR initData)
+    into g.telegram_user_id; we just sign a fresh session for them. Reuses the same signer as
+    the Telegram-Login-Widget browser login (_build_signed_init_data_for_user)."""
+    user_id = getattr(g, "telegram_user_id", None)
+    if not user_id:
+        # Belt-and-suspenders: resolve straight from the body/token if the guard didn't stash it.
+        user_id = _resolve_webapp_user_id(request.get_json(silent=True) or {})
+    if not user_id or int(user_id) <= 0:
+        return jsonify({"error": "not authenticated"}), 401
+    init_data = _build_signed_init_data_for_user({"id": int(user_id)}, auth_date=int(time.time()))
+    if not init_data:
+        return jsonify({"error": "Не удалось выпустить initData"}), 500
+    return jsonify({"ok": True, "initData": init_data})
+
+
 def _sse_pack(event: str, data: dict) -> str:
     """Format one Server-Sent Event frame."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
