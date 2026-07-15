@@ -5930,10 +5930,8 @@ function AppInner() {
   // "try again in a couple seconds" toast, plus a one-tap "ask admin for more" action.
   const [readerAudioLimitInfo, setReaderAudioLimitInfo] = useState(null);
   const [readerAudioLimitRequestState, setReaderAudioLimitRequestState] = useState('idle'); // idle | sending | sent | error
-  // Per-book paid-audio unlock (Phase 2): wallet balance + the opened book's audio
-  // pricing, and the unlock modal.
-  const [walletBalanceMinor, setWalletBalanceMinor] = useState(0);
-  const [walletTopupPresets, setWalletTopupPresets] = useState([300, 500, 1000, 2000]);
+  // Per-book paid-audio unlock: the opened book's audio pricing + the unlock modal.
+  // (The EUR wallet is retired — narration is paid per book directly in Telegram Stars.)
   const [readerDocAudio, setReaderDocAudio] = useState(null); // { tiers:[...], default_tier, ... }
   // True for shared public-domain "Классика" books. Their audio is PRE-GENERATED
   // per single page in the pinned Standard voice, so for these docs we voice ONE page
@@ -5941,9 +5939,8 @@ function AppInner() {
   // cache and plays instantly, instead of a cold on-demand synth. Read via a ref so
   // the play/prefetch callbacks always see the current book without re-memoizing.
   const readerDocIsPublicRef = useRef(false);
-  const [readerAudioUnlockInfo, setReaderAudioUnlockInfo] = useState(null); // null | { documentId, bookTitle, tiers, balanceMinor, defaultTier, topupPresets }
+  const [readerAudioUnlockInfo, setReaderAudioUnlockInfo] = useState(null); // null | { documentId, bookTitle, tiers, defaultTier }
   const [readerAudioUnlockState, setReaderAudioUnlockState] = useState('idle'); // idle | unlocking | error
-  const [readerAudioTopupState, setReaderAudioTopupState] = useState('idle'); // idle | opening
   // Phase 3: voice-preview clips ({ neural: url, standard: url }) — listen before pay.
   const [readerVoiceSamples, setReaderVoiceSamples] = useState(null);
   const [readerVoiceSamplesLoading, setReaderVoiceSamplesLoading] = useState(false);
@@ -15512,14 +15509,11 @@ function AppInner() {
     if (readerAudioPlayActive) stopReaderAudioPlay();
     void loadReaderVoiceSamples();
     setReaderAudioUnlockState('idle');
-    setReaderAudioTopupState('idle');
     setReaderAudioUnlockInfo({
       documentId: Number(unlock.document_id || readerDocumentId || 0),
       bookTitle: String(readerTitle || ''),
       tiers,
       defaultTier: String(unlock.voice_tier || audio.default_tier || 'neural'),
-      balanceMinor: Number(unlock.balance_minor != null ? unlock.balance_minor : walletBalanceMinor) || 0,
-      topupPresets: Array.isArray(walletTopupPresets) && walletTopupPresets.length ? walletTopupPresets : [300, 500, 1000, 2000],
     });
   }
 
@@ -15549,25 +15543,6 @@ function AppInner() {
       setReaderVoiceSamplesLoading(false);
     }
   }
-
-  const refreshWalletBalance = useCallback(async () => {
-    try {
-      const resp = await fetch('/api/webapp/wallet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok && data?.ok) {
-        const bal = Number(data.balance_minor || 0);
-        setWalletBalanceMinor(bal);
-        setReaderAudioUnlockInfo((cur) => (cur ? { ...cur, balanceMinor: bal } : cur));
-        if (Array.isArray(data.topup_presets_minor) && data.topup_presets_minor.length) {
-          setWalletTopupPresets(data.topup_presets_minor);
-        }
-      }
-    } catch (_e) { /* silent — балансы не критичны к моменту */ }
-  }, [initData]);
 
   // Mark a voice tier owned locally so the modal/reader reflect it immediately.
   const markReaderTierUnlocked = useCallback((voiceTier) => {
@@ -15643,23 +15618,6 @@ function AppInner() {
       setReaderAudioUnlockState('error');
     }
   }, [readerAudioUnlockInfo, initData, telegramApp, tr, markReaderTierUnlocked]);
-
-  const doWalletTopup = useCallback(async (amountMinor) => {
-    setReaderAudioTopupState('opening');
-    try {
-      const resp = await fetch('/api/webapp/wallet/topup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, amount_minor: amountMinor }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok && data?.url) {
-        if (telegramApp?.openLink) telegramApp.openLink(data.url);
-        else window.open(data.url, '_blank');
-      }
-    } catch (_e) { /* ignore — user can retry */ }
-    setReaderAudioTopupState('idle');
-  }, [initData]);
 
   const requestReaderAudioLimitIncrease = useCallback(async () => {
     if (readerAudioLimitRequestState === 'sending' || readerAudioLimitRequestState === 'sent') return;
@@ -24249,7 +24207,6 @@ function AppInner() {
       setReaderDocAudio(data?.audio && !data.audio.free ? data.audio : (data?.audio || null));
       // Classics (public shared library) → free, pre-generated per-page audio.
       readerDocIsPublicRef.current = data?.audio?.free === true || data?.is_public === true;
-      setWalletBalanceMinor(Number(data?.wallet?.balance_minor || 0));
       setReaderAudioUnlockInfo(null);
       const totalPages = Number(data?.total_pages || pages.length || 0);
       let sparsePages;
