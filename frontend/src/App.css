@@ -405,6 +405,21 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
+/* Standalone home-screen PWA (icon opened outside Telegram): there is no Telegram viewport
+   chrome, so the JS-measured --app-height can come up short and the page would stop mid-screen,
+   letting the dark #080b1a base show through below (the "black bottom half"). Force the page to
+   fill the true screen height here — 100dvh is exact in standalone (no dynamic browser bars). */
+@media (display-mode: standalone) {
+  html,
+  body,
+  #root {
+    min-height: 100dvh;
+  }
+  .webapp-page {
+    min-height: 100dvh;
+  }
+}
+
 .webapp-page.is-android-client {
   padding-left: 12px;
   padding-right: 12px;

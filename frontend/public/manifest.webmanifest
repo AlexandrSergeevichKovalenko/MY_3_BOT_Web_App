@@ -3,8 +3,8 @@
   "short_name": "Schlümpfchen",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0b1020",
-  "theme_color": "#0f172a",
+  "background_color": "#f6f1ea",
+  "theme_color": "#f6f1ea",
   "icons": [
     {
       "src": "/icons/icon-192.png",
