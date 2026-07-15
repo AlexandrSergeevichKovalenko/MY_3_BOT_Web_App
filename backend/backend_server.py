@@ -16440,6 +16440,17 @@ def _book_audio_stars_price(document: dict, voice_tier: str) -> int:
     return eur_minor_to_stars(eur_minor)
 
 
+# Pro subscription: sold as a native monthly Telegram Star subscription. Price in EUR
+# (env-tunable) → Stars via the same markup. 2592000s (30d) is the only period Stars
+# supports; Telegram auto-charges each period and re-fires successful_payment.
+PRO_PRICE_EUR_MINOR = int(os.getenv("PRO_PRICE_EUR_MINOR") or "449")
+STARS_SUBSCRIPTION_PERIOD_SECONDS = 2592000
+
+
+def pro_price_stars() -> int:
+    return eur_minor_to_stars(PRO_PRICE_EUR_MINOR)
+
+
 def create_stars_invoice_link(
     *, title: str, description: str, payload_obj: dict, stars: int, subscription_period: int | None = None
 ) -> str | None:
@@ -51015,6 +51026,37 @@ def reader_audio_stars_invoice():
     if not link:
         return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз."}), 502
     return jsonify({"ok": True, "invoice_link": link, "stars": int(stars), "voice_tier": voice_tier})
+
+
+@app.route("/api/webapp/billing/stars_invoice", methods=["POST"])
+def billing_stars_invoice():
+    """Create a native monthly Telegram Stars subscription invoice for Pro. The Mini
+    App opens it with WebApp.openInvoice; the bot grants Pro on successful_payment and
+    on each auto-renewal. No external browser, no multi-window."""
+    payload = request.get_json(silent=True) or {}
+    init_data = str(payload.get("initData") or "").strip()
+    if not init_data or not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id_int = int(user_id)
+    plan_code = str(payload.get("plan_code") or "pro").strip().lower() or "pro"
+    if plan_code != "pro":
+        return jsonify({"error": "В Stars доступен только Pro", "error_code": "unsupported_plan"}), 400
+
+    stars = pro_price_stars()
+    link = create_stars_invoice_link(
+        title="Pro — подписка",
+        description="Полный доступ: больше заданий, YouTube-субтитры, переводы и разборы. Продление раз в месяц, отмена в любой момент.",
+        payload_obj={"purpose": "pro", "user_id": user_id_int, "plan_code": "pro"},
+        stars=stars,
+        subscription_period=STARS_SUBSCRIPTION_PERIOD_SECONDS,
+    )
+    if not link:
+        return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз."}), 502
+    return jsonify({"ok": True, "invoice_link": link, "stars": int(stars), "plan_code": "pro"})
 
 
 @app.route("/api/webapp/reader/audio/unlock", methods=["POST"])

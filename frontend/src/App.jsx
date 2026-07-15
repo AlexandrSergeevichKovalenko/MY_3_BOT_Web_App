@@ -1312,86 +1312,48 @@ function getLocalizedSkillTopicLabel(topicLike, uiLang = 'ru') {
 }
 
 function buildOnboardingSlides(uiLang = 'ru') {
+  // Quick "?" reference = a MAP of this screen (where things are), NOT a feature tour — the
+  // step-by-step "how each feature works" lives in the onboarding wizard, so we don't repeat it.
   if (uiLang === 'de') {
     return [
       {
-        eyebrow: 'Schritt 1 von 8',
-        title: 'Wofür die App da ist',
-        body: 'Schlümpfchen führt dich vom ersten Einstieg bis zur täglichen Routine: Übersetzungen, Wörter, Videos, Lesen, Sprechpraxis und Analytik an einem Ort.',
+        eyebrow: 'Schritt 1 von 4',
+        title: 'So ist dieser Bildschirm aufgebaut',
+        body: 'Das ist deine Startseite — von hier erreichst du alles: oben die Einstellungen, darunter «Heute» mit deinem Fortschritt und die farbigen Kacheln für alle Bereiche.',
         bullets: [
-          'Oben stellst du Sprache der Oberfläche, Theme und dein Sprachpaar ein.',
-          'Die stabilste und am tiefsten ausgebaute Lernlogik ist aktuell RU ↔ DE.',
-          'Das ? oben öffnet jederzeit diesen Guide erneut.',
+          'Oben: RU/DE — Sprache der Oberfläche, ☀️/🌙 — Theme, RU→DE — dein Lernpaar.',
+          'Die Taste ? oben öffnet diesen Guide jederzeit wieder.',
+          'Die App lässt sich als Symbol auf den Startbildschirm legen und ohne Telegram öffnen.',
         ],
       },
       {
-        eyebrow: 'Schritt 2 von 8',
-        title: 'Beginne mit Heute oder Übersetzungen',
-        body: 'Nach dem Einstieg gehst du meist zuerst in den Tagesplan oder direkt in den Bereich Übersetzungen. Dort startet dein Haupttraining.',
+        eyebrow: 'Schritt 2 von 4',
+        title: 'Der Block «Heute»',
+        body: 'Drei Kacheln zeigen deinen Fortschritt für Tag und Woche — ein Blick genügt.',
         bullets: [
-          'Heute zeigt dir die nächsten sinnvollen Aufgaben in der richtigen Reihenfolge.',
-          'Übersetzungen trainieren Grammatik, Satzbau und typische Fehler am schnellsten.',
-          'Das Hamburger-Menü links oben öffnet alle Bereiche der App.',
+          'Aufgaben — wie viel vom heutigen Plan schon erledigt ist.',
+          'Skill-Map — dein durchschnittliches Niveau über alle Themen, in Prozent.',
+          'Wochenplan — Fortschritt bei den Wochenzielen (Übersetzungen, Wörter, Sprechminuten, Lesen).',
         ],
       },
       {
-        eyebrow: 'Schritt 3 von 8',
-        title: 'Nutze das Wörterbuch aktiv',
-        body: 'Unbekannte Wörter solltest du nicht nur nachschlagen, sondern sofort speichern, anhören und später wiederholen.',
+        eyebrow: 'Schritt 3 von 4',
+        title: 'Bereiche — die farbigen Kacheln',
+        body: 'Unter «Heute» liegen alle Bereiche der App. Tippe eine Kachel an, um sie zu öffnen.',
         bullets: [
-          'Es gibt einen schnellen Lookup und eine tiefere GPT-Erklärung.',
-          'Gespeicherte Wörter und Phrasen gehen später in Karten und Space Repetition ein.',
-          'Du kannst für dein Material Ordner anlegen und ein PDF exportieren.',
+          'Übersetzungen, Wörterbuch & Suche, Videos, Filme, Lesen — Lernen und echtes Deutsch.',
+          'Karten (Space Repetition) — Wiederholung deiner gespeicherten Wörter.',
+          'Analytik, Abo, Kosten — Fortschritt und Tarif; Sprechen — Sprachpraxis (Pro).',
         ],
       },
       {
-        eyebrow: 'Schritt 4 von 8',
-        title: 'Wiederholen und automatisieren',
-        body: 'Karten, Quiz, Blocks und Space Repetition machen aus passivem Verstehen aktive Erinnerung.',
+        eyebrow: 'Schritt 4 von 4',
+        title: 'Wie es weitergeht',
+        body: 'Eine Schritt-für-Schritt-Tour durch alle Funktionen findest du im Onboarding. Dieser Guide bleibt jederzeit über ? erreichbar.',
         bullets: [
-          'Space Repetition plant Wiederholungen automatisch nach deinem echten Erinnern.',
-          'Quiz und Blocks sind kürzer und spielerischer für Zwischendurch.',
-          'Neue und alte Karten werden sinnvoll gemischt statt chaotisch zufällig gezeigt.',
-        ],
-      },
-      {
-        eyebrow: 'Schritt 5 von 8',
-        title: 'Gehe in echtes Deutsch',
-        body: 'Mit YouTube, Filmen und Reader wechselst du von Übungssätzen in echten Sprachkontext.',
-        bullets: [
-          'YouTube verbindet Video, Untertitel, Wort-Lookup und Speichern.',
-          'Filme sind dein schneller Katalog mit bereits vorbereiteten Untertiteln.',
-          'Im Reader liest du ruhig, hörst Audio und sammelst Zeit für deine Ziele.',
-        ],
-      },
-      {
-        eyebrow: 'Schritt 6 von 8',
-        title: 'Trainiere aktiv mit Stimme',
-        body: 'Im Bereich Sprachpraxis sprichst du live mit dem Assistenten und trainierst freies Formulieren, Reaktion und Aussprache.',
-        bullets: [
-          'Mikrofon aktivieren, Assistent verbinden und direkt sprechen.',
-          'Die Minuten tauchen später in Plan und Analytik auf.',
-          'Dieser Bereich ist für echte mündliche Routine gedacht, nicht nur für Theorie.',
-        ],
-      },
-      {
-        eyebrow: 'Schritt 7 von 8',
-        title: 'Bot privat und in der Gruppe',
-        body: 'Ein Teil des Systems lebt direkt in Telegram: Privat-Chat für schnelle Hilfe, Gruppe für Quiz, Zusammenfassungen und gemeinsame Dynamik.',
-        bullets: [
-          'Nach /start erscheint im Privat-Chat die Taste „💬 Спросить у GPT“.',
-          'Privat kommen je nach Route Plan, Erklärungen, Audio und Analytik.',
-          'In Gruppen kommen bestätigte Teilnehmer in Ranking und Gruppenstatistik.',
-        ],
-      },
-      {
-        eyebrow: 'Schritt 8 von 8',
-        title: 'Analytik, Skill-Training und Abo',
-        body: 'Wenn du verstehst, wo du stehst, und gezielt an Schwachstellen arbeitest, wird die App am stärksten.',
-        bullets: [
-          'Analytik zeigt dir Zeitraum, Vergleich, Ziele und Gruppenmodus.',
-          'Skill-Training baut aus einem schwachen Thema Theorie, Video und Praxis.',
-          'Im Bereich Abo verwaltest du Limits, Tarif und Stripe-Portal.',
+          'Volle Tour durch die Funktionen: /start im Bot oder die Kachel «Guide».',
+          '«Support» — schnelle Hilfe und Fragen.',
+          'Am tiefsten ausgebaut ist derzeit das Lernpaar RU ↔ DE.',
         ],
       },
     ];
@@ -1399,83 +1361,43 @@ function buildOnboardingSlides(uiLang = 'ru') {
 
   return [
     {
-      eyebrow: 'Шаг 1 из 8',
-      title: 'Для чего это приложение',
-      body: 'Schlümpfchen ведет вас от первого входа до ежедневной рутины: переводы, слова, видео, чтение, разговорная практика и аналитика собраны в одном месте.',
+      eyebrow: 'Шаг 1 из 4',
+      title: 'Как устроен этот экран',
+      body: 'Это твой главный экран — отсюда доступно всё: сверху настройки, ниже «Сегодня» с твоим прогрессом и цветные плитки со всеми разделами.',
       bullets: [
-        'Вверху вы меняете язык интерфейса, тему и языковую пару.',
-        'Самая полная и стабильная логика обучения сейчас собрана вокруг пары RU ↔ DE.',
+        'Вверху: RU/DE — язык интерфейса, ☀️/🌙 — тема, RU→DE — твоя пара обучения.',
         'Кнопка ? в шапке в любой момент снова открывает этот гид.',
+        'Приложение можно вынести иконкой на рабочий стол и открывать без Telegram.',
       ],
     },
     {
-      eyebrow: 'Шаг 2 из 8',
-      title: 'Начните с Сегодня или Переводов',
-      body: 'После входа обычно лучше идти либо в план на сегодня, либо сразу в раздел переводов. Именно там запускается основной учебный цикл.',
+      eyebrow: 'Шаг 2 из 4',
+      title: 'Блок «Сегодня»',
+      body: 'Три плитки показывают твой прогресс за день и неделю — видно с одного взгляда.',
       bullets: [
-        'Сегодня показывает, какие задачи сейчас полезнее делать по порядку.',
-        'Переводы быстрее всего прокачивают грамматику, порядок слов и типичные ошибки.',
-        'Гамбургер-меню слева сверху открывает все разделы приложения.',
+        'Задачи — сколько из дневного плана уже сделано.',
+        'Skill-Map — твой средний уровень по всем темам, в процентах.',
+        'Wochenplan — прогресс по недельным целям (переводы, слова, минуты речи, чтение).',
       ],
     },
     {
-      eyebrow: 'Шаг 3 из 8',
-      title: 'Работайте со словарем активно',
-      body: 'Незнакомые слова лучше не просто переводить, а сразу сохранять, слушать и затем повторять.',
+      eyebrow: 'Шаг 3 из 4',
+      title: 'Разделы — цветные плитки',
+      body: 'Ниже «Сегодня» — все разделы приложения. Тапни любую плитку, чтобы открыть.',
       bullets: [
-        'В словаре есть быстрый перевод и более глубокий GPT-разбор.',
-        'Сохраненные слова и фразы потом идут в карточки и Space Repetition.',
-        'Можно создавать папки под свои темы и выгружать словарь в PDF.',
+        'Переводы, Словарь и поиск, Видео, Фильмы, Чтение — обучение и живой язык.',
+        'Карты (Space Repetition) — повторение сохранённых слов.',
+        'Аналитика, Подписка, Расходы — прогресс и тариф; Разговор — голосовая практика (Pro).',
       ],
     },
     {
-      eyebrow: 'Шаг 4 из 8',
-      title: 'Повторяйте и автоматизируйте',
-      body: 'Карточки, quiz, blocks и Space Repetition превращают пассивное понимание слова в активное вспоминание.',
+      eyebrow: 'Шаг 4 из 4',
+      title: 'Куда идти дальше',
+      body: 'Пошаговый тур по всем функциям — в онбординге. А этот гид всегда под рукой по кнопке ?.',
       bullets: [
-        'Space Repetition сам рассчитывает интервалы повторения по вашему реальному ответу.',
-        'Quiz и Blocks подходят для коротких и более игровых сессий.',
-        'Новые и старые карточки смешиваются осмысленно, а не случайно.',
-      ],
-    },
-    {
-      eyebrow: 'Шаг 5 из 8',
-      title: 'Переходите к живому языку',
-      body: 'YouTube, фильмы и читалка переводят вас из учебных предложений в реальный языковой контекст.',
-      bullets: [
-        'YouTube объединяет видео, субтитры, быстрый lookup и сохранение слов.',
-        'Фильмы дают быстрый каталог видео, где субтитры уже подготовлены.',
-        'В читалке вы читаете спокойно, слушаете аудио и копите минуты в прогрессе.',
-      ],
-    },
-    {
-      eyebrow: 'Шаг 6 из 8',
-      title: 'Говорите вслух',
-      body: 'В разговорной практике вы общаетесь с ассистентом голосом и тренируете свободную речь, реакцию и произношение.',
-      bullets: [
-        'Подключите ассистента, дайте доступ к микрофону и начинайте диалог.',
-        'Минуты разговора потом видны в плане и аналитике.',
-        'Этот раздел нужен именно для живой устной практики, а не только для теории.',
-      ],
-    },
-    {
-      eyebrow: 'Шаг 7 из 8',
-      title: 'Используйте бота в личке и в группе',
-      body: 'Часть системы живет прямо в Telegram: личка нужна для быстрой помощи, группа для квизов, итогов и общего движения.',
-      bullets: [
-        'После /start в личке появляется кнопка «💬 Спросить у GPT».',
-        'В личку по вашему сценарию могут приходить план, объяснения, аудио и аналитика.',
-        'В группе в рейтинг и общую статистику попадают только подтвержденные участники.',
-      ],
-    },
-    {
-      eyebrow: 'Шаг 8 из 8',
-      title: 'Следите за аналитикой и слабыми местами',
-      body: 'Максимальная польза начинается тогда, когда вы понимаете свой прогресс и точечно дорабатываете слабые темы.',
-      bullets: [
-        'Аналитика показывает период, сравнение, цели и групповой режим.',
-        'Тренировка навыка собирает теорию, видео и практику под одну слабую тему.',
-        'В разделе Подписка вы управляете лимитами, тарифом и Stripe Portal.',
+        'Полный тур по функциям: команда /start в боте или плитка «Guide».',
+        '«Support» — быстрая помощь и вопросы.',
+        'Глубже всего сейчас проработана пара обучения RU ↔ DE.',
       ],
     },
   ];
@@ -13202,9 +13124,10 @@ function AppInner() {
   }, [flashcardsOnly, selectedSections]);
   const isHomeRouteActive = isHomeScreen || Boolean(activeHomeSubsectionKey);
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
-  // Only for authenticated users on the home screen. The tokenless login screen must stay a
-  // bare login form — the "how to use the app" content lives in onboarding, not here.
-  const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed && Boolean(initData);
+  // Removed from the home screen by request: the "So startest du" promo card was clutter at
+  // start. The guide is always one tap away via the ? button in the top bar (and the Guide tile),
+  // so there's no need to occupy the first screen with it.
+  const showHomeGuideQuickCard = false;
   /* Legacy guide/onboarding copy removed from runtime path.
   const _legacyOnboardingSlides = useMemo(() => ([
     {
@@ -31430,6 +31353,40 @@ function AppInner() {
   const handleBillingUpgrade = async (planCode) => {
     if (!initData) {
       setBillingStatusError(initDataMissingMsg);
+      return;
+    }
+    // Pro is sold as a native Telegram Stars subscription — one in-app sheet, no
+    // external browser. Falls back to Stripe checkout only if Stars is unavailable.
+    if (String(planCode) === 'pro' && telegramApp?.openInvoice) {
+      setBillingActionLoading(true);
+      try {
+        const resp = await fetch('/api/webapp/billing/stars_invoice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, plan_code: 'pro' }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data?.invoice_link) {
+          throw new Error(String(data?.error || tr('Не удалось открыть оплату', 'Zahlung konnte nicht geöffnet werden')));
+        }
+        telegramApp.openInvoice(data.invoice_link, (status) => {
+          if (status === 'paid') {
+            try {
+              telegramApp.showPopup?.({
+                title: tr('Готово', 'Fertig'),
+                message: tr('Pro подключён! Обновляем доступ…', 'Pro aktiv! Zugang wird aktualisiert…'),
+                buttons: [{ type: 'ok' }],
+              });
+            } catch (_e) { /* popup optional */ }
+            // The bot grants Pro server-side on successful_payment (near-instant).
+            setTimeout(() => { void loadBillingStatus(); }, 1500);
+          }
+        });
+      } catch (error) {
+        setBillingStatusError(`${tr('Ошибка оплаты', 'Zahlungsfehler')}: ${error.message}`);
+      } finally {
+        setBillingActionLoading(false);
+      }
       return;
     }
     setBillingActionLoading(true);

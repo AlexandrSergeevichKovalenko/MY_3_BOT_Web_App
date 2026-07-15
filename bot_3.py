@@ -33301,8 +33301,27 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
         except Exception:
             logging.exception("book_audio grant failed charge=%s", charge_id)
     elif purpose == "pro":
-        # Stage 3: Pro subscription grant lands here.
-        logging.info("stars pro payment received (grant TBD) charge=%s user=%s stars=%s", charge_id, uid, stars)
+        try:
+            from backend.database import set_subscription_from_stripe
+            from datetime import datetime, timezone, timedelta
+            exp = getattr(sp, "subscription_expiration_date", None)
+            if isinstance(exp, (int, float)):
+                exp = datetime.fromtimestamp(int(exp), tz=timezone.utc)
+            if not exp:
+                exp = datetime.now(timezone.utc) + timedelta(days=31)
+            set_subscription_from_stripe(
+                user_id=int(payload.get("user_id") or uid),
+                plan_code="pro",
+                stripe_customer_id=None,
+                stripe_subscription_id=f"stars_{charge_id}",
+                status="active",
+                current_period_end=exp,
+            )
+            await msg.reply_text(
+                "✅ Pro подключён — спасибо! Продлевается автоматически раз в месяц; отменить можно в любой момент в настройках Telegram."
+            )
+        except Exception:
+            logging.exception("stars pro grant failed charge=%s", charge_id)
     else:
         logging.warning("stars payment with unknown purpose=%r charge=%s", purpose, charge_id)
 
