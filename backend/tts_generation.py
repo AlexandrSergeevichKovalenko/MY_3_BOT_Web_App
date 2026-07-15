@@ -37,6 +37,7 @@ from backend.database import (
     mark_tts_object_ready,
     set_provider_budget_block_state,
 )
+from backend import tts_budget_counter
 from backend.observability import _elapsed_ms_since
 from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url
 from backend.telegram_notify import _send_private_message
@@ -325,6 +326,15 @@ def _enforce_google_tts_monthly_budget(requested_chars: int) -> dict:
             "is_blocked": False,
         }
 
+    # Read usage from the fast O(1) per-month counter instead of SUM-ing the whole
+    # billing table. It is INCR'd by EVERY synth path below (not just the few that
+    # write a billing row), so the threshold alerts finally reflect real Google
+    # usage. Seeds from the ledger SUM on a cold Redis key; fail-open to the SUM.
+    period_month = status.get("period_month")
+    status["used_units"] = tts_budget_counter.get_used(
+        "google_tts", period_month, fallback=status.get("used_units")
+    )
+
     _notify_google_tts_budget_thresholds(status=status, requested_chars=requested_value)
 
     effective_limit = int(status.get("effective_limit_units") or 0)
@@ -361,6 +371,8 @@ def _enforce_google_tts_monthly_budget(requested_chars: int) -> dict:
         payload["remaining"] = max(0, effective_limit - int(round(used_units)))
         raise GoogleTTSBudgetBlockedError(over_reason, payload=payload)
 
+    # Passed the gate → record these chars so the very next check sees them.
+    tts_budget_counter.add("google_tts", period_month, requested_value)
     return status
 
 
@@ -378,6 +390,12 @@ def _enforce_tts_monthly_budget(requested_chars: int, *, provider: str = "google
     status = get_provider_monthly_budget_status(provider=normalized, units_type="chars", unit_label="chars")
     if not status:
         return {"provider": normalized, "unit": "chars", "used_units": 0.0, "effective_limit_units": 0, "is_blocked": False}
+
+    # Same fast counter for the Standard/paid buckets (each synth INCRs exactly once).
+    period_month = status.get("period_month")
+    status["used_units"] = tts_budget_counter.get_used(
+        normalized, period_month, fallback=status.get("used_units")
+    )
 
     effective_limit = int(status.get("effective_limit_units") or 0)
     used_units = float(status.get("used_units") or 0.0)
@@ -402,6 +420,9 @@ def _enforce_tts_monthly_budget(requested_chars: int, *, provider: str = "google
             logging.warning("Failed to persist %s budget block state", normalized, exc_info=True)
         payload["is_blocked"] = True
         raise GoogleTTSBudgetBlockedError(over_reason, payload=payload)
+
+    # Passed the gate → record these chars into the same fast counter.
+    tts_budget_counter.add(normalized, period_month, requested_value)
     return status
 
 
