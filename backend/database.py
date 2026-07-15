@@ -35410,6 +35410,60 @@ def delete_stale_reader_audio_pages(older_than_days: int = 90, limit: int = 5000
         return []
 
 
+def delete_churned_user_reader_audio_pages(inactive_months: int = 12, limit: int = 5000) -> list[str]:
+    """Reclaim PAID reader audio belonging to users who have LEFT the platform. Returns
+    the deleted rows' audio_url list (caller removes the R2 objects). Call repeatedly
+    until it returns []. This is the counterpart to the idle TTL: paid audio is normally
+    kept forever (regen costs the owner ~thousands× a month of storage), but once a user
+    is gone it will never be replayed, so keeping it is pure waste.
+
+    We delete only the AUDIO PAGES, never the book row or the unlock — so if the user
+    ever returns, their permanent unlock still lets the audio regenerate free for them.
+
+    "Gone" is intentionally conservative — ALL of:
+      • non-public book (classics never touched here);
+      • the audio page itself is cold (not played in `inactive_months`) — so an active
+        reader's book is safe even if their learning streak looks stale;
+      • AND the owner shows a positive left-the-platform signal: either blocked the bot
+        (bt_3_bot_blocked_users) or no learning activity for `inactive_months`
+        (bt_3_user_streaks.last_active_date). Users with no positive signal are kept."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM bt_3_reader_audio_pages
+                    WHERE id IN (
+                        SELECT ap.id FROM bt_3_reader_audio_pages ap
+                        JOIN bt_3_reader_library rl ON rl.id = ap.document_id
+                        WHERE rl.is_public = FALSE
+                          AND ap.user_id > 0
+                          AND COALESCE(ap.last_played_at, ap.created_at)
+                              < NOW() - (%s * INTERVAL '1 month')
+                          AND (
+                              EXISTS (
+                                  SELECT 1 FROM bt_3_bot_blocked_users b
+                                  WHERE b.user_id = ap.user_id AND b.is_blocked = TRUE
+                              )
+                              OR EXISTS (
+                                  SELECT 1 FROM bt_3_user_streaks s
+                                  WHERE s.user_id = ap.user_id
+                                    AND s.last_active_date
+                                        < (CURRENT_DATE - (%s * INTERVAL '1 month'))
+                              )
+                          )
+                        LIMIT %s
+                    )
+                    RETURNING audio_url
+                    """,
+                    (int(inactive_months), int(inactive_months), int(limit)),
+                )
+                return [str(r[0]) for r in cursor.fetchall() if r and r[0]]
+    except Exception:
+        logging.exception("delete_churned_user_reader_audio_pages failed")
+        return []
+
+
 def enforce_reader_audio_pro_monthly_limit(
     user_id: int,
     *,

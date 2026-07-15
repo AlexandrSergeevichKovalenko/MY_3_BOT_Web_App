@@ -528,6 +528,7 @@ from backend.database import (
     get_cached_reader_audio_page,
     save_reader_audio_page_cache,
     delete_stale_reader_audio_pages,
+    delete_churned_user_reader_audio_pages,
     reader_audio_cache_total_bytes,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
@@ -53693,6 +53694,41 @@ def _run_reader_audio_cache_eviction_job() -> None:
         logging.exception("[READER_AUDIO_TTL] eviction job failed")
 
 
+def _run_churned_user_audio_cleanup_job() -> None:
+    """Reclaim PAID reader audio of users who have LEFT the platform (blocked the bot or
+    no learning activity for READER_AUDIO_CHURN_INACTIVE_MONTHS, default 12) AND whose
+    audio is itself cold. Paid audio is otherwise kept forever (regen ≫ storage), but a
+    gone user will never replay it. Only the audio pages + their R2 mp3s are removed —
+    the book row and the permanent unlock stay, so a returning user regenerates free."""
+    inactive_months = int((os.getenv("READER_AUDIO_CHURN_INACTIVE_MONTHS") or "12").strip() or "12")
+    if inactive_months <= 0:
+        logging.info("[READER_AUDIO_CHURN] disabled (READER_AUDIO_CHURN_INACTIVE_MONTHS<=0)")
+        return
+    total_rows = 0
+    total_objs = 0
+    try:
+        for _ in range(200):  # up to 200 batches × 5000 = 1M rows/run safety cap
+            urls = delete_churned_user_reader_audio_pages(inactive_months=inactive_months, limit=5000)
+            if not urls:
+                break
+            total_rows += len(urls)
+            for url in urls:
+                key = r2_key_from_public_url(url)
+                if not key:
+                    continue
+                try:
+                    r2_delete_object(key)
+                    total_objs += 1
+                except Exception:
+                    logging.warning("[READER_AUDIO_CHURN] R2 delete failed key=%s", key)
+        logging.info(
+            "[READER_AUDIO_CHURN] reclaimed rows=%s r2_objects=%s inactive_months=%s",
+            total_rows, total_objs, inactive_months,
+        )
+    except Exception:
+        logging.exception("[READER_AUDIO_CHURN] cleanup job failed")
+
+
 def _run_audio_scheduler_job() -> None:
     mode = (os.getenv("AUDIO_SCHEDULER_DATE_MODE") or "yesterday").strip().lower()
     tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
@@ -58308,6 +58344,21 @@ def _start_audio_scheduler() -> None:
             "cron",
             hour=int((os.getenv("READER_AUDIO_CACHE_TTL_HOUR") or "4").strip() or "4"),
             minute=int((os.getenv("READER_AUDIO_CACHE_TTL_MINUTE") or "20").strip() or "20"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=21600,
+        )
+    # Weekly reclaim of PAID audio belonging to churned users (blocked the bot / inactive
+    # ≥12mo) whose audio is also cold. Paid audio is kept forever otherwise; a gone user
+    # never replays it. Light + batched, so weekly (Sun 04:30) is plenty.
+    reader_audio_churn_enabled = (os.getenv("READER_AUDIO_CHURN_CLEANUP_ENABLED") or "1").strip().lower()
+    if reader_audio_churn_enabled in ("1", "true", "yes", "on"):
+        _audio_scheduler.add_job(
+            _run_churned_user_audio_cleanup_job,
+            "cron",
+            day_of_week=os.getenv("READER_AUDIO_CHURN_DOW") or "sun",
+            hour=int((os.getenv("READER_AUDIO_CHURN_HOUR") or "4").strip() or "4"),
+            minute=int((os.getenv("READER_AUDIO_CHURN_MINUTE") or "30").strip() or "30"),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=21600,
