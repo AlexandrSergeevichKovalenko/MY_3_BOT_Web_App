@@ -5557,6 +5557,7 @@ function AppInner() {
     const rootStyle = document.documentElement?.style;
     const viewport = window.visualViewport;
     let frameId = null;
+    const settleTimers = [];
 
     const applyViewportHeight = () => {
       frameId = null;
@@ -5580,30 +5581,45 @@ function AppInner() {
       frameId = window.requestAnimationFrame(applyViewportHeight);
     };
 
-    requestViewportHeightUpdate();
+    // Some transitions (returning from the iOS share sheet / app switcher, closing
+    // the keyboard, rotating) leave visualViewport.height reading a stale/shrunk value
+    // for a beat, then settle. A single measurement can latch that wrong value and the
+    // page stays half-height ("split screen", black bottom half). Re-measure a couple of
+    // times after the event so we catch the settled height, not the transient one.
+    const settleViewportHeight = () => {
+      requestViewportHeightUpdate();
+      [120, 350].forEach((delay) => {
+        settleTimers.push(window.setTimeout(applyViewportHeight, delay));
+      });
+    };
+
+    settleViewportHeight();
     window.addEventListener('resize', requestViewportHeightUpdate);
-    window.addEventListener('orientationchange', requestViewportHeightUpdate);
-    window.addEventListener('focus', requestViewportHeightUpdate);
-    document.addEventListener('visibilitychange', requestViewportHeightUpdate);
+    window.addEventListener('orientationchange', settleViewportHeight);
+    window.addEventListener('focus', settleViewportHeight);
+    window.addEventListener('pageshow', settleViewportHeight);
+    document.addEventListener('visibilitychange', settleViewportHeight);
     viewport?.addEventListener('resize', requestViewportHeightUpdate);
     viewport?.addEventListener('scroll', requestViewportHeightUpdate);
 
     if (typeof telegramApp?.onEvent === 'function') {
-      telegramApp.onEvent('viewportChanged', requestViewportHeightUpdate);
+      telegramApp.onEvent('viewportChanged', settleViewportHeight);
     }
 
     return () => {
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
+      settleTimers.forEach((id) => window.clearTimeout(id));
       window.removeEventListener('resize', requestViewportHeightUpdate);
-      window.removeEventListener('orientationchange', requestViewportHeightUpdate);
-      window.removeEventListener('focus', requestViewportHeightUpdate);
-      document.removeEventListener('visibilitychange', requestViewportHeightUpdate);
+      window.removeEventListener('orientationchange', settleViewportHeight);
+      window.removeEventListener('focus', settleViewportHeight);
+      window.removeEventListener('pageshow', settleViewportHeight);
+      document.removeEventListener('visibilitychange', settleViewportHeight);
       viewport?.removeEventListener('resize', requestViewportHeightUpdate);
       viewport?.removeEventListener('scroll', requestViewportHeightUpdate);
       if (typeof telegramApp?.offEvent === 'function') {
-        telegramApp.offEvent('viewportChanged', requestViewportHeightUpdate);
+        telegramApp.offEvent('viewportChanged', settleViewportHeight);
       }
     };
   }, [telegramApp]);

@@ -745,6 +745,19 @@ html:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
 body:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]),
 #root:has(.webapp-page.is-reader-immersive[data-reader-theme="cream"]) { background: #fbf8f1 !important; }
 
+/* App shell base fill. The root layers (html/#root) default to the dark #080b1a base,
+   which is right for the DARK theme. In the LIGHT theme the page itself is cream
+   (#efe4d1), but anywhere the page box is shorter than the physical screen — a
+   keyboard-shrunk or stale --app-height, the instant you return from the iOS share
+   sheet / app switcher — the dark root showed through beneath it as an ugly BLACK band
+   (the "black bottom half", the strip under the keyboard). Paint the root layers the
+   same cream so those gaps read as seamless background instead of a black hole. Mirrors
+   the reader :has() rules above; the reader rules keep !important so they still win when
+   the reader is open in light theme. */
+html:has(.webapp-page.is-theme-light),
+body:has(.webapp-page.is-theme-light),
+#root:has(.webapp-page.is-theme-light) { background: #efe4d1; }
+
 /* And let the immersive page span the full viewport WIDTH so the reader background
    reaches the side edges (height stays governed by the existing 100dvh / --app-height
    rules — don't force it taller or the bottom dock could slip under a native bar). */
