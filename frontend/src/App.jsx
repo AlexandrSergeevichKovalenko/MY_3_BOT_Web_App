@@ -3465,11 +3465,32 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     flushValue(nextValue, 'blur');
   };
 
+  // When the keyboard opens, the page shrinks to the space above it and a short field
+  // otherwise stays pinned near the TOP with a big empty band down to the keyboard — it
+  // only snaps into place once iOS auto-scrolls the caret on the first keystroke. Do that
+  // scroll up front on focus so the whole card (sentence + input + actions) sits right
+  // above the keyboard with no empty band. Touch-only (harmless-but-pointless on desktop)
+  // and not on Android/Telegram, which manages its own viewport + has custom draft logic.
+  const handleFocus = useCallback(() => {
+    if (isAndroidClient) return;
+    const isTouch = typeof window !== 'undefined'
+      && (('ontouchstart' in window) || Number(navigator?.maxTouchPoints || 0) > 0);
+    if (!isTouch) return;
+    const node = textareaRef.current;
+    if (!node) return;
+    window.setTimeout(() => {
+      if (typeof document === 'undefined' || document.activeElement !== node) return;
+      const card = node.closest('.webapp-translation-item') || node;
+      try { card.scrollIntoView({ block: 'end', behavior: 'smooth' }); } catch { /* older engines */ }
+    }, 350);
+  }, [isAndroidClient]);
+
   const textareaProps = {
     ref: textareaRef,
     rows: 5,
     defaultValue: String(initialValue || ''),
     onBlur: handleBlur,
+    onFocus: handleFocus,
     placeholder,
     'data-translation-draft-field': 'true',
   };
@@ -8054,20 +8075,30 @@ function AppInner() {
       .map((item) => {
         const planCode = String(item.plan_code || '').trim().toLowerCase();
         const meta = billingPlanMeta[planCode] || {};
+        let priceLabel = formatBillingPriceLabel(
+          item,
+          uiLang,
+          uiLang === 'de'
+            ? String(meta.priceLabelDe || meta.priceLabel || '').trim()
+            : String(meta.priceLabel || '').trim(),
+          planCode.startsWith('support_'),
+        );
+        // Pro is paid in Telegram Stars now → show the ⭐ price, not the Stripe EUR one.
+        // (Rate mirrors backend STARS_PER_EUR=50 / STARS_MARKUP=1.30 — keep in sync.)
+        if (planCode === 'pro') {
+          const eur = Number(item?.amount_value);
+          if (Number.isFinite(eur) && eur > 0) {
+            const stars = Math.max(1, Math.ceil(eur * 1.30 * 50));
+            priceLabel = uiLang === 'de' ? `${stars} ⭐ / Monat` : `${stars} ⭐ / мес`;
+          }
+        }
         return {
           ...item,
           planCode,
           title: String(meta.title || item.name || planCode).trim(),
           eyebrow: String(meta.eyebrow || tr('Тариф', 'Tarif')).trim(),
           blurb: String(meta.blurb || '').trim(),
-          priceLabel: formatBillingPriceLabel(
-            item,
-            uiLang,
-            uiLang === 'de'
-              ? String(meta.priceLabelDe || meta.priceLabel || '').trim()
-              : String(meta.priceLabel || '').trim(),
-            planCode.startsWith('support_'),
-          ),
+          priceLabel,
           sortOrder: Number.isFinite(order[planCode]) ? order[planCode] : 500,
         };
       })

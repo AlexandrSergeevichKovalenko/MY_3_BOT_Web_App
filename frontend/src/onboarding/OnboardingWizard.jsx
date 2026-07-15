@@ -686,12 +686,12 @@ function StepBody(props) {
               <li>{t('🎚 Хочешь озвучить свою книгу — выбираешь голос, от него зависит цена:', '🎚 Willst du dein eigenes Buch vertonen — du wählst die Stimme, danach richtet sich der Preis:')}</li>
             </ul>
             <ul className="ob-list ob-sublist">
-              <li>{t('Обычный голос — €4 за 1 млн символов', 'Standard-Stimme — €4 pro 1 Mio. Zeichen')}</li>
-              <li>{t('Премиум-голос — €16 за 1 млн символов', 'Premium-Stimme — €16 pro 1 Mio. Zeichen')}</li>
+              <li>{t('Обычный голос — дешевле', 'Standard-Stimme — günstiger')}</li>
+              <li>{t('Премиум-голос — качественнее, дороже', 'Premium-Stimme — hochwertiger, teurer')}</li>
             </ul>
             <p className="ob-muted-note">
-              {t('Например, книга ~300 000 символов: Обычный ≈ €1,2, Премиум ≈ €4,8. Точная цена показывается перед покупкой. Платишь один раз за книгу — слушаешь сколько угодно, навсегда. Кошелёк для озвучки пополняется от €3.',
-                 'Beispiel: ein Buch mit ~300 000 Zeichen — Standard ≈ €1,2, Premium ≈ €4,8. Der genaue Preis wird vor dem Kauf angezeigt. Du zahlst einmal pro Buch — und hörst so oft du willst, für immer. Vertonungs-Guthaben ab €3 aufladbar.')}
+              {t('Например, книга ~300 000 символов: Обычный ≈ 78 ⭐, Премиум ≈ 312 ⭐ (для длинных книг — больше). Точная цена в ⭐ показывается перед покупкой. Платишь один раз за книгу — слушаешь сколько угодно, навсегда. Оплата — прямо в Telegram Stars.',
+                 'Beispiel: ein Buch mit ~300 000 Zeichen — Standard ≈ 78 ⭐, Premium ≈ 312 ⭐ (bei langen Büchern mehr). Der genaue Preis in ⭐ wird vor dem Kauf angezeigt. Du zahlst einmal pro Buch — und hörst so oft du willst, für immer. Bezahlt wird direkt mit Telegram Stars.')}
             </p>
             <p className="ob-muted-note">{t('Озвучить книгу можно прямо в Читалке: открываешь книгу → кнопка озвучки.', 'Ein Buch vertonst du direkt im Reader: Buch öffnen → Vertonungs-Knopf.')}</p>
           </div>
@@ -1054,12 +1054,13 @@ export default function OnboardingWizard() {
         const pro = (Array.isArray(d.plans) ? d.plans : []).find((p) => p.plan_code === 'pro');
         const amount = pro && pro.amount_value != null ? Number(pro.amount_value) : null;
         if (!off && amount != null && !Number.isNaN(amount)) {
-          const cur = String(pro.currency || 'EUR').toUpperCase();
           const per = pro.recurring_interval === 'year' ? t('год', 'Jahr')
             : pro.recurring_interval === 'week' ? t('неделя', 'Woche')
             : t('месяц', 'Monat');
-          const amtStr = Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
-          setProPrice(`${amtStr} ${cur} / ${per}`);
+          // Pro is paid in Telegram Stars now → show the ⭐ price.
+          // (Rate mirrors backend STARS_PER_EUR=50 / STARS_MARKUP=1.30.)
+          const stars = Math.max(1, Math.ceil(amount * 1.30 * 50));
+          setProPrice(`${stars} ⭐ / ${per}`);
         }
       } catch (_e) { /* price hidden; CTA still opens the live paywall */ }
     })();
