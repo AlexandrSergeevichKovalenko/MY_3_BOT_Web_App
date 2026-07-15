@@ -16483,10 +16483,12 @@ def _book_audio_pricing_payload(document: dict, unlocked_tiers: list[str] | None
     unlocked = set(unlocked_tiers or [])
     tiers = []
     for tier in AUDIO_OFFERED_VOICE_TIERS:
+        price_minor = int(estimate_book_audio_price_minor(chars, tier))
         tiers.append({
             "tier": tier,
             "label": _AUDIO_TIER_LABELS.get(tier, {}),
-            "price_minor": int(estimate_book_audio_price_minor(chars, tier)),
+            "price_minor": price_minor,
+            "price_stars": eur_minor_to_stars(price_minor),
             "unlocked": tier in unlocked,
         })
     return {

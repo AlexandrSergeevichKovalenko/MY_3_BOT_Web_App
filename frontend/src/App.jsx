@@ -15505,40 +15505,60 @@ function AppInner() {
     } catch (_e) { /* silent — балансы не критичны к моменту */ }
   }, [initData]);
 
+  // Mark a voice tier owned locally so the modal/reader reflect it immediately.
+  const markReaderTierUnlocked = useCallback((voiceTier) => {
+    setReaderDocAudio((cur) => {
+      if (!cur || !Array.isArray(cur.tiers)) return cur;
+      return { ...cur, any_unlocked: true, tiers: cur.tiers.map((t) => (t.tier === voiceTier ? { ...t, unlocked: true } : t)) };
+    });
+  }, []);
+
+  // Pay for a book's narration natively in Telegram Stars (WebApp.openInvoice): one
+  // in-app sheet, result via callback — no wallet, no external browser. The bot grants
+  // the unlock server-side on successful_payment.
   const doUnlockBookAudio = useCallback(async (voiceTier) => {
     const info = readerAudioUnlockInfo;
     if (!info || !info.documentId) return;
     setReaderAudioUnlockState('unlocking');
     try {
-      const resp = await fetch('/api/webapp/reader/audio/unlock', {
+      const resp = await fetch('/api/webapp/reader/audio/stars_invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData, document_id: info.documentId, voice_tier: voiceTier }),
       });
       const data = await resp.json().catch(() => ({}));
-      if (resp.ok && data?.ok) {
-        // Optimistic: reflect balance + mark this tier owned, then close.
-        const newBal = Number(data.balance_minor || 0);
-        setWalletBalanceMinor(newBal);
-        setReaderDocAudio((cur) => {
-          if (!cur || !Array.isArray(cur.tiers)) return cur;
-          return { ...cur, any_unlocked: true, tiers: cur.tiers.map((t) => (t.tier === voiceTier ? { ...t, unlocked: true } : t)) };
-        });
+      if (resp.ok && (data.already_unlocked || data.free)) {
+        markReaderTierUnlocked(voiceTier);
         setReaderAudioUnlockState('idle');
         closeReaderAudioUnlockModal();
         return;
       }
-      if (resp.status === 402) {
-        // Not enough balance — keep the modal open, refresh to the shortfall view.
-        setReaderAudioUnlockState('idle');
-        setReaderAudioUnlockInfo((cur) => (cur ? { ...cur, balanceMinor: Number(data.balance_minor || cur.balanceMinor || 0) } : cur));
+      if (!resp.ok || !data.invoice_link || !telegramApp?.openInvoice) {
+        setReaderAudioUnlockState('error');
         return;
       }
-      setReaderAudioUnlockState('error');
+      telegramApp.openInvoice(data.invoice_link, (status) => {
+        if (status === 'paid') {
+          markReaderTierUnlocked(voiceTier);
+          setReaderAudioUnlockState('idle');
+          closeReaderAudioUnlockModal();
+          try {
+            telegramApp.showPopup?.({
+              title: tr('Готово', 'Fertig'),
+              message: tr('Озвучка книги открыта! Нажми ▶ — теперь её можно слушать всегда.',
+                          'Buch-Audio freigeschaltet! Tippe auf ▶ — jederzeit anhören.'),
+              buttons: [{ type: 'ok' }],
+            });
+          } catch (_e) { /* popup optional */ }
+        } else {
+          // cancelled | failed | pending — stay on the modal so they can retry.
+          setReaderAudioUnlockState(status === 'failed' ? 'error' : 'idle');
+        }
+      });
     } catch (_e) {
       setReaderAudioUnlockState('error');
     }
-  }, [readerAudioUnlockInfo, initData]);
+  }, [readerAudioUnlockInfo, initData, telegramApp, tr, markReaderTierUnlocked]);
 
   const doWalletTopup = useCallback(async (amountMinor) => {
     setReaderAudioTopupState('opening');
@@ -33838,12 +33858,9 @@ function AppInner() {
               isOpen={!!readerAudioUnlockInfo}
               info={readerAudioUnlockInfo}
               unlockState={readerAudioUnlockState}
-              topupState={readerAudioTopupState}
               samples={readerVoiceSamples}
               samplesLoading={readerVoiceSamplesLoading}
               onUnlock={doUnlockBookAudio}
-              onTopup={doWalletTopup}
-              onRefreshBalance={refreshWalletBalance}
               onClose={closeReaderAudioUnlockModal}
               tr={tr}
             />
