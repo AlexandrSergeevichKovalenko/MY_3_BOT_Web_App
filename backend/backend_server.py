@@ -3144,7 +3144,10 @@ def _dict_token_access_allowed(path: str) -> bool:
 def enforce_webapp_access():
     path = request.path or ""
     # Backward compatibility for legacy frontend/API paths without /api prefix.
-    if path in {"/webapp", "/webapp/"}:
+    # /webapp/t/<token> is the standalone home-screen app ENTRY (serves HTML), NOT a legacy
+    # API path — it must be exempt from the /webapp/ → /api/webapp/ redirect below, else the
+    # installed icon 307-bounces to /api/webapp/t/<token> and never loads the app.
+    if path in {"/webapp", "/webapp/"} or path.startswith("/webapp/t/"):
         return None
     if path in _LEGACY_API_EXACT_PATHS or path.startswith(_LEGACY_API_PREFIXES):
         return redirect(f"/api{path}", code=307)
@@ -3280,6 +3283,12 @@ def enforce_billing_guards():
 @app.route("/webapp")
 @app.route("/webapp/")
 def serve_webapp_entry():
+    # Onboarding opens the standalone app in Safari as /webapp?aqt=<token>. Bake that token
+    # into the manifest link server-side too (not only via runtime JS), so "Add to Home Screen"
+    # captures a token-carrying start_url even before the bundle's applyAppHomeScreenMeta runs —
+    # exactly the dict's ?dqt= behaviour. Without a token, serve the plain index.html unchanged.
+    if str(request.args.get("aqt") or request.args.get("initData") or "").strip():
+        return _serve_app_entry_html()
     response = send_from_directory(FRONTEND_DIST, "index.html")
     return _apply_webapp_entry_cache_headers(response)
 
