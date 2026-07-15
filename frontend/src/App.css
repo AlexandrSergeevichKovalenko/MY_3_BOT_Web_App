@@ -27134,6 +27134,25 @@ body.worldnews-active .webapp-topbar {
 .explain-syn-word { color: #fcd34d; }
 .explain-syn-arrow { color: #8fa2bb; }
 .explain-syn-opts { color: #d8e2f0; }
+.explain-grammar-card {
+  margin-top: 10px; padding: 13px 14px; border-radius: 14px;
+  background: rgba(129, 140, 248, 0.08);
+  border: 1px solid rgba(129, 140, 248, 0.22);
+  border-left: 4px solid #818cf8;
+}
+.explain-grammar-head { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+.explain-grammar-num {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 999px;
+  display: grid; place-items: center; font-size: 12px; font-weight: 800;
+  background: rgba(129, 140, 248, 0.22); color: #c7d2fe;
+}
+.explain-grammar-part {
+  color: #e2e8f0; background: rgba(129, 140, 248, 0.12);
+  padding: 2px 8px; border-radius: 7px; font-size: 15px; font-weight: 600;
+}
+.explain-grammar-structure { font-size: 13px; font-weight: 700; color: #a5b4fc; margin-top: 2px; }
+.explain-grammar-loading { margin-top: 6px; }
+
 .explain-modal-followup { margin-top: 18px; padding-top: 14px; border-top: 1px dashed rgba(148, 163, 184, 0.22); }
 
 html[data-scheme="light"] .explain-modal,
@@ -27152,6 +27171,10 @@ html[data-scheme="light"] .explain-summary p,
 .webapp-page.theme-light .explain-summary p,
 html[data-scheme="light"] .explain-line,
 .webapp-page.theme-light .explain-line { color: #243246; }
+html[data-scheme="light"] .explain-grammar-part,
+.webapp-page.theme-light .explain-grammar-part { color: #1f2a3a; }
+html[data-scheme="light"] .explain-grammar-structure,
+.webapp-page.theme-light .explain-grammar-structure { color: #4f46e5; }
 
 
 /* ================================================================

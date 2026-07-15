@@ -1524,6 +1524,32 @@ RULES:
 Output ONLY valid minified JSON (no markdown, no code fences, no extra text) with EXACTLY this shape:
 {"summary":"...","errors":[{"type":"grammar","your":"...","correct":"...","why":"...","rule":"...","example":"..."}],"alternatives":[{"variant":"...","note":"..."}],"synonyms":[{"word":"...","options":["..."]}]}
 """,
+"check_correct_sentence_grammar_structured": """
+You are a friendly German teacher explaining the grammar of a CORRECT sentence to a beginner (A1-A2).
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
+  "original_text": "...",
+  "user_translation": "..."
+}
+
+First, silently determine the fully CORRECT target_language translation of original_text (fix any mistakes in user_translation). Then explain the grammar of THAT correct sentence.
+
+RULES:
+- Split the correct sentence into 2-6 logical parts covering ALL of it, in natural reading order.
+- For each part give:
+  - "part": the exact fragment of the CORRECT sentence, in target_language,
+  - "structure": the name of the grammar structure of that part (e.g. "Perfekt: haben + Partizip II", "Nebensatz mit 'als' — Verb am Ende", "Wechselpräposition 'unter' + Dativ"), written in explanation_language,
+  - "note": one or two simple beginner sentences on how/why this construction works — word order, case, article, verb form as relevant — in explanation_language.
+- Keep every "part" fragment in target_language; keep "structure" and "note" in explanation_language.
+- Use simple A1-A2 wording. Explain the grammar of the RIGHT answer (never the user's mistakes here).
+
+Output ONLY valid minified JSON (no markdown, no code fences, no extra text) with EXACTLY this shape:
+{"grammar":[{"part":"...","structure":"...","note":"..."}]}
+""",
 "check_translation_explanation_multilang": """
 You are an expert translation reviewer.
 
@@ -7769,6 +7795,38 @@ def _coerce_structured_explanation(raw: str) -> dict:
     }
 
 
+def _coerce_grammar_explanation(raw: str) -> dict:
+    """Parse the LLM JSON for the correct-sentence grammar walk-through into a validated
+    dict `{"grammar": [{part, structure, note}]}`. Tolerant of code fences / stray prose."""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
+        s = re.sub(r"\n?```$", "", s).strip()
+    a, b = s.find("{"), s.rfind("}")
+    data = None
+    if a >= 0 and b > a:
+        try:
+            data = json.loads(s[a:b + 1])
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        return {"grammar": []}
+
+    def _str(v) -> str:
+        return str(v or "").strip()
+
+    grammar = []
+    for g in (data.get("grammar") or [])[:6]:
+        if not isinstance(g, dict):
+            continue
+        part = _str(g.get("part"))
+        structure = _str(g.get("structure"))
+        note = _str(g.get("note"))
+        if part or structure or note:
+            grammar.append({"part": part, "structure": structure, "note": note})
+    return {"grammar": grammar}
+
+
 async def run_translation_explanation_structured(
     original_text: str,
     user_translation: str,
@@ -7801,6 +7859,41 @@ async def run_translation_explanation_structured(
             break
         await asyncio.sleep(3)
     return _coerce_structured_explanation(content)
+
+
+async def run_correct_sentence_grammar_structured(
+    original_text: str,
+    user_translation: str,
+    source_lang: str,
+    target_lang: str,
+    explanation_language: str,
+) -> dict:
+    """Structured A1-A2 grammar walk-through of the CORRECT sentence, loaded progressively
+    (separate parallel call) into the translation explain modal."""
+    if _heavy_spend_blocked():
+        return {"grammar": []}  # graceful empty, same as an LLM failure
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "explanation_language": (explanation_language or source_lang or "ru").strip().lower(),
+        "original_text": original_text,
+        "user_translation": user_translation,
+    }
+    content = ""
+    for _ in range(3):
+        try:
+            content = (await llm_execute(
+                task_name="check_correct_sentence_grammar_structured",
+                system_instruction_key="check_correct_sentence_grammar_structured",
+                user_message=json.dumps(payload, ensure_ascii=False),
+                poll_interval_seconds=1.0,
+            ) or "").strip()
+        except Exception:
+            content = ""
+        if content:
+            break
+        await asyncio.sleep(3)
+    return _coerce_grammar_explanation(content)
 
 
 def _coerce_story_explanation(raw: str) -> dict:

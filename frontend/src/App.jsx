@@ -2205,7 +2205,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Что можно делать во время перевода',
           items: [
             'Посмотреть перевод слова прямо рядом с предложением, не выходя из задания.',
-            'Поставить галочку «Прислать разбор в личку» — после проверки грамматический разбор придёт в Telegram.',
+            'После проверки нажать «Объяснить ошибки» под предложением — прямо здесь откроется разбор: ошибки, правила и грамматика правильного варианта.',
             'Послушать, как звучит правильный перевод, перед тем как ответить.',
           ],
         },
@@ -3637,8 +3637,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
   setStoryGuess,
   storySubmitHint,
   setStorySubmitHint,
-  translationPrivateGrammarTextOptIn,
-  setTranslationPrivateGrammarTextOptIn,
   translationCheckProgress,
   webappError,
   finishMessage,
@@ -3657,6 +3655,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
   closeExplainModal,
   handleSetExplainLang,
   explainStructured,
+  explainGrammar,
+  explainGrammarLoading,
   explainLangDe,
   explainErrorMap,
   explanationLoading,
@@ -4345,6 +4345,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 const explainDe = Boolean(explainLangDe?.[explanationKey]);
                 const explainLang = explainDe ? 'de' : 'ru';
                 const explainData = explainStructured?.[`${explanationKey}:${explainLang}`];
+                const explainGrammarData = explainGrammar?.[`${explanationKey}:${explainLang}`];
+                const explainGrammarBusy = Boolean(explainGrammarLoading?.[`${explanationKey}:${explainLang}`]);
                 const explainErr = explainErrorMap?.[explanationKey] || '';
                 const explainOpen = explainModalKey === explanationKey;
                 return (
@@ -4486,6 +4488,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           data={explainData}
                           loading={Boolean(explanationLoading[explanationKey]) && !explainData}
                           errorMsg={explainErr}
+                          grammar={explainGrammarData}
+                          grammarLoading={explainGrammarBusy}
                         >
                           {explainData && (
                             <div className="webapp-explanation-followup">
@@ -4559,32 +4563,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
             <div className="tr-footer-hint">
               {tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst prüfen, dann beenden.')}
             </div>
-          )}
-          {!isStorySession && hasActiveTranslationSentences && (
-            <label className="translation-private-grammar-optin">
-              <div className="translation-private-grammar-optin-copy">
-                <span>
-                  {tr(
-                    'Отправлять текстовое объяснение грамматики в личку сразу после проверки',
-                    'Textuelle Grammatikerklärung sofort nach der Prüfung in den privaten Chat senden'
-                  )}
-                </span>
-                <small>
-                  {tr(
-                    'Разбор приходит отдельным сообщением по каждому проверенному предложению.',
-                    'Die Analyse kommt als separate Nachricht für jeden geprüften Satz.'
-                  )}
-                </small>
-              </div>
-              <span className="translation-private-grammar-optin-check">
-                <input
-                  type="checkbox"
-                  checked={translationPrivateGrammarTextOptIn}
-                  onChange={(event) => setTranslationPrivateGrammarTextOptIn(event.target.checked)}
-                  disabled={webappLoading}
-                />
-              </span>
-            </label>
           )}
           <button
             type="button"
@@ -6119,6 +6097,8 @@ function AppInner() {
   // Teacher-grade structured explanation modal (replaces the old inline text blocks).
   const [explainModalKey, setExplainModalKey] = useState(null);   // which sentence's modal is open
   const [explainStructured, setExplainStructured] = useState({}); // `${key}:${lang}` -> JSON breakdown
+  const [explainGrammar, setExplainGrammar] = useState({});       // `${key}:${lang}` -> {grammar:[...]} (progressive, separate call)
+  const [explainGrammarLoading, setExplainGrammarLoading] = useState({}); // `${key}:${lang}` -> bool
   const [explainLangDe, setExplainLangDe] = useState({});         // key -> bool (🇩🇪 explanation)
   const [explainErrorMap, setExplainErrorMap] = useState({});     // key -> fetch error message
   const [explanationLoading, setExplanationLoading] = useState({});
@@ -6187,7 +6167,6 @@ function AppInner() {
   const [theoryChecking, setTheoryChecking] = useState(false);
   const [theoryFeedback, setTheoryFeedback] = useState(null);
   const [theoryItemId, setTheoryItemId] = useState(null);
-  const [translationPrivateGrammarTextOptIn, setTranslationPrivateGrammarTextOptIn] = useState(false);
   const [translationAudioGrammarOptIn, setTranslationAudioGrammarOptIn] = useState({});
   const [translationAudioGrammarSaving, setTranslationAudioGrammarSaving] = useState({});
   const [skillReport, setSkillReport] = useState(null);
@@ -7016,6 +6995,7 @@ function AppInner() {
     flushTimer: null,
   });
   const explanationInFlightKeysRef = useRef(new Set());
+  const explainGrammarInFlightKeysRef = useRef(new Set());
   const supportBottomRef = useRef(null);
   const startupPhase1TimerRef = useRef(null);
   const startupPhase2TimerRef = useRef(null);
@@ -13875,7 +13855,7 @@ function AppInner() {
           {
             title: 'После проверки',
             items: [
-              'Перед проверкой можно поставить галочку, чтобы текстовые объяснения грамматики дополнительно приходили в личку по каждому предложению.',
+              'Под каждым предложением есть кнопка «Объяснить ошибки» — она открывает подробный разбор прямо здесь: ошибки с правилами и грамматика правильного варианта.',
               'После проверки вы увидите балл, эталонный вариант, объяснения и сможете открыть историю результатов за сегодня той же кнопкой внизу.',
               'На следующий день бот может прислать аудиосообщения с разбором ошибок, чтобы вам было легче подготовиться к следующему переводу.',
             ],
@@ -20384,7 +20364,6 @@ function AppInner() {
             id_for_mistake_table: item.id,
             translation: item.translation,
           })),
-          send_private_grammar_text: translationPrivateGrammarTextOptIn,
           language_pair: getWebappLanguagePairHint() || undefined,
         }),
       });
@@ -28009,6 +27988,39 @@ function AppInner() {
     }
   };
 
+  // Progressive companion to fetchExplain: the correct-sentence grammar walk-through loads
+  // in a SEPARATE parallel call so the error breakdown paints first; cached by `${key}:${lang}`.
+  const fetchGrammar = async (item, lang) => {
+    const key = getExplanationItemKey(item);
+    const cacheKey = `${key}:${lang}`;
+    if (explainGrammar[cacheKey]) return;                     // already have it
+    if (explainGrammarInFlightKeysRef.current.has(cacheKey)) return;
+    explainGrammarInFlightKeysRef.current.add(cacheKey);
+    setExplainGrammarLoading((prev) => ({ ...prev, [cacheKey]: true }));
+    try {
+      const response = await fetch('/api/webapp/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          mode: 'grammar',
+          original_text: item.original_text,
+          user_translation: item.user_translation,
+          explanation_language: lang,
+        }),
+      });
+      if (!response.ok) return;                               // grammar is best-effort; stay silent
+      const data = await response.json();
+      const grammar = Array.isArray(data?.explanation_json?.grammar) ? data.explanation_json.grammar : [];
+      setExplainGrammar((prev) => ({ ...prev, [cacheKey]: grammar }));
+    } catch (_error) {
+      /* best-effort: leave the grammar block absent on failure */
+    } finally {
+      explainGrammarInFlightKeysRef.current.delete(cacheKey);
+      setExplainGrammarLoading((prev) => ({ ...prev, [cacheKey]: false }));
+    }
+  };
+
   const handleExplainTranslation = async (item) => {
     if (!initData) {
       setWebappError(initDataMissingMsg);
@@ -28017,6 +28029,7 @@ function AppInner() {
     const key = getExplanationItemKey(item);
     const lang = explainLangDe[key] ? 'de' : 'ru';
     setExplainModalKey(key);                 // open the modal immediately (shows loading)
+    void fetchGrammar(item, lang);           // progressive companion block, in parallel
     await fetchExplain(item, lang);
   };
 
@@ -28027,6 +28040,7 @@ function AppInner() {
     setExplainLangDe((prev) => ({ ...prev, [key]: !!checkedDe }));
     if (explainModalKey === key) {           // live-switch language while the modal is open
       fetchExplain(item, checkedDe ? 'de' : 'ru');
+      void fetchGrammar(item, checkedDe ? 'de' : 'ru');
     }
   };
 
@@ -34001,8 +34015,6 @@ function AppInner() {
                 setStoryGuess={setStoryGuess}
                 storySubmitHint={storySubmitHint}
                 setStorySubmitHint={setStorySubmitHint}
-                translationPrivateGrammarTextOptIn={translationPrivateGrammarTextOptIn}
-                setTranslationPrivateGrammarTextOptIn={setTranslationPrivateGrammarTextOptIn}
                 translationCheckProgress={translationCheckProgress}
                 webappError={webappError}
                 finishMessage={finishMessage}
@@ -34021,6 +34033,8 @@ function AppInner() {
                 closeExplainModal={closeExplainModalStable}
                 handleSetExplainLang={handleSetExplainLangStable}
                 explainStructured={explainStructured}
+                explainGrammar={explainGrammar}
+                explainGrammarLoading={explainGrammarLoading}
                 explainLangDe={explainLangDe}
                 explainErrorMap={explainErrorMap}
                 explanationLoading={explanationLoading}

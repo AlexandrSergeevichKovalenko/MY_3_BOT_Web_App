@@ -308,6 +308,7 @@ from backend.openai_manager import (
     run_translation_explanation,
     run_translation_explanation_multilang,
     run_translation_explanation_structured,
+    run_correct_sentence_grammar_structured,
     run_audio_sentence_grammar_explain_multilang,
     run_feel_word,
     run_feel_word_multilang,
@@ -27493,25 +27494,29 @@ def _run_translation_check_completion_side_effects(
 
         summary_json = _build_translation_check_terminal_summary(session=claimed_session, items=items)
 
-        if first_attempt and bool(claimed_session.get("send_private_grammar_text")):
-            for item in sorted(items, key=lambda entry: int(entry.get("item_order") or 0)):
-                result_payload = item.get("result_json") if isinstance(item.get("result_json"), dict) else None
-                if result_payload:
-                    try:
-                        _queue_private_grammar_explanation_for_result(
-                            user_id=int(claimed_session["user_id"]),
-                            result_item=result_payload,
-                            source_lang=str(claimed_session.get("source_lang") or "ru"),
-                            target_lang=str(claimed_session.get("target_lang") or "de"),
-                        )
-                    except Exception:
-                        logging.warning(
-                            "translation_check completion private grammar enqueue failed: session=%s user=%s item_order=%s",
-                            session_id,
-                            claimed_session.get("user_id"),
-                            item.get("item_order"),
-                            exc_info=True,
-                        )
+        # DM «Грамматический разбор» disabled: it duplicated the in-app «Объяснить ошибки»
+        # breakdown (same error analysis), and its only unique part — the grammar of the
+        # correct sentence — is now folded into that same mini-app modal as the "grammar"
+        # section. Kept (commented) rather than deleted so it can be revived if needed.
+        # if first_attempt and bool(claimed_session.get("send_private_grammar_text")):
+        #     for item in sorted(items, key=lambda entry: int(entry.get("item_order") or 0)):
+        #         result_payload = item.get("result_json") if isinstance(item.get("result_json"), dict) else None
+        #         if result_payload:
+        #             try:
+        #                 _queue_private_grammar_explanation_for_result(
+        #                     user_id=int(claimed_session["user_id"]),
+        #                     result_item=result_payload,
+        #                     source_lang=str(claimed_session.get("source_lang") or "ru"),
+        #                     target_lang=str(claimed_session.get("target_lang") or "de"),
+        #                 )
+        #             except Exception:
+        #                 logging.warning(
+        #                     "translation_check completion private grammar enqueue failed: session=%s user=%s item_order=%s",
+        #                     session_id,
+        #                     claimed_session.get("user_id"),
+        #                     item.get("item_order"),
+        #                     exc_info=True,
+        #                 )
 
         try:
             _sync_today_translation_task_progress_for_session(
@@ -59931,7 +59936,11 @@ def explain_webapp_translation():
     # 2.3b: wire the previously-dead per-user daily COUNT cap for the (heavy, OpenAI) explain
     # feature. Complements the EUR cap already on this endpoint — a ceiling on the NUMBER of
     # explains regardless of cost. Free-tier only (Pro bypasses); idempotent per content.
-    _explain_key = hashlib.sha1(f"{original_text}|{user_translation}|{mode}".encode("utf-8", "ignore")).hexdigest()[:24]
+    # "grammar" is a companion call to the SAME modal open as the default translation
+    # explain — share its reservation (same idempotency key, mode folded to "") so the
+    # progressive grammar block doesn't burn a 2nd daily explain unit for Free users.
+    _cap_mode = "" if mode == "grammar" else mode
+    _explain_key = hashlib.sha1(f"{original_text}|{user_translation}|{_cap_mode}".encode("utf-8", "ignore")).hexdigest()[:24]
     _explain_reservation = reserve_free_feature_usage(
         user_id=int(user_id),
         feature_key="dictionary_openai_explanation_daily",
@@ -59972,6 +59981,19 @@ def explain_webapp_translation():
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
+        elif mode == "grammar":
+            # Progressive companion block: A1-A2 grammar walk-through of the CORRECT
+            # sentence, fetched in parallel by the modal so the error breakdown paints first.
+            explanation_json = asyncio.run(
+                run_correct_sentence_grammar_structured(
+                    original_text=original_text,
+                    user_translation=user_translation,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    explanation_language=req_explain_lang,
+                )
+            )
+            explanation = ""
         else:
             # Teacher-grade structured breakdown (JSON) rendered in the explain modal.
             explanation_json = asyncio.run(

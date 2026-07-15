@@ -32,6 +32,8 @@ export default function ExplainErrorsModal({
   data,
   loading,
   errorMsg,
+  grammar: grammarProp,
+  grammarLoading,
   children,
 }) {
   if (!isOpen) return null;
@@ -39,6 +41,9 @@ export default function ExplainErrorsModal({
   const errors = Array.isArray(data?.errors) ? data.errors : [];
   const alternatives = Array.isArray(data?.alternatives) ? data.alternatives : [];
   const synonyms = Array.isArray(data?.synonyms) ? data.synonyms : [];
+  // Grammar of the correct sentence loads progressively via a separate call, so it arrives
+  // as its own prop (not part of `data`) and shows a skeleton until it lands.
+  const grammar = Array.isArray(grammarProp) ? grammarProp : [];
   const summary = String(data?.summary || '').trim();
   const hasData = !!data && !loading && !errorMsg;
 
@@ -138,6 +143,32 @@ export default function ExplainErrorsModal({
                       <b className="explain-syn-word">{syn.word}</b>
                       <span className="explain-syn-arrow"> → </span>
                       <span className="explain-syn-opts">{(syn.options || []).join(', ')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(grammar.length > 0 || grammarLoading) && (
+                <div className="explain-section">
+                  <div className="explain-section-title">🧠 {tr('Грамматика правильного варианта', 'Grammatik der richtigen Version')}</div>
+                  {grammar.length === 0 && grammarLoading && (
+                    <div className="explain-grammar-loading">
+                      <div className="explain-skel" /><div className="explain-skel sm" />
+                      <p className="explain-modal-muted">{tr('Разбираем грамматику…', 'Grammatik wird analysiert…')}</p>
+                    </div>
+                  )}
+                  {grammar.map((g, i) => (
+                    <div className="explain-grammar-card" key={i}>
+                      <div className="explain-grammar-head">
+                        <span className="explain-grammar-num">{i + 1}</span>
+                        {g.part ? <span className="explain-grammar-part">{g.part}</span> : null}
+                      </div>
+                      {g.structure && (
+                        <div className="explain-grammar-structure">🧩 {g.structure}</div>
+                      )}
+                      {g.note && (
+                        <div className="explain-line"><span className="explain-line-ico">💡</span><span>{g.note}</span></div>
+                      )}
                     </div>
                   ))}
                 </div>
