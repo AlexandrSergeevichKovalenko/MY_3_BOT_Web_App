@@ -16453,7 +16453,7 @@ def pro_price_stars() -> int:
 
 def create_stars_invoice_link(
     *, title: str, description: str, payload_obj: dict, stars: int, subscription_period: int | None = None
-) -> str | None:
+) -> tuple[str | None, str]:
     """Create a Telegram Stars invoice link (currency XTR, no provider token) the
     Mini App opens with WebApp.openInvoice. `payload_obj` is echoed back verbatim in
     the successful_payment update so the bot knows what was bought. Returns the link
@@ -16462,11 +16462,13 @@ def create_stars_invoice_link(
     token = TELEGRAM_Deutsch_BOT_TOKEN
     if not token:
         logging.error("create_stars_invoice_link: bot token missing")
-        return None
+        return None, "bot_token_missing"
     body = {
         "title": str(title or "")[:32],
         "description": str(description or "")[:255],
         "payload": json.dumps(payload_obj, ensure_ascii=False)[:128],
+        # For Telegram Stars (XTR) the provider token MUST be an empty string.
+        "provider_token": "",
         "currency": "XTR",
         "prices": [{"label": str(title or "Zahlung")[:32], "amount": max(1, int(stars))}],
     }
@@ -16479,12 +16481,12 @@ def create_stars_invoice_link(
         )
         data = resp.json()
         if not data.get("ok"):
-            logging.error("createInvoiceLink failed: %s", data)
-            return None
-        return str(data.get("result") or "") or None
-    except Exception:
+            logging.error("createInvoiceLink failed: %s | body=%s", data, {k: v for k, v in body.items() if k != "payload"})
+            return None, str(data.get("description") or "unknown_error")
+        return (str(data.get("result") or "") or None), ""
+    except Exception as exc:
         logging.exception("createInvoiceLink request failed")
-        return None
+        return None, f"request_error: {exc}"
 
 
 def _book_audio_pricing_payload(document: dict, unlocked_tiers: list[str] | None) -> dict:
@@ -51056,7 +51058,7 @@ def reader_audio_stars_invoice():
     stars = _book_audio_stars_price(document, voice_tier)
     tier_label = (_AUDIO_TIER_LABELS.get(voice_tier, {}) or {}).get("ru", "Голос")
     book_title = str(document.get("title") or "книга")[:48]
-    link = create_stars_invoice_link(
+    link, detail = create_stars_invoice_link(
         title=f"Озвучка: {book_title}",
         description=f"{tier_label} · слушать эту книгу всегда, без ограничений.",
         payload_obj={
@@ -51068,7 +51070,7 @@ def reader_audio_stars_invoice():
         stars=stars,
     )
     if not link:
-        return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз."}), 502
+        return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз.", "detail": detail}), 502
     return jsonify({"ok": True, "invoice_link": link, "stars": int(stars), "voice_tier": voice_tier})
 
 
@@ -51091,7 +51093,7 @@ def billing_stars_invoice():
         return jsonify({"error": "В Stars доступен только Pro", "error_code": "unsupported_plan"}), 400
 
     stars = pro_price_stars()
-    link = create_stars_invoice_link(
+    link, detail = create_stars_invoice_link(
         title="Pro — подписка",
         description="Полный доступ: больше заданий, YouTube-субтитры, переводы и разборы. Продление раз в месяц, отмена в любой момент.",
         payload_obj={"purpose": "pro", "user_id": user_id_int, "plan_code": "pro"},
@@ -51099,7 +51101,7 @@ def billing_stars_invoice():
         subscription_period=STARS_SUBSCRIPTION_PERIOD_SECONDS,
     )
     if not link:
-        return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз."}), 502
+        return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз.", "detail": detail}), 502
     return jsonify({"ok": True, "invoice_link": link, "stars": int(stars), "plan_code": "pro"})
 
 
