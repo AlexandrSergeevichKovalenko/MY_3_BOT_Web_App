@@ -35283,7 +35283,12 @@ def delete_stale_reader_audio_pages(older_than_days: int = 90, limit: int = 5000
     """Delete reader-audio cache rows not played (or created, if never played) within
     the last `older_than_days`, in a batch of up to `limit`. Returns the deleted rows'
     audio_url list so the caller can remove the R2 objects. Call repeatedly until it
-    returns []. Active reading keeps a page 'hot' (last_played_at updates on play)."""
+    returns []. Active reading keeps a page 'hot' (last_played_at updates on play).
+
+    NEVER evict "Классика" (public shared library) audio: it's a small, fixed corpus
+    (~1 GB for the whole shelf → ~cents/year in R2) that is expensive to re-warm from
+    the free Standard bucket, and it's meant to play instantly for everyone. Keeping it
+    forever is far cheaper than the regeneration churn. Personal books still cycle."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -35291,8 +35296,10 @@ def delete_stale_reader_audio_pages(older_than_days: int = 90, limit: int = 5000
                     """
                     DELETE FROM bt_3_reader_audio_pages
                     WHERE id IN (
-                        SELECT id FROM bt_3_reader_audio_pages
-                        WHERE COALESCE(last_played_at, created_at) < NOW() - (%s * INTERVAL '1 day')
+                        SELECT ap.id FROM bt_3_reader_audio_pages ap
+                        JOIN bt_3_reader_library rl ON rl.id = ap.document_id
+                        WHERE COALESCE(ap.last_played_at, ap.created_at) < NOW() - (%s * INTERVAL '1 day')
+                          AND rl.is_public = FALSE
                         LIMIT %s
                     )
                     RETURNING audio_url
