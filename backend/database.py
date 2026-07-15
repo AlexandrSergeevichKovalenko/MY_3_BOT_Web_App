@@ -1304,6 +1304,23 @@ def run_dictionary_dedup_now(*, max_users: int = 200, since_days: int = 7) -> di
 # ── "Работа над ошибками": durable mistakes store + spaced repetition ─────────
 _MISTAKE_INTERVALS = [1, 3, 7, 16]  # days; a correct review advances; past the top → mastered
 
+# A review becomes due at the START of the local day N days ahead (Europe/Vienna) — NOT a
+# rolling +24h. So a mistake made this afternoon surfaces with tomorrow morning's review
+# batch alongside everything else, instead of only after a literal 24h (same Europe/Vienna
+# calendar convention the trial policy uses). N=1 → next local midnight.
+_REVIEW_TZ = "Europe/Vienna"
+
+
+def _due_at_next_local_day_sql(days_sql: str) -> str:
+    """SQL expr (timestamptz) = midnight starting the day `days_sql` days from today in
+    _REVIEW_TZ. `days_sql` must be a trusted int literal (e.g. '1') or a '%s' placeholder —
+    never raw user input."""
+    return (
+        "((date_trunc('day', (NOW() AT TIME ZONE '" + _REVIEW_TZ + "'))"
+        " + ((" + days_sql + ")::text || ' days')::interval)"
+        " AT TIME ZONE '" + _REVIEW_TZ + "')"
+    )
+
 
 def ensure_aufgabe_mistakes_schema() -> None:
     with get_db_connection_context() as conn:
@@ -1592,14 +1609,15 @@ def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
     try:
         ensure_aufgabe_mistakes_schema()
         h = _mistake_hash(fmt, payload, correct_answer)
+        due_sql = _due_at_next_local_day_sql("1")  # due at the start of the next local day
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     INSERT INTO bt_3_aufgabe_mistakes
                       (user_id, content_hash, format, payload, correct_answer, last_wrong_answer,
                        interval_days, review_count, mastered, due_at, updated_at)
-                    VALUES (%s,%s,%s,%s::jsonb,%s,%s, 1, 0, FALSE, NOW() + INTERVAL '1 day', NOW())
+                    VALUES (%s,%s,%s,%s::jsonb,%s,%s, 1, 0, FALSE, {due_sql}, NOW())
                     ON CONFLICT (user_id, content_hash) DO UPDATE SET
                       last_wrong_answer = EXCLUDED.last_wrong_answer,
                       payload           = EXCLUDED.payload,
@@ -1607,7 +1625,7 @@ def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
                       format            = EXCLUDED.format,
                       interval_days     = 1,
                       mastered          = FALSE,
-                      due_at            = NOW() + INTERVAL '1 day',
+                      due_at            = EXCLUDED.due_at,
                       updated_at        = NOW();
                     """,
                     (int(user_id), h, str(fmt), _json.dumps(payload or {}, ensure_ascii=False),
@@ -1782,14 +1800,14 @@ def reschedule_mistake(*, mistake_id: int, user_id: int, is_correct: bool) -> No
                     else:
                         cur.execute(
                             "UPDATE bt_3_aufgabe_mistakes SET interval_days=%s, "
-                            "due_at=NOW() + (%s || ' days')::interval, "
+                            f"due_at={_due_at_next_local_day_sql('%s')}, "
                             "review_count=review_count+1, updated_at=NOW() WHERE id=%s AND user_id=%s;",
                             (int(nxt), int(nxt), int(mistake_id), int(user_id)),
                         )
                 else:
                     cur.execute(
                         "UPDATE bt_3_aufgabe_mistakes SET interval_days=1, "
-                        "due_at=NOW() + INTERVAL '1 day', review_count=review_count+1, "
+                        f"due_at={_due_at_next_local_day_sql('1')}, review_count=review_count+1, "
                         "updated_at=NOW() WHERE id=%s AND user_id=%s;",
                         (int(mistake_id), int(user_id)),
                     )
