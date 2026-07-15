@@ -12,6 +12,11 @@
 
 .ob-root {
   min-height: 100vh;
+  /* Standalone iOS PWA: 100vh is TALLER than the visible viewport, so a vh-sized card
+     gets centered partly below the screen edge and the footer buttons slide under the
+     home indicator (untappable). 100dvh = the actually-visible height → the card and its
+     safe-area bottom padding stay on-screen. Kept after 100vh as a progressive override. */
+  min-height: 100dvh;
   margin: 0;
   padding: 20px 16px calc(20px + env(safe-area-inset-bottom, 0px));
   box-sizing: border-box;
@@ -33,11 +38,15 @@
   border: 1px solid var(--ob-line);
   border-radius: 22px;
   box-shadow: 0 20px 50px rgba(28, 55, 110, 0.12);
-  padding: 22px 20px 18px;
+  padding: 22px 20px calc(18px + env(safe-area-inset-bottom, 0px));
   display: flex;
   flex-direction: column;
   min-height: 60vh;
   max-height: 92vh;
+  /* Leave a guaranteed gap below the card (≈ home-indicator + breathing room) so the
+     footer buttons never touch the bottom edge, on any screen size. dvh keeps this
+     correct in a standalone PWA; the 92vh line above is the fallback. */
+  max-height: min(88dvh, calc(100dvh - 28px - env(safe-area-inset-bottom, 0px)));
   box-sizing: border-box;
 }
 
