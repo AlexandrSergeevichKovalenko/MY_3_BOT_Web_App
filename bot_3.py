@@ -7893,6 +7893,50 @@ def _run_telemetry_retention_safe() -> None:
         _record_sched_heartbeat("telemetry_retention", status="failed")
 
 
+def _run_classics_audio_readiness_report_safe() -> None:
+    """Bot-side MORNING DM: which «Классика» books are fully warmed (audio ready) so
+    the admin knows which to test. Sync (BackgroundScheduler thread → stays sync).
+    Best-effort; mirrors _send_shortcut_runs_report's delivery."""
+    import requests as _requests
+    try:
+        from backend.backend_server import PUBLIC_LIBRARY_TTS_VOICE
+        from backend.database import get_public_library_audio_readiness, get_admin_telegram_ids
+        rows = get_public_library_audio_readiness(PUBLIC_LIBRARY_TTS_VOICE)
+    except Exception:
+        logging.exception("classics audio readiness gather failed")
+        return
+    if not rows:
+        return
+    ready = [r for r in rows if r["ready"]]
+    partial = sorted([r for r in rows if not r["ready"]], key=lambda x: -x["pct"])
+    lines = ["🎧 <b>Аудио классики — готовность</b>", ""]
+    if ready:
+        lines.append(f"✅ <b>Готовы полностью ({len(ready)}) — можно тестировать:</b>")
+        for r in ready:
+            lines.append(f"• {r['title']} — {r['total_pages']} стр.")
+        lines.append("")
+    else:
+        lines.append("Пока ни одна книга не прогрета полностью — идёт постепенный прогрев в рамках бесплатного бакета.\n")
+    if partial:
+        lines.append("🟡 <b>Догреваются (топ-6):</b>")
+        for r in partial[:6]:
+            lines.append(f"• {r['title']} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
+    text = "\n".join(lines)
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    if not token or not admin_ids:
+        return
+    for uid in admin_ids:
+        try:
+            _requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": uid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+                timeout=20,
+            )
+        except Exception:
+            logging.exception("classics audio readiness DM failed admin=%s", uid)
+
+
 def _run_daily_audio_safe() -> None:
     """Bot-side DAILY "mistakes audio" trigger. The dedicated SCHEDULER_SERVICE cron
     is the same unreliable path that never dispatched the nightly dict dedup, and the
@@ -33679,6 +33723,30 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
             parse_mode="HTML",
         )
 
+    if arg == "audio":
+        try:
+            from backend.backend_server import PUBLIC_LIBRARY_TTS_VOICE
+            from backend.database import get_public_library_audio_readiness
+            rows = await asyncio.to_thread(get_public_library_audio_readiness, PUBLIC_LIBRARY_TTS_VOICE)
+        except Exception as exc:
+            await message.reply_text(f"❌ audio-status failed: {exc}")
+            return
+        ready = [r for r in rows if r["ready"]]
+        partial = sorted([r for r in rows if not r["ready"]], key=lambda x: -x["pct"])
+        lines = ["🎧 <b>Готовность аудио классики</b> (Standard-голос)", ""]
+        if ready:
+            lines.append(f"✅ <b>Готовы полностью — можно тестировать ({len(ready)}):</b>")
+            for r in ready:
+                lines.append(f"• {r['title']} — {r['total_pages']} стр.")
+            lines.append("")
+        if partial:
+            lines.append("🟡 <b>Догреваются:</b>")
+            for r in partial:
+                lines.append(f"• {r['title']} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
+        if not rows:
+            lines.append("Пока нет данных (нет публичных книг?).")
+        await message.reply_text("\n".join(lines), parse_mode="HTML")
+
 
 # ── Telegram Stars payments (Mini App digital purchases) ─────────────────────
 async def on_stars_pre_checkout(update: Update, context: CallbackContext) -> None:
@@ -36815,6 +36883,17 @@ def main():
             coalesce=True,
             max_instances=1,
             misfire_grace_time=1800,
+        )
+        # -- Morning DM: which «Классика» books are fully warmed (audio ready to test) --
+        scheduler.add_job(
+            _run_classics_audio_readiness_report_safe,
+            "cron",
+            hour=int((os.getenv("CLASSICS_AUDIO_REPORT_HOUR") or "8").strip() or "8"),
+            minute=int((os.getenv("CLASSICS_AUDIO_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
         )
         # -- Weekly duplicate-removal report (Mon 10:00 Europe/Vienna) --
         # Tells the admin how many vocabulary duplicates the nightly dedup job removed,

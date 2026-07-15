@@ -28826,6 +28826,42 @@ def get_public_library_document(
     return _public_library_row_to_dict(row, include_content=include_content)
 
 
+def get_public_library_audio_readiness(voice_name: str) -> list[dict]:
+    """Per-book audio warm-up progress for the «Классика» shelf: how many pages of
+    each public book already have cached audio in the shared Standard voice vs total.
+    Lets us tell WHICH classics are fully ready to test. Never raises."""
+    out: list[dict] = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT l.id, l.public_slug, l.title,
+                           COALESCE(jsonb_array_length(l.content_pages), 0) AS total_pages,
+                           (SELECT COUNT(DISTINCT p.page_number)
+                              FROM bt_3_reader_audio_pages p
+                             WHERE p.document_id = l.id AND p.voice_name = %s) AS cached_pages
+                    FROM bt_3_reader_library l
+                    WHERE l.is_public IS TRUE AND COALESCE(l.is_archived, FALSE) = FALSE
+                    ORDER BY l.public_sort ASC, l.title ASC;
+                    """,
+                    (str(voice_name),),
+                )
+                rows = cursor.fetchall()
+        for r in rows:
+            total = int(r[3] or 0)
+            cached = min(int(r[4] or 0), total) if total else int(r[4] or 0)
+            pct = int(round(100.0 * cached / total)) if total > 0 else 0
+            out.append({
+                "id": int(r[0]), "slug": str(r[1] or ""), "title": str(r[2] or ""),
+                "total_pages": total, "cached_pages": cached, "pct": min(100, pct),
+                "ready": total > 0 and cached >= total,
+            })
+    except Exception:
+        logging.exception("public library audio readiness query failed")
+    return out
+
+
 def get_public_library_diagnostics() -> dict:
     """READ-ONLY diagnosis of why the «Классика» shelf may show 0: whether the
     is_public column exists, how many public rows there are, their target_lang
