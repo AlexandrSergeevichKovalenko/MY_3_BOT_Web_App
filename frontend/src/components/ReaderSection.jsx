@@ -18,6 +18,13 @@
 import React from 'react';
 import ReaderGuideModal from './ReaderGuideModal';
 
+// Persist the open library shelf across brief ReaderSection remounts. The section is
+// mounted only while isSectionVisible('reader') is true; an async event (poll /
+// visibilitychange) can flip it for a frame → remount → local state would reset and
+// bounce the user from a shelf back to the overview mid-scroll. Module-scoped so it
+// survives the remount (single ReaderSection instance).
+let _readerLibraryShelfMemo = null;
+
 export default function ReaderSection(props) {
   const {
     // ── i18n ─────────────────────────────────────────────────────
@@ -217,7 +224,14 @@ export default function ReaderSection(props) {
   // quiet corner button instead of a permanent 4-button row on every cover.
   const [readerLibActionsOpenId, setReaderLibActionsOpenId] = React.useState(null);
   // Library overview vs a single shelf detail: null | 'mine' | 'classics' | 'articles'
-  const [readerLibraryShelf, setReaderLibraryShelf] = React.useState(null);
+  const [readerLibraryShelf, _setReaderLibraryShelf] = React.useState(_readerLibraryShelfMemo);
+  const setReaderLibraryShelf = React.useCallback((v) => {
+    _setReaderLibraryShelf((prev) => {
+      const next = typeof v === 'function' ? v(prev) : v;
+      _readerLibraryShelfMemo = next;
+      return next;
+    });
+  }, []);
   // «Как читать и слушать» grandma-proof explainer.
   const [readerGuideOpen, setReaderGuideOpen] = React.useState(false);
   const readerColIndexRef = React.useRef(0);
