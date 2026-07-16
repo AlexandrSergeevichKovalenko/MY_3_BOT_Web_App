@@ -6677,6 +6677,10 @@ function AppInner() {
   const welcomeTrialCheckedRef = useRef(false);
   // "What are Telegram Stars" explainer — opened by a small ⓘ next to any Stars price.
   const [starsInfoOpen, setStarsInfoOpen] = useState(false);
+  // Set by the ?startapp=buypro deep-link (onboarding «Оформить Pro») → auto-open the Pro
+  // Stars sheet once auth is ready, so the user lands straight on payment.
+  const [autoProCheckoutPending, setAutoProCheckoutPending] = useState(false);
+  const autoProCheckoutDoneRef = useRef(false);
   const [billingPlansLoading, setBillingPlansLoading] = useState(false);
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
@@ -19057,6 +19061,15 @@ function AppInner() {
       setFlashcardsOnly(false);
       setFlashcardSessionActive(false);
       setSelectedSections(new Set(['subscription']));
+      const t = setTimeout(() => { scrollToRef(billingRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
+    } else if (startParam === 'buypro') {
+      // «Оформить Pro» from onboarding/PWA → land on «Подписка» AND auto-open the Pro Stars
+      // sheet (a separate effect fires once initData is ready) — no extra screen/tap.
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['subscription']));
+      setAutoProCheckoutPending(true);
       const t = setTimeout(() => { scrollToRef(billingRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
     } else if (startParam === 'worldnews' || startParam.startsWith('worldnews')) {
@@ -32068,6 +32081,20 @@ function AppInner() {
       setBillingActionLoading(false);
     }
   };
+  // Keep the latest handleBillingUpgrade reachable from the auto-checkout effect below
+  // without re-subscribing it every render (the function is redefined each render).
+  const handleBillingUpgradeRef = useRef(null);
+  handleBillingUpgradeRef.current = handleBillingUpgrade;
+
+  // ?startapp=buypro → once auth (initData) is ready, open the Pro Stars sheet exactly once,
+  // so a user coming from onboarding lands straight on payment (no «Подписка» screen/2nd tap).
+  useEffect(() => {
+    if (!autoProCheckoutPending || !initData || autoProCheckoutDoneRef.current) return;
+    autoProCheckoutDoneRef.current = true;
+    setAutoProCheckoutPending(false);
+    const t = setTimeout(() => { handleBillingUpgradeRef.current?.('pro'); }, 700);
+    return () => clearTimeout(t);
+  }, [autoProCheckoutPending, initData]);
 
   const handleBillingManage = async () => {
     if (!initData) {

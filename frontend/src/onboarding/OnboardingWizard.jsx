@@ -1106,8 +1106,11 @@ export default function OnboardingWizard() {
     setShortcutOpening(false);
   }, [botUrl, shortcutOpening]);
 
-  // «Оформить Pro» on the plans step → open the Mini-App «Подписка» screen, where the
-  // live Stripe price and checkout live (startapp=subscription; mirrors the DM upsell).
+  // «Оформить Pro» on the plans step. Stars can only be charged INSIDE Telegram, and the
+  // onboarding (esp. the standalone PWA) has no initData to open a payment itself — so we
+  // hand off to the bot. `startapp=buypro` lands in the Mini-App AND auto-opens the Pro
+  // Stars sheet immediately (no «Подписка» screen, no second «купить» tap) — the shortest
+  // path Stars allows. Inside Telegram it's an in-place jump.
   const openSubscription = useCallback(async () => {
     try { tg?.HapticFeedback?.impactOccurred?.('medium'); } catch (_e) { /* noop */ }
     let base = botUrl;
@@ -1119,7 +1122,7 @@ export default function OnboardingWizard() {
         if (base) setBotUrl(base);
       } catch (_e) { /* noop */ }
     }
-    const url = base ? `${base}?startapp=subscription` : '';
+    const url = base ? `${base}?startapp=buypro` : '';
     try {
       if (url && tg?.openTelegramLink) tg.openTelegramLink(url);
       else if (url) window.location.href = url;
