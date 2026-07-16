@@ -17860,6 +17860,39 @@ def grant_welcome_trial_once(user_id: int, days: int = WELCOME_TRIAL_DAYS) -> di
         return {"granted": False, "until": None, "days": int(days)}
 
 
+def get_welcome_trial_status(user_id: int) -> dict:
+    """Welcome-trial state for the app-entry plaque:
+    {used, active, ends_at, days_left}. `used` = ever granted (survives app reinstall —
+    keyed on Telegram user_id, row never deleted); `active` = still inside the window."""
+    import math as _math
+    try:
+        _ensure_dau_schema()
+        used = False
+        until = None
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM bt_3_pro_grants WHERE user_id=%s AND reason=%s LIMIT 1;",
+                            (int(user_id), WELCOME_TRIAL_REASON))
+                used = cur.fetchone() is not None
+                cur.execute("SELECT granted_until FROM bt_3_pro_grants "
+                            "WHERE user_id=%s AND reason=%s AND granted_until > NOW() "
+                            "ORDER BY granted_until DESC LIMIT 1;", (int(user_id), WELCOME_TRIAL_REASON))
+                r = cur.fetchone()
+                until = r[0] if r else None
+        active = until is not None
+        days_left = 0
+        ends_at_iso = None
+        if active:
+            until_dt = _to_aware_datetime(until)
+            ends_at_iso = until_dt.isoformat()
+            secs = (until_dt - datetime.now(timezone.utc)).total_seconds()
+            days_left = max(1, int(_math.ceil(secs / 86400.0)))
+        return {"used": bool(used), "active": bool(active),
+                "ends_at": ends_at_iso, "days_left": int(days_left)}
+    except Exception:
+        return {"used": False, "active": False, "ends_at": None, "days_left": 0}
+
+
 def get_user_streak(user_id: int) -> dict:
     try:
         _ensure_dau_schema()

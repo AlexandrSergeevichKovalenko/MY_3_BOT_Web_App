@@ -503,6 +503,7 @@ from backend.database import (
     try_mark_stripe_event_processed,
     resolve_entitlement,
     grant_welcome_trial_once,
+    get_welcome_trial_status,
     enforce_daily_cost_cap,
     enforce_feature_limit,
     get_user_provider_units_today,
@@ -25192,8 +25193,25 @@ def bootstrap_webapp_session():
         if parsed_user_id is not None and parsed_user_id > 0:
             # One-time 7-day Pro trial for everyone (Pro minus book-narration audio) on first
             # Mini-App open. Idempotent per lifetime — a returning user just gets granted=False.
+            # Enrich with the app-entry plaque state (active countdown / ended → buy Pro).
             try:
-                welcome_trial = grant_welcome_trial_once(int(parsed_user_id))
+                _grant_res = grant_welcome_trial_once(int(parsed_user_id))
+                _ws = get_welcome_trial_status(int(parsed_user_id))
+                _ent = resolve_entitlement(int(parsed_user_id))  # cached read
+                _mode = str(_ent.get("effective_mode") or "free").strip().lower()
+                if _ws.get("active"):
+                    _state = "active"          # inside the free trial → show countdown
+                elif _ws.get("used") and _mode != "pro":
+                    _state = "ended"           # used it up and now Free → nudge to buy Pro
+                else:
+                    _state = "none"            # never eligible, or already a paying Pro
+                welcome_trial = {
+                    "state": _state,
+                    "granted": bool(_grant_res.get("granted")),
+                    "days": int(_grant_res.get("days") or 0),
+                    "days_left": int(_ws.get("days_left") or 0),
+                    "ends_at": _ws.get("ends_at"),
+                }
             except Exception:
                 logging.warning("welcome trial grant failed user=%s", parsed_user_id, exc_info=True)
             starter_dictionary = _build_starter_dictionary_offer(user_id=int(parsed_user_id))

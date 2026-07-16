@@ -1,0 +1,108 @@
+/* Welcome-trial plaque — richer take on the ProFeatureModal shell, with a warm hero
+   for the active countdown and a nudge-to-buy variant when the trial has ended. */
+.prot-card {
+  max-width: 372px;
+  overflow: hidden;
+}
+/* Warm gradient top for the active (gift) state, cooler for the ended state. */
+.prot-card.is-active::before,
+.prot-card.is-ended::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 118px;
+  z-index: 0;
+  pointer-events: none;
+}
+.prot-card.is-active::before {
+  background: radial-gradient(120% 90% at 50% 0%, rgba(214, 161, 74, 0.24) 0%, transparent 64%);
+}
+.prot-card.is-ended::before {
+  background: radial-gradient(120% 90% at 50% 0%, rgba(91, 52, 213, 0.18) 0%, transparent 64%);
+}
+.prot-card > * { position: relative; z-index: 1; }
+
+.prot-badge {
+  display: inline-block;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
+  padding: 5px 12px; border-radius: 999px; margin-bottom: 12px;
+}
+.prot-badge.is-active { color: #0a6b5e; background: #d9f5ee; }
+.prot-badge.is-ended  { color: #5b34d5; background: #ece7fb; }
+.prot-emoji { filter: drop-shadow(0 5px 12px rgba(150, 110, 50, 0.28)); }
+
+/* Big days-left counter */
+.prot-countdown {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 2px 0 14px;
+  padding: 8px 16px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(16, 185, 129, 0.05));
+  border: 1px solid rgba(16, 185, 129, 0.22);
+}
+.prot-countdown-num {
+  font-size: 30px; font-weight: 900; line-height: 1; color: #0f9e82;
+  letter-spacing: -0.02em;
+}
+.prot-countdown-word { font-size: 14px; font-weight: 700; color: #1f6b52; }
+
+/* Perk list */
+.prot-perks {
+  list-style: none;
+  margin: 4px 0 14px;
+  padding: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.prot-perks li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #2a3650;
+}
+.prot-perks-check {
+  flex: 0 0 auto;
+  width: 19px; height: 19px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: #e3f5ec;
+  color: #1ea672;
+  font-size: 12px; font-weight: 900;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.prot-note {
+  margin: 0 0 16px;
+  padding: 11px 13px;
+  border-radius: 13px;
+  background: #f4f6fb;
+  font-size: 12.5px;
+  line-height: 1.45;
+  font-weight: 600;
+  color: #5d6b82;
+  text-align: left;
+}
+
+.prot-cta {
+  display: block; width: 100%;
+  border: none; border-radius: 14px;
+  padding: 15px 16px; margin-bottom: 8px;
+  font-size: 16px; font-weight: 800; color: #fff; cursor: pointer;
+  transition: transform 0.1s ease, opacity 0.15s ease;
+}
+.prot-cta:active { transform: scale(0.985); }
+.prot-cta:disabled { opacity: 0.65; cursor: default; }
+.prot-cta.is-active {
+  background: linear-gradient(135deg, #1fb87a, #0e9e8e);
+  box-shadow: 0 10px 22px rgba(15, 158, 130, 0.28);
+}
+.prot-cta.is-ended {
+  background: linear-gradient(135deg, #3a7bd5, #5b34d5);
+  box-shadow: 0 10px 22px rgba(58, 52, 213, 0.28);
+}
