@@ -357,3 +357,59 @@
   color: var(--ob-accent); font-size: 13px; font-weight: 700;
   padding: 4px 12px; border-radius: 999px; cursor: pointer;
 }
+
+/* ── Free vs Pro comparison table («Тарифы» step) ── */
+.ob-cmp {
+  width: 100%; box-sizing: border-box;
+  background: var(--ob-card); border: 1px solid var(--ob-line);
+  border-radius: 16px; overflow: hidden;
+}
+.ob-cmp-head {
+  display: grid; grid-template-columns: 1fr 58px 74px;
+  background: #fff; border-bottom: 1px solid var(--ob-line);
+}
+.ob-cmp-head > div { padding: 10px 3px; text-align: center; }
+.ob-cmp-head .h-feat { text-align: left; padding-left: 12px; font-size: 12px; font-weight: 800; color: var(--ob-muted); align-self: center; }
+.ob-cmp-head .n { font-size: 14.5px; }
+.ob-cmp-head .h-free .n { font-weight: 800; color: var(--ob-muted); }
+.ob-cmp-head .h-pro .n { font-weight: 900; color: #1b7a53; }
+.ob-cmp-head .tag { display: block; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #9aa4b8; margin-top: 1px; }
+.ob-cmp-head .h-pro .tag { color: #b9822a; }
+.ob-cmp-head .h-pro { background: linear-gradient(180deg, rgba(24,164,110,.09), rgba(58,123,213,.05)); border-left: 1px solid var(--ob-line); }
+.ob-cmp-grid { display: grid; grid-template-columns: 1fr 58px 74px; }
+.ob-cmp-sect {
+  grid-column: 1 / -1; padding: 10px 12px 5px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--ob-accent); background: #f2f7ff; border-top: 1px solid var(--ob-line);
+}
+.ob-cmp-row { display: contents; }
+.ob-cmp-row > div { padding: 9px 3px; border-top: 1px solid var(--ob-line); display: flex; align-items: center; justify-content: center; min-height: 42px; }
+.ob-cmp-row .f { justify-content: flex-start; text-align: left; padding-left: 12px; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--ob-ink); line-height: 1.22; }
+.ob-cmp-row .f .emo { flex: 0 0 auto; }
+.ob-cmp-row .c-pro { background: linear-gradient(180deg, rgba(24,164,110,.06), rgba(58,123,213,.035)); border-left: 1px solid var(--ob-line); }
+.ob-cmp .v { font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; text-align: center; }
+.ob-cmp .v.free { color: var(--ob-muted); }
+.ob-cmp .v.pro { color: #1b7a53; }
+.ob-cmp .inf { font-size: 18px; line-height: 1; color: #1b7a53; font-weight: 700; }
+.ob-cmp .mk { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 900; }
+.ob-cmp .yes { background: #e3f5ec; color: #159c67; }
+.ob-cmp .no { background: #fbe7e4; color: #cf6f63; }
+.ob-cmp-row.ex .f { color: #1b7a53; font-weight: 800; }
+.ob-cmp-row.ex .f, .ob-cmp-row.ex .c-free { background: #f4fbf6; }
+.ob-cmp-legend { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; font-size: 11.5px; color: var(--ob-muted); margin: 2px 0; }
+.ob-cmp-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.ob-cmp-legend i { width: 14px; height: 14px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 900; font-style: normal; }
+.ob-cmp-legend .yes { background: #e3f5ec; color: #159c67; }
+.ob-cmp-legend .no { background: #fbe7e4; color: #cf6f63; }
+
+/* Info blocks below the table */
+.ob-info { width: 100%; box-sizing: border-box; display: flex; gap: 11px; align-items: flex-start; background: #f7faff; border: 1px solid var(--ob-line); border-radius: 14px; padding: 13px 14px; }
+.ob-info .ic { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center; font-size: 19px; }
+.ob-info h4 { margin: 0 0 3px; font-size: 14.5px; font-weight: 800; color: var(--ob-ink); }
+.ob-info p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--ob-muted); }
+.ob-info p b { color: var(--ob-ink); }
+.ob-info.is-trial .ic { background: #e3f5ec; }
+.ob-info.is-audio .ic { background: #fbf1dc; }
+.ob-info.is-stars .ic { background: #e7f0fd; }
+.ob-info.is-maint { border-style: dashed; }
+.ob-info.is-maint .ic { background: #fbe7e4; }

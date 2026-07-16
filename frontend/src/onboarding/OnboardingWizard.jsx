@@ -635,68 +635,153 @@ function StepBody(props) {
           </p>
         </div>
       );
-    case 'plans':
+    case 'plans': {
+      const YES = 'yes', NO = 'no', INF = 'inf';
+      const D = (n) => [`${n}/день`, `${n}/Tag`];
+      const cmpCell = (spec, col) => {
+        if (spec === YES) return <span className="mk yes">✓</span>;
+        if (spec === NO) return <span className="mk no">✕</span>;
+        if (spec === INF) return <span className="inf">∞</span>;
+        const txt = Array.isArray(spec) ? t(spec[0], spec[1]) : spec;
+        return <span className={`v ${col}`}>{txt}</span>;
+      };
+      const SECTIONS = [
+        { title: t('📝 Переводы с разбором', '📝 Übersetzungen mit Analyse'), rows: [
+          { f: t('Наборы переводов в день', 'Übersetzungs-Sätze pro Tag'), free: D(1), pro: INF },
+          { f: t('Объяснить ошибки / грамматику', 'Fehler / Grammatik erklären'), free: D(1), pro: INF },
+          { f: t('Спроси GPT (вопросы)', 'GPT fragen'), free: D(1), pro: INF },
+          { f: t('🎭 Загадочная история', '🎭 Rätselgeschichte'), free: NO, pro: YES, ex: true },
+          { f: t('🎧 Аудио-разбор ошибок утром', '🎧 Morgendliche Fehler-Audio'), free: NO, pro: YES, ex: true },
+        ] },
+        { title: t('📖 Словарь', '📖 Wörterbuch'), rows: [
+          { f: t('Переводы-запросы', 'Wörterbuch-Abfragen'), free: D(10), pro: INF },
+          { f: t('Сохранение слов', 'Wörter speichern'), free: D(20), pro: INF },
+          { f: t('Полный разбор (GPT)', 'Tiefenanalyse (GPT)'), free: [t('лимит', 'Limit'), 'Limit'], pro: INF },
+        ] },
+        { title: t('🃏 Карточки', '🃏 Karteikarten'), rows: [
+          { f: t('Новые слова', 'Neue Wörter'), free: ['10/режим', '10/Modus'], pro: INF },
+          { f: t('Повторения в день', 'Wiederholungen pro Tag'), free: '20', pro: INF },
+        ] },
+        { title: t('🎯 Тренажёры', '🎯 Übungen'), rows: [
+          { f: t('«Почувствуй слово»', '«Wort fühlen»'), free: D(3), pro: INF },
+          { f: t('Числа на слух — своя тренировка', 'Zahlen-Diktat — eigenes Training'), free: NO, pro: D(5) },
+          { f: t('Прокачка навыков', 'Skill-Training'), free: NO, pro: INF },
+        ] },
+        { title: t('📚 Читалка', '📚 Reader'), rows: [
+          { f: t('Классика (общие книги)', 'Klassiker (geteilte Bücher)'), free: YES, pro: YES },
+          { f: t('Статьи из интернета (DW, Tagesschau…)', 'Web-Artikel (DW, Tagesschau…)'), free: YES, pro: YES },
+          { f: t('Добавлять свои книги', 'Eigene Bücher hinzufügen'), free: NO, pro: INF, ex: true },
+        ] },
+        { title: t('▶️ Видео (YouTube)', '▶️ Videos (YouTube)'), rows: [
+          { f: t('Немецкие субтитры', 'Deutsche Untertitel'), free: YES, pro: YES },
+          { f: t('Синхронные RU-субтитры', 'Synchrone RU-Untertitel'), free: NO, pro: YES, ex: true },
+          { f: t('Видео-рекомендация недели', 'Video-Empfehlung der Woche'), free: NO, pro: YES, ex: true },
+        ] },
+        { title: t('📬 Задания по расписанию', '📬 Aufgaben nach Plan'), rows: [
+          { f: t('Заданий в день', 'Aufgaben pro Tag'), free: '6', pro: '12 → 20' },
+          { f: t('Своё расписание и часы', 'Eigener Plan & Zeiten'), free: NO, pro: YES, ex: true },
+          { f: t('Приоритетная обработка', 'Priorisierte Verarbeitung'), free: NO, pro: YES, ex: true },
+        ] },
+        { title: t('🧭 Разделы приложения', '🧭 App-Bereiche'), rows: [
+          { f: t('📊 Аналитика прогресса', '📊 Fortschritts-Analyse'), free: NO, pro: YES, ex: true },
+          { f: t('🗓 Задачи на сегодня', '🗓 Heutige Aufgaben'), free: NO, pro: YES, ex: true },
+          { f: t('📅 План на неделю', '📅 Wochenplan'), free: NO, pro: YES, ex: true },
+          { f: t('🗺 Слабые навыки: карта + точечная тренировка', '🗺 Schwache Skills: Karte + gezieltes Training'), free: NO, pro: YES, ex: true },
+        ] },
+        { title: t('⚔️ Дуэли и игры', '⚔️ Duelle & Spiele'), rows: [
+          { f: t('Играть по приглашению', 'Auf Einladung spielen'), free: YES, pro: YES },
+          { f: t('Создавать свои дуэли', 'Eigene Duelle erstellen'), free: NO, pro: YES, ex: true },
+          { f: t('Игры, кроссворды, новости', 'Spiele, Kreuzworträtsel, News'), free: YES, pro: YES },
+        ] },
+        { title: t('📥 Захват слов', '📥 Worterfassung'), rows: [
+          { f: t('Пересылка сообщений боту', 'Nachrichten an den Bot'), free: D(1), pro: INF },
+          { f: t('Shortcut «Ночной Переводчик»', 'Shortcut «Nacht-Übersetzer»'), free: [t('5 проб всего', '5 Testläufe'), '5 Testläufe'], pro: D(2) },
+        ] },
+      ];
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            {t('Ты увидел, что умеет бот. Теперь — тарифы. Их два: Free и Pro. Плюс отдельная опция — озвучка книг (о ней ниже).',
-               'Du hast gesehen, was der Bot kann. Jetzt die Tarife. Es gibt zwei: Free und Pro. Dazu eine separate Option — Buch-Vertonung (dazu unten mehr).')}
+            {t('Ты увидел, что умеет бот. Вот что входит в каждый тариф — Free и Pro. Озвучка книг оплачивается отдельно.',
+               'Du hast gesehen, was der Bot kann. Das steckt in jedem Tarif — Free und Pro. Buch-Vertonung wird separat bezahlt.')}
           </p>
 
-          <div className="ob-plan">
-            <p className="ob-plan-title">🆓 <b>Free</b> — {t('бесплатно, навсегда', 'kostenlos, für immer')}</p>
-            <p className="ob-muted-note">{t('Полноценно учишься каждый день, но с дневными лимитами:', 'Du lernst voll mit, aber mit Tageslimits:')}</p>
-            <ul className="ob-list">
-              <li>{t('📝 Переводы с разбором — 1 подход в день', '📝 Übersetzungen mit Analyse — 1 Runde/Tag')}</li>
-              <li>{t('📖 Словарь — сохранять до 20 слов и смотреть до 30 переводов в день', '📖 Wörterbuch — bis 20 Wörter speichern und bis 30 Übersetzungen/Tag')}</li>
-              <li>{t('📲 Захват слов (Shortcut/пересылка) — до 15 сообщений и до 20 сохранений в день', '📲 Worterfassung (Shortcut/Weiterleitung) — bis 15 Nachrichten und 20 Speicherungen/Tag')}</li>
-              <li>{t('🃏 Карточки — до 20 повторений в день', '🃏 Karten — bis 20 Wiederholungen/Tag')}</li>
-              <li>{t('🤖 «Спроси GPT» — 5 вопросов в день', '🤖 «Frag GPT» — 5 Fragen/Tag')}</li>
-              <li>{t('🎙 Разговорная практика — 3 минуты в день', '🎙 Sprechpraxis — 3 Minuten/Tag')}</li>
-              <li>{t('📚 Читалка — 1 книга/документ, хранится 30 дней', '📚 Reader — 1 Buch/Dokument, 30 Tage gespeichert')}</li>
-              <li>{t('🎮 Игры-тренировки, дуэли, новости, кроссворды — да, входят', '🎮 Übungsspiele, Duelle, News, Kreuzworträtsel — ja, inklusive')}</li>
-            </ul>
+          <div className="ob-cmp">
+            <div className="ob-cmp-head">
+              <div className="h-feat">{t('Возможность', 'Funktion')}</div>
+              <div className="h-free"><span className="n">Free</span><span className="tag">{t('бесплатно', 'gratis')}</span></div>
+              <div className="h-pro"><span className="n">Pro</span><span className="tag">💎</span></div>
+            </div>
+            <div className="ob-cmp-grid">
+              {SECTIONS.map((s, si) => (
+                <React.Fragment key={si}>
+                  <div className="ob-cmp-sect">{s.title}</div>
+                  {s.rows.map((r, ri) => (
+                    <div className={`ob-cmp-row${r.ex ? ' ex' : ''}`} key={ri}>
+                      <div className="f">{r.f}</div>
+                      <div className="c-free">{cmpCell(r.free, 'free')}</div>
+                      <div className="c-pro">{cmpCell(r.pro, 'pro')}</div>
+                    </div>
+                  ))}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+
+          <div className="ob-cmp-legend">
+            <span><i className="yes">✓</i>{t('входит', 'inklusive')}</span>
+            <span><i className="no">✕</i>{t('нет', 'nein')}</span>
+            <span><b style={{ color: '#1b7a53' }}>∞</b>{t('без ограничений', 'unbegrenzt')}</span>
+          </div>
+
+          <div className="ob-info is-trial">
+            <div className="ic">🎁</div>
+            <div>
+              <h4>{t('7 дней Pro — бесплатно каждому', '7 Tage Pro — für jeden gratis')}</h4>
+              <p>{t('Каждый новый пользователь сразу получает полный Pro на 7 дней, чтобы попробовать всё. Без карты, автоматически.',
+                    'Jeder neue Nutzer erhält sofort 7 Tage volles Pro, um alles auszuprobieren. Ohne Karte, automatisch.')}</p>
+            </div>
+          </div>
+
+          <div className="ob-info is-audio">
+            <div className="ic">🔊</div>
+            <div>
+              <h4>{t('Озвучка книг — отдельно', 'Buch-Vertonung — separat')}</h4>
+              <p>{t('Не входит ни в Free, ни в Pro. Оплачивается за каждую книгу отдельно звёздами: 3 голоса и 25 / 50 / 100 % книги. ',
+                    'Weder in Free noch in Pro enthalten. Wird pro Buch separat mit Sternen bezahlt: 3 Stimmen und 25 / 50 / 100 % des Buches. ')}
+                <b>{t('Классика озвучена бесплатно для всех.', 'Klassiker sind für alle gratis vertont.')}</b>{' '}
+                {t('Озвучить книгу можно прямо в Читалке: открываешь книгу → кнопка ▶.',
+                   'Ein Buch vertonst du direkt im Reader: Buch öffnen → ▶-Knopf.')}</p>
+            </div>
+          </div>
+
+          <div className="ob-info is-stars">
+            <div className="ic">⭐</div>
+            <div>
+              <h4>{t('Что такое звёзды Telegram', 'Was sind Telegram-Sterne')}</h4>
+              <p>{t('Звёзды — официальная валюта Telegram. Покупаются в пару тапов прямо в приложении, безопасно, без карт на сторонних сайтах. Ими оплачивается Pro и озвучка книг.',
+                    'Sterne sind die offizielle Telegram-Währung. In wenigen Taps direkt in der App gekauft — sicher, ohne Karte auf fremden Seiten. Damit zahlst du Pro und Buch-Vertonung.')}</p>
+            </div>
+          </div>
+
+          <div className="ob-info is-maint">
+            <div className="ic">🎙</div>
+            <div>
+              <h4>{t('Разговорная практика — на доработке', 'Sprechpraxis — in Arbeit')}</h4>
+              <p>{t('Раздел временно выключен: оптимизируем, чтобы он работал быстро и стабильно. Скоро вернём.',
+                    'Der Bereich ist vorübergehend deaktiviert: wir optimieren ihn für schnelle, stabile Nutzung. Bald wieder da.')}</p>
+            </div>
           </div>
 
           <div className="ob-plan ob-plan-pro">
-            <p className="ob-plan-title">💎 <b>Pro</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : null}</p>
-            <p className="ob-muted-note">{t('Всё то же самое, но без дневных лимитов — и с бесплатным пробным периодом на 3 дня:', 'Alles dasselbe, aber ohne Tageslimits — und mit 3 Tagen kostenlos zum Testen:')}</p>
-            <ul className="ob-list">
-              <li>{t('♾ Переводы, словарь, карточки, «Почувствуй слово» — без лимитов', '♾ Übersetzungen, Wörterbuch, Karten, «Fühl das Wort» — ohne Limit')}</li>
-              <li>{t('📚 Читалка — без лимитов: сколько угодно книг, хранятся сколько нужно', '📚 Reader — ohne Limit: beliebig viele Bücher, bleiben so lange du willst')}</li>
-              <li>{t('🎙 Разговорная практика — 15 минут в день', '🎙 Sprechpraxis — 15 Minuten/Tag')}</li>
-              <li>{t('📲 Захват слов и все тренажёры — без ограничений', '📲 Worterfassung und alle Übungen — ohne Beschränkung')}</li>
-              <li>{t('⚡ Приоритетная обработка и настройка расписания заданий (сколько и когда присылать)', '⚡ Priorisierte Verarbeitung und einstellbarer Aufgabenplan (wie viel und wann)')}</li>
-            </ul>
+            <p className="ob-plan-title">💎 <b>Pro</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">292 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
             <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
               {t('✨ Оформить Pro', '✨ Pro holen')}
             </button>
-            <span className="ob-muted-note">{t('Кнопка откроет экран «Подписка» — там видна актуальная цена и оплата. Открыть его можно в любой момент из меню бота.', 'Der Knopf öffnet den «Abo»-Bildschirm — dort siehst du den aktuellen Preis und zahlst. Erreichbar jederzeit über das Bot-Menü.')}</span>
-          </div>
-
-          <div className="ob-plan">
-            <p className="ob-plan-title">🎧 <b>{t('Озвучка книг — отдельная опция', 'Buch-Vertonung — separate Option')}</b></p>
-            <p className="ob-lead">
-              {t('Качественная озвучка стоит дорого и нужна не всем — поэтому мы убрали её из цены Pro, чтобы не заставлять платить тех, кому она не нужна. Это отдельная опция по желанию.',
-                 'Hochwertige Vertonung ist teuer und nicht für jeden nötig — deshalb haben wir sie aus dem Pro-Preis herausgenommen, damit niemand dafür zahlt, der sie nicht braucht. Eine optionale Zusatzfunktion.')}
-            </p>
-            <ul className="ob-list">
-              <li>{t('✅ Доступно всем — и на Free, и на Pro. Выбираешь любую свою книгу, озвучиваешь её и читаешь, одновременно слушая.', '✅ Für alle — Free wie Pro. Wähle ein beliebiges Buch, vertone es und lies, während du zuhörst.')}</li>
-              <li>{t('🆓 Классика уже озвучена бесплатно: набор классических книг («Классика») можно слушать в базовом голосе — всем и без оплаты.', '🆓 Klassiker sind schon kostenlos vertont: die «Klassik»-Sammlung hörst du in der Standard-Stimme — für alle, gratis.')}</li>
-              <li>{t('🎚 Хочешь озвучить свою книгу — выбираешь голос, от него зависит цена:', '🎚 Willst du dein eigenes Buch vertonen — du wählst die Stimme, danach richtet sich der Preis:')}</li>
-            </ul>
-            <ul className="ob-list ob-sublist">
-              <li>{t('Обычный голос — дешевле', 'Standard-Stimme — günstiger')}</li>
-              <li>{t('Премиум-голос — качественнее, дороже', 'Premium-Stimme — hochwertiger, teurer')}</li>
-            </ul>
-            <p className="ob-muted-note">
-              {t('Например, книга ~300 000 символов: Обычный ≈ 78 ⭐, Премиум ≈ 312 ⭐ (для длинных книг — больше). Точная цена в ⭐ показывается перед покупкой. Платишь один раз за книгу — слушаешь сколько угодно, навсегда. Оплата — прямо в Telegram Stars.',
-                 'Beispiel: ein Buch mit ~300 000 Zeichen — Standard ≈ 78 ⭐, Premium ≈ 312 ⭐ (bei langen Büchern mehr). Der genaue Preis in ⭐ wird vor dem Kauf angezeigt. Du zahlst einmal pro Buch — und hörst so oft du willst, für immer. Bezahlt wird direkt mit Telegram Stars.')}
-            </p>
-            <p className="ob-muted-note">{t('Озвучить книгу можно прямо в Читалке: открываешь книгу → кнопка озвучки.', 'Ein Buch vertonst du direkt im Reader: Buch öffnen → Vertonungs-Knopf.')}</p>
+            <span className="ob-muted-note">{t('Кнопка откроет экран «Подписка» — там актуальная цена и оплата в Telegram Stars. Открыть можно в любой момент из меню бота.', 'Der Knopf öffnet den «Abo»-Bildschirm — dort der aktuelle Preis und Zahlung mit Telegram Stars. Jederzeit über das Bot-Menü erreichbar.')}</span>
           </div>
         </div>
       );
+    }
     case 'howto_translations':
       return (
         <div className="ob-stub">
