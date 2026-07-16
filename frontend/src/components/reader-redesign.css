@@ -150,15 +150,76 @@
     min-height: 0;
   }
   /* Overview only: the three shelves take the leftover height and each card
-     grows to consume ALL of it — no cap — so the list always reaches the bottom
-     of the screen. Small screens shrink cards toward the floor (min-height);
-     big screens grow them. Fully adaptive to the device height either way. */
+     grows to consume it, so the list reaches the bottom of the screen. In
+     Telegram (webview, NOT standalone) there is little slack — cards grow only
+     a little and stay well-proportioned, which is the look we want to keep.
+     The standalone PWA block below overrides this to scale the card CONTENT
+     up too, so extra height never turns cards into big empty boxes. */
   .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelves {
     flex: 1 1 auto;
   }
   .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-card {
     flex: 1 1 0;
     min-height: 82px;
+  }
+}
+
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  STANDALONE PWA (home-screen icon): scale the WHOLE card, not the box   │
+   │  Growing only the card height left tiny text floating in a huge box.    │
+   │  Here the cover stack, emoji, title, count and description all scale     │
+   │  together with the viewport height (vh clamps: current phone size →      │
+   │  tuned tablet size), so cards look like the Telegram layout, just        │
+   │  bigger, filling the screen at correct proportions on ANY device height. │
+   │  Scoped to display-mode:standalone so the Telegram view is untouched.    │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+@media (display-mode: standalone) and (max-width: 900px) {
+  /* Cards keep their natural (content-driven) height instead of ballooning;
+     the leftover height is spread as even spacing so they reach the bottom. */
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelves {
+    justify-content: space-between;
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-card {
+    flex: 0 1 auto;
+    min-height: 0;
+    gap: clamp(15px, 2.2vh, 22px);
+    padding: clamp(15px, 2.1vh, 21px) clamp(16px, 2.2vh, 22px);
+    border-radius: clamp(20px, 2.6vh, 26px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-stack {
+    width: clamp(82px, 12vh, 108px);
+    height: clamp(74px, 11vh, 98px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-mini {
+    width: clamp(46px, 6.8vh, 62px);
+    height: clamp(66px, 9.7vh, 88px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-mini:nth-child(2) {
+    left: clamp(17px, 2.4vh, 22px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-mini:nth-child(3) {
+    left: clamp(32px, 4.9vh, 44px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-mini-ini {
+    font-size: clamp(19px, 2.9vh, 26px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-emoji {
+    width: clamp(62px, 9.2vh, 84px);
+    height: clamp(62px, 9.2vh, 84px);
+    font-size: clamp(30px, 4.4vh, 40px);
+    border-radius: clamp(15px, 2vh, 18px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-name {
+    font-size: clamp(18px, 2.5vh, 23px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-badge {
+    font-size: clamp(15px, 2.1vh, 19px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-count {
+    font-size: clamp(11.5px, 1.5vh, 13.5px);
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-desc {
+    font-size: clamp(13px, 1.75vh, 15px);
   }
 }
 
