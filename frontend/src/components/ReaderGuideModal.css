@@ -25,7 +25,11 @@
 .rdg-card {
   position: relative;
   width: 100%;
-  max-width: 384px;
+  /* Width proportional to the screen (~92%), not a fixed 384px. In the standalone
+     PWA the CSS viewport is wider than the Telegram webview, so a fixed 384px cap
+     made the sheet look narrow (~75%). min(540px, 94vw) keeps the same ~92% look
+     in Telegram AND fills the wider PWA viewport, with a sane cap for tablets. */
+  max-width: min(540px, 94vw);
   max-height: 88vh;
   display: flex;
   flex-direction: column;
