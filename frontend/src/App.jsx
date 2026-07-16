@@ -8155,25 +8155,27 @@ function AppInner() {
   }, [billingPlans, billingPlanMeta, uiLang, tr]);
   const billingPlanLimitDetails = useMemo(() => {
     const paidCommon = [
-      tr('Переводы: безлимитно.', 'Übersetzungen: unbegrenzt.'),
-      tr('Читалка: безлимитно.', 'Reader: unbegrenzt.'),
-      tr('Карточки: безлимитно.', 'Karteikarten: unbegrenzt.'),
-      tr('«Почувствуй слово»: безлимитно.', '„Wort fühlen“: unbegrenzt.'),
-      tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.'),
-      tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.'),
+      tr('Переводы, словарь, карточки, тренажёры: без дневных лимитов.', 'Übersetzungen, Wörterbuch, Karten, Übungen: ohne Tageslimits.'),
+      tr('Читалка: свои книги без ограничений (+ классика и статьи).', 'Reader: eigene Bücher ohne Limit (+ Klassiker und Artikel).'),
+      tr('YouTube: синхронные русские субтитры.', 'YouTube: synchrone russische Untertitel.'),
+      tr('🎭 Загадочная история + 🎧 утренний аудио-разбор ошибок.', '🎭 Rätselgeschichte + 🎧 morgendliche Fehler-Audio.'),
+      tr('📊 Аналитика, 🗓 Задачи на день, 📅 План недели, 🗺 Карта слабых навыков с тренировкой.', '📊 Analyse, 🗓 Tagesaufgaben, 📅 Wochenplan, 🗺 Schwache-Skills-Karte mit Training.'),
+      tr('Создавать свои дуэли, настраивать расписание, приоритетная обработка.', 'Eigene Duelle erstellen, Plan einstellen, priorisierte Verarbeitung.'),
+      tr('«Числа на слух» (своя тренировка): до 5 в день.', 'Zahlen-Diktat (eigenes Training): bis zu 5 pro Tag.'),
     ];
     return {
       free: {
         title: tr('Лимиты тарифа Free', 'Limits des Free-Tarifs'),
         items: [
-          tr('Переводы: 1 набор в день (7 предложений).', 'Übersetzungen: 1 Set pro Tag (7 Sätze).'),
-          tr('Читалка: 1 книга/документ в архиве (период хранения до 30 дней).', 'Reader: 1 Buch/Dokument im Archiv (Speicherzeit bis 30 Tage).'),
-          tr('Чтобы добавить новую книгу, нужно удалить предыдущую.', 'Um ein neues Buch hinzuzufügen, muss das vorherige gelöscht werden.'),
-          tr('Скачивание аудио из читалки: недоступно.', 'Audio-Export aus dem Reader: nicht verfügbar.'),
-          tr('Карточки: в каждом виде тренировки по 5 слов в день.', 'Karteikarten: in jedem Trainingsmodus 5 Wörter pro Tag.'),
-          tr('«Почувствуй слово»: до 3 раз в день (общий лимит).', '„Wort fühlen“: bis zu 3-mal pro Tag (globales Limit).'),
-          tr('Разговорная практика: 3 минуты в день.', 'Sprechpraxis: 3 Minuten pro Tag.'),
-          tr('Прокачка навыков: 1 навык.', 'Skill-Training: 1 Skill.'),
+          tr('Переводы с разбором: 1 набор в день (7 предложений).', 'Übersetzungen mit Analyse: 1 Set pro Tag (7 Sätze).'),
+          tr('Словарь: 10 запросов + 20 сохранений в день.', 'Wörterbuch: 10 Abfragen + 20 Speicherungen pro Tag.'),
+          tr('«Объяснить ошибки» и «Спроси GPT»: по 1 в день.', '„Fehler erklären“ und „GPT fragen“: je 1 pro Tag.'),
+          tr('Карточки: 10 новых слов на каждый вид тренировки + 20 повторений в день.', 'Karten: 10 neue Wörter je Trainingsmodus + 20 Wiederholungen pro Tag.'),
+          tr('«Почувствуй слово»: до 3 раз в день.', '„Wort fühlen“: bis zu 3-mal pro Tag.'),
+          tr('Читалка: «Классика» и статьи из интернета; свои книги — только в Pro.', 'Reader: „Klassiker“ und Web-Artikel; eigene Bücher — nur in Pro.'),
+          tr('YouTube: немецкие субтитры (синхронные русские — в Pro).', 'YouTube: deutsche Untertitel (synchrone russische — in Pro).'),
+          tr('Задания по расписанию: 6 в день (без своей настройки).', 'Aufgaben nach Plan: 6 pro Tag (ohne eigene Einstellung).'),
+          tr('Прокачка навыков, «Числа на слух» (тренажёр), аналитика, задачи, план недели, карта навыков — в Pro.', 'Skill-Training, Zahlen-Diktat (Training), Analyse, Aufgaben, Wochenplan, Skill-Karte — in Pro.'),
         ],
       },
       pro: {
@@ -40031,7 +40033,7 @@ function AppInner() {
               <section className="webapp-section webapp-billing" ref={billingRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Подписка', 'Abo')}</h2>
-                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и Stripe Portal: отмена подписки, смена карты и счета.', 'Aktueller Tarif, Limits und Stripe-Portal: Kündigung, Kartenwechsel und Rechnungen.')}</p>
+                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и управление подпиской. Оплата Pro — в Telegram Stars.', 'Aktueller Tarif, Limits und Abo-Verwaltung. Pro wird mit Telegram Stars bezahlt.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 
@@ -40083,31 +40085,47 @@ function AppInner() {
                     ) : null}
 
                     <div className="billing-trial-banner">
-                      <strong>{tr('Новые пользователи начинают с Free. Платные функции доступны по подписке Pro.', 'Neue Nutzer starten mit Free. Bezahlte Funktionen sind mit Pro-Abo verfügbar.')}</strong>
+                      <strong>{tr('🎁 Каждый новый пользователь получает 7 дней полного Pro — бесплатно, чтобы попробовать всё. Потом — Free. Оплата Pro и озвучки книг — в Telegram Stars.', '🎁 Jeder neue Nutzer bekommt 7 Tage volles Pro — kostenlos zum Ausprobieren. Danach Free. Pro und Buch-Vertonung zahlst du mit Telegram Stars.')}</strong>
                     </div>
                     <div className="billing-policy-grid">
                       <article className="billing-policy-card">
-                        <h4>{tr('Free по умолчанию', 'Free standardmäßig')}</h4>
+                        <h4>{tr('Free — бесплатно, с дневными лимитами', 'Free — gratis, mit Tageslimits')}</h4>
                         <ul>
-                          <li>{tr('Переводы: 1 набор в день (7 предложений).', 'Übersetzungen: 1 Set pro Tag (7 Sätze).')}</li>
-                          <li>{tr('Читалка: 1 книга (до 30 дней), новая только после удаления старой.', 'Reader: 1 Buch (bis 30 Tage), neues nur nach Löschen des alten.')}</li>
-                          <li>{tr('Аудио из читалки: недоступно.', 'Audio aus Reader: nicht verfügbar.')}</li>
-                          <li>{tr('Карточки: по 5 слов в день на каждый вид тренировки.', 'Karteikarten: 5 Wörter pro Tag je Trainingsmodus.')}</li>
-                          <li>{tr('«Почувствуй слово»: 3 раза в день.', '„Wort fühlen“: 3-mal pro Tag.')}</li>
-                          <li>{tr('Разговорная практика: 3 минуты в день.', 'Sprechpraxis: 3 Minuten pro Tag.')}</li>
-                          <li>{tr('Прокачка навыков: 1 навык.', 'Skill-Training: 1 Skill.')}</li>
+                          <li>{tr('Переводы с разбором: 1 набор/день (7 предложений).', 'Übersetzungen mit Analyse: 1 Set/Tag (7 Sätze).')}</li>
+                          <li>{tr('Словарь: 10 запросов + 20 сохранений/день.', 'Wörterbuch: 10 Abfragen + 20 Speicherungen/Tag.')}</li>
+                          <li>{tr('«Объяснить ошибки» и «Спроси GPT»: по 1/день.', '„Fehler erklären“ und „GPT fragen“: je 1/Tag.')}</li>
+                          <li>{tr('Карточки: 10 новых слов/режим + 20 повторений/день.', 'Karten: 10 neue Wörter/Modus + 20 Wiederholungen/Tag.')}</li>
+                          <li>{tr('«Почувствуй слово»: 3/день.', '„Wort fühlen“: 3/Tag.')}</li>
+                          <li>{tr('Читалка: «Классика» и статьи из интернета (свои книги — нельзя).', 'Reader: „Klassiker“ und Web-Artikel (eigene Bücher — nein).')}</li>
+                          <li>{tr('YouTube: немецкие субтитры.', 'YouTube: deutsche Untertitel.')}</li>
+                          <li>{tr('Задания по расписанию: 6/день (без своей настройки).', 'Aufgaben nach Plan: 6/Tag (ohne eigene Einstellung).')}</li>
+                          <li>{tr('Игры, кроссворды, новости, дуэли по приглашению — входят.', 'Spiele, Kreuzworträtsel, News, Duelle auf Einladung — inklusive.')}</li>
                         </ul>
                       </article>
-                      <article className="billing-policy-card">
-                        <h4>{tr('Pro — полный доступ', 'Pro — voller Zugang')}</h4>
+                      <article className="billing-policy-card billing-policy-card--pro">
+                        <h4>{tr('💎 Pro — всё без ограничений', '💎 Pro — alles ohne Limits')}</h4>
                         <ul>
-                          <li>{tr('Переводы, читалка, карточки, «почувствуй слово»: безлимитно.', 'Übersetzungen, Reader, Karteikarten, „Wort fühlen“: unbegrenzt.')}</li>
-                          <li>{tr('Аудио из читалки: до 10 страниц за 7 дней.', 'Audio aus Reader: bis zu 10 Seiten in 7 Tagen.')}</li>
-                          <li>{tr('Разговорная практика: 15 минут в день.', 'Sprechpraxis: 15 Minuten pro Tag.')}</li>
-                          <li>{tr('Прокачка навыков: безлимитно.', 'Skill-Training: unbegrenzt.')}</li>
-                          <li>{tr('Можно обсудить индивидуальную доработку/тренировку (по технической возможности).', 'Individuelle Anpassung/Training kann besprochen werden (sofern technisch möglich).')}</li>
+                          <li>{tr('Переводы, словарь, карточки, тренажёры: без дневных лимитов.', 'Übersetzungen, Wörterbuch, Karten, Übungen: ohne Tageslimits.')}</li>
+                          <li>{tr('Читалка: свои книги без ограничений (+ классика и статьи).', 'Reader: eigene Bücher ohne Limit (+ Klassiker und Artikel).')}</li>
+                          <li>{tr('YouTube: синхронные русские субтитры.', 'YouTube: synchrone russische Untertitel.')}</li>
+                          <li>{tr('🎭 Загадочная история + 🎧 утренний аудио-разбор ошибок.', '🎭 Rätselgeschichte + 🎧 morgendliche Fehler-Audio.')}</li>
+                          <li>{tr('📊 Аналитика, 🗓 Задачи на день, 📅 План недели, 🗺 Карта слабых навыков с тренировкой.', '📊 Analyse, 🗓 Tagesaufgaben, 📅 Wochenplan, 🗺 Schwache-Skills-Karte mit Training.')}</li>
+                          <li>{tr('Создавать свои дуэли, настраивать расписание, приоритетная обработка.', 'Eigene Duelle erstellen, Plan einstellen, priorisierte Verarbeitung.')}</li>
+                          <li>{tr('Задания по расписанию: 12–20/день.', 'Aufgaben nach Plan: 12–20/Tag.')}</li>
                         </ul>
                       </article>
+                    </div>
+                    <div className="billing-trial-banner">
+                      🔊 <strong>{tr('Озвучка книг — отдельно.', 'Buch-Vertonung — separat.')}</strong>{' '}
+                      {tr('Не входит ни в Free, ни в Pro: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Free noch in Pro: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}
+                    </div>
+                    <div className="billing-trial-banner">
+                      ⭐ <strong>{tr('Что такое звёзды Telegram.', 'Was sind Telegram-Sterne.')}</strong>{' '}
+                      {tr('Официальная валюта Telegram: покупаются в пару тапов прямо в приложении, безопасно, без карт на сторонних сайтах.', 'Die offizielle Telegram-Währung: in wenigen Taps direkt in der App gekauft — sicher, ohne Karte auf fremden Seiten.')}
+                    </div>
+                    <div className="billing-trial-banner">
+                      🎙 <strong>{tr('Разговорная практика — на доработке.', 'Sprechpraxis — in Arbeit.')}</strong>{' '}
+                      {tr('Раздел временно выключен: оптимизируем, скоро вернём.', 'Vorübergehend deaktiviert: wir optimieren, bald wieder da.')}
                     </div>
                     {billingAccessCards.length > 0 && (
                       <div className="billing-zone billing-zone--access">
@@ -40192,7 +40210,7 @@ function AppInner() {
                                 : tr('Оплата и подписка', 'Zahlung & Abo verwalten')}
                             </span>
                             <span className="billing-manage-cta__sub">
-                              {tr('Карта, история платежей и отмена — в Stripe', 'Karte, Zahlungen & Kündigung — im Stripe-Portal')}
+                              {tr('Продление, отмена и счета', 'Verlängerung, Kündigung & Rechnungen')}
                             </span>
                           </span>
                           <span className="billing-manage-cta__chevron" aria-hidden="true">

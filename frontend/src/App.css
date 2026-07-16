@@ -3832,6 +3832,16 @@ body:has(.webapp-page.is-theme-light),
   line-height: 1.4;
 }
 
+/* Pro card — visually lifted so it reads as the recommended tier */
+.billing-policy-card--pro {
+  border-color: rgba(31, 184, 122, 0.5);
+  background:
+    linear-gradient(180deg, rgba(31, 184, 122, 0.12), rgba(58, 123, 213, 0.06)),
+    rgba(15, 23, 42, 0.54);
+  box-shadow: 0 10px 26px -14px rgba(31, 184, 122, 0.45);
+}
+.billing-policy-card--pro h4 { color: #6ee7b7; }
+
 .billing-support-card__title-row {
   display: flex;
   align-items: flex-start;
