@@ -6972,6 +6972,10 @@ function AppInner() {
   const translationSubmitInFlightRef = useRef(false);
   const translationStartInFlightRef = useRef(false);
   const translationProgressiveFillPollTokenRef = useRef(0);
+  // Sentences from a progressive-fill poll that arrived WHILE a draft field was focused.
+  // Applying them mid-typing re-renders/remounts the list and drops the keyboard, so we
+  // stash them here and flush once the user leaves the field (see handleDraftCommit).
+  const pendingProgressiveSentencesRef = useRef(null);
   const translationFinishInFlightRef = useRef(false);
   const translationDraftsRef = useRef({});
   const translationShownAckedRef = useRef(new Map());
@@ -19372,7 +19376,15 @@ function AppInner() {
         || (Boolean(data?.generation_in_progress) && readyCount < expectedTotal ? 'running' : readyCount >= expectedTotal ? 'ready' : 'idle')
       ).trim().toLowerCase() || 'idle';
       const generationError = String(data?.generation_error || '').trim();
-      setSentences(items);
+      // During progressive fill, replacing the sentence list while the user is typing
+      // re-renders/remounts the draft fields and drops the keyboard mid-word. If a draft
+      // field is focused, defer the new list (stash it) and flush it on blur instead.
+      if (options?.deferWhileTyping && hasFocusedTranslationDraftField()) {
+        pendingProgressiveSentencesRef.current = items;
+      } else {
+        pendingProgressiveSentencesRef.current = null;
+        setSentences(items);
+      }
       if (!options?.preserveResults) {
         setResults([]);
         setTranslationAudioGrammarOptIn({});
@@ -19421,6 +19433,7 @@ function AppInner() {
         preserveResults: true,
         preserveFinishMessage: true,
         suppressError: true,
+        deferWhileTyping: true,
         sessionId,
       });
       if (translationProgressiveFillPollTokenRef.current !== pollToken) {
@@ -21069,6 +21082,18 @@ function AppInner() {
       React.startTransition(applyStateUpdate);
     } else {
       applyStateUpdate();
+    }
+    // The field just lost focus (keyboard going down). If a progressive-fill poll held
+    // back a fresh sentence list while we were typing, apply it now — but wait a tick and
+    // re-check focus so we don't remount the list under a field the user just switched to.
+    if (pendingProgressiveSentencesRef.current) {
+      window.setTimeout(() => {
+        const pending = pendingProgressiveSentencesRef.current;
+        if (pending && !hasFocusedTranslationDraftField()) {
+          pendingProgressiveSentencesRef.current = null;
+          setSentences(pending);
+        }
+      }, 250);
     }
     scheduleTranslationDraftPersistence({
       immediateLocal: true,
