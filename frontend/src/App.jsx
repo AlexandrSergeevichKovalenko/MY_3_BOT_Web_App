@@ -29594,6 +29594,23 @@ function AppInner() {
       translationDictDragRef.current.dragging = false;
     };
 
+    // The widget is anchored `bottom: 78px`, but position:fixed is trapped by the
+    // .webapp-page box whose height is --app-height. When the keyboard opens that height
+    // shrinks (and re-settles a couple of times), which yanks a bottom-anchored element up
+    // and back down — the "jumping block" over the dictionary. Freezing the widget to its
+    // current TOP (top-anchored, like a drag) makes the --app-height changes irrelevant, so
+    // it stays put while the keyboard is up. Runs once on focus; the user can still drag it.
+    const freezeWidgetTopForKeyboard = () => {
+      const el = translationDictWidgetRef.current;
+      if (!el) return;
+      if (el.style.top && el.style.bottom === 'auto') return; // already top-anchored (dragged/frozen)
+      const rect = el.getBoundingClientRect();
+      el.style.top = `${Math.round(rect.top)}px`;
+      el.style.left = `${Math.round(rect.left)}px`;
+      el.style.bottom = 'auto';
+      el.style.transform = 'none';
+    };
+
     return (
       <div
         className="translation-dict-widget"
@@ -29659,6 +29676,7 @@ function AppInner() {
               type="text"
               value={dictionaryWord}
               onChange={(event) => setDictionaryWord(event.target.value)}
+              onFocus={freezeWidgetTopForKeyboard}
               placeholder={tr('Слово или фраза...', 'Wort oder Phrase...')}
             />
             {dictionaryWord.trim() && (
