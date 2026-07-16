@@ -16473,6 +16473,108 @@ def ingest_public_library_catalog(
     return {"total": len(results), "ok": ok, "failed": len(results) - ok, "results": results}
 
 
+def _gutenberg_id_from_source_url(source_url: str | None) -> int | None:
+    """Extract the Project Gutenberg ebook id from a stored source_url like
+    'https://www.gutenberg.org/ebooks/1234'."""
+    if not source_url:
+        return None
+    m = re.search(r"/ebooks/(\d+)", str(source_url))
+    return int(m.group(1)) if m else None
+
+
+def _norm_title_key(title: str | None) -> str:
+    """Alphanumeric-only lowercase prefix of a title, for loose duplicate detection
+    across Gutenberg editions ('Faust: Der Tragödie...' vs 'Faust — Der Tragödie...').
+    Umlauts fold to their base letter so ä/ö/ü variants collapse together."""
+    s = (title or "").lower()
+    s = s.replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
+    return re.sub(r"[^a-z0-9]", "", s)[:18]
+
+
+def suggest_public_library_replacements(
+    *, level: str | None = None, target_lang: str = "de", limit: int = 3
+) -> list[dict]:
+    """Pick up to `limit` replacement classics from Gutendex's most-popular German books,
+    excluding anything already in the shelf (by Gutenberg id) or previously retired.
+    Returns [{gutenberg_id, slug, title, author, level, cover_url, sort}], popular first.
+    `level` is only a display hint carried onto the suggestions (Gutendex has no CEFR)."""
+    from backend.public_library_catalog import fetch_popular_german_candidates
+    from backend.database import get_retired_public_slugs
+
+    try:
+        existing = list_public_library_documents(target_lang=target_lang) or []
+    except Exception:
+        logging.exception("suggest_public_library_replacements: list existing failed")
+        existing = []
+    existing_ids = {
+        gid for gid in (_gutenberg_id_from_source_url(d.get("source_url")) for d in existing) if gid
+    }
+    existing_titles = {k for k in (_norm_title_key(d.get("title")) for d in existing) if k}
+    max_sort = max((int(d.get("public_sort") or 0) for d in existing), default=0)
+    retired = get_retired_public_slugs()
+
+    picks: list[dict] = []
+    picked_titles: set[str] = set()
+    try:
+        pool = fetch_popular_german_candidates()
+    except Exception:
+        logging.exception("suggest_public_library_replacements: gutendex pool failed")
+        pool = []
+    for c in pool:
+        gid = int(c["gutenberg_id"])
+        slug = f"gtx-{gid}"
+        tkey = _norm_title_key(c.get("title"))
+        # Skip: already on the shelf (by id or title/edition), retired, or a dup title
+        # already picked this round (Gutenberg often lists multi-volume editions).
+        if gid in existing_ids or slug in retired:
+            continue
+        if tkey and (tkey in existing_titles or tkey in picked_titles):
+            continue
+        picks.append({
+            "gutenberg_id": gid,
+            "slug": slug,
+            "title": c["title"],
+            "author": c["author"],
+            "level": (level or "").strip(),
+            "cover_url": c.get("cover_url"),
+            "sort": max_sort + 10 + len(picks) * 10,
+        })
+        if tkey:
+            picked_titles.add(tkey)
+        if len(picks) >= max(1, int(limit)):
+            break
+    return picks
+
+
+def ingest_adhoc_public_book(
+    *, gutenberg_id: int, title: str, author: str, level: str = "", sort: int = 0,
+    slug: str | None = None, source_lang: str = "ru", target_lang: str = "de",
+) -> dict:
+    """Ingest ONE ad-hoc public-domain book (an admin-chosen replacement) by pinned
+    Gutenberg id — reuses the exact download/extract/upsert path as the curated catalog.
+    The book lands as a normal is_public row, so nightly audio pregen, covers and
+    survival across deploys/re-ingests all apply automatically. A too-short / stub
+    download is rejected by _ingest_public_library_book (extract_too_short). Un-retires
+    the slug in case that book had been deleted before."""
+    from backend.public_library_catalog import CatalogBook
+    from backend.database import unretire_public_library_slug
+
+    slug = (slug or f"gtx-{int(gutenberg_id)}").strip()
+    book = CatalogBook(
+        slug=slug,
+        title=str(title).strip() or slug,
+        author=str(author).strip(),
+        level=str(level).strip() or "B1",
+        query=f"{title} {author}".strip(),
+        sort=int(sort or 0),
+        gutenberg_id=int(gutenberg_id),
+    )
+    result = _ingest_public_library_book(book, source_lang=source_lang, target_lang=target_lang)
+    if result.get("ok"):
+        unretire_public_library_slug(slug)
+    return result
+
+
 # Shared voice for the public-domain library: a Google Standard German voice, billed
 # from its own ~4M-char/month free tier. BOTH the on-demand audio endpoint and the
 # nightly pre-gen job must use this exact voice + rate so their cache keys line up and

@@ -4325,6 +4325,191 @@ async def handle_pubaudit_go_callback(update: Update, context: CallbackContext) 
         except Exception:
             pass
 
+    # Offer replacements for what was just removed — a separate follow-up message with
+    # tap-to-add candidates from Gutendex's most-popular German books. Best-effort: a
+    # network hiccup here must never break the delete confirmation above.
+    if deleted_titles:
+        level = ""
+        for it in chosen:
+            if it.get("level"):
+                level = str(it.get("level"))
+                break
+        try:
+            await _offer_public_replacements(context, int(query.from_user.id), digest_id, level=level)
+        except Exception:
+            logging.warning("public audit: replacement suggestion failed", exc_info=True)
+
+
+# ===== Replacement suggestions after a classics deletion ================================
+# After the admin deletes a book, we surface a few popular public-domain German books
+# (not yet in the shelf, not retired) as tappable buttons. One tap ingests the chosen
+# book as a normal public row (nightly audio pregen + cover follow automatically). The
+# candidate list lives in Redis, mirroring the audit-digest pattern above.
+
+def _pubrepl_redis_key(repl_id: str) -> str:
+    return f"pubrepl_digest:{repl_id}"
+
+
+def _pubrepl_read(repl_id: str) -> dict | None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is None:
+        return None
+    raw = client.get(_pubrepl_redis_key(repl_id))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except Exception:
+        return None
+
+
+def _pubrepl_write(repl_id: str, state: dict, ttl: int = 604800) -> None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is None:
+        return
+    client.setex(_pubrepl_redis_key(repl_id), ttl, json.dumps(state, ensure_ascii=False))
+
+
+def _pubrepl_delete(repl_id: str) -> None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is not None:
+        try:
+            client.delete(_pubrepl_redis_key(repl_id))
+        except Exception:
+            pass
+
+
+def _pubrepl_build_keyboard(repl_id: str, candidates: list) -> InlineKeyboardMarkup:
+    rows = []
+    for idx, c in enumerate(candidates):
+        title = str(c.get("title") or "")[:40]
+        author = str(c.get("author") or "")
+        label = f"➕ {title}" + (f" — {author}" if author else "")
+        rows.append([InlineKeyboardButton(label[:64], callback_data=f"pubrepl_add:{repl_id}:{idx}")])
+    rows.append([InlineKeyboardButton("Не нужно", callback_data=f"pubrepl_close:{repl_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _offer_public_replacements(context, user_id: int, base_id: str, *, level: str = "") -> None:
+    """Suggest replacement classics and DM the admin a tap-to-add keyboard."""
+    from backend.backend_server import suggest_public_library_replacements
+
+    candidates = await asyncio.to_thread(suggest_public_library_replacements, level=level, limit=3)
+    if not candidates:
+        return
+    repl_id = f"{base_id}r"
+    _pubrepl_write(repl_id, {"user_id": int(user_id), "candidates": candidates})
+    lines = ["📚 <b>Заменить удалённое?</b>", "Популярные книги публичного домена, которых ещё нет на полке:"]
+    for c in candidates:
+        lvl = f" · {html.escape(str(c.get('level')))}" if c.get("level") else ""
+        lines.append(f"• {html.escape(str(c.get('title') or ''))} — {html.escape(str(c.get('author') or ''))}{lvl}")
+    lines.append("")
+    lines.append("Нажми, чтобы добавить. Аудио к новой книге наполнится ночью.")
+    try:
+        await context.bot.send_message(
+            chat_id=int(user_id), text="\n".join(lines), parse_mode="HTML",
+            reply_markup=_pubrepl_build_keyboard(repl_id, candidates),
+        )
+    except Exception:
+        logging.warning("public audit: could not DM replacement suggestions", exc_info=True)
+
+
+async def handle_pubrepl_add_callback(update: Update, context: CallbackContext) -> None:
+    """Admin tapped a replacement candidate → ingest it as a public book."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    repl_id = parts[1] if len(parts) >= 2 else ""
+    try:
+        idx = int(parts[2]) if len(parts) >= 3 else -1
+    except ValueError:
+        idx = -1
+    state = _pubrepl_read(repl_id)
+    if not state:
+        await query.answer("Список устарел.", show_alert=True)
+        return
+    if int(state.get("user_id", 0)) != int(query.from_user.id) or not _is_admin_user(query.from_user.id):
+        await query.answer("Доступно только администратору.", show_alert=True)
+        return
+    candidates = state.get("candidates") or []
+    if idx < 0 or idx >= len(candidates):
+        await query.answer("Не найдено.", show_alert=True)
+        return
+    chosen = candidates[idx]
+    try:
+        await query.answer("Добавляю…")
+    except Exception:
+        pass
+
+    from backend.backend_server import ingest_adhoc_public_book
+    try:
+        res = await asyncio.to_thread(
+            ingest_adhoc_public_book,
+            gutenberg_id=int(chosen.get("gutenberg_id")),
+            title=str(chosen.get("title") or ""),
+            author=str(chosen.get("author") or ""),
+            level=str(chosen.get("level") or ""),
+            sort=int(chosen.get("sort") or 0),
+            slug=str(chosen.get("slug") or "") or None,
+        )
+    except Exception:
+        logging.exception("pubrepl add: ingest failed gid=%s", chosen.get("gutenberg_id"))
+        res = {"ok": False, "error": "exception"}
+
+    if res.get("ok"):
+        # Drop the added one; keep the rest tappable so the admin can add several.
+        remaining = [c for i, c in enumerate(candidates) if i != idx]
+        _pubrepl_write(repl_id, {"user_id": int(query.from_user.id), "candidates": remaining})
+        note = f"✅ Добавлено: {html.escape(str(chosen.get('title') or ''))}. Аудио наполнится ночью."
+        try:
+            if remaining:
+                await query.edit_message_text(
+                    note + "\n\nДобавить ещё?", parse_mode="HTML",
+                    reply_markup=_pubrepl_build_keyboard(repl_id, remaining),
+                )
+            else:
+                _pubrepl_delete(repl_id)
+                await query.edit_message_text(note, parse_mode="HTML")
+        except Exception:
+            pass
+    else:
+        # Stub/too-short or download error → drop this candidate, offer the others.
+        err = str(res.get("error") or "")
+        remaining = [c for i, c in enumerate(candidates) if i != idx]
+        _pubrepl_write(repl_id, {"user_id": int(query.from_user.id), "candidates": remaining})
+        await query.answer(
+            "Не получилось (файл пустой или битый). Попробуй другую." if "short" in err or "empty" in err
+            else "Не удалось добавить. Попробуй другую.",
+            show_alert=True,
+        )
+        try:
+            if remaining:
+                await query.edit_message_reply_markup(reply_markup=_pubrepl_build_keyboard(repl_id, remaining))
+            else:
+                _pubrepl_delete(repl_id)
+                await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+
+async def handle_pubrepl_close_callback(update: Update, context: CallbackContext) -> None:
+    """Admin dismissed the replacement suggestions."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    repl_id = parts[1] if len(parts) >= 2 else ""
+    _pubrepl_delete(repl_id)
+    try:
+        await query.answer("Ок")
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
 
 async def reader_public_audit_command(update: Update, context: CallbackContext) -> None:
     """Admin: send the Классика readership audit on demand (same as the twice-a-year DM)."""
@@ -36712,6 +36897,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_pubaudit_delete_callback, pattern=r"^pubaud_del:"))
     application.add_handler(CallbackQueryHandler(handle_pubaudit_go_callback, pattern=r"^pubaud_go:"))
     application.add_handler(CallbackQueryHandler(handle_pubaudit_cancel_callback, pattern=r"^pubaud_cancel:"))
+    application.add_handler(CallbackQueryHandler(handle_pubrepl_add_callback, pattern=r"^pubrepl_add:"))
+    application.add_handler(CallbackQueryHandler(handle_pubrepl_close_callback, pattern=r"^pubrepl_close:"))
     application.add_handler(CallbackQueryHandler(handle_artikel_settheme_callback, pattern=r"^art_st:"))
     application.add_handler(CallbackQueryHandler(_next_task_chooser_callback, pattern=r"^nxt:"))
     application.add_handler(CallbackQueryHandler(_schedule_preset_callback, pattern=r"^pset:"))

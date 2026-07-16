@@ -146,6 +146,70 @@ def resolve_gutendex(book: CatalogBook, *, timeout: int = 30) -> dict | None:
     return None
 
 
+def fetch_popular_german_candidates(*, page_limit: int = 2, timeout: int = 30) -> list[dict]:
+    """Query Gutendex for the most-downloaded German books (its default ordering is by
+    download count, desc) and return those with a usable EPUB/plain-text download.
+
+    Returns a list of raw candidate dicts, most-popular first:
+        {gutenberg_id, title, author, source_type, download_url, cover_url, download_count}
+
+    This is a POOL, not a final pick: the caller must still exclude books already in the
+    library / retired and confirm with the admin. Obvious junk (no downloadable text,
+    missing title/author) is dropped here; a "README-stub" that only reveals its
+    emptiness on download is caught later by the ingest's extract-too-short guard.
+    Network call — used only when suggesting a replacement.
+    """
+    candidates: list[dict] = []
+    seen_ids: set[int] = set()
+    url = f"{GUTENDEX_API}?{urllib.parse.urlencode({'languages': 'de'})}"
+    for _ in range(max(1, int(page_limit))):
+        if not url:
+            break
+        req = urllib.request.Request(url, headers={"User-Agent": _HTTP_USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            logger.exception("gutendex popular fetch failed url=%s", url)
+            break
+        for result in (payload.get("results") or []):
+            try:
+                gid = int(result.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if gid in seen_ids:
+                continue
+            formats = result.get("formats") or {}
+            download_url = _pick_format(formats, _EPUB_MIME_HINTS)
+            source_type = "epub"
+            if not download_url:
+                download_url = _pick_format(formats, _TEXT_MIME_HINTS)
+                source_type = "file"
+            if not download_url:
+                continue
+            title = (result.get("title") or "").strip()
+            authors = result.get("authors") or []
+            author = (authors[0].get("name") if authors and isinstance(authors[0], dict) else "") or ""
+            # Gutendex author names come "Last, First" — flip to "First Last" for display.
+            if "," in author:
+                last, _, first = author.partition(",")
+                author = f"{first.strip()} {last.strip()}".strip()
+            if not title or not author:
+                continue
+            seen_ids.add(gid)
+            candidates.append({
+                "gutenberg_id": gid,
+                "title": title,
+                "author": author,
+                "source_type": source_type,
+                "download_url": download_url,
+                "cover_url": _pick_format(formats, ("image/jpeg", "image/png")),
+                "download_count": int(result.get("download_count") or 0),
+            })
+        url = payload.get("next") or ""
+    return candidates
+
+
 def download_book_bytes(download_url: str, *, timeout: int = 60) -> bytes:
     """Download the resolved book file from Project Gutenberg."""
     req = urllib.request.Request(download_url, headers={"User-Agent": _HTTP_USER_AGENT})
