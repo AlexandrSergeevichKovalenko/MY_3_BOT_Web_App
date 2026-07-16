@@ -1471,7 +1471,7 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'subscription',
         title: 'Abo',
-        summary: 'Hier siehst du Tarif, Limits und den Weg ins Stripe-Portal.',
+        summary: 'Hier siehst du Tarif, Limits und zahlst Pro mit Telegram Stars.',
         sections: [
           {
             title: 'Was dieser Bereich zeigt',
@@ -1492,9 +1492,9 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Was du dort tippen kannst',
             items: [
-              'Tarif wählen, Limits lesen und das Stripe-Portal öffnen.',
-              'Im Stripe-Portal verwaltest du Karte, Rechnungen, Kündigung und Wiederaufnahme.',
-              'Nach Rückkehr kurz aktualisieren, damit der Status sichtbar nachzieht.',
+              'Tarif wählen, Limits lesen und Pro mit Telegram Stars holen.',
+              'Dein Stars-Abo (Verlängerung, Kündigung) verwaltest du direkt in Telegram.',
+              'Nach dem Kauf kurz aktualisieren, damit der Status sichtbar nachzieht.',
             ],
           },
         ],
@@ -8074,7 +8074,7 @@ function AppInner() {
       return tr('Оплата была отменена. Ты можешь попробовать еще раз в этом разделе.', 'Die Zahlung wurde abgebrochen. Du kannst es in diesem Bereich erneut versuchen.');
     }
     if (billingReturnContext.kind === 'portal') {
-      return tr('Возврат из Stripe Portal. Обновляю текущий статус подписки.', 'Rückkehr aus dem Stripe-Portal. Ich aktualisiere den aktuellen Abo-Status.');
+      return tr('Возврат из управления подпиской. Обновляю текущий статус.', 'Zurück aus der Abo-Verwaltung. Ich aktualisiere den aktuellen Status.');
     }
     return '';
   }, [billingReturnContext.kind, tr]);
@@ -13366,13 +13366,13 @@ function AppInner() {
       eyebrow: tr('Шаг 5 из 6', 'Schritt 5 von 6'),
       title: tr('Подписка и управление тарифом', 'Abo und Tarifverwaltung'),
       body: tr(
-        'В разделе «Подписка» видны текущий тариф, лимиты и все доступные планы. Там же открывается Stripe Portal для управления оплатой.',
-        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfügbaren Pläne. Dort öffnest du auch das Stripe-Portal zur Zahlungsverwaltung.'
+        'В разделе «Подписка» видны текущий тариф, лимиты и все доступные планы. Pro оплачивается в Telegram Stars — прямо в приложении, без карт на сторонних сайтах.',
+        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfügbaren Pläne. Pro wird mit Telegram Stars bezahlt — direkt in der App, ohne Karte auf fremden Seiten.'
       ),
       bullets: [
-        tr('Free — базовый бесплатный режим с лимитами. Только в тарифе Pro можно отправить персональный запрос на доработку под себя.', 'Free ist der kostenlose Modus mit Limits. Nur im Tarif Pro kannst du zusätzlich einen persönlichen Anpassungswunsch einreichen.'),
-        tr('«Кофе» и «Кофе + чизкейк» сейчас работают как альтернативные платные планы (не параллельные add-on).', '„Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Pläne (keine parallelen Add-ons).'),
-        tr('Кнопка «Управлять подпиской» открывает Stripe Portal: там смена карты, отмена/возобновление и счета; затем возвращайтесь в Mini App.', '„Abo verwalten“ öffnet das Stripe-Portal: Karte wechseln, kündigen/reaktivieren und Rechnungen; danach zur Mini App zurückkehren.'),
+        tr('Каждый новый пользователь получает 7 дней полного Pro бесплатно, чтобы попробовать всё. Потом — Free с дневными лимитами.', 'Jeder neue Nutzer bekommt 7 Tage volles Pro gratis zum Ausprobieren. Danach Free mit Tageslimits.'),
+        tr('Озвучка книг оплачивается отдельно, за каждую книгу — в Pro она не входит. Классика озвучена бесплатно для всех.', 'Die Buch-Vertonung wird separat je Buch bezahlt — nicht in Pro enthalten. Klassiker sind für alle gratis vertont.'),
+        tr('Pro-подпиской (продление и отмена) управляешь прямо в Telegram; отменить можно в любой момент.', 'Dein Pro-Abo (Verlängerung und Kündigung) verwaltest du direkt in Telegram; jederzeit kündbar.'),
       ],
     },
     {
@@ -13639,47 +13639,47 @@ function AppInner() {
         {
           key: 'subscription',
           number: '6',
-          title: 'Abo und Stripe-Portal',
-          summary: 'Verstehe Free/Pro, Support-Tarife und wie der Tarifwechsel wirklich funktioniert.',
+          title: 'Abo und Telegram Stars',
+          summary: 'Verstehe Free/Pro, den 7-Tage-Test, die Buch-Vertonung und die Zahlung mit Telegram Stars.',
           sections: [
             {
               title: 'Was der Bereich „Abo“ zeigt',
               items: [
                 'Hier siehst du deinen aktuellen Plan, den Status, den heutigen Verbrauch und dein Tageslimit.',
-                'Außerdem sind alle verfügbaren Tarife sichtbar, damit du direkt auswählen kannst, ohne erst das Portal zu öffnen.',
-                'Wenn ein Tarif als „nicht verbunden in Stripe“ erscheint, fehlt für diesen Plan die Stripe-Preis-Konfiguration auf dem Server.',
+                'Außerdem sind alle Funktionen von Free und Pro als Vergleich sichtbar.',
+                'Jeder neue Nutzer bekommt 7 Tage volles Pro gratis zum Ausprobieren; danach Free.',
               ],
             },
             {
               title: 'Welche Tarife es gibt',
               items: [
-                'Free: kostenloser Basis-Modus mit Limits.',
-                'Pro: voller Modus ohne Tageslimit; zusätzlich kannst du einen persönlichen Wunsch für eine individuelle Funktionsanpassung anfragen.',
-                'Support „Kaffee“ und „Kaffee + Cheesecake“ sind aktuell alternative bezahlte Tarife und ersetzen den aktiven bezahlten Tarif, statt parallel als Add-on zu laufen.',
+                'Free: kostenloser Basis-Modus mit Tageslimits.',
+                'Pro: voller Modus ohne Tageslimit (Übersetzungen, Wörterbuch, Karten, Analyse, Skill-Karte, eigene Bücher u. v. m.).',
+                'Buch-Vertonung ist separat und nicht in Pro enthalten — sie wird pro Buch mit Sternen bezahlt; Klassiker sind für alle gratis vertont.',
               ],
             },
             {
-              title: 'Was passiert bei Tarifwechsel',
+              title: 'Wie du Pro holst',
               items: [
-                'Wenn bereits bezahlte Abos aktiv sind, werden alle auf „läuft bis Periodenende“ gestellt und der neue Tarif startet zum nächsten Abrechnungszeitpunkt.',
-                'Dadurch gibt es keine doppelte Sofortbelastung mitten im laufenden Zyklus.',
-                'Wenn du denselben aktiven Tarif noch einmal auswählst, bekommst du eine Meldung und verwaltest ihn stattdessen im Portal.',
+                'Pro wird mit Telegram Stars bezahlt — der offiziellen Telegram-Währung, direkt in der App, ohne Karte auf fremden Seiten.',
+                'Tippe auf „Pro holen“ — Telegram bietet an, die nötigen Sterne zu kaufen, und schaltet Pro sofort frei.',
+                'Das Abo verlängert sich monatlich; kündbar jederzeit direkt in Telegram.',
               ],
             },
             {
-              title: 'Button „Abo im Stripe-Portal verwalten“',
+              title: 'Abo verwalten und kündigen',
               items: [
-                'Der Button öffnet Stripe Billing Portal (Domain: billing.stripe.com) für deinen Customer-Kontext.',
-                'Dort kannst du Karte wechseln, Abo kündigen/reaktivieren und Rechnungen einsehen.',
-                'Zurück: im Portal auf Rückkehr zur App tippen oder Browser/WebView schließen und die Mini App erneut öffnen, dann wird der Status im Abo-Bereich aktualisiert.',
+                'Dein Pro-Abo verwaltest du direkt in Telegram (Verlängerung, Kündigung) — kein externes Portal, keine fremde Seite.',
+                'Nach einer Kündigung bleibt Pro bis zum Ende des bereits bezahlten Zeitraums aktiv.',
+                'Zurück in der App den Abo-Bereich kurz aktualisieren, damit der Status nachzieht.',
               ],
             },
             {
               title: 'Wichtige Hinweise',
               items: [
-                'Nach Checkout oder Portal-Rückkehr immer kurz 1–3 Sekunden warten und den Abo-Bereich aktualisieren.',
-                'Wenn ein Tarif nicht sofort reagiert, kurz warten, den Abo-Bereich aktualisieren und es noch einmal versuchen.',
-                'Auch mit aktivem Pro bleiben die anderen Tarife sichtbar, damit du Wechseloptionen direkt in der Mini App siehst.',
+                'Nach dem Kauf kurz 1–3 Sekunden warten und den Abo-Bereich aktualisieren.',
+                'Wenn der Status nicht sofort reagiert, kurz warten, aktualisieren und es noch einmal versuchen.',
+                'Auch mit aktivem Pro bleibt der Free/Pro-Vergleich sichtbar.',
               ],
             },
           ],
@@ -14069,47 +14069,47 @@ function AppInner() {
       {
         key: 'subscription',
         number: '6',
-        title: 'Подписка и Stripe Portal',
-        summary: 'Раздел, где видно все тарифы и как правильно менять план без путаницы.',
+        title: 'Подписка и Telegram Stars',
+        summary: 'Free/Pro, 7 дней Pro для всех, озвучка книг и оплата в Telegram Stars.',
         sections: [
           {
             title: 'Что показывает блок «Подписка»',
             items: [
-              'Текущий план и статус подписки.',
-              'Полный список доступных тарифов внутри Mini App, чтобы не искать их в Stripe вручную.',
-              'Если у плана написано «тариф не подключён в Stripe», значит для него не задан или неактивен Stripe Price ID на сервере.',
+              'Текущий план, статус и дневной расход.',
+              'Сравнение всех возможностей Free и Pro прямо в Mini App.',
+              'Каждый новый пользователь получает 7 дней полного Pro бесплатно, чтобы попробовать всё; потом — Free.',
             ],
           },
           {
             title: 'Какие варианты тарифов есть',
             items: [
-              'Free: бесплатный базовый режим с лимитами.',
-              'Pro: полный режим без дневного лимита; только в тарифе Pro можно отправить персональный запрос на индивидуальную доработку функции.',
-              '«Поддержать разработчика: кофе» и «кофе + чизкейк» сейчас работают как альтернативные платные планы, а не как параллельные add-on поверх Pro.',
+              'Free: бесплатный базовый режим с дневными лимитами.',
+              'Pro: полный режим без дневного лимита (переводы, словарь, карточки, аналитика, карта навыков, свои книги и многое другое).',
+              'Озвучка книг — отдельно, не входит в Pro: оплачивается за каждую книгу звёздами; классика озвучена бесплатно для всех.',
             ],
           },
           {
-            title: 'Как работает смена тарифа',
+            title: 'Как оформить Pro',
             items: [
-              'Если у вас уже активны платные тарифы, система ставит их на завершение в конце периода и включает новый тариф со следующего биллингового цикла.',
-              'Это сделано, чтобы не было двойного списания в середине текущего периода.',
-              'Если выбрать тот же активный тариф, сервер вернёт подсказку управлять им через Stripe Portal.',
+              'Pro оплачивается в Telegram Stars — официальной валюте Telegram, прямо в приложении, без карт на сторонних сайтах.',
+              'Нажимаешь «Оформить Pro» — Telegram сам предложит купить нужное количество звёзд и тут же откроет Pro.',
+              'Подписка продлевается раз в месяц; отменить можно в любой момент прямо в Telegram.',
             ],
           },
           {
-            title: 'Кнопка «Управлять подпиской в Stripe Portal»',
+            title: 'Как управлять подпиской и отменить',
             items: [
-              'Кнопка открывает Stripe Billing Portal (домен `billing.stripe.com`) для вашего аккаунта.',
-              'Там можно: сменить карту, отменить/возобновить подписку, посмотреть счета и платежи.',
-              'Чтобы вернуться: нажмите возврат в портале или закройте браузер/WebView и снова откройте Mini App; раздел подписки подтянет актуальный статус.',
+              'Pro-подпиской (продление и отмена) управляешь прямо в Telegram — без внешнего портала и чужих сайтов.',
+              'После отмены Pro остаётся активным до конца уже оплаченного периода.',
+              'Вернувшись в приложение, обнови блок подписки, чтобы статус подтянулся.',
             ],
           },
           {
             title: 'Что ещё важно пользователю',
             items: [
-              'После оплаты/возврата из портала дайте системе 1–3 секунды и обновите блок подписки.',
-              'Если кнопка с тарифом не сработала сразу, просто подождите немного, обновите раздел и попробуйте ещё раз.',
-              'Даже если у вас уже активен Pro, остальные тарифы всё равно остаются видны в Mini App, чтобы можно было спокойно сравнить варианты и сменить план.',
+              'После оплаты дайте системе 1–3 секунды и обновите блок подписки.',
+              'Если статус не отреагировал сразу, подождите немного, обновите раздел и попробуйте ещё раз.',
+              'Даже с активным Pro сравнение Free/Pro остаётся видно в Mini App.',
             ],
           },
         ],
@@ -14203,7 +14203,7 @@ function AppInner() {
             title: 'Что ещё важно и часто забывают',
             items: [
               'Каждому участнику группы нужно хотя бы один раз открыть бота в личке, иначе часть функций у некоторых пользователей может работать неполно.',
-              'После оплаты, возврата из Stripe Portal или смены тарифа дайте системе 1–3 секунды и обновите статус.',
+              'После оплаты или смены тарифа дайте системе 1–3 секунды и обновите статус.',
               'Если что-то ведёт себя странно или непонятно, просто напишите в «Поддержку» и по возможности приложите скриншот.',
             ],
           },
