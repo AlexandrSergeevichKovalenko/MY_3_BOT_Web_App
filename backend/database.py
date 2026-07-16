@@ -20862,6 +20862,24 @@ def get_recent_world_news_video_ids(days: int = 14) -> set[str]:
             return {str(r[0]).strip() for r in cursor.fetchall() if r and r[0]}
 
 
+def is_world_news_video(video_id: str) -> bool:
+    """True if this video_id was ever used by the world-news rubric. Curated news videos
+    always have subtitles (we only pick captioned ones), so it's safe to live-fetch their
+    transcript for ANY user — a prep warm-miss then self-heals on the first view."""
+    vid = str(video_id or "").strip()
+    if not vid:
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM bt_3_world_news_daily WHERE video_id = %s LIMIT 1;", (vid,)
+                )
+                return cursor.fetchone() is not None
+    except Exception:
+        return False
+
+
 def upsert_world_news_daily(
     *,
     news_date,

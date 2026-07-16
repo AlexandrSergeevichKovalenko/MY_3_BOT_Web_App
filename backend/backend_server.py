@@ -564,6 +564,7 @@ from backend.database import (
     has_youtube_proxy_subtitles_access,
     upsert_youtube_proxy_subtitles_access,
     list_youtube_proxy_subtitles_access,
+    is_world_news_video,
     get_weekly_goals,
     upsert_weekly_goals,
     get_weekly_plan_progress,
@@ -47874,7 +47875,16 @@ def get_youtube_transcript():
             )
             return jsonify(response_payload)
 
-        if int(user_id) != YOUTUBE_LIBRARY_ADMIN_USER_ID:
+        # Cache miss. Non-admins normally can't trigger a live proxy fetch (a cost/abuse guard
+        # on arbitrary user-supplied videos). EXCEPTION: curated «Начни день с новостей» videos
+        # ALWAYS have subtitles (we only pick captioned ones) and must be viewable by EVERYONE —
+        # so let a non-admin fall through to live-fetch + cache, which self-heals a prep
+        # warm-miss on the first view. Force the proxy on for these (YouTube blocks the
+        # datacenter IP, and a Free user has no per-user proxy grant).
+        is_curated_news_video = is_world_news_video(video_id)
+        if is_curated_news_video and not proxy_allowed:
+            proxy_allowed = True
+        if int(user_id) != YOUTUBE_LIBRARY_ADMIN_USER_ID and not is_curated_news_video:
             response_payload = {
                 "error": "youtube_transcript_not_in_library",
                 "error_code": "youtube_transcript_not_in_library",
