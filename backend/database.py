@@ -8491,6 +8491,19 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_reader_public_progress_user
                 ON bt_3_reader_public_progress (user_id, updated_at DESC);
             """)
+            # "Retired" public-library slugs. When an admin deletes a classic via the
+            # semi-annual audit, its slug is recorded here so a later full-catalog
+            # re-ingest (run for other reasons, e.g. backfilling covers) does NOT
+            # resurrect it — no more hand-editing PUBLIC_LIBRARY_CATALOG. An explicit
+            # per-slug re-ingest deliberately un-retires (removes the row).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_public_library_retired (
+                    slug        TEXT PRIMARY KEY,
+                    title       TEXT NOT NULL DEFAULT '',
+                    reason      TEXT NOT NULL DEFAULT '',
+                    retired_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             # Cover image (lead image of a web article / journal) → shown on the
             # library card instead of a bare letter tile. Nullable, no rewrite.
             cursor.execute("""
@@ -29771,25 +29784,53 @@ def get_public_library_audit_rows(period_months: int = 6) -> list[dict]:
         return []
 
 
+def get_retired_public_slugs() -> set[str]:
+    """Slugs an admin has deleted from the classics library. The full-catalog ingest
+    skips these so a re-ingest never resurrects a deliberately removed book."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT slug FROM bt_3_public_library_retired;")
+                return {str(r[0]) for r in cursor.fetchall() if r and r[0]}
+    except Exception:
+        logging.exception("get_retired_public_slugs failed")
+        return set()
+
+
+def unretire_public_library_slug(slug: str) -> None:
+    """Drop a slug from the retire list (a deliberate per-slug re-ingest brings it back)."""
+    slug = str(slug or "").strip()
+    if not slug:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM bt_3_public_library_retired WHERE slug = %s;", (slug,))
+    except Exception:
+        logging.exception("unretire_public_library_slug failed slug=%s", slug)
+
+
 def delete_public_library_document(document_id: int) -> dict:
     """Fully remove ONE public-domain ("Классика") book. Returns
-    {ok, title, audio_urls:[...]} — the CALLER must delete those R2 mp3 objects (they are
+    {ok, title, slug, audio_urls:[...]} — the CALLER must delete those R2 mp3 objects (they are
     NOT FK-cascaded). Deleting the bt_3_reader_library row cascades its audio-page rows
     (bt_3_reader_audio_pages) and per-user progress (bt_3_reader_public_progress); the
     book text/pages are columns on the row, so they die with it. Scoped to is_public so
-    this can never touch a personal book. NOTE: to keep a deletion permanent, also remove
-    the slug from PUBLIC_LIBRARY_CATALOG, else a manual re-ingest resurrects it."""
+    this can never touch a personal book. The book's slug is recorded in
+    bt_3_public_library_retired in the SAME transaction so a later full-catalog re-ingest
+    cannot resurrect it — no manual PUBLIC_LIBRARY_CATALOG edit needed."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT title FROM bt_3_reader_library WHERE id = %s AND is_public IS TRUE",
+                    "SELECT title, public_slug FROM bt_3_reader_library WHERE id = %s AND is_public IS TRUE",
                     (int(document_id),),
                 )
                 row = cursor.fetchone()
                 if not row:
-                    return {"ok": False, "error": "not_found", "title": "", "audio_urls": []}
+                    return {"ok": False, "error": "not_found", "title": "", "slug": "", "audio_urls": []}
                 title = str(row[0] or "")
+                slug = str(row[1] or "").strip()
                 cursor.execute(
                     "SELECT audio_url FROM bt_3_reader_audio_pages WHERE document_id = %s",
                     (int(document_id),),
@@ -29800,10 +29841,22 @@ def delete_public_library_document(document_id: int) -> dict:
                     (int(document_id),),
                 )
                 ok = cursor.rowcount > 0
-                return {"ok": bool(ok), "title": title, "audio_urls": audio_urls}
+                if ok and slug:
+                    # Same transaction as the delete → the book can never be alive AND
+                    # un-retired at once. Idempotent; refreshes title on re-delete.
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_public_library_retired (slug, title, reason)
+                        VALUES (%s, %s, 'audit_delete')
+                        ON CONFLICT (slug) DO UPDATE
+                            SET title = EXCLUDED.title, retired_at = NOW();
+                        """,
+                        (slug, title),
+                    )
+                return {"ok": bool(ok), "title": title, "slug": slug, "audio_urls": audio_urls}
     except Exception:
         logging.exception("delete_public_library_document failed doc=%s", document_id)
-        return {"ok": False, "error": "exception", "title": "", "audio_urls": []}
+        return {"ok": False, "error": "exception", "title": "", "slug": "", "audio_urls": []}
 
 
 def get_daily_plan(user_id: int, plan_date: date) -> dict | None:

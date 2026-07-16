@@ -4315,7 +4315,8 @@ async def handle_pubaudit_go_callback(update: Update, context: CallbackContext) 
         lines.append("")
         lines.append(f"⚠️ Не удалось: {html.escape(', '.join(str(f) for f in failed))}")
     lines.append("")
-    lines.append("Чтобы книга не вернулась при ручном ре-ингесте, убери её slug из PUBLIC_LIBRARY_CATALOG.")
+    if deleted_titles:
+        lines.append("✅ Книга больше не вернётся — даже при ре-ингесте (slug занесён в список исключений автоматически).")
     try:
         await query.edit_message_text("\n".join(lines), parse_mode="HTML")
     except Exception:

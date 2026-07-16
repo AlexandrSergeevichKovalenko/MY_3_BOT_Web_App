@@ -16440,13 +16440,26 @@ def ingest_public_library_catalog(
     """Ingest the whole curated catalog (or a subset by slug). Best-effort per book:
     one failure does not abort the rest."""
     from backend.public_library_catalog import PUBLIC_LIBRARY_CATALOG, CATALOG_BY_SLUG
-
-    if slugs:
-        books = [CATALOG_BY_SLUG[s] for s in slugs if s in CATALOG_BY_SLUG]
-    else:
-        books = list(PUBLIC_LIBRARY_CATALOG)
+    from backend.database import get_retired_public_slugs, unretire_public_library_slug
 
     results: list[dict] = []
+    if slugs:
+        # Explicit per-slug ingest = a deliberate act. If the admin re-ingests a book
+        # they had deleted, that's an intentional "bring it back" → un-retire it.
+        books = [CATALOG_BY_SLUG[s] for s in slugs if s in CATALOG_BY_SLUG]
+        for book in books:
+            unretire_public_library_slug(book.slug)
+    else:
+        # Full-catalog run: skip anything an admin deleted via the audit, so a re-ingest
+        # (e.g. to backfill covers) never resurrects a deliberately removed book.
+        retired = get_retired_public_slugs()
+        books = [b for b in PUBLIC_LIBRARY_CATALOG if b.slug not in retired]
+        skipped = [b.slug for b in PUBLIC_LIBRARY_CATALOG if b.slug in retired]
+        for s in skipped:
+            results.append({"slug": s, "ok": True, "skipped": "retired"})
+        if skipped:
+            logging.info("public library ingest skipping %d retired slug(s): %s", len(skipped), skipped)
+
     for book in books:
         try:
             results.append(
