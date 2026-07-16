@@ -305,8 +305,6 @@ from backend.openai_manager import (
     run_dictionary_collocations_multilang,
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
-    run_translation_explanation,
-    run_translation_explanation_multilang,
     run_translation_explanation_structured,
     run_correct_sentence_grammar_structured,
     run_audio_sentence_grammar_explain_multilang,
@@ -19518,187 +19516,6 @@ def _generate_audio_grammar_explanation(
     return cleaned
 
 
-def _strip_grammar_language_tags(text: str) -> str:
-    raw = str(text or "")
-    if not raw:
-        return ""
-    return re.sub(r"\[/?(?:SOURCE|TARGET)\]", "", raw, flags=re.IGNORECASE)
-
-
-def _normalize_grammar_explanation_line(line: str) -> str:
-    cleaned = _strip_grammar_language_tags(line)
-    cleaned = re.sub(r"</?[^>\n]+>", "", cleaned)
-    cleaned = cleaned.replace("\u200b", "")
-    cleaned = re.sub(r"[ \t]+", " ", cleaned)
-    return cleaned.strip()
-
-
-def _prettify_grammar_explanation_text(text: str) -> str:
-    cleaned_text = _strip_grammar_language_tags(text)
-    lines = [str(line or "").strip() for line in cleaned_text.splitlines()]
-    rendered: list[str] = []
-    for line in lines:
-        line = _normalize_grammar_explanation_line(line)
-        if not line:
-            if rendered and rendered[-1] != "":
-                rendered.append("")
-            continue
-        if re.match(r"^(part|часть)\s+\d+:", line, flags=re.IGNORECASE):
-            if rendered and rendered[-1] != "":
-                rendered.append("")
-            rendered.append(f"🔹 {line}")
-            continue
-        if re.match(r"^(original sentence|оригинальное предложение):", line, flags=re.IGNORECASE):
-            rendered.append(f"📌 {line}")
-            continue
-        if re.match(r"^(structure name|название структуры):", line, flags=re.IGNORECASE):
-            rendered.append(f"• {line}")
-            continue
-        if re.match(r"^(why used|почему используется):", line, flags=re.IGNORECASE):
-            rendered.append(f"• {line}")
-            continue
-        if re.match(r"^(construction in |построение на немецком:)", line, flags=re.IGNORECASE):
-            rendered.append(f"• {line}")
-            continue
-        if re.match(r"^(breakdown|подробный разбор):", line, flags=re.IGNORECASE):
-            rendered.append(f"• {line}")
-            continue
-        if re.match(r"^(final\s+|итоговое\s+)", line, flags=re.IGNORECASE):
-            if rendered and rendered[-1] != "":
-                rendered.append("")
-            rendered.append(f"✅ {line}")
-            continue
-        if re.match(r"^-\s+", line):
-            rendered.append(f"• {line[2:].strip()}")
-            continue
-        rendered.append(line)
-    return "\n".join(rendered).strip()
-
-
-def _fallback_grammar_explanation_text(text: str) -> str:
-    raw = _strip_grammar_language_tags(text).strip()
-    if not raw:
-        return ""
-    cleaned = re.sub(r"```[a-zA-Z]*", "", raw).replace("```", "")
-    cleaned = re.sub(r"</?[^>\n]+>", "", cleaned)
-    lines = [_normalize_grammar_explanation_line(line) for line in cleaned.splitlines()]
-    rendered: list[str] = []
-    for line in lines:
-        if not line:
-            if rendered and rendered[-1] != "":
-                rendered.append("")
-            continue
-        rendered.append(line)
-    return "\n".join(rendered).strip()
-
-
-def _render_private_grammar_explanation_text(text: str) -> str:
-    pretty_text = _prettify_grammar_explanation_text(text)
-    if pretty_text:
-        return pretty_text
-    return _fallback_grammar_explanation_text(text)
-
-
-def _build_private_grammar_message(
-    *,
-    sentence_number: int | None,
-    original_text: str,
-    correct_translation: str,
-    user_translation: str | None,
-    error_analysis_text: str,
-    explanation_text: str,
-    source_lang: str,
-    target_lang: str,
-) -> str:
-    src = _normalize_short_lang_code(source_lang, fallback="ru").upper()
-    tgt = _normalize_short_lang_code(target_lang, fallback="de").upper()
-    title = "🧠 Грамматический разбор"
-    if sentence_number is not None and int(sentence_number) > 0:
-        title = f"{title} · Satz {int(sentence_number)}"
-
-    parts: list[str] = [
-        f"{title}",
-        f"Пара: {src} → {tgt}",
-        "",
-        f"Исходное предложение:\n{(original_text or '—').strip()}",
-        "",
-    ]
-    if user_translation and user_translation.strip():
-        parts.append(f"Твой перевод:\n{user_translation.strip()}")
-        parts.append("")
-    parts.append(f"Корректный вариант:\n{(correct_translation or '—').strip()}")
-
-    if error_analysis_text:
-        parts.append("")
-        parts.append("Разбор ошибок:")
-        parts.append(error_analysis_text.strip())
-
-    if explanation_text:
-        pretty = _render_private_grammar_explanation_text(explanation_text)
-        if pretty:
-            parts.append("")
-            parts.append("Грамматика корректного предложения:")
-            parts.append(pretty)
-
-    return "\n".join(parts)
-
-
-def _dispatch_private_grammar_explanation(
-    *,
-    user_id: int,
-    sentence_number: int | None,
-    original_text: str,
-    correct_translation: str,
-    user_translation: str | None,
-    source_lang: str,
-    target_lang: str,
-) -> None:
-    try:
-        has_user_translation = bool(user_translation and user_translation.strip())
-
-        async def _noop() -> str:
-            return ""
-
-        async def _gather() -> tuple[str, str]:
-            error_coro = (
-                run_translation_explanation_multilang(
-                    original_text=str(original_text or ""),
-                    user_translation=str(user_translation or ""),
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    explanation_lang=source_lang,
-                )
-                if has_user_translation
-                else _noop()
-            )
-            grammar_coro = run_audio_sentence_grammar_explain_multilang(
-                sentence=str(correct_translation or ""),
-                language=_normalize_short_lang_code(target_lang, fallback="de"),
-                explanation_language=_normalize_short_lang_code(source_lang, fallback="ru"),
-            )
-            error_result, grammar_result = await asyncio.gather(error_coro, grammar_coro)
-            return str(error_result or "").strip(), str(grammar_result or "").strip()
-
-        error_analysis, grammar_text = asyncio.run(_gather())
-
-        if not error_analysis and not grammar_text:
-            return
-
-        text = _build_private_grammar_message(
-            sentence_number=sentence_number,
-            original_text=original_text,
-            correct_translation=correct_translation,
-            user_translation=user_translation,
-            error_analysis_text=error_analysis,
-            explanation_text=grammar_text,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        _send_private_message_chunks(int(user_id), text, limit=3500)
-    except Exception as exc:
-        logging.warning("Private grammar text send failed for user %s: %s", user_id, exc)
-
-
 def _tts_cache_key(lang: str, voice: str, speed: float, text: str) -> str:
     normalized = _normalize_utterance_text(text)
     raw = f"{lang}|{voice}|{speed}|{normalized}"
@@ -27494,30 +27311,6 @@ def _run_translation_check_completion_side_effects(
 
         summary_json = _build_translation_check_terminal_summary(session=claimed_session, items=items)
 
-        # DM «Грамматический разбор» disabled: it duplicated the in-app «Объяснить ошибки»
-        # breakdown (same error analysis), and its only unique part — the grammar of the
-        # correct sentence — is now folded into that same mini-app modal as the "grammar"
-        # section. Kept (commented) rather than deleted so it can be revived if needed.
-        # if first_attempt and bool(claimed_session.get("send_private_grammar_text")):
-        #     for item in sorted(items, key=lambda entry: int(entry.get("item_order") or 0)):
-        #         result_payload = item.get("result_json") if isinstance(item.get("result_json"), dict) else None
-        #         if result_payload:
-        #             try:
-        #                 _queue_private_grammar_explanation_for_result(
-        #                     user_id=int(claimed_session["user_id"]),
-        #                     result_item=result_payload,
-        #                     source_lang=str(claimed_session.get("source_lang") or "ru"),
-        #                     target_lang=str(claimed_session.get("target_lang") or "de"),
-        #                 )
-        #             except Exception:
-        #                 logging.warning(
-        #                     "translation_check completion private grammar enqueue failed: session=%s user=%s item_order=%s",
-        #                     session_id,
-        #                     claimed_session.get("user_id"),
-        #                     item.get("item_order"),
-        #                     exc_info=True,
-        #                 )
-
         try:
             _sync_today_translation_task_progress_for_session(
                 user_id=int(claimed_session.get("user_id") or 0),
@@ -28068,46 +27861,6 @@ def _start_webapp_translation_check_queue_first(
         http_status=200,
     )
     return jsonify(response_payload), 200
-
-
-def _queue_private_grammar_explanation_for_result(
-    *,
-    user_id: int,
-    result_item: dict[str, Any],
-    source_lang: str,
-    target_lang: str,
-) -> int:
-    if not isinstance(result_item, dict) or str(result_item.get("error") or "").strip():
-        return 0
-    correct_translation = str(
-        result_item.get("correct_translation")
-        or _extract_correct_translation(str(result_item.get("feedback") or ""))
-        or result_item.get("user_translation")
-        or ""
-    ).strip()
-    if not correct_translation:
-        return 0
-    sentence_number_raw = result_item.get("sentence_number")
-    try:
-        sentence_number = int(sentence_number_raw) if sentence_number_raw is not None else None
-    except Exception:
-        sentence_number = None
-    original_sentence = str(result_item.get("original_text") or "").strip()
-    user_trans = str(result_item.get("user_translation") or "").strip()
-    threading.Thread(
-        target=_dispatch_private_grammar_explanation,
-        kwargs={
-            "user_id": int(user_id),
-            "sentence_number": sentence_number,
-            "original_text": original_sentence,
-            "correct_translation": correct_translation,
-            "user_translation": user_trans or None,
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-        },
-        daemon=True,
-    ).start()
-    return 1
 
 
 def _build_translation_check_item_timeout_payload(

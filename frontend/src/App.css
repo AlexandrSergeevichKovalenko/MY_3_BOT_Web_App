@@ -5094,40 +5094,6 @@ body:has(.webapp-page.is-theme-light),
   height: 16px;
 }
 
-.translation-private-grammar-optin {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 12px;
-  align-items: center;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(102, 225, 235, 0.35);
-  background: rgba(9, 32, 44, 0.62);
-}
-
-.translation-private-grammar-optin-copy {
-  display: grid;
-  gap: 4px;
-}
-
-.translation-private-grammar-optin-copy span {
-  font-size: 0.92rem;
-  font-weight: 600;
-  color: rgba(231, 248, 255, 0.96);
-}
-
-.translation-private-grammar-optin-copy small {
-  font-size: 0.8rem;
-  line-height: 1.35;
-  color: rgba(174, 214, 231, 0.9);
-}
-
-.translation-private-grammar-optin input {
-  width: 18px;
-  height: 18px;
-  accent-color: #27c0c8;
-}
-
 .result-inline-audio-row {
   display: inline-flex;
   align-items: center;
@@ -21738,80 +21704,6 @@ body.worldnews-active .webapp-topbar {
   transform: none;
   background: var(--tr-bg-hover);
   box-shadow: none;
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 16px;
-  padding: 16px;
-  border-radius: 20px;
-  border: 1px solid var(--tr-border);
-  background: var(--tr-bg-card-alt);
-  min-width: 0;
-  max-width: 100%;
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin-copy span {
-  font-size: 16px;
-  line-height: 1.35;
-  font-weight: 600;
-  color: var(--tr-text-primary);
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin-copy small {
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--tr-text-muted);
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin-check {
-  width: 44px;
-  height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input {
-  appearance: none;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  border: 1px solid var(--tr-border);
-  background: transparent;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input::after {
-  content: "";
-  width: 10px;
-  height: 6px;
-  border-left: 2px solid #ffffff;
-  border-bottom: 2px solid #ffffff;
-  transform: rotate(-45deg) scale(0);
-  transform-origin: center;
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input:checked {
-  background: var(--tr-primary);
-  border-color: var(--tr-primary);
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input:checked::after {
-  transform: rotate(-45deg) scale(1);
-}
-
-.webapp-section.webapp-section-translations .translation-private-grammar-optin-check input:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .webapp-section.webapp-section-translations .primary-button,
