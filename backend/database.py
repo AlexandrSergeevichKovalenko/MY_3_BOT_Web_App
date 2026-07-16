@@ -3968,6 +3968,10 @@ TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
 # entitlement path and self-expires. Once per lifetime.
 WELCOME_TRIAL_DAYS = max(0, _env_int("WELCOME_TRIAL_DAYS", 7))
 WELCOME_TRIAL_REASON = "welcome_trial"
+# Self-paced «Числа на слух» (Zahlen-Diktat) practice: Free has NO on-demand generation
+# (they only get numdict inside the daily rotation); Pro/trial can drill on demand but is
+# capped per day so it can't run up unbounded TTS cost. Free-block is enforced in the loader.
+NUMDICT_PRACTICE_PRO_DAILY_LIMIT = max(0, _env_int("NUMDICT_PRACTICE_PRO_DAILY_LIMIT", 5))
 TRIAL_POLICY_TZ = "Europe/Vienna"
 # Google's WaveNet/Neural2/Polyglot free tier is ~1M chars/mo; hold the guard at 900k
 # so it trips with a safety margin BELOW Google's real free line (our counter lags the
@@ -34348,7 +34352,7 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
     },
     "dictionary_lookup_daily": {
         "title": "Словарные запросы",
-        "free_limit": 30,
+        "free_limit": 10,
         "reset_policy": "daily_europe_vienna",
     },
     "shortcut_forwarded_message_daily": {
@@ -35204,6 +35208,44 @@ def reserve_free_feature_usage(
                 "used": used_today + 1.0,
                 "limit": limit_value,
             }
+
+
+def reserve_numdict_practice_pro_usage(
+    *,
+    user_id: int,
+    idempotency_key: str,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict[str, Any]:
+    """Cap a PAID (Pro/trial) user's self-paced numdict practice at
+    NUMDICT_PRACTICE_PRO_DAILY_LIMIT/day, recording each serve in the usage ledger.
+    Free users are blocked from on-demand practice upstream, so this only runs for paid
+    tiers. Returns {blocked, used, limit}."""
+    feature = "numdict_practice_daily"
+    limit_value = float(NUMDICT_PRACTICE_PRO_DAILY_LIMIT)
+    safe_user_id = int(user_id)
+    now_value = now_ts_utc or datetime.now(timezone.utc)
+    day_local = _to_aware_datetime(now_value).astimezone(_resolve_timezone(tz)).date()
+    lock_material = f"pro_numdict:{safe_user_id}:{day_local.isoformat()}"
+    lock_key = int.from_bytes(hashlib.sha256(lock_material.encode("utf-8")).digest()[:8], "big", signed=True)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s::bigint);", (lock_key,))
+            used_today = get_free_feature_usage_today(
+                user_id=safe_user_id, feature_key=feature, now_ts_utc=now_value, tz=tz, cursor=cursor,
+            )
+            if limit_value >= 0 and used_today + 1.0 > limit_value:
+                return {"blocked": True, "used": used_today, "limit": limit_value}
+            _insert_free_feature_usage_with_cursor(
+                cursor,
+                idempotency_key=str(idempotency_key),
+                user_id=safe_user_id,
+                feature_key=feature,
+                metadata={"origin": "numdict_practice_pro"},
+                event_time=now_value,
+            )
+        conn.commit()
+    return {"blocked": False, "used": used_today + 1.0, "limit": limit_value}
 
 
 def build_free_limit_error(

@@ -1034,28 +1034,41 @@ def load_numdict_practice_next(*, user_id: int) -> dict:
     advances. NEVER leaks answer_value / display_answer."""
     import time
     from backend.database import (
-        reserve_free_feature_usage, pick_numdict_practice_item, mark_numdict_practice_seen,
+        resolve_entitlement, reserve_numdict_practice_pro_usage,
+        pick_numdict_practice_item, mark_numdict_practice_seen,
     )
 
-    reservation = reserve_free_feature_usage(
-        user_id=int(user_id),
-        feature_key=NUMDICT_PRACTICE_FEATURE_KEY,
-        idempotency_key=f"{NUMDICT_PRACTICE_FEATURE_KEY}:{int(user_id)}:{time.time_ns()}",
-        metadata={"origin": "numdict_practice"},
-    )
-    if reservation.get("blocked"):
-        err = reservation.get("error") if isinstance(reservation.get("error"), dict) else {}
+    # On-demand practice is a PAID feature. Free users get «Числа на слух» only inside the
+    # daily rotation, not this endless self-paced drill → show a Pro upsell screen.
+    entitlement = resolve_entitlement(user_id=int(user_id))
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode == "free":
         return {
             "kind": "numdict_practice",
             "done": True,
             "capped": True,
             "upsell": True,
+            "pro_only": True,
+            "used": 0,
+            "limit": 0,
+            "title": "Числа на слух",
+            "message": "Бесконечная тренировка чисел — в Pro. На бесплатном плане числа приходят в общей ленте заданий.",
+        }
+
+    # Paid tiers: cap the on-demand drill per day so TTS cost stays bounded.
+    reservation = reserve_numdict_practice_pro_usage(
+        user_id=int(user_id),
+        idempotency_key=f"{NUMDICT_PRACTICE_FEATURE_KEY}:{int(user_id)}:{time.time_ns()}",
+    )
+    if reservation.get("blocked"):
+        return {
+            "kind": "numdict_practice",
+            "done": True,
+            "capped": True,
+            "upsell": False,
             "limit": reservation.get("limit"),
             "used": reservation.get("used"),
-            "reset_at": err.get("reset_at"),
-            "title": err.get("feature_title") or err.get("title"),
-            "message": err.get("message")
-            or "На сегодня хватит — лимит обновится завтра. Premium снимает ограничение.",
+            "message": f"На сегодня {int(reservation.get('limit') or 0)} тренировок готово — приходи завтра за новыми.",
         }
 
     item = pick_numdict_practice_item(user_id=int(user_id))
