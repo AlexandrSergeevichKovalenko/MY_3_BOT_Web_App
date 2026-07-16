@@ -2,6 +2,7 @@ import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import './ProFeatureModal.css';
 import './ReaderAudioUnlockModal.css';
+import './StarsInfoModal.css';
 
 /**
  * "Unlock this book's narration" plaque. One-time per-book purchase paid natively in
@@ -16,6 +17,7 @@ export default function ReaderAudioUnlockModal({
   samplesLoading = false,
   onUnlock,
   onClose,
+  onStarsInfo,
   tr,
 }) {
   const tiers = (info && Array.isArray(info.tiers) ? info.tiers : []);
@@ -221,6 +223,9 @@ export default function ReaderAudioUnlockModal({
             'Оплата в Telegram Stars, прямо здесь. Платишь только за эту книгу — классика в библиотеке озвучивается бесплатно.',
             'Zahlung mit Telegram Stars, direkt hier. Nur für dieses Buch — Klassiker in der Bibliothek: Audio gratis.',
           )}
+          {onStarsInfo ? (
+            <button type="button" className="stars-info-btn" onClick={onStarsInfo} aria-label={tr('Что такое звёзды Telegram', 'Was sind Telegram-Sterne')} title={tr('Что такое звёзды', 'Was sind Sterne')}>i</button>
+          ) : null}
         </p>
         <button type="button" className="profeat-later" onClick={onClose}>{tr('Позже', 'Später')}</button>
       </div>

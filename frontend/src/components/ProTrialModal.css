@@ -106,3 +106,11 @@
   background: linear-gradient(135deg, #3a7bd5, #5b34d5);
   box-shadow: 0 10px 22px rgba(58, 52, 213, 0.28);
 }
+
+.prot-footnote {
+  margin: -2px 0 8px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #9aa4b8;
+  text-align: left;
+}

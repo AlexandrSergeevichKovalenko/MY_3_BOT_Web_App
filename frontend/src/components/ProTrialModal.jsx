@@ -27,9 +27,9 @@ export default function ProTrialModal({
 
   const perks = [
     tr('Переводы и разборы без дневного лимита', 'Übersetzungen & Analysen ohne Tageslimit'),
-    tr('YouTube-субтитры и разбор видео', 'YouTube-Untertitel & Video-Analyse'),
-    tr('Карточки и тренировки без ограничений', 'Karten & Training ohne Limit'),
-    tr('Разговорная практика и все навыки', 'Sprechpraxis & alle Skills'),
+    tr('Русские субтитры к видео + загадочная история', 'Russische Video-Untertitel + Rätselgeschichte'),
+    tr('Карточки и тренажёры без ограничений', 'Karten & Übungen ohne Limit'),
+    tr('Аналитика, план дня и карта слабых навыков', 'Analyse, Tagesplan & Schwache-Skills-Karte'),
   ];
 
   const badge = isActive
@@ -92,6 +92,13 @@ export default function ProTrialModal({
           🔊 {tr(
             'Озвучка книг в читалке оплачивается отдельно, за каждую книгу — в Pro она не входит.',
             'Buch-Vertonung im Reader wird separat je Buch bezahlt — nicht in Pro enthalten.',
+          )}
+        </div>
+
+        <div className="prot-footnote">
+          {tr(
+            '* Разговорная практика сейчас на доработке — скоро вернём.',
+            '* Sprechpraxis wird gerade überarbeitet — bald wieder da.',
           )}
         </div>
 

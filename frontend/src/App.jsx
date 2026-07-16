@@ -13,6 +13,7 @@ import ProFeatureModal from './components/ProFeatureModal';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
 import ProTrialModal from './components/ProTrialModal';
+import StarsInfoModal from './components/StarsInfoModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -6674,6 +6675,8 @@ function AppInner() {
   const [welcomeTrial, setWelcomeTrial] = useState(null);
   const [welcomeTrialModalOpen, setWelcomeTrialModalOpen] = useState(false);
   const welcomeTrialCheckedRef = useRef(false);
+  // "What are Telegram Stars" explainer — opened by a small ⓘ next to any Stars price.
+  const [starsInfoOpen, setStarsInfoOpen] = useState(false);
   const [billingPlansLoading, setBillingPlansLoading] = useState(false);
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
@@ -34509,6 +34512,7 @@ function AppInner() {
               samplesLoading={readerVoiceSamplesLoading}
               onUnlock={doUnlockBookAudio}
               onClose={closeReaderAudioUnlockModal}
+              onStarsInfo={() => setStarsInfoOpen(true)}
               tr={tr}
             />
 
@@ -34520,6 +34524,12 @@ function AppInner() {
               buying={billingActionLoading}
               onBuyPro={() => { setWelcomeTrialModalOpen(false); void handleBillingUpgrade('pro'); }}
               onClose={() => setWelcomeTrialModalOpen(false)}
+              tr={tr}
+            />
+
+            <StarsInfoModal
+              isOpen={starsInfoOpen}
+              onClose={() => setStarsInfoOpen(false)}
               tr={tr}
             />
 
@@ -40119,10 +40129,10 @@ function AppInner() {
                       🔊 <strong>{tr('Озвучка книг — отдельно.', 'Buch-Vertonung — separat.')}</strong>{' '}
                       {tr('Не входит ни в Free, ни в Pro: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Free noch in Pro: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}
                     </div>
-                    <div className="billing-trial-banner">
-                      ⭐ <strong>{tr('Что такое звёзды Telegram.', 'Was sind Telegram-Sterne.')}</strong>{' '}
-                      {tr('Официальная валюта Telegram: покупаются в пару тапов прямо в приложении, безопасно, без карт на сторонних сайтах.', 'Die offizielle Telegram-Währung: in wenigen Taps direkt in der App gekauft — sicher, ohne Karte auf fremden Seiten.')}
-                    </div>
+                    <button type="button" className="billing-trial-banner billing-trial-banner--tappable" onClick={() => setStarsInfoOpen(true)}>
+                      ⭐ <strong>{tr('Что такое звёзды Telegram?', 'Was sind Telegram-Sterne?')}</strong>{' '}
+                      {tr('Официальная валюта Telegram: безопасно, в пару тапов прямо в приложении. Нажми, чтобы узнать подробнее.', 'Die offizielle Telegram-Währung: sicher, in wenigen Taps direkt in der App. Tippe für mehr Infos.')}
+                    </button>
                     <div className="billing-trial-banner">
                       🎙 <strong>{tr('Разговорная практика — на доработке.', 'Sprechpraxis — in Arbeit.')}</strong>{' '}
                       {tr('Раздел временно выключен: оптимизируем, скоро вернём.', 'Vorübergehend deaktiviert: wir optimieren, bald wieder da.')}

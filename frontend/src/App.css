@@ -3799,6 +3799,20 @@ body:has(.webapp-page.is-theme-light),
   line-height: 1.45;
 }
 
+/* Tappable variant (the Stars explainer opens the full plaque) */
+.billing-trial-banner--tappable {
+  width: 100%;
+  text-align: left;
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 13px;
+  line-height: 1.45;
+  font-family: inherit;
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.15s ease;
+}
+.billing-trial-banner--tappable:active { transform: scale(0.99); }
+.billing-trial-banner--tappable:hover { border-color: rgba(250, 204, 21, 0.65); }
+
 .billing-policy-grid {
   margin-top: 12px;
   display: grid;
