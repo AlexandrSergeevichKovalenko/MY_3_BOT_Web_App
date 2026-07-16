@@ -80,6 +80,7 @@ from backend.background_jobs import (  # noqa: E402
     run_translation_check_stale_cleanup_actor,
     run_system_message_cleanup_actor,
     run_flashcard_feel_cleanup_actor,
+    run_world_news_purge_actor,
     run_tts_db_cache_cleanup_actor,
     run_tts_r2_cache_cleanup_actor,
     run_image_quiz_r2_cleanup_actor,
@@ -281,6 +282,10 @@ def _dispatch_system_message_cleanup() -> None:
 
 def _dispatch_flashcard_feel_cleanup() -> None:
     run_flashcard_feel_cleanup_actor.send()
+
+
+def _dispatch_world_news_purge() -> None:
+    run_world_news_purge_actor.send()
 
 
 def _dispatch_tts_db_cache_cleanup() -> None:
@@ -584,6 +589,19 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=300,
+        )
+
+    # -- Morning-news nightly purge (news is not stored: a day's news lives only that day) --
+    if _enabled("WORLD_NEWS_PURGE_ENABLED"):
+        scheduler.add_job(
+            _dispatch_world_news_purge,
+            "cron",
+            hour=_int_env("WORLD_NEWS_PURGE_HOUR", 0),
+            minute=_int_env("WORLD_NEWS_PURGE_MINUTE", 30),
+            timezone=_tz(os.getenv("WORLD_NEWS_PURGE_TZ") or "Europe/Berlin"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
 
     # -- Weekly goals --

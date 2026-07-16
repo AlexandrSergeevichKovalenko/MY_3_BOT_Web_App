@@ -5844,6 +5844,10 @@ function AppInner() {
   const [moviesError, setMoviesError] = useState('');
   const [moviesCollapsed, setMoviesCollapsed] = useState(false);
   const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
+  // Admin-only «Фильмы» management: multi-select + bulk delete from the shared catalog.
+  const [moviesSelectMode, setMoviesSelectMode] = useState(false);
+  const [moviesSelectedIds, setMoviesSelectedIds] = useState(() => new Set());
+  const [moviesDeleting, setMoviesDeleting] = useState(false);
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [youtubeSettingsOpen, setYoutubeSettingsOpen] = useState(false);
   // Premium Dock: presentational-only popover («⋯ Mehr») holding the rare source
@@ -24479,6 +24483,50 @@ function AppInner() {
     }
   };
 
+  const toggleMovieSelected = (videoId) => {
+    if (!videoId) return;
+    setMoviesSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(videoId)) next.delete(videoId);
+      else next.add(videoId);
+      return next;
+    });
+  };
+
+  const exitMoviesSelectMode = () => {
+    setMoviesSelectMode(false);
+    setMoviesSelectedIds(new Set());
+  };
+
+  const deleteSelectedMovies = async () => {
+    if (!initData || moviesDeleting) return;
+    const videoIds = Array.from(moviesSelectedIds);
+    if (videoIds.length === 0) return;
+    const confirmed = window.confirm(tr(
+      `Удалить ${videoIds.length} фильм(ов) из каталога у всех пользователей? Действие нельзя отменить: пропадут субтитры, переводы и история просмотров этих видео.`,
+      `${videoIds.length} Video(s) für alle Nutzer aus dem Katalog löschen? Kann nicht rückgängig gemacht werden: Untertitel, Übersetzungen und Wiedergabeverlauf gehen verloren.`
+    ));
+    if (!confirmed) return;
+    setMoviesDeleting(true);
+    try {
+      const response = await fetch('/api/webapp/youtube/catalog/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, video_ids: videoIds }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка удаления', 'Fehler beim Löschen'));
+      }
+      const removed = new Set(videoIds);
+      setMovies((prev) => prev.filter((item) => !removed.has(item?.video_id)));
+      exitMoviesSelectMode();
+    } catch (error) {
+      setMoviesError(normalizeNetworkErrorMessage(error, 'Не удалось удалить видео. Попробуйте ещё раз.', 'Videos konnten nicht gelöscht werden. Bitte erneut versuchen.'));
+    } finally {
+      setMoviesDeleting(false);
+    }
+  };
+
   const downloadReaderAudio = async (fullDocument = false) => {
     if (!initData || !readerDocumentId) return;
     if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
@@ -37346,6 +37394,40 @@ function AppInner() {
                   <p>{tr('Видео с доступными субтитрами, сохранённые в каталоге.', 'Videos mit verfügbaren Untertiteln im Katalog.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
+                {canManageYoutubeTranscripts && !moviesLoading && movies.length > 0 && (
+                  <div className="movies-admin-bar">
+                    {!moviesSelectMode ? (
+                      <button
+                        type="button"
+                        className="movies-admin-btn"
+                        onClick={() => setMoviesSelectMode(true)}
+                      >
+                        {tr('Выбрать для удаления', 'Zum Löschen auswählen')}
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="movies-admin-btn is-danger"
+                          disabled={moviesDeleting || moviesSelectedIds.size === 0}
+                          onClick={deleteSelectedMovies}
+                        >
+                          {moviesDeleting
+                            ? tr('Удаляю…', 'Lösche…')
+                            : tr(`Удалить (${moviesSelectedIds.size})`, `Löschen (${moviesSelectedIds.size})`)}
+                        </button>
+                        <button
+                          type="button"
+                          className="movies-admin-btn"
+                          disabled={moviesDeleting}
+                          onClick={exitMoviesSelectMode}
+                        >
+                          {tr('Отмена', 'Abbrechen')}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
                 {moviesLoading && <div className="webapp-muted">{tr('Загружаем каталог...', 'Katalog wird geladen...')}</div>}
                 {moviesError && <div className="webapp-error">{moviesError}</div>}
                 {!moviesLoading && !moviesError && movies.length === 0 && (
@@ -37378,8 +37460,12 @@ function AppInner() {
                       <button
                         type="button"
                         key={item.video_id}
-                        className="movie-card"
+                        className={`movie-card${moviesSelectMode ? ' is-selectable' : ''}${moviesSelectMode && moviesSelectedIds.has(item.video_id) ? ' is-selected' : ''}`}
                         onClick={() => {
+                          if (moviesSelectMode) {
+                            toggleMovieSelected(item.video_id);
+                            return;
+                          }
                           setYoutubeInput(`https://youtu.be/${item.video_id}`);
                           setMoviesCollapsed(true);
                           ensureSectionVisible('youtube');
@@ -37387,6 +37473,11 @@ function AppInner() {
                         }}
                       >
                         <div className="movie-thumb">
+                          {moviesSelectMode && (
+                            <span className={`movie-select-check${moviesSelectedIds.has(item.video_id) ? ' on' : ''}`} aria-hidden="true">
+                              {moviesSelectedIds.has(item.video_id) ? '✓' : ''}
+                            </span>
+                          )}
                           <img src={item.thumbnail} alt={item.title} loading="lazy" />
                         </div>
                         <div className="movie-meta">

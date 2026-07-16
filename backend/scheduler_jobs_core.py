@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from backend.database import get_db_connection_context
+from backend.database import purge_world_news_before
 from backend.database import delete_stale_tts_db_cache
 from backend.database import cleanup_stale_translation_check_sessions
 from backend.database import get_pending_telegram_system_messages
@@ -58,6 +59,29 @@ def run_translation_sessions_auto_close_job() -> None:
         logging.info("✅ Translation sessions auto-close finished: %s", result)
     except Exception:
         logging.exception("❌ Translation sessions auto-close failed")
+        raise
+
+
+@_heartbeat("world_news_purge")
+def run_world_news_purge_job() -> None:
+    """Nightly: fully delete every past-day morning-news entry (row + cached
+    subtitles + watch_state + R2 hero). Morning news is not stored — a day's
+    news lives only for that day. Runs after midnight in the news timezone, so
+    «today» is preserved and only news_date < today is purged."""
+    enabled = (os.getenv("WORLD_NEWS_PURGE_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logging.info("ℹ️ World-news purge disabled by WORLD_NEWS_PURGE_ENABLED")
+        return
+    tz_name = (os.getenv("WORLD_NEWS_PURGE_TZ") or "Europe/Berlin").strip() or "Europe/Berlin"
+    try:
+        today = datetime.now(ZoneInfo(tz_name)).date()
+    except Exception:
+        today = datetime.utcnow().date()
+    try:
+        result = purge_world_news_before(today)
+        logging.info("✅ World-news purge finished (before %s): %s", today, result)
+    except Exception:
+        logging.exception("❌ World-news purge failed")
         raise
 
 

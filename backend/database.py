@@ -20677,6 +20677,48 @@ def purge_old_youtube_transcripts(days: int = 7) -> None:
             """, (days,))
 
 
+def delete_youtube_catalog_video(video_id: str) -> dict:
+    """Admin action: fully remove one film/video from the shared YouTube catalog.
+
+    Wipes the video everywhere and for everyone in a single transaction:
+      • bt_3_youtube_transcripts     — subtitles + translations (the «Фильмы» catalog);
+      • bt_3_youtube_watch_state     — per-user watch/resume progress (all users);
+      • bt_3_video_recommendations   — grammar-recommendation entry, if the same
+        video is also served there (votes cascade via ON DELETE CASCADE).
+    Returns per-table deleted-row counts.
+    """
+    vid = str(video_id or "").strip()
+    if not vid:
+        return {"video_id": "", "transcripts": 0, "watch_state": 0, "recommendations": 0}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM bt_3_youtube_transcripts WHERE video_id = %s;", (vid,))
+            transcripts_deleted = cursor.rowcount or 0
+            cursor.execute("DELETE FROM bt_3_youtube_watch_state WHERE video_id = %s;", (vid,))
+            watch_state_deleted = cursor.rowcount or 0
+            cursor.execute("DELETE FROM bt_3_video_recommendations WHERE video_id = %s;", (vid,))
+            recommendations_deleted = cursor.rowcount or 0
+    return {
+        "video_id": vid,
+        "transcripts": transcripts_deleted,
+        "watch_state": watch_state_deleted,
+        "recommendations": recommendations_deleted,
+    }
+
+
+def purge_nonadmin_youtube_watch_state(admin_user_id: int) -> int:
+    """One-shot cleanup: drop every user's YouTube watch/resume progress except
+    the admin's. The YouTube block is a viewing surface, not storage — regular
+    users must not accumulate a server-side watch history. Returns rows deleted."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM bt_3_youtube_watch_state WHERE user_id <> %s;",
+                (int(admin_user_id),),
+            )
+            return cursor.rowcount or 0
+
+
 def upsert_youtube_translations(video_id: str, translations: dict) -> None:
     if not video_id or not translations:
         return
@@ -20856,6 +20898,61 @@ def set_world_news_hero_key(news_date, hero_object_key: str) -> None:
                 "UPDATE bt_3_world_news_daily SET hero_object_key = %s, updated_at = NOW() WHERE news_date = %s;",
                 (hero_object_key, news_date),
             )
+
+
+def purge_world_news_before(today_date) -> dict:
+    """Auto-cleanup: fully remove every past-day morning-news entry.
+
+    Morning news is not stored — a day's news lives only for that day. For each
+    row with news_date < today_date we delete the hero image from R2, drop the
+    cached subtitles of the news video (so it never lingers in «Фильмы»), clear
+    any watch_state for that video, then delete the daily row itself. Words a
+    user actively saved to their dictionary are NOT touched. Returns counts.
+    """
+    if not today_date:
+        return {"rows": 0, "transcripts": 0, "watch_state": 0, "hero_objects": 0}
+    hero_keys: list[str] = []
+    video_ids: list[str] = []
+    rows_deleted = 0
+    transcripts_deleted = 0
+    watch_state_deleted = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT video_id, hero_object_key FROM bt_3_world_news_daily WHERE news_date < %s;",
+                (today_date,),
+            )
+            for video_id, hero_object_key in cursor.fetchall():
+                vid = str(video_id or "").strip()
+                if vid:
+                    video_ids.append(vid)
+                if hero_object_key:
+                    hero_keys.append(str(hero_object_key))
+            for vid in video_ids:
+                cursor.execute("DELETE FROM bt_3_youtube_transcripts WHERE video_id = %s;", (vid,))
+                transcripts_deleted += cursor.rowcount or 0
+                cursor.execute("DELETE FROM bt_3_youtube_watch_state WHERE video_id = %s;", (vid,))
+                watch_state_deleted += cursor.rowcount or 0
+            cursor.execute("DELETE FROM bt_3_world_news_daily WHERE news_date < %s;", (today_date,))
+            rows_deleted = cursor.rowcount or 0
+    hero_objects_deleted = 0
+    if hero_keys:
+        try:
+            from backend.r2_storage import r2_delete_object
+            for key in hero_keys:
+                try:
+                    if r2_delete_object(key):
+                        hero_objects_deleted += 1
+                except Exception:
+                    logging.warning("purge_world_news_before: failed to delete R2 hero %s", key, exc_info=True)
+        except Exception:
+            logging.warning("purge_world_news_before: r2_delete_object unavailable", exc_info=True)
+    return {
+        "rows": rows_deleted,
+        "transcripts": transcripts_deleted,
+        "watch_state": watch_state_deleted,
+        "hero_objects": hero_objects_deleted,
+    }
 
 
 # ── Admin command descriptions (durable, DB-backed) ──────────────────────────

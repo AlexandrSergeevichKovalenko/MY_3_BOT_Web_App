@@ -1978,6 +1978,12 @@ def run_flashcard_feel_cleanup_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_world_news_purge_actor() -> None:
+    from backend.scheduler_jobs_core import run_world_news_purge_job
+    run_world_news_purge_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_tts_db_cache_cleanup_actor() -> None:
     from backend.scheduler_jobs_core import run_tts_db_cache_cleanup_job
     run_tts_db_cache_cleanup_job()

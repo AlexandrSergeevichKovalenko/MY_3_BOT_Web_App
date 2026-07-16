@@ -378,6 +378,8 @@ from backend.database import (
     get_youtube_watch_state,
     get_latest_youtube_watch_state,
     upsert_youtube_watch_state,
+    delete_youtube_catalog_video,
+    purge_nonadmin_youtube_watch_state,
     get_translation_draft_state,
     upsert_translation_draft_state,
     delete_translation_draft_state,
@@ -48287,6 +48289,28 @@ def youtube_watch_state():
             )
             return jsonify({"error": "current_time_seconds должен быть числом"}), 400
 
+        # The YouTube block is a viewing surface, not storage: regular users must
+        # not accumulate a server-side watch history (resume stays client-side in
+        # localStorage). Only the admin's progress is persisted — the admin's
+        # watched videos legitimately populate the «Фильмы» catalog / «просмотрено».
+        if user_id_int != YOUTUBE_LIBRARY_ADMIN_USER_ID:
+            _log_flow_observation(
+                "youtube_state",
+                "youtube_state_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=user_id_int,
+                video_id=video_id,
+                mode="save",
+                current_time_seconds=safe_seconds,
+                persisted=False,
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"ok": True, "state": None})
+
         save_started_perf = time.perf_counter()
         try:
             state = upsert_youtube_watch_state(
@@ -48649,6 +48673,83 @@ def get_youtube_catalog():
         query_duration_ms=query_duration_ms,
         oembed_duration_ms=oembed_duration_ms,
         response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
+    return jsonify(response_payload)
+
+
+@app.route("/api/webapp/youtube/catalog/delete", methods=["POST"])
+def delete_youtube_catalog():
+    """Admin-only: remove one or more films from the shared «Фильмы» catalog.
+
+    Deletes each video_id everywhere and for everyone (subtitles/translations,
+    per-user watch progress, and any grammar-recommendation entry). Irreversible.
+    """
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="youtube_catalog_delete")
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    if int(user_id) != YOUTUBE_LIBRARY_ADMIN_USER_ID:
+        return jsonify({"error": "Недостаточно прав"}), 403
+
+    raw_ids = payload.get("video_ids")
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "video_ids должен быть списком"}), 400
+    # De-dupe + trim, preserve order, cap the batch.
+    seen: set[str] = set()
+    video_ids: list[str] = []
+    for value in raw_ids:
+        vid = str(value or "").strip()
+        if vid and vid not in seen:
+            seen.add(vid)
+            video_ids.append(vid)
+        if len(video_ids) >= 50:
+            break
+    if not video_ids:
+        return jsonify({"error": "Не выбрано ни одного видео"}), 400
+
+    deleted = []
+    try:
+        with db_acquire_scope("youtube_catalog_delete"):
+            for vid in video_ids:
+                deleted.append(delete_youtube_catalog_video(vid))
+    except Exception as exc:
+        _log_flow_observation(
+            "youtube_catalog_delete",
+            "youtube_catalog_delete_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            requested=len(video_ids),
+            final_status="error",
+            error_code=exc.__class__.__name__,
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=500,
+        )
+        return jsonify({"error": "Не удалось удалить видео"}), 500
+
+    response_payload = {"ok": True, "deleted": deleted, "total": len(deleted)}
+    _log_flow_observation(
+        "youtube_catalog_delete",
+        "youtube_catalog_delete_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        requested=len(video_ids),
+        deleted_count=len(deleted),
         final_status="success",
         duration_ms=_elapsed_ms_since(started_perf),
         http_status=200,
@@ -59409,6 +59510,27 @@ def send_daily_group_summary_now():
 
     result = _dispatch_daily_group_summary(target_date=target_date, tz_name=tz_name)
     return jsonify(result)
+
+
+@app.route("/api/admin/youtube/watch-state/purge", methods=["POST"])
+def admin_purge_youtube_watch_state():
+    """One-shot maintenance: drop every non-admin YouTube watch/resume row.
+
+    Regular users must not keep a server-side watch history; the admin's own
+    progress is preserved. Call once after deploy; safe to re-run (idempotent)."""
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+    try:
+        deleted = purge_nonadmin_youtube_watch_state(YOUTUBE_LIBRARY_ADMIN_USER_ID)
+    except Exception as exc:
+        logging.exception("admin_purge_youtube_watch_state failed")
+        return jsonify({"error": f"Ошибка чистки: {exc}"}), 500
+    return jsonify({"ok": True, "deleted": deleted, "kept_admin_user_id": YOUTUBE_LIBRARY_ADMIN_USER_ID})
 
 
 @app.route("/api/admin/send-weekly-group-summary", methods=["POST"])
