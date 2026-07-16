@@ -17311,9 +17311,11 @@ body.worldnews-active .webapp-topbar {
     font-size: clamp(18px, 5vw, 24px);
   }
 
+  /* Два блока (DE+RU): делят выделенную под субтитры зону ПОРОВНУ — одинаковая высота,
+     сумма ≈ одиночному бюджету (56vh), чтобы оба помещались на экране. */
   .webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-de .webapp-subtitles-list {
     font-size: clamp(14.5px, 3.95vw, 17.5px);
-    max-height: min(40vh, 400px);
+    max-height: min(28vh, 280px);
     padding: 10px 12px;
   }
 
@@ -17323,7 +17325,7 @@ body.worldnews-active .webapp-topbar {
 
   .webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-ru .webapp-subtitles-list {
     font-size: clamp(14.5px, 3.95vw, 17.5px);
-    max-height: min(38vh, 380px);
+    max-height: min(28vh, 280px);
   }
 
   .youtube-head-settings-btn {
