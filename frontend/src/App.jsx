@@ -166,7 +166,26 @@ const LazyLiveKitRuntime = lazy(loadLiveKitRuntime);
 // Поставить false, когда LiveKit-сервис будет включён. См. память project_api_token_livekit_auth_hole
 // (перед включением надо закрыть auth-дыру /api/token).
 const ASSISTANT_UNDER_CONSTRUCTION = true;
-const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
+// Single-instance lock is scoped PER SURFACE. The Telegram Mini-App (in-app webview)
+// and the installed home-screen PWA can share localStorage on the same origin; with a
+// shared lock they fought over "who is the active copy" and the backgrounded one kept
+// grabbing leadership (its heartbeat throttled to ~20-30s), flashing the "Эта копия
+// больше не активна" screen on the foreground one every ~20-30s. Separate keys → the
+// standalone PWA never competes with the Telegram Mini-App. Duplicate tabs of the SAME
+// surface still share a key, so real single-instance protection is unchanged. The
+// non-PWA key keeps its old value for rollout backward-compat.
+const _DDS_IS_STANDALONE_PWA = (() => {
+  try {
+    if (typeof window === 'undefined') return false;
+    return Boolean(
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+      || (window.navigator && window.navigator.standalone === true)
+    );
+  } catch (_e) { return false; }
+})();
+const SINGLE_INSTANCE_LOCK_KEY = _DDS_IS_STANDALONE_PWA
+  ? 'dds_single_instance_lock_v1_pwa'
+  : 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const SINGLE_INSTANCE_STALE_MS = 5000;
 const TTS_CACHE_MAX_ENTRIES = 60;
