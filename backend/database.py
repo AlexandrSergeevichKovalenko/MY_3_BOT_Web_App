@@ -641,6 +641,31 @@ def build_translation_session_minutes_sql(alias: str = "p") -> str:
     )
 
 
+def refresh_user_display_name(user_id: int, display_name: str) -> int:
+    """Persist the user's Telegram display name onto their progress rows.
+
+    Analytics reads the username from the LATEST bt_3_user_progress row, so users whose
+    rows have a blank username show up as "Unknown". We fill in the name for every user
+    on their webapp visits — but only where it is currently blank/"Unknown", so an existing
+    real name is never clobbered. Returns the number of rows updated.
+    """
+    name = str(display_name or "").strip()
+    if not name or int(user_id or 0) <= 0:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_user_progress
+                SET username = %s
+                WHERE user_id = %s
+                  AND (username IS NULL OR btrim(username) = '' OR username = 'Unknown')
+                """,
+                (name, int(user_id)),
+            )
+            return cursor.rowcount or 0
+
+
 def sync_translation_session_activity(
     *,
     user_id: int,

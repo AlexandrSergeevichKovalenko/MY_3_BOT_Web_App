@@ -653,6 +653,7 @@ from backend.database import (
     sync_translation_session_activity,
 )
 from backend.database import (
+    refresh_user_display_name,
     lookup_base_dictionary_entry,
     upsert_base_dictionary_entry,
     list_base_dictionary_for_offline_pack,
@@ -3147,6 +3148,33 @@ def _dict_token_access_allowed(path: str) -> bool:
     return any(p.startswith(prefix) for prefix in _DICT_TOKEN_ACCESS_PREFIXES)
 
 
+# Per-process cache so we persist a user's display name at most once per (day, name),
+# not on every webapp request. Value = "<YYYY-MM-DD>:<name>".
+_display_name_refresh_seen: dict[int, str] = {}
+
+
+def _maybe_persist_display_name(user_id: int, user_data: dict) -> None:
+    """Best-effort: keep bt_3_user_progress.username populated for EVERY user from their
+    Telegram profile on webapp visits, so analytics never shows "Unknown". Never blocks
+    or fails the request."""
+    try:
+        uid = int(user_id or 0)
+        if uid <= 0 or not user_data:
+            return
+        first = str(user_data.get("first_name") or "").strip()
+        last = str(user_data.get("last_name") or "").strip()
+        display = (f"{first} {last}").strip() or str(user_data.get("username") or "").strip()
+        if not display:
+            return
+        cache_key = f"{datetime.now(timezone.utc):%Y-%m-%d}:{display}"
+        if _display_name_refresh_seen.get(uid) == cache_key:
+            return
+        _display_name_refresh_seen[uid] = cache_key
+        refresh_user_display_name(uid, display)
+    except Exception:
+        logging.debug("persist display name failed", exc_info=True)
+
+
 @app.before_request
 def enforce_webapp_access():
     path = request.path or ""
@@ -3227,6 +3255,8 @@ def enforce_webapp_access():
     g.telegram_user = resolved_user_data
     g.telegram_init_data = resolved_parsed
     g.webapp_access_guard_cache_source = allowlist_cache_source
+    if resolved_user_data:
+        _maybe_persist_display_name(int(resolved_user_id), resolved_user_data)
     return None
 
 
