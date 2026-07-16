@@ -5702,7 +5702,6 @@ function AppInner() {
   const [translationDictionaryOpen, setTranslationDictionaryOpen] = useState(false);
   const [translationDictionaryAnchor, setTranslationDictionaryAnchor] = useState('');
   const [dictionaryWord, setDictionaryWord] = useState('');
-  const [dictKbDebug, setDictKbDebug] = useState(''); // TEMP: on-screen keyboard/viewport readout for the floating dict
   const [dictSearchMethod, setDictSearchMethod] = useState('gpt'); // 'gpt' | 'quick' | 'base'
   const [dictionaryResult, setDictionaryResult] = useState(null);
   // Lazy, streamed GPT breakdown for the in-app dictionary (mirrors the quick
@@ -29786,7 +29785,7 @@ function AppInner() {
           <div className="yt-dict-drag-dots" aria-hidden="true">
             {[0, 1, 2, 3, 4, 5].map((item) => <span key={item} />)}
           </div>
-          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')} <span style={{ opacity: 0.5, fontSize: '9px' }}>v10</span><br /><span style={{ opacity: 0.75, fontSize: '9px', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>{dictKbDebug}</span></span>
+          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')}</span>
           <button
             type="button"
             className="translation-dict-widget-close"
