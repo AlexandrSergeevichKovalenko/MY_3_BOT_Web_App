@@ -29736,7 +29736,7 @@ function AppInner() {
           <div className="yt-dict-drag-dots" aria-hidden="true">
             {[0, 1, 2, 3, 4, 5].map((item) => <span key={item} />)}
           </div>
-          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')} <span style={{ opacity: 0.5, fontSize: '9px' }}>v9</span><br /><span style={{ opacity: 0.75, fontSize: '9px', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>{dictKbDebug}</span></span>
+          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')} <span style={{ opacity: 0.5, fontSize: '9px' }}>v10</span><br /><span style={{ opacity: 0.75, fontSize: '9px', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>{dictKbDebug}</span></span>
           <button
             type="button"
             className="translation-dict-widget-close"
@@ -34212,7 +34212,18 @@ function AppInner() {
                 renderStoryPaidFeatureNotice={() => renderAppPaidFeatureNotice(storyPaidFeatureTitle)}
               />
             )}
-            {renderTranslationDictionaryWidget()}
+            {translationDictionaryOpen && createPortal(
+              // Portal the floating dictionary straight to <body>: in the standalone iOS PWA an
+              // ancestor was visually clipping this position:fixed widget to a sliver (its
+              // getBoundingClientRect was full-height, but a containing-block ancestor with
+              // overflow cropped what showed). At <body> there is no such ancestor. The
+              // display:contents wrapper carries the theme class so `.webapp-page.is-theme-light`
+              // styling still matches, without creating a box/containing-block of its own.
+              <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''}`} style={{ display: 'contents' }}>
+                {renderTranslationDictionaryWidget()}
+              </div>,
+              document.body,
+            )}
 
             <StoryResultModal
               isOpen={storyResultModalOpen}
