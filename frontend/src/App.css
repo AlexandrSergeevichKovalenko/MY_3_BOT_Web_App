@@ -27131,7 +27131,7 @@ body.worldnews-active .webapp-topbar {
 .explain-alt-variant { color: #e2e8f0; }
 .explain-alt-note { color: #93a4bd; font-style: italic; font-size: 13px; }
 .explain-syn { margin-top: 7px; font-size: 15px; line-height: 1.5; }
-.explain-syn-word { color: #fcd34d; }
+.explain-syn-word { color: #f8fafc; }
 .explain-syn-arrow { color: #8fa2bb; }
 .explain-syn-opts { color: #d8e2f0; }
 .explain-grammar-card {
@@ -27175,6 +27175,15 @@ html[data-scheme="light"] .explain-grammar-part,
 .webapp-page.theme-light .explain-grammar-part { color: #1f2a3a; }
 html[data-scheme="light"] .explain-grammar-structure,
 .webapp-page.theme-light .explain-grammar-structure { color: #4f46e5; }
+
+/* The explain modal always keeps its dark styling (its light-theme variant selectors
+   above use `.theme-light`, but the real class is `.is-theme-light`, so they never
+   match). On a light-theme PAGE the rule `.webapp-page.is-theme-light .webapp-result-card b`
+   would darken the modal's bold text to near-black on that dark background — the
+   synonym word and the "Regel" label became invisible. Re-assert light colours for the
+   modal's <b> elements so they stay readable on the dark modal. */
+.webapp-page.is-theme-light .webapp-result-card .explain-modal .explain-syn-word { color: #f8fafc; }
+.webapp-page.is-theme-light .webapp-result-card .explain-modal .explain-line b { color: #f1f5f9; }
 
 
 /* ================================================================
