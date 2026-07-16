@@ -29607,11 +29607,23 @@ function AppInner() {
       const el = translationDictWidgetRef.current;
       if (!el) return;
       const vv = typeof window !== 'undefined' ? window.visualViewport : null;
-      const availTop = vv ? Math.round(vv.offsetTop) : 0;
-      const availHeight = vv ? Math.round(vv.height) : (window.innerHeight || 0);
+      const layoutH = (typeof window !== 'undefined' && window.innerHeight) || 0;
+      // visualViewport.height is the space above the keyboard, BUT in a standalone iOS PWA it
+      // often reports a bogus tiny value when the keyboard opens (Telegram's webview reports it
+      // correctly — hence "works in Telegram, not in the installed app"). Only trust it when
+      // it's a sane fraction of the layout height; otherwise fall back to a keyboard-reserve
+      // estimate so the widget never collapses to a sliver.
+      let availHeight = vv ? Math.round(vv.height) : layoutH;
+      if (!availHeight || (layoutH && availHeight < layoutH * 0.35)) {
+        availHeight = Math.round((layoutH || availHeight || 600) * 0.52); // keyboard ≈ half the screen
+      }
+      let availTop = vv ? Math.round(vv.offsetTop) : 0;
+      if (!Number.isFinite(availTop) || availTop < 0 || (layoutH && availTop > layoutH * 0.3)) {
+        availTop = 0;
+      }
       el.style.top = `${availTop + 10}px`;
       el.style.bottom = 'auto';
-      el.style.maxHeight = `${Math.max(220, availHeight - 20)}px`;
+      el.style.maxHeight = `${Math.max(240, availHeight - 20)}px`;
     };
     const liftWidgetForKeyboard = () => {
       // Run now and again after the keyboard has animated in (visualViewport settles late).
