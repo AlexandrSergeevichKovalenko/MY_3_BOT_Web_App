@@ -49376,15 +49376,15 @@ def ingest_reader_content():
             limit=300,
             include_archived=True,
         )
-        # Count only BOOKS/documents toward the Free limit — articles are excluded.
-        existing_books = [d for d in existing_docs if str(d.get("source_type") or "") != "html"]
-        if (effective_mode == "free" and is_async_candidate
-                and not incoming_is_article and len(existing_books) >= 1):
+        # Adding your OWN books is a Pro feature. Free users read the shared «Классика»
+        # library + web articles for free, but can't upload personal books. Web articles
+        # (html) never count and stay free for everyone.
+        if effective_mode == "free" and is_async_candidate and not incoming_is_article:
             return jsonify(
                 {
                     "error": (
-                        f"Лимит Free: можно хранить только 1 книгу/документ "
-                        f"до {FREE_READER_STORAGE_DAYS} дней. Чтобы добавить новую, удалите старую."
+                        "Загрузка своих книг — функция Pro. На бесплатном плане можно читать "
+                        "«Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги."
                     ),
                     "error_code": "LIMIT_FREE_PLAN_1_BOOK",
                 }
@@ -49497,14 +49497,16 @@ def ingest_reader_content():
 
     try:
         if effective_mode == "free":
+            # Adding your own book/text is a Pro feature (Free reads «Классика» + articles).
+            # Re-opening an already-stored doc stays allowed (idempotent).
             text_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
             has_same_document = any(str(item.get("text_hash") or "") == text_hash for item in existing_docs)
-            if not has_same_document and len(existing_docs) >= 1:
+            if not has_same_document:
                 return jsonify(
                     {
                         "error": (
-                            f"Лимит Free: можно хранить только 1 книгу/документ "
-                            f"до {FREE_READER_STORAGE_DAYS} дней. Чтобы добавить новую, удалите старую."
+                            "Загрузка своих книг — функция Pro. На бесплатном плане можно читать "
+                            "«Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги."
                         ),
                         "error_code": "LIMIT_FREE_PLAN_1_BOOK",
                     }
@@ -49595,14 +49597,14 @@ def reader_upload_init():
             limit=300,
             include_archived=True,
         )
-        # Web articles (read-once) don't consume the Free book slot — count only books.
-        existing_books = [d for d in existing_docs if str(d.get("source_type") or "") != "html"]
-        if effective_mode == "free" and len(existing_books) >= 1:
+        # A file upload is always a personal book → Pro only. Free reads «Классика» +
+        # web articles for free, but can't upload its own books.
+        if effective_mode == "free":
             return jsonify(
                 {
                     "error": (
-                        f"Лимит Free: можно хранить только 1 книгу/документ "
-                        f"до {FREE_READER_STORAGE_DAYS} дней. Чтобы добавить новую, удалите старую."
+                        "Загрузка своих книг — функция Pro. На бесплатном плане можно читать "
+                        "«Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги."
                     ),
                     "error_code": "LIMIT_FREE_PLAN_1_BOOK",
                 }

@@ -21677,6 +21677,18 @@ function AppInner() {
     }
     setYoutubeTranslationEnabled((v) => !v);
   };
+  // Regular-catalog «RU» button — same rule as News: synced Russian subtitles are Pro.
+  // Free users keep the German subtitles and get a soft toast instead.
+  const handleCatalogRuToggle = () => {
+    if (isKnownFreePaidSurfaceMode) {
+      showAppToast(tr(
+        '🔒 Русские субтитры — в Pro. Немецкие остаются с тобой.',
+        '🔒 Russische Untertitel — in Pro. Deutsche bleiben dir erhalten.',
+      ));
+      return;
+    }
+    setYoutubeTranslationEnabled((v) => !v);
+  };
   useEffect(() => () => {
     if (worldNewsRuLockedTimerRef.current) {
       clearTimeout(worldNewsRuLockedTimerRef.current);
@@ -25913,8 +25925,8 @@ function AppInner() {
       setReaderErrorCode(code);
       if (code === 'LIMIT_FREE_PLAN_1_BOOK') {
         setReaderError(tr(
-          'На бесплатном плане можно хранить только 1 книгу/документ. Удалите текущий документ или перейдите на Pro.',
-          'Im Free-Plan kannst du nur 1 Buch/Dokument speichern. Lösche das aktuelle Dokument oder wechsle zu Pro.'
+          'Загрузка своих книг — функция Pro. На бесплатном плане можно читать «Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги.',
+          'Eigene Bücher hochladen ist eine Pro-Funktion. Im Free-Plan liest du «Klassiker» und Web-Artikel. Hol dir Pro, um eigene Bücher hinzuzufügen.'
         ));
       } else {
         setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить текст в читалку.', 'Text konnte nicht in den Leser geladen werden.'));
@@ -27599,7 +27611,7 @@ function AppInner() {
         {/* языки субтитров */}
         <div className="ypb-seg" role="group" aria-label={tr('Субтитры', 'Untertitel')}>
           <button type="button" className={youtubeOriginalEnabled ? 'on' : ''} onClick={() => setYoutubeOriginalEnabled((v) => !v)} disabled={!subsReady} title={tr('Немецкие субтитры', 'Deutsche Untertitel')}>DE</button>
-          <button type="button" className={youtubeTranslationEnabled ? 'on' : ''} onClick={() => setYoutubeTranslationEnabled((v) => !v)} disabled={!subsReady} title={tr('Русские субтитры', 'Russische Untertitel')}>RU</button>
+          <button type="button" className={youtubeTranslationEnabled ? 'on' : ''} onClick={handleCatalogRuToggle} disabled={!subsReady} title={tr('Русские субтитры', 'Russische Untertitel')}>RU</button>
         </div>
         <span className="ypb-divider" aria-hidden="true" />
         {/* предыдущее предложение · play · следующее */}

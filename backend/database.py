@@ -34358,7 +34358,9 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
     },
     "dictionary_openai_explanation_daily": {
         "title": "OpenAI-объяснения в словаре",
-        "free_limit": 5,
+        # Free "taster": 1/day. It's expensive GPT work — one daily explanation is the
+        # bait so a Free user sees the value, then upgrades for unlimited.
+        "free_limit": 1,
         "reset_policy": "daily_europe_vienna",
     },
     "fsrs_card_review_daily": {
@@ -34373,7 +34375,8 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
     },
     "ask_gpt_daily": {
         "title": "Спросить GPT",
-        "free_limit": 5,
+        # Free taster: 1/day (same rationale as the explanation limit — costly GPT call).
+        "free_limit": 1,
         "reset_policy": "daily_europe_vienna",
     },
     "numdict_practice_daily": {
