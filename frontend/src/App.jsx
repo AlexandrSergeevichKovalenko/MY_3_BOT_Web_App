@@ -30668,6 +30668,32 @@ function AppInner() {
       document.body.appendChild(script);
     });
 
+    // Poll current time + duration. Lives in a helper (not only inside onReady) because the
+    // effect's cleanup clears the interval on every re-run; the cueVideoById reuse path below
+    // returns early without a fresh onReady, so without restarting here the duration stays 0
+    // and the seek/scrubber bar (gated on youtubeDuration > 0) disappears + time freezes.
+    const startTimePolling = () => {
+      if (youtubeTimeIntervalRef.current) {
+        clearInterval(youtubeTimeIntervalRef.current);
+      }
+      youtubeTimeIntervalRef.current = setInterval(() => {
+        try {
+          if (!youtubeScrubbingRef.current) {
+            const time = youtubePlayerRef.current?.getCurrentTime?.();
+            if (typeof time === 'number' && !Number.isNaN(time)) {
+              setYoutubeCurrentTime(time);
+            }
+          }
+          const dur = youtubePlayerRef.current?.getDuration?.();
+          if (typeof dur === 'number' && !Number.isNaN(dur) && dur > 0) {
+            setYoutubeDuration((prev) => (Math.abs(prev - dur) > 0.5 ? dur : prev));
+          }
+        } catch (error) {
+          // ignore
+        }
+      }, 400);
+    };
+
     // Is the current player object still mounted in the LIVE host? Navigating to Films /
     // Skill-training unmounts the whole YouTube section, so its <iframe> is removed from the
     // DOM while the JS player object lingers in the ref. Reusing that stale object (cueVideoById)
@@ -30684,8 +30710,12 @@ function AppInner() {
       }
     }
 
-    // Same video, still mounted — nothing to do.
-    if (playerLive && youtubePlayerLoadedIdRef.current === youtubeId) return;
+    // Same video, still mounted — nothing to do (but the cleanup just cleared the poll
+    // interval, so restart it, otherwise time/duration freeze).
+    if (playerLive && youtubePlayerLoadedIdRef.current === youtubeId) {
+      startTimePolling();
+      return;
+    }
 
     // Different video, still mounted — swap in place (cueVideoById loads the thumbnail
     // without auto-playing) instead of a full teardown/rebuild.
@@ -30694,6 +30724,8 @@ function AppInner() {
         youtubePlayerRef.current.cueVideoById(youtubeId);
         youtubePlayerLoadedIdRef.current = youtubeId;
         youtubeResumeAppliedForVideoRef.current = '';
+        setYoutubeDuration(0); // new video → forget the old length until the poll reads the new one
+        startTimePolling();
         return;
       } catch (_e) {
         // fall through to a full rebuild below
@@ -30773,26 +30805,7 @@ function AppInner() {
             } catch (_error) {
               // ignore
             }
-            if (youtubeTimeIntervalRef.current) {
-              clearInterval(youtubeTimeIntervalRef.current);
-            }
-            youtubeTimeIntervalRef.current = setInterval(() => {
-              try {
-                // Don't fight the user's finger while they drag the scrubber.
-                if (!youtubeScrubbingRef.current) {
-                  const time = youtubePlayerRef.current?.getCurrentTime?.();
-                  if (typeof time === 'number' && !Number.isNaN(time)) {
-                    setYoutubeCurrentTime(time);
-                  }
-                }
-                const dur = youtubePlayerRef.current?.getDuration?.();
-                if (typeof dur === 'number' && !Number.isNaN(dur) && dur > 0) {
-                  setYoutubeDuration((prev) => (Math.abs(prev - dur) > 0.5 ? dur : prev));
-                }
-              } catch (error) {
-                // ignore
-              }
-            }, 400);
+            startTimePolling();
           },
           onStateChange: (stateEvent) => {
             const state = stateEvent?.data;
