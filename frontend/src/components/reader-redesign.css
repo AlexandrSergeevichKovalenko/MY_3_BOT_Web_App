@@ -122,6 +122,45 @@
   padding: 6px 0 18px;
 }
 
+/* ╭───────────────────────────────────────────────────────────────────────╮
+   │  LIBRARY FILLS THE SCREEN HEIGHT (adaptive to the device)              │
+   │  Top-anchored content left the bottom ~third empty — very visible in   │
+   │  the standalone home-screen PWA, which has no Telegram header eating    │
+   │  the top, so there is even MORE dead space below. Stretch the           │
+   │  shell → main → section → overview chain to the real viewport height    │
+   │  and let the shelf cards grow to use it (capped so tall screens don't   │
+   │  balloon). Phone-only — desktop keeps its sidebar/grid layout.          │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+@media (max-width: 900px) {
+  .webapp-page.is-reader-library { align-items: stretch; }
+  .webapp-page.is-reader-library .webapp-shell { min-height: 0; }
+  .webapp-page.is-reader-library .webapp-main {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .webapp-page.is-reader-library .webapp-main > .webapp-reader {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .webapp-page.is-reader-library .webapp-reader > .reader-library-mode {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  /* Overview only: the three shelves take the leftover height and each card
+     grows to fill it, so the list breathes down to the bottom of the screen. */
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelves {
+    flex: 1 1 auto;
+  }
+  .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-card {
+    flex: 1 1 0;
+    min-height: 78px;
+    max-height: 148px;
+  }
+}
+
 
 /* ╭───────────────────────────────────────────────────────────────────────╮
    │  LIBRARY HEADER: «Моя библиотека» + refresh + add                      │
