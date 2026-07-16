@@ -29636,10 +29636,13 @@ function AppInner() {
       if (!availHeight || (layoutH && availHeight < layoutH * 0.35)) {
         availHeight = Math.round((layoutH || availHeight || 600) * 0.52); // keyboard ≈ half the screen
       }
+      // offsetTop = how far the visual viewport is shifted from the layout viewport. When an
+      // input inside a position:fixed element is focused, iOS standalone SCROLLS the fixed
+      // layer up by the keyboard height (the notorious "fixed jumps off-screen" bug), and
+      // offsetTop reflects that shift. We MUST add it back so the widget lands at the top of
+      // what's actually visible — zeroing it (previous bug) left the widget scrolled off-screen.
       let availTop = vv ? Math.round(vv.offsetTop) : 0;
-      if (!Number.isFinite(availTop) || availTop < 0 || (layoutH && availTop > layoutH * 0.3)) {
-        availTop = 0;
-      }
+      if (!Number.isFinite(availTop) || availTop < 0) availTop = 0;
       el.style.top = `${availTop + 10}px`;
       el.style.bottom = 'auto';
       el.style.maxHeight = `${Math.max(240, availHeight - 20)}px`;
@@ -29714,7 +29717,7 @@ function AppInner() {
           <div className="yt-dict-drag-dots" aria-hidden="true">
             {[0, 1, 2, 3, 4, 5].map((item) => <span key={item} />)}
           </div>
-          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')} <span style={{ opacity: 0.5, fontSize: '9px' }}>v6</span></span>
+          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')} <span style={{ opacity: 0.5, fontSize: '9px' }}>v7</span></span>
           <button
             type="button"
             className="translation-dict-widget-close"
