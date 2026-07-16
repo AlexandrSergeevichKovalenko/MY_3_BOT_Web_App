@@ -595,7 +595,8 @@ from backend.database import (
     credit_audio_wallet,
     unlock_book_audio,
     is_book_audio_unlocked,
-    list_book_audio_unlocked_tiers,
+    get_book_audio_unlock_coverage,
+    get_book_audio_coverage_for_doc,
     get_user_book_audio_unlocks_map,
     estimate_book_audio_price_minor,
     AUDIO_MIN_TOPUP_MINOR,
@@ -16513,26 +16514,52 @@ def create_stars_invoice_link(
         return None, f"request_error: {exc}"
 
 
-def _book_audio_pricing_payload(document: dict, unlocked_tiers: list[str] | None) -> dict:
-    """Per-book audio price + unlock status for the reader UI. Price is pure
+# Partial narration: a user can buy the first 25% / 50% or the whole (100%) book.
+AUDIO_COVERAGE_OPTIONS = (25, 50, 100)
+
+
+def _book_audio_coverage_price_minor(chars: int, tier: str, coverage_pct: int) -> int:
+    """Price (EUR cents) to narrate `coverage_pct`% of a `chars`-char book in `tier`."""
+    cov = max(1, min(100, int(coverage_pct or 100)))
+    frac_chars = int(math.ceil(max(0, int(chars or 0)) * cov / 100.0))
+    return int(estimate_book_audio_price_minor(frac_chars, tier))
+
+
+def _book_audio_pricing_payload(document: dict, coverage_map: dict | None) -> dict:
+    """Per-book audio price + unlock status for the reader UI. `coverage_map` is
+    {voice_tier: unlocked_coverage_pct}. Each tier carries the 25/50/100 coverage
+    options with prices (EUR + Stars) so the modal can offer «попробовать кусок». Pure
     computation from total_chars (no DB) — cheap to attach to every list item."""
     chars = int((document or {}).get("total_chars") or 0)
-    unlocked = set(unlocked_tiers or [])
+    cov_map = coverage_map or {}
+    any_unlocked = any(int(c or 0) > 0 for c in cov_map.values())
     tiers = []
     for tier in AUDIO_OFFERED_VOICE_TIERS:
-        price_minor = int(estimate_book_audio_price_minor(chars, tier))
+        owned_cov = int(cov_map.get(tier, 0) or 0)
+        full_price = _book_audio_coverage_price_minor(chars, tier, 100)
+        options = []
+        for cov in AUDIO_COVERAGE_OPTIONS:
+            pm = _book_audio_coverage_price_minor(chars, tier, cov)
+            options.append({
+                "coverage_pct": cov,
+                "price_minor": pm,
+                "price_stars": eur_minor_to_stars(pm),
+                "owned": owned_cov >= cov,
+            })
         tiers.append({
             "tier": tier,
             "label": _AUDIO_TIER_LABELS.get(tier, {}),
-            "price_minor": price_minor,
-            "price_stars": eur_minor_to_stars(price_minor),
-            "unlocked": tier in unlocked,
+            "price_minor": full_price,
+            "price_stars": eur_minor_to_stars(full_price),
+            "unlocked": owned_cov >= 100,
+            "unlocked_coverage": owned_cov,
+            "coverage_options": options,
         })
     return {
         "chars": chars,
         "currency": "EUR",
         "default_tier": AUDIO_DEFAULT_VOICE_TIER,
-        "any_unlocked": bool(unlocked),
+        "any_unlocked": any_unlocked,
         "tiers": tiers,
     }
 
@@ -49698,7 +49725,7 @@ def reader_library_list():
         try:
             unlocks_map = get_user_book_audio_unlocks_map(int(user_id))
             for item in items:
-                item["audio"] = _book_audio_pricing_payload(item, unlocks_map.get(int(item.get("id") or 0), []))
+                item["audio"] = _book_audio_pricing_payload(item, unlocks_map.get(int(item.get("id") or 0), {}))
             wallet_balance_minor = get_audio_wallet_balance_minor(int(user_id))
         except Exception:
             logging.exception("reader library audio pricing failed user=%s", user_id)
@@ -50024,8 +50051,8 @@ def reader_library_open():
             wallet_balance_minor = 0
         else:
             try:
-                unlocked_tiers = list_book_audio_unlocked_tiers(int(user_id), int(document_id))
-                audio_pricing = _book_audio_pricing_payload(doc, unlocked_tiers)
+                coverage_map = get_book_audio_coverage_for_doc(int(user_id), int(document_id))
+                audio_pricing = _book_audio_pricing_payload(doc, coverage_map)
                 wallet_balance_minor = get_audio_wallet_balance_minor(int(user_id))
             except Exception:
                 logging.exception("reader open audio pricing failed user=%s doc=%s", user_id, document_id)
@@ -51075,6 +51102,10 @@ def reader_audio_stars_invoice():
     voice_tier = str(payload.get("voice_tier") or "").strip().lower() or AUDIO_DEFAULT_VOICE_TIER
     if voice_tier not in AUDIO_PRICE_PER_1M_MINOR:
         return jsonify({"error": "Неизвестный голос", "error_code": "unknown_voice_tier"}), 400
+    # Partial narration: buy the first 25% / 50% or the whole (100%) book.
+    coverage_pct = int(payload.get("coverage_pct") or 100)
+    if coverage_pct not in AUDIO_COVERAGE_OPTIONS:
+        coverage_pct = 100
 
     source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
     document, document_is_public = _resolve_reader_document_for_user(
@@ -51085,26 +51116,41 @@ def reader_audio_stars_invoice():
         return jsonify({"error": "Книга не найдена"}), 404
     if document_is_public:
         return jsonify({"ok": True, "already_unlocked": True, "free": True, "voice_tier": voice_tier})
-    if is_book_audio_unlocked(user_id_int, document_id_int, voice_tier):
-        return jsonify({"ok": True, "already_unlocked": True, "voice_tier": voice_tier})
+    owned_cov = int(get_book_audio_unlock_coverage(user_id_int, document_id_int, voice_tier) or 0)
+    if owned_cov >= coverage_pct:
+        return jsonify({"ok": True, "already_unlocked": True, "voice_tier": voice_tier,
+                        "coverage_pct": owned_cov})
 
-    stars = _book_audio_stars_price(document, voice_tier)
+    # Only charge for the *additional* coverage (upgrading 25%→100% costs the delta).
+    chars = int(document.get("total_chars") or 0)
+    price_minor = _book_audio_coverage_price_minor(chars, voice_tier, coverage_pct)
+    owned_minor = _book_audio_coverage_price_minor(chars, voice_tier, owned_cov) if owned_cov > 0 else 0
+    delta_minor = max(0, price_minor - owned_minor)
+    stars = max(1, eur_minor_to_stars(delta_minor))
     tier_label = (_AUDIO_TIER_LABELS.get(voice_tier, {}) or {}).get("ru", "Голос")
     book_title = str(document.get("title") or "книга")[:48]
+    if coverage_pct >= 100:
+        scope_ru = "вся книга"
+        scope_desc = "слушать эту книгу всю, без ограничений."
+    else:
+        scope_ru = f"{coverage_pct}% книги"
+        scope_desc = f"озвучка первых {coverage_pct}% книги — попробуйте, прежде чем брать всю."
     link, detail = create_stars_invoice_link(
-        title=f"Озвучка: {book_title}",
-        description=f"{tier_label} · слушать эту книгу всегда, без ограничений.",
+        title=f"Озвучка ({scope_ru}): {book_title}",
+        description=f"{tier_label} · {scope_desc}",
         payload_obj={
             "purpose": "book_audio",
             "user_id": user_id_int,
             "document_id": document_id_int,
             "voice_tier": voice_tier,
+            "coverage_pct": coverage_pct,
         },
         stars=stars,
     )
     if not link:
         return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз.", "detail": detail}), 502
-    return jsonify({"ok": True, "invoice_link": link, "stars": int(stars), "voice_tier": voice_tier})
+    return jsonify({"ok": True, "invoice_link": link, "stars": int(stars),
+                    "voice_tier": voice_tier, "coverage_pct": coverage_pct})
 
 
 @app.route("/api/webapp/billing/stars_invoice", methods=["POST"])
@@ -51297,15 +51343,26 @@ def reader_audio_page():
     # have unlocked THIS book in the requested voice tier (one-time wallet charge) —
     # then it plays forever, unlimited. No subscription tier includes narration.
     voice_tier = str(payload.get("voice_tier") or "").strip().lower() or AUDIO_DEFAULT_VOICE_TIER
-    if not document_is_public and not is_book_audio_unlocked(user_id_int, document_id_int, voice_tier):
-        price_minor = estimate_book_audio_price_minor(int(document.get("total_chars") or 0), voice_tier)
+    # Partial narration: an unlock may cover only the first N% of the book — the gate
+    # allows pages within that fraction and blocks the rest (offering the upgrade).
+    _doc_pages = document.get("content_pages") if isinstance(document.get("content_pages"), list) else []
+    total_pages_for_gate = len(_doc_pages) or int(document.get("total_pages") or 0)
+    if not document_is_public and not is_book_audio_unlocked(
+        user_id_int, document_id_int, voice_tier,
+        page_number=page_int, total_pages=total_pages_for_gate,
+    ):
+        owned_cov = int(get_book_audio_unlock_coverage(user_id_int, document_id_int, voice_tier) or 0)
+        chars = int(document.get("total_chars") or 0)
+        price_minor = _book_audio_coverage_price_minor(chars, voice_tier, 100)
         balance_minor = get_audio_wallet_balance_minor(user_id_int)
         return jsonify({
-            "error": "Озвучка этой книги ещё не оплачена.",
+            "error": "Озвучка этой части книги ещё не оплачена." if owned_cov > 0
+                     else "Озвучка этой книги ещё не оплачена.",
             "error_code": "audio_unlock_required",
             "unlock": {
                 "document_id": document_id_int,
                 "voice_tier": voice_tier,
+                "owned_coverage_pct": owned_cov,
                 "price_minor": int(price_minor),
                 "currency": "EUR",
                 "balance_minor": int(balance_minor),

@@ -15531,7 +15531,13 @@ function AppInner() {
     const defTier = String(unlock.voice_tier || audio.default_tier || 'neural');
     const allTiers = Array.isArray(audio.tiers) && audio.tiers.length
       ? audio.tiers
-      : [{ tier: defTier, label: {}, price_minor: Number(unlock.price_minor || 0), unlocked: false }];
+      : [{ tier: defTier, label: {}, price_minor: Number(unlock.price_minor || 0), unlocked: false,
+           unlocked_coverage: Number(unlock.owned_coverage_pct || 0),
+           coverage_options: [
+             { coverage_pct: 25, price_stars: 0, owned: false },
+             { coverage_pct: 50, price_stars: 0, owned: false },
+             { coverage_pct: 100, price_stars: 0, owned: false },
+           ] }];
     // Phase 3: show ALL voice tiers so the user can pick + preview before paying.
     const tiers = allTiers;
     if (readerAudioPlayActive) stopReaderAudioPlay();
@@ -15572,18 +15578,31 @@ function AppInner() {
     }
   }
 
-  // Mark a voice tier owned locally so the modal/reader reflect it immediately.
-  const markReaderTierUnlocked = useCallback((voiceTier) => {
+  // Mark a voice tier owned locally so the modal/reader reflect it immediately. With
+  // partial narration we track the covered fraction (25/50/100), never downgrading.
+  const markReaderTierUnlocked = useCallback((voiceTier, coveragePct = 100) => {
+    const cov = [25, 50, 100].includes(Number(coveragePct)) ? Number(coveragePct) : 100;
     setReaderDocAudio((cur) => {
       if (!cur || !Array.isArray(cur.tiers)) return cur;
-      return { ...cur, any_unlocked: true, tiers: cur.tiers.map((t) => (t.tier === voiceTier ? { ...t, unlocked: true } : t)) };
+      return {
+        ...cur,
+        any_unlocked: true,
+        tiers: cur.tiers.map((t) => {
+          if (t.tier !== voiceTier) return t;
+          const newCov = Math.max(Number(t.unlocked_coverage || 0), cov);
+          const opts = Array.isArray(t.coverage_options)
+            ? t.coverage_options.map((o) => ({ ...o, owned: Number(o.coverage_pct) <= newCov }))
+            : t.coverage_options;
+          return { ...t, unlocked: newCov >= 100, unlocked_coverage: newCov, coverage_options: opts };
+        }),
+      };
     });
   }, []);
 
   // Pay for a book's narration natively in Telegram Stars (WebApp.openInvoice): one
   // in-app sheet, result via callback — no wallet, no external browser. The bot grants
   // the unlock server-side on successful_payment.
-  const doUnlockBookAudio = useCallback(async (voiceTier) => {
+  const doUnlockBookAudio = useCallback(async (voiceTier, coveragePct = 100) => {
     const info = readerAudioUnlockInfo;
     if (!info || !info.documentId) return;
     setReaderAudioUnlockState('unlocking');
@@ -15591,11 +15610,11 @@ function AppInner() {
       const resp = await fetch('/api/webapp/reader/audio/stars_invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, document_id: info.documentId, voice_tier: voiceTier }),
+        body: JSON.stringify({ initData, document_id: info.documentId, voice_tier: voiceTier, coverage_pct: coveragePct }),
       });
       const data = await resp.json().catch(() => ({}));
       if (resp.ok && (data.already_unlocked || data.free)) {
-        markReaderTierUnlocked(voiceTier);
+        markReaderTierUnlocked(voiceTier, data.coverage_pct || coveragePct);
         setReaderAudioUnlockState('idle');
         closeReaderAudioUnlockModal();
         return;
@@ -15614,16 +15633,20 @@ function AppInner() {
         return;
       }
       if (!telegramApp?.openInvoice) { setReaderAudioUnlockState('error'); return; }
+      const grantedCoverage = Number(data.coverage_pct || coveragePct);
       telegramApp.openInvoice(data.invoice_link, (status) => {
         if (status === 'paid') {
-          markReaderTierUnlocked(voiceTier);
+          markReaderTierUnlocked(voiceTier, grantedCoverage);
           setReaderAudioUnlockState('idle');
           closeReaderAudioUnlockModal();
           try {
             telegramApp.showPopup?.({
               title: tr('Готово', 'Fertig'),
-              message: tr('Озвучка книги открыта! Нажми ▶ — теперь её можно слушать всегда.',
-                          'Buch-Audio freigeschaltet! Tippe auf ▶ — jederzeit anhören.'),
+              message: grantedCoverage >= 100
+                ? tr('Озвучка книги открыта! Нажми ▶ — теперь её можно слушать всю.',
+                     'Buch-Audio freigeschaltet! Tippe auf ▶ — ganz anhören.')
+                : tr(`Озвучка открыта на первые ${grantedCoverage}% книги! Нажми ▶.`,
+                     `Die ersten ${grantedCoverage}% sind vertont! Tippe auf ▶.`),
               buttons: [{ type: 'ok' }],
             });
           } catch (_e) { /* popup optional */ }

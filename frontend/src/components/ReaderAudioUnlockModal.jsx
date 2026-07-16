@@ -20,6 +20,9 @@ export default function ReaderAudioUnlockModal({
 }) {
   const tiers = (info && Array.isArray(info.tiers) ? info.tiers : []);
   const [pickedTier, setPickedTier] = useState('');
+  // Partial narration: 25 / 50 / 100. Default to the whole book, but the cheaper
+  // chips are right there so a pricey book is "tryable".
+  const [pickedCoverage, setPickedCoverage] = useState(100);
 
   // Voice-preview playback: one shared <audio>, only one tier plays at a time.
   const [playingTier, setPlayingTier] = useState('');
@@ -47,17 +50,41 @@ export default function ReaderAudioUnlockModal({
     return tiers.find((t) => t.tier === (info && info.defaultTier)) || tiers[0] || null;
   }, [pickedTier, tiers, info]);
 
+  // Coverage options for the selected voice (25/50/100 with per-fraction prices).
+  const covOptions = useMemo(
+    () => (effTier && Array.isArray(effTier.coverage_options) ? effTier.coverage_options : []),
+    [effTier],
+  );
+  const ownedCov = Math.max(0, Number(effTier?.unlocked_coverage || 0));
+  const selectedOpt = useMemo(() => {
+    if (!covOptions.length) return null;
+    return covOptions.find((o) => Number(o.coverage_pct) === Number(pickedCoverage))
+      || covOptions.find((o) => Number(o.coverage_pct) === 100)
+      || covOptions[covOptions.length - 1];
+  }, [covOptions, pickedCoverage]);
+  const ownedOpt = ownedCov > 0 ? covOptions.find((o) => Number(o.coverage_pct) === ownedCov) : null;
+
   if (!isOpen || !info) return null;
   const target = typeof document !== 'undefined' ? document.body : null;
 
-  const effStars = Math.max(0, Number(effTier?.price_stars || 0));
-  const unlocked = Boolean(effTier?.unlocked);
+  // Charge only the delta when upgrading an already-owned fraction (25% → 100%).
+  const selStars = Math.max(0, Number(selectedOpt?.price_stars ?? effTier?.price_stars ?? 0));
+  const ownedStars = Math.max(0, Number(ownedOpt?.price_stars || 0));
+  const effStars = selectedOpt ? Math.max(0, selStars - ownedStars) : Math.max(0, Number(effTier?.price_stars || 0));
+  const fullyUnlocked = ownedCov >= 100;
+  const pieceOwned = Boolean(selectedOpt?.owned) && !fullyUnlocked; // this exact fraction already bought
   const busy = unlockState === 'unlocking';
 
   const tierLabel = (t) => {
     const lbl = t?.label || {};
     return tr(lbl.ru || 'Голос', lbl.de || 'Stimme');
   };
+  const covLabel = (pct) => {
+    if (pct >= 100) return tr('Вся книга', 'Ganzes Buch');
+    if (pct === 50) return tr('Половина', 'Die Hälfte');
+    return tr('Кусочек', 'Ein Stück');
+  };
+  const covSub = (pct) => (pct >= 100 ? tr('целиком', 'komplett') : `${pct}%`);
 
   const node = (
     <div className="profeat-overlay" role="dialog" aria-modal="true">
@@ -113,9 +140,13 @@ export default function ReaderAudioUnlockModal({
                   <span className="rau-tier-preview is-loading" aria-hidden="true" />
                 ) : null}
                 <span className="rau-tier-price">
-                  {t.unlocked
+                  {Number(t.unlocked_coverage || 0) >= 100
                     ? <span className="rau-tier-owned">✓ {tr('куплено', 'gekauft')}</span>
-                    : <span className="rau-tier-stars">{Number(t.price_stars || 0)} ⭐</span>}
+                    : (() => {
+                        const opts = Array.isArray(t.coverage_options) ? t.coverage_options : [];
+                        const from = opts.length ? Math.min(...opts.map((o) => Number(o.price_stars || 0))) : Number(t.price_stars || 0);
+                        return <span className="rau-tier-stars">{tr('от', 'ab')} {from} ⭐</span>;
+                      })()}
                 </span>
               </div>
             );
@@ -125,17 +156,55 @@ export default function ReaderAudioUnlockModal({
           <div className="rau-preview-hint">🎧 {tr('Нажми ▶, чтобы услышать голос перед оплатой', 'Tippe auf ▶, um die Stimme vor dem Kauf zu hören')}</div>
         )}
 
+        {/* How much to narrate — try a piece before buying the whole book */}
+        {!fullyUnlocked && covOptions.length > 1 ? (
+          <div className="rau-cov">
+            <div className="rau-cov-label">{tr('Сколько озвучить', 'Wie viel vertonen')}</div>
+            <div className="rau-cov-chips">
+              {covOptions.map((o) => {
+                const pct = Number(o.coverage_pct);
+                const isSel = selectedOpt && Number(selectedOpt.coverage_pct) === pct;
+                const owned = Boolean(o.owned);
+                return (
+                  <button
+                    key={pct}
+                    type="button"
+                    className={`rau-cov-chip${isSel ? ' is-selected' : ''}${owned ? ' is-owned' : ''}`}
+                    onClick={() => setPickedCoverage(pct)}
+                  >
+                    <span className="rau-cov-chip-title">{covLabel(pct)}</span>
+                    <span className="rau-cov-chip-sub">{covSub(pct)}</span>
+                    <span className="rau-cov-chip-price">
+                      {owned ? `✓ ${tr('есть', 'da')}` : `${Number(o.price_stars || 0)} ⭐`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {ownedCov > 0 && ownedCov < 100 ? (
+              <div className="rau-cov-hint">
+                {tr(`У тебя уже озвучено ${ownedCov}% — за остальное доплатишь только разницу.`,
+                    `${ownedCov}% sind schon vertont — für den Rest zahlst du nur die Differenz.`)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* CTA — native Telegram Stars payment */}
-        {unlocked ? (
+        {fullyUnlocked ? (
           <button type="button" className="rau-primary is-owned" onClick={onClose}>
             ✅ {tr('Уже куплено — можно слушать', 'Bereits gekauft — anhören')}
+          </button>
+        ) : pieceOwned ? (
+          <button type="button" className="rau-primary is-owned" onClick={onClose}>
+            ✅ {tr('Эта часть уже куплена', 'Dieser Teil ist gekauft')}
           </button>
         ) : (
           <button
             type="button"
             className="rau-primary"
             disabled={busy}
-            onClick={() => onUnlock && effTier && onUnlock(effTier.tier)}
+            onClick={() => onUnlock && effTier && selectedOpt && onUnlock(effTier.tier, Number(selectedOpt.coverage_pct))}
           >
             {busy
               ? tr('Открываю оплату…', 'Zahlung wird geöffnet…')

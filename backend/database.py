@@ -8537,6 +8537,13 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_book_audio_unlocks_user
                 ON bt_3_book_audio_unlocks (user_id);
             """)
+            # Partial narration: how much of the book this unlock covers (25/50/100).
+            # Lets a user buy just the first 25%/50% of a long book to try it, then
+            # top up to the full book later (coverage only ever grows).
+            cursor.execute("""
+                ALTER TABLE bt_3_book_audio_unlocks
+                ADD COLUMN IF NOT EXISTS coverage_pct INTEGER NOT NULL DEFAULT 100;
+            """)
             # Telegram Stars payments ledger — the authoritative record of every
             # successful in-app Stars purchase (book audio, Pro, …). Keyed by the
             # Telegram charge id for idempotency (a retried successful_payment is a
@@ -29150,62 +29157,106 @@ def record_star_payment_once(
             return cursor.fetchone() is not None
 
 
+def _normalize_coverage_pct(value) -> int:
+    """Clamp a narration-coverage percent to one of the offered tiers {25,50,100}."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return 100
+    if v <= 25:
+        return 25
+    if v <= 50:
+        return 50
+    return 100
+
+
 def grant_book_audio_unlock(
-    *, user_id: int, document_id: int, voice_tier: str, price_minor: int = 0, chars: int = 0, currency: str = "XTR"
+    *, user_id: int, document_id: int, voice_tier: str, price_minor: int = 0, chars: int = 0,
+    currency: str = "XTR", coverage_pct: int = 100,
 ) -> dict:
     """Record a per-book audio unlock WITHOUT touching any wallet (paid directly via
-    Telegram Stars). Idempotent on (user, document, tier). Returns {ok, already_unlocked}."""
+    Telegram Stars). Coverage only ever GROWS (buying 100% after 25% upgrades the row;
+    a re-delivered smaller grant never shrinks it). Idempotent. Returns
+    {ok, already_unlocked, coverage_pct}."""
     uid = int(user_id)
     doc = int(document_id)
     tier = str(voice_tier or "").strip().lower()
+    cov = _normalize_coverage_pct(coverage_pct)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO bt_3_book_audio_unlocks (user_id, document_id, voice_tier, price_minor, chars, currency)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (user_id, document_id, voice_tier) DO NOTHING
-                RETURNING id;
+                INSERT INTO bt_3_book_audio_unlocks (user_id, document_id, voice_tier, price_minor, chars, currency, coverage_pct)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, document_id, voice_tier) DO UPDATE
+                    SET coverage_pct = GREATEST(bt_3_book_audio_unlocks.coverage_pct, EXCLUDED.coverage_pct),
+                        price_minor = bt_3_book_audio_unlocks.price_minor + EXCLUDED.price_minor
+                    WHERE EXCLUDED.coverage_pct > bt_3_book_audio_unlocks.coverage_pct
+                RETURNING (xmax = 0) AS inserted, coverage_pct;
                 """,
-                (uid, doc, tier, max(0, int(price_minor or 0)), int(chars or 0), str(currency or "XTR")),
+                (uid, doc, tier, max(0, int(price_minor or 0)), int(chars or 0), str(currency or "XTR"), cov),
             )
-            inserted = cursor.fetchone() is not None
-    return {"ok": True, "already_unlocked": not inserted}
+            row = cursor.fetchone()
+    if not row:
+        # Conflict but coverage didn't grow (WHERE guard) → already had >= this coverage.
+        return {"ok": True, "already_unlocked": True, "coverage_pct": get_book_audio_unlock_coverage(uid, doc, tier)}
+    inserted = bool(row[0])
+    return {"ok": True, "already_unlocked": not inserted, "coverage_pct": int(row[1] or cov)}
 
 
-def is_book_audio_unlocked(user_id: int, document_id: int, voice_tier: str) -> bool:
+def get_book_audio_unlock_coverage(user_id: int, document_id: int, voice_tier: str) -> int:
+    """Coverage % this user has unlocked for (book, voice); 0 if not unlocked at all."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT 1 FROM bt_3_book_audio_unlocks WHERE user_id=%s AND document_id=%s AND voice_tier=%s LIMIT 1;",
+                "SELECT coverage_pct FROM bt_3_book_audio_unlocks WHERE user_id=%s AND document_id=%s AND voice_tier=%s LIMIT 1;",
                 (int(user_id), int(document_id), str(voice_tier or "").strip().lower()),
             )
-            return cursor.fetchone() is not None
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
 
 
-def list_book_audio_unlocked_tiers(user_id: int, document_id: int) -> list[str]:
-    """Voice tiers the user has already unlocked for a book (for price/status UI)."""
+def is_book_audio_unlocked(user_id: int, document_id: int, voice_tier: str, page_number: int | None = None, total_pages: int | None = None) -> bool:
+    """True if the user has unlocked this book's audio in the voice. When page_number +
+    total_pages are given, also require the page to be WITHIN the purchased coverage
+    (partial narration) — page beyond the covered prefix reads as locked."""
+    cov = get_book_audio_unlock_coverage(int(user_id), int(document_id), str(voice_tier or ""))
+    if cov <= 0:
+        return False
+    if cov >= 100 or page_number is None or not total_pages or int(total_pages) <= 0:
+        return True
+    import math as _math
+    max_page = max(1, _math.ceil(int(total_pages) * cov / 100.0))
+    return int(page_number) <= max_page
+
+
+def get_book_audio_coverage_for_doc(user_id: int, document_id: int) -> dict[str, int]:
+    """{voice_tier: coverage_pct} the user has unlocked for one book (for the modal)."""
+    out: dict[str, int] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT voice_tier FROM bt_3_book_audio_unlocks WHERE user_id=%s AND document_id=%s;",
+                "SELECT voice_tier, coverage_pct FROM bt_3_book_audio_unlocks WHERE user_id=%s AND document_id=%s;",
                 (int(user_id), int(document_id)),
             )
-            return [str(r[0]) for r in cursor.fetchall()]
+            for tier, cov in cursor.fetchall():
+                out[str(tier)] = int(cov or 0)
+    return out
 
 
-def get_user_book_audio_unlocks_map(user_id: int) -> dict[int, list[str]]:
-    """ALL of a user's book-audio unlocks in ONE query → {document_id: [voice_tier,…]}.
-    Lets a whole library list attach unlock status without a per-book query."""
-    result: dict[int, list[str]] = {}
+def get_user_book_audio_unlocks_map(user_id: int) -> dict[int, dict[str, int]]:
+    """ALL of a user's book-audio unlocks in ONE query → {document_id: {voice_tier:
+    coverage_pct}}. Lets a whole library list attach unlock status + coverage without a
+    per-book query."""
+    result: dict[int, dict[str, int]] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT document_id, voice_tier FROM bt_3_book_audio_unlocks WHERE user_id=%s;",
+                "SELECT document_id, voice_tier, coverage_pct FROM bt_3_book_audio_unlocks WHERE user_id=%s;",
                 (int(user_id),),
             )
-            for doc_id, tier in cursor.fetchall():
-                result.setdefault(int(doc_id), []).append(str(tier))
+            for doc_id, tier, cov in cursor.fetchall():
+                result.setdefault(int(doc_id), {})[str(tier)] = int(cov or 0)
     return result
 
 

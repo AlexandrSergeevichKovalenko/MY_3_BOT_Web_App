@@ -134,6 +134,52 @@
 .rau-tier-owned { color: #1ea672; font-weight: 800; font-size: 13.5px; }
 .rau-tier.is-unlocked { border-color: #bfead6; background: #f2fbf6; }
 
+/* ── Coverage (partial narration: try a piece before the whole book) ── */
+.rau-cov { margin: -4px 0 14px; text-align: left; }
+.rau-cov-label {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #7c8aa5;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.rau-cov-chips {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.rau-cov-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 4px;
+  border: 1.5px solid #e6e9f0;
+  border-radius: 13px;
+  background: #fafbfe;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+}
+.rau-cov-chip:active { transform: scale(0.97); }
+.rau-cov-chip.is-selected {
+  border-color: #1fb87a;
+  background: #f0fbf6;
+  box-shadow: 0 4px 14px rgba(15, 158, 130, 0.16);
+}
+.rau-cov-chip.is-owned { border-color: #bfead6; background: #f2fbf6; }
+.rau-cov-chip-title { font-size: 13.5px; font-weight: 800; color: #1c2536; }
+.rau-cov-chip-sub { font-size: 11px; font-weight: 700; color: #9aa4b8; }
+.rau-cov-chip-price { font-size: 13px; font-weight: 800; color: #0e9e8e; margin-top: 2px; }
+.rau-cov-chip.is-owned .rau-cov-chip-price { color: #1ea672; }
+.rau-cov-hint {
+  margin-top: 9px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  font-weight: 600;
+  color: #5d6b82;
+}
+
 /* ── Wallet balance ──────────────────────────────────────── */
 .rau-balance {
   display: flex;

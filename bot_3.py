@@ -33940,15 +33940,24 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
 
     if purpose == "book_audio":
         try:
+            coverage_pct = int(payload.get("coverage_pct") or 100)
+            if coverage_pct not in (25, 50, 100):
+                coverage_pct = 100
             grant_book_audio_unlock(
                 user_id=int(payload.get("user_id") or uid),
                 document_id=int(payload.get("document_id") or 0),
                 voice_tier=str(payload.get("voice_tier") or "neural"),
                 currency="XTR",
+                coverage_pct=coverage_pct,
             )
-            await msg.reply_text(
-                "✅ Озвучка книги открыта! Вернись в читалку и нажми ▶ — теперь эту книгу можно слушать всегда, без ограничений."
-            )
+            if coverage_pct >= 100:
+                await msg.reply_text(
+                    "✅ Озвучка книги открыта! Вернись в читалку и нажми ▶ — теперь эту книгу можно слушать всю, без ограничений."
+                )
+            else:
+                await msg.reply_text(
+                    f"✅ Озвучка открыта на первые {coverage_pct}% книги! Вернись в читалку и нажми ▶. Захочешь дальше — можно докупить остальное, доплатив только разницу."
+                )
         except Exception:
             logging.exception("book_audio grant failed charge=%s", charge_id)
     elif purpose == "pro":
