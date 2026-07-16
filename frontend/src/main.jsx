@@ -111,6 +111,21 @@ if (shouldTreatAsTelegram) {
       });
   }
 } else {
+  // Pick up a fresh deploy on THIS open instead of one open later. The SW skip-waits +
+  // clients-claims, so a new bundle activates immediately — but the already-loaded page keeps
+  // running the old JS/CSS (StaleWhileRevalidate served the previous bundle) until the next
+  // launch. Reload once when the UPDATED worker takes control so the new build is applied now.
+  // Guarded so we don't reload on the first-ever control acquisition (initial install claim)
+  // and never loop.
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    const hadControllerAtLoad = Boolean(navigator.serviceWorker.controller);
+    let reloadingForSwUpdate = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloadingForSwUpdate || !hadControllerAtLoad) return;
+      reloadingForSwUpdate = true;
+      window.location.reload();
+    });
+  }
   import('virtual:pwa-register')
     .then(({ registerSW }) => {
       registerSW({ immediate: true });
