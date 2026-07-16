@@ -8348,6 +8348,13 @@ def _build_scheduler_health_report(view: str = "full") -> str:
             line += f"\n   ген {int(meta.get('generated') or 0)} → добавлено {int(meta.get('upserted') or 0)}"
             if meta.get("skipped") and "generated" in meta:
                 line += f" · пропуск: {str(meta.get('reason') or '')}"
+        # Remedial-video assembly reports {events, cards_created, users}: surface the real
+        # output so a silent "0 карточек" night is visible in the morning report (a green
+        # ✅ alone hid that the job ran but delivered nothing).
+        if "cards_created" in meta or "events" in meta:
+            line += (f"\n   события {int(meta.get('events') or 0)} → "
+                     f"карточек {int(meta.get('cards_created') or 0)}"
+                     f" (польз. {int(meta.get('users') or 0)})")
 
         if source == "none":
             conditional.append(f"❔ {line}\n   <i>не отмечается — проверяй /poolreport</i>")
