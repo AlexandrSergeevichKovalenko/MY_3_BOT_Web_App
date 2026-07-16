@@ -24547,10 +24547,11 @@ function AppInner() {
   }, []);
 
   const playReaderAudioPage = useCallback(async (page, startWidOverride, charStartOverride, opts = {}) => {
-    if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
-      openReaderAudioPremiumPaywall();
-      return;
-    }
+    // No Pro pre-gate here: the new model is «Классика» free for everyone + personal
+    // books paid per-book in Telegram Stars. The backend enforces it (public → free,
+    // personal-unlocked → play, personal-locked → 402 audio_unlock_required → Stars
+    // modal). The old Pro premium gate wrongly blocked free classics AND stopped
+    // non-Pro users from ever reaching the per-book purchase flow.
     // A user-initiated start/jump (word tap, Play button) gets the small
     // fast-start window; only the auto-next-page continuation (opts.continuation)
     // keeps the full window — that window was already prefetched during the
@@ -25004,10 +25005,8 @@ function AppInner() {
 
   // Toolbar play button: pause/resume if playing, else toggle word-select mode
   const handleReaderAudioPlayBtn = useCallback(() => {
-    if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
-      openReaderAudioPremiumPaywall();
-      return;
-    }
+    // No Pro pre-gate — see playReaderAudioPage. Classics free for all; personal
+    // books resolve to the per-book Stars purchase via the backend 402 flow.
     if (readerUsesOriginalEpubLayout) {
       setReaderAudioPlayError(tr(
         'Аудио с выбором слова доступно в адаптивном текстовом режиме. Переключись из Original в Settings.',
