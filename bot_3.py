@@ -8775,6 +8775,99 @@ async def stars_command(update: Update, context: CallbackContext) -> None:
             logging.warning("/stars reply failed", exc_info=True)
 
 
+def _refund_star_purpose_label(purpose: str) -> str:
+    p = str(purpose or "").lower()
+    if "book_audio" in p:
+        return "озвучка книги"
+    if "pro" in p:
+        return "Pro"
+    return p or "—"
+
+
+async def refund_star_command(update: Update, context: CallbackContext) -> None:
+    """/refund_star — admin-only. Lists recent Stars charges with a button to refund each
+    (Telegram refundStarPayment). Lets us test a real payment cheaply: buy → verify in
+    /stars → refund the stars back to our balance. Refunds are per-charge and idempotent."""
+    from backend.database import list_recent_star_payments
+    from datetime import timezone as _tz
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not _is_admin_user(int(user.id)):
+        return
+    rows = await asyncio.to_thread(list_recent_star_payments, 10)
+    if not rows:
+        await message.reply_text("⭐ Пока нет оплат звёздами для возврата.")
+        return
+    lines = ["⭐ <b>Возврат звёзд</b>\nПоследние оплаты — нажми, чтобы вернуть:"]
+    keyboard = []
+    for r in rows:
+        when = r["created_at"]
+        when_s = when.astimezone(_tz.utc).strftime("%d.%m %H:%M") if when else "—"
+        label = _refund_star_purpose_label(r["purpose"])
+        if r["refunded"]:
+            lines.append(f"• {r['stars']}⭐ · {when_s} · {label} · ✅ возвращено")
+            continue
+        lines.append(f"• {r['stars']}⭐ · {when_s} · {label} · user {r['user_id']}")
+        # callback_data ≤64 bytes: charge ids are long → pass the last 40 chars + user id.
+        keyboard.append([InlineKeyboardButton(
+            f"↩️ Вернуть {r['stars']}⭐ · {label}",
+            callback_data=f"rfst:{r['user_id']}:{r['charge_id'][-48:]}",
+        )])
+    markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    await message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=markup)
+
+
+async def refund_star_callback(update: Update, context: CallbackContext) -> None:
+    """Handle a ↩️ refund button: call refundStarPayment, stamp the row, report the result."""
+    from backend.database import get_star_payment_by_charge, mark_star_payment_refunded
+    query = update.callback_query
+    if not query or not query.from_user or not _is_admin_user(int(query.from_user.id)):
+        if query:
+            await query.answer("Только для админа", show_alert=True)
+        return
+    try:
+        _, uid_s, charge_tail = str(query.data or "").split(":", 2)
+        uid = int(uid_s)
+    except Exception:
+        await query.answer("Плохие данные", show_alert=True)
+        return
+    # The button carries only the tail of the charge id — resolve the full record.
+    row = await asyncio.to_thread(_resolve_star_payment_by_tail, uid, charge_tail)
+    if not row:
+        await query.answer("Оплата не найдена", show_alert=True)
+        return
+    if row.get("refunded"):
+        await query.answer("Уже возвращено", show_alert=True)
+        return
+    charge_id = row["charge_id"]
+    try:
+        await context.bot.refund_star_payment(user_id=uid, telegram_payment_charge_id=charge_id)
+    except Exception as exc:
+        logging.warning("refund_star_payment failed charge=%s: %s", charge_id, exc)
+        await query.answer(f"Telegram отклонил возврат: {exc}"[:190], show_alert=True)
+        return
+    await asyncio.to_thread(mark_star_payment_refunded, charge_id)
+    try:
+        await query.answer(f"✅ Возвращено {row['stars']}⭐", show_alert=True)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            f"✅ Возврат выполнен: {row['stars']}⭐ пользователю {uid} ({_refund_star_purpose_label(row['purpose'])}). "
+            f"Звёзды вернулись на баланс бота — можно платить снова."
+        )
+    except Exception:
+        logging.warning("refund_star post-refund UI update failed", exc_info=True)
+
+
+def _resolve_star_payment_by_tail(user_id: int, charge_tail: str) -> dict | None:
+    """Match a recent charge by user + charge-id suffix (the button can't carry the full id)."""
+    from backend.database import list_recent_star_payments
+    tail = str(charge_tail or "")
+    for r in list_recent_star_payments(50):
+        if int(r["user_id"]) == int(user_id) and r["charge_id"].endswith(tail):
+            return r
+    return None
+
+
 async def admin_scheduler_health_command(update: Update, context: CallbackContext):
     """Show, per scheduled job, when it last actually ran — reading the CORRECT tracking
     table per job (run-guards vs admin-runs) so conditional jobs aren't falsely "never".
@@ -36911,6 +37004,8 @@ def main():
     application.add_handler(CommandHandler("admin_send_analytics", admin_send_analytics_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("stars", stars_command))
+    application.add_handler(CommandHandler("refund_star", refund_star_command))
+    application.add_handler(CallbackQueryHandler(refund_star_callback, pattern=r"^rfst:"))
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("review_makedue", admin_review_makedue_command))
     application.add_handler(CommandHandler("addvideo", add_video_command))

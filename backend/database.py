@@ -8613,6 +8613,10 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_star_payments_user
                 ON bt_3_star_payments (user_id, created_at DESC);
             """)
+            # Refund audit: set when an admin refunds a Stars charge via refundStarPayment.
+            cursor.execute(
+                "ALTER TABLE bt_3_star_payments ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ;"
+            )
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_active
                 ON bt_3_agent_voice_sessions (user_id, source_lang, target_lang, started_at DESC)
@@ -29430,6 +29434,71 @@ def record_star_payment_once(
                  max(0, int(stars or 0)), json.dumps(payload or {}, ensure_ascii=False)),
             )
             return cursor.fetchone() is not None
+
+
+def list_recent_star_payments(limit: int = 10) -> list[dict]:
+    """Newest Stars charges (for the admin /refund_star picker). Includes refund status."""
+    out: list[dict] = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT telegram_payment_charge_id, user_id, purpose, stars, created_at, refunded_at
+                    FROM bt_3_star_payments
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (max(1, min(50, int(limit))),),
+                )
+                for r in cursor.fetchall():
+                    out.append({
+                        "charge_id": str(r[0]), "user_id": int(r[1]), "purpose": str(r[2] or ""),
+                        "stars": int(r[3] or 0), "created_at": r[4],
+                        "refunded_at": r[5], "refunded": r[5] is not None,
+                    })
+    except Exception:
+        logging.warning("list_recent_star_payments failed", exc_info=True)
+    return out
+
+
+def get_star_payment_by_charge(charge_id: str) -> dict | None:
+    charge = str(charge_id or "").strip()
+    if not charge:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT telegram_payment_charge_id, user_id, purpose, stars, refunded_at "
+                "FROM bt_3_star_payments WHERE telegram_payment_charge_id = %s LIMIT 1;",
+                (charge,),
+            )
+            r = cursor.fetchone()
+    if not r:
+        return None
+    return {"charge_id": str(r[0]), "user_id": int(r[1]), "purpose": str(r[2] or ""),
+            "stars": int(r[3] or 0), "refunded_at": r[4], "refunded": r[4] is not None}
+
+
+def mark_star_payment_refunded(charge_id: str) -> bool:
+    """Stamp a charge as refunded (only if not already). Returns True if newly stamped."""
+    charge = str(charge_id or "").strip()
+    if not charge:
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_star_payments SET refunded_at = NOW() "
+                    "WHERE telegram_payment_charge_id = %s AND refunded_at IS NULL;",
+                    (charge,),
+                )
+                changed = cursor.rowcount or 0
+            conn.commit()
+        return changed > 0
+    except Exception:
+        logging.warning("mark_star_payment_refunded failed charge=%s", charge, exc_info=True)
+        return False
 
 
 def _normalize_coverage_pct(value) -> int:
