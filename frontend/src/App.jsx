@@ -32607,7 +32607,21 @@ function AppInner() {
     const tooltipTextColor = isLightTheme ? '#1f1a14' : '#e2e8f0';
     const secondaryLabelColor = isLightTheme ? 'rgba(90, 74, 57, 0.72)' : 'rgba(199, 210, 241, 0.72)';
     const selfId = webappUser?.id;
-    const names = analyticsCompare.map((item) => item.username);
+    // The self bar's username is often blank in bt_3_user_progress → backend sends "Unknown".
+    // Fall back to the Telegram profile name for the current user (and a localized label for
+    // unnamed peers) so the chart never shows "Unknown".
+    const selfDisplayName = [webappUser?.first_name, webappUser?.last_name]
+      .filter(Boolean)
+      .join(' ')
+      .trim() || String(webappUser?.username || '').trim();
+    const resolveCompareName = (item) => {
+      const raw = String(item?.username || '').trim();
+      const isSelf = selfId && item && String(item.user_id) === String(selfId);
+      if (isSelf) return selfDisplayName || tr('Вы', 'Du');
+      if (raw && raw.toLowerCase() !== 'unknown') return raw;
+      return tr('Пользователь', 'Nutzer');
+    };
+    const names = analyticsCompare.map((item) => resolveCompareName(item));
     const formatCompareStartDateLabel = (rawValue) => {
       const normalized = String(rawValue || '').trim();
       if (!normalized) return '';
@@ -32665,7 +32679,7 @@ function AppInner() {
           color: chartTextColor,
           formatter: (_value, index) => {
             const item = analyticsCompare[index];
-            const username = String(item?.username || '').trim() || 'Unknown';
+            const username = resolveCompareName(item);
             const compareStartLabel = formatCompareStartDateLabel(item?.effective_compare_start_date);
             if (!compareStartLabel) {
               return `{name|${username}}`;
