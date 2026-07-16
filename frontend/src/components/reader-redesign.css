@@ -150,14 +150,15 @@
     min-height: 0;
   }
   /* Overview only: the three shelves take the leftover height and each card
-     grows to fill it, so the list breathes down to the bottom of the screen. */
+     grows to consume ALL of it — no cap — so the list always reaches the bottom
+     of the screen. Small screens shrink cards toward the floor (min-height);
+     big screens grow them. Fully adaptive to the device height either way. */
   .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelves {
     flex: 1 1 auto;
   }
   .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-card {
     flex: 1 1 0;
-    min-height: 78px;
-    max-height: 148px;
+    min-height: 82px;
   }
 }
 
