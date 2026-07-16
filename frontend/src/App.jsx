@@ -12,6 +12,7 @@ import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
+import ProTrialModal from './components/ProTrialModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -5595,13 +5596,21 @@ function AppInner() {
       const clientHeight = Number(document.documentElement?.clientHeight || 0);
       const fullHeight = Math.max(innerHeight, clientHeight, 0);
 
+      // The floating dictionary's input is portaled to <body> and positioned by itself, so a
+      // page-shrink for ITS keyboard isn't needed — and would leave an empty background band
+      // behind the floating widget. Treat it as "no page input focused" so the page stays full.
+      const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+      const floatingDictFocused = !!(activeEl && typeof activeEl.getAttribute === 'function'
+        && activeEl.getAttribute('data-floating-dict-input') === 'true');
+      const pageInputFocused = isEditableFocused() && !floatingDictFocused;
+
       // In a standalone home-screen PWA the ONLY thing that should shrink the app below
       // the full screen is the keyboard. The iOS share sheet / app switcher also shrink
       // visualViewport.height transiently, and honoring that latched a half-height page
-      // ("split screen", black bottom). So in standalone, when no editable field is
-      // focused (keyboard down), fill the full layout viewport and ignore the shrink.
+      // ("split screen", black bottom). So in standalone, when no PAGE field is
+      // focused (keyboard down, or only the floating dict), fill the full layout viewport.
       let nextHeight;
-      if (isStandalonePwa() && !isEditableFocused() && fullHeight > 0) {
+      if (isStandalonePwa() && !pageInputFocused && fullHeight > 0) {
         nextHeight = Math.round(Math.max(fullHeight, visualHeight));
       } else {
         let vh = visualHeight > 0 ? visualHeight : fullHeight;
@@ -6657,9 +6666,11 @@ function AppInner() {
   const [billingStatusError, setBillingStatusError] = useState('');
   const [billingStatus, setBillingStatus] = useState(null);
   const billingStatusPrefetchStartedRef = useRef(false);
-  // One-time 7-day Pro welcome trial, granted server-side on first bootstrap.
-  const [welcomeTrialGrant, setWelcomeTrialGrant] = useState(null); // { granted, until, days }
-  const welcomeTrialShownRef = useRef(false);
+  // One-time 7-day Pro welcome trial. Bootstrap returns its plaque state each app entry:
+  // { state:'active'|'ended'|'none', granted, days, days_left, ends_at }.
+  const [welcomeTrial, setWelcomeTrial] = useState(null);
+  const [welcomeTrialModalOpen, setWelcomeTrialModalOpen] = useState(false);
+  const welcomeTrialCheckedRef = useRef(false);
   const [billingPlansLoading, setBillingPlansLoading] = useState(false);
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
@@ -17701,8 +17712,8 @@ function AppInner() {
         const starterOffer = normalizeStarterDictionaryOffer(data?.starter_dictionary);
         setStarterDictionaryOffer(starterOffer);
         setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
-        if (data?.welcome_trial?.granted) {
-          setWelcomeTrialGrant(data.welcome_trial);
+        if (data?.welcome_trial) {
+          setWelcomeTrial(data.welcome_trial);
         }
         // Keep the cold-start landing view on the home dashboard.
         // Translations should hydrate only after the user explicitly opens that section
@@ -17726,28 +17737,24 @@ function AppInner() {
     };
   }, [fetchWithTimeout, flashcardsOnly, handleInitDataAuthFailure, initData, isInitDataAuthFailureMessage, isWebAppMode, normalizeStarterDictionaryOffer, readApiError, telegramApp, tr]);
 
-  // Celebrate the one-time 7-day Pro welcome trial. Wait until onboarding is done so we
-  // don't interrupt the wizard (new users see plans there; the entitlement is already live).
+  // App-entry Pro-trial plaque: show the beautiful card once per calendar day (per state)
+  // — an "active" countdown while the free trial runs, an "ended → buy Pro" nudge after.
+  // Deferred until onboarding is done so we don't interrupt the wizard.
   useEffect(() => {
-    if (!welcomeTrialGrant?.granted || welcomeTrialShownRef.current || onboardingOpen) return;
-    welcomeTrialShownRef.current = true;
-    const days = Number(welcomeTrialGrant.days || 7);
-    const title = tr('Тебе открыт Pro', 'Pro freigeschaltet');
-    const message = tr(
-      `На ${days} дней у тебя полный Pro — бесплатно: больше заданий, YouTube-субтитры, переводы и разборы без ограничений. Попробуй всё! (Озвучка книг покупается отдельно, за каждую книгу.)`,
-      `${days} Tage voller Pro — kostenlos: mehr Aufgaben, YouTube-Untertitel, Übersetzungen und Analysen ohne Limit. Probier alles aus! (Buch-Vertonung wird separat je Buch gekauft.)`,
-    );
-    let shownAsPopup = false;
+    if (!welcomeTrial || welcomeTrialCheckedRef.current || onboardingOpen) return;
+    const state = String(welcomeTrial.state || 'none');
+    if (state !== 'active' && state !== 'ended') return;
+    welcomeTrialCheckedRef.current = true;
+    let shouldShow = true;
     try {
-      if (telegramApp?.showPopup) {
-        telegramApp.showPopup({ title, message, buttons: [{ type: 'ok' }] });
-        shownAsPopup = true;
-      }
-    } catch (_e) { /* popup optional */ }
-    if (!shownAsPopup) {
-      try { showAppToast(`🎁 ${title}: ${days} ${tr('дней бесплатно', 'Tage gratis')}`); } catch (_e2) { /* ignore */ }
-    }
-  }, [welcomeTrialGrant, onboardingOpen, telegramApp, tr, showAppToast]);
+      const today = new Date().toISOString().slice(0, 10);
+      const tag = `${today}:${state}`;
+      const key = 'dds_pro_trial_plaque_v1';
+      if (String(window.localStorage.getItem(key) || '') === tag) shouldShow = false;
+      else window.localStorage.setItem(key, tag);
+    } catch (_e) { /* storage optional — still show */ }
+    if (shouldShow) setWelcomeTrialModalOpen(true);
+  }, [welcomeTrial, onboardingOpen]);
 
   useEffect(() => {
     invalidateAsyncGuards(
@@ -29705,18 +29712,9 @@ function AppInner() {
       // what's actually visible — zeroing it (previous bug) left the widget scrolled off-screen.
       let availTop = vv ? Math.round(vv.offsetTop) : 0;
       if (!Number.isFinite(availTop) || availTop < 0) availTop = 0;
-      const maxH = Math.max(240, availHeight - 20);
       el.style.top = `${availTop + 10}px`;
       el.style.bottom = 'auto';
-      el.style.maxHeight = `${maxH}px`;
-      // TEMP diagnostics: report the real measured values so we can see WHY it clips on device.
-      try {
-        const vvRaw = vv ? Math.round(vv.height) : -1;
-        window.requestAnimationFrame(() => {
-          const r = el.getBoundingClientRect();
-          setDictKbDebug(`vv=${vvRaw} top=${vv ? Math.round(vv.offsetTop) : -1} win=${layoutH} mh=${maxH} → box h=${Math.round(r.height)} y=${Math.round(r.top)}`);
-        });
-      } catch (_e) { /* ignore */ }
+      el.style.maxHeight = `${Math.max(240, availHeight - 20)}px`;
     };
     const liftWidgetForKeyboard = () => {
       // Run now and again after the keyboard has animated in (visualViewport settles late).
@@ -29811,6 +29809,10 @@ function AppInner() {
               onChange={(event) => setDictionaryWord(event.target.value)}
               onFocus={liftWidgetForKeyboard}
               onBlur={dropWidgetAfterKeyboard}
+              // Marks this as the FLOATING overlay's input (portaled to <body>), not a page
+              // field: the viewport effect keeps the page full-height when only this is focused,
+              // so the page behind the floating dict doesn't shrink into an empty background band.
+              data-floating-dict-input="true"
               placeholder={tr('Слово или фраза...', 'Wort oder Phrase...')}
             />
             {dictionaryWord.trim() && (
@@ -34320,6 +34322,17 @@ function AppInner() {
               samplesLoading={readerVoiceSamplesLoading}
               onUnlock={doUnlockBookAudio}
               onClose={closeReaderAudioUnlockModal}
+              tr={tr}
+            />
+
+            <ProTrialModal
+              isOpen={welcomeTrialModalOpen}
+              mode={welcomeTrial?.state === 'ended' ? 'ended' : 'active'}
+              daysLeft={Number(welcomeTrial?.days_left || 0)}
+              justGranted={Boolean(welcomeTrial?.granted)}
+              buying={billingActionLoading}
+              onBuyPro={() => { setWelcomeTrialModalOpen(false); void handleBillingUpgrade('pro'); }}
+              onClose={() => setWelcomeTrialModalOpen(false)}
               tr={tr}
             />
 
