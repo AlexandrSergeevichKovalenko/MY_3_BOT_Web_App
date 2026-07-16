@@ -29714,7 +29714,7 @@ function AppInner() {
           <div className="yt-dict-drag-dots" aria-hidden="true">
             {[0, 1, 2, 3, 4, 5].map((item) => <span key={item} />)}
           </div>
-          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')}</span>
+          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')} <span style={{ opacity: 0.5, fontSize: '9px' }}>v6</span></span>
           <button
             type="button"
             className="translation-dict-widget-close"
