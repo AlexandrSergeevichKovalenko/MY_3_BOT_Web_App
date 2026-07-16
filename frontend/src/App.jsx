@@ -6798,6 +6798,9 @@ function AppInner() {
   const youtubeDictWidgetRef = useRef(null);
   const translationDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
   const translationDictWidgetRef = useRef(null);
+  // Cleanup for the visualViewport listeners that keep the floating dict above the keyboard
+  // while its input is focused (see liftWidgetForKeyboard / dropWidgetAfterKeyboard).
+  const translationDictKbCleanupRef = useRef(null);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
   const autoAdvanceTimeoutRef = useRef(null);
@@ -29594,17 +29597,46 @@ function AppInner() {
       translationDictDragRef.current.dragging = false;
     };
 
-    // The widget is anchored `bottom: 78px`, but position:fixed is trapped by the
-    // .webapp-page box whose height is --app-height. When the input is focused the keyboard
-    // opens, --app-height shrinks to the space above it, and a bottom-anchored widget slides
-    // straight down BEHIND the keyboard (disappears). On focus, lift it to the top of the
-    // visible area (`.is-kb-lift` → top-anchored + max-height:--app-height) so it stays fully
-    // above the keyboard; drop back to the resting bottom position on blur.
+    // The widget is anchored `bottom: 78px`. When its input is focused the keyboard opens
+    // and covers the bottom of the screen, so a bottom-anchored (or dragged-low) widget ends
+    // up hidden behind the keyboard. Lift it to the top of the VISIBLE area, measured live
+    // from visualViewport, and cap its height to what's on screen. Inline styles win over the
+    // CSS default AND any dragged inline position; the listeners keep it correct as the
+    // keyboard animates in. All cleaned up on blur.
+    const positionWidgetAboveKeyboard = () => {
+      const el = translationDictWidgetRef.current;
+      if (!el) return;
+      const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+      const availTop = vv ? Math.round(vv.offsetTop) : 0;
+      const availHeight = vv ? Math.round(vv.height) : (window.innerHeight || 0);
+      el.style.top = `${availTop + 10}px`;
+      el.style.bottom = 'auto';
+      el.style.maxHeight = `${Math.max(220, availHeight - 20)}px`;
+    };
     const liftWidgetForKeyboard = () => {
-      translationDictWidgetRef.current?.classList.add('is-kb-lift');
+      // Run now and again after the keyboard has animated in (visualViewport settles late).
+      positionWidgetAboveKeyboard();
+      const t1 = window.setTimeout(positionWidgetAboveKeyboard, 120);
+      const t2 = window.setTimeout(positionWidgetAboveKeyboard, 350);
+      const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+      vv?.addEventListener('resize', positionWidgetAboveKeyboard);
+      vv?.addEventListener('scroll', positionWidgetAboveKeyboard);
+      translationDictKbCleanupRef.current = () => {
+        window.clearTimeout(t1);
+        window.clearTimeout(t2);
+        vv?.removeEventListener('resize', positionWidgetAboveKeyboard);
+        vv?.removeEventListener('scroll', positionWidgetAboveKeyboard);
+      };
     };
     const dropWidgetAfterKeyboard = () => {
-      translationDictWidgetRef.current?.classList.remove('is-kb-lift');
+      translationDictKbCleanupRef.current?.();
+      translationDictKbCleanupRef.current = null;
+      const el = translationDictWidgetRef.current;
+      if (!el) return;
+      // Clear our inline overrides so the widget returns to its resting bottom position.
+      el.style.top = '';
+      el.style.bottom = '';
+      el.style.maxHeight = '';
     };
 
     return (
