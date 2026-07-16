@@ -32616,10 +32616,14 @@ function AppInner() {
       .trim() || String(webappUser?.username || '').trim();
     const resolveCompareName = (item) => {
       const raw = String(item?.username || '').trim();
+      const rawIsReal = raw && raw.toLowerCase() !== 'unknown';
       const isSelf = selfId && item && String(item.user_id) === String(selfId);
-      if (isSelf) return selfDisplayName || tr('Вы', 'Du');
-      if (raw && raw.toLowerCase() !== 'unknown') return raw;
-      return tr('Пользователь', 'Nutzer');
+      if (isSelf) {
+        // Prefer the live Telegram profile name; in the standalone PWA (no initData) fall
+        // back to the name the backend stored in the data, and only then to a generic label.
+        return selfDisplayName || (rawIsReal ? raw : tr('Вы', 'Du'));
+      }
+      return rawIsReal ? raw : tr('Пользователь', 'Nutzer');
     };
     const names = analyticsCompare.map((item) => resolveCompareName(item));
     const formatCompareStartDateLabel = (rawValue) => {
