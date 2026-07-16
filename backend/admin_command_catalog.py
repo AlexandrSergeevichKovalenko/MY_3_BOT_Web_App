@@ -135,6 +135,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "example": '/costs 30',
         },
         {
+            "cmd": '/provider_costs',
+            "desc": 'Реальные затраты от провайдеров (OpenAI Costs API, Google BigQuery billing export, DeepL usage) рядом с нашим расчётом из billing_events; флажок ⚠️ при расхождении >10%.',
+            "args": 'Необязательный первый аргумент — дата YYYY-MM-DD; по умолчанию вчера.',
+            "example": '/provider_costs 2026-07-15',
+        },
+        {
             "cmd": '/dau',
             "desc": 'Показывает администратору статистику DAU/WAU/MAU, липкость и сводку по стрикам.',
             "args": 'нет аргументов',

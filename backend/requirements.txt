@@ -21,6 +21,7 @@ spacy==3.7.4
 reportlab==4.2.5
 APScheduler==3.11.0
 google-cloud-texttospeech==2.25.1
+google-cloud-bigquery==3.25.0
 pydub==0.25.1
 pypdf==5.2.0
 PyMuPDF==1.27.2

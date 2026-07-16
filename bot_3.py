@@ -100,6 +100,10 @@ from backend.image_quiz_utils import (
     build_image_quiz_feedback_payload,
     normalize_image_quiz_option_text,
 )
+from backend.provider_cost_truth import (
+    build_provider_cost_truth_text,
+    send_provider_cost_truth_report,
+)
 from backend.admin_economics import (
     _split_telegram_text,
     apply_admin_limit_change,
@@ -7973,6 +7977,18 @@ def _run_admin_economics_report_safe() -> None:
         logging.exception("admin cost breakdown report (bot scheduler) failed")
 
 
+def _run_provider_cost_truth_report_safe() -> None:
+    """Bot-side morning provider-truth report: pulls REAL costs from OpenAI/Google/DeepL
+    billing APIs and DMs them next to our own estimate. Runs in a BackgroundScheduler
+    thread → must stay synchronous. force=True bypasses the daily run-guard (mirrors the
+    economics report; the scheduler already de-dupes with coalesce + max_instances)."""
+    try:
+        result = send_provider_cost_truth_report(force=True)
+        logging.info("provider cost truth report (bot scheduler) result=%s", result)
+    except Exception:
+        logging.exception("provider cost truth report (bot scheduler) failed")
+
+
 def _run_remedial_video_job_safe() -> None:
     """Bot-side nightly remedial-video assembly. Reads weak-topic events and drops a
     theory-video card into «Работа над ошибками» for users who struggled. Runs in a
@@ -8830,6 +8846,34 @@ async def admin_costs_command(update: Update, context: CallbackContext):
     except Exception as exc:
         logging.exception("admin costs command failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Не удалось собрать разбивку затрат: {exc}")
+
+
+async def admin_provider_costs_command(update: Update, context: CallbackContext):
+    """Real provider billing (OpenAI Costs API + Google BigQuery export + DeepL usage)
+    next to OUR estimate, to catch a blind counter. /provider_costs [YYYY-MM-DD] —
+    default: yesterday."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    target_day = None
+    if context.args:
+        try:
+            target_day = datetime.strptime(str(context.args[0]).strip(), "%Y-%m-%d").date()
+        except (ValueError, IndexError):
+            await message.reply_text("Формат даты: /provider_costs 2026-07-15")
+            return
+    await message.reply_text("📊 Тяну реальные затраты у провайдеров…")
+    try:
+        text = await asyncio.to_thread(build_provider_cost_truth_text, target_day=target_day)
+        for part in _split_telegram_text(text):
+            await message.reply_text(part, disable_web_page_preview=True)
+    except Exception as exc:
+        logging.exception("admin provider costs command failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось собрать отчёт провайдеров: {exc}")
 
 
 async def admin_review_card_command(update: Update, context: CallbackContext):
@@ -36848,6 +36892,7 @@ def main():
     application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("economics", admin_economics_command))
     application.add_handler(CommandHandler("costs", admin_costs_command))
+    application.add_handler(CommandHandler("provider_costs", admin_provider_costs_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
     application.add_handler(CommandHandler("fix_translation_sessions", admin_fix_translation_sessions_command))
@@ -37383,6 +37428,21 @@ def main():
             hour=int((os.getenv("STARS_REPORT_HOUR") or "10").strip() or "10"),
             minute=int((os.getenv("STARS_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("STARS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Morning DM: provider cost TRUTH vs our estimate (09:00 Europe/Vienna) --
+        # Pulls real billing from OpenAI Costs API + Google BigQuery export + DeepL usage
+        # and puts them next to our own bt_3_billing_events number, flagging >10% gaps so a
+        # blind counter (like the past background-TTS overage) surfaces. force=True inside;
+        # coalesce + max_instances de-dupe on restart.
+        scheduler.add_job(
+            _run_provider_cost_truth_report_safe,
+            "cron",
+            hour=int((os.getenv("PROVIDER_COST_TRUTH_REPORT_HOUR") or "9").strip() or "9"),
+            minute=int((os.getenv("PROVIDER_COST_TRUTH_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("PROVIDER_COST_TRUTH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,
