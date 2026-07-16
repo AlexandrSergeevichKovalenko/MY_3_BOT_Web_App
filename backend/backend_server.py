@@ -3254,7 +3254,14 @@ def enforce_webapp_single_instance():
         return None
 
     active_instance_id = str(active_lease.get("instance_id") or "").strip()
-    if active_instance_id and active_instance_id != instance_id:
+    # Single-instance is scoped PER SURFACE: only conflict when the active lease is the
+    # SAME surface (app_context) as this request. A user with the Telegram Mini App AND
+    # the installed PWA open at once has two DIFFERENT surfaces → they never deactivate
+    # each other (this was the ~20-30s "Эта копия больше не активна" flash).
+    active_ctx = str(active_lease.get("app_context") or "").strip().lower()
+    request_ctx = _extract_webapp_app_context()
+    if (active_instance_id and active_instance_id != instance_id
+            and (not request_ctx or not active_ctx or active_ctx == request_ctx)):
         return jsonify(_build_webapp_instance_conflict_payload(active_lease)), 409
 
     g.webapp_instance_id = instance_id
@@ -4247,6 +4254,21 @@ def _extract_webapp_session_id(payload: dict | None = None) -> str | None:
         or ""
     ).strip()
     return raw[:128] if raw else None
+
+
+def _extract_webapp_app_context(payload: dict | None = None) -> str:
+    """Surface of the request: 'telegram' (Mini App), 'pwa' (installed home-screen
+    app), 'browser'. The client sends it on every request. Single-instance is scoped
+    PER SURFACE — a user may keep the Telegram Mini App AND the installed PWA open at
+    once; they must NOT deactivate each other."""
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    raw = str(
+        request.headers.get("X-Webapp-App-Context")
+        or body.get("appContext")
+        or body.get("app_context")
+        or ""
+    ).strip().lower()
+    return raw[:64]
 
 
 def _webapp_instance_lease_is_fresh(lease: dict | None) -> bool:
@@ -25182,10 +25204,15 @@ def claim_webapp_instance():
         return jsonify({"error": "instanceId обязателен"}), 400
 
     reason = str(payload.get("reason") or "heartbeat").strip().lower() or "heartbeat"
+    request_ctx = _extract_webapp_app_context(payload)
     previous_lease = _get_cached_webapp_instance_lease(int(user_id))
     previous_active = bool(previous_lease and _webapp_instance_lease_is_fresh(previous_lease))
     previous_instance_id = str(previous_lease.get("instance_id") or "").strip() if isinstance(previous_lease, dict) else ""
-    if previous_active and previous_instance_id and previous_instance_id != instance_id and reason != "claim":
+    previous_ctx = str(previous_lease.get("app_context") or "").strip().lower() if isinstance(previous_lease, dict) else ""
+    # Per-surface: a heartbeat from a DIFFERENT surface (Telegram vs installed PWA) is
+    # not a conflict — the surfaces coexist and each keeps its own lease alive.
+    same_surface = (not request_ctx or not previous_ctx or previous_ctx == request_ctx)
+    if previous_active and previous_instance_id and previous_instance_id != instance_id and reason != "claim" and same_surface:
         return jsonify(_build_webapp_instance_conflict_payload(previous_lease)), 409
     lease = claim_webapp_instance_lease(
         user_id=int(user_id),
