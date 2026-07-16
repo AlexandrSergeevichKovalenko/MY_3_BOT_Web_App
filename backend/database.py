@@ -9443,7 +9443,10 @@ def ensure_webapp_tables() -> None:
                 ON plan_limits (plan_code, is_active, period);
             """)
             free_feel_word_daily = _env_decimal("FREE_FEEL_WORD_DAILY_LIMIT", "3")
-            free_skill_training_daily = _env_decimal("FREE_SKILL_TRAINING_DAILY_LIMIT", "0")
+            # Free: 0 skill training (Pro-only). _env_decimal rejects 0 (>0-or-NULL only),
+            # so parse directly — unset/empty/"null" → 0. A positive env override still works.
+            _skill_raw = str(os.getenv("FREE_SKILL_TRAINING_DAILY_LIMIT") or "0").strip()
+            free_skill_training_daily = Decimal(0) if _skill_raw.lower() in ("", "null") else Decimal(_skill_raw)
             free_translation_daily_sets = _env_decimal("FREE_TRANSLATION_DAILY_SETS_LIMIT", "1")
             free_numdict_practice_daily = _env_decimal("NUMDICT_PRACTICE_FREE_LIMIT", "3")
             plan_limit_seed_rows: list[tuple] = []
