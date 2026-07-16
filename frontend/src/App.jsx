@@ -29595,20 +29595,16 @@ function AppInner() {
     };
 
     // The widget is anchored `bottom: 78px`, but position:fixed is trapped by the
-    // .webapp-page box whose height is --app-height. When the keyboard opens that height
-    // shrinks (and re-settles a couple of times), which yanks a bottom-anchored element up
-    // and back down — the "jumping block" over the dictionary. Freezing the widget to its
-    // current TOP (top-anchored, like a drag) makes the --app-height changes irrelevant, so
-    // it stays put while the keyboard is up. Runs once on focus; the user can still drag it.
-    const freezeWidgetTopForKeyboard = () => {
-      const el = translationDictWidgetRef.current;
-      if (!el) return;
-      if (el.style.top && el.style.bottom === 'auto') return; // already top-anchored (dragged/frozen)
-      const rect = el.getBoundingClientRect();
-      el.style.top = `${Math.round(rect.top)}px`;
-      el.style.left = `${Math.round(rect.left)}px`;
-      el.style.bottom = 'auto';
-      el.style.transform = 'none';
+    // .webapp-page box whose height is --app-height. When the input is focused the keyboard
+    // opens, --app-height shrinks to the space above it, and a bottom-anchored widget slides
+    // straight down BEHIND the keyboard (disappears). On focus, lift it to the top of the
+    // visible area (`.is-kb-lift` → top-anchored + max-height:--app-height) so it stays fully
+    // above the keyboard; drop back to the resting bottom position on blur.
+    const liftWidgetForKeyboard = () => {
+      translationDictWidgetRef.current?.classList.add('is-kb-lift');
+    };
+    const dropWidgetAfterKeyboard = () => {
+      translationDictWidgetRef.current?.classList.remove('is-kb-lift');
     };
 
     return (
@@ -29676,7 +29672,8 @@ function AppInner() {
               type="text"
               value={dictionaryWord}
               onChange={(event) => setDictionaryWord(event.target.value)}
-              onFocus={freezeWidgetTopForKeyboard}
+              onFocus={liftWidgetForKeyboard}
+              onBlur={dropWidgetAfterKeyboard}
               placeholder={tr('Слово или фраза...', 'Wort oder Phrase...')}
             />
             {dictionaryWord.trim() && (

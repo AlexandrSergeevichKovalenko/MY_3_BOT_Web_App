@@ -17630,6 +17630,16 @@ body.worldnews-active .webapp-topbar {
   color: #f8fafc;
 }
 
+/* While the search input is focused the keyboard is up and --app-height shrinks to the
+   space above it. A bottom-anchored widget would slide behind the keyboard and vanish, so
+   lift it to the top of the visible area and cap its height to what's actually on screen
+   (content scrolls). Horizontal centering (left/transform) is kept from the base rule. */
+.translation-dict-widget.is-kb-lift {
+  top: 10px;
+  bottom: auto;
+  max-height: calc(var(--app-height, 100vh) - 20px);
+}
+
 .translation-dict-widget-handle {
   display: flex;
   align-items: center;
