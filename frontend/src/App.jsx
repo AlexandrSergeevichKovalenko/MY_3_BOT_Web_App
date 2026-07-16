@@ -30668,34 +30668,47 @@ function AppInner() {
       document.body.appendChild(script);
     });
 
-    // A live player already showing this exact video — nothing to do (avoids a
-    // destroy→recreate churn that leaves a black frame).
-    if (
-      youtubePlayerRef.current
-      && youtubePlayerLoadedIdRef.current === youtubeId
-      && typeof youtubePlayerRef.current.getPlayerState === 'function'
-    ) {
-      return;
+    // Is the current player object still mounted in the LIVE host? Navigating to Films /
+    // Skill-training unmounts the whole YouTube section, so its <iframe> is removed from the
+    // DOM while the JS player object lingers in the ref. Reusing that stale object (cueVideoById)
+    // then renders nothing → white frame. Only treat the player as reusable when its iframe is
+    // actually attached inside the current #youtube-player node.
+    const liveHostNode = document.getElementById('youtube-player');
+    let playerLive = false;
+    if (youtubePlayerRef.current && typeof youtubePlayerRef.current.getPlayerState === 'function') {
+      try {
+        const liveIframe = youtubePlayerRef.current.getIframe?.();
+        playerLive = Boolean(liveIframe && liveHostNode && liveHostNode.contains(liveIframe));
+      } catch (_e) {
+        playerLive = false;
+      }
     }
 
-    // A live player showing a DIFFERENT video — swap in place instead of tearing
-    // the iframe down and rebuilding it (rebuild is what flakes to black).
-    // cueVideoById loads the thumbnail without auto-playing (matches the paused start).
-    if (
-      youtubePlayerRef.current
-      && typeof youtubePlayerRef.current.cueVideoById === 'function'
-    ) {
+    // Same video, still mounted — nothing to do.
+    if (playerLive && youtubePlayerLoadedIdRef.current === youtubeId) return;
+
+    // Different video, still mounted — swap in place (cueVideoById loads the thumbnail
+    // without auto-playing) instead of a full teardown/rebuild.
+    if (playerLive && typeof youtubePlayerRef.current.cueVideoById === 'function') {
       try {
         youtubePlayerRef.current.cueVideoById(youtubeId);
         youtubePlayerLoadedIdRef.current = youtubeId;
         youtubeResumeAppliedForVideoRef.current = '';
+        return;
       } catch (_e) {
         // fall through to a full rebuild below
-        try { youtubePlayerRef.current.destroy?.(); } catch (_err) { /* ignore */ }
-        youtubePlayerRef.current = null;
       }
-      if (youtubePlayerRef.current) return;
     }
+
+    // Stale (section was unmounted) or absent player — tear down the dead object and rebuild.
+    if (youtubePlayerRef.current) {
+      try { youtubePlayerRef.current.destroy?.(); } catch (_e) { /* ignore */ }
+      youtubePlayerRef.current = null;
+      youtubePlayerLoadedIdRef.current = '';
+    }
+    // Show the fallback embed while the real player rebuilds (state lingered true across
+    // the section unmount, which is why the frame stayed blank instead of showing it).
+    setYoutubePlayerReady(false);
 
     ensureApiReady().then(() => {
       if (!window.YT || !window.YT.Player) return;
