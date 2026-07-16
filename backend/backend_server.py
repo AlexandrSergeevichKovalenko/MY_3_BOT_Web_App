@@ -16436,12 +16436,16 @@ PUBLIC_LIBRARY_TTS_RATE = 1.0
 
 
 # Voice tiers offered for paid personal-book narration (order = display order).
-# 'eleven' (ElevenLabs) is Phase 3 — not offered yet.
-AUDIO_OFFERED_VOICE_TIERS = ("neural", "standard")
+# 'chirp3hd' = Google's newest generative voice (near-audiobook quality). 'eleven'
+# (ElevenLabs) is not offered — Chirp3-HD covers the premium niche at ~1/7 the cost.
+AUDIO_OFFERED_VOICE_TIERS = ("chirp3hd", "neural", "standard")
 _AUDIO_TIER_LABELS = {
+    "chirp3hd": {"ru": "Профи-озвучка", "de": "Profi-Stimme"},
     "neural": {"ru": "Премиум-голос", "de": "Premium-Stimme"},
     "standard": {"ru": "Обычный голос", "de": "Standard-Stimme"},
 }
+# Concrete Google voice for the Chirp3-HD tier (male narration by default).
+CHIRP3HD_TTS_VOICE_DE = os.getenv("READER_CHIRP3HD_VOICE_DE", "de-DE-Chirp3-HD-Charon").strip() or "de-DE-Chirp3-HD-Charon"
 
 # ── Telegram Stars pricing ──────────────────────────────────────────────────
 # Digital goods in a Mini App must be sold in Telegram Stars (XTR). We price in EUR
@@ -16573,6 +16577,11 @@ def _voice_tier_to_voice(voice_tier: str, lang_short: str = "de") -> str:
     tier = (voice_tier or AUDIO_DEFAULT_VOICE_TIER).strip().lower()
     if tier == "standard":
         return PUBLIC_LIBRARY_TTS_VOICE
+    if tier == "chirp3hd":
+        # Chirp3-HD is German-specific; other languages fall back to the neural voice.
+        if (lang_short or "de").strip().lower() == "de":
+            return CHIRP3HD_TTS_VOICE_DE
+        return _TTS_VOICES.get(lang_short, _TTS_VOICES["de"])
     return _TTS_VOICES.get(lang_short, _TTS_VOICES["de"])
 
 

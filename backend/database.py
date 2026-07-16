@@ -3998,11 +3998,13 @@ PUBLIC_LIBRARY_AUDIO_BUDGET_FRACTION = _env_decimal("PUBLIC_LIBRARY_AUDIO_BUDGET
 # per-tier rate (passthrough of the provider's price, no markup). Cents throughout.
 AUDIO_WALLET_CURRENCY = "EUR"
 # Price per 1,000,000 characters, in EUR cents, per voice tier.
-# neural ≈ Google Neural2/Polyglot ($16/1M), standard ≈ Google Standard ($4/1M),
-# eleven = ElevenLabs (Phase 3). Env-overridable.
+# standard ≈ Google Standard ($4/1M), neural ≈ Google Neural2/Polyglot ($16/1M),
+# chirp3hd ≈ Google Chirp3-HD generative ($30/1M — near-ElevenLabs quality, 1/7 the cost),
+# eleven = ElevenLabs (not offered). Env-overridable.
 AUDIO_PRICE_PER_1M_MINOR: dict[str, int] = {
     "neural": max(0, _env_int("AUDIO_PRICE_NEURAL_PER_1M_EUR_CENTS", 1600)),
     "standard": max(0, _env_int("AUDIO_PRICE_STANDARD_PER_1M_EUR_CENTS", 400)),
+    "chirp3hd": max(0, _env_int("AUDIO_PRICE_CHIRP3HD_PER_1M_EUR_CENTS", 3000)),
     "eleven": max(0, _env_int("AUDIO_PRICE_ELEVEN_PER_1M_EUR_CENTS", 20000)),
 }
 AUDIO_DEFAULT_VOICE_TIER = (os.getenv("AUDIO_DEFAULT_VOICE_TIER", "neural").strip().lower() or "neural")

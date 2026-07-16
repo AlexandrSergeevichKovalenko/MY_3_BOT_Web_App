@@ -8429,6 +8429,143 @@ def _run_scheduler_health_report_evening_safe() -> None:
         logging.exception("scheduler health report (evening) failed")
 
 
+# ── Telegram Stars earnings report (/stars + daily 10:00 DM) ──────────────────
+def _stars_txn_label(payload: str) -> str:
+    """Human label for a Stars transaction from our invoice payload JSON."""
+    purpose = ""
+    try:
+        import json as _json
+        purpose = str((_json.loads(payload) or {}).get("purpose") or "").lower()
+    except Exception:
+        purpose = str(payload or "").lower()
+    if "book_audio" in purpose:
+        return "озвучка книги"
+    if "pro" in purpose:
+        return "Pro"
+    return ""
+
+
+def _fetch_star_ledger(limit: int = 25) -> dict:
+    """Query Telegram for the bot's Stars balance + recent transactions via plain HTTP
+    (getMyStarBalance + getStarTransactions). SYNC — safe from the /stars thread and the
+    morning BackgroundScheduler job. Returns {ok, balance, transactions, error}."""
+    import requests as _requests
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    if not token:
+        return {"ok": False, "error": "no_token", "balance": None, "transactions": []}
+    out = {"ok": True, "balance": None, "transactions": [], "error": None}
+    try:
+        r = _requests.get(f"https://api.telegram.org/bot{token}/getMyStarBalance", timeout=20)
+        j = r.json()
+        if j.get("ok"):
+            out["balance"] = int((j.get("result") or {}).get("amount") or 0)
+    except Exception:
+        logging.warning("getMyStarBalance failed", exc_info=True)
+    try:
+        r = _requests.get(
+            f"https://api.telegram.org/bot{token}/getStarTransactions",
+            params={"offset": 0, "limit": max(1, min(100, int(limit)))}, timeout=20,
+        )
+        j = r.json()
+        if j.get("ok"):
+            out["transactions"] = (j.get("result") or {}).get("transactions") or []
+        else:
+            out["error"] = str(j.get("description") or "")
+    except Exception:
+        logging.warning("getStarTransactions failed", exc_info=True)
+        out["error"] = "request_failed"
+    return out
+
+
+def _build_stars_report(limit: int = 15) -> str:
+    """HTML report of the bot's Stars balance, 30-day earnings and recent operations."""
+    from html import escape as _esc
+    from datetime import datetime as _dt, timezone as _tz
+    data = _fetch_star_ledger(limit=max(limit, 30))
+    if data.get("error") == "no_token":
+        return "⭐ <b>Telegram Stars</b>\nНе задан токен бота — не могу опросить Telegram."
+    txns = data.get("transactions") or []
+    balance = data.get("balance")
+    now = _dt.now(_tz.utc)
+    incoming_30d = 0
+    lines = []
+    for t in txns:
+        amount = int(t.get("amount") or 0)
+        ts = int(t.get("date") or 0)
+        when = _dt.fromtimestamp(ts, _tz.utc) if ts else None
+        is_incoming = bool(t.get("source"))      # a user paid us → earnings
+        is_outgoing = bool(t.get("receiver"))    # refund / withdrawal
+        sign = "＋" if is_incoming else ("－" if is_outgoing else "")
+        src = t.get("source") or t.get("receiver") or {}
+        label = _stars_txn_label(src.get("invoice_payload") if isinstance(src, dict) else "")
+        if is_incoming and when and (now - when).days <= 30:
+            incoming_30d += amount
+        if len(lines) < limit:
+            when_s = when.strftime("%d.%m %H:%M") if when else "—"
+            lines.append(f"{sign}{amount}⭐ · {when_s}" + (f" · {_esc(label)}" if label else ""))
+
+    head = "⭐ <b>Telegram Stars</b>\n"
+    if balance is not None:
+        head += f"Баланс бота: <b>{balance}⭐</b>\n"
+    else:
+        head += "Баланс: Telegram пока не отдал — показываю операции ниже.\n"
+    head += f"Получено за 30 дней: <b>{incoming_30d}⭐</b>\n\nПоследние операции:\n"
+    body = "\n".join(lines) if lines else "пока нет операций."
+    tail = ("\n\n💡 Звёзды копятся на балансе бота. Вывести: @BotFather → твой бот → "
+            "Balance (через Fragment, после ~21 дня выдержки).")
+    return head + body + tail
+
+
+def _send_stars_report() -> dict:
+    """DM the Stars report to all admins. SYNC (BackgroundScheduler thread),
+    mirrors _send_scheduler_health_report's delivery."""
+    import requests as _requests
+    from backend.database import get_admin_telegram_ids
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    if not token or not admin_ids:
+        return {"ok": False, "sent": 0, "reason": "no_token_or_admins"}
+    text = _build_stars_report()
+    sent = 0
+    for uid in admin_ids:
+        for part in _split_telegram_text(text):
+            try:
+                _requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": uid, "text": part, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=20,
+                )
+            except Exception:
+                logging.warning("stars report DM failed uid=%s", uid, exc_info=True)
+        sent += 1
+    return {"ok": True, "sent": sent}
+
+
+def _run_stars_report_safe() -> None:
+    """Bot-side morning Stars report to admins. Runs in a BackgroundScheduler thread
+    (must stay synchronous)."""
+    try:
+        result = _send_stars_report()
+        logging.info("stars report (morning) result=%s", result)
+    except Exception:
+        logging.exception("stars report (morning) failed")
+
+
+async def stars_command(update: Update, context: CallbackContext) -> None:
+    """/stars — admin-only on-demand Stars balance + recent transactions."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not _is_admin_user(int(user.id)):
+        return
+    text = await asyncio.to_thread(_build_stars_report)
+    for part in _split_telegram_text(text):
+        try:
+            await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            logging.warning("/stars reply failed", exc_info=True)
+
+
 async def admin_scheduler_health_command(update: Update, context: CallbackContext):
     """Show, per scheduled job, when it last actually ran — reading the CORRECT tracking
     table per job (run-guards vs admin-runs) so conditional jobs aren't falsely "never".
@@ -36535,6 +36672,7 @@ def main():
     application.add_handler(CommandHandler("admin_send_audio", admin_send_audio_command))
     application.add_handler(CommandHandler("admin_send_analytics", admin_send_analytics_command))
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
+    application.add_handler(CommandHandler("stars", stars_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("review_makedue", admin_review_makedue_command))
     application.add_handler(CommandHandler("addvideo", add_video_command))
@@ -37040,6 +37178,19 @@ def main():
             coalesce=True,
             max_instances=1,
             misfire_grace_time=1800,
+        )
+        # -- Morning DM: Telegram Stars balance + earnings (10:00 Europe/Vienna) --
+        # Auto-pushes the same panel as /stars each morning so the admin sees the bot's
+        # Stars balance + last transactions without having to ask. Own per-run scheduler.
+        scheduler.add_job(
+            _run_stars_report_safe,
+            "cron",
+            hour=int((os.getenv("STARS_REPORT_HOUR") or "10").strip() or "10"),
+            minute=int((os.getenv("STARS_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("STARS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
         )
         # -- Morning DM: which «Классика» books are fully warmed (audio ready to test) --
         scheduler.add_job(

@@ -597,6 +597,89 @@ def _synthesize_mp3(
 # ---------------------------------------------------------------------------
 
 
+def _synthesize_page_plaintext_with_timings(
+    *,
+    page_text: str,
+    words: list,
+    lang_code: str,
+    voice_name: str,
+    speaking_rate: float,
+) -> dict:
+    """Plain-text synthesis for voices that don't support SSML timepointing (Chirp /
+    Chirp3-HD). Same return contract as synthesize_page_with_timings, but word timings
+    are interpolated across the measured audio duration, weighted by word length — good
+    enough to keep the reader's highlight roughly in sync. The monthly TTS budget is
+    already enforced by the caller, so we don't double-count here."""
+    from google.cloud import texttospeech
+
+    client = _get_tts_client()
+    voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=voice_name)
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        speaking_rate=float(speaking_rate),
+    )
+
+    # Chunk plain text under Google's per-request limit, splitting on sentence bounds.
+    max_chars = 4500
+    if len(page_text) <= max_chars:
+        chunks = [page_text]
+    else:
+        chunks = []
+        current = ""
+        for sentence in re.split(r"(?<=[.!?])\s+", page_text):
+            candidate = f"{current} {sentence}".strip() if current else sentence
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                current = sentence
+        if current:
+            chunks.append(current)
+
+    combined = AudioSegment.silent(duration=0)
+    for chunk in chunks:
+        if not chunk.strip():
+            continue
+        response = client.synthesize_speech(
+            input=texttospeech.SynthesisInput(text=chunk),
+            voice=voice_params,
+            audio_config=audio_config,
+        )
+        if response.audio_content:
+            combined += AudioSegment.from_file(io.BytesIO(response.audio_content), format="mp3")
+
+    if len(combined) == 0:
+        raise RuntimeError("Google TTS (Chirp) вернул пустой аудиопоток")
+    duration_ms = len(combined)
+
+    weights = [max(1, len(str(w.get("value") or ""))) for w in words]
+    total_weight = sum(weights) or 1
+    timings = []
+    acc = 0
+    for i, w in enumerate(words):
+        start_ms = int(round(duration_ms * acc / total_weight))
+        acc += weights[i]
+        end_ms = int(round(duration_ms * acc / total_weight))
+        timings.append({
+            "wid": str(i),
+            "word": w.get("value"),
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "char_start": w.get("char_start"),
+            "char_end": w.get("char_end"),
+        })
+
+    out = io.BytesIO()
+    combined.export(out, format="mp3", bitrate="192k")
+    return {
+        "audio_bytes": out.getvalue(),
+        "mime": "audio/mpeg",
+        "duration_ms": duration_ms,
+        "word_timings": timings,
+    }
+
+
 def synthesize_page_with_timings(
     *,
     page_text: str,
@@ -643,6 +726,18 @@ def synthesize_page_with_timings(
     resolved_voice_name = str(voice_name or _TTS_VOICES["de"]).strip() or _TTS_VOICES["de"]
 
     _enforce_tts_monthly_budget(_estimate_reader_page_tts_budget_chars(page_text), provider=budget_provider)
+
+    # Chirp / Chirp3-HD are plain-text-only voices — they reject SSML, so timepointing
+    # (word <mark>s) isn't available. Synthesize from plain text and interpolate word
+    # timings across the measured duration so the reader still highlights approximately.
+    if "chirp" in resolved_voice_name.lower():
+        return _synthesize_page_plaintext_with_timings(
+            page_text=page_text,
+            words=words,
+            lang_code=lang_code,
+            voice_name=resolved_voice_name,
+            speaking_rate=float(speaking_rate),
+        )
 
     tts_client = _get_tts_beta_client()
     voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=resolved_voice_name)
