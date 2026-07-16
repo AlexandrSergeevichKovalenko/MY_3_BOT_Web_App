@@ -29679,6 +29679,9 @@ function AppInner() {
       el.style.top = `${nextTop}px`;
       el.style.bottom = 'auto';
       el.style.transform = 'none';
+      // The user has taken manual control of the position — stop the keyboard auto-lift from
+      // yanking the widget back to the top (it fought the drag and made it "jump away").
+      drag.moved = true;
     };
     const endDrag = () => {
       translationDictDragRef.current.dragging = false;
@@ -29693,6 +29696,10 @@ function AppInner() {
     const positionWidgetAboveKeyboard = () => {
       const el = translationDictWidgetRef.current;
       if (!el) return;
+      // Don't reposition while the user is dragging the widget, or after they've moved it —
+      // the visualViewport listeners would otherwise snap it back to the top and fight the drag.
+      const drag = translationDictDragRef.current;
+      if (drag?.dragging || drag?.moved) return;
       const vv = typeof window !== 'undefined' ? window.visualViewport : null;
       const layoutH = (typeof window !== 'undefined' && window.innerHeight) || 0;
       // visualViewport.height is the space above the keyboard, BUT in a standalone iOS PWA it
@@ -29716,6 +29723,8 @@ function AppInner() {
       el.style.maxHeight = `${Math.max(240, availHeight - 20)}px`;
     };
     const liftWidgetForKeyboard = () => {
+      // Fresh focus → allow the auto-lift again (clears any "user moved it" latch from before).
+      if (translationDictDragRef.current) translationDictDragRef.current.moved = false;
       // Run now and again after the keyboard has animated in (visualViewport settles late).
       positionWidgetAboveKeyboard();
       const t1 = window.setTimeout(positionWidgetAboveKeyboard, 120);
