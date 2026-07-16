@@ -6820,6 +6820,7 @@ function AppInner() {
   const moviesRef = useRef(null);
   const youtubeSubtitlesRef = useRef(null);
   const youtubePlayerRef = useRef(null);
+  const youtubePlayerLoadedIdRef = useRef(''); // videoId currently loaded into the live YT.Player
   const youtubePausedBySelectionRef = useRef(false);
   const youtubePlayerShellRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
@@ -30604,6 +30605,22 @@ function AppInner() {
     };
   }, [syncYoutubeResumeState]);
 
+  // Warm the YouTube IFrame API at startup so window.YT is ready BEFORE the user ever
+  // taps into the YouTube section. Cold-loading the API over mobile data is exactly why
+  // the first entry showed an empty/black frame and only the second (cached) entry worked.
+  useEffect(() => {
+    if (window.YT && window.YT.Player) return;
+    if (document.querySelector('script[data-youtube-iframe]')) return;
+    const script = document.createElement('script');
+    script.src = 'https://www.youtube.com/iframe_api';
+    script.async = true;
+    script.dataset.youtubeIframe = '1';
+    if (typeof window.onYouTubeIframeAPIReady !== 'function') {
+      window.onYouTubeIframeAPIReady = () => { /* API ready; player effect will pick it up */ };
+    }
+    document.body.appendChild(script);
+  }, []);
+
   useEffect(() => {
     if (!youtubeId) {
       setYoutubePlayerReady(false);
@@ -30620,6 +30637,7 @@ function AppInner() {
         youtubePlayerRef.current.destroy();
         youtubePlayerRef.current = null;
       }
+      youtubePlayerLoadedIdRef.current = '';
       return;
     }
     if (!youtubeSectionVisible) {
@@ -30650,14 +30668,58 @@ function AppInner() {
       document.body.appendChild(script);
     });
 
+    // A live player already showing this exact video — nothing to do (avoids a
+    // destroy→recreate churn that leaves a black frame).
+    if (
+      youtubePlayerRef.current
+      && youtubePlayerLoadedIdRef.current === youtubeId
+      && typeof youtubePlayerRef.current.getPlayerState === 'function'
+    ) {
+      return;
+    }
+
+    // A live player showing a DIFFERENT video — swap in place instead of tearing
+    // the iframe down and rebuilding it (rebuild is what flakes to black).
+    // cueVideoById loads the thumbnail without auto-playing (matches the paused start).
+    if (
+      youtubePlayerRef.current
+      && typeof youtubePlayerRef.current.cueVideoById === 'function'
+    ) {
+      try {
+        youtubePlayerRef.current.cueVideoById(youtubeId);
+        youtubePlayerLoadedIdRef.current = youtubeId;
+        youtubeResumeAppliedForVideoRef.current = '';
+      } catch (_e) {
+        // fall through to a full rebuild below
+        try { youtubePlayerRef.current.destroy?.(); } catch (_err) { /* ignore */ }
+        youtubePlayerRef.current = null;
+      }
+      if (youtubePlayerRef.current) return;
+    }
+
     ensureApiReady().then(() => {
       if (!window.YT || !window.YT.Player) return;
+      if (!youtubeSectionVisible) return; // user already navigated away while the API loaded
+      // Another async run already built the player for this video — don't double-create.
+      // (new YT.Player() assigns the ref synchronously, so a concurrent .then sees it.)
+      if (youtubePlayerRef.current && youtubePlayerLoadedIdRef.current === youtubeId) return;
       const hostNode = document.getElementById('youtube-player');
       if (!hostNode) return;
       if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
         try { youtubePlayerRef.current.destroy(); } catch (_e) { /* stale player */ }
+        youtubePlayerRef.current = null;
       }
-      youtubePlayerRef.current = new window.YT.Player(hostNode, {
+      // Mount into a FRESH throwaway child, never the React-owned #youtube-player node.
+      // YT.Player replaces the element it's handed with an <iframe>; if that element is
+      // React's own div, a later render reconciles against a node React no longer owns and
+      // the iframe is orphaned → black frame. A disposable inner div keeps React's node intact.
+      hostNode.innerHTML = '';
+      const mountNode = document.createElement('div');
+      mountNode.style.width = '100%';
+      mountNode.style.height = '100%';
+      hostNode.appendChild(mountNode);
+      youtubePlayerLoadedIdRef.current = youtubeId;
+      youtubePlayerRef.current = new window.YT.Player(mountNode, {
         videoId: youtubeId,
         playerVars: {
           rel: 0,
@@ -33706,13 +33768,20 @@ function AppInner() {
 
                   {skillTrainingLoading && (
                     <div className="skill-training-status-block" role="status" aria-live="polite">
-                      <div className="skill-training-status-row">
-                        <span className="skill-training-status-indicator" aria-hidden="true" />
-                        <span>{tr('Обновляем...', 'Aktualisieren...')}</span>
+                      <div className="skill-training-status-head">
+                        <span className="skill-training-spinner" aria-hidden="true" />
+                        <span className="skill-training-status-title">
+                          {tr('Готовим тренировку навыка…', 'Skill-Training wird vorbereitet…')}
+                        </span>
                       </div>
-                      <div className="skill-training-status-row">
-                        <span className="skill-training-status-indicator is-subtle" aria-hidden="true" />
-                        <span>{tr('Готовим тренировку навыка...', 'Skill-Training wird vorbereitet...')}</span>
+                      <div className="skill-training-status-bar" aria-hidden="true">
+                        <span className="skill-training-status-bar-fill" />
+                      </div>
+                      <div className="skill-training-status-hint">
+                        {tr(
+                          'Подбираем теорию, примеры и упражнения под твои ошибки. Это займёт несколько секунд — можно подождать здесь.',
+                          'Wir stellen Theorie, Beispiele und Übungen zu deinen Fehlern zusammen. Das dauert ein paar Sekunden — du kannst hier warten.',
+                        )}
                       </div>
                     </div>
                   )}

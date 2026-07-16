@@ -13415,6 +13415,8 @@ body:has(.webapp-page.is-theme-light),
   box-shadow: 0 25px 50px rgba(0, 0, 0, 0.45);
   display: grid;
   gap: 16px;
+  /* Wider useful area: halve the horizontal padding (24 → 12) while keeping vertical rhythm. */
+  padding: 24px 12px;
 }
 
 .skill-training-top-card {
@@ -13490,45 +13492,81 @@ body:has(.webapp-page.is-theme-light),
 
 .skill-training-status-block {
   display: grid;
-  gap: 8px;
+  gap: 12px;
   padding: 16px;
   border-radius: 20px;
   border: 1px solid #334155;
   background: #0b1220;
 }
 
-.skill-training-status-row {
+.skill-training-status-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  color: #94a3b8;
-  font-size: 14px;
-  line-height: 1.4;
+  gap: 12px;
 }
 
-.skill-training-status-indicator {
-  width: 10px;
-  height: 10px;
+.skill-training-spinner {
+  width: 22px;
+  height: 22px;
   border-radius: 999px;
-  background: #2563eb;
+  border: 2.5px solid rgba(148, 163, 184, 0.28);
+  border-top-color: #2563eb;
   flex: 0 0 auto;
-  animation: skill-training-pulse 1.1s ease-in-out infinite;
+  animation: skill-training-spin 0.8s linear infinite;
 }
 
-.skill-training-status-indicator.is-subtle {
-  background: #64748b;
-  animation-duration: 1.6s;
+.skill-training-status-title {
+  color: #e2e8f0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
 }
 
-@keyframes skill-training-pulse {
-  0%, 100% {
-    opacity: 0.45;
-    transform: scale(0.9);
+.skill-training-status-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  overflow: hidden;
+}
+
+.skill-training-status-bar-fill {
+  position: absolute;
+  top: 0;
+  left: -40%;
+  height: 100%;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0), #2563eb, rgba(37, 99, 235, 0));
+  animation: skill-training-bar 1.3s ease-in-out infinite;
+}
+
+.skill-training-status-hint {
+  color: #94a3b8;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@keyframes skill-training-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes skill-training-bar {
+  0% {
+    left: -40%;
   }
 
-  50% {
-    opacity: 1;
-    transform: scale(1);
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skill-training-spinner,
+  .skill-training-status-bar-fill {
+    animation-duration: 2.6s;
   }
 }
 
@@ -13636,7 +13674,7 @@ body:has(.webapp-page.is-theme-light),
 }
 
 .skill-training-section .theory-focus-line {
-  padding: 14px 16px;
+  padding: 14px 8px;
   border: 1px solid #334155;
   border-radius: 20px;
   background: #0b1220;
@@ -13658,7 +13696,8 @@ body:has(.webapp-page.is-theme-light),
 .skill-training-section .theory-feedback {
   border: 1px solid #334155;
   border-radius: 20px;
-  padding: 16px;
+  /* Wider useful area: halve the horizontal padding (16 → 8). */
+  padding: 16px 8px;
   background: #0b1220;
   box-shadow: none;
   gap: 12px;
@@ -13833,7 +13872,7 @@ body:has(.webapp-page.is-theme-light),
   .skill-training-section .theory-resources,
   .skill-training-section .theory-practice-block,
   .skill-training-section .theory-feedback {
-    padding: 14px;
+    padding: 14px 8px;
     border-radius: 18px;
   }
 }
@@ -13887,8 +13926,8 @@ body:has(.webapp-page.is-theme-light),
     padding: 14px;
   }
 
-  .skill-training-status-row {
-    font-size: 13px;
+  .skill-training-status-title {
+    font-size: 14px;
   }
 }
 
@@ -25717,16 +25756,25 @@ body.worldnews-active .webapp-topbar {
   background: #fff8ee;
 }
 
-.webapp-page.is-theme-light .skill-training-status-row {
+.webapp-page.is-theme-light .skill-training-status-title {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .skill-training-status-hint {
   color: #5a4a39;
 }
 
-.webapp-page.is-theme-light .skill-training-status-indicator {
-  background: #cf9d63;
+.webapp-page.is-theme-light .skill-training-spinner {
+  border-color: rgba(155, 128, 97, 0.32);
+  border-top-color: #cf7a1f;
 }
 
-.webapp-page.is-theme-light .skill-training-status-indicator.is-subtle {
-  background: #9b8061;
+.webapp-page.is-theme-light .skill-training-status-bar {
+  background: rgba(155, 128, 97, 0.22);
+}
+
+.webapp-page.is-theme-light .skill-training-status-bar-fill {
+  background: linear-gradient(90deg, rgba(207, 122, 31, 0), #cf7a1f, rgba(207, 122, 31, 0));
 }
 
 .webapp-page.is-theme-light .skill-train-status-badge.is-progress {
