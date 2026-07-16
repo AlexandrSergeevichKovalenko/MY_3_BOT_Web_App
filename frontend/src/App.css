@@ -16437,15 +16437,12 @@ body.worldnews-active .webapp-topbar {
 
 /* ── Draggable scrubber / progress bar (планшет/браузер; телефон не трогаем) ── */
 .youtube-scrubber {
-  display: none;
+  display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
   max-width: 640px;
   margin: 0 auto;
-}
-@media (min-width: 700px) {
-  .youtube-scrubber { display: flex; }
 }
 
 .youtube-scrubber-time {

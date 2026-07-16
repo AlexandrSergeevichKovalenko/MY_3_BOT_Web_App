@@ -27693,8 +27693,11 @@ function AppInner() {
         className={`youtube-sentence-jump-bar ${inline ? 'is-inline' : 'is-floating'}`}
         aria-label={tr('Навигация по предложениям', 'Navigation zwischen Sätzen')}
       >
-        {canScrub && (
-          <div className="youtube-scrubber">
+        {youtubeId && (
+          // Always show the seek bar while a video is open. Dragging is enabled once the
+          // duration is known (canScrub) — for a freshly cued/paused video YouTube reports
+          // duration only after playback/buffering starts, so it stays disabled briefly.
+          <div className={`youtube-scrubber ${canScrub ? '' : 'is-loading'}`}>
             <span className="youtube-scrubber-time">{formatClock(clampedTime)}</span>
             <div className="youtube-scrubber-track">
               <div className="youtube-scrubber-fill" style={{ width: `${scrubPercent}%` }} />
@@ -27702,9 +27705,10 @@ function AppInner() {
                 type="range"
                 className="youtube-scrubber-input"
                 min={0}
-                max={youtubeDuration}
+                max={youtubeDuration > 0 ? youtubeDuration : 1}
                 step="any"
                 value={clampedTime}
+                disabled={!canScrub}
                 onPointerDown={() => { youtubeScrubbingRef.current = true; }}
                 onPointerUp={() => { youtubeScrubbingRef.current = false; }}
                 onPointerCancel={() => { youtubeScrubbingRef.current = false; }}
@@ -27716,7 +27720,7 @@ function AppInner() {
                 aria-label={tr('Перемотка видео', 'Video vorspulen')}
               />
             </div>
-            <span className="youtube-scrubber-time is-total">{formatClock(youtubeDuration)}</span>
+            <span className="youtube-scrubber-time is-total">{youtubeDuration > 0 ? formatClock(youtubeDuration) : '–:–'}</span>
           </div>
         )}
         <div className="youtube-transport-buttons">
