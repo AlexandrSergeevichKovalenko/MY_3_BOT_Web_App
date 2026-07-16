@@ -3937,6 +3937,12 @@ FLASHCARD_RECENT_SEEN_HOURS = max(1, _env_int("FLASHCARD_RECENT_SEEN_HOURS", 24)
 # Used only if billing ledger stores events in USD and caps are enforced in EUR.
 FX_USD_TO_EUR = _env_decimal("FX_USD_TO_EUR", "0.92") or Decimal("0.92")
 TRIAL_POLICY_DAYS = max(0, _env_int("TRIAL_DAYS", 3))
+# Everyone gets a one-time N-day Pro trial on first Mini-App open — Pro features EXCEPT
+# reader book-narration audio, which is always a separate per-book purchase. Granted via
+# bt_3_pro_grants (reason='welcome_trial'), so it flows through the existing earned-Pro
+# entitlement path and self-expires. Once per lifetime.
+WELCOME_TRIAL_DAYS = max(0, _env_int("WELCOME_TRIAL_DAYS", 7))
+WELCOME_TRIAL_REASON = "welcome_trial"
 TRIAL_POLICY_TZ = "Europe/Vienna"
 # Google's WaveNet/Neural2/Polyglot free tier is ~1M chars/mo; hold the guard at 900k
 # so it trips with a safety margin BELOW Google's real free line (our counter lags the
@@ -17778,6 +17784,80 @@ def grant_pro_days(user_id: int, days: int = 1, reason: str = "streak") -> bool:
     except Exception:
         logging.warning("grant_pro_days failed user=%s", user_id, exc_info=True)
         return False
+
+
+def get_active_pro_grant_detail(user_id: int):
+    """(granted_until, reason) of the latest still-active earned Pro grant, or (None, None).
+    Lets resolve_entitlement distinguish a welcome trial from a DAU/streak reward."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT granted_until, reason FROM bt_3_pro_grants "
+                            "WHERE user_id=%s AND granted_until > NOW() "
+                            "ORDER BY granted_until DESC LIMIT 1;", (int(user_id),))
+                r = cur.fetchone()
+        return (r[0], str(r[1] or "")) if r else (None, None)
+    except Exception:
+        return (None, None)
+
+
+def has_had_welcome_trial(user_id: int) -> bool:
+    """True if this user has EVER been granted the one-time welcome trial (active or past)."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM bt_3_pro_grants WHERE user_id=%s AND reason=%s LIMIT 1;",
+                            (int(user_id), WELCOME_TRIAL_REASON))
+                return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def grant_welcome_trial_once(user_id: int, days: int = WELCOME_TRIAL_DAYS) -> dict:
+    """One-time N-day Pro trial for a user (Pro EXCEPT book-narration audio, which stays a
+    per-book purchase). Idempotent per lifetime via the 'welcome_trial' reason marker — a
+    concurrent double-open can't double-grant (INSERT ... WHERE NOT EXISTS is atomic).
+    Returns {granted: bool, until: iso|None, days}. `granted` is True only when NEWLY given."""
+    if int(days) <= 0:
+        return {"granted": False, "until": None, "days": 0}
+    # Don't burn a paying user's one-time trial while they're already Pro — keep it for
+    # when they're actually Free. (Also avoids relabeling a paid sub as a trial on read.)
+    try:
+        sub = get_user_subscription(int(user_id))
+        if sub:
+            _st = _normalize_subscription_status(sub.get("status"))
+            _plan = str(sub.get("plan_code") or "free").strip().lower()
+            if _plan != "free" and _st in ("active", "trialing"):
+                return {"granted": False, "until": None, "days": int(days), "skipped": "already_pro"}
+    except Exception:
+        pass
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO bt_3_pro_grants (user_id, granted_until, reason)
+                    SELECT %s, NOW() + (%s || ' days')::interval, %s
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM bt_3_pro_grants WHERE user_id=%s AND reason=%s
+                    )
+                    RETURNING granted_until;
+                    """,
+                    (int(user_id), int(days), WELCOME_TRIAL_REASON, int(user_id), WELCOME_TRIAL_REASON),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if row:
+            _bust_entitlement_cache(int(user_id))  # user is now Pro → re-resolve next request
+            until = row[0]
+            return {"granted": True, "until": until.isoformat() if until else None, "days": int(days)}
+        return {"granted": False, "until": None, "days": int(days)}
+    except Exception:
+        logging.warning("grant_welcome_trial_once failed user=%s", user_id, exc_info=True)
+        return {"granted": False, "until": None, "days": int(days)}
 
 
 def get_user_streak(user_id: int) -> dict:
@@ -35192,14 +35272,22 @@ def resolve_entitlement(
         if status == "trialing":
             source_of_entitlement = "legacy_free_trial"
 
-    # Earned Pro grant (DAU reward, Этап 4) — honest earned access; beats the denylist.
+    # Earned Pro grant (DAU reward Этап 4, or the one-time welcome trial) — honest earned
+    # access; beats the denylist. The reason distinguishes the welcome trial for the UI.
     try:
-        _earned_until = get_active_pro_grant(int(user_id))
+        _earned_until, _earned_reason = get_active_pro_grant_detail(int(user_id))
     except Exception:
-        _earned_until = None
+        _earned_until, _earned_reason = (None, None)
     if _earned_until is not None:
+        # A real paid subscription keeps its own source/label — the grant just banks extra
+        # days beyond the paid period. Only let the grant BE the source when it's what makes
+        # the user Pro (i.e. they'd otherwise be Free), so a payer never shows a 🎁 trial.
+        _was_paid_pro = effective_mode == "pro" and source_of_entitlement == "paid_subscription"
         effective_mode = "pro"
-        source_of_entitlement = "earned_grant"
+        if not _was_paid_pro:
+            source_of_entitlement = (
+                "welcome_trial" if _earned_reason == WELCOME_TRIAL_REASON else "earned_grant"
+            )
 
     # Admin denylist: block the SELF-SERVE subscription path (incl. Stripe TEST-mode
     # re-subscribes) — but NOT Pro the user actually EARNED above.
@@ -35232,6 +35320,15 @@ def resolve_entitlement(
         else str(free_plan.get("name") or "Free")
     )
 
+    # Welcome trial: surface its end date as trial_ends_at (the subscription row has none)
+    # so the UI shows a "Pro-триал до …" countdown, and flag it so we can badge it.
+    is_welcome_trial = source_of_entitlement == "welcome_trial"
+    if is_welcome_trial and trial_ends_at_dt is None and _earned_until is not None:
+        try:
+            trial_ends_at_dt = _to_aware_datetime(_earned_until)
+        except Exception:
+            pass
+
     result = {
         "user_id": int(user_id),
         "plan_code": effective_plan_code,
@@ -35240,6 +35337,7 @@ def resolve_entitlement(
         "trial_ends_at": trial_ends_at_dt.isoformat() if trial_ends_at_dt else None,
         "effective_mode": effective_mode,
         "source_of_entitlement": source_of_entitlement,
+        "is_welcome_trial": bool(is_welcome_trial),
         "cap_eur": float(cap_eur) if cap_eur is not None else None,
         "reset_at": _next_local_midnight_iso(now_utc, tz=tz),
     }

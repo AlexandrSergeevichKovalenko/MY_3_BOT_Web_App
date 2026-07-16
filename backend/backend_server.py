@@ -502,6 +502,7 @@ from backend.database import (
     set_subscription_from_stripe,
     try_mark_stripe_event_processed,
     resolve_entitlement,
+    grant_welcome_trial_once,
     enforce_daily_cost_cap,
     enforce_feature_limit,
     get_user_provider_units_today,
@@ -25184,10 +25185,17 @@ def bootstrap_webapp_session():
     parsed = _parse_telegram_init_data(init_data)
     starter_dictionary = None
     translation_session = None
+    welcome_trial = None
     try:
         parsed_user = parsed.get("user") if isinstance(parsed.get("user"), dict) else {}
         parsed_user_id = _safe_int(parsed_user.get("id"))
         if parsed_user_id is not None and parsed_user_id > 0:
+            # One-time 7-day Pro trial for everyone (Pro minus book-narration audio) on first
+            # Mini-App open. Idempotent per lifetime — a returning user just gets granted=False.
+            try:
+                welcome_trial = grant_welcome_trial_once(int(parsed_user_id))
+            except Exception:
+                logging.warning("welcome trial grant failed user=%s", parsed_user_id, exc_info=True)
             starter_dictionary = _build_starter_dictionary_offer(user_id=int(parsed_user_id))
             session_projection_payload, _session_lookup_mode = _load_session_presence_projection_with_source(int(parsed_user_id))
             if isinstance(session_projection_payload, dict):
@@ -25205,6 +25213,7 @@ def bootstrap_webapp_session():
             **parsed,
             "starter_dictionary": starter_dictionary,
             "translation_session": translation_session,
+            "welcome_trial": welcome_trial,
         }
     )
 
@@ -30983,6 +30992,7 @@ def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]
         "effective_mode": effective_mode,
         "is_sponsor": bool(sponsor_flag),
         "sponsor_tier": sponsor_tier,
+        "is_welcome_trial": bool(entitlement.get("is_welcome_trial")),
         "trial_ends_at": entitlement.get("trial_ends_at"),
         "current_period_end": subscription.get("current_period_end"),
         "spent_today_eur": float(round(spent_today, 6)),

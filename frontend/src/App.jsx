@@ -6657,6 +6657,9 @@ function AppInner() {
   const [billingStatusError, setBillingStatusError] = useState('');
   const [billingStatus, setBillingStatus] = useState(null);
   const billingStatusPrefetchStartedRef = useRef(false);
+  // One-time 7-day Pro welcome trial, granted server-side on first bootstrap.
+  const [welcomeTrialGrant, setWelcomeTrialGrant] = useState(null); // { granted, until, days }
+  const welcomeTrialShownRef = useRef(false);
   const [billingPlansLoading, setBillingPlansLoading] = useState(false);
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
@@ -17698,6 +17701,9 @@ function AppInner() {
         const starterOffer = normalizeStarterDictionaryOffer(data?.starter_dictionary);
         setStarterDictionaryOffer(starterOffer);
         setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
+        if (data?.welcome_trial?.granted) {
+          setWelcomeTrialGrant(data.welcome_trial);
+        }
         // Keep the cold-start landing view on the home dashboard.
         // Translations should hydrate only after the user explicitly opens that section
         // or via an intentional deep link/start_param. This avoids paying the sentence
@@ -17719,6 +17725,29 @@ function AppInner() {
       cancelled = true;
     };
   }, [fetchWithTimeout, flashcardsOnly, handleInitDataAuthFailure, initData, isInitDataAuthFailureMessage, isWebAppMode, normalizeStarterDictionaryOffer, readApiError, telegramApp, tr]);
+
+  // Celebrate the one-time 7-day Pro welcome trial. Wait until onboarding is done so we
+  // don't interrupt the wizard (new users see plans there; the entitlement is already live).
+  useEffect(() => {
+    if (!welcomeTrialGrant?.granted || welcomeTrialShownRef.current || onboardingOpen) return;
+    welcomeTrialShownRef.current = true;
+    const days = Number(welcomeTrialGrant.days || 7);
+    const title = tr('Тебе открыт Pro', 'Pro freigeschaltet');
+    const message = tr(
+      `На ${days} дней у тебя полный Pro — бесплатно: больше заданий, YouTube-субтитры, переводы и разборы без ограничений. Попробуй всё! (Озвучка книг покупается отдельно, за каждую книгу.)`,
+      `${days} Tage voller Pro — kostenlos: mehr Aufgaben, YouTube-Untertitel, Übersetzungen und Analysen ohne Limit. Probier alles aus! (Buch-Vertonung wird separat je Buch gekauft.)`,
+    );
+    let shownAsPopup = false;
+    try {
+      if (telegramApp?.showPopup) {
+        telegramApp.showPopup({ title, message, buttons: [{ type: 'ok' }] });
+        shownAsPopup = true;
+      }
+    } catch (_e) { /* popup optional */ }
+    if (!shownAsPopup) {
+      try { showAppToast(`🎁 ${title}: ${days} ${tr('дней бесплатно', 'Tage gratis')}`); } catch (_e2) { /* ignore */ }
+    }
+  }, [welcomeTrialGrant, onboardingOpen, telegramApp, tr, showAppToast]);
 
   useEffect(() => {
     invalidateAsyncGuards(
@@ -39797,11 +39826,20 @@ function AppInner() {
                       </div>
                     </div>
 
-                    {billingStatus?.trial_ends_at && (
+                    {billingStatus?.is_welcome_trial && billingStatus?.trial_ends_at ? (
+                      <div className="webapp-success">
+                        🎁 {tr(
+                          'Бесплатный Pro-триал активен до',
+                          'Kostenlose Pro-Testphase aktiv bis',
+                        )}: {new Date(billingStatus.trial_ends_at).toLocaleString()}
+                        {'. '}
+                        {tr('Озвучка книг — отдельно, за каждую книгу.', 'Buch-Vertonung — separat, je Buch.')}
+                      </div>
+                    ) : billingStatus?.trial_ends_at ? (
                       <div className="webapp-muted">
                         {tr('Trial активен до', 'Trial aktiv bis')}: {new Date(billingStatus.trial_ends_at).toLocaleString()}
                       </div>
-                    )}
+                    ) : null}
 
                     <div className="billing-trial-banner">
                       <strong>{tr('Новые пользователи начинают с Free. Платные функции доступны по подписке Pro.', 'Neue Nutzer starten mit Free. Bezahlte Funktionen sind mit Pro-Abo verfügbar.')}</strong>
