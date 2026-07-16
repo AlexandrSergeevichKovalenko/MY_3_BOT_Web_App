@@ -85,6 +85,8 @@ _DEFAULT_RESPONSES_TASKS = {
     "check_translation_multilang",
     "check_translation_story",
     "check_translation_story_arena",
+    "check_translation_with_claude",
+    "check_translation_explanation_multilang",
     "check_story_explanation_core",
     "check_story_explanation_meta",
     "audio_sentence_grammar_explain_multilang",
@@ -1425,6 +1427,71 @@ while adhering strictly to this instruction format and requirements.
 
 **Provide only one word which describes the user's mistake the best. Give back inly one word or short phrase.**
 """,
+"check_translation_with_claude": """
+You are an expert in Russian and German languages, a professional translator, and a German grammar instructor.
+
+Your task is to analyze the student's translation from Russian to German and provide detailed feedback according to the following criteria:
+
+❗️ Important: Do NOT repeat the original sentence or the translation in your response. Only provide conclusions and explanations. LANGUAGE OF CAPTIONS: ENGLISH. LANGUAGE OF EXPLANATIONS: GERMAN.
+
+Analysis Criteria:
+1. Error Identification:
+
+    Identify the main errors and classify each error into one of the following categories:
+
+        Grammar (e.g., noun cases, verb tenses, prepositions, syntax)
+
+        Vocabulary (e.g., incorrect word choice, false friends)
+
+        Style (e.g., formality, clarity, tone)
+
+2. Grammar Explanation:
+
+    Explain why the grammatical structure is incorrect.
+
+    Provide the corrected form.
+
+    If the error concerns verb usage or prepositions, specify the correct form and proper usage.
+
+3. Alternative Sentence Construction:
+
+    Suggest one alternative version of the sentence.
+
+    Note: Only provide the alternative sentence without explanation.
+
+4. Synonyms:
+
+    Suggest up to two synonyms for incorrect or less appropriate words.
+
+    Format: Original Word: …
+    Possible Synonyms: …
+
+🔎 Important Notes:
+Follow the format exactly as specified.
+
+Provide objective, constructive feedback without personal comments.
+
+Avoid introductory or summarizing phrases (e.g., "Here’s my analysis...").
+
+Keep the response clear, concise, and structured.
+
+Provided Information:
+You will receive:
+Original Sentence (in Russian)
+User's Translation (in German)
+
+Response Format (STRICTLY FOLLOW THIS):
+
+Error 1: User fragment: "<exact wrong fragment from user's German translation>"; Issue: <brief description>; Correct fragment: "<correct version of this fragment>"; Rule: <which rule applies and why>.
+Error 2: User fragment: "<exact wrong fragment from user's German translation>"; Issue: <brief description>; Correct fragment: "<correct version of this fragment>"; Rule: <which rule applies and why>.
+Error 3: User fragment: "<exact wrong fragment from user's German translation>"; Issue: <brief description>; Correct fragment: "<correct version of this fragment>"; Rule: <which rule applies and why>.
+Correct Translation: …
+Grammar Explanation:
+Alternative Sentence Construction: …
+Synonyms:
+Original Word: …
+Possible Synonyms: … (maximum two)
+""",
 "check_translation_explanation_structured": """
 You are a professional German teacher and linguist giving feedback on a student's translation. Be precise, pedagogically clear, and kind — like a real teacher explaining to a student.
 
@@ -1482,6 +1549,35 @@ RULES:
 
 Output ONLY valid minified JSON (no markdown, no code fences, no extra text) with EXACTLY this shape:
 {"grammar":[{"part":"...","structure":"...","note":"..."}]}
+""",
+"check_translation_explanation_multilang": """
+You are an expert translation reviewer.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "explanation_language": "ru|en|de|es|it",
+  "original_text": "...",
+  "user_translation": "..."
+}
+
+Task:
+- Analyze mistakes in user_translation against original_text.
+- Keep section labels exactly as below in English.
+- Write explanatory content in explanation_language.
+- Keep corrected translation in target_language.
+
+Output format:
+Error 1: User fragment: "<...>"; Issue: <...>; Correct fragment: "<...>"; Rule: <...>
+Error 2: ...
+Error 3: ...
+Correct Translation: ...
+Grammar Explanation: ...
+Alternative Sentence Construction: ...
+Synonyms:
+Original Word: ...
+Possible Synonyms: ... (maximum two)
 """,
 "audio_sentence_grammar_explain_multilang": """
 You are an expert language teacher who explains grammar in a very detailed, step-by-step way for absolute beginners.
@@ -7523,6 +7619,212 @@ async def run_language_learning_private_question_detailed(payload: dict) -> dict
         payload=payload or {},
         poll_delay_sec=1.0,
     )
+
+
+async def run_translation_explanation(original_text: str, user_translation: str) -> str:
+    task_name = "check_translation_with_claude"
+    system_instruction_key = "check_translation_with_claude"
+
+    user_message = (
+        f'**Original sentence (Russian):** "{original_text}"\n'
+        f'**User\'s translation (German):** "{user_translation}"'
+    )
+
+    response_text = None
+
+    for _ in range(3):
+        try:
+            response_text = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
+            )
+        except Exception:
+            response_text = None
+        if response_text:
+            break
+        await asyncio.sleep(5)
+
+    if not response_text:
+        return "❌ Ошибка: Не удалось обработать ответ от Claude."
+
+    list_of_errors_pattern = re.findall(
+        r'(Error)\s*(\d+)\:*\s*(.+?)(?=\nError\s*\d+\s*:|\nCorrect Translation:|\Z)',
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    correct_translation = re.findall(r'(Correct Translation)\:\s*(.+?)(?:\n|$)', response_text, flags=re.DOTALL)
+    grammar_explanation_pattern = re.findall(
+        r'(Grammar Explanation)\s*\:*\s*\n*(.+?)(?=\n[A-Z][a-zA-Z\s]+:|\Z)',
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    altern_sentence_pattern = re.findall(
+        r'(Alternative Construction|Alternative Sentence Construction)\:*\s*(.+?)(?=Synonyms|$)',
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    synonyms_pattern = re.findall(r'Synonyms\:*\n([\s\S]*?)(?=\Z)', response_text, flags=re.DOTALL | re.IGNORECASE)
+
+    if not list_of_errors_pattern and not correct_translation:
+        return "❌ Ошибка: Не удалось обработать ответ от Claude."
+
+    result_list = [
+        "📥 *Detailed grammar explanation*:\n",
+        f"🟢*Original russian sentence*:\n{original_text}\n",
+        f"🟣*User translation*:\n{user_translation}\n",
+    ]
+
+    for line in list_of_errors_pattern:
+        result_list.append(f"🔴*{line[0]} {line[1]}*: {line[2].strip()}\n")
+
+    for item in correct_translation:
+        result_list.append(f"✅*{item[0]}*:\n➡️ {item[1]}\n")
+
+    for item in grammar_explanation_pattern:
+        result_list.append(f"🟡*{item[0]}*:")
+        grammar_parts = item[1].split("\n")
+        for part in grammar_parts:
+            clean_part = part.strip()
+            if clean_part and clean_part not in ["-", ":"]:
+                result_list.append(f"🔥{clean_part}")
+
+    for item in altern_sentence_pattern:
+        result_list.append(f"\n🔵*{item[0]}*:\n {item[1].strip()}\n")
+
+    if synonyms_pattern:
+        result_list.append("➡️ *Synonyms*:")
+        for synonym_block in synonyms_pattern:
+            synonym_parts = synonym_block.split("\n")
+            for part in synonym_parts:
+                clean_part = part.strip()
+                if clean_part:
+                    result_list.append(f"• {clean_part}")
+
+    return "\n".join(result_list).strip()
+
+
+async def run_translation_explanation_multilang(
+    original_text: str,
+    user_translation: str,
+    source_lang: str,
+    target_lang: str,
+    explanation_lang: str,
+) -> str:
+    task_name = "check_translation_explanation_multilang"
+    system_instruction_key = "check_translation_explanation_multilang"
+
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "explanation_language": (explanation_lang or source_lang or "").strip().lower(),
+        "original_text": original_text,
+        "user_translation": user_translation,
+    }
+    content = (
+        await llm_execute(
+            task_name=task_name,
+            system_instruction_key=system_instruction_key,
+            user_message=json.dumps(payload, ensure_ascii=False),
+            poll_interval_seconds=1.0,
+        )
+    ).strip()
+
+    return content or "❌ Ошибка: Не удалось обработать объяснение."
+
+
+_ALLOWED_EXPLAIN_ERROR_TYPES = {"grammar", "vocabulary", "syntax", "style", "orthography"}
+
+
+def _coerce_structured_explanation(raw: str) -> dict:
+    """Parse the LLM JSON for the teacher-grade explanation into a validated dict.
+    Tolerant of code fences / stray prose; falls back to a minimal shape so the UI
+    never breaks."""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
+        s = re.sub(r"\n?```$", "", s).strip()
+    a, b = s.find("{"), s.rfind("}")
+    data = None
+    if a >= 0 and b > a:
+        try:
+            data = json.loads(s[a:b + 1])
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        return {"summary": (raw or "").strip(), "errors": [], "alternatives": [], "synonyms": []}
+
+    def _str(v) -> str:
+        return str(v or "").strip()
+
+    errors = []
+    for e in (data.get("errors") or [])[:5]:
+        if not isinstance(e, dict):
+            continue
+        etype = _str(e.get("type")).lower()
+        if etype not in _ALLOWED_EXPLAIN_ERROR_TYPES:
+            etype = "grammar"
+        errors.append({
+            "type": etype,
+            "your": _str(e.get("your")),
+            "correct": _str(e.get("correct")),
+            "why": _str(e.get("why")),
+            "rule": _str(e.get("rule")),
+            "example": _str(e.get("example")),
+        })
+    alternatives = []
+    for a_ in (data.get("alternatives") or [])[:2]:
+        if isinstance(a_, dict) and _str(a_.get("variant")):
+            alternatives.append({"variant": _str(a_.get("variant")), "note": _str(a_.get("note"))})
+        elif isinstance(a_, str) and a_.strip():
+            alternatives.append({"variant": a_.strip(), "note": ""})
+    synonyms = []
+    for sy in (data.get("synonyms") or [])[:3]:
+        if not isinstance(sy, dict):
+            continue
+        word = _str(sy.get("word"))
+        options = [_str(o) for o in (sy.get("options") or []) if _str(o)][:3]
+        if word and options:
+            synonyms.append({"word": word, "options": options})
+    return {
+        "summary": _str(data.get("summary")),
+        "errors": errors,
+        "alternatives": alternatives,
+        "synonyms": synonyms,
+    }
+
+
+def _coerce_grammar_explanation(raw: str) -> dict:
+    """Parse the LLM JSON for the correct-sentence grammar walk-through into a validated
+    dict `{"grammar": [{part, structure, note}]}`. Tolerant of code fences / stray prose."""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
+        s = re.sub(r"\n?```$", "", s).strip()
+    a, b = s.find("{"), s.rfind("}")
+    data = None
+    if a >= 0 and b > a:
+        try:
+            data = json.loads(s[a:b + 1])
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        return {"grammar": []}
+
+    def _str(v) -> str:
+        return str(v or "").strip()
+
+    grammar = []
+    for g in (data.get("grammar") or [])[:6]:
+        if not isinstance(g, dict):
+            continue
+        part = _str(g.get("part"))
+        structure = _str(g.get("structure"))
+        note = _str(g.get("note"))
+        if part or structure or note:
+            grammar.append({"part": part, "structure": structure, "note": note})
+    return {"grammar": grammar}
 
 
 async def run_translation_explanation_structured(
