@@ -174,14 +174,15 @@
    │  Scoped to display-mode:standalone so the Telegram view is untouched.    │
    ╰───────────────────────────────────────────────────────────────────────╯ */
 @media (display-mode: standalone) and (max-width: 900px) {
-  /* Cards keep their natural (content-driven) height instead of ballooning;
-     the leftover height is spread as even spacing so they reach the bottom. */
+  /* Tight, fixed spacing between shelves (≈half of before). Cards flex-grow to
+     absorb the leftover height themselves, so they reach the bottom WITHOUT
+     concentrating the slack into the gaps — that gap-concentration was what made
+     the cards visibly jump ("shake") every time --app-height was re-measured. */
   .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelves {
-    justify-content: space-between;
+    gap: clamp(13px, 1.9vh, 18px);
   }
   .webapp-page.is-reader-library .reader-library-mode[data-shelf="overview"] .reader-shelf-card {
-    flex: 0 1 auto;
-    min-height: 0;
+    flex: 1 1 auto;
     gap: clamp(15px, 2.2vh, 22px);
     padding: clamp(15px, 2.1vh, 21px) clamp(16px, 2.2vh, 22px);
     border-radius: clamp(20px, 2.6vh, 26px);
