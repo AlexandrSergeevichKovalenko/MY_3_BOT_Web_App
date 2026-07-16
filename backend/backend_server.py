@@ -31944,7 +31944,7 @@ def get_webapp_analytics_compare():
             ):
                 response_payload = _build_personal_compare_payload_from_summary(
                     user_id=user_id_int,
-                    username=str(user_data.get("username") or "").strip() or None,
+                    username=_extract_display_name(user_data),
                     source_lang=source_lang,
                     target_lang=target_lang,
                     period=period,
