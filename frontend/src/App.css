@@ -17246,7 +17246,22 @@ body.worldnews-active .webapp-topbar {
   }
 
   .youtube-subtitles-block {
+    gap: 3px;
+  }
+
+  /* Тонкая шапка DE/RU: плашка-язык — это только метка, она не должна съедать
+     вертикаль у важных блоков субтитров. Ужимаем её ~в 3 раза, место идёт тексту. */
+  .youtube-subtitles-card-head {
     gap: 8px;
+    min-height: 0;
+  }
+  .youtube-subtitles-card-badge > span,
+  .youtube-subtitles-block-ru .youtube-subtitles-card-head > span {
+    min-height: 0;
+    height: 17px;
+    line-height: 17px;
+    padding: 0 8px;
+    font-size: 10.5px;
   }
 
   .youtube-status-action-btn {
@@ -17288,7 +17303,7 @@ body.worldnews-active .webapp-topbar {
   }
 
   .youtube-subtitles-block .webapp-subtitles-list {
-    max-height: min(44vh, 460px);
+    max-height: min(56vh, 560px);
     padding: 12px 14px;
   }
 
@@ -17298,7 +17313,7 @@ body.worldnews-active .webapp-topbar {
 
   .webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-de .webapp-subtitles-list {
     font-size: clamp(14.5px, 3.95vw, 17.5px);
-    max-height: min(30vh, 300px);
+    max-height: min(40vh, 400px);
     padding: 10px 12px;
   }
 
@@ -17308,7 +17323,7 @@ body.worldnews-active .webapp-topbar {
 
   .webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-ru .webapp-subtitles-list {
     font-size: clamp(14.5px, 3.95vw, 17.5px);
-    max-height: min(28vh, 280px);
+    max-height: min(38vh, 380px);
   }
 
   .youtube-head-settings-btn {
