@@ -51397,7 +51397,8 @@ def reader_audio_page():
         enqueue_result = enqueue_reader_audio_page_job(
             {
                 "job_key": reader_audio_singleflight_key,
-                "user_id": user_id_int,
+                # Public «Классика» → shared owner (0), same as the inline synth + pre-gen.
+                "user_id": int(PUBLIC_LIBRARY_OWNER_ID) if document_is_public else user_id_int,
                 "document_id": document_id_int,
                 "page": page_int,
                 "page_source": page_source,
@@ -51484,8 +51485,14 @@ def reader_audio_page():
     # (No per-user char cap — personal audio is paid per-book, public is free.)
     try:
         try:
+            # Public «Классика» audio is SHARED: key its R2 object + cache row under
+            # PUBLIC_LIBRARY_OWNER_ID (0), never the requesting user. Otherwise an
+            # on-demand synth writes reader-audio-pages/<uid>/... — not shared, missed
+            # by the pre-gen (which uses 0), and reaped by the per-user churn cleanup,
+            # leaving the shared cache row pointing at a deleted object (404 → silence).
+            cache_owner_id = int(PUBLIC_LIBRARY_OWNER_ID) if document_is_public else user_id_int
             ready_payload = _generate_and_cache_reader_audio_page(
-                user_id_int=user_id_int,
+                user_id_int=cache_owner_id,
                 document_id_int=document_id_int,
                 page_int=page_int,
                 page_source=page_source,
