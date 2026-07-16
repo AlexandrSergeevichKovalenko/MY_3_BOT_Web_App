@@ -5604,7 +5604,16 @@ function AppInner() {
       if (isStandalonePwa() && !isEditableFocused() && fullHeight > 0) {
         nextHeight = Math.round(Math.max(fullHeight, visualHeight));
       } else {
-        nextHeight = Math.round(visualHeight > 0 ? visualHeight : fullHeight);
+        let vh = visualHeight > 0 ? visualHeight : fullHeight;
+        // Standalone iOS PWAs sometimes report a BOGUS tiny visualViewport.height when the
+        // keyboard opens (a real keyboard never leaves less than ~a third of the screen). Left
+        // as-is it collapses --app-height, which shrinks .webapp-page and CLIPS fixed overlays
+        // anchored to it (the floating dictionary showed only its header). Floor it so a
+        // clearly-bogus reading can't crush the layout.
+        if (isEditableFocused() && fullHeight > 0 && vh < fullHeight * 0.35) {
+          vh = Math.round(fullHeight * 0.5);
+        }
+        nextHeight = Math.round(vh);
       }
       if (nextHeight > 0) {
         rootStyle?.setProperty('--app-height', `${nextHeight}px`);
@@ -29717,7 +29726,7 @@ function AppInner() {
           <div className="yt-dict-drag-dots" aria-hidden="true">
             {[0, 1, 2, 3, 4, 5].map((item) => <span key={item} />)}
           </div>
-          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')} <span style={{ opacity: 0.5, fontSize: '9px' }}>v7</span></span>
+          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')} <span style={{ opacity: 0.5, fontSize: '9px' }}>v8</span></span>
           <button
             type="button"
             className="translation-dict-widget-close"
