@@ -9443,7 +9443,7 @@ def ensure_webapp_tables() -> None:
                 ON plan_limits (plan_code, is_active, period);
             """)
             free_feel_word_daily = _env_decimal("FREE_FEEL_WORD_DAILY_LIMIT", "3")
-            free_skill_training_daily = _env_decimal("FREE_SKILL_TRAINING_DAILY_LIMIT", "1")
+            free_skill_training_daily = _env_decimal("FREE_SKILL_TRAINING_DAILY_LIMIT", "0")
             free_translation_daily_sets = _env_decimal("FREE_TRANSLATION_DAILY_SETS_LIMIT", "1")
             free_numdict_practice_daily = _env_decimal("NUMDICT_PRACTICE_FREE_LIMIT", "3")
             plan_limit_seed_rows: list[tuple] = []
@@ -34357,7 +34357,8 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
     },
     "shortcut_forwarded_message_daily": {
         "title": "Shortcut и пересланные сообщения",
-        "free_limit": 15,
+        # Free taster: 1 forwarded message/day (just enough to see how word-capture works).
+        "free_limit": 1,
         "reset_policy": "daily_europe_vienna",
     },
     "dictionary_openai_explanation_daily": {
