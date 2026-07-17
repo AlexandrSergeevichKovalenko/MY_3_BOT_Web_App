@@ -1012,7 +1012,7 @@ def _user_send_budget(user_id: int, *, is_pro: bool, active_recent: set | None,
 
 
 # Short-TTL memo so tier-filtering doesn't hit the DB once per recipient per send.
-# Honors the PRO_DENYLIST (is_user_pro → resolve_entitlement) within the TTL window.
+# Reflects is_user_pro → resolve_entitlement within the TTL window.
 _PRO_STATUS_CACHE: dict[int, tuple[bool, float]] = {}
 _PRO_STATUS_TTL_SECONDS = 600.0
 
@@ -3345,7 +3345,7 @@ async def _admin_shortcut_reset_command(update: Update, context: CallbackContext
 
 async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> None:
     """/admin_grant_pro <user_id> [days] — grant earned Pro now + show is_user_pro
-    flip (verifies the grant AND the denylist bypass)."""
+    flip (verifies the earned-grant path)."""
     user = update.effective_user; message = update.effective_message
     if not user or not message:
         return
@@ -34761,8 +34761,113 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
             )
         except Exception:
             logging.exception("stars pro grant failed charge=%s", charge_id)
+    elif purpose in ("support_coffee", "support_cheesecake"):
+        # One-time "thank you" donation — no access change, just a sponsor badge + a place on
+        # the wall of thanks. `purpose` IS the tier (kept out of the 128-byte Stars payload).
+        try:
+            from backend.database import record_sponsorship
+            _name = str(getattr(user, "first_name", "") or "").strip() or None
+            record_sponsorship(
+                int(payload.get("user_id") or uid),
+                purpose,
+                amount_minor=int(stars),          # magnitude in Stars (currency XTR)
+                currency="XTR",
+                display_name=_name,
+                # Reuse the UNIQUE checkout-session column as the Stars idempotency key.
+                stripe_checkout_session_id=f"stars_{charge_id}",
+            )
+            _thanks = ("Спасибо за кофе ☕️" if purpose == "support_coffee"
+                       else "Спасибо за кофе и чизкейк ☕️🍰")
+            await msg.reply_text(
+                f"{_thanks} Ты в стене благодарностей — это правда помогает оплачивать серверы. 🙏"
+            )
+        except Exception:
+            logging.exception("stars support grant failed charge=%s", charge_id)
     else:
         logging.warning("stars payment with unknown purpose=%r charge=%s", purpose, charge_id)
+
+
+async def admin_reset_subs_command(update: Update, context: CallbackContext) -> None:
+    """One-time Stripe→Stars reset. Moves every paid (pro) user back to Free (they get a fresh
+    7-day Pro trial on their next Mini-App open), EXCEPT admins and any ids you keep. Dry-run
+    by default — nothing changes until you add `confirm`.
+      /admin_reset_subs                 → dry-run: list current Pro users (id + name)
+      /admin_reset_subs confirm         → reset all except admins
+      /admin_reset_subs confirm 111 222 → reset all except admins + ids 111, 222 (e.g. Alina)"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(getattr(user, "id", None)):
+        await message.reply_text("Только для админа.")
+        return
+
+    from backend.database import (
+        list_active_pro_subscription_user_ids,
+        reset_pro_subscriptions_except,
+        get_display_names_for_users,
+    )
+
+    args = context.args or []
+    confirm = bool(args) and str(args[0]).strip().lower() == "confirm"
+    extra_keep: set[int] = set()
+    for tok in args[1:] if confirm else args:
+        try:
+            extra_keep.add(int(str(tok).strip()))
+        except ValueError:
+            continue
+    admin_ids = {int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0}
+    keep = admin_ids | extra_keep
+
+    pro_ids = await asyncio.to_thread(list_active_pro_subscription_user_ids)
+    names = await asyncio.to_thread(get_display_names_for_users, pro_ids) if pro_ids else {}
+
+    def _fmt(uid: int) -> str:
+        nm = names.get(int(uid)) or "—"
+        tags = []
+        if uid in admin_ids:
+            tags.append("админ")
+        if uid in extra_keep:
+            tags.append("оставить")
+        tag = f" [{', '.join(tags)}]" if tags else ""
+        return f"• {uid} — {nm}{tag}"
+
+    async def _send_lines(lines: list[str]) -> None:
+        buf = ""
+        for ln in lines:
+            if len(buf) + len(ln) + 1 > 3500:
+                if buf:
+                    await message.reply_text(buf)
+                buf = ln
+            else:
+                buf = f"{buf}\n{ln}" if buf else ln
+        if buf:
+            await message.reply_text(buf)
+
+    targets = [u for u in pro_ids if u not in keep]
+
+    if not confirm:
+        head = [
+            f"Сейчас на Pro: {len(pro_ids)}. Оставим: {len(pro_ids) - len(targets)}, "
+            f"сбросим: {len(targets)}.",
+            "",
+        ]
+        footer = [
+            "",
+            "Ничего не изменено (сухой прогон).",
+            "Сбросить всех КРОМЕ админов:  /admin_reset_subs confirm",
+            "Дополнительно оставить кого-то (напр. Алину):  /admin_reset_subs confirm <id> <id>",
+        ]
+        await _send_lines(head + [_fmt(u) for u in pro_ids] + footer)
+        return
+
+    res = await asyncio.to_thread(reset_pro_subscriptions_except, keep)
+    reset_ids = res.get("reset") or []
+    kept_extra = sorted(extra_keep) if extra_keep else "нет"
+    await message.reply_text(
+        f"✅ Готово. Сброшено на Free: {len(reset_ids)}. Оставлены: админы + {kept_extra}.\n"
+        f"Сброшенные получат Free + 7-дневный Pro-trial при следующем открытии Mini-App."
+    )
 
 
 async def admin_crossword_revive_command(update: Update, context: CallbackContext) -> None:
@@ -37289,6 +37394,7 @@ def main():
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
+    application.add_handler(CommandHandler("admin_reset_subs", admin_reset_subs_command))
     application.add_handler(CommandHandler("reader_audio_setlimit", _admin_reader_audio_setlimit_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))

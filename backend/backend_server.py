@@ -16658,6 +16658,21 @@ def pro_price_stars() -> int:
     return eur_minor_to_stars(PRO_PRICE_EUR_MINOR)
 
 
+# One-time "thank you" donations (coffee / cheesecake) — sold as one-time Telegram Stars
+# payments now that Stripe is retired. EUR-tunable via env → Stars via the same markup as Pro.
+# These change NOTHING about access — just a sponsor badge + a spot on the wall of thanks.
+SUPPORT_COFFEE_EUR_MINOR = int(os.getenv("SUPPORT_COFFEE_EUR_MINOR") or "200")
+SUPPORT_CHEESECAKE_EUR_MINOR = int(os.getenv("SUPPORT_CHEESECAKE_EUR_MINOR") or "400")
+SUPPORT_TIER_EUR_MINOR = {
+    "support_coffee": SUPPORT_COFFEE_EUR_MINOR,
+    "support_cheesecake": SUPPORT_CHEESECAKE_EUR_MINOR,
+}
+
+
+def support_price_stars(tier: str) -> int:
+    return eur_minor_to_stars(SUPPORT_TIER_EUR_MINOR.get(str(tier or "").strip().lower(), 0))
+
+
 def create_stars_invoice_link(
     *, title: str, description: str, payload_obj: dict, stars: int, subscription_period: int | None = None
 ) -> tuple[str | None, str]:
@@ -51593,9 +51608,13 @@ def reader_audio_stars_invoice():
 
 @app.route("/api/webapp/billing/stars_invoice", methods=["POST"])
 def billing_stars_invoice():
-    """Create a native monthly Telegram Stars subscription invoice for Pro. The Mini
-    App opens it with WebApp.openInvoice; the bot grants Pro on successful_payment and
-    on each auto-renewal. No external browser, no multi-window."""
+    """Create a native Telegram Stars invoice the Mini App opens with WebApp.openInvoice.
+    Two products (Stripe is retired — everything is Stars now):
+      • plan_code='pro' → monthly Stars SUBSCRIPTION; the bot grants Pro on successful_payment
+        and on each auto-renewal.
+      • plan_code='support_coffee' | 'support_cheesecake' → ONE-TIME "thank you" donation; the
+        bot records the sponsor on successful_payment (access is unchanged).
+    No external browser, no multi-window."""
     payload = request.get_json(silent=True) or {}
     init_data = str(payload.get("initData") or "").strip()
     if not init_data or not _telegram_hash_is_valid(init_data):
@@ -51606,20 +51625,35 @@ def billing_stars_invoice():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     user_id_int = int(user_id)
     plan_code = str(payload.get("plan_code") or "pro").strip().lower() or "pro"
-    if plan_code != "pro":
-        return jsonify({"error": "В Stars доступен только Pro", "error_code": "unsupported_plan"}), 400
 
-    stars = pro_price_stars()
-    link, detail = create_stars_invoice_link(
-        title="Pro — подписка",
-        description="Полный доступ: больше заданий, YouTube-субтитры, переводы и разборы. Продление раз в месяц, отмена в любой момент.",
-        payload_obj={"purpose": "pro", "user_id": user_id_int, "plan_code": "pro"},
-        stars=stars,
-        subscription_period=STARS_SUBSCRIPTION_PERIOD_SECONDS,
-    )
+    if plan_code == "pro":
+        stars = pro_price_stars()
+        # Keep the Stars invoice `payload` tiny — Telegram caps it at 128 bytes and the bot
+        # only needs the purpose + who paid (the tier for donations lives in `purpose`).
+        link, detail = create_stars_invoice_link(
+            title="Pro — подписка",
+            description="Полный доступ: больше заданий, YouTube-субтитры, переводы и разборы. Продление раз в месяц, отмена в любой момент.",
+            payload_obj={"purpose": "pro", "user_id": user_id_int},
+            stars=stars,
+            subscription_period=STARS_SUBSCRIPTION_PERIOD_SECONDS,
+        )
+    elif plan_code in SUPPORT_TIER_EUR_MINOR:
+        stars = support_price_stars(plan_code)
+        _title = "Кофе разработчику ☕️" if plan_code == "support_coffee" else "Кофе ☕️ и чизкейк 🍰"
+        _desc = ("Разовое спасибо — доступ не меняется, это помогает оплачивать серверы. "
+                 "Ты получишь бейдж спонсора и место на стене благодарностей.")
+        link, detail = create_stars_invoice_link(
+            title=_title,
+            description=_desc,
+            payload_obj={"purpose": plan_code, "user_id": user_id_int},
+            stars=stars,
+        )
+    else:
+        return jsonify({"error": "Неизвестный тариф", "error_code": "unsupported_plan"}), 400
+
     if not link:
         return jsonify({"error": "Не удалось создать счёт. Попробуйте ещё раз.", "detail": detail}), 502
-    return jsonify({"ok": True, "invoice_link": link, "stars": int(stars), "plan_code": "pro"})
+    return jsonify({"ok": True, "invoice_link": link, "stars": int(stars), "plan_code": plan_code})
 
 
 @app.route("/api/webapp/reader/audio/unlock", methods=["POST"])

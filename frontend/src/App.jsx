@@ -32152,26 +32152,31 @@ function AppInner() {
       setBillingStatusError(initDataMissingMsg);
       return;
     }
-    // Pro is sold ONLY as a native Telegram Stars subscription (Stripe is retired). Stars
-    // can be charged only inside Telegram — so on the standalone PWA / browser (no
-    // openInvoice) we can't pay here; guide the user to open the app inside Telegram.
-    if (String(planCode) !== 'pro') return;
+    // Everything is sold via native Telegram Stars now (Stripe is retired): Pro as a monthly
+    // subscription, coffee/cheesecake as one-time "thank you" donations. Stars can be charged
+    // only inside Telegram — so on the standalone PWA / browser (no openInvoice) we can't pay
+    // here; guide the user to open the app inside Telegram.
+    const code = String(planCode || '').trim().toLowerCase();
+    const isSupport = code === 'support_coffee' || code === 'support_cheesecake';
+    if (code !== 'pro' && !isSupport) return;
     if (!telegramApp?.openInvoice) {
-      // Not inside Telegram (PWA/browser) → Stars can't be charged here. Send the user to
-      // the bot in Telegram, which auto-opens the Pro Stars sheet (?startapp=buypro).
-      try {
-        const r = await fetch('/api/public/tour-info');
-        const d = await r.json().catch(() => ({}));
-        const botUrl = String(d?.bot_url || '').trim();
-        if (botUrl && telegramApp?.openTelegramLink) {
-          telegramApp.openTelegramLink(`${botUrl}?startapp=buypro`);
-          return;
-        }
-        if (botUrl) { window.location.href = `${botUrl}?startapp=buypro`; return; }
-      } catch (_e) { /* fall through to a message */ }
+      if (code === 'pro') {
+        // Not inside Telegram (PWA/browser) → Stars can't be charged here. Send the user to
+        // the bot in Telegram, which auto-opens the Pro Stars sheet (?startapp=buypro).
+        try {
+          const r = await fetch('/api/public/tour-info');
+          const d = await r.json().catch(() => ({}));
+          const botUrl = String(d?.bot_url || '').trim();
+          if (botUrl && telegramApp?.openTelegramLink) {
+            telegramApp.openTelegramLink(`${botUrl}?startapp=buypro`);
+            return;
+          }
+          if (botUrl) { window.location.href = `${botUrl}?startapp=buypro`; return; }
+        } catch (_e) { /* fall through to a message */ }
+      }
       setBillingStatusError(tr(
-        'Оформить Pro можно только в Telegram (оплата звёздами). Открой приложение внутри Telegram и нажми «Оформить Pro».',
-        'Pro gibt es nur in Telegram (Zahlung mit Sternen). Öffne die App in Telegram und tippe auf „Pro holen“.',
+        'Оплата звёздами доступна только в Telegram. Открой приложение внутри Telegram и повтори.',
+        'Zahlung mit Sternen ist nur in Telegram möglich. Öffne die App in Telegram und versuche es erneut.',
       ));
       return;
     }
@@ -32180,7 +32185,7 @@ function AppInner() {
       const resp = await fetch('/api/webapp/billing/stars_invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, plan_code: 'pro' }),
+        body: JSON.stringify({ initData, plan_code: code }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || !data?.invoice_link) {
@@ -32190,13 +32195,19 @@ function AppInner() {
         if (status === 'paid') {
           try {
             telegramApp.showPopup?.({
-              title: tr('Готово', 'Fertig'),
-              message: tr('Pro подключён! Обновляем доступ…', 'Pro aktiv! Zugang wird aktualisiert…'),
+              title: isSupport ? tr('Спасибо!', 'Danke!') : tr('Готово', 'Fertig'),
+              message: isSupport
+                ? tr('Спасибо за поддержку! Ты в стене благодарностей 🙏', 'Danke für die Unterstützung! Du bist an der Dankeswand 🙏')
+                : tr('Pro подключён! Обновляем доступ…', 'Pro aktiv! Zugang wird aktualisiert…'),
               buttons: [{ type: 'ok' }],
             });
           } catch (_e) { /* popup optional */ }
-          // The bot grants Pro server-side on successful_payment (near-instant).
-          setTimeout(() => { void loadBillingStatus(); }, 1500);
+          // The bot fulfils server-side on successful_payment (near-instant): grants Pro, or
+          // records the sponsor for a donation.
+          setTimeout(() => {
+            void loadBillingStatus();
+            if (isSupport) { void loadBillingSponsors(); }
+          }, 1500);
         }
       });
     } catch (error) {

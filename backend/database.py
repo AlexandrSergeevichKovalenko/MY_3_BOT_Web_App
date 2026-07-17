@@ -12573,6 +12573,43 @@ def deactivate_user_subscription(
     return _subscription_row_to_dict(row) if row else None
 
 
+def list_active_pro_subscription_user_ids() -> list[int]:
+    """Every user_id currently on a paid (pro) subscription — for the one-time Stripe→Stars
+    reset. Includes active/trialing/past_due so leftover Stripe TEST-mode subs are caught."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id FROM user_subscriptions
+                WHERE plan_code <> 'free'
+                  AND status IN ('active', 'trialing', 'past_due')
+                ORDER BY user_id;
+                """
+            )
+            return [int(r[0]) for r in (cursor.fetchall() or [])]
+
+
+def reset_pro_subscriptions_except(keep_user_ids: set[int] | list[int] | None) -> dict:
+    """One-time Stripe→Stars migration: force every paid (pro) user EXCEPT keep_user_ids back
+    to Free (status 'canceled', Stripe id cleared) and bust their entitlement cache. They get
+    a fresh 7-day welcome trial on their next Mini-App open (they never consumed one while
+    paid). Idempotent — re-running only touches users still on pro. Returns {reset, kept}."""
+    keep = {int(u) for u in (keep_user_ids or [])}
+    targets = [u for u in list_active_pro_subscription_user_ids() if u not in keep]
+    done: list[int] = []
+    for uid in targets:
+        try:
+            deactivate_user_subscription(
+                user_id=uid, status="canceled", plan_code="free",
+                clear_stripe_subscription_id=True,
+            )
+            _bust_entitlement_cache(uid)
+            done.append(uid)
+        except Exception:
+            logging.warning("reset_pro_subscriptions_except: failed user=%s", uid, exc_info=True)
+    return {"reset": done, "kept": sorted(keep)}
+
+
 def purge_telegram_user_personal_data(
     *,
     user_id: int,
@@ -35529,23 +35566,6 @@ def _get_user_subscription_with_cursor(cursor, user_id: int) -> dict | None:
     return _subscription_row_to_dict(row) if row else None
 
 
-def _pro_denylist() -> set[int]:
-    """Telegram user ids force-kept on Free regardless of ANY subscription — incl.
-    Stripe TEST-mode "subscriptions" where any fake card grants Pro. Set via env
-    PRO_DENYLIST="123,456". Fully reversible: clear the env to restore their Pro."""
-    raw = (os.getenv("PRO_DENYLIST") or "").replace(";", ",").replace(" ", ",")
-    out: set[int] = set()
-    for tok in raw.split(","):
-        tok = tok.strip()
-        if not tok:
-            continue
-        try:
-            out.add(int(tok))
-        except ValueError:
-            continue
-    return out
-
-
 def _bust_entitlement_cache(user_id: int) -> None:
     """Invalidate a user's cached entitlement after any plan-change write (Stripe/grant/bind)."""
     try:
@@ -35653,7 +35673,7 @@ def resolve_entitlement(
             source_of_entitlement = "legacy_free_trial"
 
     # Earned Pro grant (DAU reward Этап 4, or the one-time welcome trial) — honest earned
-    # access; beats the denylist. The reason distinguishes the welcome trial for the UI.
+    # access. The reason distinguishes the welcome trial for the UI.
     try:
         _earned_until, _earned_reason = get_active_pro_grant_detail(int(user_id))
     except Exception:
@@ -35668,12 +35688,6 @@ def resolve_entitlement(
             source_of_entitlement = (
                 "welcome_trial" if _earned_reason == WELCOME_TRIAL_REASON else "earned_grant"
             )
-
-    # Admin denylist: block the SELF-SERVE subscription path (incl. Stripe TEST-mode
-    # re-subscribes) — but NOT Pro the user actually EARNED above.
-    if _earned_until is None and int(user_id) in _pro_denylist():
-        effective_mode = "free"
-        source_of_entitlement = "pro_denylisted"
 
     free_plan = (
         _get_billing_plan_with_cursor(cursor, "free")
