@@ -1157,6 +1157,12 @@ DICTIONARY_COALESCE_STALE_SEC = max(
 )
 DICTIONARY_SHARED_CACHE_ENABLED = str(os.getenv("DICTIONARY_SHARED_CACHE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK = str(os.getenv("DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK") or "0").strip().lower() in {"1", "true", "yes", "on"}
+# When ON, the in-app dictionary consults our bundled DE↔RU dictionaries (FreeDict ~22k →
+# WikDict) BEFORE the CORE GPT call. On a hit we serve the base translation/article/forms
+# instantly and let the SAME background enrichment (GPT) refine — and, if wrong, CORRECT —
+# it, so the cached/saved result stays GPT-quality while ONE core GPT call is saved. Default
+# OFF: it feeds the shared ~10-year cache, so QA a sample of words before arming. DE/RU only.
+DICTIONARY_BASE_BEFORE_GPT_ENABLED = str(os.getenv("DICTIONARY_BASE_BEFORE_GPT_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC = max(
     1.0,
     min(12.0, float((os.getenv("QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC") or "3.5").strip() or "3.5")),
@@ -34443,15 +34449,28 @@ def lookup_webapp_dictionary():
             return jsonify(limit_error), 429
 
         try:
-            core_payload = _run_dictionary_core_lookup_sync(
-                word=word_ru,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                query_source_lang=query_source_lang,
-                query_target_lang=query_target_lang,
-                lookup_lang=lookup_lang,
-            )
-            llm_calls_total = 1
+            base_seed = None
+            if DICTIONARY_BASE_BEFORE_GPT_ENABLED and {query_source_lang, query_target_lang} == {"de", "ru"}:
+                base_seed = _base_dict_core_seed(
+                    word=word_ru,
+                    query_source_lang=query_source_lang,
+                    query_target_lang=query_target_lang,
+                )
+            if base_seed is not None:
+                # Free-dict hit: skip the CORE GPT call. Background enrichment (GPT) still
+                # runs, seeded with the base row, and refines/corrects it before caching.
+                core_payload = base_seed
+                llm_calls_total = 0
+            else:
+                core_payload = _run_dictionary_core_lookup_sync(
+                    word=word_ru,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    query_source_lang=query_source_lang,
+                    query_target_lang=query_target_lang,
+                    lookup_lang=lookup_lang,
+                )
+                llm_calls_total = 1
             mark("llm_main")
             usage_main = core_payload.get("usage")
             gateway_path = str(core_payload.get("gateway_path") or "unknown")
@@ -35403,6 +35422,55 @@ def _build_base_dict_result_from_entry(db_entry: dict, *, query_lang: str = "de"
         "is_base_dict": True,
         "wikt_fetched": bool(db_entry.get("wikt_fetched")),
         "quick_mode": False,
+    }
+
+
+def _base_dict_core_seed(*, word: str, query_source_lang: str, query_target_lang: str) -> dict | None:
+    """Stand in for the CORE GPT dictionary call using our bundled DE↔RU dictionaries
+    (FreeDict → WikDict). Returns a payload shaped EXACTLY like
+    _run_dictionary_core_lookup_sync ({item, raw, direction, usage, gateway_path}) so the
+    caller's enrichment + response path is reused unchanged — or None on a miss. The `raw`
+    carries only fields we can trust from the base row (translation/article/pos/forms);
+    the background GPT enrichment fills the rich fields and may CORRECT the translation."""
+    q = str(word or "").strip()
+    if not q:
+        return None
+    qsl = str(query_source_lang or "").strip().lower()
+    qtl = str(query_target_lang or "").strip().lower()
+    try:
+        if qsl == "ru":
+            entry = lookup_base_dictionary_entry_by_translation(q, "de") or lookup_wiktionary_entry_by_translation(q, "de")
+        else:
+            entry = lookup_base_dictionary_entry(q, "de") or lookup_wiktionary_entry(q, "de")
+    except Exception:
+        logging.debug("base-dict core seed lookup failed word=%r", q, exc_info=True)
+        return None
+    if not entry or not entry.get("translations_ru"):
+        return None
+    item = _build_base_dict_result_from_entry(entry, query_lang=qsl or "de", query_word=q)
+    lemma = str(entry.get("lemma") or "").strip()
+    article = str(entry.get("article") or "").strip()
+    display = f"{article} {lemma}".strip() if article else lemma
+    translations_ru = [t for t in (entry.get("translations_ru") or []) if t]
+    first_ru = translations_ru[0] if translations_ru else ""
+    if qsl == "ru":
+        word_source, word_target = q, display
+    else:
+        word_source, word_target = (display or lemma), first_ru
+    raw = {
+        "detected_language": "source",
+        "word_source": word_source,
+        "word_target": word_target,
+        "part_of_speech": str(entry.get("pos") or "").strip(),
+        "article": article,
+        "forms": entry.get("forms_json") if isinstance(entry.get("forms_json"), dict) else {},
+    }
+    return {
+        "item": item,
+        "raw": raw,
+        "direction": f"{qsl}-{qtl}",
+        "usage": None,
+        "gateway_path": "base_dict",
     }
 
 
