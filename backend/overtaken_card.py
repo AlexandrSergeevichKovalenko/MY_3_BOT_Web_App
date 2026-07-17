@@ -5,7 +5,7 @@ A card sent once when a faster correct answer pushes the user off the lead. The
 *current place* lives on an inline button under the photo and is edited in place
 as the user sinks further (2nd → 3rd → …), so we never spam a new message.
 
-The visual: a random pre-generated Smurf-style "overtaken" background (podium /
+The visual: a random pre-generated Fox-mascot "overtaken" background (podium /
 race), with the overtaker's name + circular Telegram avatar composited on top,
 the specific task label, and the title. If no background has been generated yet
 (see /admin_overtaken_images), it falls back to a soft gradient + a sad blob.
@@ -16,28 +16,31 @@ import io
 import time
 
 from backend.article_quiz_card import _font, _ctext, _vgrad, _glow, W, H
+from backend.mascot_style import mascot_prompt
 
 WHITE = (255, 255, 255)
 
 # Pre-generated background object keys in R2 (filled by the admin generator).
-_OVERTAKEN_BG_KEYS = [f"overtaken/smurf_{i}.png" for i in range(1, 4)]
+_OVERTAKEN_BG_KEYS = [f"overtaken/fox_{i}.png" for i in range(1, 4)]
 
-# Curated gpt-image-1 prompts — brand mascot (cute blue smurf-like) + podium /
-# race humour. NO text/letters (the card draws its own).
+# Curated gpt-image-1 prompts — brand mascot (Fox, see backend/mascot_style.py) +
+# podium / race humour. NO text/letters (the card draws its own).
 OVERTAKEN_IMAGE_PROMPTS = [
-    ("A winners podium scene with two cute friendly blue smurf-like cartoon characters: "
-     "the winner stands on the top step beaming and holding a shiny golden trophy; the "
-     "second character on the lower step looks up with comic, exaggerated envy and a pout. "
-     "Soft 3D Pixar-like render, vibrant playful colors, clean simple background, no text, "
-     "no letters, no numbers, centered composition."),
-    ("Two cute friendly blue smurf-like cartoon runners at a race finish line: one bursts "
-     "triumphantly through a red finish ribbon with arms up, the other is just half a step "
-     "behind, panting and comically surprised. Dynamic motion, humorous, soft 3D Pixar-like "
-     "render, vibrant colors, clean background, no text, no letters, no numbers."),
-    ("A funny cartoon snail race: one cute friendly blue smurf-like character rides a fast "
-     "rocket-snail zooming ahead with a confident grin, while another smurf-like character "
-     "on a slow snail watches in shocked dismay. Soft 3D Pixar-like render, vibrant playful "
-     "colors, clean background, no text, no letters, no numbers."),
+    mascot_prompt(
+        "A winners podium scene with two Fox mascots: the winner stands on the top "
+        "step beaming and holding a shiny golden trophy; the second fox on the lower "
+        "step looks up with comic, exaggerated envy and a pout"
+    ),
+    mascot_prompt(
+        "Two Fox mascots racing at a finish line: one bursts triumphantly through a "
+        "red finish ribbon with both arms up, the other is just half a step behind, "
+        "panting and comically surprised. Dynamic motion, humorous"
+    ),
+    mascot_prompt(
+        "A funny cartoon snail race between two Fox mascots: one rides a fast "
+        "rocket-snail zooming ahead with a confident grin, while the other on a slow "
+        "snail watches in shocked dismay"
+    ),
 ]
 
 # In-process cache of fetched backgrounds (TTL so newly generated ones appear).
@@ -50,7 +53,7 @@ def overtaken_bg_keys() -> list[str]:
 
 
 def pick_overtaken_background() -> bytes | None:
-    """Random pre-generated Smurf background bytes from R2 (cached in-proc, TTL).
+    """Random pre-generated Fox-mascot background bytes from R2 (cached in-proc, TTL).
     Returns None if none generated yet → renderer uses the gradient fallback."""
     import random
     from backend.r2_storage import r2_get_bytes
@@ -95,9 +98,10 @@ def _circle_avatar(avatar_bytes: bytes, size: int):
 
 
 def _sad_character(d, cx, cy, r):
-    """A cute slumped blob with downcast eyes, sad brows and a tear (fallback)."""
-    body = (150, 170, 235)
-    dark = (40, 48, 80)
+    """A cute slumped blob with downcast eyes, sad brows and a tear (fallback).
+    Warm fox-orange to stay on-brand with the Fox mascot backgrounds."""
+    body = (232, 140, 74)
+    dark = (92, 52, 24)
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=body)
     d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 60), width=4)
     eye_dx, eye_dy = int(r * 0.42), int(r * 0.12)

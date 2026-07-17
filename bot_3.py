@@ -26046,7 +26046,7 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
 
 
 async def admin_overtaken_images_command(update: Update, context: CallbackContext) -> None:
-    """Generate the rotating Smurf-style "you were overtaken" background images
+    """Generate the rotating Fox-mascot "you were overtaken" background images
     (podium / race) via gpt-image-1 and store them in R2. Run once; the overtaken
     plaque then picks one at random. /admin_overtaken_images"""
     user = update.effective_user
@@ -26056,7 +26056,7 @@ async def admin_overtaken_images_command(update: Update, context: CallbackContex
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Генерирую смурф-картинки «тебя обошли»…")
+    status_msg = await message.reply_text("Генерирую лис-картинки «тебя обошли»…")
 
     def _gen() -> dict:
         from backend.image_generation_provider import generate_image_bytes
@@ -26085,7 +26085,7 @@ async def admin_overtaken_images_command(update: Update, context: CallbackContex
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
         return
-    text = f"✅ Сгенерировано: {result.get('made')}/{result.get('total')} (R2: overtaken/smurf_*.png)"
+    text = f"✅ Сгенерировано: {result.get('made')}/{result.get('total')} (R2: overtaken/fox_*.png)"
     if result.get("errs"):
         text += "\n🔴 " + "\n".join(result["errs"][:5])
     text += "\n\nКэш фонов обновится в течение ~10 мин (или после рестарта)."
