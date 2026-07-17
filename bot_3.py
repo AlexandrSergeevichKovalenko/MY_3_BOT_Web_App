@@ -34922,6 +34922,20 @@ async def admin_subs_command(update: Update, context: CallbackContext) -> None:
     all_ids = allowed_ids | pro_ids | set(grant_map)
     dnames = await asyncio.to_thread(get_display_names_for_users, list(all_ids)) if all_ids else {}
 
+    # Hide synthetic accounts (load/smoke/phase tests, load-runner, skill fixtures) so the
+    # roster shows only real people. Matched by name/username marker or a negative id.
+    _synth_re = re.compile(r"(load[ _]?test|smoke|phasec|postclaim|timeoutfix|skill_v2)", re.I)
+
+    def _is_synthetic(uid: int) -> bool:
+        if int(uid) < 0:
+            return True
+        blob = f"{allowed_name.get(int(uid), '')} {dnames.get(int(uid), '')}"
+        return bool(_synth_re.search(blob))
+
+    hidden = sum(1 for u in all_ids if _is_synthetic(u))
+    all_ids = {u for u in all_ids if not _is_synthetic(u)}
+    allowed_ids = {u for u in allowed_ids if not _is_synthetic(u)}
+
     _reason_label = {"welcome_trial": "7-дн. триал", "admin_test": "выдан вручную", "streak": "за streak"}
 
     def _nm(uid: int) -> str:
@@ -34936,6 +34950,7 @@ async def admin_subs_command(update: Update, context: CallbackContext) -> None:
 
     lines = [
         f"Пользователей (allowed): {len(allowed_ids)}"
+        + (f"   ⚙️ технических скрыто: {hidden}" if hidden else "")
         + (" ⚠️ показаны первые 500" if len(allowed) >= 500 else ""),
         f"💳 Pro-подписка: {len(paid)}   🎁 триал/грант: {len(granted)}   ⚪ Free: {len(free)}",
         "",
