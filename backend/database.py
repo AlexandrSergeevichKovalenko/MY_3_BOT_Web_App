@@ -17890,6 +17890,28 @@ def get_active_pro_grant_detail(user_id: int):
         return (None, None)
 
 
+def list_active_pro_grant_users() -> list[tuple[int, object, str]]:
+    """Every user with a still-active earned Pro grant (welcome trial / DAU reward / manual):
+    [(user_id, granted_until, reason)], latest grant per user. These are Pro via bt_3_pro_grants
+    (NOT a paid subscription) — untouched by the Stripe→Stars reset."""
+    try:
+        _ensure_dau_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (user_id) user_id, granted_until, reason
+                    FROM bt_3_pro_grants
+                    WHERE granted_until > NOW()
+                    ORDER BY user_id, granted_until DESC;
+                    """
+                )
+                return [(int(r[0]), r[1], str(r[2] or "")) for r in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("list_active_pro_grant_users failed", exc_info=True)
+        return []
+
+
 def has_had_welcome_trial(user_id: int) -> bool:
     """True if this user has EVER been granted the one-time welcome trial (active or past)."""
     try:

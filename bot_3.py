@@ -34804,6 +34804,7 @@ async def admin_reset_subs_command(update: Update, context: CallbackContext) -> 
 
     from backend.database import (
         list_active_pro_subscription_user_ids,
+        list_active_pro_grant_users,
         reset_pro_subscriptions_except,
         get_display_names_for_users,
     )
@@ -34820,7 +34821,15 @@ async def admin_reset_subs_command(update: Update, context: CallbackContext) -> 
     keep = admin_ids | extra_keep
 
     pro_ids = await asyncio.to_thread(list_active_pro_subscription_user_ids)
-    names = await asyncio.to_thread(get_display_names_for_users, pro_ids) if pro_ids else {}
+    grant_rows = await asyncio.to_thread(list_active_pro_grant_users)  # [(uid, until, reason)]
+    all_ids = list({*pro_ids, *[r[0] for r in grant_rows]})
+    names = await asyncio.to_thread(get_display_names_for_users, all_ids) if all_ids else {}
+
+    _reason_label = {
+        "welcome_trial": "7-дн. триал",
+        "admin_test": "выдан вручную",
+        "streak": "за streak",
+    }
 
     def _fmt(uid: int) -> str:
         nm = names.get(int(uid)) or "—"
@@ -34831,6 +34840,13 @@ async def admin_reset_subs_command(update: Update, context: CallbackContext) -> 
             tags.append("оставить")
         tag = f" [{', '.join(tags)}]" if tags else ""
         return f"• {uid} — {nm}{tag}"
+
+    def _fmt_grant(row) -> str:
+        uid, until, reason = row
+        nm = names.get(int(uid)) or "—"
+        label = _reason_label.get(reason, reason or "грант")
+        until_s = until.strftime("%Y-%m-%d") if hasattr(until, "strftime") else str(until)[:10]
+        return f"• {uid} — {nm} ({label}, до {until_s})"
 
     async def _send_lines(lines: list[str]) -> None:
         buf = ""
@@ -34847,18 +34863,26 @@ async def admin_reset_subs_command(update: Update, context: CallbackContext) -> 
     targets = [u for u in pro_ids if u not in keep]
 
     if not confirm:
+        total_pro = len({*pro_ids, *[r[0] for r in grant_rows]})
         head = [
-            f"Сейчас на Pro: {len(pro_ids)}. Оставим: {len(pro_ids) - len(targets)}, "
-            f"сбросим: {len(targets)}.",
+            f"Всего Pro сейчас: {total_pro} чел.",
             "",
+            f"💳 На платной подписке: {len(pro_ids)}  (только их трогает сброс — "
+            f"оставим {len(pro_ids) - len(targets)}, сбросим {len(targets)})",
         ]
+        head += [_fmt(u) for u in pro_ids] if pro_ids else ["  (никого)"]
+        grant_block = [
+            "",
+            f"🎁 Подаренный/пробный Pro: {len(grant_rows)}  (сброс НЕ трогает)",
+        ]
+        grant_block += [_fmt_grant(r) for r in grant_rows] if grant_rows else ["  (никого)"]
         footer = [
             "",
             "Ничего не изменено (сухой прогон).",
-            "Сбросить всех КРОМЕ админов:  /admin_reset_subs confirm",
-            "Дополнительно оставить кого-то (напр. Алину):  /admin_reset_subs confirm <id> <id>",
+            "Сбросить платные подписки, КРОМЕ админов:  /admin_reset_subs confirm",
+            "Дополнительно оставить кого-то:  /admin_reset_subs confirm <id> <id>",
         ]
-        await _send_lines(head + [_fmt(u) for u in pro_ids] + footer)
+        await _send_lines(head + grant_block + footer)
         return
 
     res = await asyncio.to_thread(reset_pro_subscriptions_except, keep)
