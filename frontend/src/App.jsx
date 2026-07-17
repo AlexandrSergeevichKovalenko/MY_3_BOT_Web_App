@@ -30626,17 +30626,17 @@ function AppInner() {
     };
     const onScroll = () => { if (raf == null) raf = window.requestAnimationFrame(measure); };
     measure();
-    // The real scroller differs by platform: on Android/Chromium the page uses
-    // is-contained-scroll so `.webapp-page` itself scrolls, but on iOS (Telegram & PWA)
-    // there is no contained scroll and the WINDOW scrolls instead. Listen on both so the
-    // overlap measure keeps running regardless of which one is actually scrolling —
-    // otherwise iOS only measured once at mount and the bar never tucked.
-    scroller.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('scroll', onScroll, { passive: true });
+    // The actual scroll container varies by environment: on Android/Chromium `.webapp-page`
+    // scrolls (is-contained-scroll / is-sticky-topbar → overflow-y:auto), in the standalone
+    // PWA the window scrolls, and inside the iOS Telegram Mini-App wrapper yet another element
+    // scrolls. Rather than guess which one, listen for scroll on `window` in the CAPTURE phase:
+    // scroll events don't bubble, but the capture phase runs window → … → target, so a single
+    // capture listener catches scroll from ANY nested scroller (the trick floating-ui/popper
+    // use to track scroll ancestors). Fixes the bar never tucking inside Telegram on iOS.
+    window.addEventListener('scroll', onScroll, { passive: true, capture: true });
     window.addEventListener('resize', onScroll);
     return () => {
-      scroller.removeEventListener('scroll', onScroll);
-      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('scroll', onScroll, { capture: true });
       window.removeEventListener('resize', onScroll);
       if (raf != null) window.cancelAnimationFrame(raf);
       setYoutubeTopbarTucked(false);
