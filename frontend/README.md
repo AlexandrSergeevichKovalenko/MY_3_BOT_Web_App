@@ -35,8 +35,6 @@ Frontend здесь — это в первую очередь Telegram Mini App,
 | `src/components/LiveKitRuntime.jsx` | thin wrapper around LiveKit components | voice UI/runtime shell |
 | `src/components/BlocksTrainer.jsx` | interactive block-based training UI | отдельный учебный interaction mode |
 | `src/components/WeeklySummaryModal.jsx` | weekly summary modal shell | открывается поверх app state |
-| `src/components/ThreeMascot.jsx` | mascot/presentation component | UI-only |
-| `src/components/WebGLMascot.jsx` | WebGL-based mascot/presentation component | UI-only |
 | `src/components/ExplainErrorsModal.jsx` | teacher-grade error breakdown modal | рендерит структурированный payload из `/api/webapp/explain` (summary, per-error cards, alternatives, synonyms) + 🇩🇪 RU/DE toggle |
 
 ### Standalone Mini-App overlays (lazy-mounted)

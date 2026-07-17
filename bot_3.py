@@ -32061,9 +32061,9 @@ def _build_cert_rows(cur: dict, prev: dict) -> list[dict]:
 async def _cert_user_name(context: CallbackContext, uid: int) -> str:
     try:
         chat = await context.bot.get_chat(int(uid))
-        return str(getattr(chat, "first_name", None) or getattr(chat, "username", None) or "Schlumpf")
+        return str(getattr(chat, "first_name", None) or getattr(chat, "username", None) or "Fuchs")
     except Exception:
-        return "Schlumpf"
+        return "Fuchs"
 
 
 async def _send_certificates_window(context: CallbackContext, *, cur_start, cur_end,
