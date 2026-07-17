@@ -489,6 +489,18 @@ body {
   z-index: 40;
 }
 
+/* YouTube-only: fade the sticky top bar out the moment it overlaps the video frame while
+   scrolling, and back in once the player is clear (see the youtubeTopbarTucked effect).
+   opacity-only — the bar keeps its layout box, so the overlap measurement stays stable and
+   pointer-events:none lets taps fall through to the player underneath. */
+.webapp-page.is-youtube-active .webapp-topbar {
+  transition: opacity 0.18s ease;
+}
+.webapp-page.is-youtube-active.is-youtube-topbar-tucked .webapp-topbar {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .webapp-page.is-telegram-fullscreen {
   padding-top: calc(env(safe-area-inset-top, 0px) + 64px);
 }

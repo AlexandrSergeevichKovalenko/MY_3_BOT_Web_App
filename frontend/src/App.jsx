@@ -5854,6 +5854,10 @@ function AppInner() {
   // Premium Dock: presentational-only popover («⋯ Mehr») holding the rare source
   // actions (Paste transcript / Reload subtitles). Does not touch video logic.
   const [youtubeDockMoreOpen, setYoutubeDockMoreOpen] = useState(false);
+  // YouTube-only: while scrolling, hide the sticky "На главную" top bar the moment it
+  // would overlap the video player (it otherwise covers the frame), and bring it back
+  // once the player has scrolled clear of it. World-news mode is intentionally excluded.
+  const [youtubeTopbarTucked, setYoutubeTopbarTucked] = useState(false);
   const [youtubeDictOpen, setYoutubeDictOpen] = useState(false);
   const [youtubeDictQuery, setYoutubeDictQuery] = useState('');
   const [youtubeDictResult, setYoutubeDictResult] = useState(null);
@@ -27666,10 +27670,7 @@ function AppInner() {
         </div>
         <span className="ypb-time">{fmt(cur)} / {fmt(dur)}</span>
         <span className="ypb-divider" aria-hidden="true" />
-        {/* словарь */}
-        <button type="button" className={`ypb-icon ${youtubeDictOpen ? 'is-active' : ''}`} onClick={() => setYoutubeDictOpen((v) => !v)} title={tr('Словарь', 'Wörterbuch')} aria-label={tr('Словарь', 'Wörterbuch')}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
-        </button>
+        {/* Словарь убран: каждое слово в субтитрах кликабельно и переводится на месте. */}
         {/* настройки (меню: сменить видео / поиск / субтитры / транскрипт / все настройки) */}
         <div className="ypb-menu-wrap">
           <button type="button" className={`ypb-icon ${youtubeBarMenuOpen ? 'is-active' : ''}`} onClick={() => setYoutubeBarMenuOpen((v) => !v)} title={tr('Настройки', 'Einstellungen')} aria-label={tr('Настройки', 'Einstellungen')} aria-expanded={youtubeBarMenuOpen}>
@@ -30522,6 +30523,41 @@ function AppInner() {
     return () => { document.body.classList.remove('worldnews-active'); };
   }, [youtubeNewsMode, youtubeSectionVisible]);
 
+  // YouTube-only: tuck the sticky top bar away while it physically overlaps the video frame.
+  // The top bar is position:sticky at the top of the page scroller; as the player scrolls up
+  // under it they collide and the bar covers the frame. We watch the scroller and toggle a
+  // class the instant the player rect intersects the bar rect (and restore it once clear).
+  // Excluded in world-news mode, per the design ("новости утренние не трогаем").
+  useEffect(() => {
+    if (!isWebAppMode) { setYoutubeTopbarTucked(false); return undefined; }
+    if (!youtubeSectionVisible || youtubeNewsMode) { setYoutubeTopbarTucked(false); return undefined; }
+    const scroller = webappPageRef.current;
+    if (!scroller) return undefined;
+    let raf = null;
+    const measure = () => {
+      raf = null;
+      const shell = youtubePlayerShellRef.current;
+      const bar = scroller.querySelector('.webapp-topbar');
+      if (!shell || !bar) { setYoutubeTopbarTucked(false); return; }
+      const playerRect = shell.getBoundingClientRect();
+      const barRect = bar.getBoundingClientRect();
+      // Overlap along the vertical axis only — opacity:0 keeps the bar's box in place,
+      // so this measurement stays stable and can't oscillate at the boundary.
+      const overlaps = playerRect.top < barRect.bottom && playerRect.bottom > barRect.top;
+      setYoutubeTopbarTucked(overlaps);
+    };
+    const onScroll = () => { if (raf == null) raf = window.requestAnimationFrame(measure); };
+    measure();
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+      if (raf != null) window.cancelAnimationFrame(raf);
+      setYoutubeTopbarTucked(false);
+    };
+  }, [isWebAppMode, youtubeSectionVisible, youtubeNewsMode, youtubeId, youtubeAppFullscreen]);
+
   // «Тест» deep-link (?startapp=worldnews_quiz): once the quiz has rendered, scroll to it.
   useEffect(() => {
     if (!worldNewsScrollToQuiz || !worldNewsData?.available) return undefined;
@@ -32858,7 +32894,7 @@ function AppInner() {
     return (
       <div
         ref={webappPageRef}
-        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${readerSectionVisible && !(readerHasContent && readerImmersive) ? 'is-reader-library' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${youtubeNewsMode && youtubeSectionVisible ? 'is-worldnews-page' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'search' && !dictionaryResult ? 'is-dict-fill' : ''} ${isWebAppMode && !flashcardsOnly && !(readerHasContent && readerImmersive) && !(isHomeScreen && !activeHomeSubsectionKey) && !(dictionarySectionVisible && vocabTab === 'library') && !youtubeWatchFocusMode ? 'is-sticky-topbar' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
+        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${readerSectionVisible && !(readerHasContent && readerImmersive) ? 'is-reader-library' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${youtubeTopbarTucked ? 'is-youtube-topbar-tucked' : ''} ${youtubeNewsMode && youtubeSectionVisible ? 'is-worldnews-page' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'search' && !dictionaryResult ? 'is-dict-fill' : ''} ${isWebAppMode && !flashcardsOnly && !(readerHasContent && readerImmersive) && !(isHomeScreen && !activeHomeSubsectionKey) && !(dictionarySectionVisible && vocabTab === 'library') && !youtubeWatchFocusMode ? 'is-sticky-topbar' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
         data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
       >
         <pre id="app-perf-report" style={{ display: 'none' }} />
@@ -34653,18 +34689,7 @@ function AppInner() {
                               <span className="youtube-iconbtn-lbl">{youtubeSearchLoading ? tr('Ищем…', 'Suchen…') : tr('Искать', 'Suchen')}</span>
                             </button>
                           )}
-                          <span className="youtube-dock-divider" aria-hidden="true" />
-                          {/* Словарь — прямой доступ (переехал из старого «⋯») */}
-                          <button
-                            type="button"
-                            className={`youtube-iconbtn youtube-dock-dict-btn ${youtubeDictOpen ? 'is-active' : ''}`}
-                            onClick={() => setYoutubeDictOpen((prev) => !prev)}
-                            title={tr('Словарь рядом', 'Wörterbuch daneben')}
-                            aria-label={tr('Словарь рядом', 'Wörterbuch daneben')}
-                          >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
-                            <span className="youtube-iconbtn-lbl">{tr('Словарь', 'Wörterbuch')}</span>
-                          </button>
+                          {/* Словарь убран: слова в субтитрах кликабельны и переводятся на месте. */}
                         </div>
 
                         <span className="youtube-dock-divider" aria-hidden="true" />
@@ -34837,18 +34862,7 @@ function AppInner() {
                               </button>
                             )}
                             {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
-                            <button
-                              type="button"
-                              className={`youtube-dock-icon-btn youtube-head-dict-btn ${youtubeDictOpen ? 'is-active' : ''}`}
-                              onClick={() => setYoutubeDictOpen((prev) => !prev)}
-                              aria-label={tr('Словарь', 'Wörterbuch')}
-                              title={tr('Словарь', 'Wörterbuch')}
-                            >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
-                                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-                                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-                              </svg>
-                            </button>
+                            {/* Словарь убран: слова в субтитрах кликабельны и переводятся на месте. */}
                             <button
                               type="button"
                               className="youtube-dock-icon-btn youtube-head-settings-btn"
