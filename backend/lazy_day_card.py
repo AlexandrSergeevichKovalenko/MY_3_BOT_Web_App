@@ -2,8 +2,8 @@
 "Lazy day" plaque (PIL).
 
 Sent instead of the boring text report when NOBODY translated anything today:
-a pre-generated Smurf-as-a-sloth-on-the-couch scene (TV + chips + beer) with a
-playful headline drawn on top. The list of slackers goes in the photo CAPTION
+a pre-generated Fox-as-a-sloth-on-the-couch scene (TV + chips) with a playful
+headline drawn on top. The list of slackers goes in the photo CAPTION
 (dynamic, readable, no overflow) — not drawn on the image.
 
 The background is generated once via gpt-image-1 → R2 (see /admin_lazy_image).
@@ -15,32 +15,29 @@ import io
 import time
 
 from backend.article_quiz_card import _font, _ctext, _vgrad, _glow, W, H
+from backend.mascot_style import mascot_prompt
 
 WHITE = (255, 255, 255)
 
-_LAZY_BG_KEY = "lazy/smurf_sloth.png"
+_LAZY_BG_KEY = "lazy/fox_sloth.png"
 
-# gpt-image-1 prompt — brand mascot (cute blue smurf-like) as a couch-potato sloth.
-# NO text/letters (the card draws its own headline).
-LAZY_IMAGE_PROMPT = (
-    "A cute friendly blue smurf-like cartoon character lazing like a sloth, sprawled "
-    "lazily on a cozy couch in front of a glowing TV at night, one hand in a big bag of "
-    "potato chips and a can of beer on the side table, droopy sleepy half-closed eyes and "
-    "a goofy content smile, slippers on, blanket half over him. Humorous couch-potato vibe. "
-    "Soft 3D Pixar-like render, warm cozy lighting, vibrant playful colors, clean simple "
-    "background, no text, no letters, no numbers, centered composition."
+# gpt-image-1 prompt — brand mascot (Fox, see backend/mascot_style.py) as a
+# couch-potato sloth. NO text/letters (the card draws its own headline).
+LAZY_IMAGE_PROMPT = mascot_prompt(
+    "A Fox mascot lazing like a sloth, sprawled lazily on a cozy couch at night in "
+    "front of a glowing TV, one hand in a big bag of potato chips, droopy sleepy "
+    "half-closed eyes and a goofy content smile, slippers on, a blanket half over "
+    "him, warm cozy night lighting. Humorous couch-potato vibe"
 )
 
-_ACTIVE_BG_KEY = "lazy/smurf_active.png"
+_ACTIVE_BG_KEY = "lazy/fox_active.png"
 
 # Celebratory counterpart: shown when someone DID complete the task today.
-ACTIVE_IMAGE_PROMPT = (
-    "A cute friendly blue smurf-like cartoon character sitting proudly and energetically "
-    "at a tidy desk with an open book and a laptop, a shiny golden star/trophy beside him, "
-    "colorful confetti in the air, a big proud confident smile, one thumb up, eyes bright "
-    "and motivated — a 'great job, work done' celebration vibe. Soft 3D Pixar-like render, "
-    "bright cheerful lighting, vibrant playful colors, clean simple background, no text, no "
-    "letters, no numbers, centered composition."
+ACTIVE_IMAGE_PROMPT = mascot_prompt(
+    "A Fox mascot sitting proudly and energetically at a tidy desk with an open book "
+    "and a laptop, a shiny golden star trophy beside him, colorful confetti in the "
+    "air, a big proud confident smile and one thumb up, bright motivated eyes — a "
+    "'great job, work done' celebration vibe, bright cheerful lighting"
 )
 
 _bg_cache: dict = {"lazy": {"t": 0.0, "img": None}, "active": {"t": 0.0, "img": None}}

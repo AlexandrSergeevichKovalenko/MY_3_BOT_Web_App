@@ -18,26 +18,25 @@ import time
 
 from backend.article_quiz_card import _font, _ctext, _fit_font, _vgrad, _glow, W, H
 from backend.lazy_day_card import _strip_emoji
+from backend.mascot_style import mascot_prompt
 
 WHITE = (255, 255, 255)
 
 # Dedicated review-reminder background (its own art, distinct from the day-report
 # "active" Smurf). Generated once via gpt-image-1 → R2 (see /admin_review_image);
 # a green study gradient is used until it's there.
-_REVIEW_BG_KEY = "review/smurf_review.png"
+_REVIEW_BG_KEY = "review/fox_review.png"
 
-# gpt-image-1 prompt — brand mascot happily reviewing vocabulary flashcards.
-# NO text/letters/numbers (the card draws its own). Green study palette to sit
-# under the card's green scrim; empty upper area for the headline + hero number.
-REVIEW_IMAGE_PROMPT = (
-    "A cute friendly blue smurf-like cartoon character in a cozy study nook, cheerfully "
-    "reviewing a fan of vocabulary flashcards in his hands, a neat stack of word cards and "
-    "a steaming cup of tea on the desk beside him, soft glowing sparkles of memory / a warm "
-    "lightbulb above his head, a motivated confident smile and bright focused eyes. "
-    "Encouraging 'time to review your words' mood. Soft 3D Pixar-like render, warm cozy "
-    "green-toned study lighting, vibrant playful colors, clean simple uncluttered background "
-    "with plenty of empty space in the upper half, no text, no letters, no numbers, "
-    "centered composition."
+# gpt-image-1 prompt — brand mascot (Fox, see backend/mascot_style.py) happily
+# reviewing vocabulary flashcards. NO text/letters (the card draws its own). Green
+# study palette to sit under the card's green scrim; empty upper area for headline.
+REVIEW_IMAGE_PROMPT = mascot_prompt(
+    "A Fox mascot in a cozy study nook, cheerfully reviewing a fan of vocabulary "
+    "flashcards in his paws, a neat stack of word cards and a steaming cup of tea on "
+    "the desk beside him, soft glowing sparkles of memory and a warm lightbulb above "
+    "his head, a motivated confident smile and bright focused eyes, warm green-toned "
+    "study lighting, plenty of empty space in the upper half. Encouraging 'time to "
+    "review your words' mood"
 )
 
 _bg_cache: dict = {"t": 0.0, "img": None}

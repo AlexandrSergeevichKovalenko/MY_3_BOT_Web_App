@@ -1,9 +1,9 @@
 """
 World-news hero card (PIL) — «Начни день с коротких новостей».
 
-Replaces the flat text card with a branded morning plашка whose mascot is a
-Smurf reading a newspaper. Reuses the shared brand kit (article_quiz_card
-primitives) and a dedicated Smurf-reading-newspaper background from R2
+Replaces the flat text card with a branded morning plашка whose mascot is the
+Fox reading a newspaper. Reuses the shared brand kit (article_quiz_card
+primitives) and a dedicated Fox-reading-newspaper background from R2
 (generated once via /admin_worldnews_image); a blue morning gradient is used
 until that asset exists.
 
@@ -18,24 +18,23 @@ import time
 
 from backend.article_quiz_card import _font, _ctext, _fit_font, _vgrad, W, H
 from backend.lazy_day_card import _strip_emoji
+from backend.mascot_style import mascot_prompt
 
 WHITE = (255, 255, 255)
 
 # Dedicated Smurf-reading-the-news background. Generated once via gpt-image-1 → R2
 # (see /admin_worldnews_image); a blue morning gradient is drawn until it's there.
-_WORLD_NEWS_BG_KEY = "worldnews/smurf_news.png"
+_WORLD_NEWS_BG_KEY = "worldnews/fox_news.png"
 
-# gpt-image-1 prompt — brand mascot reading a morning newspaper. NO text/letters
-# (the card draws its own). Blue morning palette to sit under the card's scrim;
-# empty lower area for the headline + title + summary.
-WORLD_NEWS_IMAGE_PROMPT = (
-    "A cute friendly blue smurf-like cartoon character sitting comfortably in a cozy armchair "
-    "in the early morning, calmly reading an open paper newspaper, a steaming cup of coffee on a "
-    "small side table, warm sunrise light coming through a window behind him, a relaxed curious "
-    "smile and bright awake eyes. Encouraging 'start your day with short news' morning mood. "
-    "Soft 3D Pixar-like render, warm morning blue-and-amber lighting, vibrant playful colors, "
-    "clean simple uncluttered background with plenty of empty space in the lower half, "
-    "no text, no letters, no numbers, centered composition."
+# gpt-image-1 prompt — brand mascot (Fox, see backend/mascot_style.py) reading a
+# morning newspaper. NO text/letters (the card draws its own). Empty lower area
+# for the headline + title + summary.
+WORLD_NEWS_IMAGE_PROMPT = mascot_prompt(
+    "A Fox mascot sitting comfortably in a cozy armchair in the early morning, calmly "
+    "reading an open paper newspaper, a steaming cup of coffee on a small side table, "
+    "warm sunrise light coming through a window behind him, a relaxed curious smile "
+    "and bright awake eyes, warm morning blue-and-amber lighting, plenty of empty "
+    "space in the lower half. Encouraging 'start your day with short news' morning mood"
 )
 
 _bg_cache: dict = {"t": 0.0, "img": None}

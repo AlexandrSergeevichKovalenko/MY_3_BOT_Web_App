@@ -4613,6 +4613,213 @@ async def reader_audio_churn_preview_command(update: Update, context: CallbackCo
     await send_churn_audio_preview(context.application)
 
 
+# ===== Monthly auto-purge: delete PERSONAL data of users inactive >= 12 months ==========
+# Shared, reusable data (canonical dictionary entries, TTS/R2 audio, base/wiktionary dicts,
+# metainfo) is NEVER touched — purge_telegram_user_personal_data only deletes per-user rows.
+# Admins and paying/Pro users are excluded. The job runs on the 1st of every month and is
+# tracked in /scheduler_health. It runs in PREVIEW (dry-run) mode by default — set
+# AUTO_PURGE_INACTIVE_DRY_RUN=0 to arm real deletion (a one-time switch; then it is
+# automatic forever). On-demand preview: /admin_auto_purge_preview.
+
+def _auto_purge_is_dry_run() -> bool:
+    return (os.getenv("AUTO_PURGE_INACTIVE_DRY_RUN") or "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _auto_purge_format(result: dict, sample: list[dict]) -> str:
+    months = int(result.get("months") or 12)
+    dry = bool(result.get("dry_run"))
+    head = "🧹 <b>Автоочистка персональных данных неактивных</b>"
+    mode = "🔍 ПРЕДПРОСМОТР (ничего не удалено)" if dry else "🗑 БОЕВОЙ РЕЖИМ (данные удалены)"
+    lines = [
+        head,
+        f"Режим: {mode}",
+        f"Порог неактивности: {months} мес",
+        "",
+        f"Кандидатов (неактивны ≥ {months} мес): <b>{result.get('candidates', 0)}</b>",
+        f"Исключено: админов {result.get('excluded_admin', 0)}, Pro/платящих {result.get('excluded_pro', 0)}",
+        f"К удалению: <b>{result.get('eligible', 0)}</b>",
+    ]
+    if not dry:
+        lines.append(
+            f"Удалено пользователей: <b>{result.get('purged', 0)}</b> "
+            f"(строк всего {result.get('deleted_rows', 0)}), ошибок: {result.get('errors', 0)}"
+        )
+    lines.append("")
+    if sample:
+        shown = sample[:20]
+        for c in shown:
+            la = c.get("last_active") or "—"
+            blocked = " · заблокировал бота" if c.get("blocked") else ""
+            rows = f" · удалено {c.get('rows')} стр." if (not dry and c.get("rows") is not None) else ""
+            lines.append(f"• id <code>{c.get('user_id')}</code> — актив: {la}{blocked}{rows}")
+        if len(sample) > 20:
+            lines.append(f"… и ещё {len(sample) - 20} польз.")
+    else:
+        lines.append("Никого под удаление — всё чисто.")
+    lines.append("")
+    if dry:
+        lines.append(
+            "Это предпросмотр. Чтобы включить реальное удаление раз в месяц навсегда, "
+            "выставьте <code>AUTO_PURGE_INACTIVE_DRY_RUN=0</code>. Общие слова, аудио и "
+            "метаинформация сохраняются в любом случае."
+        )
+    else:
+        lines.append("Идёт автоматически 1-го числа каждого месяца. Общее (слова/аудио/метаинфо) сохранено.")
+    return "\n".join(lines)
+
+
+async def run_auto_purge_inactive_users(application, *, force_live: bool = False) -> dict:
+    """Find users inactive ≥ N months, exclude admins + Pro/paying, and (unless dry-run)
+    purge ONLY their personal data via the existing safe path (schedule → purge). Shared
+    word/audio/metainfo is preserved. DMs admins a report. Returns a summary dict."""
+    from backend.database import (
+        get_admin_telegram_ids,
+        list_users_eligible_for_auto_purge,
+        resolve_entitlement,
+        schedule_telegram_user_removal,
+        purge_telegram_user_personal_data,
+        has_admin_scheduler_run,
+        mark_admin_scheduler_run,
+    )
+    months = int((os.getenv("AUTO_PURGE_INACTIVE_MONTHS") or "12").strip() or "12")
+    limit = int((os.getenv("AUTO_PURGE_INACTIVE_LIMIT") or "500").strip() or "500")
+    dry_run = (not force_live) and _auto_purge_is_dry_run()
+
+    try:
+        candidates = await asyncio.to_thread(list_users_eligible_for_auto_purge, months, limit)
+    except Exception:
+        logging.exception("auto-purge: candidate fetch failed")
+        candidates = []
+    try:
+        admin_ids = {int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0}
+    except Exception:
+        admin_ids = set()
+
+    to_purge: list[dict] = []
+    excluded_admin = 0
+    excluded_pro = 0
+    for c in candidates:
+        uid = int(c["user_id"])
+        if uid in admin_ids:
+            excluded_admin += 1
+            continue
+        try:
+            ent = await asyncio.to_thread(resolve_entitlement, uid)
+            if str((ent or {}).get("effective_mode") or "").strip().lower() == "pro":
+                excluded_pro += 1
+                continue
+        except Exception:
+            # Fail SAFE: if we cannot confirm the plan, treat as protected and never delete.
+            logging.warning("auto-purge: entitlement check failed uid=%s — skipping (fail-safe)", uid, exc_info=True)
+            excluded_pro += 1
+            continue
+        to_purge.append(dict(c))
+
+    purged: list[dict] = []
+    deleted_rows = 0
+    errors = 0
+    if not dry_run:
+        for c in to_purge:
+            uid = int(c["user_id"])
+            try:
+                await asyncio.to_thread(
+                    schedule_telegram_user_removal,
+                    user_id=uid,
+                    reason=f"auto-purge: inactive >= {months}m",
+                    grace_days=1,
+                )
+                summary = await asyncio.to_thread(
+                    purge_telegram_user_personal_data,
+                    user_id=uid,
+                    note=f"auto-purge inactive {months}m",
+                )
+                rows = int(((summary or {}).get("purge_summary") or {}).get("total_deleted_rows") or 0)
+                deleted_rows += rows
+                purged.append({**c, "rows": rows})
+            except Exception:
+                errors += 1
+                logging.exception("auto-purge: purge failed uid=%s", uid)
+
+    result = {
+        "months": months,
+        "candidates": len(candidates),
+        "eligible": len(to_purge),
+        "purged": len(purged),
+        "deleted_rows": deleted_rows,
+        "excluded_admin": excluded_admin,
+        "excluded_pro": excluded_pro,
+        "errors": errors,
+        "dry_run": dry_run,
+    }
+
+    sample = purged if (not dry_run and purged) else to_purge
+    text = _auto_purge_format(result, sample)
+    if len(text) > 4000:  # Telegram 4096-char cap safety
+        text = text[:3990] + "\n…"
+
+    try:
+        now_local = datetime.now(ZoneInfo(os.getenv("AUTO_PURGE_INACTIVE_TZ") or "Europe/Vienna"))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    run_period = f"{now_local.year}-{now_local.month:02d}"
+
+    sent = 0
+    for admin_id in sorted(admin_ids):
+        # On-demand previews always send; the scheduled run de-dupes per month per admin.
+        if not force_live:
+            try:
+                if await asyncio.to_thread(
+                    has_admin_scheduler_run,
+                    job_key="auto_purge_inactive",
+                    run_period=run_period,
+                    target_chat_id=int(admin_id),
+                ):
+                    continue
+            except Exception:
+                pass
+        try:
+            await application.bot.send_message(chat_id=int(admin_id), text=text, parse_mode="HTML")
+            sent += 1
+            if not force_live:
+                await asyncio.to_thread(
+                    mark_admin_scheduler_run,
+                    job_key="auto_purge_inactive",
+                    run_period=run_period,
+                    target_chat_id=int(admin_id),
+                    metadata={k: result[k] for k in ("candidates", "purged", "dry_run")},
+                )
+        except Exception:
+            logging.warning("auto-purge: DM failed admin=%s", admin_id, exc_info=True)
+
+    result["sent"] = sent
+    return result
+
+
+async def _auto_purge_inactive_job(context: CallbackContext) -> None:
+    """Monthly (1st of month) auto-purge job — reports to admins and, when armed, deletes."""
+    status = "completed"
+    result: dict = {}
+    try:
+        result = await run_auto_purge_inactive_users(context.application)
+        if int(result.get("errors") or 0) > 0:
+            status = "failed"
+        logging.info("auto-purge inactive job result=%s", result)
+    except Exception:
+        status = "failed"
+        logging.exception("auto-purge inactive job failed")
+    _record_sched_heartbeat("auto_purge_inactive", status=status, metadata=result)
+
+
+async def admin_auto_purge_preview_command(update: Update, context: CallbackContext) -> None:
+    """Admin: on-demand DRY-RUN preview of the monthly auto-purge (deletes nothing)."""
+    user = update.effective_user
+    if not user or not _is_admin_user(int(user.id)):
+        return
+    await run_auto_purge_inactive_users(context.application, force_live=False)
+
+
 # ===== Nightly auto-save: settings toggle + multi-select digest =========================
 
 def _autosave_digest_redis_key(digest_id: str) -> str:
@@ -9793,7 +10000,7 @@ async def admin_world_news_image_command(update: Update, context: CallbackContex
     if not _is_admin_user(user.id):
         await message.reply_text("⛔️ Команда доступна только администратору.")
         return
-    status_msg = await message.reply_text("Генерирую смурф-картинку «читает новости»…")
+    status_msg = await message.reply_text("Генерирую лис-картинку «читает новости»…")
 
     def _gen() -> dict:
         from backend.image_generation_provider import generate_image_bytes
@@ -26103,7 +26310,7 @@ async def admin_lazy_image_command(update: Update, context: CallbackContext) -> 
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Генерирую смурф-картинки «день лени» и «молодцы»…")
+    status_msg = await message.reply_text("Генерирую лис-картинки «день лени» и «молодцы»…")
 
     def _gen() -> dict:
         from backend.image_generation_provider import generate_image_bytes
@@ -26155,7 +26362,7 @@ async def admin_review_image_command(update: Update, context: CallbackContext) -
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Генерирую смурф-картинку «пора повторить»…")
+    status_msg = await message.reply_text("Генерирую лис-картинку «пора повторить»…")
 
     def _gen() -> dict:
         from backend.image_generation_provider import generate_image_bytes
@@ -28042,7 +28249,7 @@ async def admin_battle_images_command(update: Update, context: CallbackContext) 
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Генерирую боевые смурф-картинки…")
+    status_msg = await message.reply_text("Генерирую боевые лис-картинки…")
 
     def _gen() -> dict:
         from backend.image_generation_provider import generate_image_bytes
@@ -28068,7 +28275,7 @@ async def admin_battle_images_command(update: Update, context: CallbackContext) 
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
         return
-    text = f"✅ Сгенерировано: {result.get('made')}/{result.get('total')} (R2: battle/invite.png, battle/reminder.png)"
+    text = f"✅ Сгенерировано: {result.get('made')}/{result.get('total')} (R2: battle/fox_invite.png, battle/fox_reminder.png)"
     if result.get("errs"):
         text += "\n🔴 " + "\n".join(result["errs"][:5])
     await status_msg.edit_text(text[:4000])
