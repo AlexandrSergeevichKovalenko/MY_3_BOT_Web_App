@@ -3783,6 +3783,9 @@ body:has(.webapp-page.is-theme-light),
   border-radius: 14px;
   border: 1px solid rgba(250, 204, 21, 0.4);
   background: linear-gradient(135deg, rgba(30, 41, 59, 0.86), rgba(10, 16, 34, 0.72));
+  /* Base text color for plain (non-<p>) content — dark theme. Light theme overrides
+     it below; without this, plain text inherited an unpredictable color and vanished. */
+  color: rgba(226, 232, 240, 0.9);
   display: grid;
   gap: 6px;
 }
@@ -26759,6 +26762,9 @@ body.worldnews-active .webapp-topbar {
 .webapp-page.is-theme-light .billing-trial-banner {
   border-color: rgba(171, 126, 72, 0.45);
   background: linear-gradient(135deg, rgba(255, 243, 224, 0.96), rgba(247, 235, 217, 0.92));
+  /* Dark text so plain (non-<p>) banner content stays readable on the light card —
+     covers the audio/Stars/maintenance notes and the tappable Stars banner. */
+  color: #3a3127;
 }
 
 .webapp-page.is-theme-light .billing-trial-banner strong {
