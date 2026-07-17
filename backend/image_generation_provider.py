@@ -103,6 +103,8 @@ def generate_image_bytes(
     template_id: int,
     user_id: int,
     action_type: str = "image_generation",
+    background: str | None = None,
+    size: str | None = None,
 ) -> dict:
     normalized_prompt = str(prompt or "").strip()
     if not normalized_prompt:
@@ -131,14 +133,26 @@ def generate_image_bytes(
         api_key=api_key,
         timeout=IMAGE_GENERATION_TIMEOUT_SECONDS,
     )
+    # Optional per-call overrides. `background="transparent"` (gpt-image-1) yields a
+    # PNG with alpha — used for the die-cut hero stickers. Only passed when set, so
+    # existing callers keep the env defaults untouched.
+    req_size = str(size or IMAGE_GENERATION_SIZE).strip() or IMAGE_GENERATION_SIZE
+    req_output_format = IMAGE_GENERATION_OUTPUT_FORMAT
+    extra: dict = {}
+    bg = str(background or "").strip().lower()
+    if bg in ("transparent", "opaque", "auto"):
+        extra["background"] = bg
+        if bg == "transparent" and req_output_format == "jpeg":
+            req_output_format = "png"  # alpha needs png/webp
     response = client.images.generate(
         model=IMAGE_GENERATION_MODEL,
         prompt=normalized_prompt,
-        size=IMAGE_GENERATION_SIZE,
+        size=req_size,
         quality=IMAGE_GENERATION_QUALITY,
-        output_format=IMAGE_GENERATION_OUTPUT_FORMAT,
+        output_format=req_output_format,
         moderation=IMAGE_GENERATION_MODERATION,
         user=f"image_quiz:{int(user_id)}:{int(template_id)}",
+        **extra,
     )
     data_items = list(getattr(response, "data", None) or [])
     if not data_items:

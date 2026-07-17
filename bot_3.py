@@ -26299,6 +26299,57 @@ async def admin_overtaken_images_command(update: Update, context: CallbackContex
     await status_msg.edit_text(text[:4000])
 
 
+async def admin_hero_images_command(update: Update, context: CallbackContext) -> None:
+    """Generate the Felix (Fox mascot) hero stickers on a TRANSPARENT background via
+    gpt-image-1 and upload them to R2 (brand/felix_*.png): happy/check, cry/warning,
+    thinking, thumbs-up. Sends each back as a preview photo. A human then converts
+    them to frontend hero_*.webp + the icon set. /admin_hero_images"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Генерирую hero-стикеры Феликса (прозрачный фон)…")
+
+    def _gen() -> list:
+        from backend.hero_images import generate_and_upload_hero_images
+        return generate_and_upload_hero_images(user_id=getattr(user, "id", 0) or 0)
+
+    try:
+        results = await asyncio.to_thread(_gen)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+
+    made = [r for r in results if not r.get("error")]
+    errs = [f"{r['name']}: {r['error']}" for r in results if r.get("error")]
+    for r in made:
+        data = r.get("bytes")
+        if not data:
+            continue
+        try:
+            await message.reply_photo(
+                photo=bytes(data), caption=f"Felix · {r['name']}\n{r.get('url') or r['key']}"
+            )
+        except Exception:
+            logging.warning("hero preview send failed name=%s", r.get("name"), exc_info=True)
+
+    text = f"✅ Готово: {len(made)}/{len(results)} (R2: brand/felix_*.png)"
+    if errs:
+        text += "\n🔴 " + "\n".join(errs[:5])
+    text += ("\n\nДальше: конвертирую их в frontend/hero_*.webp и пересоберу иконки. "
+             "Кэш R2 ~10 мин.")
+    try:
+        await status_msg.edit_text(text[:4000])
+    except Exception:
+        try:
+            await message.reply_text(text[:4000])
+        except Exception:
+            logging.warning("admin_hero_images: could not deliver result")
+
+
 async def admin_lazy_image_command(update: Update, context: CallbackContext) -> None:
     """Generate the 'lazy day' Smurf-sloth-on-the-couch background via gpt-image-1
     and store it in R2. Run once; the no-activity translation report then uses it.
@@ -37372,6 +37423,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
+    application.add_handler(CommandHandler("admin_hero_images", admin_hero_images_command))
     application.add_handler(CommandHandler("admin_lazy_image", admin_lazy_image_command))
     application.add_handler(CommandHandler("admin_review_image", admin_review_image_command))
     application.add_handler(CommandHandler("admin_battle_images", admin_battle_images_command))

@@ -41,3 +41,22 @@ def mascot_prompt(scene: str) -> str:
     """
     scene = (scene or "").strip().rstrip(".")
     return f"{scene}. {MASCOT_CHARACTER}. {MASCOT_RENDER}."
+
+
+# Render block for the die-cut hero STICKERS used in the app UI (frontend
+# hero_*.webp + app icon source). These sit over the interface, so they need a
+# fully TRANSPARENT background — pair this with background="transparent" on the
+# image request (see generate_image_bytes(background=...)).
+MASCOT_STICKER_RENDER = (
+    "Full-body die-cut sticker with a thin soft white outline, the character "
+    "isolated on a fully transparent background (alpha channel), no scene, no floor, "
+    "no ground shadow. Soft 3D Pixar-like render, vibrant playful colors, soft studio "
+    "lighting, rounded shapes, no text, no letters, no numbers, no watermark."
+)
+
+
+def mascot_sticker_prompt(pose: str) -> str:
+    """Compose a transparent die-cut sticker prompt: <pose> + who Fox is + sticker
+    render. Use for the frontend hero poses and the app icon source."""
+    pose = (pose or "").strip().rstrip(".")
+    return f"{pose}. {MASCOT_CHARACTER}. {MASCOT_STICKER_RENDER}"
