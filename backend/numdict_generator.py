@@ -282,7 +282,14 @@ def _call_gpt_scene(scenario: dict, spoken_number: str) -> str:
     )
     if not resp.ok:
         raise RuntimeError(f"OpenAI HTTP {resp.status_code}: {resp.text[:300]}")
-    raw = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    resp_json = resp.json()
+    try:
+        from backend.openai_usage_logging import log_openai_raw_usage
+        log_openai_raw_usage(action_type="pool_numdict", model=model,
+                             usage=resp_json.get("usage"), user_id=None)
+    except Exception:
+        pass
+    raw = (resp_json.get("choices") or [{}])[0].get("message", {}).get("content") or ""
     return str(json.loads(raw).get("scenario_text") or "").strip()
 
 

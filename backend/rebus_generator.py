@@ -597,6 +597,12 @@ def _call_gpt_for_replenishment(count: int, existing_words: list[str]) -> list[d
         raise RuntimeError(f"OpenAI replenishment HTTP {resp.status_code}: {resp.text[:300]}")
 
     data = resp.json()
+    try:
+        from backend.openai_usage_logging import log_openai_raw_usage
+        log_openai_raw_usage(action_type="pool_rebus", model=model,
+                             usage=data.get("usage"), user_id=None)
+    except Exception:
+        pass
     raw = str((data.get("choices") or [{}])[0].get("message", {}).get("content") or "")
     try:
         parsed = json.loads(raw)

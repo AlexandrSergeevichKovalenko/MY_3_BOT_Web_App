@@ -546,7 +546,14 @@ def _call_llm(title: str, transcript: str) -> dict:
     )
     if not resp.ok:
         raise RuntimeError(f"OpenAI HTTP {resp.status_code}: {resp.text[:300]}")
-    raw = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    resp_json = resp.json()
+    try:
+        from backend.openai_usage_logging import log_openai_raw_usage
+        log_openai_raw_usage(action_type="pool_world_news", model=str(payload.get("model") or ""),
+                             usage=resp_json.get("usage"), user_id=None)
+    except Exception:
+        pass
+    raw = (resp_json.get("choices") or [{}])[0].get("message", {}).get("content") or ""
     return json.loads(raw)
 
 

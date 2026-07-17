@@ -13712,6 +13712,12 @@ def _request_separable_prefix_quiz_item_via_openai() -> dict:
     if not response.ok:
         raise RuntimeError(f"OpenAI quiz HTTP {response.status_code}: {response.text[:240]}")
     data = response.json() if response.content else {}
+    try:
+        from backend.openai_usage_logging import log_openai_raw_usage
+        log_openai_raw_usage(action_type="quiz_separable_prefix", model=OPENAI_QUIZ_MODEL,
+                             usage=data.get("usage"), user_id=None)
+    except Exception:
+        pass
     choices = data.get("choices") if isinstance(data, dict) else []
     message = choices[0].get("message") if isinstance(choices, list) and choices else {}
     raw_content = ""
@@ -14187,6 +14193,12 @@ def _request_sentence_context_quiz_via_openai(german_sentence: str, translation_
     if not response.ok:
         raise RuntimeError(f"OpenAI sentence quiz HTTP {response.status_code}: {response.text[:240]}")
     data = response.json() if response.content else {}
+    try:
+        from backend.openai_usage_logging import log_openai_raw_usage
+        log_openai_raw_usage(action_type="quiz_sentence_context", model=OPENAI_QUIZ_MODEL,
+                             usage=data.get("usage"), user_id=None)
+    except Exception:
+        pass
     choices = data.get("choices") if isinstance(data, dict) else []
     message = choices[0].get("message") if isinstance(choices, list) and choices else {}
     raw_content = str(message.get("content") or "") if isinstance(message, dict) else ""
@@ -43775,6 +43787,12 @@ def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: 
             response_format={"type": "json_object"},
             timeout=60,
         )
+        try:
+            from backend.openai_usage_logging import log_openai_raw_usage
+            log_openai_raw_usage(action_type="autosave_cards", model=model,
+                                 usage=getattr(response, "usage", None), user_id=None)
+        except Exception:
+            pass
         return response.choices[0].message.content or "{}"
 
     valid_categories = set(_AUTOSAVE_SEMANTIC_CATEGORIES)
