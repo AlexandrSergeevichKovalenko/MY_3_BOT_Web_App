@@ -648,7 +648,14 @@ def _call_gpt_for_manual_rebus_entries(requested_words: list[str], existing_word
     if not resp.ok:
         raise RuntimeError(f"OpenAI manual rebus HTTP {resp.status_code}: {resp.text[:300]}")
 
-    raw = str((resp.json().get("choices") or [{}])[0].get("message", {}).get("content") or "")
+    resp_json = resp.json()
+    try:
+        from backend.openai_usage_logging import log_openai_raw_usage
+        log_openai_raw_usage(action_type="manual_rebus_generate", model=model,
+                             usage=resp_json.get("usage"), user_id=None)
+    except Exception:
+        pass
+    raw = str((resp_json.get("choices") or [{}])[0].get("message", {}).get("content") or "")
     try:
         parsed = json.loads(raw)
     except Exception as exc:
