@@ -118,6 +118,7 @@ export default function DeepAnalysis({ startParam }) {
 
   // Action states.
   const [feel, setFeel] = useState({ state: 'idle', text: '' });   // idle|loading|done
+  const [feelLimit, setFeelLimit] = useState(null);   // { limit, used, reset_at } when daily free limit hit
   const [collos, setCollos] = useState({ state: 'idle', items: [] });
   const [ask, setAsk] = useState({ q: '', a: '', state: 'idle', history: [] });
 
@@ -357,7 +358,7 @@ export default function DeepAnalysis({ startParam }) {
 
   const runFeel = useCallback(async () => {
     if (feel.state === 'loading') return;
-    setFeel({ state: 'loading', text: '' }); haptic('light');
+    setFeel({ state: 'loading', text: '' }); setFeelLimit(null); haptic('light');
     try {
       const [sl, tl] = dir.includes('-') ? dir.split('-', 2) : ['', ''];
       const data = await api('/api/webapp/dictionary/feel', {
@@ -366,7 +367,16 @@ export default function DeepAnalysis({ startParam }) {
         source_lang: sl || undefined, target_lang: tl || undefined,
       });
       setFeel({ state: 'done', text: clean(data?.feel_text) });
-    } catch (e) { setFeel({ state: 'idle', text: '' }); setError(String(e?.message || e)); haptic('bad'); }
+    } catch (e) {
+      setFeel({ state: 'idle', text: '' }); haptic('bad');
+      // Daily free limit / cost cap → show the soft plaque IN PLACE instead of a raw error.
+      const kind = e?.payload?.error;
+      if (e?.status === 429 && (kind === 'feature_limit_exceeded' || kind === 'cost_cap_exceeded')) {
+        setFeelLimit(e.payload || {});
+      } else {
+        setError(String(e?.message || e));
+      }
+    }
   }, [feel.state, dir, item, germanText, translation]);
 
   const runCollocations = useCallback(async () => {
@@ -597,6 +607,17 @@ export default function DeepAnalysis({ startParam }) {
               {feel.state === 'loading' ? '⏳ Генерирую…' : '📌 Почувствовать слово'}
             </button>
             {feel.state === 'done' && feel.text && <div className="deep-act-out"><RichText text={feel.text} /></div>}
+            {feelLimit && (
+              <div className="deep-feel-plaque" role="status">
+                <div className="deep-feel-plaque-emoji">📌</div>
+                <div className="deep-feel-plaque-title">На сегодня «Почувствовать слово» закончилось</div>
+                <div className="deep-feel-plaque-text">
+                  На бесплатном тарифе это доступно {Math.max(1, Number(feelLimit.limit || 1))}× в день — обновится завтра.
+                  В Pro «Почувствовать слово» без ограничений.
+                </div>
+                <button type="button" className="deep-feel-plaque-close" onClick={() => setFeelLimit(null)}>Понятно</button>
+              </div>
+            )}
           </div>
 
           <div className="deep-act-block">

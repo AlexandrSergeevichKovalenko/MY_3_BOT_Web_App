@@ -9459,7 +9459,7 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_plan_limits_lookup
                 ON plan_limits (plan_code, is_active, period);
             """)
-            free_feel_word_daily = _env_decimal("FREE_FEEL_WORD_DAILY_LIMIT", "3")
+            free_feel_word_daily = _env_decimal("FREE_FEEL_WORD_DAILY_LIMIT", "1")
             # Free: 0 skill training (Pro-only). _env_decimal rejects 0 (>0-or-NULL only),
             # so parse directly — unset/empty/"null" → 0. A positive env override still works.
             _skill_raw = str(os.getenv("FREE_SKILL_TRAINING_DAILY_LIMIT") or "0").strip()

@@ -315,6 +315,36 @@
   background: var(--dmps-card-alt, rgba(148,163,184,0.06));
   border-radius: 12px; padding: 10px 12px;
 }
+/* Soft "daily free limit reached" plaque for «Почувствовать слово». */
+.deep-feel-plaque {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  text-align: center;
+  padding: 16px 14px;
+  border-radius: 14px;
+  background: rgba(143, 180, 255, 0.08);
+  border: 1px solid rgba(143, 180, 255, 0.24);
+}
+.deep-feel-plaque-emoji { font-size: 26px; line-height: 1; }
+.deep-feel-plaque-title {
+  font-size: 14px; font-weight: 700;
+  color: var(--dmps-text-title, #f1f5f9);
+}
+.deep-feel-plaque-text {
+  font-size: 13px; line-height: 1.5;
+  color: var(--dmps-text-secondary, #cbd5e1);
+}
+.deep-feel-plaque-close {
+  margin-top: 4px;
+  align-self: center;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: rgba(143, 180, 255, 0.14);
+  border: 1px solid rgba(143, 180, 255, 0.30);
+  color: #cdddff;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.deep-feel-plaque-close:active { transform: scale(0.98); }
+
 .deep-collo-list { display: flex; flex-direction: column; gap: 6px; }
 .deep-collo {
   text-align: left; display: flex; flex-direction: column; gap: 2px;

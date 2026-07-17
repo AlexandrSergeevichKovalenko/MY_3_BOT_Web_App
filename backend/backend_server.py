@@ -2865,6 +2865,9 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/token": {"cap": True, "paid_feature": "voice_assistant", "paid_feature_title": "Голосовой ассистент"},
     "/api/webapp/dictionary": {"cap": True},
     "/api/webapp/dictionary/collocations": {"cap": True},
+    # Quick-dict «Почувствовать слово» shares the SAME daily free limit as the flashcards
+    # surface (feature_code=feel_word_daily) — one budget per user across both surfaces.
+    "/api/webapp/dictionary/feel": {"cap": True, "feature_code": "feel_word_daily"},
     "/api/webapp/flashcards/feel": {"cap": True, "feature_code": "feel_word_daily"},
     "/api/webapp/flashcards/feel/dispatch": {"cap": True},
     "/api/webapp/flashcards/enrich": {"cap": True},
@@ -35230,17 +35233,41 @@ def get_webapp_dictionary_feel():
         source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
-        feel_text = asyncio.run(
-            run_feel_word_multilang(
-                source_text=source_text or target_text,
-                target_text=target_text or source_text,
-                source_lang=source_lang,
-                target_lang=target_lang,
+        # Attribute the OpenAI cost of THIS feel call to the real user, so the gateway
+        # auto-logger records it under this user_id (not user_id=NULL). Reset in finally so
+        # the contextvar never leaks to the next LLM call on this reused web-tier thread.
+        from backend.openai_manager import set_llm_billing_user
+        set_llm_billing_user(int(user_id))
+        try:
+            feel_text = asyncio.run(
+                run_feel_word_multilang(
+                    source_text=source_text or target_text,
+                    target_text=target_text or source_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
             )
-        )
+        finally:
+            set_llm_billing_user(None)
     except Exception as exc:
         logging.exception("dictionary feel failed: %s", exc)
         return jsonify({"error": "Не удалось сгенерировать. Попробуйте снова."}), 500
+
+    # Tick the SHARED daily "feel word" counter (feature_code=feel_word_daily) so the
+    # free-tier limit enforced by the billing guard actually counts quick-dict feels,
+    # exactly like /api/webapp/flashcards/feel. Count-only marker (no cost — the OpenAI
+    # dollars ride on the gateway auto-log attributed to this user above).
+    _billing_log_event_safe(
+        user_id=int(user_id),
+        action_type="flashcards_feel_request",
+        provider="app_internal",
+        units_type="requests",
+        units_value=1.0,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={"surface": "dictionary"},
+        idempotency_seed=f"feel:dict:{user_id}:{time.time_ns()}",
+    )
 
     return jsonify({"ok": True, "feel_text": str(feel_text or "").strip()})
 
