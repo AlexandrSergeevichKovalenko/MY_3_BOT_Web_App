@@ -590,8 +590,10 @@ def fetch_openai_usage_tokens(*, start_day: date) -> dict[str, Any]:
     start_ts = int(datetime(start_day.year, start_day.month, start_day.day, tzinfo=timezone.utc).timestamp())
     try:
         input_t = cached_t = output_t = 0
+        requests_n = 0
         by_model: dict[str, dict[str, int]] = {}
-        params: dict[str, Any] = {"start_time": start_ts, "bucket_width": "1d", "limit": 62, "group_by": "model"}
+        # Usage API caps limit at 31 for bucket_width=1d — one bucket per day covers a month.
+        params: dict[str, Any] = {"start_time": start_ts, "bucket_width": "1d", "limit": 31, "group_by": "model"}
         page = None
         for _ in range(12):
             if page:
@@ -610,14 +612,17 @@ def fetch_openai_usage_tokens(*, start_day: date) -> dict[str, Any]:
                     it = int(item.get("input_tokens") or 0)
                     ct = int(item.get("input_cached_tokens") or 0)
                     ot = int(item.get("output_tokens") or 0)
+                    rq = int(item.get("num_model_requests") or 0)
                     input_t += it
                     cached_t += ct
                     output_t += ot
+                    requests_n += rq
                     model = str(item.get("model") or "—")
-                    slot = by_model.setdefault(model, {"input": 0, "cached": 0, "output": 0})
+                    slot = by_model.setdefault(model, {"input": 0, "cached": 0, "output": 0, "requests": 0})
                     slot["input"] += it
                     slot["cached"] += ct
                     slot["output"] += ot
+                    slot["requests"] += rq
             if body.get("has_more") and body.get("next_page"):
                 page = body.get("next_page")
                 continue
@@ -627,6 +632,7 @@ def fetch_openai_usage_tokens(*, start_day: date) -> dict[str, Any]:
             "input": input_t,
             "cached": cached_t,
             "output": output_t,
+            "requests": requests_n,
             "by_model": dict(sorted(by_model.items(), key=lambda kv: kv[1]["input"] + kv[1]["output"], reverse=True)),
         }
     except Exception as exc:  # noqa: BLE001
@@ -716,12 +722,15 @@ def build_openai_audit_text(*, target_day: date | None = None, tz_name: str | No
         oa_in = int(usage.get("input") or 0)
         oa_cached = int(usage.get("cached") or 0)
         oa_out = int(usage.get("output") or 0)
+        oa_req = int(usage.get("requests") or 0)
         our_in = int(ledger["by_units"].get("tokens_in", {}).get("units", 0))
         our_out = int(ledger["by_units"].get("tokens_out", {}).get("units", 0))
+        our_req = int(ledger["by_units"].get("requests", {}).get("units", 0))
         cached_pct = (oa_cached / oa_in * 100.0) if oa_in else 0.0
-        lines.append(f"  вход:  OpenAI {oa_in:,} (из них кэш {oa_cached:,} = {cached_pct:.0f}%) | наш {our_in:,} | {_token_ratio_note(our_in, oa_in)}")
-        lines.append(f"  выход: OpenAI {oa_out:,} | наш {our_out:,} | {_token_ratio_note(our_out, oa_out)}")
-        lines.append("  ⇒ токены сходятся → виноваты ЦЕНЫ; наших заметно больше → двойной учёт.")
+        lines.append(f"  вход:    OpenAI {oa_in:,} (кэш {oa_cached:,} = {cached_pct:.0f}%) | наш {our_in:,} | {_token_ratio_note(our_in, oa_in)}")
+        lines.append(f"  выход:   OpenAI {oa_out:,} | наш {our_out:,} | {_token_ratio_note(our_out, oa_out)}")
+        lines.append(f"  запросы: OpenAI {oa_req:,} | наш {our_req:,} | {_token_ratio_note(our_req, oa_req)}")
+        lines.append("  ⇒ запросы вдвое → двойной учёт; запросы сходятся, а токены нет → раздувание на вызов.")
     lines.append("")
 
     # 2) PRICES — our snapshot vs the real OpenAI list price
