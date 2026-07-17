@@ -296,14 +296,19 @@
     border-radius: 15px !important;
   }
   .webapp-page.is-home-bento .hdt-ic svg { width: 56% !important; height: 56% !important; }
-  /* Подписи крупнее + жирнее + перенос длинных нем. слов (без обрезки). */
+  /* Подписи крупнее + жирнее + перенос длинных нем. слов (без обрезки).
+     ВАЖНО: базовое правило .hdt-bt:not(.hero) .hdt-bl ставит white-space:nowrap
+     (нужно для телефонов, чтоб подпись в 1 строку). Здесь, на широком экране, это
+     заставляло длинные подписи («Wörterbuch & Suche») вылезать за плитку — поэтому
+     ЯВНО разрешаем перенос (normal !important) + перенос по словам/дефисам. */
   .webapp-page.is-home-bento .hdt-bl {
     font-size: clamp(15.5px, 2.35vh, 19px) !important;
     font-weight: 800 !important;
     line-height: 1.16 !important;
-    overflow-wrap: anywhere;
-    word-break: normal;
-    hyphens: auto;
+    white-space: normal !important;
+    overflow-wrap: break-word !important;
+    word-break: normal !important;
+    hyphens: auto !important;
   }
   .webapp-page.is-home-bento .hdt-bt.hero .hdt-bl {
     font-size: clamp(17px, 2.8vh, 22px) !important;
