@@ -855,6 +855,7 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
                 "   по сервисам: "
                 + " · ".join(f"{p.get('label')} ${_num(p.get('cost')):.4f}" for p in providers)
             )
+        L.append("   ⓘ оценка по прайс-листу (потолок), а не счёт провайдера — реальные списания: /provider_costs")
 
     # ── Activity by user (top first, medal for #1) ───────────────────────────
     activity = sorted(

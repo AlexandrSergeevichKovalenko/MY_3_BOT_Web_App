@@ -461,6 +461,7 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
     our_yday = fetch_our_estimate(start_day=yesterday, end_day=yesterday, tz_name=tz_name)
 
     openai = fetch_openai_costs(start_day=month_start, yesterday=yesterday)
+    openai_usage = fetch_openai_usage_tokens(start_day=month_start)
     google = fetch_google_costs(start_day=month_start, yesterday=yesterday, tz_name=tz_name)
     deepl = fetch_deepl_usage()
     r2 = fetch_cloudflare_r2(start_day=month_start)
@@ -472,16 +473,21 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
     lines.append("")
 
     # ---- OpenAI ----
+    # Three honest numbers, since our list-price ledger can't equal the real invoice while
+    # OpenAI's free daily token grants are active (see /openai_audit): the real bill (Costs
+    # API), the list-price ceiling if grants stopped (gross Usage × list price), and our
+    # internal ledger estimate (which also under-logs part of the calls).
     lines.append("▪️ OpenAI")
     if not openai.get("configured"):
         lines.append("  не настроено (нет OPENAI_ADMIN_KEY)")
     elif openai.get("error"):
         lines.append(f"  ошибка API: {openai['error']}")
     else:
-        lines.append(_delta_line(label="вчера", truth=openai.get("yday_usd"),
-                                 ours=_our_group_total(our_yday, "openai")))
-        lines.append(_delta_line(label="месяц", truth=openai.get("mtd_usd"),
-                                 ours=_our_group_total(our_mtd, "openai")))
+        lines.append(f"  реальный счёт (что платишь): месяц {_fmt_usd(openai.get('mtd_usd'))} · вчера {_fmt_usd(openai.get('yday_usd'))}")
+        ceiling = openai_list_price_ceiling(openai_usage)
+        if ceiling is not None:
+            lines.append(f"  потолок по прайсу (если гранты OpenAI кончатся): ~{_fmt_usd(ceiling)}/мес")
+        lines.append(f"  наш ledger (внутр. оценка, логирует часть вызовов): {_fmt_usd(_our_group_total(our_mtd, 'openai'))}")
         top = list((openai.get("by_line_item") or {}).items())[:5]
         if top:
             lines.append("  по статьям (месяц): " + ", ".join(f"{k} {_fmt_usd(v)}" for k, v in top))
@@ -593,6 +599,30 @@ def _sku_to_model_family(sku: str) -> str:
             s = s[: -len(suffix)]
             break
     return _model_family(s)
+
+
+def openai_list_price_ceiling(usage: dict[str, Any]) -> float | None:
+    """What OpenAI's GROSS usage (from the Usage API) would cost at full list price —
+    i.e. the bill if the free daily token grants / caching went away. Cached input is
+    still priced at the cached rate (that discount is not a grant). Returns None if
+    usage is unavailable. Models without a known list price are skipped."""
+    if not usage.get("configured") or usage.get("error"):
+        return None
+    total = 0.0
+    for model, v in (usage.get("by_model") or {}).items():
+        price = _OPENAI_REAL_PRICE_PER_1M.get(_model_family(model))
+        if not price:
+            continue
+        inp = int(v.get("input") or 0)
+        cached = int(v.get("cached") or 0)
+        out = int(v.get("output") or 0)
+        uncached = max(0, inp - cached)
+        total += (
+            uncached / 1_000_000.0 * price["input"]
+            + cached / 1_000_000.0 * price.get("cached", price["input"])
+            + out / 1_000_000.0 * price["output"]
+        )
+    return total
 
 
 def fetch_openai_usage_tokens(*, start_day: date) -> dict[str, Any]:
