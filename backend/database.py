@@ -39955,11 +39955,23 @@ def get_story_leaderboard(story_id: int) -> list[dict]:
                 (story_id, SYNTHETIC_TELEGRAM_USER_ID_MIN),
             )
             rows = cursor.fetchall()
+    # Rows whose stored username is empty (legacy scores, or submits whose initData
+    # carried no name) would otherwise degrade to a bare "Пользователь_<id>" placeholder.
+    # Backfill from the user's most recent known name across other tables.
+    missing_name_ids = [row[1] for row in rows if not (row[2] or "").strip()]
+    backfill_names = get_display_names_for_users(missing_name_ids) if missing_name_ids else {}
+
+    def _translator_name(row) -> str:
+        stored = (row[2] or "").strip()
+        if stored:
+            return stored
+        return backfill_names.get(int(row[1])) or f"Пользователь_{row[1]}"
+
     return [
         {
             "score_id":          row[0],
             "user_id":           row[1],
-            "username":          row[2] or f"Пользователь_{row[1]}",
+            "username":          _translator_name(row),
             "total_score":       row[3],
             "score_grammar":     row[4],
             "score_accuracy":    row[5],
@@ -39972,8 +39984,29 @@ def get_story_leaderboard(story_id: int) -> list[dict]:
     ]
 
 
+def _normalize_arena_difficulty(value: str | None) -> str:
+    """Fold difficulty labels to the canonical codes stored in bt_3_story_bank.
+
+    Stories persist difficulty normalized to beginner/intermediate/advanced
+    (see translation_workflow._normalize_story_difficulty), but the Arena search
+    sends the raw Russian dropdown label ('средний' etc.). Without this fold the
+    ILIKE never matches and Arena always reports "no opponents". Kept in sync with
+    the writer-side normalizer."""
+    if not value:
+        return "intermediate"
+    normalized = value.strip().lower()
+    if normalized in {"начальный", "beginner", "a2"}:
+        return "beginner"
+    if normalized in {"средний", "intermediate", "b1", "b2"}:
+        return "intermediate"
+    if normalized in {"продвинутый", "advanced", "c1", "c2"}:
+        return "advanced"
+    return "intermediate"
+
+
 def get_arena_stories_for_params(story_type: str, difficulty: str, exclude_user_id: int | None = None) -> list[dict]:
     """Return stories (with at least one scored translation) matching type+difficulty."""
+    difficulty = _normalize_arena_difficulty(difficulty)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -39990,7 +40023,11 @@ def get_arena_stories_for_params(story_type: str, difficulty: str, exclude_user_
                     (SELECT sc2.total_score
                      FROM bt_story_scores sc2
                      WHERE sc2.story_id = b.id
-                     ORDER BY sc2.total_score DESC LIMIT 1) AS best_user_score
+                     ORDER BY sc2.total_score DESC LIMIT 1) AS best_user_score,
+                    (SELECT sc2.user_id
+                     FROM bt_story_scores sc2
+                     WHERE sc2.story_id = b.id
+                     ORDER BY sc2.total_score DESC LIMIT 1) AS best_user_id
                 FROM bt_3_story_bank b
                 JOIN bt_story_scores sc ON sc.story_id = b.id
                 WHERE b.story_type ILIKE %s
@@ -40003,6 +40040,19 @@ def get_arena_stories_for_params(story_type: str, difficulty: str, exclude_user_
                 (story_type, difficulty, exclude_user_id, exclude_user_id),
             )
             rows = cursor.fetchall()
+    # Backfill the top translator's name for cards whose stored username is empty,
+    # so the opponent card never shows a faceless "Аноним" when the name is known.
+    missing_name_ids = [row[9] for row in rows if row[9] is not None and not (row[7] or "").strip()]
+    backfill_names = get_display_names_for_users(missing_name_ids) if missing_name_ids else {}
+
+    def _best_name(row) -> str:
+        stored = (row[7] or "").strip()
+        if stored:
+            return stored
+        if row[9] is not None:
+            return backfill_names.get(int(row[9])) or "Аноним"
+        return "Аноним"
+
     return [
         {
             "story_id":         row[0],
@@ -40012,7 +40062,7 @@ def get_arena_stories_for_params(story_type: str, difficulty: str, exclude_user_
             "translator_count": int(row[4]),
             "best_score":       int(row[5]) if row[5] is not None else 0,
             "avg_score":        int(row[6]) if row[6] is not None else 0,
-            "best_username":    row[7] or "Аноним",
+            "best_username":    _best_name(row),
             "best_user_score":  int(row[8]) if row[8] is not None else 0,
         }
         for row in rows
