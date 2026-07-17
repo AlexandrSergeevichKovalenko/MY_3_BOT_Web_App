@@ -36164,6 +36164,56 @@ def preview_churned_user_reader_audio(inactive_months: int = 12) -> dict:
         return {"inactive_months": int(inactive_months), "users": 0, "pages": 0, "bytes": 0, "rows": []}
 
 
+def list_users_eligible_for_auto_purge(inactive_months: int = 12, limit: int = 500) -> list[dict]:
+    """Read-only: candidates for the MONTHLY auto-purge of PERSONAL data — users who have
+    left the platform. Eligibility is deliberately conservative and anchored on a single
+    positive signal: no learning activity for `inactive_months`
+    (bt_3_user_streaks.last_active_date older than the threshold). A user with NO streak
+    row (unknown last-active) is never returned — silence is not a deletion signal. Having
+    blocked the bot is reported for context (the `blocked` flag) but is NOT sufficient on
+    its own, so someone who just blocked yesterday is not swept in.
+
+    Admins and paying/Pro users are NOT filtered here — the caller excludes them via
+    get_admin_telegram_ids() / resolve_entitlement() (Python-level checks). Users already
+    purged (bt_3_user_removal_queue.status = 'purged') are skipped so the monthly run does
+    not re-process the same people. Only shared data survives the eventual purge; this
+    function itself deletes nothing. Returns [{user_id, last_active(iso|None), blocked}]
+    oldest-inactive first."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT s.user_id,
+                           s.last_active_date          AS last_active,
+                           (b.user_id IS NOT NULL)     AS blocked
+                    FROM bt_3_user_streaks s
+                    LEFT JOIN bt_3_bot_blocked_users b
+                           ON b.user_id = s.user_id AND b.is_blocked = TRUE
+                    LEFT JOIN bt_3_user_removal_queue q
+                           ON q.user_id = s.user_id
+                    WHERE s.user_id > 0
+                      AND s.last_active_date IS NOT NULL
+                      AND s.last_active_date < (CURRENT_DATE - (%s * INTERVAL '1 month'))
+                      AND COALESCE(q.status, '') <> 'purged'
+                    ORDER BY s.last_active_date ASC
+                    LIMIT %s
+                    """,
+                    (int(inactive_months), max(1, int(limit))),
+                )
+                out: list[dict] = []
+                for r in cursor.fetchall():
+                    out.append({
+                        "user_id": int(r[0]),
+                        "last_active": r[1].isoformat() if r[1] else None,
+                        "blocked": bool(r[2]),
+                    })
+                return out
+    except Exception:
+        logging.exception("list_users_eligible_for_auto_purge failed")
+        return []
+
+
 def enforce_reader_audio_pro_monthly_limit(
     user_id: int,
     *,

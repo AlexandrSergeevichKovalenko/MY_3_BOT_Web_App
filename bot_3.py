@@ -4670,10 +4670,16 @@ def _auto_purge_format(result: dict, sample: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def run_auto_purge_inactive_users(application, *, force_live: bool = False) -> dict:
+async def run_auto_purge_inactive_users(
+    application, *, force_dry_run: bool = False, dedupe: bool = True
+) -> dict:
     """Find users inactive ≥ N months, exclude admins + Pro/paying, and (unless dry-run)
     purge ONLY their personal data via the existing safe path (schedule → purge). Shared
-    word/audio/metainfo is preserved. DMs admins a report. Returns a summary dict."""
+    word/audio/metainfo is preserved. DMs admins a report. Returns a summary dict.
+
+    force_dry_run: never delete, only report (used by the on-demand preview command).
+    dedupe: when True (the scheduled monthly run) skip admins already DM'd this month;
+    when False (on-demand) always send."""
     from backend.database import (
         get_admin_telegram_ids,
         list_users_eligible_for_auto_purge,
@@ -4685,7 +4691,7 @@ async def run_auto_purge_inactive_users(application, *, force_live: bool = False
     )
     months = int((os.getenv("AUTO_PURGE_INACTIVE_MONTHS") or "12").strip() or "12")
     limit = int((os.getenv("AUTO_PURGE_INACTIVE_LIMIT") or "500").strip() or "500")
-    dry_run = (not force_live) and _auto_purge_is_dry_run()
+    dry_run = force_dry_run or _auto_purge_is_dry_run()
 
     try:
         candidates = await asyncio.to_thread(list_users_eligible_for_auto_purge, months, limit)
@@ -4768,7 +4774,7 @@ async def run_auto_purge_inactive_users(application, *, force_live: bool = False
     sent = 0
     for admin_id in sorted(admin_ids):
         # On-demand previews always send; the scheduled run de-dupes per month per admin.
-        if not force_live:
+        if dedupe:
             try:
                 if await asyncio.to_thread(
                     has_admin_scheduler_run,
@@ -4782,7 +4788,7 @@ async def run_auto_purge_inactive_users(application, *, force_live: bool = False
         try:
             await application.bot.send_message(chat_id=int(admin_id), text=text, parse_mode="HTML")
             sent += 1
-            if not force_live:
+            if dedupe:
                 await asyncio.to_thread(
                     mark_admin_scheduler_run,
                     job_key="auto_purge_inactive",
@@ -4817,7 +4823,7 @@ async def admin_auto_purge_preview_command(update: Update, context: CallbackCont
     user = update.effective_user
     if not user or not _is_admin_user(int(user.id)):
         return
-    await run_auto_purge_inactive_users(context.application, force_live=False)
+    await run_auto_purge_inactive_users(context.application, force_dry_run=True, dedupe=False)
 
 
 # ===== Nightly auto-save: settings toggle + multi-select digest =========================
@@ -8688,6 +8694,10 @@ _SCHEDULER_HEALTH_CATALOG = [
     # not a "works now" guarantee. Both sit quietly under 💤 instead of a false ❌.
     ("tts_prewarm", "TTS prewarm (30м)", 3, False, "guard"),
     ("tts_generation_recovery", "Восстановление TTS (10м)", 3, False, "guard"),
+    # Monthly (1st) auto-purge of PERSONAL data for users inactive >= 12 months. Preview by
+    # default; armed via AUTO_PURGE_INACTIVE_DRY_RUN=0. 800h ≈ 33 days so a missed month
+    # goes ПРОТУХЛО. Shared word/audio/metainfo is never deleted.
+    ("auto_purge_inactive", "Автоочистка неактивных ≥12 мес (1-е число)", 800, True, "guard"),
 ]
 
 
@@ -37505,6 +37515,7 @@ def main():
     application.add_handler(CommandHandler("reader_public_status", admin_reader_public_status_command))
     application.add_handler(CommandHandler("reader_public_audit", reader_public_audit_command))
     application.add_handler(CommandHandler("reader_audio_churn_preview", reader_audio_churn_preview_command))
+    application.add_handler(CommandHandler("admin_auto_purge_preview", admin_auto_purge_preview_command))
     # Telegram Stars payments (Mini App digital purchases): approve pre-checkout + fulfil.
     application.add_handler(PreCheckoutQueryHandler(on_stars_pre_checkout))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_stars_successful_payment), group=-1)
@@ -37926,6 +37937,21 @@ def main():
             hour=int((os.getenv("READER_AUDIO_CHURN_PREVIEW_HOUR") or "9").strip() or "9"),
             minute=int((os.getenv("READER_AUDIO_CHURN_PREVIEW_MINUTE") or "30").strip() or "30"),
             timezone=ZoneInfo(os.getenv("READER_AUDIO_CHURN_PREVIEW_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Monthly AUTO-PURGE of personal data for users inactive >= 12 months (1st, 05:00) --
+        # Deletes ONLY per-user rows; shared word/audio/metainfo is preserved. Admins and
+        # Pro/paying users are excluded. Runs in PREVIEW mode until AUTO_PURGE_INACTIVE_DRY_RUN=0
+        # arms it (one-time switch → automatic forever). On-demand: /admin_auto_purge_preview.
+        scheduler.add_job(
+            lambda: submit_async(_auto_purge_inactive_job, CallbackContext(application=application)),
+            "cron",
+            day=int((os.getenv("AUTO_PURGE_INACTIVE_DAY") or "1").strip() or "1"),
+            hour=int((os.getenv("AUTO_PURGE_INACTIVE_HOUR") or "5").strip() or "5"),
+            minute=int((os.getenv("AUTO_PURGE_INACTIVE_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("AUTO_PURGE_INACTIVE_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,

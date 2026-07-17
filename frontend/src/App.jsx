@@ -30626,17 +30626,23 @@ function AppInner() {
     };
     const onScroll = () => { if (raf == null) raf = window.requestAnimationFrame(measure); };
     measure();
-    // The actual scroll container varies by environment: on Android/Chromium `.webapp-page`
-    // scrolls (is-contained-scroll / is-sticky-topbar → overflow-y:auto), in the standalone
-    // PWA the window scrolls, and inside the iOS Telegram Mini-App wrapper yet another element
-    // scrolls. Rather than guess which one, listen for scroll on `window` in the CAPTURE phase:
-    // scroll events don't bubble, but the capture phase runs window → … → target, so a single
-    // capture listener catches scroll from ANY nested scroller (the trick floating-ui/popper
-    // use to track scroll ancestors). Fixes the bar never tucking inside Telegram on iOS.
-    window.addEventListener('scroll', onScroll, { passive: true, capture: true });
+    // The scroll container varies by environment, so we attach one listener per case (they're
+    // all rAF-debounced, so extra ones are harmless):
+    //   • `.webapp-page` element — Android/Chromium (is-contained-scroll / is-sticky-topbar
+    //     give it overflow-y:auto, so the element itself scrolls).
+    //   • `window` (bubble) — standalone PWA, where the document/window scrolls. (A capture
+    //     listener on window did NOT catch this in the iOS webview, so keep the bubble one.)
+    //   • `document` (capture) — the iOS Telegram Mini-App wrapper scrolls yet another inner
+    //     element (neither window nor `.webapp-page`); scroll doesn't bubble, but the capture
+    //     phase runs document → … → target, so this catches scroll from ANY nested scroller.
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('scroll', onScroll, { passive: true });
+    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
     window.addEventListener('resize', onScroll);
     return () => {
-      window.removeEventListener('scroll', onScroll, { capture: true });
+      scroller.removeEventListener('scroll', onScroll);
+      window.removeEventListener('scroll', onScroll);
+      document.removeEventListener('scroll', onScroll, { capture: true });
       window.removeEventListener('resize', onScroll);
       if (raf != null) window.cancelAnimationFrame(raf);
       setYoutubeTopbarTucked(false);
