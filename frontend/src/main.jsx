@@ -149,7 +149,7 @@ function setupMediaSession() {
   const apply = () => {
     try {
       navigator.mediaSession.metadata = new window.MediaMetadata({
-        title: 'Das Deutsche Schlümpfchen',
+        title: 'Schlaufuchs',
         artist: 'Deutsch lernen',
         artwork: [
           { src: '/hero_sticker.webp', sizes: '512x512', type: 'image/webp' },
@@ -506,7 +506,7 @@ function applyAppHomeScreenMeta() {
       m.setAttribute('content', content);
     };
     setMeta('apple-mobile-web-app-capable', 'yes');
-    setMeta('apple-mobile-web-app-title', 'Schlümpfchen');
+    setMeta('apple-mobile-web-app-title', 'Schlaufuchs');
   } catch (_e) { /* non-fatal */ }
 }
 

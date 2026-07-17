@@ -1436,7 +1436,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Wofür die App gedacht ist',
             items: [
-              'Schlümpfchen verbindet Übersetzungen, Wörterbuch, Karten, Video, Lesen, Sprechpraxis und Analytik in einem Lernfluss.',
+              'Schlaufuchs verbindet Übersetzungen, Wörterbuch, Karten, Video, Lesen, Sprechpraxis und Analytik in einem Lernfluss.',
               'Du kannst zwischen Telegram Mini App und Web wechseln, ohne deine Lernlogik zu verlieren.',
               'Die tiefste und am vollständigsten ausgebaute Lernstrecke ist aktuell RU ↔ DE.',
             ],
@@ -2117,7 +2117,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Для чего нужно приложение',
           items: [
-            'Schlümpfchen — твой помощник в немецком: переводы, словарь, карточки для запоминания, видео, чтение и разговор — всё в одном месте.',
+            'Schlaufuchs — твой помощник в немецком: переводы, словарь, карточки для запоминания, видео, чтение и разговор — всё в одном месте.',
             'Работает прямо в Telegram и в браузере: твои слова и прогресс сохраняются и доступны с любого устройства.',
           ],
         },
@@ -33040,7 +33040,7 @@ function AppInner() {
                 <>
                   <div className="topbar-row topbar-row-main">
                     <div className="topbar-leading-spacer" aria-hidden="true" />
-                    <div className="topbar-title">Das Deutsche Schlümpfchen</div>
+                    <div className="topbar-title">Schlaufuchs</div>
                     {billingStatus?.is_sponsor && (
                       <button
                         type="button"
@@ -33136,7 +33136,7 @@ function AppInner() {
                     >
                       {tr('Back', 'Back')}
                     </button>
-                    <div className="brand-title overlay-brand-title">Schlümpfchen</div>
+                    <div className="brand-title overlay-brand-title">Schlaufuchs</div>
                     <button
                       type="button"
                       className="overlay-close-button"
@@ -33905,7 +33905,7 @@ function AppInner() {
               <section className="webapp-section webapp-guide" ref={guideRef}>
                 <div className="guide-hero-card">
                   <div className="guide-hero-copy">
-                    <h2>{tr('Как пользоваться', 'So benutzt du Schlümpfchen')}</h2>
+                    <h2>{tr('Как пользоваться', 'So benutzt du Schlaufuchs')}</h2>
                     <p className="guide-hero-subtitle">
                       {tr(
                         'Полная карта приложения по порядку меню: что делает каждый раздел, что приходит в личку и что приходит в группу.',
