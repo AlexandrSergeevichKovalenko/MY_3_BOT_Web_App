@@ -381,19 +381,20 @@ def fetch_railway_usage(*, start_day: date) -> dict[str, Any]:
     if not token:
         return {"configured": False}
     workspace = (os.getenv("RAILWAY_WORKSPACE_ID") or "").strip() or None
-    start_iso = f"{start_day.isoformat()}T00:00:00Z"
-    end_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # estimatedUsage rejects date args (returns the current billing cycle) and is scoped
+    # by the token; workspaceId is only sent when explicitly provided, to keep the arg
+    # list minimal (fewer chances for an "unknown argument" validation error).
+    var_defs = ["$measurements:[MetricMeasurement!]!"]
+    field_args = ["measurements:$measurements"]
+    variables: dict[str, Any] = {"measurements": ["CPU_USAGE", "MEMORY_USAGE_GB", "NETWORK_TX_GB"]}
+    if workspace:
+        var_defs.append("$workspaceId:String")
+        field_args.append("workspaceId:$workspaceId")
+        variables["workspaceId"] = workspace
     query = (
-        "query usage($measurements:[MetricMeasurement!]!,$workspaceId:String,$startDate:DateTime!,$endDate:DateTime!){"
-        "estimatedUsage(measurements:$measurements,workspaceId:$workspaceId,startDate:$startDate,endDate:$endDate){"
-        "measurement estimatedValue}}"
+        f"query usage({','.join(var_defs)}){{"
+        f"estimatedUsage({','.join(field_args)}){{measurement estimatedValue}}}}"
     )
-    variables = {
-        "measurements": ["CPU_USAGE", "MEMORY_USAGE_GB", "NETWORK_TX_GB"],
-        "workspaceId": workspace,
-        "startDate": start_iso,
-        "endDate": end_iso,
-    }
     try:
         resp = requests.post(
             _RAILWAY_GRAPHQL,
@@ -402,10 +403,10 @@ def fetch_railway_usage(*, start_day: date) -> dict[str, Any]:
             timeout=_HTTP_TIMEOUT,
         )
         if resp.status_code >= 400:
-            return {"configured": True, "error": f"HTTP {resp.status_code}: {resp.text[:300]}"}
+            return {"configured": True, "error": f"HTTP {resp.status_code}: {resp.text[:600]}"}
         body = resp.json()
         if body.get("errors"):
-            return {"configured": True, "error": str(body["errors"])[:300]}
+            return {"configured": True, "error": str(body["errors"])[:600]}
         rows = ((body.get("data") or {}).get("estimatedUsage")) or []
         by_measure: dict[str, float] = {}
         total = 0.0
