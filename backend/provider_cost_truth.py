@@ -581,6 +581,20 @@ def _ref_price_for_sku(sku: str) -> float | None:
     return None
 
 
+def _model_family(model: str) -> str:
+    """Strip the -YYYY-MM-DD date suffix so 'gpt-4.1-2025-04-14' == 'gpt-4.1'."""
+    return _MODEL_DATE_RE.sub("", str(model or "").strip())
+
+
+def _sku_to_model_family(sku: str) -> str:
+    s = str(sku or "")
+    for suffix in ("_input", "_output", "_cached"):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)]
+            break
+    return _model_family(s)
+
+
 def fetch_openai_usage_tokens(*, start_day: date) -> dict[str, Any]:
     """Token QUANTITIES (input/cached/output) from OpenAI's Usage API, grouped by
     model — the ground truth to check our token counting against. Read-only."""
@@ -645,6 +659,7 @@ def fetch_our_openai_ledger(*, start_day: date, end_day: date, tz_name: str) -> 
     snapshot to recover the model/SKU. Read-only: totals per units_type + per SKU."""
     by_units: dict[str, dict[str, float]] = {}
     by_sku: dict[str, dict[str, Any]] = {}
+    by_model: dict[str, dict[str, float]] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -669,7 +684,11 @@ def fetch_our_openai_ledger(*, start_day: date, end_day: date, tz_name: str) -> 
                 slot["units"] += u
                 slot["cost"] += c
                 by_sku[f"{sku} · {ut}"] = {"units": u, "cost": c}
-    return {"by_units": by_units, "by_sku": by_sku}
+                fam = _sku_to_model_family(sku)
+                if fam and ut in ("tokens_in", "tokens_out"):
+                    fm = by_model.setdefault(fam, {"tokens_in": 0.0, "tokens_out": 0.0})
+                    fm[ut] += u
+    return {"by_units": by_units, "by_sku": by_sku, "by_model": by_model}
 
 
 def fetch_openai_price_snapshots() -> dict[str, float]:
@@ -730,7 +749,24 @@ def build_openai_audit_text(*, target_day: date | None = None, tz_name: str | No
         lines.append(f"  вход:    OpenAI {oa_in:,} (кэш {oa_cached:,} = {cached_pct:.0f}%) | наш {our_in:,} | {_token_ratio_note(our_in, oa_in)}")
         lines.append(f"  выход:   OpenAI {oa_out:,} | наш {our_out:,} | {_token_ratio_note(our_out, oa_out)}")
         lines.append(f"  запросы: OpenAI {oa_req:,} | наш {our_req:,} | {_token_ratio_note(our_req, oa_req)}")
-        lines.append("  ⇒ запросы вдвое → двойной учёт; запросы сходятся, а токены нет → раздувание на вызов.")
+        lines.append("")
+        # Per-model: does OpenAI's GROSS gpt-4.1 usage match what WE attribute to gpt-4.1?
+        # This settles it — the aggregate mixes cheap models we barely log.
+        lines.append("  по моделям (OpenAI gross vs наш ledger), вход/выход:")
+        oa_fam: dict[str, dict[str, int]] = {}
+        for model, v in (usage.get("by_model") or {}).items():
+            f = _model_family(model)
+            acc = oa_fam.setdefault(f, {"input": 0, "output": 0})
+            acc["input"] += int(v.get("input") or 0)
+            acc["output"] += int(v.get("output") or 0)
+        our_fam = ledger.get("by_model") or {}
+        fams = sorted(set(oa_fam) | set(our_fam), key=lambda f: oa_fam.get(f, {}).get("input", 0), reverse=True)
+        for f in fams[:8]:
+            oi = int(oa_fam.get(f, {}).get("input", 0))
+            oo = int(oa_fam.get(f, {}).get("output", 0))
+            ui = int(our_fam.get(f, {}).get("tokens_in", 0))
+            uo = int(our_fam.get(f, {}).get("tokens_out", 0))
+            lines.append(f"    {f}: вход OA {oi:,}/наш {ui:,} {_token_ratio_note(ui, oi)} · выход OA {oo:,}/наш {uo:,} {_token_ratio_note(uo, oo)}")
     lines.append("")
 
     # 2) PRICES — our snapshot vs the real OpenAI list price
