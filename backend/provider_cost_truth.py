@@ -18,6 +18,7 @@ network/parse error is captured into the report instead of crashing the job.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import os
 import time
@@ -421,13 +422,25 @@ def fetch_railway_usage(*, start_day: date) -> dict[str, Any]:
                     return {"configured": True, "error": "Railway ограничил одновременные usage-запросы (лимит 16). Данные подтянутся в следующем отчёте."}
                 return {"configured": True, "error": last_msg[:600]}
             rows = ((body.get("data") or {}).get("estimatedUsage")) or []
+            # estimatedValue is the RAW metered quantity (GB-minutes of RAM, vCPU-minutes,
+            # GB egress), NOT dollars — price it with Railway's list rates ($10/GB-month RAM,
+            # $20/vCPU-month CPU, $0.05/GB egress, $0.25/GB-month volume). Calibrated within
+            # ~2-4% of the dashboard's "Estimated Usage" panel (which this query powers).
+            now = datetime.now(timezone.utc)
+            minutes_in_month = calendar.monthrange(now.year, now.month)[1] * 24 * 60
+            unit_price = {
+                "MEMORY_USAGE_GB": 10.0 / minutes_in_month,
+                "CPU_USAGE": 20.0 / minutes_in_month,
+                "NETWORK_TX_GB": 0.05,
+                "DISK_USAGE_GB": 0.25 / minutes_in_month,
+            }
             by_measure: dict[str, float] = {}
             total = 0.0
             for r in rows:
                 m = str(r.get("measurement") or "—")
-                v = float(r.get("estimatedValue") or 0.0)
-                by_measure[m] = by_measure.get(m, 0.0) + v
-                total += v
+                cost = float(r.get("estimatedValue") or 0.0) * unit_price.get(m, 0.0)
+                by_measure[m] = by_measure.get(m, 0.0) + cost
+                total += cost
             return {"configured": True, "total_usd": total, "by_measure": by_measure}
         return {"configured": True, "error": (last_msg or "Railway usage unavailable")[:600]}
     except Exception as exc:  # noqa: BLE001
@@ -518,13 +531,13 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
     lines.append("")
 
     # ---- Railway ----
-    lines.append("▪️ Railway (инфраструктура, оценка за месяц)")
+    lines.append("▪️ Railway (инфраструктура, прогноз на конец месяца ≈)")
     if not railway.get("configured"):
         lines.append("  не настроено (нет RAILWAY_API_TOKEN)")
     elif railway.get("error"):
         lines.append(f"  ошибка API: {railway['error']}")
     else:
-        lines.append(f"  оценка usage: {_fmt_usd(railway.get('total_usd'))}")
+        lines.append(f"  ≈ {_fmt_usd(railway.get('total_usd'))} (по прайсу Railway; точное — в Railway → Usage)")
         bm = railway.get("by_measure") or {}
         if bm:
             lines.append("  по ресурсам: " + ", ".join(f"{k} {_fmt_usd(v)}" for k, v in bm.items()))
