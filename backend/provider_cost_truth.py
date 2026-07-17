@@ -53,6 +53,25 @@ _OUR_PROVIDER_GROUPS: dict[str, tuple[str, ...]] = {
     "perplexity": ("perplexity",),
 }
 
+# Cloudflare R2 — monthly free allowances + list prices (2026) for an overage estimate.
+_CF_GRAPHQL = "https://api.cloudflare.com/client/v4/graphql"
+_R2_FREE_STORAGE_GB = 10.0
+_R2_FREE_CLASS_A = 1_000_000
+_R2_FREE_CLASS_B = 10_000_000
+_R2_PRICE_STORAGE_GB = 0.015
+_R2_PRICE_CLASS_A_PER_M = 4.50
+_R2_PRICE_CLASS_B_PER_M = 0.36
+# actionType → billing class. Free ops are skipped; everything not Class A counts as B.
+_R2_CLASS_A_ACTIONS = {
+    "ListBuckets", "PutBucket", "ListObjects", "PutObject", "CopyObject",
+    "CompleteMultipartUpload", "CreateMultipartUpload", "ListMultipartUploads",
+    "LifecycleStorageTierTransition", "UploadPart", "UploadPartCopy",
+    "PutBucketEncryption", "PutBucketCors", "PutBucketLifecycleConfiguration",
+}
+_R2_FREE_ACTIONS = {"DeleteObject", "DeleteBucket", "AbortMultipartUpload"}
+
+_RAILWAY_GRAPHQL = "https://backboard.railway.com/graphql/v2"
+
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -268,6 +287,140 @@ def fetch_deepl_usage() -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Cloudflare R2  (storage GB + Class A/B ops vs free tier)
+# --------------------------------------------------------------------------- #
+def fetch_cloudflare_r2(*, start_day: date) -> dict[str, Any]:
+    """Account-level R2 usage from Cloudflare's GraphQL Analytics API: latest stored
+    bytes + object count, and month-to-date Class A/B operations, with an overage
+    estimate vs the free tier. Needs CLOUDFLARE_API_TOKEN (Account Analytics: Read)
+    + R2_ACCOUNT_ID. Metrics are retained ~31 days, so MTD is reliable early-month."""
+    token = (os.getenv("CLOUDFLARE_API_TOKEN") or "").strip()
+    account = (os.getenv("R2_ACCOUNT_ID") or "").strip()
+    if not token or not account:
+        return {"configured": False}
+    start_iso = f"{start_day.isoformat()}T00:00:00Z"
+    end_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    storage_q = (
+        "query($tag:String!,$start:Time,$end:Time){viewer{accounts(filter:{accountTag:$tag}){"
+        "r2StorageAdaptiveGroups(limit:1,filter:{datetime_geq:$start,datetime_leq:$end},orderBy:[datetime_DESC]){"
+        "max{objectCount payloadSize metadataSize} dimensions{datetime}}}}}"
+    )
+    ops_q = (
+        "query($tag:String!,$start:Time,$end:Time){viewer{accounts(filter:{accountTag:$tag}){"
+        "r2OperationsAdaptiveGroups(limit:10000,filter:{datetime_geq:$start,datetime_leq:$end}){"
+        "sum{requests} dimensions{actionType}}}}}"
+    )
+    variables = {"tag": account, "start": start_iso, "end": end_iso}
+    try:
+        s_resp = requests.post(_CF_GRAPHQL, headers=headers,
+                               json={"query": storage_q, "variables": variables}, timeout=_HTTP_TIMEOUT)
+        o_resp = requests.post(_CF_GRAPHQL, headers=headers,
+                               json={"query": ops_q, "variables": variables}, timeout=_HTTP_TIMEOUT)
+        for r in (s_resp, o_resp):
+            if r.status_code >= 400:
+                return {"configured": True, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+        s_body = s_resp.json()
+        o_body = o_resp.json()
+        if s_body.get("errors"):
+            return {"configured": True, "error": str(s_body["errors"])[:200]}
+        if o_body.get("errors"):
+            return {"configured": True, "error": str(o_body["errors"])[:200]}
+
+        def _accounts(body: dict) -> list:
+            return (((body.get("data") or {}).get("viewer") or {}).get("accounts") or [{}])
+
+        s_groups = _accounts(s_body)[0].get("r2StorageAdaptiveGroups") or []
+        stored_bytes = 0.0
+        object_count = 0
+        if s_groups:
+            mx = s_groups[0].get("max") or {}
+            stored_bytes = float(mx.get("payloadSize") or 0) + float(mx.get("metadataSize") or 0)
+            object_count = int(mx.get("objectCount") or 0)
+
+        o_groups = _accounts(o_body)[0].get("r2OperationsAdaptiveGroups") or []
+        class_a = class_b = 0
+        for g in o_groups:
+            action = str((g.get("dimensions") or {}).get("actionType") or "")
+            reqs = int((g.get("sum") or {}).get("requests") or 0)
+            if action in _R2_FREE_ACTIONS:
+                continue
+            if action in _R2_CLASS_A_ACTIONS:
+                class_a += reqs
+            else:
+                class_b += reqs
+
+        gb = stored_bytes / 1e9
+        est_cost = (
+            max(0.0, gb - _R2_FREE_STORAGE_GB) * _R2_PRICE_STORAGE_GB
+            + max(0, class_a - _R2_FREE_CLASS_A) / 1e6 * _R2_PRICE_CLASS_A_PER_M
+            + max(0, class_b - _R2_FREE_CLASS_B) / 1e6 * _R2_PRICE_CLASS_B_PER_M
+        )
+        return {
+            "configured": True,
+            "gb": gb,
+            "object_count": object_count,
+            "class_a": class_a,
+            "class_b": class_b,
+            "est_cost": est_cost,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Cloudflare R2 fetch failed: %s", exc, exc_info=True)
+        return {"configured": True, "error": str(exc)}
+
+
+# --------------------------------------------------------------------------- #
+# Railway  (infra usage estimate for the current month)
+# --------------------------------------------------------------------------- #
+def fetch_railway_usage(*, start_day: date) -> dict[str, Any]:
+    """Month-to-date estimated usage ($) from Railway's GraphQL API. Railway does NOT
+    document this billing query, so it is self-diagnosing: a wrong field name comes
+    back in ``error`` (GraphQL echoes a "did you mean …" hint) and we patch from there.
+    Needs RAILWAY_API_TOKEN (account/workspace token); RAILWAY_WORKSPACE_ID optional."""
+    token = (os.getenv("RAILWAY_API_TOKEN") or "").strip()
+    if not token:
+        return {"configured": False}
+    workspace = (os.getenv("RAILWAY_WORKSPACE_ID") or "").strip() or None
+    start_iso = f"{start_day.isoformat()}T00:00:00Z"
+    end_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = (
+        "query usage($measurements:[MetricMeasurement!]!,$workspaceId:String,$startDate:DateTime!,$endDate:DateTime!){"
+        "estimatedUsage(measurements:$measurements,workspaceId:$workspaceId,startDate:$startDate,endDate:$endDate){"
+        "measurement estimatedValue}}"
+    )
+    variables = {
+        "measurements": ["CPU_USAGE", "MEMORY_USAGE_GB", "NETWORK_TX_GB"],
+        "workspaceId": workspace,
+        "startDate": start_iso,
+        "endDate": end_iso,
+    }
+    try:
+        resp = requests.post(
+            _RAILWAY_GRAPHQL,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"query": query, "variables": variables},
+            timeout=_HTTP_TIMEOUT,
+        )
+        if resp.status_code >= 400:
+            return {"configured": True, "error": f"HTTP {resp.status_code}: {resp.text[:300]}"}
+        body = resp.json()
+        if body.get("errors"):
+            return {"configured": True, "error": str(body["errors"])[:300]}
+        rows = ((body.get("data") or {}).get("estimatedUsage")) or []
+        by_measure: dict[str, float] = {}
+        total = 0.0
+        for r in rows:
+            m = str(r.get("measurement") or "—")
+            v = float(r.get("estimatedValue") or 0.0)
+            by_measure[m] = by_measure.get(m, 0.0) + v
+            total += v
+        return {"configured": True, "total_usd": total, "by_measure": by_measure}
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Railway usage fetch failed: %s", exc, exc_info=True)
+        return {"configured": True, "error": str(exc)}
+
+
+# --------------------------------------------------------------------------- #
 # report text
 # --------------------------------------------------------------------------- #
 def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: str | None = None) -> str:
@@ -281,6 +434,8 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
     openai = fetch_openai_costs(start_day=month_start, yesterday=yesterday)
     google = fetch_google_costs(start_day=month_start, yesterday=yesterday, tz_name=tz_name)
     deepl = fetch_deepl_usage()
+    r2 = fetch_cloudflare_r2(start_day=month_start)
+    railway = fetch_railway_usage(start_day=month_start)
 
     lines: list[str] = []
     lines.append("📊 Эталон провайдеров (факт vs наш расчёт)")
@@ -330,6 +485,34 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
         remaining = max(0, limit - used)
         pct = (used / limit * 100.0) if limit else 0.0
         lines.append(f"  использовано {used:,} / {limit:,} символов ({pct:.0f}%), осталось {remaining:,}")
+    lines.append("")
+
+    # ---- Cloudflare R2 ----
+    lines.append("▪️ Cloudflare R2 (хранилище + операции)")
+    if not r2.get("configured"):
+        lines.append("  не настроено (нет CLOUDFLARE_API_TOKEN / R2_ACCOUNT_ID)")
+    elif r2.get("error"):
+        lines.append(f"  ошибка API: {r2['error']}")
+    else:
+        gb = float(r2.get("gb") or 0.0)
+        a = int(r2.get("class_a") or 0)
+        b = int(r2.get("class_b") or 0)
+        lines.append(f"  хранилище {gb:.2f} / 10 GB · объектов {int(r2.get('object_count') or 0):,}")
+        lines.append(f"  Class A {a:,} / 1,000,000 · Class B {b:,} / 10,000,000 (месяц)")
+        lines.append(f"  оценка сверх free: {_fmt_usd(r2.get('est_cost'))}")
+    lines.append("")
+
+    # ---- Railway ----
+    lines.append("▪️ Railway (инфраструктура, оценка за месяц)")
+    if not railway.get("configured"):
+        lines.append("  не настроено (нет RAILWAY_API_TOKEN)")
+    elif railway.get("error"):
+        lines.append(f"  ошибка API: {railway['error']}")
+    else:
+        lines.append(f"  оценка usage: {_fmt_usd(railway.get('total_usd'))}")
+        bm = railway.get("by_measure") or {}
+        if bm:
+            lines.append("  по ресурсам: " + ", ".join(f"{k} {_fmt_usd(v)}" for k, v in bm.items()))
     lines.append("")
 
     # ---- Perplexity (no truth API) ----
