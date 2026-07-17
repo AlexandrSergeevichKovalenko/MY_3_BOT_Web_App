@@ -153,6 +153,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "example": '/provider_costs 2026-07-15',
         },
         {
+            "cmd": '/openai_audit',
+            "desc": 'READ-ONLY диагностика перерасчёта OpenAI: сравнивает КОЛИЧЕСТВО токенов (OpenAI Usage API vs наш billing_events), затем цены-снапшоты vs реальные цены OpenAI, затем $ по SKU. Ничего не пишет, без фоновой работы.',
+            "args": 'Необязательный первый аргумент — дата YYYY-MM-DD (месяц этой даты); по умолчанию вчера.',
+            "example": '/openai_audit 2026-07-16',
+        },
+        {
             "cmd": '/dau',
             "desc": 'Показывает администратору статистику DAU/WAU/MAU, липкость и сводку по стрикам.',
             "args": 'нет аргументов',

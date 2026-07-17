@@ -101,6 +101,7 @@ from backend.image_quiz_utils import (
     normalize_image_quiz_option_text,
 )
 from backend.provider_cost_truth import (
+    build_openai_audit_text,
     build_provider_cost_truth_text,
     send_provider_cost_truth_report,
 )
@@ -8981,6 +8982,35 @@ async def admin_provider_costs_command(update: Update, context: CallbackContext)
     except Exception as exc:
         logging.exception("admin provider costs command failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Не удалось собрать отчёт провайдеров: {exc}")
+
+
+async def admin_openai_audit_command(update: Update, context: CallbackContext):
+    """READ-ONLY diagnostic: why our billing_events overcounts OpenAI. Compares token
+    QUANTITIES (OpenAI Usage API vs our ledger) first, then snapshot prices vs real
+    OpenAI list prices, then $ by SKU. No writes, no background work.
+    /openai_audit [YYYY-MM-DD] — default: yesterday (current month)."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    target_day = None
+    if context.args:
+        try:
+            target_day = datetime.strptime(str(context.args[0]).strip(), "%Y-%m-%d").date()
+        except (ValueError, IndexError):
+            await message.reply_text("Формат даты: /openai_audit 2026-07-16")
+            return
+    await message.reply_text("🔎 Собираю аудит OpenAI (токены → цены → $)…")
+    try:
+        text = await asyncio.to_thread(build_openai_audit_text, target_day=target_day)
+        for part in _split_telegram_text(text):
+            await message.reply_text(part, disable_web_page_preview=True)
+    except Exception as exc:
+        logging.exception("admin openai audit command failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось собрать аудит OpenAI: {exc}")
 
 
 async def admin_review_card_command(update: Update, context: CallbackContext):
@@ -37000,6 +37030,7 @@ def main():
     application.add_handler(CommandHandler("economics", admin_economics_command))
     application.add_handler(CommandHandler("costs", admin_costs_command))
     application.add_handler(CommandHandler("provider_costs", admin_provider_costs_command))
+    application.add_handler(CommandHandler("openai_audit", admin_openai_audit_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
     application.add_handler(CommandHandler("fix_translation_sessions", admin_fix_translation_sessions_command))

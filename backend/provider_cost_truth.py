@@ -21,6 +21,7 @@ from __future__ import annotations
 import calendar
 import logging
 import os
+import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -552,6 +553,204 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
         lines.append("")
 
     lines.append("⚠️ = расхождение факт/наш > 10% — наш счётчик мог что-то не учесть.")
+    return "\n".join(lines).rstrip()
+
+
+# --------------------------------------------------------------------------- #
+# OpenAI overcount AUDIT (read-only): tokens first, then prices, then $
+# --------------------------------------------------------------------------- #
+# Real OpenAI list prices per 1M tokens (mid-2026), reference for the ⚠️ flag.
+_OPENAI_REAL_PRICE_PER_1M: dict[str, dict[str, float]] = {
+    "gpt-4.1": {"input": 2.00, "output": 8.00, "cached": 0.50},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cached": 0.10},
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40, "cached": 0.025},
+    "gpt-4o": {"input": 2.50, "output": 10.00, "cached": 1.25},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60, "cached": 0.075},
+}
+_MODEL_DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
+
+def _ref_price_for_sku(sku: str) -> float | None:
+    """Map a ledger price SKU (e.g. 'gpt-4.1-2025-04-14_output') to the real
+    OpenAI per-1M price, so we can flag an inflated snapshot."""
+    s = str(sku or "")
+    for suffix, side in (("_input", "input"), ("_output", "output"), ("_cached", "cached")):
+        if s.endswith(suffix):
+            model = _MODEL_DATE_RE.sub("", s[: -len(suffix)])
+            return (_OPENAI_REAL_PRICE_PER_1M.get(model) or {}).get(side)
+    return None
+
+
+def fetch_openai_usage_tokens(*, start_day: date) -> dict[str, Any]:
+    """Token QUANTITIES (input/cached/output) from OpenAI's Usage API, grouped by
+    model — the ground truth to check our token counting against. Read-only."""
+    key = (os.getenv("OPENAI_ADMIN_KEY") or "").strip()
+    if not key:
+        return {"configured": False}
+    start_ts = int(datetime(start_day.year, start_day.month, start_day.day, tzinfo=timezone.utc).timestamp())
+    try:
+        input_t = cached_t = output_t = 0
+        by_model: dict[str, dict[str, int]] = {}
+        params: dict[str, Any] = {"start_time": start_ts, "bucket_width": "1d", "limit": 62, "group_by": "model"}
+        page = None
+        for _ in range(12):
+            if page:
+                params["page"] = page
+            resp = requests.get(
+                "https://api.openai.com/v1/organization/usage/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                params=params,
+                timeout=_HTTP_TIMEOUT,
+            )
+            if resp.status_code >= 400:
+                return {"configured": True, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+            body = resp.json() if resp.content else {}
+            for bucket in body.get("data") or []:
+                for item in bucket.get("results") or []:
+                    it = int(item.get("input_tokens") or 0)
+                    ct = int(item.get("input_cached_tokens") or 0)
+                    ot = int(item.get("output_tokens") or 0)
+                    input_t += it
+                    cached_t += ct
+                    output_t += ot
+                    model = str(item.get("model") or "—")
+                    slot = by_model.setdefault(model, {"input": 0, "cached": 0, "output": 0})
+                    slot["input"] += it
+                    slot["cached"] += ct
+                    slot["output"] += ot
+            if body.get("has_more") and body.get("next_page"):
+                page = body.get("next_page")
+                continue
+            break
+        return {
+            "configured": True,
+            "input": input_t,
+            "cached": cached_t,
+            "output": output_t,
+            "by_model": dict(sorted(by_model.items(), key=lambda kv: kv[1]["input"] + kv[1]["output"], reverse=True)),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("OpenAI usage tokens fetch failed: %s", exc, exc_info=True)
+        return {"configured": True, "error": str(exc)}
+
+
+def fetch_our_openai_ledger(*, start_day: date, end_day: date, tz_name: str) -> dict[str, Any]:
+    """Our recorded OpenAI usage from bt_3_billing_events, joined to the price
+    snapshot to recover the model/SKU. Read-only: totals per units_type + per SKU."""
+    by_units: dict[str, dict[str, float]] = {}
+    by_sku: dict[str, dict[str, Any]] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT e.units_type,
+                       COALESCE(s.sku, '(no price snapshot)') AS sku,
+                       SUM(e.units_value) AS units,
+                       SUM(e.cost_amount) AS cost
+                FROM bt_3_billing_events e
+                LEFT JOIN bt_3_billing_price_snapshots s ON s.id = e.price_snapshot_id
+                WHERE e.provider = 'openai'
+                  AND (e.event_time AT TIME ZONE %s)::date BETWEEN %s AND %s
+                GROUP BY e.units_type, COALESCE(s.sku, '(no price snapshot)');
+                """,
+                (tz_name, start_day, end_day),
+            )
+            for units_type, sku, units, cost in cursor.fetchall() or []:
+                ut = str(units_type or "")
+                u = float(units or 0.0)
+                c = float(cost or 0.0)
+                slot = by_units.setdefault(ut, {"units": 0.0, "cost": 0.0})
+                slot["units"] += u
+                slot["cost"] += c
+                by_sku[f"{sku} · {ut}"] = {"units": u, "cost": c}
+    return {"by_units": by_units, "by_sku": by_sku}
+
+
+def fetch_openai_price_snapshots() -> dict[str, float]:
+    """Current effective per-unit OpenAI prices from the snapshot table (latest
+    valid_from per sku+unit). Key = 'sku|unit', value = price_per_unit. Read-only."""
+    prices: dict[str, float] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (sku, unit) sku, unit, price_per_unit
+                FROM bt_3_billing_price_snapshots
+                WHERE provider = 'openai'
+                ORDER BY sku, unit, valid_from DESC;
+                """
+            )
+            for sku, unit, ppu in cursor.fetchall() or []:
+                prices[f"{sku}|{unit}"] = float(ppu or 0.0)
+    return prices
+
+
+def _token_ratio_note(ours: int, ref: int) -> str:
+    if ref <= 0:
+        return "эталон 0" if ours <= 0 else "эталон 0 / у нас >0 ⚠️"
+    d = (ours - ref) / ref * 100.0
+    return f"Δ {d:+.0f}%{' ⚠️' if abs(d) > 10 else ' ✅'}"
+
+
+def build_openai_audit_text(*, target_day: date | None = None, tz_name: str | None = None) -> str:
+    tz_name = tz_name or _tz_name()
+    yesterday = target_day or (datetime.now(timezone.utc).date() - timedelta(days=1))
+    month_start = yesterday.replace(day=1)
+
+    usage = fetch_openai_usage_tokens(start_day=month_start)
+    ledger = fetch_our_openai_ledger(start_day=month_start, end_day=yesterday, tz_name=tz_name)
+    snaps = fetch_openai_price_snapshots()
+
+    lines: list[str] = []
+    lines.append("🔎 OpenAI аудит: сначала ТОКЕНЫ, потом цены, потом $")
+    lines.append(f"Месяц {month_start.isoformat()} → {yesterday.isoformat()} · TZ {tz_name}")
+    lines.append("")
+
+    # 1) TOKENS — do our counts match OpenAI's? (isolates counting vs pricing)
+    lines.append("1️⃣ ТОКЕНЫ (эталон OpenAI Usage vs наш ledger)")
+    if not usage.get("configured"):
+        lines.append("  нет OPENAI_ADMIN_KEY")
+    elif usage.get("error"):
+        lines.append(f"  ошибка Usage API: {usage['error']}")
+    else:
+        oa_in = int(usage.get("input") or 0)
+        oa_cached = int(usage.get("cached") or 0)
+        oa_out = int(usage.get("output") or 0)
+        our_in = int(ledger["by_units"].get("tokens_in", {}).get("units", 0))
+        our_out = int(ledger["by_units"].get("tokens_out", {}).get("units", 0))
+        cached_pct = (oa_cached / oa_in * 100.0) if oa_in else 0.0
+        lines.append(f"  вход:  OpenAI {oa_in:,} (из них кэш {oa_cached:,} = {cached_pct:.0f}%) | наш {our_in:,} | {_token_ratio_note(our_in, oa_in)}")
+        lines.append(f"  выход: OpenAI {oa_out:,} | наш {our_out:,} | {_token_ratio_note(our_out, oa_out)}")
+        lines.append("  ⇒ токены сходятся → виноваты ЦЕНЫ; наших заметно больше → двойной учёт.")
+    lines.append("")
+
+    # 2) PRICES — our snapshot vs the real OpenAI list price
+    lines.append("2️⃣ ЦЕНЫ снапшота в БД vs реальные OpenAI")
+    if not snaps:
+        lines.append("  снапшотов OpenAI нет (цена=0 → это был бы недосчёт, а не пере-)")
+    else:
+        for key in sorted(snaps):
+            sku, unit = key.split("|", 1)
+            ppu = snaps[key]
+            if unit in ("tokens_in", "tokens_out"):
+                per_1m = ppu * 1_000_000.0
+                ref = _ref_price_for_sku(sku)
+                if ref and ref > 0:
+                    r = per_1m / ref
+                    flag = f"⚠️ ×{r:.1f}" if (r >= 1.2 or r <= 0.8) else "✅"
+                    lines.append(f"  {sku}: ${per_1m:,.2f}/1M vs реально ${ref:.2f} {flag}")
+                else:
+                    lines.append(f"  {sku}: ${per_1m:,.2f}/1M (нет эталона)")
+            else:
+                lines.append(f"  {sku} [{unit}]: ${ppu:,.4f}/ед")
+    lines.append("")
+
+    # 3) MONEY — our ledger $ by SKU (compare to /provider_costs OpenAI truth $2.09)
+    lines.append("3️⃣ ДЕНЬГИ (наш ledger по SKU)")
+    total = sum(v["cost"] for v in ledger["by_units"].values())
+    for k, v in sorted(ledger["by_sku"].items(), key=lambda it: it[1]["cost"], reverse=True)[:10]:
+        lines.append(f"  {k}: {int(v['units']):,} ед → {_fmt_usd(v['cost'])}")
+    lines.append(f"  ИТОГО наш OpenAI: {_fmt_usd(total)} (эталон OpenAI Costs ≈ см. /provider_costs)")
     return "\n".join(lines).rstrip()
 
 
