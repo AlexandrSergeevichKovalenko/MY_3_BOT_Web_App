@@ -965,6 +965,11 @@ FREE_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("FREE_VOICE_MINUTES_DAILY
 PAID_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("PAID_VOICE_MINUTES_DAILY_LIMIT") or "15").strip() or "15"))
 FREE_READER_STORAGE_DAYS = max(1, int((os.getenv("FREE_READER_STORAGE_DAYS") or "30").strip() or "30"))
 STRIPE_SECRET_KEY = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
+# Pro is sold EXCLUSIVELY via Telegram Stars now. Stripe is fully retired as a Pro path:
+# no new checkouts, the webhook grants nothing, and we never re-sync Pro from live Stripe.
+# This makes it impossible to obtain Pro through Stripe (incl. leftover test-mode subs) —
+# people can only (re)subscribe by paying Stars. Set STRIPE_BILLING_ENABLED=1 to revive.
+STRIPE_BILLING_ENABLED = (os.getenv("STRIPE_BILLING_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
 STRIPE_WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
 STRIPE_PRICE_ID_PRO = (os.getenv("STRIPE_PRICE_ID_PRO") or "").strip()
 STRIPE_PRICE_ID_SUPPORT_COFFEE = (os.getenv("STRIPE_PRICE_ID_SUPPORT_COFFEE") or "").strip()
@@ -7178,7 +7183,9 @@ def _sync_user_subscription_from_live_stripe(
 
     stripe_customer_id = str(subscription_row.get("stripe_customer_id") or "").strip() or None
     stripe_subscription_id = str(subscription_row.get("stripe_subscription_id") or "").strip() or None
-    if stripe is None or not STRIPE_SECRET_KEY or (not stripe_customer_id and not stripe_subscription_id):
+    # Stripe retired → never re-activate Pro from live Stripe (would resurrect leftover
+    # test-mode subs). Return the local row unchanged.
+    if stripe is None or not STRIPE_SECRET_KEY or not STRIPE_BILLING_ENABLED or (not stripe_customer_id and not stripe_subscription_id):
         if trace_enabled:
             _log_compact_trace(
                 "auth_sync",
@@ -32656,6 +32663,13 @@ def get_billing_sponsors():
 
 @app.route("/api/billing/create-checkout-session", methods=["POST"])
 def create_billing_checkout_session():
+    # Pro is Stars-only now — Stripe checkout is retired. Refuse to mint a Stripe session
+    # so nobody can obtain Pro through Stripe (even by hitting the API directly).
+    if not STRIPE_BILLING_ENABLED:
+        return jsonify({
+            "error": "Pro доступен только через Telegram Stars. Оформи его в приложении внутри Telegram.",
+            "error_code": "stripe_disabled",
+        }), 403
     started_perf = time.perf_counter()
     request_id = _extract_observability_request_id()
     correlation_id = _build_observability_correlation_id(prefix="billing_checkout")
@@ -32895,6 +32909,12 @@ def create_billing_checkout_session():
 
 @app.route("/api/billing/create-portal-session", methods=["POST"])
 def create_billing_portal_session():
+    # Stripe retired → no billing portal. Stars subscriptions are managed in Telegram.
+    if not STRIPE_BILLING_ENABLED:
+        return jsonify({
+            "error": "Подписка Pro управляется прямо в Telegram (Настройки → Telegram Stars и подписки).",
+            "error_code": "stripe_disabled",
+        }), 403
     started_perf = time.perf_counter()
     request_id = _extract_observability_request_id()
     correlation_id = _build_observability_correlation_id(prefix="billing_portal")
@@ -33177,6 +33197,10 @@ def wallet_topup():
 
 @app.route("/api/billing/webhook", methods=["POST"])
 def stripe_billing_webhook():
+    # Stripe retired → acknowledge and ignore. Prevents any leftover/test-mode Stripe
+    # event (e.g. a renewal) from granting or resurrecting Pro. 200 so Stripe won't retry.
+    if not STRIPE_BILLING_ENABLED:
+        return jsonify({"ok": True, "ignored": "stripe_disabled"}), 200
     config_error = _require_stripe_config(require_webhook_secret=True)
     if config_error:
         return jsonify({"error": config_error}), 500
