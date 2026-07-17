@@ -195,7 +195,14 @@ def evaluate_listening_answers(
     if not resp.ok:
         raise RuntimeError(f"OpenAI eval HTTP {resp.status_code}: {resp.text[:300]}")
 
-    raw = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    resp_json = resp.json()
+    try:
+        from backend.openai_usage_logging import log_openai_raw_usage
+        log_openai_raw_usage(action_type="listening_eval", model=model,
+                             usage=resp_json.get("usage"), user_id=None)
+    except Exception:
+        pass
+    raw = (resp_json.get("choices") or [{}])[0].get("message", {}).get("content") or ""
     data = json.loads(raw)
     evals = data.get("evaluations")
     if not isinstance(evals, list) or len(evals) == 0:

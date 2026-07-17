@@ -42870,6 +42870,12 @@ def _shortcut_split_blocks(
             response_format={"type": "json_object"},
             timeout=timeout,
         )
+        try:
+            from backend.openai_usage_logging import log_openai_raw_usage
+            log_openai_raw_usage(action_type="shortcut_split", model=model,
+                                 usage=getattr(response, "usage", None), user_id=user_id)
+        except Exception:
+            pass
         return response.choices[0].message.content or "{}"
 
     fallback_reason = ""

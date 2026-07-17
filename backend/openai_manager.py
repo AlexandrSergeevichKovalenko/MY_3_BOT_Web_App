@@ -7408,6 +7408,12 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", f
             temperature=0,
             response_format={"type": "json_object"},
         )
+        try:
+            from backend.openai_usage_logging import log_openai_raw_usage
+            log_openai_raw_usage(action_type="image_depicts_check", model=_DEFAULT_GATEWAY_MODEL,
+                                 usage=getattr(resp, "usage", None), user_id=None)
+        except Exception:
+            pass
         data = json.loads(str(resp.choices[0].message.content or "").strip())
     except Exception:
         logging.warning("run_image_depicts failed expected=%s", expected, exc_info=True)
@@ -7466,6 +7472,12 @@ def run_image_quiz_render_check(
             temperature=0,
             response_format={"type": "json_object"},
         )
+        try:
+            from backend.openai_usage_logging import log_openai_raw_usage
+            log_openai_raw_usage(action_type="image_quiz_render_check", model=_DEFAULT_GATEWAY_MODEL,
+                                 usage=getattr(resp, "usage", None), user_id=None)
+        except Exception:
+            pass
         data = json.loads(str(resp.choices[0].message.content or "").strip())
     except Exception:
         logging.warning("run_image_quiz_render_check failed correct=%s", correct, exc_info=True)
