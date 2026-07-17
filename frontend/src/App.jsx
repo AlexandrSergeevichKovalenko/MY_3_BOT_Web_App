@@ -8178,7 +8178,7 @@ function AppInner() {
           tr('Словарь: 10 запросов + 20 сохранений в день.', 'Wörterbuch: 10 Abfragen + 20 Speicherungen pro Tag.'),
           tr('«Объяснить ошибки» и «Спроси GPT»: по 1 в день.', '„Fehler erklären“ und „GPT fragen“: je 1 pro Tag.'),
           tr('Карточки: 10 новых слов на каждый вид тренировки + 20 повторений в день.', 'Karten: 10 neue Wörter je Trainingsmodus + 20 Wiederholungen pro Tag.'),
-          tr('«Почувствуй слово»: до 3 раз в день.', '„Wort fühlen“: bis zu 3-mal pro Tag.'),
+          tr('«Почувствуй слово»: 1 раз в день.', '„Wort fühlen“: 1-mal pro Tag.'),
           tr('Читалка: «Классика» и статьи из интернета; свои книги — только в Pro.', 'Reader: „Klassiker“ und Web-Artikel; eigene Bücher — nur in Pro.'),
           tr('YouTube: немецкие субтитры (синхронные русские — в Pro).', 'YouTube: deutsche Untertitel (synchrone russische — in Pro).'),
           tr('Задания по расписанию: 6 в день (без своей настройки).', 'Aufgaben nach Plan: 6 pro Tag (ohne eigene Einstellung).'),
@@ -34547,6 +34547,7 @@ function AppInner() {
               isOpen={welcomeTrialModalOpen}
               mode={welcomeTrial?.state === 'ended' ? 'ended' : 'active'}
               daysLeft={Number(welcomeTrial?.days_left || 0)}
+              endsAt={welcomeTrial?.ends_at || null}
               justGranted={Boolean(welcomeTrial?.granted)}
               buying={billingActionLoading}
               onBuyPro={() => { setWelcomeTrialModalOpen(false); void handleBillingUpgrade('pro'); }}
@@ -40136,7 +40137,7 @@ function AppInner() {
                           <li>{tr('Словарь: 10 запросов + 20 сохранений/день.', 'Wörterbuch: 10 Abfragen + 20 Speicherungen/Tag.')}</li>
                           <li>{tr('«Объяснить ошибки» и «Спроси GPT»: по 1/день.', '„Fehler erklären“ und „GPT fragen“: je 1/Tag.')}</li>
                           <li>{tr('Карточки: 10 новых слов/режим + 20 повторений/день.', 'Karten: 10 neue Wörter/Modus + 20 Wiederholungen/Tag.')}</li>
-                          <li>{tr('«Почувствуй слово»: 3/день.', '„Wort fühlen“: 3/Tag.')}</li>
+                          <li>{tr('«Почувствуй слово»: 1/день.', '„Wort fühlen“: 1/Tag.')}</li>
                           <li>{tr('Читалка: «Классика» и статьи из интернета (свои книги — нельзя).', 'Reader: „Klassiker“ und Web-Artikel (eigene Bücher — nein).')}</li>
                           <li>{tr('YouTube: немецкие субтитры.', 'YouTube: deutsche Untertitel.')}</li>
                           <li>{tr('Задания по расписанию: 6/день (без своей настройки).', 'Aufgaben nach Plan: 6/Tag (ohne eigene Einstellung).')}</li>
@@ -40164,6 +40165,10 @@ function AppInner() {
                       ⭐ <strong>{tr('Что такое звёзды Telegram?', 'Was sind Telegram-Sterne?')}</strong>{' '}
                       {tr('Официальная валюта Telegram: безопасно, в пару тапов прямо в приложении. Нажми, чтобы узнать подробнее.', 'Die offizielle Telegram-Währung: sicher, in wenigen Taps direkt in der App. Tippe für mehr Infos.')}
                     </button>
+                    <div className="billing-trial-banner">
+                      🔁 <strong>{tr('Как отменить Pro.', 'Pro kündigen.')}</strong>{' '}
+                      {tr('Pro продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.', 'Pro verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}
+                    </div>
                     <div className="billing-trial-banner">
                       🎙 <strong>{tr('Разговорная практика — на доработке.', 'Sprechpraxis — in Arbeit.')}</strong>{' '}
                       {tr('Раздел временно выключен: оптимизируем, скоро вернём.', 'Vorübergehend deaktiviert: wir optimieren, bald wieder da.')}

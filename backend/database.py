@@ -29818,6 +29818,40 @@ def delete_reader_library_document(
     return bool(deleted)
 
 
+def delete_stale_reader_web_articles(older_than_days: int = 2, limit: int = 2000) -> int:
+    """Nightly self-cleaning of transient web articles («Источники»: DW/Tagesschau/…).
+    Deletes every NON-public reader doc with source_type='html' whose created_at is older
+    than `older_than_days`. Web articles are read-once material, not a library, so they
+    don't accumulate on the shelf. Classics (is_public) and uploaded books/PDFs
+    (source_type != 'html') are NEVER touched. Returns the number of articles deleted."""
+    days = max(0, int(older_than_days))
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM bt_3_reader_library
+                    WHERE id IN (
+                        SELECT id FROM bt_3_reader_library
+                        WHERE source_type = 'html'
+                          AND COALESCE(is_public, FALSE) = FALSE
+                          AND created_at < NOW() - (%s || ' days')::interval
+                        ORDER BY created_at ASC
+                        LIMIT %s
+                    );
+                    """,
+                    (days, int(limit)),
+                )
+                deleted = cursor.rowcount or 0
+            conn.commit()
+        if deleted:
+            logging.info("reader web-article cleanup: deleted %d stale articles (>%dd)", deleted, days)
+        return int(deleted)
+    except Exception:
+        logging.warning("delete_stale_reader_web_articles failed", exc_info=True)
+        return 0
+
+
 def get_public_library_audit_rows(period_months: int = 6) -> list[dict]:
     """Per public-domain ("Классика") book: readership over the last `period_months`
     plus its cached-audio footprint. Powers the semi-annual admin audit so books nobody

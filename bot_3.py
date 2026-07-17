@@ -8761,6 +8761,20 @@ def _run_stars_report_safe() -> None:
         logging.exception("stars report (morning) failed")
 
 
+def _run_reader_web_article_cleanup_safe() -> None:
+    """Nightly self-cleaning of transient reader web articles («Источники»). Deletes
+    non-public html articles older than READER_WEB_ARTICLE_RETENTION_DAYS (default 2).
+    Runs in a BackgroundScheduler thread → must stay synchronous. Classics + uploaded
+    books are never touched."""
+    try:
+        from backend.database import delete_stale_reader_web_articles
+        days = int((os.getenv("READER_WEB_ARTICLE_RETENTION_DAYS") or "2").strip() or "2")
+        deleted = delete_stale_reader_web_articles(older_than_days=days)
+        logging.info("reader web-article nightly cleanup: deleted=%d retention_days=%d", deleted, days)
+    except Exception:
+        logging.exception("reader web-article nightly cleanup failed")
+
+
 async def stars_command(update: Update, context: CallbackContext) -> None:
     """/stars — admin-only on-demand Stars balance + recent transactions."""
     user = update.effective_user
@@ -37523,6 +37537,20 @@ def main():
             hour=int((os.getenv("STARS_REPORT_HOUR") or "10").strip() or "10"),
             minute=int((os.getenv("STARS_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("STARS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Nightly self-cleaning of transient reader web articles (00:30 Europe/Vienna) --
+        # «Источники» web articles are read-once material, not a library — delete non-public
+        # html articles older than the retention window so the shelf doesn't accumulate.
+        # Classics + uploaded books are never touched.
+        scheduler.add_job(
+            _run_reader_web_article_cleanup_safe,
+            "cron",
+            hour=int((os.getenv("READER_WEB_ARTICLE_CLEANUP_HOUR") or "0").strip() or "0"),
+            minute=int((os.getenv("READER_WEB_ARTICLE_CLEANUP_MINUTE") or "30").strip() or "30"),
+            timezone=ZoneInfo(os.getenv("READER_WEB_ARTICLE_CLEANUP_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,

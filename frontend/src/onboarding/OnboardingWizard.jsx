@@ -663,7 +663,7 @@ function StepBody(props) {
           { f: t('Повторения в день', 'Wiederholungen pro Tag'), free: '20', pro: INF },
         ] },
         { title: t('🎯 Тренажёры', '🎯 Übungen'), rows: [
-          { f: t('«Почувствуй слово»', '«Wort fühlen»'), free: D(3), pro: INF },
+          { f: t('«Почувствуй слово»', '«Wort fühlen»'), free: D(1), pro: INF },
           { f: t('Числа на слух — своя тренировка', 'Zahlen-Diktat — eigenes Training'), free: NO, pro: D(5) },
           { f: t('Прокачка навыков', 'Skill-Training'), free: NO, pro: INF },
         ] },
@@ -760,6 +760,15 @@ function StepBody(props) {
               <h4>{t('Что такое звёзды Telegram', 'Was sind Telegram-Sterne')}</h4>
               <p>{t('Звёзды — официальная валюта Telegram. Покупаются в пару тапов прямо в приложении, безопасно, без карт на сторонних сайтах. Ими оплачивается Pro и озвучка книг.',
                     'Sterne sind die offizielle Telegram-Währung. In wenigen Taps direkt in der App gekauft — sicher, ohne Karte auf fremden Seiten. Damit zahlst du Pro und Buch-Vertonung.')}</p>
+            </div>
+          </div>
+
+          <div className="ob-info is-cancel">
+            <div className="ic">🔁</div>
+            <div>
+              <h4>{t('Как отменить Pro', 'Pro kündigen')}</h4>
+              <p>{t('Pro продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.',
+                    'Pro verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
             </div>
           </div>
 

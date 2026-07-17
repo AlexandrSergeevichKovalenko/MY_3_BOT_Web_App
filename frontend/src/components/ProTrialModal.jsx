@@ -15,6 +15,7 @@ export default function ProTrialModal({
   isOpen,
   mode = 'active', // 'active' | 'ended'
   daysLeft = 0,
+  endsAt = null,
   justGranted = false,
   buying = false,
   onBuyPro,
@@ -24,6 +25,16 @@ export default function ProTrialModal({
   if (!isOpen) return null;
   const target = typeof document !== 'undefined' ? document.body : null;
   const isActive = mode === 'active';
+  // Concrete end date ("Pro до 23.07"), so the ceil-rounded day counter never looks stuck.
+  let endsAtLabel = '';
+  if (endsAt) {
+    try {
+      const d = new Date(endsAt);
+      if (!Number.isNaN(d.getTime())) {
+        endsAtLabel = d.toLocaleDateString(undefined, { day: '2-digit', month: '2-digit' });
+      }
+    } catch (_e) { /* ignore */ }
+  }
 
   const perks = [
     tr('Переводы и разборы без дневного лимита', 'Übersetzungen & Analysen ohne Tageslimit'),
@@ -76,6 +87,7 @@ export default function ProTrialModal({
             <span className="prot-countdown-num">{dLeft}</span>
             <span className="prot-countdown-word">
               {tr(`${daysWord(dLeft)} осталось`, dLeft === 1 ? 'Tag übrig' : 'Tage übrig')}
+              {endsAtLabel ? <span className="prot-countdown-date">{tr('Pro до', 'Pro bis')} {endsAtLabel}</span> : null}
             </span>
           </div>
         ) : null}
