@@ -27597,6 +27597,84 @@ function AppInner() {
     }
   };
 
+  // ── Тонкий поиск/смена видео в полосе «Startseite» (≥700, не новости). ──
+  // Заменяет большой блок-форму под видео: свёрнуто = лупа, развёрнуто = поле+Найти+✕,
+  // результаты — выпадающим списком. Показ только в Puzzle-режиме.
+  const renderYoutubeTopbarSearch = () => {
+    if (!(isWideLayout && !youtubeNewsMode && youtubeSectionVisible)) return null;
+    if (!youtubeSearchExpanded) {
+      return (
+        <button
+          type="button"
+          className="youtube-topsearch-open"
+          onClick={() => setYoutubeForceShowPanel(true)}
+          title={tr('Найти или сменить видео', 'Video suchen oder wechseln')}
+          aria-label={tr('Найти или сменить видео', 'Video suchen oder wechseln')}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.5-4.5" /></svg>
+        </button>
+      );
+    }
+    return (
+      <div className="youtube-topsearch">
+        <div className="youtube-topsearch-field">
+          <svg className="yts-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.5-4.5" /></svg>
+          <input
+            type="text"
+            className="yts-input"
+            value={youtubeInput}
+            onChange={(e) => { youtubeInputDraftRef.current = e.target.value; setYoutubeInput(e.target.value); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchYoutubeVideos(); } }}
+            placeholder={tr('Ссылка, ID или запрос…', 'Link, ID oder Suche…')}
+            aria-label={tr('Поиск видео', 'Video suchen')}
+          />
+          <button type="button" className="yts-go" onClick={() => searchYoutubeVideos()} disabled={youtubeSearchLoading}>
+            {youtubeSearchLoading ? tr('Ищем…', 'Suche…') : tr('Найти', 'Suchen')}
+          </button>
+          {youtubeId && (
+            <button
+              type="button"
+              className="yts-x"
+              onClick={() => { setYoutubeForceShowPanel(false); setYoutubeSearchResults([]); setYoutubeSearchError(''); }}
+              title={tr('Закрыть', 'Schließen')}
+              aria-label={tr('Закрыть', 'Schließen')}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          )}
+        </div>
+        {(youtubeSearchError || youtubeSearchResults.length > 0) && (
+          <div className="youtube-topsearch-results">
+            {youtubeSearchError && <div className="yts-error">{youtubeSearchError}</div>}
+            {youtubeSearchResults.map((item) => (
+              <button
+                type="button"
+                key={item.video_id}
+                className="yts-res"
+                onClick={() => {
+                  const url = item.video_url || `https://youtu.be/${item.video_id}`;
+                  youtubeInputDraftRef.current = url;
+                  setYoutubeInput(url);
+                  setYoutubeSearchResults([]);
+                  setYoutubeSearchError('');
+                  setYoutubeForceShowPanel(false);
+                }}
+              >
+                <img
+                  className="yts-thumb"
+                  src={item.thumbnail || `https://i.ytimg.com/vi/${item.video_id}/mqdefault.jpg`}
+                  alt=""
+                  loading="lazy"
+                />
+                <span className="yts-title">{item.title || item.video_id}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // ── Panel «Puzzle English»: одна строка управления под видео (≥700). ──
   const renderYoutubePuzzleBar = () => {
     const canControlPlayback = Boolean(youtubeId && youtubePlayerRef.current);
@@ -32061,56 +32139,53 @@ function AppInner() {
       setBillingStatusError(initDataMissingMsg);
       return;
     }
-    // Pro is sold as a native Telegram Stars subscription — one in-app sheet, no
-    // external browser. Falls back to Stripe checkout only if Stars is unavailable.
-    if (String(planCode) === 'pro' && telegramApp?.openInvoice) {
-      setBillingActionLoading(true);
+    // Pro is sold ONLY as a native Telegram Stars subscription (Stripe is retired). Stars
+    // can be charged only inside Telegram — so on the standalone PWA / browser (no
+    // openInvoice) we can't pay here; guide the user to open the app inside Telegram.
+    if (String(planCode) !== 'pro') return;
+    if (!telegramApp?.openInvoice) {
+      // Not inside Telegram (PWA/browser) → Stars can't be charged here. Send the user to
+      // the bot in Telegram, which auto-opens the Pro Stars sheet (?startapp=buypro).
       try {
-        const resp = await fetch('/api/webapp/billing/stars_invoice', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData, plan_code: 'pro' }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok || !data?.invoice_link) {
-          throw new Error(String(data?.error || tr('Не удалось открыть оплату', 'Zahlung konnte nicht geöffnet werden')));
+        const r = await fetch('/api/public/tour-info');
+        const d = await r.json().catch(() => ({}));
+        const botUrl = String(d?.bot_url || '').trim();
+        if (botUrl && telegramApp?.openTelegramLink) {
+          telegramApp.openTelegramLink(`${botUrl}?startapp=buypro`);
+          return;
         }
-        telegramApp.openInvoice(data.invoice_link, (status) => {
-          if (status === 'paid') {
-            try {
-              telegramApp.showPopup?.({
-                title: tr('Готово', 'Fertig'),
-                message: tr('Pro подключён! Обновляем доступ…', 'Pro aktiv! Zugang wird aktualisiert…'),
-                buttons: [{ type: 'ok' }],
-              });
-            } catch (_e) { /* popup optional */ }
-            // The bot grants Pro server-side on successful_payment (near-instant).
-            setTimeout(() => { void loadBillingStatus(); }, 1500);
-          }
-        });
-      } catch (error) {
-        setBillingStatusError(`${tr('Ошибка оплаты', 'Zahlungsfehler')}: ${error.message}`);
-      } finally {
-        setBillingActionLoading(false);
-      }
+        if (botUrl) { window.location.href = `${botUrl}?startapp=buypro`; return; }
+      } catch (_e) { /* fall through to a message */ }
+      setBillingStatusError(tr(
+        'Оформить Pro можно только в Telegram (оплата звёздами). Открой приложение внутри Telegram и нажми «Оформить Pro».',
+        'Pro gibt es nur in Telegram (Zahlung mit Sternen). Öffne die App in Telegram und tippe auf „Pro holen“.',
+      ));
       return;
     }
     setBillingActionLoading(true);
     try {
-      const response = await fetch('/api/billing/create-checkout-session', {
+      const resp = await fetch('/api/webapp/billing/stars_invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, plan_code: planCode }),
+        body: JSON.stringify({ initData, plan_code: 'pro' }),
       });
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка создания checkout', 'Fehler beim Erstellen von Checkout'));
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data?.invoice_link) {
+        throw new Error(String(data?.error || tr('Не удалось открыть оплату', 'Zahlung konnte nicht geöffnet werden')));
       }
-      const data = await response.json();
-      const url = String(data?.url || '').trim();
-      if (!url) {
-        throw new Error(tr('Сервер не вернул URL checkout', 'Server hat keine Checkout-URL geliefert'));
-      }
-      openBillingUrl(url);
+      telegramApp.openInvoice(data.invoice_link, (status) => {
+        if (status === 'paid') {
+          try {
+            telegramApp.showPopup?.({
+              title: tr('Готово', 'Fertig'),
+              message: tr('Pro подключён! Обновляем доступ…', 'Pro aktiv! Zugang wird aktualisiert…'),
+              buttons: [{ type: 'ok' }],
+            });
+          } catch (_e) { /* popup optional */ }
+          // The bot grants Pro server-side on successful_payment (near-instant).
+          setTimeout(() => { void loadBillingStatus(); }, 1500);
+        }
+      });
     } catch (error) {
       setBillingStatusError(`${tr('Ошибка оплаты', 'Zahlungsfehler')}: ${error.message}`);
     } finally {
@@ -32912,6 +32987,7 @@ function AppInner() {
                     <span className="topbar-home-arrow" aria-hidden="true">{Boolean(flashcardActiveMode) ? '◀️' : '🏠'}</span>
                     <span>{Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}</span>
                   </button>
+                  {renderYoutubeTopbarSearch()}
                   {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
                   {showReaderTopbarPeekInAppTopbar && (
                     <button
@@ -35243,7 +35319,7 @@ function AppInner() {
                     {youtubeTranscriptError && (
                       renderYoutubeTranscriptNotice(youtubeTranscriptError) || <div className="webapp-error">{youtubeTranscriptError}</div>
                     )}
-                    {youtubeSearchExpanded && !youtubeNewsMode && (
+                    {youtubeSearchExpanded && !youtubeNewsMode && !(isWideLayout && !youtubeNewsMode) && (
                       <div className="webapp-video-form youtube-setup-form">
                         <YoutubeQueryInputField
                           value={youtubeInput}
