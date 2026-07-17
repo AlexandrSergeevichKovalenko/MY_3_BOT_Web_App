@@ -54,6 +54,7 @@ const MEDIA = {
   learn_words:   `${R2}/forward_from_chat_and_learning_words/learn_saved_words.mp4`,   // howto_learn
   world_news:    `${R2}/youtube_video_morningnews/morning_news_video.mp4`,             // howto_interactives — «Starte den Tag mit Nachrichten»
   youtube_dual_subs: `${R2}/youtube_video_morningnews/youtube_double_subtitles.mp4`,   // howto_tools — «YouTube mit doppelten Untertiteln»
+  youtube_browser:   `${R2}/youtube_video_morningnews/youtube_in_browser.mp4`,         // howto_tools — то же в браузере
   interactives: [                                                                     // howto_interactives
     { src: `${R2}/interactives/interactive_1.mp4`, caption: t('🎥 Артикли der/die/das — Artikelquiz', '🎥 Artikel der/die/das — Artikelquiz') },
     { src: `${R2}/interactives/interactive_2.mp4`, caption: t('🎥 Вопросы Wo-Fragen', '🎥 Wo-Fragen') },
@@ -823,6 +824,7 @@ function StepBody(props) {
               {t(' — смотришь видео с субтитрами на двух языках сразу, а любое слово сохраняешь в словарь в один тап.',
                  ' — du schaust Videos mit Untertiteln in zwei Sprachen gleichzeitig und speicherst jedes Wort mit einem Tipp ins Wörterbuch.')}
               {MEDIA.youtube_dual_subs ? <MediaTile src={MEDIA.youtube_dual_subs} type="video" caption={t('🎥 YouTube с двойными субтитрами', '🎥 YouTube mit doppelten Untertiteln')} /> : null}
+              {MEDIA.youtube_browser ? <MediaTile src={MEDIA.youtube_browser} type="video" caption={t('🎥 Так же можно смотреть в браузере', '🎥 So kannst du auch im Browser schauen')} /> : null}
             </li>
             <li>
               <b>{t('📖 Читалка', '📖 Reader')}</b>
