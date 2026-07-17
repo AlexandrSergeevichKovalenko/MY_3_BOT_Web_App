@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -396,26 +397,39 @@ def fetch_railway_usage(*, start_day: date) -> dict[str, Any]:
         f"estimatedUsage({','.join(field_args)}){{measurement estimatedValue}}}}"
     )
     try:
-        resp = requests.post(
-            _RAILWAY_GRAPHQL,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"query": query, "variables": variables},
-            timeout=_HTTP_TIMEOUT,
-        )
-        if resp.status_code >= 400:
-            return {"configured": True, "error": f"HTTP {resp.status_code}: {resp.text[:600]}"}
-        body = resp.json()
-        if body.get("errors"):
-            return {"configured": True, "error": str(body["errors"])[:600]}
-        rows = ((body.get("data") or {}).get("estimatedUsage")) or []
-        by_measure: dict[str, float] = {}
-        total = 0.0
-        for r in rows:
-            m = str(r.get("measurement") or "—")
-            v = float(r.get("estimatedValue") or 0.0)
-            by_measure[m] = by_measure.get(m, 0.0) + v
-            total += v
-        return {"configured": True, "total_usd": total, "by_measure": by_measure}
+        # Railway caps concurrent usage queries (16/client) and answers with a transient
+        # INTERNAL_SERVER_ERROR when busy; back off and retry a couple of times.
+        last_msg = ""
+        for attempt in range(3):
+            resp = requests.post(
+                _RAILWAY_GRAPHQL,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"query": query, "variables": variables},
+                timeout=_HTTP_TIMEOUT,
+            )
+            if resp.status_code >= 400:
+                return {"configured": True, "error": f"HTTP {resp.status_code}: {resp.text[:600]}"}
+            body = resp.json()
+            errs = body.get("errors")
+            if errs:
+                last_msg = str(errs)
+                if ("usage queries" in last_msg or "retry in" in last_msg
+                        or "INTERNAL_SERVER_ERROR" in last_msg) and attempt < 2:
+                    time.sleep(6 * (attempt + 1))
+                    continue
+                if "usage queries" in last_msg or "retry in" in last_msg:
+                    return {"configured": True, "error": "Railway ограничил одновременные usage-запросы (лимит 16). Данные подтянутся в следующем отчёте."}
+                return {"configured": True, "error": last_msg[:600]}
+            rows = ((body.get("data") or {}).get("estimatedUsage")) or []
+            by_measure: dict[str, float] = {}
+            total = 0.0
+            for r in rows:
+                m = str(r.get("measurement") or "—")
+                v = float(r.get("estimatedValue") or 0.0)
+                by_measure[m] = by_measure.get(m, 0.0) + v
+                total += v
+            return {"configured": True, "total_usd": total, "by_measure": by_measure}
+        return {"configured": True, "error": (last_msg or "Railway usage unavailable")[:600]}
     except Exception as exc:  # noqa: BLE001
         logging.warning("Railway usage fetch failed: %s", exc, exc_info=True)
         return {"configured": True, "error": str(exc)}
