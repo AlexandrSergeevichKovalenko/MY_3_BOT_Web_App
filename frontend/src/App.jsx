@@ -35044,9 +35044,13 @@ function AppInner() {
                         </div>
                       </div>
                     </div>
-                    {/* Premium Dock §2: ЕДИНСТВЕННЫЙ транспорт — по центру под видео,
-                        показывается всегда, когда есть субтитры (обычный вид + overlay). */}
-                    {youtubeSubtitlesReady && (isWideLayout ? renderYoutubePuzzleBar() : renderYoutubeSentenceJumpBar())}
+                    {/* Панель управления. В Puzzle-режиме (≥700, не новости) показываем ВСЕГДА,
+                        когда есть видео — иначе до загрузки субтитров не было бы ни одной кнопки
+                        (дока нет), включая ⚙ «Загрузить субтитры». Субтитро-зависимые кнопки
+                        (DE/RU/размер/скраббер) сами выключены, пока не готово. Иначе — старый транспорт. */}
+                    {(isWideLayout && !youtubeNewsMode)
+                      ? (youtubeId && renderYoutubePuzzleBar())
+                      : (youtubeSubtitlesReady && renderYoutubeSentenceJumpBar())}
                     </>
                     )}
                     {youtubeNewsMode && worldNewsLoading && !worldNewsData && (
