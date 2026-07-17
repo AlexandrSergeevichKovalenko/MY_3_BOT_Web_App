@@ -22626,10 +22626,10 @@ body.worldnews-active .webapp-topbar {
 .arena-verdict.is-loss { background: rgba(99, 102, 241, 0.10); border: 1px solid rgba(99, 102, 241, 0.3); }
 .arena-verdict.is-tie  { background: rgba(245, 158, 11, 0.10); border: 1px solid rgba(245, 158, 11, 0.3); }
 .arena-verdict-medal { font-size: 30px; flex-shrink: 0; }
-.arena-verdict-text { font-size: 16px; font-weight: 700; color: #f1f5f9; flex: 1; }
-.arena-verdict-scores { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; }
-.arena-vs-me, .arena-vs-them { color: #e2e8f0; }
-.arena-vs-sep { color: #475569; font-weight: 700; }
+.arena-verdict-text { font-size: 16px; font-weight: 700; color: #0f172a; flex: 1; }
+.arena-verdict-scores { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #475569; }
+.arena-vs-me, .arena-vs-them { color: #1e293b; }
+.arena-vs-sep { color: #64748b; font-weight: 700; }
 
 /* ── Arena 4-criteria score card ─────────────────────────────────────── */
 .arena-score-card {
