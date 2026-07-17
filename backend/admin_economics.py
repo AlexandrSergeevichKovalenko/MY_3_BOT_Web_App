@@ -809,6 +809,27 @@ def _num(value: Any) -> float:
         return 0.0
 
 
+def _openai_real_and_ceiling() -> tuple[float | None, float | None]:
+    """Real OpenAI bill month-to-date (Costs API — WITH the free daily token grants) and
+    the list-price ceiling if grants stopped (gross Usage tokens × list price). Network;
+    fully guarded — returns (None, None) on any failure so the report never breaks."""
+    try:
+        from backend.provider_cost_truth import (
+            fetch_openai_costs,
+            fetch_openai_usage_tokens,
+            openai_list_price_ceiling,
+        )
+        yday = datetime.now(timezone.utc).date() - timedelta(days=1)
+        mstart = yday.replace(day=1)
+        costs = fetch_openai_costs(start_day=mstart, yesterday=yday)
+        real = float(costs.get("mtd_usd")) if (costs.get("configured") and not costs.get("error")) else None
+        ceiling = openai_list_price_ceiling(fetch_openai_usage_tokens(start_day=mstart))
+        return real, ceiling
+    except Exception:
+        logging.debug("openai real/ceiling fetch failed", exc_info=True)
+        return None, None
+
+
 def format_admin_economics_report(payload: dict[str, Any]) -> str:
     """Scan-friendly daily economics report.
 
@@ -884,11 +905,19 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
         0.0,
     )
     total_reqs = int(openai_stats.get("total_openai_requests") or 0)
+    real_bill, ceiling = _openai_real_and_ceiling()
     L.append("")
+    L.append("🤖 OpenAI · реальные деньги (месяц):")
+    L.append(
+        f"   с грантами (реальный счёт): ${real_bill:.2f}" if real_bill is not None
+        else "   с грантами (реальный счёт): н/д"
+    )
+    if ceiling is not None:
+        L.append(f"   без грантов (по прайсу): ~${ceiling:.2f}")
     if total_reqs == 0 and openai_cost == 0:
-        L.append("🤖 OpenAI: 0 запросов · $0.0000  (нет вызовов / всё из кэша)")
+        L.append("   внутр. ledger: 0 запросов (всё из кэша)")
     else:
-        L.append(f"🤖 OpenAI: {total_reqs} запросов · ${openai_cost:.4f}")
+        L.append(f"   внутр. ledger (оценка для per-user атрибуции ниже): {total_reqs} req · ${openai_cost:.4f}")
         try:
             top = cost_breakdown_by_activity(days=7, limit=3).get("rows") or []
             top = [r for r in top if r.get("real_cost", r.get("cost", 0)) > 0]
