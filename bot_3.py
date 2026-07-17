@@ -34894,6 +34894,77 @@ async def admin_reset_subs_command(update: Update, context: CallbackContext) -> 
     )
 
 
+async def admin_subs_command(update: Update, context: CallbackContext) -> None:
+    """/admin_subs — full roster of ALLOWED users with their current subscription status,
+    grouped: 💳 Pro (paid subscription) / 🎁 Pro (trial or manual grant) / ⚪ Free. Read-only.
+    (The whitelist is the source of truth; anyone Pro but not whitelisted is shown too.)"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(getattr(user, "id", None)):
+        await message.reply_text("Только для админа.")
+        return
+
+    from backend.database import (
+        list_allowed_telegram_users,
+        list_active_pro_subscription_user_ids,
+        list_active_pro_grant_users,
+        get_display_names_for_users,
+    )
+
+    allowed = await asyncio.to_thread(list_allowed_telegram_users, 500)
+    allowed_name = {int(u["user_id"]): str(u.get("username") or "").strip() for u in allowed}
+    allowed_ids = set(allowed_name)
+    pro_ids = set(await asyncio.to_thread(list_active_pro_subscription_user_ids))
+    grant_rows = await asyncio.to_thread(list_active_pro_grant_users)  # [(uid, until, reason)]
+    grant_map = {int(r[0]): (r[1], str(r[2] or "")) for r in grant_rows}
+    all_ids = allowed_ids | pro_ids | set(grant_map)
+    dnames = await asyncio.to_thread(get_display_names_for_users, list(all_ids)) if all_ids else {}
+
+    _reason_label = {"welcome_trial": "7-дн. триал", "admin_test": "выдан вручную", "streak": "за streak"}
+
+    def _nm(uid: int) -> str:
+        return dnames.get(int(uid)) or allowed_name.get(int(uid)) or "—"
+
+    def _tag(uid: int) -> str:
+        return " [нет в allowed]" if uid not in allowed_ids else ""
+
+    paid = sorted(u for u in all_ids if u in pro_ids)
+    granted = sorted(u for u in all_ids if u not in pro_ids and u in grant_map)
+    free = sorted(u for u in all_ids if u not in pro_ids and u not in grant_map)
+
+    lines = [
+        f"Пользователей (allowed): {len(allowed_ids)}"
+        + (" ⚠️ показаны первые 500" if len(allowed) >= 500 else ""),
+        f"💳 Pro-подписка: {len(paid)}   🎁 триал/грант: {len(granted)}   ⚪ Free: {len(free)}",
+        "",
+        f"💳 Pro — платная подписка ({len(paid)}):",
+    ]
+    lines += [f"• {u} — {_nm(u)}{_tag(u)}" for u in paid] or ["  (никого)"]
+    lines += ["", f"🎁 Pro — триал/грант ({len(granted)}):"]
+    for u in granted:
+        until, reason = grant_map[u]
+        label = _reason_label.get(reason, reason or "грант")
+        until_s = until.strftime("%Y-%m-%d") if hasattr(until, "strftime") else str(until)[:10]
+        lines.append(f"• {u} — {_nm(u)} ({label}, до {until_s}){_tag(u)}")
+    if not granted:
+        lines.append("  (никого)")
+    lines += ["", f"⚪ Free ({len(free)}):"]
+    lines += [f"• {u} — {_nm(u)}" for u in free] or ["  (никого)"]
+
+    buf = ""
+    for ln in lines:
+        if len(buf) + len(ln) + 1 > 3500:
+            if buf:
+                await message.reply_text(buf)
+            buf = ln
+        else:
+            buf = f"{buf}\n{ln}" if buf else ln
+    if buf:
+        await message.reply_text(buf)
+
+
 async def admin_crossword_revive_command(update: Update, context: CallbackContext) -> None:
     """Un-retire every crossword whose image is still ready (resets fail_count) so they
     re-enter rotation. Recovers cards that were auto-retired by transient send outages —
@@ -37419,6 +37490,7 @@ def main():
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
     application.add_handler(CommandHandler("admin_reset_subs", admin_reset_subs_command))
+    application.add_handler(CommandHandler("admin_subs", admin_subs_command))
     application.add_handler(CommandHandler("reader_audio_setlimit", _admin_reader_audio_setlimit_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
