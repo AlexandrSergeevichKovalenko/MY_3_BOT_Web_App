@@ -52,6 +52,8 @@ const MEDIA = {
   forward_selection: `${R2}/forward_from_chat_and_learning_words/forward_word_demo.mp4`, // howto_words — выделил текст в браузере/книге → «Поделиться» → бот
   morning_words: `${R2}/morning_words_arrival/morning_words_arrival.mp4`,             // howto_morning
   learn_words:   `${R2}/forward_from_chat_and_learning_words/learn_saved_words.mp4`,   // howto_learn
+  world_news:    `${R2}/youtube_video_morningnews/morning_news_video.mp4`,             // howto_interactives — «Starte den Tag mit Nachrichten»
+  youtube_dual_subs: `${R2}/youtube_video_morningnews/youtube_double_subtitles.mp4`,   // howto_tools — «YouTube mit doppelten Untertiteln»
   interactives: [                                                                     // howto_interactives
     { src: `${R2}/interactives/interactive_1.mp4`, caption: t('🎥 Артикли der/die/das — Artikelquiz', '🎥 Artikel der/die/das — Artikelquiz') },
     { src: `${R2}/interactives/interactive_2.mp4`, caption: t('🎥 Вопросы Wo-Fragen', '🎥 Wo-Fragen') },
@@ -553,6 +555,7 @@ function StepBody(props) {
               <b>{t('🗞 Начни день с новостей', '🗞 Starte den Tag mit Nachrichten')}</b>
               {t(' — каждое утро свежие настоящие новости коротким видео. Смотришь с двойными кликабельными субтитрами (любое слово — перевёл и сохранил), а потом отвечаешь на тесты по услышанному. Тренирует понимание живой речи — навык, который нужен каждый день в реальной жизни.',
                  ' — jeden Morgen frische echte News als kurzes Video. Du schaust mit doppelten anklickbaren Untertiteln (jedes Wort — übersetzt und gespeichert) und beantwortest dann Tests zum Gehörten. Trainiert das Verstehen echter Sprache — eine Fähigkeit, die man im Alltag jeden Tag braucht.')}
+              {MEDIA.world_news ? <MediaTile src={MEDIA.world_news} type="video" caption={t('🎥 Начни день с новостей — двойные субтитры', '🎥 Starte den Tag mit Nachrichten — doppelte Untertitel')} /> : null}
             </li>
             <li>
               <b>{t('🔵 Артикли der/die/das', '🔵 Artikel der/die/das')}</b>
@@ -819,6 +822,7 @@ function StepBody(props) {
               <b>{t('▶️ YouTube с двойными субтитрами', '▶️ YouTube mit doppelten Untertiteln')}</b>
               {t(' — смотришь видео с субтитрами на двух языках сразу, а любое слово сохраняешь в словарь в один тап.',
                  ' — du schaust Videos mit Untertiteln in zwei Sprachen gleichzeitig und speicherst jedes Wort mit einem Tipp ins Wörterbuch.')}
+              {MEDIA.youtube_dual_subs ? <MediaTile src={MEDIA.youtube_dual_subs} type="video" caption={t('🎥 YouTube с двойными субтитрами', '🎥 YouTube mit doppelten Untertiteln')} /> : null}
             </li>
             <li>
               <b>{t('📖 Читалка', '📖 Reader')}</b>
