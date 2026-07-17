@@ -55,6 +55,12 @@ ADMIN_COMMAND_TOPICS: list[tuple[str, str, list[dict]]] = [
             "example": '/admin_grant_pro 123456789 3',
         },
         {
+            "cmd": '/admin_reset_subs',
+            "desc": 'Разовый сброс подписок Stripe→Stars: переводит на Free всех, кто сейчас на платном Pro, КРОМЕ админов и указанных id. Сброшенные получают Free + свежий 7-дневный Pro-trial при следующем открытии Mini-App. По умолчанию — сухой прогон (только показывает список текущих Pro, ничего не меняет); реальный сброс только со словом confirm. Идемпотентна.',
+            "args": 'без аргументов — сухой прогон (список Pro c id и именем); confirm — сбросить всех, кроме админов; confirm <id> <id> — дополнительно оставить указанные id (например, Alina).',
+            "example": '/admin_reset_subs confirm 883565092',
+        },
+        {
             "cmd": '/mobile_token',
             "desc": 'Выдаёт разрешённому пользователю mobile access token и base_url для iOS Share Extension, проверяя токен обращением к backend.',
             "args": 'нет аргументов',
