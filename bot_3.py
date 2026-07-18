@@ -3414,23 +3414,57 @@ async def _admin_reader_audio_setlimit_command(update: Update, context: Callback
 _STREAK_MILESTONES = {7, 14, 30, 60, 100, 200, 365}
 
 
-async def _send_streak_milestone_cert(context: CallbackContext, uid: int, streak: int, longest: int) -> None:
-    """Branded PNG грамота on a streak milestone (reuses the certificate renderer)."""
+async def _send_streak_milestone_cert(context: CallbackContext, uid: int, streak: int, longest: int,
+                                      stats_cache: dict | None = None) -> None:
+    """Branded PNG грамота on a streak milestone (reuses the certificate renderer).
+
+    Not a bare Серия/Рекорд card — it carries the SAME weekly activity table the
+    weekly URKUNDE uses (задания/переводы/слова/аудио/батлы with green ▲ / red ▼
+    vs the previous week), the streak/record on top, and Felix as the seal. No
+    color-emoji in the drawn text (server font renders them as tofu) — emoji live
+    only in the Telegram caption."""
     try:
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        from backend.database import certificate_stats_for_window
         from backend.certificate_poster import render_certificate
         name = await _cert_user_name(context, int(uid))
+        streak = int(streak)
+        record = max(streak, int(longest))
+        dw = _streak_days_word
+
+        # Week-over-week activity so the plaque is a real stats card, not a void.
+        # certificate_stats_for_window scans the whole window across ALL users, so
+        # compute it at most ONCE per job run (stats_cache) and index our uid out.
+        now = _dt.now(_tz.utc)
+        try:
+            if stats_cache is not None and "cur" in stats_cache:
+                cur, prev = stats_cache["cur"], stats_cache["prev"]
+            else:
+                cur = await asyncio.to_thread(certificate_stats_for_window, now - _td(days=7), now)
+                prev = await asyncio.to_thread(certificate_stats_for_window, now - _td(days=14), now - _td(days=7))
+                if stats_cache is not None:
+                    stats_cache["cur"], stats_cache["prev"] = cur, prev
+            activity = _build_cert_rows(cur.get(int(uid), {}), prev.get(int(uid), {}))
+        except Exception:
+            activity = []
+
+        # Streak identity on top (Δ = dash: there's nothing week-over-week to
+        # compare a running streak against), then the weekly activity rows. The
+        # renderer caps at 7 rows, so the 2 identity rows leave room for 5 metrics.
         rows = [
-            {"label": "Серия", "now": f"{int(streak)} дней", "prev": "", "dir": 1},
-            {"label": "Личный рекорд", "now": f"{max(int(streak), int(longest))} дней", "prev": "", "dir": 0},
-        ]
+            {"label": "Серия", "now": f"{streak} {dw(streak)}", "prev": "—", "dir": 0},
+            {"label": "Личный рекорд", "now": f"{record} {dw(record)}", "prev": "—", "dir": 0},
+        ] + activity
+
         png = await asyncio.to_thread(
-            render_certificate, name=name, title=f"{int(streak)} дней подряд!",
-            subtitle="🔥 Стрик-достижение", rows=rows, col_now="", col_prev="",
-            footer="Так держать! 🔥", hero_png=None)
+            render_certificate, name=name, title=f"{streak} {dw(streak)} подряд!",
+            subtitle="Серия без пропусков", rows=rows,
+            col_now="Эта неделя", col_prev="Прошлая",
+            footer="Так держать!", hero_png=await _cert_hero())
         if png:
             await context.bot.send_photo(
                 chat_id=int(uid), photo=io.BytesIO(png),
-                caption=f"🏅 <b>{int(streak)} дней подряд!</b> Серия в огне 🔥 Не прерывай.",
+                caption=f"🏅 <b>{streak} {dw(streak)} подряд!</b> Серия в огне 🔥 Не прерывай.",
                 parse_mode="HTML")
     except Exception:
         logging.warning("streak milestone cert failed uid=%s", uid, exc_info=True)
@@ -3448,6 +3482,7 @@ async def _update_streaks_job(context: CallbackContext) -> None:
     except Exception:
         active = set()
     granted = 0
+    _streak_stats_cache: dict = {}  # weekly stats computed lazily, once, on first milestone
     for uid in active:
         try:
             if _is_synthetic_telegram_user_id(int(uid)):
@@ -3470,7 +3505,8 @@ async def _update_streaks_job(context: CallbackContext) -> None:
             await asyncio.to_thread(upsert_user_streak, int(uid), current=new_streak,
                                     longest=longest, last_active=yday, freezes=freezes)
             if new_streak in _STREAK_MILESTONES:
-                await _send_streak_milestone_cert(context, int(uid), new_streak, longest)
+                await _send_streak_milestone_cert(context, int(uid), new_streak, longest,
+                                                  stats_cache=_streak_stats_cache)
             if new_streak % STREAK_REWARD_EVERY == 0:
                 if await asyncio.to_thread(count_pro_grants_this_month, int(uid)) < STREAK_MONTHLY_CAP:
                     if await asyncio.to_thread(grant_pro_days, int(uid), 1, f"streak{new_streak}"):
@@ -32245,6 +32281,16 @@ async def _cert_user_name(context: CallbackContext, uid: int) -> str:
         return "Fuchs"
 
 
+async def _cert_hero() -> bytes | None:
+    """Felix (the Fox) PNG for the certificate seal, from R2. None if unavailable."""
+    try:
+        from backend.battle_card import REMINDER_KEY
+        from backend.r2_storage import r2_get_bytes
+        return await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
+    except Exception:
+        return None
+
+
 async def _send_certificates_window(context: CallbackContext, *, cur_start, cur_end,
                                     prev_start, prev_end, title: str, subtitle_prefix: str,
                                     col_now: str, col_prev: str,
@@ -32380,6 +32426,16 @@ async def admin_certificate_command(update: Update, context: CallbackContext) ->
     from backend.database import certificate_stats_for_window
     from backend.certificate_poster import render_certificate
     arg = (context.args[0].strip().lower() if context.args else "week")
+    if arg == "streak":
+        # Preview the streak-milestone plaque with your real (or a demo) streak.
+        try:
+            st = await asyncio.to_thread(get_user_streak, int(user.id))
+            cur_s = int(st.get("current_streak") or 0) or 7
+            longest = int(st.get("longest_streak") or 0)
+        except Exception:
+            cur_s, longest = 7, 7
+        await _send_streak_milestone_cert(context, int(user.id), cur_s, longest)
+        return
     now = _dt.now(_tz.utc)
     if arg == "week":
         cur_start, prev_start, prev_end = now - _td(days=7), now - _td(days=14), now - _td(days=7)
