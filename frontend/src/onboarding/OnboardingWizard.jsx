@@ -53,19 +53,20 @@ const REF_PARAM = (() => {
   catch (_e) { return ''; }
 })();
 
-// UI language — same source of truth as the main app (localStorage 'ui_lang').
-// The onboarding ALWAYS starts in Russian: our audience is Russian-speaking learners,
-// so a fresh user (nothing stored) sees RU regardless of their Telegram interface
-// language. Only an explicit earlier choice (stored 'ui_lang') is honoured — a user who
-// already switched to German stays in German. The 🌐 globe toggle switches in-wizard,
-// and on the first RU open we point it out once with a short toast (see ob_lang_hinted).
-const LANG = (() => {
+// Onboarding language — ALWAYS opens in Russian. Our audience is Russian-speaking
+// learners, so EVERY fresh open is RU regardless of the app-wide ui_lang (a user whose
+// main app is German still gets the RU onboarding). The language is therefore NOT read
+// from ui_lang; it's driven by a ?oblang= URL param that ONLY the in-wizard 🌐 toggle
+// sets (see switchLang). That param survives the one reload the toggle triggers, so a
+// switch to German holds while you read — but the next fresh open has no param → RU again.
+const OBLANG_PARAM = (() => {
   try {
-    const stored = (localStorage.getItem('ui_lang') || '').toLowerCase();
-    if (stored === 'de' || stored === 'ru') return stored;
+    const p = (new URLSearchParams(window.location.search).get('oblang') || '').toLowerCase();
+    if (p === 'de' || p === 'ru') return p;
   } catch (_e) { /* noop */ }
-  return 'ru';
+  return '';
 })();
+const LANG = OBLANG_PARAM || 'ru';
 const t = (ru, de) => (LANG === 'de' ? de : ru);
 
 // R2-hosted onboarding clips. Same insertion pattern as the existing tiles: a small,
@@ -90,10 +91,20 @@ const MEDIA = {
   ],
 };
 
-// Switch the whole wizard language (reload so the module-level strings re-read).
+// Switch the wizard language. Reload (so the module-level strings re-read) with a
+// ?oblang= param that pins the choice through THIS reload only — a later fresh open has
+// no param and defaults back to RU. Mirror into ui_lang too so the main app keeps the
+// chosen language after onboarding ends. The URL hash (Telegram initData) is preserved.
 function switchLang() {
-  try { localStorage.setItem('ui_lang', LANG === 'de' ? 'ru' : 'de'); } catch (_e) { /* noop */ }
-  try { window.location.reload(); } catch (_e) { /* noop */ }
+  const target = LANG === 'de' ? 'ru' : 'de';
+  try { localStorage.setItem('ui_lang', target); } catch (_e) { /* noop */ }
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('oblang', target);
+    window.location.replace(url.toString());
+  } catch (_e) {
+    try { window.location.reload(); } catch (_e2) { /* noop */ }
+  }
 }
 
 async function api(path, extra) {
@@ -1036,18 +1047,13 @@ export default function OnboardingWizard() {
   const [proPrice, setProPrice] = useState('');           // live Pro price label (Stripe-configured)
   const [langHint, setLangHint] = useState(false);        // one-time «switch to German» toast + globe glow
 
-  // On the first RU open, point out the 🌐 globe: the wizard is in Russian, but a learner
-  // who wants the German UI can tap here. Show a gentle 6s toast once and glow the globe
-  // while it's up. Only when currently in RU (a user already on DE isn't nagged), and only
-  // once ever (ob_lang_hinted). No ui_lang gate — existing users we drive into onboarding
-  // have a stored language too, and they should still be told they can switch.
+  // On EVERY fresh RU open, point out the 🌐 globe: the wizard is in Russian, but a learner
+  // who wants the German UI can tap here. Glow the globe and float a gentle 6s toast. Not
+  // one-time — the user asked to see it each time. Skipped only right after a manual switch
+  // (?oblang= present) — they just used the toggle, no need to re-explain it.
   useEffect(() => {
-    if (LANG !== 'ru') return;
-    try { if (localStorage.getItem('ob_lang_hinted') === '1') return; } catch (_e) { /* noop */ }
-    const show = setTimeout(() => {
-      setLangHint(true);
-      try { localStorage.setItem('ob_lang_hinted', '1'); } catch (_e) { /* noop */ }
-    }, 900); // let the wizard settle in first, then draw attention to the globe
+    if (LANG !== 'ru' || OBLANG_PARAM) return;
+    const show = setTimeout(() => setLangHint(true), 900); // let the wizard settle in first
     return () => clearTimeout(show);
   }, []);
 
