@@ -350,6 +350,12 @@
 .ob-sublist li { color: var(--ob-muted); font-size: 14px; }
 .ob-sublist li::before { background: var(--ob-accent); }
 
+/* «Поделиться с другом» block on the finale */
+.ob-share {
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--ob-line);
+  display: flex; flex-direction: column; gap: 8px;
+}
+
 /* Language toggle (in-wizard RU/DE switch) + ✕ close */
 .ob-topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .ob-close {

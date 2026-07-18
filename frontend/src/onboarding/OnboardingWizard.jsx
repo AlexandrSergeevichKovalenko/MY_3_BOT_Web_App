@@ -32,6 +32,19 @@ const IS_PWA_TOUR = IS_PUBLIC && IS_STANDALONE_PWA;
 // app, so leaving = go back to the app; in Telegram it's a sheet → tg.close().
 const CAN_CLOSE = IS_STANDALONE_PWA || !IS_PUBLIC;
 
+// An existing user viewing their OWN finale (Telegram sheet OR their installed PWA) — as
+// opposed to a cold public-web visitor. Only they get the «share the tour with a friend»
+// button (a public visitor has no bot / no referral code yet).
+const CAN_SHARE = !IS_PUBLIC || IS_STANDALONE_PWA;
+
+// A friend-shared tour is opened as /tour?ref=<referrer id>. Thread that code into the
+// finale install CTA (→ t.me/<bot>?start=ref_<code>) so the referral is attributed when
+// the friend installs the bot — the existing streak-triggered payout then rewards both.
+const REF_PARAM = (() => {
+  try { return String(new URLSearchParams(window.location.search).get('ref') || '').trim(); }
+  catch (_e) { return ''; }
+})();
+
 // UI language — same source of truth as the main app (localStorage 'ui_lang').
 // Fresh users (never opened the main app) have nothing stored → fall back to the
 // Telegram interface language, else Russian. Switchable in-wizard (see LangToggle).
@@ -255,7 +268,7 @@ const REAL_STEPS = new Set(['install_app', 'language', 'dictionary', 'intensity'
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
-    onShortcutSetup, shortcutOpening, proPrice, onOpenSubscription } = props;
+    onShortcutSetup, shortcutOpening, proPrice, onOpenSubscription, onShareTour, shareHint } = props;
   const bodyKey = REAL_STEPS.has(step.id) ? step.id : step.kind;
   switch (bodyKey) {
     case 'install_app':
@@ -931,8 +944,8 @@ function StepBody(props) {
       return <p className="ob-lead">Необязательный шаг. Здесь будет выбор. Пока — заглушка каркаса.</p>;
     case 'info':
       return <p className="ob-lead">Короткое объяснение + медиа. Пока — заглушка каркаса.</p>;
-    case 'finale':
-      return IS_PWA_TOUR ? (
+    case 'finale': {
+      const finaleText = IS_PWA_TOUR ? (
         <p className="ob-lead">
           {t('Вот и весь обзор 🎉 Это был краткий тур по возможностям бота. Закрой его — и продолжай пользоваться приложением.',
              'Das war der Überblick 🎉 Ein kurzer Rundgang durch die Möglichkeiten des Bots. Schließe ihn — und nutze die App weiter.')}
@@ -949,6 +962,31 @@ function StepBody(props) {
           <b>{t('🎬 Как пользоваться', '🎬 Wie man es benutzt')}</b>.
         </p>
       );
+      return (
+        <>
+          {finaleText}
+          {CAN_SHARE ? (
+            <div className="ob-share">
+              <p className="ob-lead">
+                {t('Понравилось, что умеет бот? Поделись этим туром с другом 👇',
+                   'Gefällt dir, was der Bot kann? Teile diesen Rundgang mit einem Freund 👇')}
+              </p>
+              <button type="button" className="ob-confirm ob-alt" onClick={onShareTour}>
+                {t('📤 Поделиться с другом', '📤 Mit einem Freund teilen')}
+              </button>
+              {shareHint ? (
+                <span className="ob-lock ob-ok">{shareHint}</span>
+              ) : (
+                <span className="ob-muted-note">
+                  {t('Друг пройдёт короткий тур, а когда начнёт заниматься — вы оба получите бонусные дни Pro.',
+                     'Dein Freund macht den kurzen Rundgang, und sobald er startet, bekommt ihr beide Bonus-Pro-Tage.')}
+                </span>
+              )}
+            </div>
+          ) : null}
+        </>
+      );
+    }
     default:
       return null;
   }
@@ -971,6 +1009,7 @@ export default function OnboardingWizard() {
   const [selBattle, setSelBattle] = useState(null);       // battle readiness: null|'yes'|'no'
   const [botUrl, setBotUrl] = useState('');               // install link (public tour only)
   const [shortcutOpening, setShortcutOpening] = useState(false); // «Настроить сейчас» in flight
+  const [shareHint, setShareHint] = useState('');                // «Поделиться» feedback (copied)
   const [proPrice, setProPrice] = useState('');           // live Pro price label (Stripe-configured)
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
@@ -1074,7 +1113,12 @@ export default function OnboardingWizard() {
       return;
     }
     if (IS_PUBLIC) {
-      if (botUrl) { try { window.location.href = botUrl; } catch (_e) { /* ignore */ } }
+      if (botUrl) {
+        // Carry the referrer's code (if this tour was shared with ?ref=) into the bot
+        // deeplink so the install is attributed to them.
+        const dest = REF_PARAM ? `${botUrl}?start=ref_${encodeURIComponent(REF_PARAM)}` : botUrl;
+        try { window.location.href = dest; } catch (_e) { /* ignore */ }
+      }
       return;
     }
     setFinishing(true);
@@ -1119,6 +1163,40 @@ export default function OnboardingWizard() {
     }
     // Plain public browser tour: nothing to return to — go to the app root.
     try { window.location.href = '/'; } catch (_e) { /* noop */ }
+  }, []);
+
+  // «📤 Поделиться с другом» on the finale: send the friend the PUBLIC tour link carrying
+  // this user's referral code (/tour?ref=<id>). The friend walks the full presentation and
+  // installs from its finale via ?start=ref_<id> — captured by the existing referral flow.
+  const shareTour = useCallback(async () => {
+    try { tg?.HapticFeedback?.impactOccurred?.('medium'); } catch (_e) { /* noop */ }
+    // Referral code = the acting user's id. In Telegram it's in initDataUnsafe; in the PWA
+    // (no initData) ask the backend, which resolves us from the durable app token.
+    let ref = '';
+    try { ref = String(tg?.initDataUnsafe?.user?.id || '').trim(); } catch (_e) { /* noop */ }
+    if (!ref) {
+      try { const d = await api('/api/webapp/referral-link'); ref = String(d.ref_code || '').trim(); }
+      catch (_e) { /* fall back to a bare tour link */ }
+    }
+    const origin = window.location.origin;
+    const tourUrl = ref ? `${origin}/tour?ref=${encodeURIComponent(ref)}` : `${origin}/tour`;
+    const text = t('Смотри, что умеет этот бот для немецкого — пройди короткий тур 👇',
+                   'Schau, was dieser Deutsch-Bot kann — mach den kurzen Rundgang 👇');
+    const tgShare = `https://t.me/share/url?url=${encodeURIComponent(tourUrl)}&text=${encodeURIComponent(text)}`;
+    // Inside Telegram → native «share to chat» picker. Otherwise → Web Share sheet, else
+    // open Telegram's share URL, else copy the link to the clipboard.
+    try {
+      if (!IS_PUBLIC && tg?.openTelegramLink) { tg.openTelegramLink(tgShare); return; }
+    } catch (_e) { /* noop */ }
+    try {
+      if (navigator.share) { await navigator.share({ text, url: tourUrl }); return; }
+    } catch (_e) { return; /* user cancelled the native sheet */ }
+    try { window.open(tgShare, '_blank'); return; } catch (_e) { /* noop */ }
+    try {
+      await navigator.clipboard.writeText(tourUrl);
+      setShareHint(t('✅ Ссылка скопирована', '✅ Link kopiert'));
+      setTimeout(() => setShareHint(''), 2200);
+    } catch (_e) { /* noop */ }
   }, []);
 
   // «Настроить сейчас» on the Shortcut step (the last content step): complete
@@ -1342,6 +1420,8 @@ export default function OnboardingWizard() {
             shortcutOpening={shortcutOpening}
             proPrice={proPrice}
             onOpenSubscription={openSubscription}
+            onShareTour={shareTour}
+            shareHint={shareHint}
           />
         </main>
 

@@ -44570,6 +44570,28 @@ def public_tour_info():
     return jsonify({"ok": True, "bot_url": (f"https://t.me/{username}" if username else "")})
 
 
+@app.route("/api/webapp/referral-link", methods=["POST"])
+def webapp_referral_link():
+    """The acting user's referral code + reward terms, for the «share the tour with a
+    friend» button on the onboarding finale. Accepts Telegram initData OR the durable
+    app token, so it works both in Telegram and in the standalone home-screen PWA. The
+    friend opens /tour?ref=<code>, and the finale «install» CTA carries ?start=ref_<code>
+    into the bot — captured by the existing referral flow (both get Pro-days on streak)."""
+    user_id = _resolve_webapp_user_id()
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    return jsonify({
+        "ok": True,
+        "ref_code": str(int(user_id)),
+        "bot_ref_url": (
+            f"https://t.me/{TELEGRAM_BOT_USERNAME}?start=ref_{int(user_id)}"
+            if TELEGRAM_BOT_USERNAME else ""
+        ),
+        "reward_days": REFERRAL_REWARD_DAYS,
+        "streak_trigger": REFERRAL_STREAK_TRIGGER,
+    })
+
+
 @app.route("/api/shortcut/pairing-code", methods=["POST"])
 def shortcut_create_pairing_code():
     body = request.get_json(silent=True) or {}
