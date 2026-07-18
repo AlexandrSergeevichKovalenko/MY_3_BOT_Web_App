@@ -3486,32 +3486,15 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     flushValue(nextValue, 'blur');
   };
 
-  // When the keyboard opens, the page shrinks to the space above it and a short field
-  // otherwise stays pinned near the TOP with a big empty band down to the keyboard — it
-  // only snaps into place once iOS auto-scrolls the caret on the first keystroke. Do that
-  // scroll up front on focus so the whole card (sentence + input + actions) sits right
-  // above the keyboard with no empty band. Touch-only (harmless-but-pointless on desktop)
-  // and not on Android/Telegram, which manages its own viewport + has custom draft logic.
-  const handleFocus = useCallback(() => {
-    if (isAndroidClient) return;
-    const isTouch = typeof window !== 'undefined'
-      && (('ontouchstart' in window) || Number(navigator?.maxTouchPoints || 0) > 0);
-    if (!isTouch) return;
-    const node = textareaRef.current;
-    if (!node) return;
-    window.setTimeout(() => {
-      if (typeof document === 'undefined' || document.activeElement !== node) return;
-      const card = node.closest('.webapp-translation-item') || node;
-      try { card.scrollIntoView({ block: 'end', behavior: 'smooth' }); } catch { /* older engines */ }
-    }, 350);
-  }, [isAndroidClient]);
-
+  // Keeping the focused field above the keyboard is handled globally (see the
+  // "focusin"/keyboard-reserve effect in App): it applies to every page field
+  // uniformly (translation textareas, story-guess input, theory/skill practice),
+  // so no per-field scroll handler is needed here.
   const textareaProps = {
     ref: textareaRef,
     rows: 5,
     defaultValue: String(initialValue || ''),
     onBlur: handleBlur,
-    onFocus: handleFocus,
     placeholder,
     'data-translation-draft-field': 'true',
   };
@@ -5679,6 +5662,80 @@ function AppInner() {
       }
     };
   }, [telegramApp]);
+
+  // Keep the focused input above the software keyboard on touch devices.
+  //
+  // On these screens `.webapp-page` is a FIXED-HEIGHT scroll container
+  // (is-sticky-topbar / is-contained-scroll: height/max-height = --app-height).
+  // iOS webviews — Telegram's WKWebView especially — are unreliable about shrinking
+  // window.visualViewport when the keyboard opens, so --app-height often stays
+  // full-screen. A fixed-height inner scroller can't scroll its content above its own
+  // top, so the bottom-most fields (story-guess input, last sentence textarea, theory/
+  // skill practice) get TRAPPED behind the keyboard — the field ends up off-screen with
+  // a big empty band down to the keyboard. Fix, applied to every page field uniformly:
+  //   (1) while a field is focused, add generous bottom padding so the container has room
+  //       to scroll the last field up; (2) center the focused field once the keyboard has
+  //       settled (measured a couple of times — visualViewport settles late in WKWebView).
+  // The floating dictionary input manages its own lift and is excluded; Android has its
+  // own draft/viewport logic and is skipped.
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined') return undefined;
+    if (isAndroidTelegramClient) return undefined;
+    const isTouch = ('ontouchstart' in window) || Number(navigator?.maxTouchPoints || 0) > 0;
+    if (!isTouch) return undefined;
+
+    const isPageField = (el) => {
+      if (!el || typeof el.closest !== 'function') return false;
+      if (el.getAttribute?.('data-floating-dict-input') === 'true') return false;
+      const editable = /^(input|textarea|select)$/i.test(el.tagName || '') || el.isContentEditable === true;
+      if (!editable) return false;
+      return !!el.closest('.webapp-page');
+    };
+
+    const clearReserve = () => {
+      document.querySelectorAll('.webapp-page.is-keyboard-open').forEach((node) => {
+        node.classList.remove('is-keyboard-open');
+      });
+    };
+
+    let settleTimers = [];
+    const clearTimers = () => { settleTimers.forEach((id) => window.clearTimeout(id)); settleTimers = []; };
+
+    const centerField = (el) => {
+      if (document.activeElement !== el) return;
+      try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* older engines */ }
+    };
+
+    const handleFocusIn = (event) => {
+      const el = event.target;
+      if (!isPageField(el)) return;
+      const scroller = el.closest('.webapp-page');
+      if (scroller) scroller.classList.add('is-keyboard-open');
+      clearTimers();
+      [300, 650].forEach((delay) => {
+        settleTimers.push(window.setTimeout(() => centerField(el), delay));
+      });
+    };
+
+    const handleFocusOut = () => {
+      // Focus may hop from one field straight to another — only tear down the reserve
+      // once nothing editable is focused anymore.
+      window.setTimeout(() => {
+        if (isPageField(document.activeElement)) return;
+        clearTimers();
+        clearReserve();
+      }, 80);
+    };
+
+    document.addEventListener('focusin', handleFocusIn);
+    document.addEventListener('focusout', handleFocusOut);
+    return () => {
+      clearTimers();
+      clearReserve();
+      document.removeEventListener('focusin', handleFocusIn);
+      document.removeEventListener('focusout', handleFocusOut);
+    };
+  }, [isAndroidTelegramClient]);
 
   const [browserAuthLoading, setBrowserAuthLoading] = useState(false);
   const [browserAuthError, setBrowserAuthError] = useState('');

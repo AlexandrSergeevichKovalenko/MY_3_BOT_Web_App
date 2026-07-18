@@ -460,6 +460,17 @@ body {
   touch-action: pan-y;
 }
 
+/* Keyboard-open reserve (toggled by the global focusin handler in App.jsx).
+   These pages are fixed-height scroll containers; iOS webviews (Telegram's WKWebView)
+   often fail to shrink visualViewport for the software keyboard, so without extra room
+   the container can't scroll its bottom-most fields out from behind the keyboard and the
+   focused input gets stranded off-screen with a big empty band. Adding ample bottom
+   padding while a field is focused gives the scroller that room; the reserve sits behind
+   the keyboard, so the focused field can be centered in the visible area. Removed on blur. */
+.webapp-page.is-keyboard-open {
+  padding-bottom: max(48vh, 340px);
+}
+
 /* Sticky topbar on normal browsing screens.
    Pins the page to the viewport (--app-height) with a single internal scroller
    and keeps the topbar (home button + controls) stuck at the top so it never
