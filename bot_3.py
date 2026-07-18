@@ -9088,7 +9088,7 @@ async def refund_star_command(update: Update, context: CallbackContext) -> None:
 
 async def refund_star_callback(update: Update, context: CallbackContext) -> None:
     """Handle a ↩️ refund button: call refundStarPayment, stamp the row, report the result."""
-    from backend.database import mark_star_payment_refunded
+    from backend.database import mark_star_payment_refunded, revoke_star_payment_fulfillment
     query = update.callback_query
     if not query or not query.from_user or not _is_admin_user(int(query.from_user.id)):
         if query:
@@ -9116,12 +9116,24 @@ async def refund_star_callback(update: Update, context: CallbackContext) -> None
         await query.answer(f"Telegram отклонил возврат: {exc}"[:190], show_alert=True)
         return
     await asyncio.to_thread(mark_star_payment_refunded, charge_id)  # no-op for tips not in our DB
+    # Money went back → claw back what the charge granted (Pro days, sponsor, sub, audio).
+    revoked = await asyncio.to_thread(revoke_star_payment_fulfillment, charge_id)
+    _undone = []
+    if revoked.get("grants_removed"):
+        _undone.append("Pro-дни")
+    if revoked.get("sponsor_removed"):
+        _undone.append("спонсор")
+    if revoked.get("subscription_reverted"):
+        _undone.append("Pro-подписка")
+    if revoked.get("book_audio_revoked"):
+        _undone.append("озвучка книги")
+    _undone_txt = (" Отозвано: " + ", ".join(_undone) + ".") if _undone else ""
     try:
         await query.answer(f"✅ Возвращено {row['stars']}⭐", show_alert=True)
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(
             f"✅ Возврат выполнен: {row['stars']}⭐ пользователю {uid}. "
-            f"Звёзды вернулись на баланс бота — можно платить снова."
+            f"Звёзды вернулись на баланс бота — можно платить снова.{_undone_txt}"
         )
     except Exception:
         logging.warning("refund_star post-refund UI update failed", exc_info=True)
@@ -35027,7 +35039,9 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
             _days = _support_pro_days.get(purpose, 0)
             _pro_granted = False
             if _days > 0:
-                _pro_granted = bool(grant_pro_days(_uid, days=_days, reason=purpose))
+                # Link the grant to this charge so a refund can revoke exactly these days.
+                _pro_granted = bool(grant_pro_days(_uid, days=_days, reason=purpose,
+                                                   source_charge_id=charge_id))
             _thanks = ("Спасибо за кофе ☕️" if purpose == "support_coffee"
                        else "Спасибо за кофе и чизкейк ☕️🍰")
             if _pro_granted:

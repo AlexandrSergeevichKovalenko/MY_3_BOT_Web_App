@@ -17498,6 +17498,10 @@ def _ensure_dau_schema() -> None:
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pro_grants_user "
                         "ON bt_3_pro_grants (user_id, granted_until);")
+            # Links a grant to the Stars charge that paid for it (support donations), so a
+            # refund can claw back exactly the days it granted. NULL for streak/referral/trial.
+            cur.execute("ALTER TABLE bt_3_pro_grants "
+                        "ADD COLUMN IF NOT EXISTS source_charge_id TEXT;")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_referrals (
                     invited_user_id  BIGINT PRIMARY KEY,
@@ -17838,13 +17842,17 @@ def count_pro_grants_this_month(user_id: int) -> int:
         return 0
 
 
-def grant_pro_days(user_id: int, days: int = 1, reason: str = "streak") -> bool:
+def grant_pro_days(user_id: int, days: int = 1, reason: str = "streak",
+                   source_charge_id: str | None = None) -> bool:
     """Add `days` of earned Pro, stacking on any active grant.
 
     Banking: if the user is on a PAID subscription right now, the earned window
     starts at the paid period end (not NOW) so the day genuinely EXTENDS the
     subscription instead of burning concurrently with paid coverage. Free users
-    (no active paid period) get it immediately, as before."""
+    (no active paid period) get it immediately, as before.
+
+    `source_charge_id` links the grant to the Stars charge that paid for it (support
+    donations) so a refund can revoke exactly these days. Leave None for earned grants."""
     try:
         _ensure_dau_schema()
         cur_until = get_active_pro_grant(int(user_id))
@@ -17863,9 +17871,10 @@ def grant_pro_days(user_id: int, days: int = 1, reason: str = "streak") -> bool:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO bt_3_pro_grants (user_id, granted_until, reason)
-                    VALUES (%s, GREATEST(NOW(), COALESCE(%s, NOW()), COALESCE(%s, NOW())) + (%s || ' days')::interval, %s);
-                """, (int(user_id), cur_until, paid_end, int(days), str(reason)))
+                    INSERT INTO bt_3_pro_grants (user_id, granted_until, reason, source_charge_id)
+                    VALUES (%s, GREATEST(NOW(), COALESCE(%s, NOW()), COALESCE(%s, NOW())) + (%s || ' days')::interval, %s, %s);
+                """, (int(user_id), cur_until, paid_end, int(days), str(reason),
+                      (str(source_charge_id).strip() or None) if source_charge_id else None))
             conn.commit()
         _bust_entitlement_cache(int(user_id))  # earned Pro changed → re-resolve next request
         return True
@@ -29537,6 +29546,78 @@ def get_star_payment_by_charge(charge_id: str) -> dict | None:
         return None
     return {"charge_id": str(r[0]), "user_id": int(r[1]), "purpose": str(r[2] or ""),
             "stars": int(r[3] or 0), "refunded_at": r[4], "refunded": r[4] is not None}
+
+
+def revoke_star_payment_fulfillment(charge_id: str) -> dict:
+    """Reverse whatever a refunded Stars charge granted, keyed by its recorded purpose.
+
+    A refund gives the stars back, so the perks must go too. Idempotent (a second call
+    finds nothing to remove). Reads the fulfilled bt_3_star_payments row for the purpose +
+    payload; if the charge was never recorded (nothing was granted) it's a clean no-op.
+    Returns a summary of what was undone for the admin message."""
+    out = {"purpose": None, "user_id": None, "grants_removed": 0,
+           "sponsor_removed": 0, "subscription_reverted": False, "book_audio_revoked": 0}
+    charge = str(charge_id or "").strip()
+    if not charge:
+        return out
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT user_id, purpose, payload FROM bt_3_star_payments "
+                    "WHERE telegram_payment_charge_id = %s;",
+                    (charge,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return out  # never fulfilled → nothing to revoke
+                uid = int(row[0])
+                purpose = str(row[1] or "").strip().lower()
+                payload = row[2] if isinstance(row[2], dict) else {}
+                out["user_id"] = uid
+                out["purpose"] = purpose
+
+                if purpose in ("support_coffee", "support_cheesecake"):
+                    # Remove exactly the days this charge granted + its wall entry.
+                    cursor.execute(
+                        "DELETE FROM bt_3_pro_grants WHERE user_id = %s AND source_charge_id = %s;",
+                        (uid, charge),
+                    )
+                    out["grants_removed"] = cursor.rowcount or 0
+                    cursor.execute(
+                        "DELETE FROM bt_3_sponsorships WHERE stripe_checkout_session_id = %s;",
+                        (f"stars_{charge}",),
+                    )
+                    out["sponsor_removed"] = cursor.rowcount or 0
+                elif purpose == "book_audio":
+                    # Unlocks aren't charge-linked; revoke the exact (doc, tier) this charge paid for.
+                    doc_id = int(payload.get("document_id") or 0)
+                    voice_tier = str(payload.get("voice_tier") or "").strip()
+                    if doc_id and voice_tier:
+                        cursor.execute(
+                            "DELETE FROM bt_3_book_audio_unlocks "
+                            "WHERE user_id = %s AND document_id = %s AND voice_tier = %s;",
+                            (uid, doc_id, voice_tier),
+                        )
+                        out["book_audio_revoked"] = cursor.rowcount or 0
+            conn.commit()
+
+        # Pro subscription revert lives in its own helper (separate txn) — do it outside.
+        if out["purpose"] == "pro":
+            try:
+                deactivate_user_subscription(
+                    user_id=int(out["user_id"]), status="canceled", plan_code="free",
+                    clear_stripe_subscription_id=True,
+                )
+                out["subscription_reverted"] = True
+            except Exception:
+                logging.warning("revoke: subscription revert failed charge=%s", charge, exc_info=True)
+
+        if out["user_id"] is not None:
+            _bust_entitlement_cache(int(out["user_id"]))  # perks changed → re-resolve
+    except Exception:
+        logging.warning("revoke_star_payment_fulfillment failed charge=%s", charge, exc_info=True)
+    return out
 
 
 def mark_star_payment_refunded(charge_id: str) -> bool:
