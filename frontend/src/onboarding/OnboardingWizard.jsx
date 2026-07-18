@@ -54,16 +54,21 @@ const REF_PARAM = (() => {
 })();
 
 // UI language — same source of truth as the main app (localStorage 'ui_lang').
-// Fresh users (never opened the main app) have nothing stored → fall back to the
-// Telegram interface language, else Russian. Switchable in-wizard (see LangToggle).
+// The onboarding ALWAYS starts in Russian: our audience is Russian-speaking learners,
+// so a fresh user (nothing stored) sees RU regardless of their Telegram interface
+// language. Only an explicit earlier choice (stored 'ui_lang') is honoured — a user who
+// already switched to German stays in German. The 🌐 globe toggle switches in-wizard,
+// and on the very first RU start we point it out with a short toast (see LANG_HINTED).
+const HAS_STORED_LANG = (() => {
+  try {
+    const stored = (localStorage.getItem('ui_lang') || '').toLowerCase();
+    return stored === 'de' || stored === 'ru';
+  } catch (_e) { return false; }
+})();
 const LANG = (() => {
   try {
     const stored = (localStorage.getItem('ui_lang') || '').toLowerCase();
     if (stored === 'de' || stored === 'ru') return stored;
-  } catch (_e) { /* noop */ }
-  try {
-    const tgLang = String(tg?.initDataUnsafe?.user?.language_code || '').toLowerCase();
-    if (tgLang.startsWith('de')) return 'de';
   } catch (_e) { /* noop */ }
   return 'ru';
 })();
@@ -1035,6 +1040,27 @@ export default function OnboardingWizard() {
   const [shortcutOpening, setShortcutOpening] = useState(false); // «Настроить сейчас» in flight
   const [shareHint, setShareHint] = useState('');                // «Поделиться» feedback (copied)
   const [proPrice, setProPrice] = useState('');           // live Pro price label (Stripe-configured)
+  const [langHint, setLangHint] = useState(false);        // one-time «switch to German» toast + globe glow
+
+  // On the very first RU start (no language ever chosen), point out the 🌐 globe: the
+  // wizard defaults to Russian, but a learner who wants the German UI can tap here. Show
+  // a gentle 6s toast once and glow the globe while it's up. Shown only when we actually
+  // defaulted (nothing stored) and are in RU — never nags a user who already switched.
+  useEffect(() => {
+    if (HAS_STORED_LANG || LANG !== 'ru') return;
+    try { if (localStorage.getItem('ob_lang_hinted') === '1') return; } catch (_e) { /* noop */ }
+    const show = setTimeout(() => {
+      setLangHint(true);
+      try { localStorage.setItem('ob_lang_hinted', '1'); } catch (_e) { /* noop */ }
+    }, 900); // let the wizard settle in first, then draw attention to the globe
+    return () => clearTimeout(show);
+  }, []);
+
+  useEffect(() => {
+    if (!langHint) return;
+    const hide = setTimeout(() => setLangHint(false), 6000);
+    return () => clearTimeout(hide);
+  }, [langHint]);
 
   // Force LIGHT theme (owner: onboarding is always light, in the interactive style).
   useEffect(() => {
@@ -1411,9 +1437,28 @@ export default function OnboardingWizard() {
             {CAN_CLOSE ? (
               <button type="button" className="ob-close" onClick={onClose} aria-label={t('Закрыть', 'Schließen')}>✕</button>
             ) : <span />}
-            <button type="button" className="ob-lang" onClick={switchLang}>
-              {LANG === 'de' ? '🌐 RU' : '🌐 DE'}
-            </button>
+            <div className="ob-lang-wrap">
+              <button
+                type="button"
+                className={`ob-lang${langHint ? ' is-hinted' : ''}`}
+                onClick={() => { setLangHint(false); switchLang(); }}
+              >
+                {LANG === 'de' ? '🌐 RU' : '🌐 DE'}
+              </button>
+              {langHint && (
+                <div className="ob-lang-hint" role="status">
+                  <span className="ob-lang-hint-arrow" aria-hidden="true" />
+                  <span aria-hidden="true">🌐</span>
+                  <span>{t('Онбординг на русском. Хочешь на немецком — нажми здесь.', 'Onboarding auf Russisch. Lieber Deutsch? Tippe hier.')}</span>
+                  <button
+                    type="button"
+                    className="ob-lang-hint-x"
+                    onClick={() => setLangHint(false)}
+                    aria-label={t('Закрыть', 'Schließen')}
+                  >×</button>
+                </div>
+              )}
+            </div>
           </div>
           <div className="ob-progress">
             <span className="ob-step-label">{t('Шаг', 'Schritt')} {idx + 1} {t('из', 'von')} {STEPS.length}</span>

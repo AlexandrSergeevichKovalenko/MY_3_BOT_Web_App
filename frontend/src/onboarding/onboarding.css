@@ -369,6 +369,49 @@
   appearance: none; border: 1px solid var(--ob-line); background: #f4f8ff;
   color: var(--ob-accent); font-size: 13px; font-weight: 700;
   padding: 4px 12px; border-radius: 999px; cursor: pointer;
+  transition: box-shadow .25s ease, transform .25s ease, border-color .25s ease;
+}
+
+/* One-time «switch to German» hint: glow the globe + float a soft footnote below it. */
+.ob-lang-wrap { position: relative; display: flex; }
+.ob-lang.is-hinted {
+  border-color: var(--ob-accent);
+  animation: obLangPulse 1.6s ease-in-out infinite;
+}
+@keyframes obLangPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(58, 123, 213, 0.42); transform: scale(1); }
+  50%      { box-shadow: 0 0 0 7px rgba(58, 123, 213, 0);   transform: scale(1.06); }
+}
+.ob-lang-hint {
+  position: absolute; top: calc(100% + 10px); right: 0; z-index: 40;
+  width: max-content; max-width: min(78vw, 300px);
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 12px; border-radius: 14px;
+  background: linear-gradient(135deg, #ffffff, #f4f8ff);
+  border: 1px solid var(--ob-accent);
+  box-shadow: 0 10px 28px rgba(58, 123, 213, 0.18);
+  color: var(--ob-ink); font-size: 12.5px; line-height: 1.35; font-weight: 600;
+  animation: obLangHintIn .28s cubic-bezier(.16,.84,.44,1) both;
+  pointer-events: auto;
+}
+.ob-lang-hint-arrow {
+  position: absolute; top: -6px; right: 16px;
+  width: 12px; height: 12px; border-radius: 3px 0 0 0;
+  background: #ffffff; border-left: 1px solid var(--ob-accent); border-top: 1px solid var(--ob-accent);
+  transform: rotate(45deg);
+}
+.ob-lang-hint-x {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  color: var(--ob-muted); font-size: 15px; font-weight: 700; line-height: 1;
+  padding: 0 0 0 2px; margin-left: auto; align-self: flex-start;
+}
+@keyframes obLangHintIn {
+  from { opacity: 0; transform: translateY(-6px) scale(.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ob-lang.is-hinted { animation: none; box-shadow: 0 0 0 3px rgba(58, 123, 213, 0.3); }
+  .ob-lang-hint { animation: none; }
 }
 
 /* ── Free vs Pro comparison table («Тарифы» step) ── */
