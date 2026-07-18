@@ -17,6 +17,9 @@ import StarsInfoModal from './components/StarsInfoModal';
 import BonusProDaysModal from './components/BonusProDaysModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
+// Быстрый словарь-оверлей (тот же, что в standalone-PWA) — грузим лениво, открываем
+// значком в верхней полосе на планшете/браузере.
+const QuickDictionaryOverlay = lazy(() => import('./dictionary/DictionaryOverlay.jsx'));
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
@@ -5865,6 +5868,8 @@ function AppInner() {
       ? window.matchMedia('(min-width: 700px)').matches
       : false,
   );
+  // Быстрый словарь-оверлей поверх приложения (планшет/браузер).
+  const [quickDictOpen, setQuickDictOpen] = useState(false);
   // Размер overlay-субтитров: шаг 0..4 (2 = как сейчас). Масштаб → --yt-overlay-scale.
   const YT_SUB_SCALES = [0.8, 0.9, 1, 1.15, 1.32];
   const [youtubeSubFontStep, setYoutubeSubFontStep] = useState(() => {
@@ -27777,20 +27782,36 @@ function AppInner() {
   // результаты — выпадающим списком. Показ только в Puzzle-режиме.
   const renderYoutubeTopbarSearch = () => {
     if (!(isWideLayout && !youtubeNewsMode && youtubeSectionVisible)) return null;
+    const dictBtn = (
+      <button
+        type="button"
+        className="youtube-topdict-open"
+        onClick={() => setQuickDictOpen(true)}
+        title={tr('Быстрый словарь', 'Schnellwörterbuch')}
+        aria-label={tr('Быстрый словарь', 'Schnellwörterbuch')}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+      </button>
+    );
     if (!youtubeSearchExpanded) {
       return (
-        <button
-          type="button"
-          className="youtube-topsearch-open"
-          onClick={() => setYoutubeForceShowPanel(true)}
-          title={tr('Найти или сменить видео', 'Video suchen oder wechseln')}
-          aria-label={tr('Найти или сменить видео', 'Video suchen oder wechseln')}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.5-4.5" /></svg>
-        </button>
+        <div className="youtube-topbar-tools">
+          {dictBtn}
+          <button
+            type="button"
+            className="youtube-topsearch-open"
+            onClick={() => setYoutubeForceShowPanel(true)}
+            title={tr('Найти или сменить видео', 'Video suchen oder wechseln')}
+            aria-label={tr('Найти или сменить видео', 'Video suchen oder wechseln')}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.5-4.5" /></svg>
+          </button>
+        </div>
       );
     }
     return (
+      <div className="youtube-topbar-tools is-expanded">
+      {dictBtn}
       <div className="youtube-topsearch">
         <div className="youtube-topsearch-field">
           <svg className="yts-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.5-4.5" /></svg>
@@ -27846,6 +27867,7 @@ function AppInner() {
             ))}
           </div>
         )}
+      </div>
       </div>
     );
   };
@@ -34954,6 +34976,20 @@ function AppInner() {
               banked={Boolean(billingStatus?.bonus_pro?.banked)}
               until={billingStatus?.bonus_pro?.until || null}
             />
+
+            {quickDictOpen && (
+              <Suspense fallback={null}>
+                <div className="quick-dict-portal" data-dq-tablet>
+                  <button
+                    type="button"
+                    className="quick-dict-backdrop"
+                    aria-label={tr('Закрыть словарь', 'Wörterbuch schließen')}
+                    onClick={() => setQuickDictOpen(false)}
+                  />
+                  <QuickDictionaryOverlay onClose={() => setQuickDictOpen(false)} />
+                </div>
+              </Suspense>
+            )}
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>

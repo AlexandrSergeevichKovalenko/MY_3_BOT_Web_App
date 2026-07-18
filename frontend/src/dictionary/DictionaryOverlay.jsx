@@ -145,7 +145,7 @@ function DictBlockedGate({ botUsername }) {
   );
 }
 
-export default function DictionaryOverlay() {
+export default function DictionaryOverlay({ onClose } = {}) {
   const [query, setQuery] = useState('');
   const [phase, setPhase] = useState('idle'); // idle|loading|done|error
   const [quick, setQuick] = useState(null);   // { source, target, translation, sourceLang, targetLang, direction }
@@ -743,6 +743,17 @@ export default function DictionaryOverlay() {
       <div className="ans-card dq-card">
         <div className="ans-head dq-head-row">
           <span className="ans-eyebrow">📖 Быстрый словарь</span>
+          {typeof onClose === 'function' && (
+            <button
+              type="button"
+              className="dq-close-btn"
+              onClick={onClose}
+              aria-label="Закрыть словарь"
+              title="Закрыть"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          )}
           {deepId && item && (
             <button
               type="button"

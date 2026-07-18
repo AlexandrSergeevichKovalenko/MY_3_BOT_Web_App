@@ -1218,14 +1218,36 @@ body:has(.webapp-page.is-theme-light),
 }
 
 /* ── Тонкий поиск/смена видео YouTube в полосе «Startseite» (≥700) ── */
-.topbar-home-row .youtube-topsearch-open {
-  width: 34px; height: 34px; flex: 0 0 auto; margin-left: auto;
+/* группа инструментов справа в полосе Startseite: [📖 словарь] [🔍 поиск] */
+.topbar-home-row .youtube-topbar-tools {
+  margin-left: auto; flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.topbar-home-row .youtube-topbar-tools.is-expanded { flex: 1 1 auto; margin-left: 12px; }
+
+.topbar-home-row .youtube-topsearch-open,
+.topbar-home-row .youtube-topdict-open {
+  width: 34px; height: 34px; flex: 0 0 auto;
   border-radius: 11px; border: 1px solid rgba(0, 0, 0, .12);
   background: rgba(255, 255, 255, .92); color: #5a4a39;
   display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: .15s;
 }
-.topbar-home-row .youtube-topsearch-open svg { width: 18px; height: 18px; }
-.topbar-home-row .youtube-topsearch-open:hover { background: #fff; color: #c1873f; border-color: rgba(193, 135, 63, .5); }
+.topbar-home-row .youtube-topsearch-open svg,
+.topbar-home-row .youtube-topdict-open svg { width: 18px; height: 18px; }
+.topbar-home-row .youtube-topsearch-open:hover,
+.topbar-home-row .youtube-topdict-open:hover { background: #fff; color: #c1873f; border-color: rgba(193, 135, 63, .5); }
+
+/* Быстрый словарь поверх приложения (тот же оверлей, что в standalone-PWA).
+   .ans-root сам разворачивается на весь экран (как на телефоне); ✕ в шапке закрывает. */
+.quick-dict-portal { position: fixed; inset: 0; z-index: 90; }
+.quick-dict-portal .quick-dict-backdrop { position: absolute; inset: 0; border: 0; background: transparent; }
+.dq-close-btn {
+  flex: 0 0 auto; margin-left: auto;
+  width: 32px; height: 32px; border-radius: 10px; border: 1px solid rgba(0, 0, 0, .12);
+  background: #ffffff; color: #5a4a39;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: .15s;
+}
+.dq-close-btn:hover { background: #f3eee6; color: #17120d; }
 
 .topbar-home-row .youtube-topsearch { position: relative; flex: 1 1 auto; min-width: 0; max-width: 560px; display: flex; }
 .topbar-home-row .youtube-topsearch-field {
