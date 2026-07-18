@@ -6672,9 +6672,13 @@ function AppInner() {
   const [economicsSummary, setEconomicsSummary] = useState(null);
   const [billingStatusLoading, setBillingStatusLoading] = useState(false);
   const [billingStatusError, setBillingStatusError] = useState('');
-  // Friendly (non-alarming) billing note — e.g. «open in Telegram to pay». Rendered as a soft
-  // banner, NOT the red error plaque, so a "you need Telegram to pay" hint never looks like a crash.
+  // Friendly (non-alarming) billing note — e.g. a generic "try again". Rendered as a soft banner,
+  // NOT the red error plaque, so an informational hint never looks like a crash.
   const [billingStatusNotice, setBillingStatusNotice] = useState('');
+  // Set when a PWA/browser user tried to pay (Stars only work inside Telegram): holds the bot
+  // deep-link so we can show an EXPLICIT «Открыть в Telegram» button instead of a silent redirect
+  // that can dead-end on a t.me interstitial. { url, isSupport } | null.
+  const [billingPayInTelegram, setBillingPayInTelegram] = useState(null);
   const [billingStatus, setBillingStatus] = useState(null);
   const billingStatusPrefetchStartedRef = useRef(false);
   // One-time 7-day Pro welcome trial. Bootstrap returns its plaque state each app entry:
@@ -32177,6 +32181,7 @@ function AppInner() {
   const handleBillingUpgrade = async (planCode) => {
     setBillingStatusNotice('');
     setBillingStatusError('');
+    setBillingPayInTelegram(null);
     if (!initData) {
       setBillingStatusError(initDataMissingMsg);
       return;
@@ -32193,22 +32198,24 @@ function AppInner() {
     const startAppForCode = code === 'pro' ? 'buypro' : code; // support_coffee | support_cheesecake
     const canPayHere = appMode === 'telegram' && typeof telegramApp?.openInvoice === 'function';
     if (!canPayHere) {
+      let botUrl = '';
       try {
         const r = await fetch('/api/public/tour-info');
         const d = await r.json().catch(() => ({}));
-        const botUrl = String(d?.bot_url || '').trim();
-        if (botUrl) {
-          const deepLink = `${botUrl}?startapp=${startAppForCode}`;
-          // openTelegramLink only works reliably INSIDE Telegram (an old client without openInvoice);
-          // from a PWA/browser it can silently no-op, so hand off via the OS with a t.me navigation.
-          if (appMode === 'telegram' && telegramApp?.openTelegramLink) {
-            telegramApp.openTelegramLink(deepLink);
-          } else {
-            window.location.href = deepLink;
-          }
-          return;
+        botUrl = String(d?.bot_url || '').trim();
+      } catch (_e) { /* noop — handled below */ }
+      if (botUrl) {
+        const deepLink = `${botUrl}?startapp=${startAppForCode}`;
+        // Rare: already INSIDE Telegram but on an old client without openInvoice → hand off silently.
+        if (appMode === 'telegram' && telegramApp?.openTelegramLink) {
+          try { telegramApp.openTelegramLink(deepLink); return; } catch (_e) { /* fall through */ }
         }
-      } catch (_e) { /* fall through to a friendly note */ }
+        // PWA/browser: DON'T silently redirect (a t.me navigation can dead-end on an "Open in
+        // Telegram" interstitial and confuse the user). Surface an explicit button so the handoff
+        // is a deliberate, reliable tap that lands straight on the Stars sheet.
+        setBillingPayInTelegram({ url: deepLink, isSupport });
+        return;
+      }
       setBillingStatusNotice(tr(
         'Оплата звёздами проходит внутри Telegram. Открой бота в Telegram и нажми «Поддержать» ещё раз — там всё в пару тапов.',
         'Die Zahlung mit Sternen läuft in Telegram. Öffne den Bot in Telegram und tippe erneut auf „Unterstützen“ — dort klappt es in wenigen Taps.',
@@ -32256,8 +32263,8 @@ function AppInner() {
       console.warn('billing upgrade failed', raw);
       if (/unsupported|not.?supported|WebAppMethod/i.test(raw)) {
         setBillingStatusNotice(tr(
-          'Оплата звёздами проходит внутри Telegram. Открой бота в Telegram и нажми «Поддержать» ещё раз — там всё в пару тапов.',
-          'Die Zahlung mit Sternen läuft in Telegram. Öffne den Bot in Telegram und tippe erneut auf „Unterstützen“ — dort klappt es in wenigen Taps.',
+          'Твоя версия Telegram не поддерживает оплату звёздами. Обнови Telegram до последней версии и попробуй снова.',
+          'Deine Telegram-Version unterstützt die Zahlung mit Sternen nicht. Aktualisiere Telegram auf die neueste Version und versuche es erneut.',
         ));
       } else {
         setBillingStatusNotice(tr(
@@ -32294,6 +32301,20 @@ function AppInner() {
     const t = setTimeout(() => { handleBillingUpgradeRef.current?.(tier); }, 700);
     return () => clearTimeout(t);
   }, [autoSupportCheckoutTier, initData]);
+
+  // Explicit «Открыть в Telegram» tap (PWA/browser) → hand off to the bot deep-link. A direct
+  // user-gesture navigation is the most reliable way to trigger the OS → Telegram universal link.
+  const openBillingPayInTelegram = () => {
+    const url = String(billingPayInTelegram?.url || '').trim();
+    if (!url) return;
+    try {
+      if (appMode === 'telegram' && telegramApp?.openTelegramLink) {
+        telegramApp.openTelegramLink(url);
+        return;
+      }
+    } catch (_e) { /* fall through to a plain navigation */ }
+    window.location.href = url;
+  };
 
   const handleBillingManage = async () => {
     if (!initData) {
@@ -40261,6 +40282,18 @@ function AppInner() {
                   <div className={billingReturnContext.kind === 'cancel' ? 'webapp-muted' : 'webapp-success'}>
                     {billingReturnMessage}
                   </div>
+                )}
+                {billingPayInTelegram?.url && (
+                  <button
+                    type="button"
+                    className="billing-trial-banner billing-trial-banner--tappable"
+                    onClick={openBillingPayInTelegram}
+                  >
+                    💫 <strong>{tr('Открыть в Telegram, чтобы оплатить →', 'In Telegram öffnen und bezahlen →')}</strong>{' '}
+                    {billingPayInTelegram.isSupport
+                      ? tr('Звёздами можно платить только внутри Telegram. Нажми — откроем бота прямо на этой поддержке.', 'Sterne funktionieren nur in Telegram. Tippe — wir öffnen den Bot direkt bei dieser Unterstützung.')
+                      : tr('Звёздами можно платить только внутри Telegram. Нажми — откроем бота прямо на оплате Pro.', 'Sterne funktionieren nur in Telegram. Tippe — wir öffnen den Bot direkt bei der Pro-Zahlung.')}
+                  </button>
                 )}
                 {billingStatusNotice && (
                   <div className="billing-trial-banner">
