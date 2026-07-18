@@ -9104,11 +9104,30 @@ async def reconcile_refunds_command(update: Update, context: CallbackContext) ->
         from backend.background_jobs import run_stars_refund_reconcile_actor
         run_stars_refund_reconcile_actor.send()
         await message.reply_text(
-            "🔁 Запустил сверку возвратов Stars. Если что-то отозвано — придёт отдельным сообщением."
+            "🔁 Запустил сверку возвратов Stars (работает тихо, откат перков — в фоне). "
+            "Полную сводку смотри в /refund_report, статус задачи — в /scheduler_health."
         )
     except Exception:
         logging.exception("reconcile_refunds dispatch failed")
         await message.reply_text("Не получилось запустить сверку — смотри логи.")
+
+
+async def refund_report_command(update: Update, context: CallbackContext) -> None:
+    """/refund_report — admin-only. Sends the Stars-refund reconciliation report NOW (the same
+    summary that goes out automatically every Sunday): refunds in the last 7 days, how many
+    users had perks clawed back, split into auto-caught (bypassed /refund_star) vs manual.
+    The worker DMs the report."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not _is_admin_user(int(user.id)):
+        return
+    try:
+        from backend.background_jobs import run_stars_refund_weekly_report_actor
+        run_stars_refund_weekly_report_actor.send()
+        await message.reply_text("🧾 Готовлю отчёт по возвратам Stars — придёт в личку через пару секунд.")
+    except Exception:
+        logging.exception("refund_report dispatch failed")
+        await message.reply_text("Не получилось собрать отчёт — смотри логи.")
 
 
 async def refund_star_command(update: Update, context: CallbackContext) -> None:
@@ -37891,6 +37910,7 @@ def main():
     application.add_handler(CommandHandler("stars", stars_command))
     application.add_handler(CommandHandler("refund_star", refund_star_command))
     application.add_handler(CommandHandler("reconcile_refunds", reconcile_refunds_command))
+    application.add_handler(CommandHandler("refund_report", refund_report_command))
     application.add_handler(CallbackQueryHandler(refund_star_callback, pattern=r"^rfst:"))
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("review_makedue", admin_review_makedue_command))
