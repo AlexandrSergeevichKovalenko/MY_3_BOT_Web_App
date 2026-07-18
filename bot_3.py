@@ -9018,33 +9018,68 @@ def _refund_star_purpose_label(purpose: str) -> str:
     return p or "—"
 
 
+def _list_refundable_star_txns(limit: int = 20) -> list[dict]:
+    """Incoming Stars payments straight from Telegram's ledger (getStarTransactions),
+    each carrying the charge id refundStarPayment needs. Unlike our bt_3_star_payments
+    table (filled only by on_stars_successful_payment / invoice purchases), this also
+    surfaces tips/gifts that never went through a bot invoice — so any real payment is
+    refundable, which is exactly what a cheap end-to-end test needs."""
+    data = _fetch_star_ledger(limit=max(limit, 30))
+    out: list[dict] = []
+    for t in data.get("transactions") or []:
+        src = t.get("source")
+        if not isinstance(src, dict):
+            continue  # no source ⇒ outgoing (a refund/withdrawal), not refundable here
+        uid = int((src.get("user") or {}).get("id") or 0)
+        charge_id = str(t.get("id") or "")
+        if uid <= 0 or not charge_id:
+            continue  # need a user + charge id to call refundStarPayment
+        out.append({
+            "charge_id": charge_id,
+            "user_id": uid,
+            "stars": int(t.get("amount") or 0),
+            "date": int(t.get("date") or 0),
+            "label": _stars_txn_label(src.get("invoice_payload")),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _resolve_refundable_star_txn_by_tail(user_id: int, charge_tail: str) -> dict | None:
+    """Match a ledger charge by user + charge-id suffix (the button can't carry the full id)."""
+    tail = str(charge_tail or "")
+    for r in _list_refundable_star_txns(50):
+        if int(r["user_id"]) == int(user_id) and r["charge_id"].endswith(tail):
+            return r
+    return None
+
+
 async def refund_star_command(update: Update, context: CallbackContext) -> None:
     """/refund_star — admin-only. Lists recent Stars charges with a button to refund each
     (Telegram refundStarPayment). Lets us test a real payment cheaply: buy → verify in
     /stars → refund the stars back to our balance. Refunds are per-charge and idempotent."""
-    from backend.database import list_recent_star_payments
-    from datetime import timezone as _tz
+    from datetime import datetime as _dt, timezone as _tz
     user = update.effective_user
     message = update.effective_message
     if not user or not message or not _is_admin_user(int(user.id)):
         return
-    rows = await asyncio.to_thread(list_recent_star_payments, 10)
+    rows = await asyncio.to_thread(_list_refundable_star_txns, 10)
     if not rows:
-        await message.reply_text("⭐ Пока нет оплат звёздами для возврата.")
+        await message.reply_text(
+            "⭐ Пока нет входящих оплат звёздами для возврата (Telegram не отдал ни одной)."
+        )
         return
-    lines = ["⭐ <b>Возврат звёзд</b>\nПоследние оплаты — нажми, чтобы вернуть:"]
+    lines = ["⭐ <b>Возврат звёзд</b>\nВходящие оплаты из Telegram — нажми, чтобы вернуть:"]
     keyboard = []
     for r in rows:
-        when = r["created_at"]
-        when_s = when.astimezone(_tz.utc).strftime("%d.%m %H:%M") if when else "—"
-        label = _refund_star_purpose_label(r["purpose"])
-        if r["refunded"]:
-            lines.append(f"• {r['stars']}⭐ · {when_s} · {label} · ✅ возвращено")
-            continue
-        lines.append(f"• {r['stars']}⭐ · {when_s} · {label} · user {r['user_id']}")
-        # callback_data ≤64 bytes: charge ids are long → pass the last 40 chars + user id.
+        when_s = _dt.fromtimestamp(r["date"], _tz.utc).strftime("%d.%m %H:%M") if r["date"] else "—"
+        label = r["label"]
+        suffix = f" · {label}" if label else ""
+        lines.append(f"• {r['stars']}⭐ · {when_s} · user {r['user_id']}{suffix}")
+        # callback_data ≤64 bytes: charge ids are long → pass the last 48 chars + user id.
         keyboard.append([InlineKeyboardButton(
-            f"↩️ Вернуть {r['stars']}⭐ · {label}",
+            f"↩️ Вернуть {r['stars']}⭐{suffix}",
             callback_data=f"rfst:{r['user_id']}:{r['charge_id'][-48:]}",
         )])
     markup = InlineKeyboardMarkup(keyboard) if keyboard else None
@@ -9053,7 +9088,7 @@ async def refund_star_command(update: Update, context: CallbackContext) -> None:
 
 async def refund_star_callback(update: Update, context: CallbackContext) -> None:
     """Handle a ↩️ refund button: call refundStarPayment, stamp the row, report the result."""
-    from backend.database import get_star_payment_by_charge, mark_star_payment_refunded
+    from backend.database import mark_star_payment_refunded
     query = update.callback_query
     if not query or not query.from_user or not _is_admin_user(int(query.from_user.id)):
         if query:
@@ -9065,13 +9100,13 @@ async def refund_star_callback(update: Update, context: CallbackContext) -> None
     except Exception:
         await query.answer("Плохие данные", show_alert=True)
         return
-    # The button carries only the tail of the charge id — resolve the full record.
-    row = await asyncio.to_thread(_resolve_star_payment_by_tail, uid, charge_tail)
+    # The button carries only the tail of the charge id — resolve the full one from the
+    # Telegram ledger (falls back to our DB for invoice purchases if the ledger rolled over).
+    row = await asyncio.to_thread(_resolve_refundable_star_txn_by_tail, uid, charge_tail)
+    if not row:
+        row = await asyncio.to_thread(_resolve_star_payment_by_tail, uid, charge_tail)
     if not row:
         await query.answer("Оплата не найдена", show_alert=True)
-        return
-    if row.get("refunded"):
-        await query.answer("Уже возвращено", show_alert=True)
         return
     charge_id = row["charge_id"]
     try:
@@ -9080,12 +9115,12 @@ async def refund_star_callback(update: Update, context: CallbackContext) -> None
         logging.warning("refund_star_payment failed charge=%s: %s", charge_id, exc)
         await query.answer(f"Telegram отклонил возврат: {exc}"[:190], show_alert=True)
         return
-    await asyncio.to_thread(mark_star_payment_refunded, charge_id)
+    await asyncio.to_thread(mark_star_payment_refunded, charge_id)  # no-op for tips not in our DB
     try:
         await query.answer(f"✅ Возвращено {row['stars']}⭐", show_alert=True)
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(
-            f"✅ Возврат выполнен: {row['stars']}⭐ пользователю {uid} ({_refund_star_purpose_label(row['purpose'])}). "
+            f"✅ Возврат выполнен: {row['stars']}⭐ пользователю {uid}. "
             f"Звёзды вернулись на баланс бота — можно платить снова."
         )
     except Exception:
