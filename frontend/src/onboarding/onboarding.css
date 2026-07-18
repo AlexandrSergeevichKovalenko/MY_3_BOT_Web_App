@@ -50,6 +50,18 @@
   box-sizing: border-box;
 }
 
+/* Планшет/браузер (≥700): онбординг-тур не должен быть телефонной коробочкой
+   посреди экрана — раскрываем его крупнее и выше (как модалка «Читалки»).
+   Телефон (<700) не трогаем. */
+@media (min-width: 700px) {
+  .ob-card {
+    max-width: min(720px, 92vw);
+    max-height: min(92dvh, calc(100dvh - 40px - env(safe-area-inset-bottom, 0px)));
+    padding: 30px 34px calc(28px + env(safe-area-inset-bottom, 0px));
+    border-radius: 26px;
+  }
+}
+
 .ob-loading {
   color: var(--ob-muted);
   font-size: 15px;
