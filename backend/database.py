@@ -6022,6 +6022,21 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_group_contexts_chat_confirmed
                 ON bt_3_webapp_group_contexts (chat_id, participation_confirmed, last_seen_at DESC);
             """)
+            # Weekly snapshot of each group's total activity, so the co-op "this week vs
+            # average of the last 4 weeks" comparison needs no historical re-aggregation
+            # (quiz stats can't be windowed to a past week). One row per (group, week).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_group_weekly_totals (
+                    chat_id BIGINT NOT NULL,
+                    week_start DATE NOT NULL,
+                    total INTEGER NOT NULL DEFAULT 0,
+                    translations INTEGER NOT NULL DEFAULT 0,
+                    quizzes INTEGER NOT NULL DEFAULT 0,
+                    words INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (chat_id, week_start)
+                );
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_instance_leases (
                     user_id BIGINT PRIMARY KEY,
@@ -14081,6 +14096,46 @@ def list_group_participants(chat_id: int) -> list[int]:
                 (int(chat_id),),
             )
             return [int(r[0]) for r in (cursor.fetchall() or []) if r and r[0] is not None]
+
+
+def upsert_group_weekly_total(
+    chat_id: int, week_start, total: int, translations: int, quizzes: int, words: int
+) -> None:
+    """Store/refresh one group's activity total for a given week (co-op baseline)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_group_weekly_totals
+                    (chat_id, week_start, total, translations, quizzes, words, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (chat_id, week_start) DO UPDATE
+                SET total = EXCLUDED.total,
+                    translations = EXCLUDED.translations,
+                    quizzes = EXCLUDED.quizzes,
+                    words = EXCLUDED.words,
+                    updated_at = NOW();
+                """,
+                (int(chat_id), week_start, int(total), int(translations), int(quizzes), int(words)),
+            )
+
+
+def get_group_recent_weekly_totals(chat_id: int, before_week_start, limit: int = 4) -> list[int]:
+    """The group's `total` for up to `limit` most-recent COMPLETED weeks strictly before
+    `before_week_start` — the baseline the current week is compared against. Newest first."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT total
+                FROM bt_3_group_weekly_totals
+                WHERE chat_id = %s AND week_start < %s
+                ORDER BY week_start DESC
+                LIMIT %s;
+                """,
+                (int(chat_id), before_week_start, int(limit)),
+            )
+            return [int(r[0] or 0) for r in (cursor.fetchall() or []) if r]
 
 
 def deactivate_group_chat(chat_id: int) -> int:

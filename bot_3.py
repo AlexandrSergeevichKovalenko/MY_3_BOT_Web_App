@@ -30994,12 +30994,11 @@ async def _send_weekly_champion_job(context: CallbackContext) -> None:
     """
     week_no = _get_quiz_schedule_now().isocalendar()[1]
 
-    # 1) Group-scoped weekly posters into each group.
-    try:
-        g_sent = await _post_weekly_group_champions(context, week_no=week_no)
-    except Exception:
-        g_sent = 0
-        logging.warning("weekly_champion group pass failed", exc_info=True)
+    # 1) Group-scoped weekly poster: DISABLED (2026-07-19). Replaced by the unified weekly
+    # group report (co-op "this week vs 4-week average" + merged standings), sent from
+    # backend_server._dispatch_weekly_group_summary. Keeping two weekly group posts was a
+    # duplicate. The SOLO global DM below is unchanged — solo users still get their recap.
+    g_sent = 0
 
     # 2) Global poster to solo (non-group) users in their DM.
     s_sent = 0

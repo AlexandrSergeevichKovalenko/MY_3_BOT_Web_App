@@ -18664,6 +18664,7 @@ def _send_group_photo(
     caption: str | None = None,
     *,
     chat_id: int | None = None,
+    parse_mode: str | None = None,
 ) -> None:
     target_chat_id = int(chat_id) if chat_id is not None else (int(TELEGRAM_GROUP_CHAT_ID) if TELEGRAM_GROUP_CHAT_ID else None)
     if target_chat_id is None:
@@ -18672,6 +18673,8 @@ def _send_group_photo(
     data = {"chat_id": int(target_chat_id)}
     if caption:
         data["caption"] = caption
+        if parse_mode:
+            data["parse_mode"] = parse_mode
     files = {"photo": (filename, image_bytes, "image/png")}
     response = requests.post(url, data=data, files=files, timeout=60)
     if response.status_code >= 400:
@@ -57366,6 +57369,175 @@ def _dispatch_daily_group_summary(*, target_date: date, tz_name: str = TODAY_PLA
     }
 
 
+def _build_group_week_vs_avg_chart_png(
+    *, this_week: int, avg4: float | None, record: int | None, title: str, subtitle: str | None = None
+) -> bytes | None:
+    """Co-op weekly bar chart: this week vs the group's 4-week average (+ record).
+    Fuchs/Felix warm palette; the current week is the amber hero bar."""
+    if plt is None:
+        return None
+    outer_bg = "#efe2cd"; inner_bg = "#f8f1e5"; grid_color = "#d9cabb"
+    text_color = "#554636"; amber = "#e0952f"; muted = "#b8a894"; record_col = "#cdb89c"
+    labels = ["Эта неделя"]; values = [float(this_week or 0)]; colors = [amber]
+    if avg4 is not None:
+        labels.append("Среднее\n4 недели"); values.append(float(avg4)); colors.append(muted)
+    if record is not None:
+        labels.append("Рекорд"); values.append(float(record)); colors.append(record_col)
+    fig, ax = plt.subplots(figsize=(6.6, 4.4), dpi=170)
+    fig.patch.set_facecolor(outer_bg); ax.set_facecolor(inner_bg)
+    x = list(range(len(values)))
+    bars = ax.bar(x, values, color=colors, width=0.6, edgecolor="none")
+    top = max(values + [1.0])
+    ax.set_ylim(0, top * 1.24)
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=13, color=text_color)
+    ax.tick_params(axis="x", length=0)
+    ax.tick_params(axis="y", colors=text_color, labelsize=11, length=0)
+    ax.grid(axis="y", color=grid_color, linewidth=1, alpha=0.8); ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    for b, v in zip(bars, values):
+        ax.text(b.get_x() + b.get_width() / 2.0, v + top * 0.03, f"{int(round(v))}",
+                ha="center", va="bottom", fontsize=17, fontweight="bold", color=text_color)
+    fig.text(0.065, 0.965, str(title or "").strip(), fontsize=17, fontweight="bold", color=text_color, ha="left", va="top")
+    if subtitle:
+        fig.text(0.065, 0.910, str(subtitle).strip(), fontsize=10.5, color="#7b6e62", ha="left", va="top")
+    ax.set_position([0.10, 0.13, 0.86, 0.70])
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor=outer_bg)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _collect_group_weekly_activity(*, member_user_ids: list[int], week_start: date, week_end: date) -> dict[str, Any]:
+    """Merge a group's weekly activity per member across translations + interactive/quiz
+    answers (incl. battles/sprints) + words learned. 'total' per member sums all three."""
+    cohort = {int(u) for u in (member_user_ids or [])}
+    members: dict[int, dict] = {}
+
+    def rec(uid: int) -> dict:
+        return members.setdefault(int(uid), {
+            "name": "", "translated": 0, "quiz_answered": 0,
+            "quiz_points": 0, "quiz_correct": 0, "golds": 0, "words": 0,
+        })
+
+    try:
+        trows = _fetch_group_weekly_summary_rows(
+            week_start=week_start, week_end=week_end, cohort_user_ids=list(cohort)
+        )
+    except Exception:
+        trows = []
+        logging.warning("group weekly: translation rows failed", exc_info=True)
+    for r in trows or []:
+        uid = int(r.get("user_id") or 0)
+        if uid <= 0:
+            continue
+        m = rec(uid)
+        m["translated"] += int(r.get("translated") or 0)
+        if not m["name"]:
+            m["name"] = str(r.get("username") or "").strip()
+
+    try:
+        from backend.quiz_leaderboard import get_leaderboard_rows_since, compute_quiz_leaderboard
+        qrows = [r for r in (get_leaderboard_rows_since(7 * 24) or []) if int(r.get("user_id") or 0) in cohort]
+        for l in (compute_quiz_leaderboard(qrows).get("leaders") or []):
+            uid = int(l.get("user_id") or 0)
+            if uid <= 0:
+                continue
+            m = rec(uid)
+            m["quiz_answered"] += int(l.get("answered") or 0)
+            m["quiz_points"] += int(l.get("points") or 0)
+            m["quiz_correct"] += int(l.get("correct") or 0)
+            m["golds"] += int(l.get("golds") or 0)
+            nm = str(l.get("name") or "").strip()
+            if not m["name"] and nm and nm != "Student":
+                m["name"] = nm
+    except Exception:
+        logging.warning("group weekly: quiz aggregation failed", exc_info=True)
+
+    try:
+        from backend.database import _cert_learned_words_by_user
+        wmap = _cert_learned_words_by_user(week_start, week_end + timedelta(days=1))
+        for uid, cnt in (wmap or {}).items():
+            if int(uid) in cohort:
+                rec(uid)["words"] += int(cnt or 0)
+    except Exception:
+        logging.warning("group weekly: words aggregation failed", exc_info=True)
+
+    for m in members.values():
+        m["total"] = int(m["translated"]) + int(m["quiz_answered"]) + int(m["words"])
+
+    return {
+        "members": members,
+        "group_total": sum(m["total"] for m in members.values()),
+        "translations_total": sum(m["translated"] for m in members.values()),
+        "quizzes_total": sum(m["quiz_answered"] for m in members.values()),
+        "words_total": sum(m["words"] for m in members.values()),
+    }
+
+
+def _format_group_weekly_hybrid_caption(
+    *, activity: dict, avg4: float | None, record: int | None,
+    week_start: date, week_end: date, global_rank: dict, global_total: int
+) -> str:
+    """Short co-op caption (Telegram HTML): group-vs-usual hero line, who led each activity,
+    and each member's global top-N%. The chart image carries the visual comparison."""
+    from html import escape as _esc
+    members = activity["members"]
+    group_total = int(activity["group_total"])
+
+    def nm(uid: int) -> str:
+        n = str(members.get(int(uid), {}).get("name") or "").strip()
+        return _esc(n) if n else "участник"
+
+    period = f"{week_start.strftime('%d.%m')}–{week_end.strftime('%d.%m')}"
+    lines = [f"🦊 <b>Итоги недели</b> · {period}", ""]
+
+    if avg4 is None:
+        lines.append(f"🌱 Первая неделя вместе — <b>{group_total}</b> заданий. Задаём планку на будущее!")
+    else:
+        avg_i = int(round(avg4))
+        if group_total > avg_i and avg_i > 0:
+            pct = int(round((group_total - avg_i) / avg_i * 100))
+            lines.append(f"🎉 <b>{group_total}</b> заданий вместе — обычно {avg_i}. ↑ +{pct}% лучше обычного!")
+        elif group_total >= avg_i:
+            lines.append(f"💪 <b>{group_total}</b> заданий вместе — как обычно (~{avg_i}). Держим темп!")
+        else:
+            lines.append(f"💪 <b>{group_total}</b> заданий вместе — обычно {avg_i}. Чуть меньше — наверстаем!")
+        if record and group_total >= int(record) and group_total > avg_i:
+            lines.append("🏆 Новый рекорд группы!")
+
+    def top_by(key: str):
+        cand = [(uid, m) for uid, m in members.items() if int(m.get(key) or 0) > 0]
+        return max(cand, key=lambda kv: int(kv[1].get(key) or 0))[0] if cand else None
+
+    standings = []
+    t = top_by("translated")
+    if t:
+        standings.append(f"🥇 переводы — <b>{nm(t)}</b>")
+    q = top_by("quiz_points")
+    if q:
+        standings.append(f"🎮 интерактивы — <b>{nm(q)}</b>")
+    w = top_by("words")
+    if w:
+        standings.append(f"📚 слова — <b>{nm(w)}</b>")
+    if standings:
+        lines.append("")
+        lines.extend(standings)
+
+    if global_rank and global_total:
+        ranked = sorted((uid for uid in members if int(uid) in global_rank), key=lambda u: global_rank[int(u)])
+        gp = []
+        for uid in ranked[:5]:
+            pct = max(1, int(round((global_rank[int(uid)] + 1) / max(1, global_total) * 100)))
+            gp.append(f"{nm(uid)} — топ {pct}%")
+        if gp:
+            lines.append("")
+            lines.append("🌍 В общем рейтинге бота: " + " · ".join(gp))
+
+    return "\n".join(lines)
+
+
 def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict[str, Any]:
     bounds = get_period_bounds("week", today=target_date)
     targets = _collect_group_summary_targets()
@@ -57381,6 +57553,20 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
             "tz": tz_name,
         }
 
+    # Global quiz leaderboard once — for each member's "top N%" among ALL bot users.
+    global_rank: dict[int, int] = {}
+    global_total = 0
+    try:
+        from backend.quiz_leaderboard import get_quiz_leaderboard
+        glb = get_quiz_leaderboard(7)
+        leaders = glb.get("leaders") or []
+        global_total = int(glb.get("total_players") or len(leaders))
+        global_rank = {int(l["user_id"]): i for i, l in enumerate(leaders) if l.get("user_id") is not None}
+    except Exception:
+        logging.warning("weekly group: global leaderboard failed", exc_info=True)
+
+    from backend.database import upsert_group_weekly_total, get_group_recent_weekly_totals
+
     sent = 0
     errors: list[str] = []
     groups = 0
@@ -57391,34 +57577,43 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
         groups += 1
         try:
             member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
-            rows = _fetch_group_weekly_summary_rows(
+            activity = _collect_group_weekly_activity(
+                member_user_ids=member_user_ids,
                 week_start=bounds.start_date,
                 week_end=bounds.end_date,
-                cohort_user_ids=member_user_ids,
             )
-            labeled_rows = _apply_group_summary_labels(rows)
-            text = _format_group_weekly_summary_message(
-                week_start=bounds.start_date,
-                week_end=bounds.end_date,
-                rows=labeled_rows,
+            group_total = int(activity["group_total"])
+            past = get_group_recent_weekly_totals(chat_id, bounds.start_date, limit=4)
+            avg4 = (sum(past) / len(past)) if past else None
+            record = max(past + [group_total]) if past else None
+
+            caption = _format_group_weekly_hybrid_caption(
+                activity=activity, avg4=avg4, record=record,
+                week_start=bounds.start_date, week_end=bounds.end_date,
+                global_rank=global_rank, global_total=global_total,
             )
-            _send_group_message(text=text, chat_id=chat_id)
-            # Chart disabled by request: keep the textual weekly summary, skip the
-            # comparison diagram/photo payload.
-            # chart_png = _build_compare_leaderboard_chart_png(
-            #     rows=labeled_rows,
-            #     title="Итоги недели на текущий момент",
-            #     subtitle=f"{bounds.start_date} — {bounds.end_date}",
-            #     highlight_user_id=None,
-            #     max_items=8,
-            # )
-            # if chart_png:
-            #     _send_group_photo(
-            #         image_bytes=chart_png,
-            #         filename=f"group_weekly_compare_{abs(chat_id)}_{bounds.end_date.isoformat()}.png",
-            #         caption=f"📊 Диаграмма сравнения за неделю\n{bounds.start_date} — {bounds.end_date}",
-            #         chat_id=chat_id,
-            #     )
+            subtitle = f"{bounds.start_date.strftime('%d.%m')} — {bounds.end_date.strftime('%d.%m')}"
+            chart_png = _build_group_week_vs_avg_chart_png(
+                this_week=group_total, avg4=avg4, record=record,
+                title="Неделя группы", subtitle=subtitle,
+            )
+            if chart_png:
+                _send_group_photo(
+                    image_bytes=chart_png,
+                    filename=f"group_week_{abs(chat_id)}_{bounds.end_date.isoformat()}.png",
+                    caption=caption, chat_id=chat_id, parse_mode="HTML",
+                )
+            else:
+                # matplotlib unavailable → plain-text fallback (strip the bold tags).
+                _send_group_message(text=caption.replace("<b>", "").replace("</b>", ""), chat_id=chat_id)
+
+            try:
+                upsert_group_weekly_total(
+                    chat_id, bounds.start_date, group_total,
+                    int(activity["translations_total"]), int(activity["quizzes_total"]), int(activity["words_total"]),
+                )
+            except Exception:
+                logging.warning("weekly group: snapshot upsert failed chat_id=%s", chat_id, exc_info=True)
             sent += 1
         except Exception as exc:
             errors.append(f"chat {chat_id}: {exc}")
