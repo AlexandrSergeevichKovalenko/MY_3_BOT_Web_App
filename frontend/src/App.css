@@ -3910,20 +3910,20 @@ body:has(.webapp-page.is-theme-light),
 .billing-policy-card h4 {
   margin: 0;
   color: #f8fafc;
-  font-size: 14px;
+  font-size: 17px;
 }
 
 .billing-policy-card ul {
-  margin: 10px 0 0;
-  padding-left: 18px;
+  margin: 12px 0 0;
+  padding-left: 20px;
   display: grid;
-  gap: 6px;
+  gap: 9px;
 }
 
 .billing-policy-card li {
-  color: rgba(226, 232, 240, 0.9);
-  font-size: 13px;
-  line-height: 1.4;
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 15.5px;
+  line-height: 1.5;
 }
 
 /* Pro card — visually lifted so it reads as the recommended tier */
