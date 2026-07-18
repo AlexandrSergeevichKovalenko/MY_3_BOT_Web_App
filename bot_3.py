@@ -20175,6 +20175,15 @@ async def _resolve_user_delivery_chat_id(
     candidate_chat_ids: list[int] = []
     route_reason = "fallback_private"
 
+    # STRATEGY 2026-07-18: individual tasks / quizzes / per-user summaries ALWAYS go to the
+    # user's private DM — never into a group chat. Piling each member's identical per-user
+    # task into a shared chat was pure noise and let people tap/answer someone else's task.
+    # The group chat receives ONLY the aggregate evening digest (see _dispatch_*_group_summary
+    # / _send_group_daily_report_job). To re-enable per-user group delivery, remove this
+    # early return; the membership-based routing below is retained but currently inert.
+    _log_delivery_route(job_name, safe_user_id, safe_user_id, "personal_only_policy")
+    return safe_user_id
+
     try:
         scope_state = await asyncio.to_thread(get_webapp_scope_state, safe_user_id)
     except Exception:
