@@ -35933,7 +35933,12 @@ function AppInner() {
                     )}
 
                     {/* Dictionary widget (trigger in title-actions row) */}
-                    {youtubeDictOpen && (
+                    {youtubeDictOpen && createPortal(
+                      // Portal to <body> like the Translations dict: rendered inside the
+                      // scrollable .webapp-page, the standalone iOS PWA scrolls the player
+                      // off-screen when this input is focused. At <body> the field is no
+                      // longer inside that scroll container, so the player stays put.
+                      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''}`} style={{ display: 'contents' }}>
                       <div
                         className="yt-dict-widget"
                         ref={youtubeDictWidgetRef}
@@ -36081,6 +36086,8 @@ function AppInner() {
                           </div>
                         )}
                       </div>
+                      </div>,
+                      document.body,
                     )}
                     </section>
                   </PerfProfiler>
