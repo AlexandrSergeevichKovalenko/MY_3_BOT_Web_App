@@ -37,6 +37,14 @@ const CAN_CLOSE = IS_STANDALONE_PWA || !IS_PUBLIC;
 // button (a public visitor has no bot / no referral code yet).
 const CAN_SHARE = !IS_PUBLIC || IS_STANDALONE_PWA;
 
+// A guest viewing the shared tour in a plain browser — they DON'T have the bot yet (no
+// account). The install-the-icon / dictionary-icon / Shortcut / buy-Pro actions all need
+// an account (they open the app/dict → the «войдите через Telegram» gate, which is a
+// dead end for a guest). So in the guest tour those steps stay as INFO but their action
+// buttons are replaced with a note: install the bot from the finale first, then the real
+// onboarding (with the bot) offers working buttons. NOT the installed PWA (has the bot).
+const IS_GUEST_TOUR = IS_PUBLIC && !IS_STANDALONE_PWA;
+
 // A friend-shared tour is opened as /tour?ref=<referrer id>. Thread that code into the
 // finale install CTA (→ t.me/<bot>?start=ref_<code>) so the referral is attributed when
 // the friend installs the bot — the existing streak-triggered payout then rewards both.
@@ -261,6 +269,14 @@ const PRO_TEASER = (
   </div>
 );
 
+// Replaces account-requiring action buttons in the guest tour (viewer has no bot yet).
+const GUEST_NOTE = (
+  <span className="ob-muted-note">
+    {t('📌 Это станет доступно, когда установишь бота. В конце тура нажми «🚀 Установить бота».',
+       '📌 Das wird verfügbar, sobald du den Bot installierst. Tippe am Ende auf «🚀 Bot installieren».')}
+  </span>
+);
+
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
 const REAL_STEPS = new Set(['install_app', 'language', 'dictionary', 'intensity', 'windows',
   'battles', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
@@ -297,9 +313,11 @@ function StepBody(props) {
               <li>{t('Нажми «Добавить» — иконка появится на рабочем столе.', 'Tippe «Hinzufügen» — das Symbol erscheint auf dem Startbildschirm.')}</li>
               <li>{t('Готово! Теперь открывай приложение как обычное — одним касанием.', 'Fertig! Öffne die App jetzt wie eine normale — mit einem Tipp.')}</li>
             </ol>
-            <button type="button" className="ob-confirm" onClick={openAppInBrowser}>
-              {t('🌐 Открыть приложение в Safari', '🌐 App in Safari öffnen')}
-            </button>
+            {IS_GUEST_TOUR ? GUEST_NOTE : (
+              <button type="button" className="ob-confirm" onClick={openAppInBrowser}>
+                {t('🌐 Открыть приложение в Safari', '🌐 App in Safari öffnen')}
+              </button>
+            )}
             <MediaTile src={MEDIA.install_ios} type="video" caption={t('🎥 Как вынести иконку на экран (iPhone)', '🎥 Wie man das Symbol anlegt (iPhone)')} />
           </div>
           <div className="ob-howbox">
@@ -494,9 +512,11 @@ function StepBody(props) {
                ' machst du mit einer Bewegung einen Screenshot eines deutschen Wortes aus jeder App — und morgens übersetzt das Handy alles selbst und schickt die Wörter privat. Nur noch speichern.')}
           </p>
           <p className="ob-lead">{t('Необязательно, настраивается один раз. Можно сейчас или позже.', 'Optional, wird einmal eingerichtet. Jetzt oder später.')}</p>
-          <button type="button" className="ob-confirm" onClick={onShortcutSetup} disabled={shortcutOpening}>
-            {shortcutOpening ? t('⏳ Открываю…', '⏳ Öffne…') : t('📲 Настроить сейчас', '📲 Jetzt einrichten')}
-          </button>
+          {IS_GUEST_TOUR ? GUEST_NOTE : (
+            <button type="button" className="ob-confirm" onClick={onShortcutSetup} disabled={shortcutOpening}>
+              {shortcutOpening ? t('⏳ Открываю…', '⏳ Öffne…') : t('📲 Настроить сейчас', '📲 Jetzt einrichten')}
+            </button>
+          )}
           <span className="ob-muted-note">{t('Пропустишь — откроешь потом через «🎬 Как пользоваться».', 'Überspringst du — öffnest du es später über «🎬 Wie man es benutzt».')}</span>
         </div>
       );
@@ -552,9 +572,11 @@ function StepBody(props) {
               <li>{t('Нажми «Добавить» — иконка появится на рабочем столе.', 'Tippe «Hinzufügen» — das Symbol erscheint auf dem Startbildschirm.')}</li>
               <li>{t('Готово! Теперь открывай словарь как обычное приложение.', 'Fertig! Öffne das Wörterbuch jetzt wie eine normale App.')}</li>
             </ol>
-            <button type="button" className="ob-confirm" onClick={openDictInBrowser}>
-              {t('🌐 Открыть словарь в Safari', '🌐 Wörterbuch in Safari öffnen')}
-            </button>
+            {IS_GUEST_TOUR ? GUEST_NOTE : (
+              <button type="button" className="ob-confirm" onClick={openDictInBrowser}>
+                {t('🌐 Открыть словарь в Safari', '🌐 Wörterbuch in Safari öffnen')}
+              </button>
+            )}
             <MediaTile src="https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/shortcuts/%D0%98%D0%BA%D0%BE%D0%BD%D0%BA%D0%B0%20%D1%81%D0%BB%D0%BE%D0%B2%D0%B0%D1%80%D1%8C%20%D0%BD%D0%B0%20%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9%20%D1%81%D1%82%D0%BE%D0%BB/translator_icon.mp4" type="video" caption={t('🎥 Как вынести иконку на экран', '🎥 Wie man das Symbol anlegt')} />
           </div>
           <p className="ob-lead ob-muted-note">
@@ -806,9 +828,11 @@ function StepBody(props) {
 
           <div className="ob-plan ob-plan-pro">
             <p className="ob-plan-title">💎 <b>Pro</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">292 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
-            <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
-              {t('✨ Оформить Pro', '✨ Pro holen')}
-            </button>
+            {IS_GUEST_TOUR ? GUEST_NOTE : (
+              <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
+                {t('✨ Оформить Pro', '✨ Pro holen')}
+              </button>
+            )}
             <span className="ob-muted-note">{t('Кнопка откроет экран «Подписка» — там актуальная цена и оплата в Telegram Stars. Открыть можно в любой момент из меню бота.', 'Der Knopf öffnet den «Abo»-Bildschirm — dort der aktuelle Preis und Zahlung mit Telegram Stars. Jederzeit über das Bot-Menü erreichbar.')}</span>
           </div>
         </div>
