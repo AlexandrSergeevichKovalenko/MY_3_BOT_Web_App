@@ -8617,6 +8617,12 @@ def ensure_webapp_tables() -> None:
             cursor.execute(
                 "ALTER TABLE bt_3_star_payments ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ;"
             )
+            # How the refund was detected: 'manual' (admin /refund_star) vs 'reconcile' (the daily
+            # ledger sweep catching refunds that bypassed the bot) — the latter are the "расхождения"
+            # the weekly report highlights.
+            cursor.execute(
+                "ALTER TABLE bt_3_star_payments ADD COLUMN IF NOT EXISTS refunded_via TEXT;"
+            )
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_active
                 ON bt_3_agent_voice_sessions (user_id, source_lang, target_lang, started_at DESC)
@@ -29620,18 +29626,21 @@ def revoke_star_payment_fulfillment(charge_id: str) -> dict:
     return out
 
 
-def mark_star_payment_refunded(charge_id: str) -> bool:
-    """Stamp a charge as refunded (only if not already). Returns True if newly stamped."""
+def mark_star_payment_refunded(charge_id: str, via: str = "manual") -> bool:
+    """Stamp a charge as refunded (only if not already). `via` records HOW it was caught
+    ('manual' = admin /refund_star, 'reconcile' = daily ledger sweep). Returns True if
+    newly stamped."""
     charge = str(charge_id or "").strip()
     if not charge:
         return False
+    via_value = str(via or "manual").strip().lower() or "manual"
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "UPDATE bt_3_star_payments SET refunded_at = NOW() "
+                    "UPDATE bt_3_star_payments SET refunded_at = NOW(), refunded_via = %s "
                     "WHERE telegram_payment_charge_id = %s AND refunded_at IS NULL;",
-                    (charge,),
+                    (via_value, charge),
                 )
                 changed = cursor.rowcount or 0
             conn.commit()
@@ -29639,6 +29648,31 @@ def mark_star_payment_refunded(charge_id: str) -> bool:
     except Exception:
         logging.warning("mark_star_payment_refunded failed charge=%s", charge, exc_info=True)
         return False
+
+
+def list_star_refunds_in_window(days: int = 7) -> list[dict]:
+    """Stars charges refunded within the last `days` — powers the weekly reconcile report.
+    Newest first; includes how the refund was caught (refunded_via)."""
+    out: list[dict] = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT user_id, purpose, stars, refunded_at, "
+                    "COALESCE(refunded_via, 'manual') AS refunded_via, telegram_payment_charge_id "
+                    "FROM bt_3_star_payments "
+                    "WHERE refunded_at IS NOT NULL AND refunded_at >= NOW() - (%s || ' days')::interval "
+                    "ORDER BY refunded_at DESC;",
+                    (max(1, int(days)),),
+                )
+                for r in cursor.fetchall():
+                    out.append({"user_id": int(r[0]), "purpose": str(r[1] or ""),
+                                "stars": int(r[2] or 0), "refunded_at": r[3],
+                                "refunded_via": str(r[4] or "manual"),
+                                "charge_id": str(r[5] or "")})
+    except Exception:
+        logging.warning("list_star_refunds_in_window failed", exc_info=True)
+    return out
 
 
 def list_unrefunded_star_payments(limit: int = 500) -> list[dict]:

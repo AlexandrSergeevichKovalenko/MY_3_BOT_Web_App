@@ -8653,6 +8653,7 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("private_analytics_auto", "Личная аналитика в личку (19:30)", 30, True, "guard"),
     ("daily_group_summary_auto", "Итоги дня в группе (22:30)", 30, True, "guard"),
     ("weekly_group_summary_auto", "Недельные итоги группы (Вс)", 192, True, "guard"),
+    ("stars_refund_weekly_report", "Сверка возвратов Stars (Вс 11:00)", 192, True, "guard"),
     ("weekly_goals_auto", "Недельные цели (06:45)", 192, True, "guard"),
     # Off by default — silence here is expected, shown for completeness only.
     ("sentence_prewarm_daily", "Прогрев предложений", 30, False, "guard"),
@@ -9170,7 +9171,7 @@ async def refund_star_callback(update: Update, context: CallbackContext) -> None
         logging.warning("refund_star_payment failed charge=%s: %s", charge_id, exc)
         await query.answer(f"Telegram отклонил возврат: {exc}"[:190], show_alert=True)
         return
-    await asyncio.to_thread(mark_star_payment_refunded, charge_id)  # no-op for tips not in our DB
+    await asyncio.to_thread(mark_star_payment_refunded, charge_id, "manual")  # no-op for tips not in our DB
     # Money went back → claw back what the charge granted (Pro days, sponsor, sub, audio).
     revoked = await asyncio.to_thread(revoke_star_payment_fulfillment, charge_id)
     _undone = []

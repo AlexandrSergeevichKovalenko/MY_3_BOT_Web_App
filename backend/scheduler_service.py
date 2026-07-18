@@ -74,6 +74,7 @@ from backend.background_jobs import (  # noqa: E402
     run_weekly_goals_scheduler_actor,
     run_daily_group_summary_scheduler_actor,
     run_stars_refund_reconcile_actor,
+    run_stars_refund_weekly_report_actor,
     run_weekly_group_summary_scheduler_actor,
     run_today_plan_scheduler_actor,
     run_today_evening_reminders_scheduler_actor,
@@ -259,6 +260,10 @@ def _dispatch_daily_group_summary() -> None:
 
 def _dispatch_stars_refund_reconcile() -> None:
     run_stars_refund_reconcile_actor.send()
+
+
+def _dispatch_stars_refund_weekly_report() -> None:
+    run_stars_refund_weekly_report_actor.send()
 
 
 def _dispatch_weekly_group_summary() -> None:
@@ -697,6 +702,20 @@ def _build_scheduler():
             hour=_int_env("STARS_REFUND_RECONCILE_HOUR", 4),
             minute=_int_env("STARS_REFUND_RECONCILE_MINUTE", 20),
             timezone=_tz(os.getenv("STARS_REFUND_RECONCILE_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Stars refund WEEKLY report (heartbeat DM; tracked in /scheduler_health) --
+    if _enabled("STARS_REFUND_WEEKLY_REPORT_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_stars_refund_weekly_report,
+            "cron",
+            day_of_week=str(os.getenv("STARS_REFUND_WEEKLY_REPORT_DOW") or "sun").strip() or "sun",
+            hour=_int_env("STARS_REFUND_WEEKLY_REPORT_HOUR", 11),
+            minute=_int_env("STARS_REFUND_WEEKLY_REPORT_MINUTE", 0),
+            timezone=_tz(os.getenv("STARS_REFUND_WEEKLY_REPORT_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,

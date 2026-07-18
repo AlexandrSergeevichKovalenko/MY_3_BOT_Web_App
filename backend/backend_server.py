@@ -57444,9 +57444,8 @@ def _run_stars_refund_reconcile_job() -> None:
     charges and revoke each match. Idempotent; safe to re-run."""
     from backend.database import (
         list_unrefunded_star_payments, mark_star_payment_refunded,
-        revoke_star_payment_fulfillment, get_admin_telegram_ids,
+        revoke_star_payment_fulfillment,
     )
-    from backend.telegram_notify import _send_private_message
     token = TELEGRAM_Deutsch_BOT_TOKEN
     if not token:
         logging.warning("stars refund reconcile: no bot token"); return
@@ -57481,33 +57480,71 @@ def _run_stars_refund_reconcile_job() -> None:
             break
     if not refunded_ids:
         return
-    revoked: list[tuple] = []
+    # Silent by design (owner: daily reconcile runs quietly; the weekly report is the notification).
+    # We stamp refunded_via='reconcile' so the weekly report can flag these as "расхождения"
+    # (refunds that bypassed /refund_star).
+    revoked_count = 0
     for cid in refunded_ids:
         try:
-            mark_star_payment_refunded(cid)
-            res = revoke_star_payment_fulfillment(cid)
-            revoked.append((ours[cid], res))
+            mark_star_payment_refunded(cid, via="reconcile")
+            revoke_star_payment_fulfillment(cid)
+            revoked_count += 1
         except Exception:
             logging.warning("stars refund reconcile: revoke failed charge=%s", cid, exc_info=True)
-    if not revoked:
-        return
-    lines = ["🔁 <b>Реконсиляция возвратов Stars</b>",
-             "Найдены возвраты мимо /refund_star — перки отозваны:"]
-    for p, res in revoked:
-        undone = []
-        if res.get("grants_removed"): undone.append("Pro-дни")
-        if res.get("sponsor_removed"): undone.append("спонсор")
-        if res.get("subscription_reverted"): undone.append("Pro-подписка")
-        if res.get("book_audio_revoked"): undone.append("озвучка")
-        lines.append(f"• user {p['user_id']} · {p.get('purpose') or '—'} · {p.get('stars')}⭐ → "
-                     + (", ".join(undone) or "нечего отзывать"))
+    if revoked_count:
+        logging.info("stars refund reconcile: revoked %d refunded charge(s)", revoked_count)
+
+
+def _run_stars_refund_weekly_report_job() -> None:
+    """Weekly heartbeat report (DM to admins): Stars refunds in the last 7 days and how many
+    users had perks clawed back, splitting auto-caught «расхождения» (refunds that bypassed
+    /refund_star, stamped refunded_via='reconcile') from manual ones. ALWAYS sends — even
+    «всё чисто» — so it shows up as alive in /scheduler_health."""
+    from backend.database import (
+        list_star_refunds_in_window, list_unrefunded_star_payments,
+        get_admin_telegram_ids, record_scheduler_heartbeat,
+    )
+    from backend.telegram_notify import _send_private_message
+    refunds = list_star_refunds_in_window(7)
+    active_count = len(list_unrefunded_star_payments())
+    total = len(refunds)
+    users = len({r["user_id"] for r in refunds})
+    reconcile = [r for r in refunds if r["refunded_via"] == "reconcile"]
+    manual = [r for r in refunds if r["refunded_via"] != "reconcile"]
+    lines = ["🧾 <b>Недельная сверка возвратов Stars</b>", "За последние 7 дней:"]
+    if total == 0:
+        lines.append("✅ Возвратов не было — всё чисто.")
+    else:
+        lines.append(f"• Возвратов: <b>{total}</b> (пользователей: {users})")
+        lines.append(f"• Авто-выявлено сверкой (мимо /refund_star): <b>{len(reconcile)}</b>")
+        lines.append(f"• Ручных (через /refund_star): {len(manual)}")
+        lines.append("Перки по возвратам отозваны (Pro-дни / спонсор / подписка / озвучка).")
+        lines.append("")
+        _emoji = {"support_coffee": "☕️", "support_cheesecake": "☕️🍰", "pro": "💎", "book_audio": "🔊"}
+        for r in refunds[:15]:
+            tag = "🔁авто" if r["refunded_via"] == "reconcile" else "🙋ручной"
+            when = r["refunded_at"].strftime("%d.%m %H:%M") if r.get("refunded_at") else "—"
+            lines.append(f"• {when} · id {r['user_id']} · {_emoji.get(r['purpose'], '')}{r['purpose'] or '—'} · {r['stars']}⭐ · {tag}")
+        if total > 15:
+            lines.append(f"…и ещё {total - 15}")
+    lines.append("")
+    lines.append(f"Активных (не возвращённых) оплат: {active_count}")
     text = "\n".join(lines)
+    sent = False
     for admin_id in get_admin_telegram_ids():
         try:
             _send_private_message(int(admin_id), text, parse_mode="HTML")
+            sent = True
         except Exception:
-            logging.warning("stars refund reconcile: admin DM failed id=%s", admin_id, exc_info=True)
-    logging.info("stars refund reconcile: revoked %d refunded charge(s)", len(revoked))
+            logging.warning("stars refund weekly report: DM failed id=%s", admin_id, exc_info=True)
+    try:
+        record_scheduler_heartbeat(
+            job_key="stars_refund_weekly_report",
+            status="completed" if sent else "failed",
+            metadata={"refunds_7d": total, "reconcile": len(reconcile), "users": users},
+        )
+    except Exception:
+        logging.debug("stars refund weekly report heartbeat failed", exc_info=True)
 
 
 def _run_daily_group_summary_scheduler_job() -> None:

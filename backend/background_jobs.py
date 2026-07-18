@@ -1936,6 +1936,12 @@ def run_stars_refund_reconcile_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_stars_refund_weekly_report_actor() -> None:
+    from backend.backend_server import _run_stars_refund_weekly_report_job
+    _run_stars_refund_weekly_report_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_daily_group_summary_scheduler_actor() -> None:
     from backend.backend_server import _run_daily_group_summary_scheduler_job
     _run_daily_group_summary_scheduler_job()
