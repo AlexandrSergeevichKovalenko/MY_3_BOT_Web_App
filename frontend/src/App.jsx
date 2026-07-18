@@ -6672,6 +6672,9 @@ function AppInner() {
   const [economicsSummary, setEconomicsSummary] = useState(null);
   const [billingStatusLoading, setBillingStatusLoading] = useState(false);
   const [billingStatusError, setBillingStatusError] = useState('');
+  // Friendly (non-alarming) billing note — e.g. «open in Telegram to pay». Rendered as a soft
+  // banner, NOT the red error plaque, so a "you need Telegram to pay" hint never looks like a crash.
+  const [billingStatusNotice, setBillingStatusNotice] = useState('');
   const [billingStatus, setBillingStatus] = useState(null);
   const billingStatusPrefetchStartedRef = useRef(false);
   // One-time 7-day Pro welcome trial. Bootstrap returns its plaque state each app entry:
@@ -6685,6 +6688,10 @@ function AppInner() {
   // Stars sheet once auth is ready, so the user lands straight on payment.
   const [autoProCheckoutPending, setAutoProCheckoutPending] = useState(false);
   const autoProCheckoutDoneRef = useRef(false);
+  // Set by the ?startapp=support_coffee|support_cheesecake deep-link (a PWA/browser «Поддержать»
+  // bounced into Telegram) → auto-open the matching donation Stars sheet once auth is ready.
+  const [autoSupportCheckoutTier, setAutoSupportCheckoutTier] = useState('');
+  const autoSupportCheckoutDoneRef = useRef(false);
   const [billingPlansLoading, setBillingPlansLoading] = useState(false);
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
@@ -19080,6 +19087,15 @@ function AppInner() {
       setFlashcardSessionActive(false);
       setSelectedSections(new Set(['subscription']));
       setAutoProCheckoutPending(true);
+      const t = setTimeout(() => { scrollToRef(billingRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
+    } else if (startParam === 'support_coffee' || startParam === 'support_cheesecake') {
+      // «Поддержать» tapped in the PWA/browser bounced the user into Telegram → land on «Подписка»
+      // AND auto-open the matching donation Stars sheet once initData is ready.
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['subscription']));
+      setAutoSupportCheckoutTier(startParam);
       const t = setTimeout(() => { scrollToRef(billingRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
     } else if (startParam === 'worldnews' || startParam.startsWith('worldnews')) {
@@ -32159,35 +32175,43 @@ function AppInner() {
   };
 
   const handleBillingUpgrade = async (planCode) => {
+    setBillingStatusNotice('');
+    setBillingStatusError('');
     if (!initData) {
       setBillingStatusError(initDataMissingMsg);
       return;
     }
     // Everything is sold via native Telegram Stars now (Stripe is retired): Pro as a monthly
-    // subscription, coffee/cheesecake as one-time "thank you" donations. Stars can be charged
-    // only inside Telegram — so on the standalone PWA / browser (no openInvoice) we can't pay
-    // here; guide the user to open the app inside Telegram.
+    // subscription, coffee/cheesecake as one-time donations that also grant bonus Pro days.
+    // Stars can be charged ONLY inside the real Telegram app. The standalone PWA / browser still
+    // loads the Telegram SDK, so telegramApp.openInvoice EXISTS but throws WebAppMethodUnsupported
+    // when called — so gate on the actual environment (appMode), not merely the method's presence,
+    // and bounce the user into Telegram, where the bot re-opens the right Stars sheet.
     const code = String(planCode || '').trim().toLowerCase();
     const isSupport = code === 'support_coffee' || code === 'support_cheesecake';
     if (code !== 'pro' && !isSupport) return;
-    if (!telegramApp?.openInvoice) {
-      if (code === 'pro') {
-        // Not inside Telegram (PWA/browser) → Stars can't be charged here. Send the user to
-        // the bot in Telegram, which auto-opens the Pro Stars sheet (?startapp=buypro).
-        try {
-          const r = await fetch('/api/public/tour-info');
-          const d = await r.json().catch(() => ({}));
-          const botUrl = String(d?.bot_url || '').trim();
-          if (botUrl && telegramApp?.openTelegramLink) {
-            telegramApp.openTelegramLink(`${botUrl}?startapp=buypro`);
-            return;
+    const startAppForCode = code === 'pro' ? 'buypro' : code; // support_coffee | support_cheesecake
+    const canPayHere = appMode === 'telegram' && typeof telegramApp?.openInvoice === 'function';
+    if (!canPayHere) {
+      try {
+        const r = await fetch('/api/public/tour-info');
+        const d = await r.json().catch(() => ({}));
+        const botUrl = String(d?.bot_url || '').trim();
+        if (botUrl) {
+          const deepLink = `${botUrl}?startapp=${startAppForCode}`;
+          // openTelegramLink only works reliably INSIDE Telegram (an old client without openInvoice);
+          // from a PWA/browser it can silently no-op, so hand off via the OS with a t.me navigation.
+          if (appMode === 'telegram' && telegramApp?.openTelegramLink) {
+            telegramApp.openTelegramLink(deepLink);
+          } else {
+            window.location.href = deepLink;
           }
-          if (botUrl) { window.location.href = `${botUrl}?startapp=buypro`; return; }
-        } catch (_e) { /* fall through to a message */ }
-      }
-      setBillingStatusError(tr(
-        'Оплата звёздами доступна только в Telegram. Открой приложение внутри Telegram и повтори.',
-        'Zahlung mit Sternen ist nur in Telegram möglich. Öffne die App in Telegram und versuche es erneut.',
+          return;
+        }
+      } catch (_e) { /* fall through to a friendly note */ }
+      setBillingStatusNotice(tr(
+        'Оплата звёздами проходит внутри Telegram. Открой бота в Telegram и нажми «Поддержать» ещё раз — там всё в пару тапов.',
+        'Die Zahlung mit Sternen läuft in Telegram. Öffne den Bot in Telegram und tippe erneut auf „Unterstützen“ — dort klappt es in wenigen Taps.',
       ));
       return;
     }
@@ -32208,7 +32232,9 @@ function AppInner() {
             telegramApp.showPopup?.({
               title: isSupport ? tr('Спасибо!', 'Danke!') : tr('Готово', 'Fertig'),
               message: isSupport
-                ? tr('Спасибо за поддержку! Ты в стене благодарностей 🙏', 'Danke für die Unterstützung! Du bist an der Dankeswand 🙏')
+                ? (code === 'support_cheesecake'
+                    ? tr('Спасибо! Начислили 14 дней Pro, и ты в стене благодарностей 🙏', 'Danke! 14 Tage Pro gutgeschrieben, und du bist an der Dankeswand 🙏')
+                    : tr('Спасибо! Начислили 7 дней Pro, и ты в стене благодарностей 🙏', 'Danke! 7 Tage Pro gutgeschrieben, und du bist an der Dankeswand 🙏'))
                 : tr('Pro подключён! Обновляем доступ…', 'Pro aktiv! Zugang wird aktualisiert…'),
               buttons: [{ type: 'ok' }],
             });
@@ -32222,7 +32248,23 @@ function AppInner() {
         }
       });
     } catch (error) {
-      setBillingStatusError(`${tr('Ошибка оплаты', 'Zahlungsfehler')}: ${error.message}`);
+      // Never surface the raw SDK/server string (e.g. "WebAppMethodUnsupported") — it looks like a
+      // crash to the user. If Telegram simply can't open the invoice here, treat it like the
+      // not-in-Telegram case; otherwise show a clean, friendly line. Details go to the console.
+      const raw = String(error?.message || '');
+      // eslint-disable-next-line no-console
+      console.warn('billing upgrade failed', raw);
+      if (/unsupported|not.?supported|WebAppMethod/i.test(raw)) {
+        setBillingStatusNotice(tr(
+          'Оплата звёздами проходит внутри Telegram. Открой бота в Telegram и нажми «Поддержать» ещё раз — там всё в пару тапов.',
+          'Die Zahlung mit Sternen läuft in Telegram. Öffne den Bot in Telegram und tippe erneut auf „Unterstützen“ — dort klappt es in wenigen Taps.',
+        ));
+      } else {
+        setBillingStatusNotice(tr(
+          'Не получилось открыть оплату. Попробуй ещё раз через пару секунд.',
+          'Die Zahlung konnte nicht geöffnet werden. Bitte versuche es in ein paar Sekunden erneut.',
+        ));
+      }
     } finally {
       setBillingActionLoading(false);
     }
@@ -32241,6 +32283,17 @@ function AppInner() {
     const t = setTimeout(() => { handleBillingUpgradeRef.current?.('pro'); }, 700);
     return () => clearTimeout(t);
   }, [autoProCheckoutPending, initData]);
+
+  // ?startapp=support_coffee|support_cheesecake → once auth is ready, open that donation Stars
+  // sheet exactly once (same pattern as buypro), so a PWA «Поддержать» → Telegram lands on payment.
+  useEffect(() => {
+    if (!autoSupportCheckoutTier || !initData || autoSupportCheckoutDoneRef.current) return;
+    autoSupportCheckoutDoneRef.current = true;
+    const tier = autoSupportCheckoutTier;
+    setAutoSupportCheckoutTier('');
+    const t = setTimeout(() => { handleBillingUpgradeRef.current?.(tier); }, 700);
+    return () => clearTimeout(t);
+  }, [autoSupportCheckoutTier, initData]);
 
   const handleBillingManage = async () => {
     if (!initData) {
@@ -40207,6 +40260,12 @@ function AppInner() {
                 {billingReturnMessage && (
                   <div className={billingReturnContext.kind === 'cancel' ? 'webapp-muted' : 'webapp-success'}>
                     {billingReturnMessage}
+                  </div>
+                )}
+                {billingStatusNotice && (
+                  <div className="billing-trial-banner">
+                    💫 <strong>{tr('Оплата — в Telegram.', 'Zahlung — in Telegram.')}</strong>{' '}
+                    {billingStatusNotice}
                   </div>
                 )}
                 {billingStatusError && <div className="webapp-error">{billingStatusError}</div>}
