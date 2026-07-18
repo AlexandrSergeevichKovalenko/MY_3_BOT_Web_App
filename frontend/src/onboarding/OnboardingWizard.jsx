@@ -26,6 +26,12 @@ const IS_STANDALONE_PWA = (() => {
 })();
 const IS_PWA_TOUR = IS_PUBLIC && IS_STANDALONE_PWA;
 
+// A ✕ close affordance so the tour can be abandoned at ANY step (not only by reaching
+// the finale). Hidden only in the pure public web tour (plain browser, no bot), where
+// there's no app to return to. In the standalone PWA the tour opened IN PLACE over the
+// app, so leaving = go back to the app; in Telegram it's a sheet → tg.close().
+const CAN_CLOSE = IS_STANDALONE_PWA || !IS_PUBLIC;
+
 // UI language — same source of truth as the main app (localStorage 'ui_lang').
 // Fresh users (never opened the main app) have nothing stored → fall back to the
 // Telegram interface language, else Russian. Switchable in-wizard (see LangToggle).
@@ -1094,6 +1100,27 @@ export default function OnboardingWizard() {
     setIdx((i) => Math.max(i - 1, 0));
   }, []);
 
+  // ✕ Close — leave the tour at any step. The resume point is already persisted, so
+  // reopening later continues where it stopped.
+  const onClose = useCallback(() => {
+    try { tg?.HapticFeedback?.impactOccurred?.('light'); } catch (_e) { /* noop */ }
+    // Standalone PWA: the tour opened IN PLACE over the app (same window) — return to it.
+    if (IS_STANDALONE_PWA) {
+      try {
+        if (window.history.length > 1) window.history.back();
+        else window.location.href = '/';
+      } catch (_e) { try { window.location.href = '/'; } catch (_e2) { /* noop */ } }
+      return;
+    }
+    // Inside Telegram: close the Mini-App sheet back to the chat.
+    if (!IS_PUBLIC) {
+      try { tg?.close?.(); } catch (_e) { /* noop */ }
+      return;
+    }
+    // Plain public browser tour: nothing to return to — go to the app root.
+    try { window.location.href = '/'; } catch (_e) { /* noop */ }
+  }, []);
+
   // «Настроить сейчас» on the Shortcut step (the last content step): complete
   // onboarding and hand off to the full Shortcut setup screen.
   const openShortcutSetup = useCallback(async () => {
@@ -1102,6 +1129,22 @@ export default function OnboardingWizard() {
     try { tg?.HapticFeedback?.impactOccurred?.('medium'); } catch (_e) { /* noop */ }
     // Complete onboarding in the BACKGROUND — don't block the open on it.
     api('/api/webapp/onboarding/complete').catch(() => {});
+    // Standalone PWA (app opened from its home-screen icon): open the Shortcut setup
+    // screen IN PLACE via the SPA router (?startapp=shortcut) instead of bouncing the
+    // user out to the Telegram client. The shortcut endpoints accept the durable app
+    // token (same auth as the rest of the standalone app), so the pairing code works
+    // here without initData. The launch hash is preserved by URL.searchParams, so this
+    // is a same-window navigation, not a jump to Telegram.
+    if (IS_STANDALONE_PWA) {
+      try {
+        const u = new URL(window.location.href);
+        u.searchParams.set('startapp', 'shortcut');
+        window.location.assign(u.toString());
+      } catch (_e) {
+        try { window.location.href = '/?startapp=shortcut'; } catch (_e2) { /* noop */ }
+      }
+      return;  // navigating away — leave shortcutOpening set
+    }
     // The deeplink needs bot_url; it loads async on mount, so on an early tap it may
     // still be empty (this is why it used to need several taps). Fetch it inline if so.
     let base = botUrl;
@@ -1263,6 +1306,9 @@ export default function OnboardingWizard() {
       <div className="ob-card">
         <header className="ob-head">
           <div className="ob-topbar">
+            {CAN_CLOSE ? (
+              <button type="button" className="ob-close" onClick={onClose} aria-label={t('Закрыть', 'Schließen')}>✕</button>
+            ) : <span />}
             <button type="button" className="ob-lang" onClick={switchLang}>
               {LANG === 'de' ? '🌐 RU' : '🌐 DE'}
             </button>

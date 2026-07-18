@@ -139,10 +139,23 @@ export default function ShortcutGuide() {
     return () => { off = true; };
   }, []);
 
-  // The single «Перейти в приложение» CTA now lives at the onboarding finale. Here
-  // we just return the user to the bot chat, where their tasks are already waiting —
-  // so this deep setup screen never ends in a dead end.
+  // Leave the setup screen. In the standalone home-screen PWA it opened IN PLACE over the
+  // app (same window), so leaving = go back to the app — there is no Telegram sheet to
+  // close. Inside Telegram → close the Mini-App back to the chat, where tasks are waiting.
   const closeGuide = useCallback(() => {
+    const isStandalonePwa = (() => {
+      try {
+        return (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches)
+          || window.navigator?.standalone === true;
+      } catch (_e) { return false; }
+    })();
+    if (isStandalonePwa || !tg?.initData) {
+      try {
+        if (window.history.length > 1) window.history.back();
+        else window.location.href = '/';
+      } catch (_e) { try { window.location.href = '/'; } catch (_e2) { /* noop */ } }
+      return;
+    }
     try { tg?.close?.(); } catch (_e) { /* noop */ }
   }, []);
 
@@ -164,6 +177,7 @@ export default function ShortcutGuide() {
 
   return (
     <div className="sc-root">
+      <button type="button" className="sc-close" onClick={closeGuide} aria-label="Закрыть">✕</button>
       <header className="sc-hero">
         <div className="sc-hero-emoji">📲</div>
         <h1 className="sc-hero-title">Перевод по скриншотам</h1>

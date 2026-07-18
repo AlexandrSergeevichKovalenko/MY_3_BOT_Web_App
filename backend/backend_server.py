@@ -44252,10 +44252,12 @@ def _shortcut_processor_public_url() -> str:
 
 @app.route("/api/webapp/shortcut/info", methods=["POST"])
 def webapp_shortcut_info():
-    """Install links for the Mini-App shortcut screen (initData auth)."""
-    user_id, _user_name, err = _answer_auth_user_id()
-    if user_id is None:
-        return err
+    """Install links for the Mini-App shortcut screen. Accepts Telegram initData OR the
+    durable app-browser token, so the screen also opens in place from the standalone
+    home-screen PWA (which has no initData)."""
+    user_id = _resolve_webapp_user_id()
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
     return jsonify({
         "ok": True,
         "collector_url": _shortcut_collector_public_url(),
@@ -44265,11 +44267,12 @@ def webapp_shortcut_info():
 
 @app.route("/api/webapp/shortcut/pairing-code", methods=["POST"])
 def webapp_shortcut_pairing_code():
-    """Issue a one-time pairing code for the nightly-processor shortcut, straight
-    from the Mini-App (initData auth) — so the user never leaves the install screen."""
-    user_id, _user_name, err = _answer_auth_user_id()
-    if user_id is None:
-        return err
+    """Issue a one-time pairing code for the nightly-processor shortcut, straight from
+    the Mini-App — so the user never leaves the install screen. Accepts Telegram initData
+    OR the durable app-browser token, so it also works in the standalone home-screen PWA."""
+    user_id = _resolve_webapp_user_id()
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
     allowed, limiter_response = _shortcut_enforce_pairing_code_issuance_limit(user_id=int(user_id))
     if not allowed:
         return limiter_response

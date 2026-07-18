@@ -350,8 +350,15 @@
 .ob-sublist li { color: var(--ob-muted); font-size: 14px; }
 .ob-sublist li::before { background: var(--ob-accent); }
 
-/* Language toggle (in-wizard RU/DE switch) */
-.ob-topbar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+/* Language toggle (in-wizard RU/DE switch) + ✕ close */
+.ob-topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.ob-close {
+  appearance: none; border: 1px solid var(--ob-line); background: #fff;
+  color: var(--ob-muted); font-size: 15px; font-weight: 700; line-height: 1;
+  width: 30px; height: 30px; border-radius: 999px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.ob-close:active { background: #f4f8ff; }
 .ob-lang {
   appearance: none; border: 1px solid var(--ob-line); background: #f4f8ff;
   color: var(--ob-accent); font-size: 13px; font-weight: 700;
