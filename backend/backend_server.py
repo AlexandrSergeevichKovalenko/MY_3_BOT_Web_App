@@ -57329,7 +57329,7 @@ def _dispatch_daily_group_summary(*, target_date: date, tz_name: str = TODAY_PLA
             continue
         groups += 1
         try:
-            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
+            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=True)
             rows = _fetch_group_daily_summary_rows(target_date=target_date, cohort_user_ids=member_user_ids)
             labeled_rows = _apply_group_summary_labels(rows)
             text = _format_group_daily_summary_message(target_date=target_date, rows=labeled_rows)
@@ -57387,7 +57387,7 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
             continue
         groups += 1
         try:
-            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
+            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=True)
             rows = _fetch_group_weekly_summary_rows(
                 week_start=bounds.start_date,
                 week_end=bounds.end_date,

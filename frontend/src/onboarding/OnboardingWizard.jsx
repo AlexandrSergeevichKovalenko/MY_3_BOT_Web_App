@@ -128,10 +128,12 @@ const STEPS = [
   { id: 'intensity',  title: t('Сколько заданий в день 🔥', 'Wie viele Aufgaben pro Tag 🔥'), kind: 'pro' },
   { id: 'windows',    title: t('Когда присылать задания ⏰', 'Wann Aufgaben kommen ⏰'), kind: 'pro' },
   { id: 'battles',    title: t('Игры с другими учениками ⚔️', 'Spiele mit anderen Lernenden ⚔️'), kind: 'opt' },
+  { id: 'groups',     title: t('Учись с близкими в группе 👨‍👩‍👧', 'Lerne mit deinen Liebsten in einer Gruppe 👨‍👩‍👧'), kind: 'opt' },
   { id: 'howto_words',        title: t('Твой словарь пополняется сам 📖', 'Dein Wörterbuch füllt sich von selbst 📖'), kind: 'info' },
   { id: 'howto_interactives', title: t('Игры-тренировки приходят сами 🎮', 'Übungsspiele kommen von selbst 🎮'), kind: 'info' },
   { id: 'howto_translations', title: t('Переводы с разбором ✍️', 'Übersetzungen mit Analyse ✍️'),          kind: 'info' },
   { id: 'howto_tools',        title: t('Ещё инструменты 🧰', 'Weitere Werkzeuge 🧰'),              kind: 'info' },
+  { id: 'howto_youtube',      title: t('Смотри YouTube в приложении ▶️', 'Schau YouTube in der App ▶️'), kind: 'info' },
   { id: 'keyboard',   title: t('Меню бота — где нажимать ⌨️', 'Bot-Menü — wo man tippt ⌨️'), kind: 'info' },
   { id: 'shortcut',   title: t('Захват слов со скриншотов (iPhone) 📲', 'Wörter aus Screenshots (iPhone) 📲'), kind: 'opt' },
   { id: 'howto_morning', title: t('Утром твои слова уже ждут 🌅', 'Morgens warten deine Wörter 🌅'), kind: 'info' },
@@ -289,8 +291,8 @@ const GUEST_NOTE = (
 
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
 const REAL_STEPS = new Set(['install_app', 'language', 'dictionary', 'intensity', 'windows',
-  'battles', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
-  'howto_tools', 'keyboard', 'howto_morning', 'howto_learn', 'plans']);
+  'battles', 'groups', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
+  'howto_tools', 'howto_youtube', 'keyboard', 'howto_morning', 'howto_learn', 'plans']);
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
@@ -511,6 +513,32 @@ function StepBody(props) {
               <span className="ob-option-sub">{t('можно включить позже', 'später aktivierbar')}</span>
             </button>
           </div>
+        </div>
+      );
+    case 'groups':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            {t('Можно учиться не в одиночку, а вместе с близкими — семьёй или друзьями. Создаёшь свою группу в Telegram, добавляешь туда бота — и вы занимаетесь вместе и видите успехи друг друга.',
+               'Du kannst nicht allein lernen, sondern zusammen mit deinen Liebsten — Familie oder Freunden. Du erstellst deine eigene Telegram-Gruppe, fügst den Bot hinzu — und ihr lernt gemeinsam und seht die Fortschritte der anderen.')}
+          </p>
+          <ul className="ob-list">
+            <li>
+              <b>{t('🚀 Как завести', '🚀 So legst du los')}</b>
+              {t(' — создай группу в Telegram и добавь в неё нашего бота. Бот сам пришлёт и закрепит сообщение с кнопкой «Получать задания здесь» — каждый, кто нажмёт, попадает в итоги и сравнение этой группы.',
+                 ' — erstelle eine Telegram-Gruppe und füge unseren Bot hinzu. Der Bot schickt und pinnt selbst eine Nachricht mit dem Knopf «Aufgaben hier bekommen» — wer tippt, kommt in die Ergebnisse und den Vergleich dieser Gruppe.')}
+            </li>
+            <li>
+              <b>{t('🏅 Итоги дня и недели — прямо в чат', '🏅 Tages- und Wochenergebnisse — direkt in den Chat')}</b>
+              {t(' — каждый вечер и в конце недели бот присылает в группу таблицу с медалями и диаграмму сравнения: кто сколько прошёл, чей балл выше. Отличная мотивация подтянуться за своими.',
+                 ' — jeden Abend und am Ende der Woche schickt der Bot eine Tabelle mit Medaillen und ein Vergleichsdiagramm in die Gruppe: wer wie viel geschafft hat, wessen Punktzahl höher ist. Eine super Motivation, mit den anderen mitzuhalten.')}
+            </li>
+            <li>
+              <b>{t('📊 Сравнение по группе в приложении', '📊 Gruppenvergleich in der App')}</b>
+              {t(' — в приложении можно переключиться на свою группу и посмотреть, кто как занимается и какое у тебя место среди близких — отдельно от общего потока всех учеников.',
+                 ' — in der App kannst du auf deine Gruppe umschalten und sehen, wer wie lernt und welchen Platz du unter deinen Liebsten hast — getrennt vom allgemeinen Strom aller Lernenden.')}
+            </li>
+          </ul>
         </div>
       );
     case 'shortcut':
@@ -873,13 +901,6 @@ function StepBody(props) {
               {t(' — повторяешь сохранённые слова по умной системе, пока не запомнишь.', ' — du wiederholst gespeicherte Wörter nach einem klugen System, bis du sie kannst.')}
             </li>
             <li>
-              <b>{t('▶️ YouTube с двойными субтитрами', '▶️ YouTube mit doppelten Untertiteln')}</b>
-              {t(' — смотришь видео с субтитрами на двух языках сразу, а любое слово сохраняешь в словарь в один тап.',
-                 ' — du schaust Videos mit Untertiteln in zwei Sprachen gleichzeitig und speicherst jedes Wort mit einem Tipp ins Wörterbuch.')}
-              {MEDIA.youtube_dual_subs ? <MediaTile src={MEDIA.youtube_dual_subs} type="video" caption={t('🎥 YouTube с двойными субтитрами', '🎥 YouTube mit doppelten Untertiteln')} /> : null}
-              {MEDIA.youtube_browser ? <MediaTile src={MEDIA.youtube_browser} type="video" caption={t('🎥 Так же можно смотреть в браузере', '🎥 So kannst du auch im Browser schauen')} /> : null}
-            </li>
-            <li>
               <b>{t('📖 Читалка', '📖 Reader')}</b>
               {t(' — загружаешь книгу и читаешь прямо в приложении. Каждое слово кликабельно: нажал — перевод и разбор; можно переводить и целыми предложениями. Что отметил — сохраняешь в словарь.',
                  ' — du lädst ein Buch und liest direkt in der App. Jedes Wort ist anklickbar: getippt — Übersetzung und Analyse; auch ganze Sätze kannst du übersetzen. Was du markierst, speicherst du ins Wörterbuch.')}
@@ -890,6 +911,29 @@ function StepBody(props) {
               <b>{t('📰 Новости прямо в читалке', '📰 Nachrichten direkt im Reader')}</b>
               {t(' — ничего не нужно искать и копировать. Заходишь в читалку, в разделе «Источники» выбираешь свежую статью (Deutsche Welle, Tagesschau, Nachrichtenleicht — новости простым языком, A2–B1) — и она открывается прямо в читалке. Читаешь как книгу: нажимаешь на любое слово или целое предложение — получаешь перевод с разбором и сохраняешь нужное в словарь, чтобы выучить позже.',
                  ' — du musst nichts suchen oder kopieren. Du gehst in den Reader, wählst im Bereich «Quellen» einen aktuellen Artikel (Deutsche Welle, Tagesschau, Nachrichtenleicht — Nachrichten in einfacher Sprache, A2–B1) — und er öffnet sich direkt im Reader. Du liest wie ein Buch: tippe auf jedes Wort oder einen ganzen Satz — du bekommst die Übersetzung mit Analyse und speicherst, was du brauchst, ins Wörterbuch, um es später zu lernen.')}
+            </li>
+          </ul>
+        </div>
+      );
+    case 'howto_youtube':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            {t('Смотри видео с YouTube прямо у нас — так удобнее, чем на самом YouTube.',
+               'Schau YouTube-Videos direkt bei uns — bequemer als auf YouTube selbst.')}
+          </p>
+          <ul className="ob-list">
+            <li>
+              <b>{t('🔎 Любое видео + словарик под рукой', '🔎 Jedes Video + Wörterbuch griffbereit')}</b>
+              {t(' — вставь ссылку на любой ролик с YouTube или найди его по названию прямо в приложении. Внизу есть маленький словарик: поставил на паузу, вписал непонятное слово — сразу перевод, и сохраняешь в свой словарь в один тап. Никуда переходить не нужно — в этом и смысл смотреть у нас, а не на YouTube.',
+                 ' — füge den Link zu einem beliebigen YouTube-Video ein oder finde es per Titel direkt in der App. Unten gibt es ein kleines Wörterbuch: pausiere, tippe ein unbekanntes Wort ein — sofort die Übersetzung, und du speicherst es mit einem Tipp in dein Wörterbuch. Du musst nirgendwohin wechseln — genau darum lohnt es sich, bei uns statt auf YouTube zu schauen.')}
+              {MEDIA.youtube_browser ? <MediaTile src={MEDIA.youtube_browser} type="video" caption={t('🎥 Так же удобно и в браузере', '🎥 Genauso bequem im Browser')} /> : null}
+            </li>
+            <li>
+              <b>{t('🎬 Раздел «Фильмы» — с двойными субтитрами', '🎬 Bereich «Filme» — mit doppelten Untertiteln')}</b>
+              {t(' — здесь мы собрали видео, которые идут с субтитрами на двух языках сразу (немецкий и русский). Любое слово в субтитрах переводится прямо по нажатию. Такие двойные субтитры есть только у этой коллекции: субтитры на YouTube — чужая собственность, поэтому произвольные ролики так показывать нельзя, только наши проверенные.',
+                 ' — hier haben wir Videos gesammelt, die Untertitel in zwei Sprachen gleichzeitig haben (Deutsch und Russisch). Jedes Wort in den Untertiteln wird direkt per Tipp übersetzt. Solche doppelten Untertitel gibt es nur für diese Sammlung: Untertitel auf YouTube sind fremdes Eigentum, deshalb können beliebige Videos so nicht gezeigt werden — nur unsere geprüften.')}
+              {MEDIA.youtube_dual_subs ? <MediaTile src={MEDIA.youtube_dual_subs} type="video" caption={t('🎥 «Фильмы» с двойными субтитрами', '🎥 «Filme» mit doppelten Untertiteln')} /> : null}
             </li>
           </ul>
         </div>

@@ -6791,10 +6791,10 @@ async def _send_group_enrollment_prompt(
     text = (
         "📍 Где получать задания и отчёты\n\n"
         f"{prefix}"
-        "Нажми кнопку — и твои ежедневные задания, итоги и рейтинг будут приходить "
-        "СЮДА, в группу, вместе с одногруппниками. 👥\n\n"
+        "Нажми кнопку — и твои ежедневные задания и итоги будут приходить "
+        "СЮДА, в группу, а в итогах дня и недели ты сравниваешься с одногруппниками. 👥\n\n"
         "🙋 Не нажимаешь — играешь индивидуально: всё приходит тебе в личку с ботом.\n"
-        "🏆 Рейтинг и Кубок чемпиона — общие для ВСЕХ игроков бота в любом случае.\n\n"
+        "🏆 Кубок чемпиона — общий для ВСЕХ игроков бота; участие в группе на него не влияет.\n\n"
         "Если уже нажимал раньше — повторно не нужно."
     )
     sent_message = await context.bot.send_message(
@@ -6993,9 +6993,9 @@ async def handle_group_enrollment_callback(update: Update, context: CallbackCont
         return
 
     if bool(result.get("was_confirmed_before")):
-        await query.answer("Вы уже участвуете в соревновании этой группы.", show_alert=False)
+        await query.answer("Вы уже в сравнении этой группы — итоги приходят сюда.", show_alert=False)
         return
-    await query.answer("Готово! Вы участвуете в рейтинге этой группы.", show_alert=False)
+    await query.answer("Готово! Итоги и сравнение этой группы теперь приходят сюда.", show_alert=False)
 
 
 async def handle_bot_group_membership(update: Update, context: CallbackContext) -> None:
