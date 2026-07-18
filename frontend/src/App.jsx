@@ -6693,9 +6693,10 @@ function AppInner() {
   const [autoProCheckoutPending, setAutoProCheckoutPending] = useState(false);
   const autoProCheckoutDoneRef = useRef(false);
   // Set by the ?startapp=support_coffee|support_cheesecake deep-link (a PWA/browser «Поддержать»
-  // bounced into Telegram) → auto-open the matching donation Stars sheet once auth is ready.
-  const [autoSupportCheckoutTier, setAutoSupportCheckoutTier] = useState('');
-  const autoSupportCheckoutDoneRef = useRef(false);
+  // bounced into Telegram). We DON'T silently auto-open the invoice — Telegram often blocks a
+  // programmatic openInvoice without a real tap, leaving the user stranded on the plans screen.
+  // Instead we pop a «confirm & pay» modal with the pre-selected option and one obvious Pay button.
+  const [billingConfirmPayCode, setBillingConfirmPayCode] = useState('');
   const [billingPlansLoading, setBillingPlansLoading] = useState(false);
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
@@ -19095,11 +19096,11 @@ function AppInner() {
       return () => clearTimeout(t);
     } else if (startParam === 'support_coffee' || startParam === 'support_cheesecake') {
       // «Поддержать» tapped in the PWA/browser bounced the user into Telegram → land on «Подписка»
-      // AND auto-open the matching donation Stars sheet once initData is ready.
+      // AND pop a «confirm & pay» modal for the SAME option (no need to hunt for the card again).
       setFlashcardsOnly(false);
       setFlashcardSessionActive(false);
       setSelectedSections(new Set(['subscription']));
-      setAutoSupportCheckoutTier(startParam);
+      setBillingConfirmPayCode(startParam);
       const t = setTimeout(() => { scrollToRef(billingRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
     } else if (startParam === 'worldnews' || startParam.startsWith('worldnews')) {
@@ -32246,6 +32247,8 @@ function AppInner() {
               buttons: [{ type: 'ok' }],
             });
           } catch (_e) { /* popup optional */ }
+          // Payment done → drop the «confirm & pay» modal if it was open (deep-link landing).
+          setBillingConfirmPayCode('');
           // The bot fulfils server-side on successful_payment (near-instant): grants Pro, or
           // records the sponsor for a donation.
           setTimeout(() => {
@@ -32291,16 +32294,14 @@ function AppInner() {
     return () => clearTimeout(t);
   }, [autoProCheckoutPending, initData]);
 
-  // ?startapp=support_coffee|support_cheesecake → once auth is ready, open that donation Stars
-  // sheet exactly once (same pattern as buypro), so a PWA «Поддержать» → Telegram lands on payment.
-  useEffect(() => {
-    if (!autoSupportCheckoutTier || !initData || autoSupportCheckoutDoneRef.current) return;
-    autoSupportCheckoutDoneRef.current = true;
-    const tier = autoSupportCheckoutTier;
-    setAutoSupportCheckoutTier('');
-    const t = setTimeout(() => { handleBillingUpgradeRef.current?.(tier); }, 700);
-    return () => clearTimeout(t);
-  }, [autoSupportCheckoutTier, initData]);
+  // «Confirm & pay» from the ?startapp=support_* deep-link: fire the invoice on a real tap
+  // (reliable — a programmatic auto-open is often silently blocked by Telegram). The modal stays
+  // up until the payment succeeds or the user dismisses it.
+  const handleBillingConfirmPay = () => {
+    const code = String(billingConfirmPayCode || '').trim();
+    if (!code) return;
+    handleBillingUpgradeRef.current?.(code);
+  };
 
   // Explicit «Открыть в Telegram» tap (PWA/browser) → hand off to the bot deep-link. A direct
   // user-gesture navigation is the most reliable way to trigger the OS → Telegram universal link.
@@ -40483,6 +40484,66 @@ function AppInner() {
                         </div>
                       </div>
                     )}
+
+                    {billingConfirmPayCode && (() => {
+                      // Landed in Telegram via the ?startapp=support_* deep-link → confirm the
+                      // SAME option and pay in one obvious tap (no hunting for the card again).
+                      const card = (Array.isArray(billingPlanCards) ? billingPlanCards : [])
+                        .find((c) => c.planCode === billingConfirmPayCode);
+                      const proDays = billingConfirmPayCode === 'support_cheesecake' ? 14 : 7;
+                      const optionTitle = String(card?.title || (billingConfirmPayCode === 'support_cheesecake'
+                        ? tr('Кофе ☕️ и чизкейк 🍰', 'Kaffee ☕️ und Cheesecake 🍰')
+                        : tr('Купить разработчику кофе ☕️', 'Dem Entwickler einen Kaffee ☕️'))).trim();
+                      const optionPrice = String(card?.priceLabel || '').trim();
+                      return (
+                        <div
+                          role="presentation"
+                          className="billing-plan-details-modal"
+                          onClick={() => setBillingConfirmPayCode('')}
+                        >
+                          <div
+                            className="billing-plan-details-modal__panel billing-pay-tg-modal"
+                            role="dialog"
+                            aria-modal="true"
+                            aria-label={tr('Подтверждение оплаты', 'Zahlung bestätigen')}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <div className="billing-pay-tg-modal__emoji" aria-hidden="true">
+                              {billingConfirmPayCode === 'support_cheesecake' ? '☕️🍰' : '☕️'}
+                            </div>
+                            <h3 className="billing-pay-tg-modal__title">
+                              {tr('Почти готово — твоя поддержка', 'Fast fertig — deine Unterstützung')}
+                            </h3>
+                            <div className="billing-pay-tg-modal__option">
+                              <span className="billing-pay-tg-modal__option-name">{optionTitle}</span>
+                              {optionPrice && <span className="billing-pay-tg-modal__option-price">{optionPrice}</span>}
+                            </div>
+                            <p className="billing-pay-tg-modal__text">
+                              {tr(`В подарок — ${proDays} дней Pro, бейдж спонсора и место на стене благодарностей. Нажми «Оплатить» — откроется оплата звёздами.`,
+                                  `Als Dank — ${proDays} Tage Pro, ein Sponsor-Abzeichen und ein Platz an der Dankeswand. Tippe „Bezahlen“ — die Sterne-Zahlung öffnet sich.`)}
+                            </p>
+                            <button
+                              type="button"
+                              className="billing-pay-tg-modal__cta"
+                              onClick={handleBillingConfirmPay}
+                              disabled={billingActionLoading}
+                              autoFocus
+                            >
+                              {billingActionLoading
+                                ? tr('Открываем оплату…', 'Zahlung wird geöffnet…')
+                                : tr('Оплатить →', 'Bezahlen →')}
+                            </button>
+                            <button
+                              type="button"
+                              className="billing-pay-tg-modal__cancel"
+                              onClick={() => setBillingConfirmPayCode('')}
+                            >
+                              {tr('Не сейчас', 'Nicht jetzt')}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {billingStatus?.manage?.available && (
                       <div className="billing-manage-row">

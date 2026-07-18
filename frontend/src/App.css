@@ -4096,6 +4096,49 @@ body:has(.webapp-page.is-theme-light),
   line-height: 1.5;
 }
 
+.billing-pay-tg-modal__option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 2px auto 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.billing-pay-tg-modal__option-name {
+  color: #f8fafc;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.billing-pay-tg-modal__option-price {
+  color: #ffd166;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.billing-pay-tg-modal__cta:disabled {
+  opacity: 0.7;
+  cursor: default;
+  animation: none;
+}
+
+.webapp-page.is-theme-light .billing-pay-tg-modal__option {
+  background: rgba(130, 101, 67, 0.1);
+  border-color: rgba(130, 101, 67, 0.24);
+}
+
+.webapp-page.is-theme-light .billing-pay-tg-modal__option-name {
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .billing-pay-tg-modal__option-price {
+  color: #b26a00;
+}
+
 .billing-pay-tg-modal__cta {
   display: flex;
   align-items: center;
