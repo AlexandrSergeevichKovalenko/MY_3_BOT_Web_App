@@ -27841,6 +27841,17 @@ function AppInner() {
           <button type="button" className={youtubeOriginalEnabled ? 'on' : ''} onClick={() => setYoutubeOriginalEnabled((v) => !v)} disabled={!subsReady} title={tr('Немецкие субтитры', 'Deutsche Untertitel')}>DE</button>
           <button type="button" className={youtubeTranslationEnabled ? 'on' : ''} onClick={handleCatalogRuToggle} disabled={!subsReady} title={tr('Русские субтитры', 'Russische Untertitel')}>RU</button>
         </div>
+        {/* CC — родные субтитры YouTube (по умолчанию выкл, чтобы не дублировать наши) */}
+        <button
+          type="button"
+          className={`ypb-cc ${youtubeNativeCcOn ? 'on' : ''}`}
+          onClick={toggleYoutubeNativeCc}
+          disabled={!subsReady}
+          title={youtubeNativeCcOn ? tr('Выключить субтитры YouTube', 'YouTube-Untertitel aus') : tr('Включить субтитры YouTube', 'YouTube-Untertitel an')}
+          aria-pressed={youtubeNativeCcOn}
+        >
+          CC
+        </button>
         <span className="ypb-divider" aria-hidden="true" />
         {/* предыдущее предложение · play · следующее */}
         <button type="button" className="ypb-nav" onClick={() => jumpYoutubeBySubtitle(-1)} disabled={!canJumpPrev} aria-label={tr('Предыдущее предложение', 'Vorheriger Satz')} title={tr('Предыдущее предложение', 'Vorheriger Satz')}>
@@ -27906,11 +27917,6 @@ function AppInner() {
                   {tr('Вставить транскрипцию', 'Transkript einfügen')}
                 </button>
               )}
-              <div className="ypb-menu-sep" aria-hidden="true" />
-              <button type="button" className={`ypb-menu-item ${youtubeNativeCcOn ? 'is-active' : ''}`} onClick={() => { toggleYoutubeNativeCc(); }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="3" /><path d="M8.5 10.5a2 2 0 1 0 0 3M15.5 10.5a2 2 0 1 0 0 3" /></svg>
-                {tr('Субтитры YouTube (CC)', 'YouTube-Untertitel (CC)')}: {youtubeNativeCcOn ? tr('вкл', 'an') : tr('выкл', 'aus')}
-              </button>
               <div className="ypb-menu-sep" aria-hidden="true" />
               <button type="button" className="ypb-menu-item" onClick={() => { setYoutubeSettingsOpen(true); setYoutubeBarMenuOpen(false); }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></svg>

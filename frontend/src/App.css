@@ -16532,6 +16532,16 @@ body.worldnews-active .webapp-topbar {
   .youtube-puzzle-bar .ypb-seg button:disabled { opacity: .45; cursor: default; }
   .youtube-puzzle-bar .ypb-seg button.on { background: var(--d-accent); color: var(--d-on-accent); box-shadow: 0 4px 12px var(--d-accent-soft); }
 
+  /* CC — родные субтитры YouTube (маленькая кнопка рядом с DE/RU) */
+  .youtube-puzzle-bar .ypb-cc {
+    flex: 0 0 auto; height: 40px; padding: 0 11px; border-radius: 11px; cursor: pointer;
+    border: 1px solid var(--d-border); background: var(--d-card); color: var(--d-muted);
+    font-size: 12.5px; font-weight: 800; letter-spacing: .03em; font-family: inherit; transition: .15s;
+  }
+  .youtube-puzzle-bar .ypb-cc:hover:not(:disabled) { background: var(--d-hover); color: var(--d-title); }
+  .youtube-puzzle-bar .ypb-cc:disabled { opacity: .45; cursor: default; }
+  .youtube-puzzle-bar .ypb-cc.on { background: var(--d-accent); border-color: transparent; color: var(--d-on-accent); box-shadow: 0 4px 12px var(--d-accent-soft); }
+
   .youtube-puzzle-bar .ypb-nav { width: 36px; height: 38px; flex: 0 0 auto; border: 1px solid var(--d-border); border-radius: 11px; background: var(--d-card); color: var(--d-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: .15s; }
   .youtube-puzzle-bar .ypb-nav:hover:not(:disabled) { background: var(--d-hover); color: var(--d-title); }
   .youtube-puzzle-bar .ypb-nav:disabled { opacity: .4; cursor: default; }
