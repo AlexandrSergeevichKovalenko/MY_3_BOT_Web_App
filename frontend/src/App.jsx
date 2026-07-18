@@ -14,6 +14,7 @@ import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
 import ProTrialModal from './components/ProTrialModal';
 import StarsInfoModal from './components/StarsInfoModal';
+import BonusProDaysModal from './components/BonusProDaysModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -6745,6 +6746,7 @@ function AppInner() {
   const welcomeTrialCheckedRef = useRef(false);
   // "What are Telegram Stars" explainer — opened by a small ⓘ next to any Stars price.
   const [starsInfoOpen, setStarsInfoOpen] = useState(false);
+  const [bonusDaysInfoOpen, setBonusDaysInfoOpen] = useState(false);
   // Set by the ?startapp=buypro deep-link (onboarding «Оформить Pro») → auto-open the Pro
   // Stars sheet once auth is ready, so the user lands straight on payment.
   const [autoProCheckoutPending, setAutoProCheckoutPending] = useState(false);
@@ -34840,6 +34842,15 @@ function AppInner() {
               tr={tr}
             />
 
+            <BonusProDaysModal
+              isOpen={bonusDaysInfoOpen}
+              onClose={() => setBonusDaysInfoOpen(false)}
+              tr={tr}
+              days={Number(billingStatus?.bonus_pro?.days || 0)}
+              banked={Boolean(billingStatus?.bonus_pro?.banked)}
+              until={billingStatus?.bonus_pro?.until || null}
+            />
+
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
                 {isSectionVisible('youtube') && (
@@ -40374,6 +40385,38 @@ function AppInner() {
                       </div>
                     </div>
 
+                    {Number(billingStatus?.bonus_pro?.days || 0) > 0 && (() => {
+                      const bp = billingStatus.bonus_pro;
+                      const d = Number(bp.days || 0);
+                      return (
+                        <div className="bonus-pro-banner">
+                          <span className="bonus-pro-banner__gift" aria-hidden="true">🎁</span>
+                          <div className="bonus-pro-banner__body">
+                            <span className="bonus-pro-banner__count">
+                              {bp.banked ? (
+                                <>{tr('В запасе', 'In Reserve')}: <b>{d}</b> {tr('дн. Pro', 'Tage Pro')}</>
+                              ) : (
+                                <><b>{d}</b> {tr('дн. Pro в подарок', 'Tage Pro geschenkt')}</>
+                              )}
+                            </span>
+                            <span className="bonus-pro-banner__sub">
+                              {bp.banked
+                                ? tr('Включатся, когда закончится подписка — не сгорят.', 'Sie starten nach Abo-Ende — nichts verfällt.')
+                                : tr('Полный Pro бесплатно. Нажми ⓘ — как копить дальше.', 'Volles Pro gratis. Tippe ⓘ — so sammelst du mehr.')}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="bonus-pro-banner__info"
+                            onClick={() => setBonusDaysInfoOpen(true)}
+                            aria-label={tr('Подробнее о бонусных днях Pro', 'Mehr zu Pro-Bonustagen')}
+                          >
+                            ⓘ
+                          </button>
+                        </div>
+                      );
+                    })()}
+
                     {billingStatus?.is_welcome_trial && billingStatus?.trial_ends_at ? (
                       <div className="webapp-success">
                         🎁 {tr(
@@ -40424,9 +40467,14 @@ function AppInner() {
                       🔊 <strong>{tr('Озвучка книг — отдельно.', 'Buch-Vertonung — separat.')}</strong>{' '}
                       {tr('Не входит ни в Free, ни в Pro: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Free noch in Pro: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}
                     </div>
-                    <button type="button" className="billing-trial-banner billing-trial-banner--tappable" onClick={() => setStarsInfoOpen(true)}>
-                      ⭐ <strong>{tr('Что такое звёзды Telegram?', 'Was sind Telegram-Sterne?')}</strong>{' '}
-                      {tr('Официальная валюта Telegram: безопасно, в пару тапов прямо в приложении. Нажми, чтобы узнать подробнее.', 'Die offizielle Telegram-Währung: sicher, in wenigen Taps direkt in der App. Tippe für mehr Infos.')}
+                    <button type="button" className="billing-trial-banner billing-trial-banner--tappable billing-stars-cta" onClick={() => setStarsInfoOpen(true)}>
+                      <span className="billing-stars-cta__icon">⭐</span>
+                      <span className="billing-stars-cta__body">
+                        <strong>{tr('Что такое звёзды Telegram?', 'Was sind Telegram-Sterne?')}</strong>
+                        <span className="billing-stars-cta__desc">{tr('Официальная валюта Telegram: безопасно, в пару тапов прямо в приложении.', 'Die offizielle Telegram-Währung: sicher, in wenigen Taps direkt in der App.')}</span>
+                        <span className="billing-stars-cta__pill">{tr('Узнать подробнее', 'Mehr erfahren')} <span aria-hidden="true">→</span></span>
+                      </span>
+                      <span className="billing-stars-cta__chevron" aria-hidden="true">›</span>
                     </button>
                     <div className="billing-trial-banner">
                       🔁 <strong>{tr('Как отменить Pro.', 'Pro kündigen.')}</strong>{' '}

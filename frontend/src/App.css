@@ -3869,14 +3869,14 @@ body:has(.webapp-page.is-theme-light),
 
 .billing-trial-banner strong {
   color: #fde68a;
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .billing-trial-banner p {
   margin: 0;
   color: rgba(226, 232, 240, 0.88);
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: 14.5px;
+  line-height: 1.5;
 }
 
 /* Tappable variant (the Stars explainer opens the full plaque) */
@@ -3892,6 +3892,124 @@ body:has(.webapp-page.is-theme-light),
 }
 .billing-trial-banner--tappable:active { transform: scale(0.99); }
 .billing-trial-banner--tappable:hover { border-color: rgba(250, 204, 21, 0.65); }
+
+/* Bonus Pro days plaque — a warm, celebratory card showing earned/banked Pro days,
+   with a round ⓘ that opens the full explainer modal. */
+.bonus-pro-banner {
+  margin-top: 14px;
+  padding: 15px 15px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  background: linear-gradient(135deg, rgba(16, 51, 45, 0.9), rgba(10, 24, 34, 0.72));
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  position: relative;
+  overflow: hidden;
+}
+.bonus-pro-banner::before {
+  content: '';
+  position: absolute;
+  top: -45%;
+  right: -8%;
+  width: 150px;
+  height: 150px;
+  background: radial-gradient(circle, rgba(52, 211, 153, 0.26), transparent 70%);
+  pointer-events: none;
+}
+.bonus-pro-banner__gift { font-size: 28px; line-height: 1; flex: 0 0 auto; }
+.bonus-pro-banner__body { display: grid; gap: 3px; flex: 1 1 auto; min-width: 0; position: relative; }
+.bonus-pro-banner__count { font-size: 15px; font-weight: 700; color: #6ee7b7; }
+.bonus-pro-banner__count b { font-size: 19px; color: #a7f3d0; }
+.bonus-pro-banner__sub { font-size: 12.5px; line-height: 1.4; color: rgba(209, 250, 229, 0.82); }
+.bonus-pro-banner__info {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid rgba(110, 231, 183, 0.5);
+  background: rgba(6, 30, 26, 0.6);
+  color: #a7f3d0;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+.bonus-pro-banner__info:active { transform: scale(0.92); }
+.bonus-pro-banner__info:hover { background: rgba(16, 60, 52, 0.85); }
+
+.webapp-page.is-theme-light .bonus-pro-banner {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: linear-gradient(135deg, rgba(209, 250, 229, 0.9), rgba(236, 253, 245, 0.7));
+}
+.webapp-page.is-theme-light .bonus-pro-banner__count { color: #047857; }
+.webapp-page.is-theme-light .bonus-pro-banner__count b { color: #065f46; }
+.webapp-page.is-theme-light .bonus-pro-banner__sub { color: rgba(6, 78, 59, 0.82); }
+.webapp-page.is-theme-light .bonus-pro-banner__info {
+  border-color: rgba(16, 185, 129, 0.5);
+  background: rgba(255, 255, 255, 0.8);
+  color: #047857;
+}
+
+/* Stars explainer — must read unmistakably as a tappable card, not a static note. */
+.billing-stars-cta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 14px;
+  border-color: rgba(250, 204, 21, 0.6);
+  background:
+    linear-gradient(135deg, rgba(250, 204, 21, 0.16), rgba(245, 158, 11, 0.06)),
+    linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(10, 16, 34, 0.78));
+  box-shadow: 0 10px 26px -14px rgba(250, 204, 21, 0.55);
+}
+.billing-stars-cta__icon {
+  flex: none;
+  font-size: 26px;
+  line-height: 1;
+}
+.billing-stars-cta__body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.billing-stars-cta__body strong {
+  font-size: 16px;
+  color: #fde68a;
+}
+.billing-stars-cta__desc {
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgba(226, 232, 240, 0.82);
+}
+.billing-stars-cta__pill {
+  justify-self: start;
+  margin-top: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 15px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  color: #1a1206;
+  font-weight: 700;
+  font-size: 13.5px;
+  letter-spacing: 0.01em;
+}
+.billing-stars-cta__chevron {
+  flex: none;
+  margin-left: auto;
+  align-self: center;
+  font-size: 28px;
+  line-height: 1;
+  color: rgba(250, 204, 21, 0.8);
+  transition: transform 0.15s ease;
+}
+.billing-stars-cta:hover .billing-stars-cta__chevron { transform: translateX(3px); }
 
 .billing-policy-grid {
   margin-top: 12px;
@@ -3910,7 +4028,7 @@ body:has(.webapp-page.is-theme-light),
 .billing-policy-card h4 {
   margin: 0;
   color: #f8fafc;
-  font-size: 17px;
+  font-size: 18px;
 }
 
 .billing-policy-card ul {
@@ -3922,8 +4040,8 @@ body:has(.webapp-page.is-theme-light),
 
 .billing-policy-card li {
   color: rgba(226, 232, 240, 0.92);
-  font-size: 15.5px;
-  line-height: 1.5;
+  font-size: 16.5px;
+  line-height: 1.55;
 }
 
 /* Pro card — visually lifted so it reads as the recommended tier */
@@ -26975,6 +27093,16 @@ body.worldnews-active .webapp-topbar {
 .webapp-page.is-theme-light .billing-trial-banner p {
   color: #3a3127;
 }
+
+.webapp-page.is-theme-light .billing-stars-cta {
+  border-color: rgba(217, 155, 46, 0.6);
+  background:
+    linear-gradient(135deg, rgba(255, 224, 150, 0.7), rgba(255, 243, 224, 0.96));
+  box-shadow: 0 10px 24px -14px rgba(217, 155, 46, 0.5);
+}
+.webapp-page.is-theme-light .billing-stars-cta__body strong { color: #8a5410; }
+.webapp-page.is-theme-light .billing-stars-cta__desc { color: #5a4a35; }
+.webapp-page.is-theme-light .billing-stars-cta__chevron { color: rgba(180, 120, 30, 0.85); }
 
 .webapp-page.is-theme-light .billing-policy-card {
   border-color: rgba(171, 126, 72, 0.28);
