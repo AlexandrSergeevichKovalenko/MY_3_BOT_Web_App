@@ -3854,9 +3854,18 @@ body:has(.webapp-page.is-theme-light),
   font-weight: 700;
 }
 
+/* Billing section: halve the outer padding so the info blocks run wider,
+   and switch this section to Onest — a cleaner, friendlier face than Manrope. */
+.webapp-billing {
+  padding: 12px;
+  font-family: 'Onest', 'Manrope', 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
 .billing-trial-banner {
   margin-top: 14px;
-  padding: 14px;
+  padding: 14px 15px;
   border-radius: 14px;
   border: 1px solid rgba(250, 204, 21, 0.4);
   background: linear-gradient(135deg, rgba(30, 41, 59, 0.86), rgba(10, 16, 34, 0.72));
@@ -3986,20 +3995,26 @@ body:has(.webapp-page.is-theme-light),
   line-height: 1.45;
   color: rgba(226, 232, 240, 0.82);
 }
+/* Same visual language as our Telegram-Stars pay button (.billing-pay-tg-modal__cta):
+   Telegram-blue gradient, white, bold, soft glow — reads unmistakably as THE action. */
 .billing-stars-cta__pill {
   justify-self: start;
-  margin-top: 5px;
+  margin-top: 7px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 15px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #fbbf24, #f59e0b);
-  color: #1a1206;
+  gap: 7px;
+  padding: 12px 20px;
+  border-radius: 13px;
+  background: linear-gradient(135deg, #2AABEE, #229ED9);
+  color: #fff;
   font-weight: 700;
-  font-size: 13.5px;
+  font-size: 14.5px;
   letter-spacing: 0.01em;
+  box-shadow: 0 8px 20px -8px rgba(42, 171, 238, 0.65);
+  transition: filter 0.15s ease, transform 0.1s ease;
 }
+.billing-stars-cta:hover .billing-stars-cta__pill { filter: brightness(1.05); }
+.billing-stars-cta:active .billing-stars-cta__pill { transform: translateY(1px); }
 .billing-stars-cta__chevron {
   flex: none;
   margin-left: auto;
