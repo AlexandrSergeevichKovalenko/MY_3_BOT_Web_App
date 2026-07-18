@@ -3854,14 +3854,179 @@ body:has(.webapp-page.is-theme-light),
   font-weight: 700;
 }
 
-/* Billing section: halve the outer padding so the info blocks run wider,
-   and switch this section to Onest — a cleaner, friendlier face than Manrope. */
+/* Billing section: tighter outer padding + native system type (SF Pro on iOS)
+   for a clean, premium feel instead of a webfont that renders loose. */
 .webapp-billing {
-  padding: 12px;
-  font-family: 'Onest', 'Manrope', 'Segoe UI', sans-serif;
+  padding: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Manrope', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+/* =========================================================================
+   Plans + notes redesign — one amber accent, real hierarchy, no box-wall.
+   Dark theme is the base; .is-theme-light overrides follow the app pattern.
+   ========================================================================= */
+
+/* Trial ribbon — one calm accent strip, not a boxed card. */
+.billing-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 13px 15px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-left: 3px solid #f0a04b;
+  background: linear-gradient(100deg, rgba(240, 160, 75, 0.14), transparent 85%), rgba(15, 23, 42, 0.55);
+  color: rgba(226, 232, 240, 0.9);
+}
+.billing-ribbon__gift { flex: none; font-size: 21px; line-height: 1; }
+.billing-ribbon__text { font-size: 13.5px; line-height: 1.45; }
+.billing-ribbon__text b { font-weight: 700; color: #f8fafc; }
+.billing-ribbon__text .accent { color: #f0a04b; font-weight: 700; }
+
+/* Plan cards */
+.billing-plans { display: grid; gap: 14px; margin-top: 14px; }
+.billing-plan {
+  position: relative;
+  padding: 18px 18px 20px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.55);
+  box-shadow: 0 8px 22px -14px rgba(0, 0, 0, 0.7);
+}
+.billing-plan--pro {
+  border-color: rgba(240, 160, 75, 0.5);
+  background:
+    radial-gradient(120% 90% at 100% 0%, rgba(240, 160, 75, 0.12), transparent 60%),
+    rgba(15, 23, 42, 0.6);
+  box-shadow: 0 24px 50px -28px rgba(240, 160, 75, 0.4);
+}
+.billing-plan__top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.billing-plan__name {
+  margin: 0; display: flex; align-items: center; gap: 8px;
+  font-size: 21px; font-weight: 800; letter-spacing: -0.015em; color: #f8fafc;
+}
+.billing-plan__dia { color: #f0a04b; font-size: 15px; }
+.billing-plan__price {
+  font-size: 13.5px; font-weight: 700; white-space: nowrap;
+  color: rgba(148, 163, 184, 0.9); font-variant-numeric: tabular-nums;
+}
+.billing-plan--pro .billing-plan__price { color: #f0a04b; }
+.billing-plan__tag { margin: 4px 0 0; font-size: 13px; line-height: 1.4; color: rgba(148, 163, 184, 0.9); }
+.billing-plan__badge {
+  position: absolute; top: -10px; right: 16px;
+  padding: 5px 11px; border-radius: 999px;
+  background: #e08a2b; color: #fff;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+  box-shadow: 0 6px 14px -6px rgba(180, 95, 19, 0.7);
+}
+
+.billing-feats { list-style: none; margin: 15px 0 0; padding: 0; display: grid; gap: 11px; }
+.billing-feats li {
+  position: relative; padding-left: 30px;
+  font-size: 15px; line-height: 1.4; color: rgba(226, 232, 240, 0.9);
+}
+.billing-feats li::before {
+  content: ""; position: absolute; left: 0; top: 0.5px;
+  width: 20px; height: 20px; border-radius: 999px;
+  background-color: rgba(240, 160, 75, 0.16);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M2 6.2 4.6 9 10 3' stroke='%23f0a04b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: center; background-size: 12px;
+}
+.billing-plan--pro .billing-feats li::before {
+  background-color: #e08a2b;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M2 6.2 4.6 9 10 3' stroke='%23ffffff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.billing-feats b { color: #f8fafc; font-weight: 650; }
+
+/* Secondary notes — quiet expandable rows inside one card. */
+.billing-notes {
+  margin-top: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.55);
+  box-shadow: 0 8px 22px -14px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+}
+.billing-note { border-top: 1px solid rgba(148, 163, 184, 0.14); }
+.billing-note:first-child { border-top: none; }
+.billing-note > summary {
+  list-style: none; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  display: flex; align-items: center; gap: 12px;
+  padding: 15px 16px; font-size: 15px; font-weight: 650; color: #f1f5f9;
+}
+.billing-note > summary::-webkit-details-marker { display: none; }
+.billing-note__ico {
+  flex: none; width: 26px; height: 26px; border-radius: 8px;
+  display: grid; place-items: center; font-size: 14px;
+  background: rgba(148, 163, 184, 0.14);
+}
+.billing-note__chev {
+  margin-left: auto; font-size: 20px; line-height: 1;
+  color: rgba(148, 163, 184, 0.8); transition: transform 0.2s ease;
+}
+.billing-note[open] .billing-note__chev { transform: rotate(90deg); }
+.billing-note__body { padding: 0 16px 16px 54px; font-size: 14px; line-height: 1.5; color: rgba(226, 232, 240, 0.82); }
+.billing-note__body p { margin: 0 0 12px; }
+.billing-note__body p:last-child { margin-bottom: 0; }
+
+/* Stars action — Telegram-blue, reserved only for this real action. */
+.billing-stars-learn {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-top: 4px; padding: 11px 19px; border: none; border-radius: 13px;
+  background: linear-gradient(135deg, #2AABEE, #229ED9);
+  color: #fff; font-size: 14px; font-weight: 700; font-family: inherit;
+  cursor: pointer; box-shadow: 0 10px 22px -10px rgba(34, 158, 217, 0.7);
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+.billing-stars-learn:hover { filter: brightness(1.05); }
+.billing-stars-learn:active { transform: translateY(1px); }
+
+/* ---- light theme ---- */
+.webapp-page.is-theme-light .billing-ribbon {
+  border-color: rgba(60, 48, 30, 0.12);
+  border-left-color: #d67a24;
+  background: linear-gradient(100deg, rgba(214, 122, 36, 0.10), transparent 85%), #fffdf8;
+  color: #5d5244;
+}
+.webapp-page.is-theme-light .billing-ribbon__text b { color: #201b14; }
+.webapp-page.is-theme-light .billing-ribbon__text .accent { color: #b45f13; }
+.webapp-page.is-theme-light .billing-plan {
+  border-color: rgba(60, 48, 30, 0.12);
+  background: #fffdf8;
+  box-shadow: 0 6px 18px -12px rgba(60, 40, 12, 0.5);
+}
+.webapp-page.is-theme-light .billing-plan--pro {
+  border-color: #d67a24;
+  background: radial-gradient(120% 90% at 100% 0%, rgba(214, 122, 36, 0.07), transparent 60%), #fffdf8;
+  box-shadow: 0 18px 40px -24px rgba(60, 40, 12, 0.4);
+}
+.webapp-page.is-theme-light .billing-plan__name { color: #201b14; }
+.webapp-page.is-theme-light .billing-plan__dia { color: #d67a24; }
+.webapp-page.is-theme-light .billing-plan__price { color: #8b8072; }
+.webapp-page.is-theme-light .billing-plan--pro .billing-plan__price { color: #b45f13; }
+.webapp-page.is-theme-light .billing-plan__tag { color: #8b8072; }
+.webapp-page.is-theme-light .billing-feats li { color: #5d5244; }
+.webapp-page.is-theme-light .billing-feats b { color: #201b14; }
+.webapp-page.is-theme-light .billing-feats li::before {
+  background-color: rgba(214, 122, 36, 0.13);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M2 6.2 4.6 9 10 3' stroke='%23b45f13' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.webapp-page.is-theme-light .billing-plan--pro .billing-feats li::before {
+  background-color: #d67a24;
+}
+.webapp-page.is-theme-light .billing-notes {
+  border-color: rgba(60, 48, 30, 0.12);
+  background: #fffdf8;
+  box-shadow: 0 6px 18px -12px rgba(60, 40, 12, 0.5);
+}
+.webapp-page.is-theme-light .billing-note { border-top-color: rgba(60, 48, 30, 0.10); }
+.webapp-page.is-theme-light .billing-note > summary { color: #201b14; }
+.webapp-page.is-theme-light .billing-note__ico { background: #f0e7d8; }
+.webapp-page.is-theme-light .billing-note__chev { color: #8b8072; }
+.webapp-page.is-theme-light .billing-note__body { color: #5d5244; }
 
 .billing-trial-banner {
   margin-top: 14px;
@@ -21933,6 +22098,32 @@ body.worldnews-active .webapp-topbar {
   padding-right: 68px;
   min-height: 56px;
   margin: 0;
+}
+
+/* ── Вариант A «Studio»: двухпанельная раскладка (≥700, планшет+браузер) ──
+   Обёртки прозрачны на телефоне (display:contents → раскладка как была). На широком
+   экране: заголовок сверху, слева рейл настройки (постоянно), справа рабочая область. */
+.tr-rail, .tr-workspace { display: contents; }
+@media (min-width: 700px) {
+  .webapp-section.webapp-section-translations:has(.tr-config-card) {
+    display: grid;
+    grid-template-columns: 320px minmax(0, 1fr);
+    column-gap: 22px;
+    row-gap: 18px;
+    align-items: start;
+  }
+  .webapp-section.webapp-section-translations:has(.tr-config-card) > .translations-title-row {
+    grid-column: 1 / -1;
+  }
+  .webapp-section.webapp-section-translations:has(.tr-config-card) > .tr-rail {
+    grid-column: 1; min-width: 0;
+    display: flex; flex-direction: column; gap: 16px;
+    position: sticky; top: 8px;
+  }
+  .webapp-section.webapp-section-translations:has(.tr-config-card) > .tr-workspace {
+    grid-column: 2; min-width: 0;
+    display: flex; flex-direction: column; gap: 16px;
+  }
 }
 
 .webapp-section.webapp-section-translations .translations-title-main {

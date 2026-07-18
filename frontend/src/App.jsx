@@ -3589,6 +3589,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   isFocusedTranslations,
   goHomeScreen,
   showTranslationStartConfigurator,
+  isWideLayout,
   todayTranslationRecommendation,
   customTopicLabel,
   applyTodayTranslationRecommendation,
@@ -3775,6 +3776,9 @@ const TranslationsSection = React.memo(function TranslationsSection({
           </div>
           <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
         </div>
+        {/* ≥700: .tr-rail = левый рейл (настройка+рекомендация), .tr-workspace = правая
+            рабочая область. На телефоне обе обёртки display:contents → раскладка как была. */}
+        <div className="tr-rail">
         {showTranslationStartConfigurator && todayTranslationRecommendation && (
           <div className="today-translation-recommendation-card">
             <div className="today-translation-recommendation-card__eyebrow">
@@ -3809,7 +3813,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
             </div>
           </div>
         )}
-        {showTranslationStartConfigurator && (
+        {(showTranslationStartConfigurator || isWideLayout) && (
           <div className={`tr-config-card ${isAndroidTelegramClient ? 'is-android-layout' : ''}`}>
 
             {/* Level chips — only when not story mode */}
@@ -3962,6 +3966,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
             </button>
           </div>
         )}
+        </div>{/* /.tr-rail */}
+        <div className="tr-workspace">
 
         {/* Grammar focus bottom sheet */}
         {focusSheetOpen && (
@@ -4616,6 +4622,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
             )}
           </section>
         )}
+        </div>{/* /.tr-workspace */}
       </section>
     </PerfProfiler>
   );
@@ -34638,6 +34645,7 @@ function AppInner() {
                 isFocusedTranslations={isFocusedTranslations}
                 goHomeScreen={goHomeScreenStable}
                 showTranslationStartConfigurator={showTranslationStartConfigurator}
+                isWideLayout={isWideLayout}
                 todayTranslationRecommendation={todayTranslationRecommendation}
                 customTopicLabel={CUSTOM_TOPIC}
                 applyTodayTranslationRecommendation={applyTodayTranslationRecommendation}
@@ -40432,13 +40440,22 @@ function AppInner() {
                       </div>
                     ) : null}
 
-                    <div className="billing-trial-banner">
-                      <strong>{tr('🎁 Каждый новый пользователь получает 7 дней полного Pro — бесплатно, чтобы попробовать всё. Потом — Free. Оплата Pro и озвучки книг — в Telegram Stars.', '🎁 Jeder neue Nutzer bekommt 7 Tage volles Pro — kostenlos zum Ausprobieren. Danach Free. Pro und Buch-Vertonung zahlst du mit Telegram Stars.')}</strong>
+                    <div className="billing-ribbon">
+                      <span className="billing-ribbon__gift">🎁</span>
+                      <span className="billing-ribbon__text">
+                        <b>{tr('7 дней полного Pro — бесплатно.', '7 Tage volles Pro — gratis.')}</b>{' '}
+                        {tr('Потом автоматически ', 'Danach automatisch ')}<span className="accent">Free</span>{tr('. Оплата Pro и озвучки — в Telegram Stars.', '. Pro und Vertonung — mit Telegram Stars.')}
+                      </span>
                     </div>
-                    <div className="billing-policy-grid">
-                      <article className="billing-policy-card">
-                        <h4>{tr('Free — бесплатно, с дневными лимитами', 'Free — gratis, mit Tageslimits')}</h4>
-                        <ul>
+
+                    <div className="billing-plans">
+                      <section className="billing-plan">
+                        <div className="billing-plan__top">
+                          <h4 className="billing-plan__name">Free</h4>
+                          <span className="billing-plan__price">0 ⭐ / {tr('мес', 'Monat')}</span>
+                        </div>
+                        <p className="billing-plan__tag">{tr('Всё важное для учёбы, с дневными лимитами.', 'Alles Wichtige zum Lernen, mit Tageslimits.')}</p>
+                        <ul className="billing-feats">
                           <li>{tr('Переводы с разбором: 1 набор/день (7 предложений).', 'Übersetzungen mit Analyse: 1 Set/Tag (7 Sätze).')}</li>
                           <li>{tr('Словарь: 10 запросов + 20 сохранений/день.', 'Wörterbuch: 10 Abfragen + 20 Speicherungen/Tag.')}</li>
                           <li>{tr('«Объяснить ошибки» и «Спроси GPT»: по 1/день.', '„Fehler erklären“ und „GPT fragen“: je 1/Tag.')}</li>
@@ -40449,40 +40466,70 @@ function AppInner() {
                           <li>{tr('Задания по расписанию: 6/день (без своей настройки).', 'Aufgaben nach Plan: 6/Tag (ohne eigene Einstellung).')}</li>
                           <li>{tr('Игры, кроссворды, новости, дуэли по приглашению — входят.', 'Spiele, Kreuzworträtsel, News, Duelle auf Einladung — inklusive.')}</li>
                         </ul>
-                      </article>
-                      <article className="billing-policy-card billing-policy-card--pro">
-                        <h4>{tr('💎 Pro — всё без ограничений', '💎 Pro — alles ohne Limits')}</h4>
-                        <ul>
+                      </section>
+                      <section className="billing-plan billing-plan--pro">
+                        <span className="billing-plan__badge">{tr('7 ДНЕЙ БЕСПЛАТНО', '7 TAGE GRATIS')}</span>
+                        <div className="billing-plan__top">
+                          <h4 className="billing-plan__name"><span className="billing-plan__dia" aria-hidden="true">◆</span> Pro</h4>
+                          <span className="billing-plan__price">292 ⭐ / {tr('мес', 'Monat')}</span>
+                        </div>
+                        <p className="billing-plan__tag">{tr('Всё без дневных лимитов — плюс экстра.', 'Alles ohne Tageslimits — plus die Extras.')}</p>
+                        <ul className="billing-feats">
                           <li>{tr('Переводы, словарь, карточки, тренажёры: без дневных лимитов.', 'Übersetzungen, Wörterbuch, Karten, Übungen: ohne Tageslimits.')}</li>
                           <li>{tr('Читалка: свои книги без ограничений (+ классика и статьи).', 'Reader: eigene Bücher ohne Limit (+ Klassiker und Artikel).')}</li>
                           <li>{tr('YouTube: синхронные русские субтитры.', 'YouTube: synchrone russische Untertitel.')}</li>
-                          <li>{tr('🎭 Загадочная история + 🎧 утренний аудио-разбор ошибок.', '🎭 Rätselgeschichte + 🎧 morgendliche Fehler-Audio.')}</li>
-                          <li>{tr('📊 Аналитика, 🗓 Задачи на день, 📅 План недели, 🗺 Карта слабых навыков с тренировкой.', '📊 Analyse, 🗓 Tagesaufgaben, 📅 Wochenplan, 🗺 Schwache-Skills-Karte mit Training.')}</li>
+                          <li>{tr('Загадочная история + утренний аудио-разбор ошибок.', 'Rätselgeschichte + morgendliche Fehler-Audio.')}</li>
+                          <li>{tr('Аналитика, задачи на день, план недели, карта слабых навыков с тренировкой.', 'Analyse, Tagesaufgaben, Wochenplan, Schwache-Skills-Karte mit Training.')}</li>
                           <li>{tr('Создавать свои дуэли, настраивать расписание, приоритетная обработка.', 'Eigene Duelle erstellen, Plan einstellen, priorisierte Verarbeitung.')}</li>
                           <li>{tr('Задания по расписанию: 12–20/день.', 'Aufgaben nach Plan: 12–20/Tag.')}</li>
                         </ul>
-                      </article>
+                      </section>
                     </div>
-                    <div className="billing-trial-banner">
-                      🔊 <strong>{tr('Озвучка книг — отдельно.', 'Buch-Vertonung — separat.')}</strong>{' '}
-                      {tr('Не входит ни в Free, ни в Pro: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Free noch in Pro: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}
-                    </div>
-                    <button type="button" className="billing-trial-banner billing-trial-banner--tappable billing-stars-cta" onClick={() => setStarsInfoOpen(true)}>
-                      <span className="billing-stars-cta__icon">⭐</span>
-                      <span className="billing-stars-cta__body">
-                        <strong>{tr('Что такое звёзды Telegram?', 'Was sind Telegram-Sterne?')}</strong>
-                        <span className="billing-stars-cta__desc">{tr('Официальная валюта Telegram: безопасно, в пару тапов прямо в приложении.', 'Die offizielle Telegram-Währung: sicher, in wenigen Taps direkt in der App.')}</span>
-                        <span className="billing-stars-cta__pill">{tr('Узнать подробнее', 'Mehr erfahren')} <span aria-hidden="true">→</span></span>
-                      </span>
-                      <span className="billing-stars-cta__chevron" aria-hidden="true">›</span>
-                    </button>
-                    <div className="billing-trial-banner">
-                      🔁 <strong>{tr('Как отменить Pro.', 'Pro kündigen.')}</strong>{' '}
-                      {tr('Pro продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.', 'Pro verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}
-                    </div>
-                    <div className="billing-trial-banner">
-                      🎙 <strong>{tr('Разговорная практика — на доработке.', 'Sprechpraxis — in Arbeit.')}</strong>{' '}
-                      {tr('Раздел временно выключен: оптимизируем, скоро вернём.', 'Vorübergehend deaktiviert: wir optimieren, bald wieder da.')}
+
+                    <div className="billing-notes">
+                      <details className="billing-note" open>
+                        <summary>
+                          <span className="billing-note__ico">🔊</span>
+                          {tr('Озвучка книг — отдельно', 'Buch-Vertonung — separat')}
+                          <span className="billing-note__chev" aria-hidden="true">›</span>
+                        </summary>
+                        <div className="billing-note__body">
+                          <p>{tr('Не входит ни в Free, ни в Pro: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Free noch in Pro: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}</p>
+                        </div>
+                      </details>
+                      <details className="billing-note">
+                        <summary>
+                          <span className="billing-note__ico">⭐</span>
+                          {tr('Что такое звёзды Telegram?', 'Was sind Telegram-Sterne?')}
+                          <span className="billing-note__chev" aria-hidden="true">›</span>
+                        </summary>
+                        <div className="billing-note__body">
+                          <p>{tr('Официальная валюта Telegram: безопасно, в пару тапов прямо в приложении.', 'Die offizielle Telegram-Währung: sicher, in wenigen Taps direkt in der App.')}</p>
+                          <button type="button" className="billing-stars-learn" onClick={() => setStarsInfoOpen(true)}>
+                            {tr('Узнать подробнее', 'Mehr erfahren')} <span aria-hidden="true">→</span>
+                          </button>
+                        </div>
+                      </details>
+                      <details className="billing-note">
+                        <summary>
+                          <span className="billing-note__ico">🔁</span>
+                          {tr('Как отменить Pro', 'Pro kündigen')}
+                          <span className="billing-note__chev" aria-hidden="true">›</span>
+                        </summary>
+                        <div className="billing-note__body">
+                          <p>{tr('Pro продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.', 'Pro verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
+                        </div>
+                      </details>
+                      <details className="billing-note">
+                        <summary>
+                          <span className="billing-note__ico">🎙</span>
+                          {tr('Разговорная практика — на доработке', 'Sprechpraxis — in Arbeit')}
+                          <span className="billing-note__chev" aria-hidden="true">›</span>
+                        </summary>
+                        <div className="billing-note__body">
+                          <p>{tr('Раздел временно выключен: оптимизируем, скоро вернём.', 'Vorübergehend deaktiviert: wir optimieren, bald wieder da.')}</p>
+                        </div>
+                      </details>
                     </div>
                     {billingAccessCards.length > 0 && (
                       <div className="billing-zone billing-zone--access">
