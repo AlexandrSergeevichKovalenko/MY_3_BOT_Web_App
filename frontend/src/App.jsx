@@ -8101,8 +8101,8 @@ function AppInner() {
       eyebrow: tr('Спасибо ☕️', 'Danke ☕️'),
       title: tr('Купить разработчику кофе ☕️', 'Dem Entwickler einen Kaffee ☕️ spendieren'),
       blurb: tr(
-        'Разовое спасибо. Доступ не меняется — это просто помогает оплачивать серверы. Ты получаешь бейдж спонсора и место на стене благодарностей.',
-        'Einmaliges Dankeschön. Der Zugang ändert sich nicht — es hilft nur, die Server zu bezahlen. Du erhältst ein Sponsor-Abzeichen und einen Platz an der Dankeswand.'
+        'В благодарность — 7 дней Pro (полный доступ), бейдж спонсора ☕️ и место на стене благодарностей. И это помогает оплачивать серверы. Оплата в Telegram Stars.',
+        'Als Dank — 7 Tage Pro (voller Zugang), ein Sponsor-Abzeichen ☕️ und ein Platz an der Dankeswand. Und es hilft, die Server zu bezahlen. Zahlung mit Telegram Stars.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -8111,8 +8111,8 @@ function AppInner() {
       eyebrow: tr('Спасибо ☕️🍰', 'Danke ☕️🍰'),
       title: tr('Кофе ☕️ и чизкейк 🍰', 'Kaffee ☕️ und Cheesecake 🍰'),
       blurb: tr(
-        'Разовое спасибо покрупнее. Тоже не меняет доступ — отличается только размером поддержки и более заметным бейджем спонсора на стене благодарностей.',
-        'Ein größeres einmaliges Dankeschön. Ändert ebenfalls nichts am Zugang — nur die Höhe der Unterstützung und ein auffälligeres Sponsor-Abzeichen an der Dankeswand.'
+        'В благодарность — 14 дней Pro (полный доступ), более заметный бейдж спонсора 🍰 и место повыше на стене благодарностей. Сильнее помогает проекту. Оплата в Telegram Stars.',
+        'Als Dank — 14 Tage Pro (voller Zugang), ein auffälligeres Sponsor-Abzeichen 🍰 und ein höherer Platz an der Dankeswand. Hilft dem Projekt stärker. Zahlung mit Telegram Stars.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -8140,14 +8140,20 @@ function AppInner() {
             : String(meta.priceLabel || '').trim(),
           planCode.startsWith('support_'),
         );
-        // Pro is paid in Telegram Stars now → show the ⭐ price, not the Stripe EUR one.
-        // (Rate mirrors backend STARS_PER_EUR=50 / STARS_MARKUP=1.30 — keep in sync.)
-        if (planCode === 'pro') {
-          const eur = Number(item?.amount_value);
-          if (Number.isFinite(eur) && eur > 0) {
-            const stars = Math.max(1, Math.ceil(eur * 1.30 * 50));
-            priceLabel = uiLang === 'de' ? `${stars} ⭐ / Monat` : `${stars} ⭐ / мес`;
-          }
+        // Everything paid is charged in Telegram Stars now (Stripe is retired). The backend sends
+        // `amount_stars` = exactly what the invoice will charge, so show THAT verbatim — never the
+        // Stripe/DB EUR, which is only a loose anchor and could differ from the wallet debit.
+        const stars = Number(item?.amount_stars);
+        const hasStars = Number.isFinite(stars) && stars > 0;
+        if (planCode === 'pro' && hasStars) {
+          priceLabel = uiLang === 'de' ? `${stars} ⭐ / Monat` : `${stars} ⭐ / мес`;
+        }
+        if (planCode.startsWith('support_') && hasStars) {
+          // Approx EUR derived from the SAME stars (÷ markup 1.30 × 50/€) so the anchor always
+          // matches the charge. It's a rough «worth about» — the markup covers Telegram's ~30% cut.
+          const eurApprox = stars / (1.30 * 50);
+          const once = uiLang === 'de' ? 'einmalig' : 'разово';
+          priceLabel = `${stars} ⭐ (≈ ${eurApprox.toFixed(2)} €) · ${once}`;
         }
         return {
           ...item,
@@ -8196,21 +8202,21 @@ function AppInner() {
       support_coffee: {
         title: tr('Кофе ☕️ — поддержка', 'Kaffee ☕️ — Unterstützung'),
         items: [
-          tr('Это разовое спасибо, а не тариф доступа.', 'Das ist ein einmaliges Dankeschön, kein Zugangstarif.'),
-          tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang ändert sich nicht (vollen Zugang gibt das Pro-Abo).'),
+          tr('7 дней Pro в подарок — полный доступ ко всем функциям.', '7 Tage Pro geschenkt — voller Zugang zu allen Funktionen.'),
           tr('Бейдж спонсора ☕️ рядом с твоим именем.', 'Sponsor-Abzeichen ☕️ neben deinem Namen.'),
           tr('Место на стене благодарностей.', 'Ein Platz an der Dankeswand.'),
           tr('Помогает оплачивать серверы и развитие.', 'Hilft, Server und Weiterentwicklung zu bezahlen.'),
+          tr('Разовый платёж в Telegram Stars. Pro-дни добавятся к твоему доступу (у Pro — продлят подписку).', 'Einmalige Zahlung in Telegram Stars. Die Pro-Tage werden deinem Zugang hinzugefügt (bei Pro verlängern sie das Abo).'),
         ],
       },
       support_cheesecake: {
         title: tr('Кофе ☕️ и чизкейк 🍰 — поддержка', 'Kaffee ☕️ und Cheesecake 🍰 — Unterstützung'),
         items: [
-          tr('Это разовое спасибо покрупнее, а не тариф доступа.', 'Das ist ein größeres einmaliges Dankeschön, kein Zugangstarif.'),
-          tr('Доступ к функциям не меняется (полный доступ даёт подписка Pro).', 'Der Funktionszugang ändert sich nicht (vollen Zugang gibt das Pro-Abo).'),
+          tr('14 дней Pro в подарок — полный доступ ко всем функциям.', '14 Tage Pro geschenkt — voller Zugang zu allen Funktionen.'),
           tr('Более заметный бейдж спонсора 🍰 рядом с твоим именем.', 'Auffälligeres Sponsor-Abzeichen 🍰 neben deinem Namen.'),
           tr('Выше место на стене благодарностей.', 'Höherer Platz an der Dankeswand.'),
           tr('Сильнее помогает оплачивать серверы и развитие.', 'Hilft stärker, Server und Weiterentwicklung zu bezahlen.'),
+          tr('Разовый платёж в Telegram Stars. Pro-дни добавятся к твоему доступу (у Pro — продлят подписку).', 'Einmalige Zahlung in Telegram Stars. Die Pro-Tage werden deinem Zugang hinzugefügt (bei Pro verlängern sie das Abo).'),
         ],
       },
     };
@@ -40309,9 +40315,7 @@ function AppInner() {
                         <div className="billing-zone__head">
                           <h3 className="billing-zone__title">{tr('Поддержать проект ❤️', 'Projekt unterstützen ❤️')}</h3>
                           <p className="billing-zone__hint">
-                            {readerAudioPremiumEnabled
-                              ? tr('У тебя уже есть полный доступ. Это — способ сказать спасибо и помочь оплачивать серверы и развитие. Разовый платёж, доступ не меняется.', 'Du hast bereits vollen Zugang. Das ist eine Möglichkeit, Danke zu sagen und Server und Weiterentwicklung mitzufinanzieren. Einmalige Zahlung, der Zugang ändert sich nicht.')
-                              : tr('Это необязательно: полный доступ открывает подписка Pro выше. А здесь — просто способ поблагодарить проект разовым платежом (доступ не меняется).', 'Optional: vollen Zugang gibt das Pro-Abo oben. Hier kannst du dich einfach mit einer einmaligen Zahlung bedanken (der Zugang ändert sich nicht).')}
+                            {tr('Поддержать может любой — и на Free, и на Pro. За кофе даём 7 дней Pro в подарок, за кофе с чизкейком — 14 дней. Плюс бейдж спонсора и место на стене благодарностей. Разовый платёж в Telegram Stars.', 'Unterstützen kann jeder — ob Free oder Pro. Für einen Kaffee gibt es 7 Tage Pro geschenkt, für Kaffee mit Cheesecake 14 Tage. Dazu ein Sponsor-Abzeichen und ein Platz an der Dankeswand. Einmalige Zahlung in Telegram Stars.')}
                           </p>
                         </div>
                         {billingStatus?.is_sponsor && (

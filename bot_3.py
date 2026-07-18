@@ -34762,13 +34762,17 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
         except Exception:
             logging.exception("stars pro grant failed charge=%s", charge_id)
     elif purpose in ("support_coffee", "support_cheesecake"):
-        # One-time "thank you" donation — no access change, just a sponsor badge + a place on
-        # the wall of thanks. `purpose` IS the tier (kept out of the 128-byte Stars payload).
+        # One-time "thank you" donation. Besides the sponsor badge + wall of thanks, it now GRANTS
+        # bonus Pro days: coffee → 7, cheesecake → 14. grant_pro_days stacks on any active grant and
+        # banks onto an active PAID period (so a Pro subscriber's days extend, not burn concurrently).
+        # `purpose` IS the tier (kept out of the 128-byte Stars payload).
+        _support_pro_days = {"support_coffee": 7, "support_cheesecake": 14}
         try:
-            from backend.database import record_sponsorship
+            from backend.database import record_sponsorship, grant_pro_days
+            _uid = int(payload.get("user_id") or uid)
             _name = str(getattr(user, "first_name", "") or "").strip() or None
             record_sponsorship(
-                int(payload.get("user_id") or uid),
+                _uid,
                 purpose,
                 amount_minor=int(stars),          # magnitude in Stars (currency XTR)
                 currency="XTR",
@@ -34776,11 +34780,21 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
                 # Reuse the UNIQUE checkout-session column as the Stars idempotency key.
                 stripe_checkout_session_id=f"stars_{charge_id}",
             )
+            _days = _support_pro_days.get(purpose, 0)
+            _pro_granted = False
+            if _days > 0:
+                _pro_granted = bool(grant_pro_days(_uid, days=_days, reason=purpose))
             _thanks = ("Спасибо за кофе ☕️" if purpose == "support_coffee"
                        else "Спасибо за кофе и чизкейк ☕️🍰")
-            await msg.reply_text(
-                f"{_thanks} Ты в стене благодарностей — это правда помогает оплачивать серверы. 🙏"
-            )
+            if _pro_granted:
+                await msg.reply_text(
+                    f"{_thanks} В подарок — {_days} дней Pro (уже начислены), плюс ты в стене благодарностей. "
+                    f"Это правда помогает оплачивать серверы. 🙏"
+                )
+            else:
+                await msg.reply_text(
+                    f"{_thanks} Ты в стене благодарностей — это правда помогает оплачивать серверы. 🙏"
+                )
         except Exception:
             logging.exception("stars support grant failed charge=%s", charge_id)
     else:
@@ -34829,6 +34843,8 @@ async def admin_reset_subs_command(update: Update, context: CallbackContext) -> 
         "welcome_trial": "7-дн. триал",
         "admin_test": "выдан вручную",
         "streak": "за streak",
+        "support_coffee": "донат ☕️",
+        "support_cheesecake": "донат ☕️🍰",
     }
 
     def _fmt(uid: int) -> str:
@@ -34936,7 +34952,7 @@ async def admin_subs_command(update: Update, context: CallbackContext) -> None:
     all_ids = {u for u in all_ids if not _is_synthetic(u)}
     allowed_ids = {u for u in allowed_ids if not _is_synthetic(u)}
 
-    _reason_label = {"welcome_trial": "7-дн. триал", "admin_test": "выдан вручную", "streak": "за streak"}
+    _reason_label = {"welcome_trial": "7-дн. триал", "admin_test": "выдан вручную", "streak": "за streak", "support_coffee": "донат ☕️", "support_cheesecake": "донат ☕️🍰"}
 
     def _nm(uid: int) -> str:
         return dnames.get(int(uid)) or allowed_name.get(int(uid)) or "—"

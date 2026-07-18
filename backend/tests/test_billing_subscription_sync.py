@@ -227,12 +227,15 @@ class BillingSubscriptionSyncTests(unittest.TestCase):
 
         with patch.object(server, "_sync_user_subscription_from_live_stripe", return_value=subscription), \
              patch.object(server, "_resolve_user_entitlement", return_value=(entitlement, subscription)), \
+             patch.object(server, "STRIPE_BILLING_ENABLED", True), \
              patch.object(server, "get_today_cost_eur_fast", return_value=0.0):
             payload, meta = server._build_billing_status_response_payload(user_id=77)
 
         self.assertEqual(payload["effective_mode"], "pro")
         self.assertEqual(payload["status"], "active")
         self.assertFalse(payload["upgrade"]["available"])
+        # Billing portal is offered only while Stripe billing is live (it's retired in prod →
+        # managing a Stars subscription happens in Telegram, so the button is hidden there).
         self.assertTrue(payload["manage"]["available"])
         self.assertEqual(meta["effective_mode"], "pro")
 

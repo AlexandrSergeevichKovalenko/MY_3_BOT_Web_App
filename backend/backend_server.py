@@ -31222,7 +31222,11 @@ def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]
             "endpoint": "/api/billing/create-checkout-session",
         },
         "manage": {
-            "available": has_billing_portal_context,
+            # Stripe billing portal only. With Stripe retired (STRIPE_BILLING_ENABLED off) there is
+            # no portal to open — the button would always 403 — so hide it. Managing/cancelling a
+            # Stars subscription happens in Telegram itself, which the «🔁 Как отменить Pro» banner
+            # already explains on this screen.
+            "available": bool(has_billing_portal_context and STRIPE_BILLING_ENABLED),
             "endpoint": "/api/billing/create-portal-session",
         },
     }
@@ -32516,6 +32520,16 @@ def get_billing_plans():
                 for item in plans:
                     is_paid = bool(item.get("is_paid"))
                     stripe_price_id = item.get("stripe_price_id") if is_paid else None
+                    # Authoritative price the Stars invoice actually charges (Stripe is retired, so
+                    # the live/DB EUR snapshot below is only a display anchor). Frontend shows this ⭐
+                    # figure verbatim so «what you see» == «what Telegram charges».
+                    _plan_code_lc = str(item.get("plan_code") or "").strip().lower()
+                    if _plan_code_lc == "pro":
+                        amount_stars = pro_price_stars()
+                    elif _plan_code_lc in SUPPORT_TIER_EUR_MINOR:
+                        amount_stars = support_price_stars(_plan_code_lc)
+                    else:
+                        amount_stars = None
                     live_price = _get_live_billing_price_snapshot(stripe_price_id) if is_paid else {
                         "amount_minor": None,
                         "amount_value": None,
@@ -32535,6 +32549,7 @@ def get_billing_plans():
                             "is_active": bool(item.get("is_active")),
                             "amount_minor": live_price.get("amount_minor"),
                             "amount_value": live_price.get("amount_value"),
+                            "amount_stars": amount_stars,
                             "currency": live_price.get("currency"),
                             "recurring_interval": live_price.get("recurring_interval"),
                             "recurring_interval_count": live_price.get("recurring_interval_count"),
@@ -51638,7 +51653,7 @@ def billing_stars_invoice():
       • plan_code='pro' → monthly Stars SUBSCRIPTION; the bot grants Pro on successful_payment
         and on each auto-renewal.
       • plan_code='support_coffee' | 'support_cheesecake' → ONE-TIME "thank you" donation; the
-        bot records the sponsor on successful_payment (access is unchanged).
+        bot records the sponsor AND grants bonus Pro days (7 / 14) on successful_payment.
     No external browser, no multi-window."""
     payload = request.get_json(silent=True) or {}
     init_data = str(payload.get("initData") or "").strip()
@@ -51665,8 +51680,9 @@ def billing_stars_invoice():
     elif plan_code in SUPPORT_TIER_EUR_MINOR:
         stars = support_price_stars(plan_code)
         _title = "Кофе разработчику ☕️" if plan_code == "support_coffee" else "Кофе ☕️ и чизкейк 🍰"
-        _desc = ("Разовое спасибо — доступ не меняется, это помогает оплачивать серверы. "
-                 "Ты получишь бейдж спонсора и место на стене благодарностей.")
+        _pro_days = 7 if plan_code == "support_coffee" else 14
+        _desc = (f"Разовое спасибо — в подарок {_pro_days} дней Pro (полный доступ), бейдж спонсора "
+                 "и место на стене благодарностей. И это помогает оплачивать серверы.")
         link, detail = create_stars_invoice_link(
             title=_title,
             description=_desc,
