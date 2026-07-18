@@ -30988,21 +30988,24 @@ def select_webapp_analytics_scope():
                 chat_type=context.get("chat_type") or payload.get("chat_type"),
                 chat_title=payload.get("chat_title") or context.get("chat_title"),
             )
-            confirmed_groups = list_webapp_group_contexts(
+            # Group mode is available to anyone the bot has SEEN in the group — no
+            # explicit button confirmation required (the upsert just above records
+            # this user as a seen member of scope_chat_id).
+            seen_groups = list_webapp_group_contexts(
                 user_id=int(user_id),
                 limit=200,
-                only_confirmed=True,
+                only_confirmed=False,
             )
-            confirmed_group_ids = {
+            seen_group_ids = {
                 int(item.get("chat_id"))
-                for item in confirmed_groups
+                for item in seen_groups
                 if item.get("chat_id") is not None
             }
-            if int(scope_chat_id) not in confirmed_group_ids:
+            if int(scope_chat_id) not in seen_group_ids:
                 return jsonify(
                     {
-                        "error": "Подтвердите участие в группе в Telegram, чтобы включить групповой режим.",
-                        "code": "group_participation_not_confirmed",
+                        "error": "Вы не участник этой группы.",
+                        "code": "group_not_a_member",
                         "scope_chat_id": int(scope_chat_id),
                     }
                 ), 403
@@ -31014,7 +31017,7 @@ def select_webapp_analytics_scope():
         known_groups = list_webapp_group_contexts(
             user_id=int(user_id),
             limit=50,
-            only_confirmed=True,
+            only_confirmed=False,
         )
         if (
             str(saved_scope.get("scope_kind")) == "group"
@@ -31555,7 +31558,7 @@ def _resolve_analytics_scope_for_request_uncached(
     known_groups = list_webapp_group_contexts(
         user_id=int(user_id),
         limit=200,
-        only_confirmed=True,
+        only_confirmed=False,
     )
     known_group_by_chat_id: dict[int, dict] = {
         int(item.get("chat_id")): item
