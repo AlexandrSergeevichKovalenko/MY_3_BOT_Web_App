@@ -3767,10 +3767,25 @@ const TranslationsSection = React.memo(function TranslationsSection({
     return lines.join('\n');
   };
 
+  // ≥700: рейл настройки можно сворачивать (☰), чтобы поле ввода растянулось на всю ширину.
+  const [railCollapsed, setRailCollapsed] = useState(false);
+
   return (
     <PerfProfiler id="section.translations">
-      <section className="webapp-section webapp-section-translations" ref={translationsRef}>
+      <section className={`webapp-section webapp-section-translations ${railCollapsed ? 'is-rail-collapsed' : ''}`} ref={translationsRef}>
         <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
+          {isWideLayout && (
+            <button
+              type="button"
+              className="tr-rail-toggle"
+              onClick={() => setRailCollapsed((v) => !v)}
+              title={railCollapsed ? tr('Показать настройку', 'Einstellungen zeigen') : tr('Скрыть настройку', 'Einstellungen ausblenden')}
+              aria-label={railCollapsed ? tr('Показать настройку', 'Einstellungen zeigen') : tr('Скрыть настройку', 'Einstellungen ausblenden')}
+              aria-pressed={!railCollapsed}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+            </button>
+          )}
           <div className="translations-title-main">
             <h2>{tr('Ваши переводы', 'Ihre Übersetzungen')}</h2>
           </div>
@@ -5896,6 +5911,26 @@ function AppInner() {
     setYoutubeMuted((prev) => {
       const next = !prev;
       applyYoutubeVolume(youtubeVolume || 60, next);
+      return next;
+    });
+  };
+  // Родные субтитры YouTube (CC). По умолчанию ВЫКЛ — у нас свой overlay DE/RU,
+  // иначе на экране дублируются двое субтитров. Тумблер — в меню ⚙ панели.
+  const [youtubeNativeCcOn, setYoutubeNativeCcOn] = useState(false);
+  const youtubeNativeCcOnRef = useRef(false);
+  const applyYoutubeNativeCc = (on) => {
+    const p = youtubePlayerRef.current;
+    if (!p) return;
+    try {
+      if (on) { p.loadModule?.('captions'); p.loadModule?.('cc'); }
+      else { p.unloadModule?.('captions'); p.unloadModule?.('cc'); }
+    } catch (e) { /* ignore */ }
+  };
+  const toggleYoutubeNativeCc = () => {
+    setYoutubeNativeCcOn((prev) => {
+      const next = !prev;
+      youtubeNativeCcOnRef.current = next;
+      applyYoutubeNativeCc(next);
       return next;
     });
   };
@@ -27872,6 +27907,11 @@ function AppInner() {
                 </button>
               )}
               <div className="ypb-menu-sep" aria-hidden="true" />
+              <button type="button" className={`ypb-menu-item ${youtubeNativeCcOn ? 'is-active' : ''}`} onClick={() => { toggleYoutubeNativeCc(); }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="3" /><path d="M8.5 10.5a2 2 0 1 0 0 3M15.5 10.5a2 2 0 1 0 0 3" /></svg>
+                {tr('Субтитры YouTube (CC)', 'YouTube-Untertitel (CC)')}: {youtubeNativeCcOn ? tr('вкл', 'an') : tr('выкл', 'aus')}
+              </button>
+              <div className="ypb-menu-sep" aria-hidden="true" />
               <button type="button" className="ypb-menu-item" onClick={() => { setYoutubeSettingsOpen(true); setYoutubeBarMenuOpen(false); }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></svg>
                 {tr('Все настройки', 'Alle Einstellungen')}
@@ -31113,6 +31153,7 @@ function AppInner() {
               // ignore
             }
             startTimePolling();
+            applyYoutubeNativeCc(youtubeNativeCcOnRef.current);
           },
           onStateChange: (stateEvent) => {
             const state = stateEvent?.data;
@@ -31133,6 +31174,8 @@ function AppInner() {
               setYoutubeIsPaused(false);
               setYoutubePlaybackStarted(true);
               setYoutubeForceShowPanel(false);
+              // YouTube иногда сам подгружает CC при старте — гасим их, если тумблер выкл.
+              applyYoutubeNativeCc(youtubeNativeCcOnRef.current);
               if (youtubeNewsMode) {
                 // On play: pull the player to the very top (the stepper hides) so the max
                 // amount of DE + RU subtitles fits below — no manual scroll needed.
@@ -34951,7 +34994,17 @@ function AppInner() {
                               <span className="youtube-iconbtn-lbl">{youtubeSearchLoading ? tr('Ищем…', 'Suchen…') : tr('Искать', 'Suchen')}</span>
                             </button>
                           )}
-                          {/* Словарь убран: слова в субтитрах кликабельны и переводятся на месте. */}
+                          {/* Словарь рядом — ручной поиск слова (нужен, когда у видео нет субтитров). */}
+                          <button
+                            type="button"
+                            className={`youtube-iconbtn youtube-dock-dict-btn ${youtubeDictOpen ? 'is-active' : ''}`}
+                            onClick={() => setYoutubeDictOpen((prev) => !prev)}
+                            title={tr('Словарь рядом', 'Wörterbuch daneben')}
+                            aria-label={tr('Словарь рядом', 'Wörterbuch daneben')}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+                            <span className="youtube-iconbtn-lbl">{tr('Словарь', 'Wörterbuch')}</span>
+                          </button>
                         </div>
 
                         <span className="youtube-dock-divider" aria-hidden="true" />
@@ -35124,7 +35177,16 @@ function AppInner() {
                               </button>
                             )}
                             {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
-                            {/* Словарь убран: слова в субтитрах кликабельны и переводятся на месте. */}
+                            {/* Словарь рядом — ручной поиск слова (нужен, когда у видео нет субтитров). */}
+                            <button
+                              type="button"
+                              className={`youtube-dock-icon-btn youtube-head-dict-btn ${youtubeDictOpen ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeDictOpen((prev) => !prev)}
+                              aria-label={tr('Словарь', 'Wörterbuch')}
+                              title={tr('Словарь', 'Wörterbuch')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+                            </button>
                             <button
                               type="button"
                               className="youtube-dock-icon-btn youtube-head-settings-btn"

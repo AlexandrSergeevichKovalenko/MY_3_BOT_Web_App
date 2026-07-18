@@ -22124,6 +22124,45 @@ body.worldnews-active .webapp-topbar {
     grid-column: 2; min-width: 0;
     display: flex; flex-direction: column; gap: 16px;
   }
+  /* ☰ свёрнут → рейл скрыт, рабочая область на всю ширину (как сайдбар в GPT/Gemini) */
+  .webapp-section.webapp-section-translations.is-rail-collapsed:has(.tr-config-card) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .webapp-section.webapp-section-translations.is-rail-collapsed > .tr-rail {
+    display: none;
+  }
+  .webapp-section.webapp-section-translations.is-rail-collapsed:has(.tr-config-card) > .tr-workspace {
+    grid-column: 1;
+  }
+}
+
+/* Кнопка-«гамбургер» сворачивания рейла настройки (только ≥700; рендерится в JSX
+   лишь на широком экране). */
+.webapp-section-translations .tr-rail-toggle {
+  position: absolute;
+  top: 4px;
+  right: 66px;
+  z-index: 3;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid var(--tr-border, #334155);
+  background: var(--tr-bg-card-alt, #0b1220);
+  color: var(--tr-text-secondary, #cbd5e1);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.webapp-section-translations .tr-rail-toggle svg { width: 20px; height: 20px; }
+.webapp-section-translations .tr-rail-toggle:hover {
+  background: var(--tr-bg-hover, #1f2937);
+  color: var(--tr-text-primary, #f8fafc);
+}
+.webapp-section-translations.is-rail-collapsed .tr-rail-toggle {
+  border-color: var(--tr-primary, #2563eb);
+  color: var(--tr-primary, #2563eb);
 }
 
 .webapp-section.webapp-section-translations .translations-title-main {
