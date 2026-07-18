@@ -22138,11 +22138,14 @@ body.worldnews-active .webapp-topbar {
 
 /* Кнопка-«гамбургер» сворачивания рейла настройки (только ≥700; рендерится в JSX
    лишь на широком экране). */
+/* ☰ слева от заголовка «Ihre Übersetzungen» */
+.webapp-section-translations .translations-title-row:has(.tr-rail-toggle) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .webapp-section-translations .tr-rail-toggle {
-  position: absolute;
-  top: 4px;
-  right: 66px;
-  z-index: 3;
+  flex: 0 0 auto;
   width: 40px;
   height: 40px;
   display: inline-flex;
