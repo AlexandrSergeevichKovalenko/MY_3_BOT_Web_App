@@ -525,8 +525,8 @@ function StepBody(props) {
           <ul className="ob-list">
             <li>
               <b>{t('🚀 Как завести', '🚀 So legst du los')}</b>
-              {t(' — создай группу в Telegram и добавь в неё нашего бота. Бот сам пришлёт и закрепит сообщение с кнопкой «Получать задания здесь» — каждый, кто нажмёт, попадает в итоги и сравнение этой группы.',
-                 ' — erstelle eine Telegram-Gruppe und füge unseren Bot hinzu. Der Bot schickt und pinnt selbst eine Nachricht mit dem Knopf «Aufgaben hier bekommen» — wer tippt, kommt in die Ergebnisse und den Vergleich dieser Gruppe.')}
+              {t(' — создай группу в Telegram и добавь в неё нашего бота. Он сам подхватит всех участников — никому ничего подтверждать не нужно. А кнопкой «Получать задания здесь» (бот закрепит её сам) можно включить, чтобы твои ежедневные задания приходили прямо в группу, а не в личку.',
+                 ' — erstelle eine Telegram-Gruppe und füge unseren Bot hinzu. Er erfasst alle Teilnehmer automatisch — niemand muss etwas bestätigen. Mit dem Knopf «Aufgaben hier bekommen» (der Bot pinnt ihn selbst) kannst du einstellen, dass deine täglichen Aufgaben direkt in die Gruppe kommen statt in den privaten Chat.')}
             </li>
             <li>
               <b>{t('🏅 Итоги дня и недели — прямо в чат', '🏅 Tages- und Wochenergebnisse — direkt in den Chat')}</b>

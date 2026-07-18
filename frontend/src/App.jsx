@@ -6967,6 +6967,7 @@ function AppInner() {
   const youtubeSuppressSentenceTapRef = useRef(0);
   const youtubeDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
   const youtubeDictWidgetRef = useRef(null);
+  const youtubeDictKbCleanupRef = useRef(null);
   const translationDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
   const translationDictWidgetRef = useRef(null);
   // Cleanup for the visualViewport listeners that keep the floating dict above the keyboard
@@ -27297,6 +27298,52 @@ function AppInner() {
     }
   };
 
+  // Keyboard handling for the floating YouTube dictionary — mirror of the Translations
+  // widget. The input is tagged data-floating-dict-input="true" so the shared page-field
+  // logic (--app-height shrink + scrollIntoView centering) leaves the player alone; these
+  // handlers lift the bottom-anchored widget above the on-screen keyboard from visualViewport.
+  const positionYoutubeDictAboveKeyboard = () => {
+    const el = youtubeDictWidgetRef.current;
+    if (!el) return;
+    const drag = youtubeDictDragRef.current;
+    if (drag?.dragging || drag?.moved) return; // don't fight an active/finished drag
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    const layoutH = (typeof window !== 'undefined' && window.innerHeight) || 0;
+    let availHeight = vv ? Math.round(vv.height) : layoutH;
+    if (!availHeight || (layoutH && availHeight < layoutH * 0.35)) {
+      availHeight = Math.round((layoutH || availHeight || 600) * 0.52); // keyboard ≈ half the screen
+    }
+    let availTop = vv ? Math.round(vv.offsetTop) : 0;
+    if (!Number.isFinite(availTop) || availTop < 0) availTop = 0;
+    el.style.top = `${availTop + 10}px`;
+    el.style.bottom = 'auto';
+    el.style.maxHeight = `${Math.max(240, availHeight - 20)}px`;
+  };
+  const liftYoutubeDictForKeyboard = () => {
+    if (youtubeDictDragRef.current) youtubeDictDragRef.current.moved = false;
+    positionYoutubeDictAboveKeyboard();
+    const t1 = window.setTimeout(positionYoutubeDictAboveKeyboard, 120);
+    const t2 = window.setTimeout(positionYoutubeDictAboveKeyboard, 350);
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    vv?.addEventListener('resize', positionYoutubeDictAboveKeyboard);
+    vv?.addEventListener('scroll', positionYoutubeDictAboveKeyboard);
+    youtubeDictKbCleanupRef.current = () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      vv?.removeEventListener('resize', positionYoutubeDictAboveKeyboard);
+      vv?.removeEventListener('scroll', positionYoutubeDictAboveKeyboard);
+    };
+  };
+  const dropYoutubeDictAfterKeyboard = () => {
+    youtubeDictKbCleanupRef.current?.();
+    youtubeDictKbCleanupRef.current = null;
+    const el = youtubeDictWidgetRef.current;
+    if (!el) return;
+    el.style.top = '';
+    el.style.bottom = '';
+    el.style.maxHeight = '';
+  };
+
   const renderClickableText = (text, options = {}) => {
     const className = options.className || 'clickable-word';
     const compact = Boolean(options.compact);
@@ -35964,9 +36011,12 @@ function AppInner() {
                             </svg>
                             <input
                               className="yt-dict-input"
+                              data-floating-dict-input="true"
                               value={youtubeDictQuery}
                               onChange={(e) => setYoutubeDictQuery(e.target.value)}
                               onKeyDown={(e) => { if (e.key === 'Enter') lookupYoutubeDict(youtubeDictQuery); }}
+                              onFocus={liftYoutubeDictForKeyboard}
+                              onBlur={dropYoutubeDictAfterKeyboard}
                               placeholder={tr('Слово для поиска…', 'Wort suchen…')}
                               autoFocus={false}
                             />

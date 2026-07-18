@@ -31610,7 +31610,7 @@ def _resolve_analytics_scope_for_request_uncached(
         member_user_ids = list_webapp_group_member_user_ids(
             chat_id=int(effective_chat_id),
             limit=5000,
-            only_confirmed=True,
+            only_confirmed=False,
         )
         if int(user_id) not in member_user_ids:
             member_user_ids = [int(user_id), *member_user_ids]
@@ -56625,7 +56625,7 @@ def run_analytics_snapshot_precompute_job(*, user_ids: list[int] | None = None) 
         if chat_id == 0:
             continue
         try:
-            members = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=True)
+            members = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
         except Exception:
             logging.warning("analytics_snapshot_job: group members failed chat_id=%s", chat_id, exc_info=True)
             continue
@@ -57329,7 +57329,7 @@ def _dispatch_daily_group_summary(*, target_date: date, tz_name: str = TODAY_PLA
             continue
         groups += 1
         try:
-            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=True)
+            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
             rows = _fetch_group_daily_summary_rows(target_date=target_date, cohort_user_ids=member_user_ids)
             labeled_rows = _apply_group_summary_labels(rows)
             text = _format_group_daily_summary_message(target_date=target_date, rows=labeled_rows)
@@ -57387,7 +57387,7 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
             continue
         groups += 1
         try:
-            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=True)
+            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
             rows = _fetch_group_weekly_summary_rows(
                 week_start=bounds.start_date,
                 week_end=bounds.end_date,
