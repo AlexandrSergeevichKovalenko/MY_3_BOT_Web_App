@@ -14064,16 +14064,19 @@ def list_webapp_group_member_user_ids(
     return result
 
 
-def list_confirmed_group_participants(chat_id: int) -> list[int]:
-    """User ids who confirmed participation in a given group (for the group daily
-    report). Empty list if none."""
+def list_group_participants(chat_id: int) -> list[int]:
+    """All user ids the bot has SEEN in a given group (for the group daily/weekly
+    posters). No button confirmation required — if the bot saw you in the group,
+    you count as a participant. Groups retired as dead by deactivate_group_chat
+    (source='auto_group_dead') are excluded. Empty list if none."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT DISTINCT user_id
                 FROM bt_3_webapp_group_contexts
-                WHERE chat_id = %s AND participation_confirmed = TRUE AND user_id > 0
+                WHERE chat_id = %s AND user_id > 0
+                  AND participation_confirmed_source IS DISTINCT FROM 'auto_group_dead'
                 """,
                 (int(chat_id),),
             )

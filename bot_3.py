@@ -371,7 +371,7 @@ from backend.database import (
     mark_challenge_notification_sent,
     set_challenge_notification_message_id,
     get_challenge_results_since,
-    list_confirmed_group_participants,
+    list_group_participants,
     create_aufgabe,
     count_available_aufgaben,
     pick_next_aufgabe,
@@ -30553,7 +30553,7 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
         if chat_id == 0:
             continue
         try:
-            participants = set(await asyncio.to_thread(list_confirmed_group_participants, chat_id))
+            participants = set(await asyncio.to_thread(list_group_participants, chat_id))
         except Exception:
             participants = set()
         if not participants:
@@ -30758,17 +30758,17 @@ async def _collect_all_group_participant_ids(context: CallbackContext) -> set[in
         if chat_id == 0:
             continue
         try:
-            ids |= set(int(u) for u in await asyncio.to_thread(list_confirmed_group_participants, chat_id))
+            ids |= set(int(u) for u in await asyncio.to_thread(list_group_participants, chat_id))
         except Exception:
             continue
     return ids
 
 
 async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int) -> int:
-    """Post each group's WEEKLY champion poster INTO the group, scoped to that
-    group's confirmed participants only (mirrors the daily group report, 7-day
-    window). Outsiders / other-group users are never pulled in — the global
-    ranking lives only behind the Mini-App button."""
+    """Post each group's WEEKLY champion poster INTO the group, scoped to every
+    member the bot has SEEN in that group (mirrors the daily group report, 7-day
+    window; no button confirmation required). Outsiders / other-group users are
+    never pulled in — the global ranking lives only behind the Mini-App button."""
     try:
         rows = await asyncio.to_thread(_get_leaderboard_rows_since, 7 * 24)
     except Exception:
@@ -30799,7 +30799,7 @@ async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int
         if chat_id == 0:
             continue
         try:
-            participants = set(await asyncio.to_thread(list_confirmed_group_participants, chat_id))
+            participants = set(await asyncio.to_thread(list_group_participants, chat_id))
         except Exception:
             participants = set()
         if not participants:
