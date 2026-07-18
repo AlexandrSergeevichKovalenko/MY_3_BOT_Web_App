@@ -16510,11 +16510,15 @@ body.worldnews-active .webapp-topbar {
 
   /* ===== панель управления (Puzzle) ===== */
   .youtube-puzzle-bar {
-    display: flex; align-items: center; gap: 9px;
+    display: flex; align-items: center; justify-content: center; gap: 9px;
     padding: 8px 12px; border-radius: 18px;
     background: var(--d-panel); border: 1px solid var(--d-border); box-shadow: var(--d-shadow);
-    flex-wrap: nowrap;
+    /* На узком (планшет-портрет) элементы не влезают в одну строку → разрешаем перенос,
+       чтобы кнопки не вылезали за край. На широком всё и так помещается в один ряд. */
+    flex-wrap: wrap; row-gap: 8px;
   }
+  /* Скраббер при переносе уходит на свою строку во всю ширину — так аккуратнее. */
+  .youtube-puzzle-bar .ypb-scrub { flex: 1 1 240px; }
   .youtube-puzzle-bar .ypb-divider { flex: 0 0 auto; width: 1px; height: 26px; background: var(--d-border); }
 
   .youtube-puzzle-bar .ypb-font {
@@ -17289,6 +17293,12 @@ body.worldnews-active .webapp-topbar {
   pointer-events: none;
   display: grid;
   gap: 10px;
+}
+
+/* Puzzle-режим: поднимаем наши субтитры выше от нижнего края (иначе нижняя RU-строка
+   упиралась/обрезалась краем видео). ~на 1 см выше. */
+.webapp-video.youtube-player-first.is-puzzle-mode .youtube-subtitles-overlay {
+  bottom: clamp(44px, 10%, 96px);
 }
 
 .webapp-video.youtube-player-first .youtube-subtitles-overlay.is-paused-history {
