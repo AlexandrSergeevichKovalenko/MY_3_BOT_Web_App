@@ -73,6 +73,7 @@ from backend.background_jobs import (  # noqa: E402
     run_private_analytics_scheduler_actor,
     run_weekly_goals_scheduler_actor,
     run_daily_group_summary_scheduler_actor,
+    run_stars_refund_reconcile_actor,
     run_weekly_group_summary_scheduler_actor,
     run_today_plan_scheduler_actor,
     run_today_evening_reminders_scheduler_actor,
@@ -254,6 +255,10 @@ def _dispatch_weekly_goals() -> None:
 
 def _dispatch_daily_group_summary() -> None:
     run_daily_group_summary_scheduler_actor.send()
+
+
+def _dispatch_stars_refund_reconcile() -> None:
+    run_stars_refund_reconcile_actor.send()
 
 
 def _dispatch_weekly_group_summary() -> None:
@@ -682,6 +687,19 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,
+        )
+
+    # -- Stars refund reconcile (daily safety net for refunds that bypass /refund_star) --
+    if _enabled("STARS_REFUND_RECONCILE_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_stars_refund_reconcile,
+            "cron",
+            hour=_int_env("STARS_REFUND_RECONCILE_HOUR", 4),
+            minute=_int_env("STARS_REFUND_RECONCILE_MINUTE", 20),
+            timezone=_tz(os.getenv("STARS_REFUND_RECONCILE_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
 
     # -- System message cleanup --

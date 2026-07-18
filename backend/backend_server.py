@@ -57433,6 +57433,83 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
     }
 
 
+def _run_stars_refund_reconcile_job() -> None:
+    """Daily safety net: catch Stars refunds that never went through /refund_star (a
+    Telegram-side or support refund sends the bot NO event) and claw back the perks they'd
+    otherwise leave in place — closing the "pay → refund → keep Pro" loophole.
+
+    Source of truth is Telegram's own ledger (getStarTransactions), NOT an event we must
+    receive. A refund appears there as an OUTGOING transaction whose id EQUALS the original
+    charge id, so we intersect the ledger's outgoing ids with our still-active fulfilled
+    charges and revoke each match. Idempotent; safe to re-run."""
+    from backend.database import (
+        list_unrefunded_star_payments, mark_star_payment_refunded,
+        revoke_star_payment_fulfillment, get_admin_telegram_ids,
+    )
+    from backend.telegram_notify import _send_private_message
+    token = TELEGRAM_Deutsch_BOT_TOKEN
+    if not token:
+        logging.warning("stars refund reconcile: no bot token"); return
+    ours = {p["charge_id"]: p for p in list_unrefunded_star_payments() if p.get("charge_id")}
+    if not ours:
+        return
+    refunded_ids: set[str] = set()
+    offset = 0
+    for _page in range(5):  # up to ~500 recent ledger entries
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{token}/getStarTransactions",
+                params={"offset": offset, "limit": 100}, timeout=20,
+            )
+            body = resp.json()
+        except Exception:
+            logging.warning("stars refund reconcile: ledger fetch failed", exc_info=True); break
+        if not body.get("ok"):
+            logging.warning("stars refund reconcile: ledger error %s", body.get("description")); break
+        txns = (body.get("result") or {}).get("transactions") or []
+        if not txns:
+            break
+        for t in txns:
+            # OUTGOING (no incoming `source`) = refund/withdrawal; its id == the original
+            # charge id. Only ids matching OUR fulfilled charges are refunds we must undo.
+            if not isinstance(t.get("source"), dict):
+                tid = str(t.get("id") or "")
+                if tid in ours:
+                    refunded_ids.add(tid)
+        offset += len(txns)
+        if len(txns) < 100:
+            break
+    if not refunded_ids:
+        return
+    revoked: list[tuple] = []
+    for cid in refunded_ids:
+        try:
+            mark_star_payment_refunded(cid)
+            res = revoke_star_payment_fulfillment(cid)
+            revoked.append((ours[cid], res))
+        except Exception:
+            logging.warning("stars refund reconcile: revoke failed charge=%s", cid, exc_info=True)
+    if not revoked:
+        return
+    lines = ["🔁 <b>Реконсиляция возвратов Stars</b>",
+             "Найдены возвраты мимо /refund_star — перки отозваны:"]
+    for p, res in revoked:
+        undone = []
+        if res.get("grants_removed"): undone.append("Pro-дни")
+        if res.get("sponsor_removed"): undone.append("спонсор")
+        if res.get("subscription_reverted"): undone.append("Pro-подписка")
+        if res.get("book_audio_revoked"): undone.append("озвучка")
+        lines.append(f"• user {p['user_id']} · {p.get('purpose') or '—'} · {p.get('stars')}⭐ → "
+                     + (", ".join(undone) or "нечего отзывать"))
+    text = "\n".join(lines)
+    for admin_id in get_admin_telegram_ids():
+        try:
+            _send_private_message(int(admin_id), text, parse_mode="HTML")
+        except Exception:
+            logging.warning("stars refund reconcile: admin DM failed id=%s", admin_id, exc_info=True)
+    logging.info("stars refund reconcile: revoked %d refunded charge(s)", len(revoked))
+
+
 def _run_daily_group_summary_scheduler_job() -> None:
     tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
     target_date = _get_local_today_date(tz_name)

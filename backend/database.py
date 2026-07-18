@@ -29641,6 +29641,28 @@ def mark_star_payment_refunded(charge_id: str) -> bool:
         return False
 
 
+def list_unrefunded_star_payments(limit: int = 500) -> list[dict]:
+    """Fulfilled Stars charges we have NOT yet marked refunded — the candidates a daily
+    reconcile job checks against Telegram's ledger to catch refunds that bypassed
+    /refund_star (Telegram-side / support). Newest first."""
+    out: list[dict] = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT telegram_payment_charge_id, user_id, purpose, stars "
+                    "FROM bt_3_star_payments WHERE refunded_at IS NULL "
+                    "ORDER BY created_at DESC LIMIT %s;",
+                    (max(1, min(2000, int(limit))),),
+                )
+                for r in cursor.fetchall():
+                    out.append({"charge_id": str(r[0]), "user_id": int(r[1]),
+                                "purpose": str(r[2] or ""), "stars": int(r[3] or 0)})
+    except Exception:
+        logging.warning("list_unrefunded_star_payments failed", exc_info=True)
+    return out
+
+
 def _normalize_coverage_pct(value) -> int:
     """Clamp a narration-coverage percent to one of the offered tiers {25,50,100}."""
     try:

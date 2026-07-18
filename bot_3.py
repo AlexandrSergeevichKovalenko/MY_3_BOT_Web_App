@@ -9055,6 +9055,25 @@ def _resolve_refundable_star_txn_by_tail(user_id: int, charge_tail: str) -> dict
     return None
 
 
+async def reconcile_refunds_command(update: Update, context: CallbackContext) -> None:
+    """/reconcile_refunds — admin-only. Runs the Stars refund reconciliation NOW instead of
+    waiting for the daily job: finds refunds that bypassed /refund_star (Telegram-side /
+    support) and claws back their perks. The worker DMs the result if anything was revoked."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message or not _is_admin_user(int(user.id)):
+        return
+    try:
+        from backend.background_jobs import run_stars_refund_reconcile_actor
+        run_stars_refund_reconcile_actor.send()
+        await message.reply_text(
+            "🔁 Запустил сверку возвратов Stars. Если что-то отозвано — придёт отдельным сообщением."
+        )
+    except Exception:
+        logging.exception("reconcile_refunds dispatch failed")
+        await message.reply_text("Не получилось запустить сверку — смотри логи.")
+
+
 async def refund_star_command(update: Update, context: CallbackContext) -> None:
     """/refund_star — admin-only. Lists recent Stars charges with a button to refund each
     (Telegram refundStarPayment). Lets us test a real payment cheaply: buy → verify in
@@ -37814,6 +37833,7 @@ def main():
     application.add_handler(CommandHandler("scheduler_health", admin_scheduler_health_command))
     application.add_handler(CommandHandler("stars", stars_command))
     application.add_handler(CommandHandler("refund_star", refund_star_command))
+    application.add_handler(CommandHandler("reconcile_refunds", reconcile_refunds_command))
     application.add_handler(CallbackQueryHandler(refund_star_callback, pattern=r"^rfst:"))
     application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("review_makedue", admin_review_makedue_command))
