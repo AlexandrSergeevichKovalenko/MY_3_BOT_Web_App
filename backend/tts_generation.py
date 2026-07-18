@@ -470,6 +470,7 @@ def _synthesize_mp3(
     language: str = "de-DE",
     voice: str | None = None,
     speed: float = 0.9,
+    budget_provider: str = "google_tts",
 ) -> bytes:
     normalized_text = str(text or "").strip()
     if not normalized_text:
@@ -556,7 +557,7 @@ def _synthesize_mp3(
     text_chunks = split_for_google_tts(normalized_text)
     if not text_chunks:
         raise RuntimeError("Google TTS не получил чанки текста")
-    _enforce_google_tts_monthly_budget(sum(len(chunk) for chunk in text_chunks))
+    _enforce_tts_monthly_budget(sum(len(chunk) for chunk in text_chunks), provider=budget_provider)
 
     tts_client = _get_tts_client()
     voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice_name)

@@ -27122,7 +27122,9 @@ async def admin_artikel_audio_command(update: Update, context: CallbackContext) 
         return
     status = await message.reply_text(f"⏳ Озвучиваю {len(todo)} слов темы «{html.escape(theme['label_de'])}»…")
     res = await _backfill_artikel_audio(todo, limit=count)
-    await status.edit_text(f"🔊 «{html.escape(theme['label_de'])}» — озвучено {res.get('made')}/{res.get('requested')}.")
+    tail = "\n⚠️ Остановлено: бюджет Standard-TTS исчерпан." if res.get("stopped") == "blocked" else ""
+    await status.edit_text(
+        f"🔊 «{html.escape(theme['label_de'])}» — озвучено {res.get('made')}/{res.get('requested')}.{tail}")
 
 
 async def admin_artikel_images_command(update: Update, context: CallbackContext) -> None:
@@ -33635,10 +33637,23 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
 ARTIKEL_NIGHTLY_MEDIA_CAP = max(20, int((os.getenv("ARTIKEL_NIGHTLY_MEDIA_CAP") or "150").strip() or "150"))
 
 
-async def _fill_artikel_theme_media(theme_key: str, *, cap: int = ARTIKEL_NIGHTLY_MEDIA_CAP) -> dict:
-    """Fill mnemonics + audio + images for up to `cap` not-yet-done words of a theme
-    (the *_without_* / *_for_image helpers return only undone ones, so nights walk
-    through the whole theme without reprocessing). One-time per word — cached."""
+# How many words to WARM WITH AUDIO across the WHOLE bank each night, spread evenly
+# (theme-of-day first, then round-robin over every other theme). Bounded so the nightly
+# Standard-bucket spend stays predictable; the whole pool completes over several nights.
+ARTIKEL_NIGHTLY_AUDIO_CAP = max(20, int((os.getenv("ARTIKEL_NIGHTLY_AUDIO_CAP") or "600").strip() or "600"))
+# Never warm audio once the Standard TTS bucket crosses this fraction of its monthly
+# free tier — leave the top headroom for anything else on that bucket.
+ARTIKEL_TTS_STANDARD_CEILING = max(0.1, min(1.0, float(os.getenv("ARTIKEL_TTS_STANDARD_CEILING") or "0.9")))
+
+
+async def _fill_artikel_theme_media(theme_key: str, *, cap: int = ARTIKEL_NIGHTLY_MEDIA_CAP,
+                                    include_audio: bool = True) -> dict:
+    """Fill mnemonics + images (+ audio, unless include_audio=False) for up to `cap`
+    not-yet-done words of a theme (the *_without_* / *_for_image helpers return only undone
+    ones, so nights walk through the whole theme without reprocessing). One-time per word —
+    cached. The nightly prewarm passes include_audio=False and lets the global, budget-aware
+    _nightly_artikel_audio_sweep voice audio evenly across ALL themes; the /artikel_fillmedia
+    admin command keeps audio on so it still finishes one theme end-to-end."""
     from backend.article_learn import _generate_and_cache_mnemonics
     made = {"mnemonics": 0, "audio": 0, "images": 0}
     # Mnemonics (chunked LLM calls).
@@ -33649,20 +33664,91 @@ async def _fill_artikel_theme_media(theme_key: str, *, cap: int = ARTIKEL_NIGHTL
             made["mnemonics"] += len(await asyncio.to_thread(_generate_and_cache_mnemonics, mitems[i:i + 20]))
         except Exception:
             logging.warning("artikel_media: mnemonic chunk failed theme=%s", theme_key, exc_info=True)
-    # Audio (TTS per word).
-    todo_a = await asyncio.to_thread(get_article_nouns_without_audio, theme_key, cap)
-    made["audio"] = int((await _backfill_artikel_audio(todo_a, limit=cap)).get("made") or 0)
+    # Audio (TTS per word, cheap Standard bucket) — skipped in the nightly path.
+    if include_audio:
+        todo_a = await asyncio.to_thread(get_article_nouns_without_audio, theme_key, cap)
+        made["audio"] = int((await _backfill_artikel_audio(todo_a, limit=cap)).get("made") or 0)
     # Images (LLM meta chunked inside + Pixabay).
     todo_i = await asyncio.to_thread(get_article_nouns_for_image, theme_key, cap)
     made["images"] = int((await _backfill_artikel_images(todo_i, limit=cap)).get("made") or 0)
     return made
 
 
+async def _nightly_artikel_audio_sweep(priority_themes: list[str], *, cap: int = ARTIKEL_NIGHTLY_AUDIO_CAP) -> dict:
+    """Budget-aware, EVEN nightly audio warm-up across the WHOLE noun bank.
+
+    Priority themes (today/tomorrow's theme-of-day + Pro focus) are drained first, in
+    order; the rest of the nightly cap is spread ROUND-ROBIN across every other active
+    theme so no theme ever starves. Already-voiced words are skipped
+    (get_article_nouns_without_audio), so once a theme is warm the sweep naturally moves on
+    to un-warmed words elsewhere. Cheap Standard voice on the google_tts_standard bucket.
+    Warms NOTHING once that bucket is blocked or past ARTIKEL_TTS_STANDARD_CEILING."""
+    from backend.database import (
+        get_google_tts_standard_monthly_budget_status, list_article_sprint_themes,
+    )
+    status = await asyncio.to_thread(get_google_tts_standard_monthly_budget_status) or {}
+    ratio = float(status.get("usage_ratio") or 0.0)
+    if status.get("is_blocked") or ratio >= ARTIKEL_TTS_STANDARD_CEILING:
+        logging.info("artikel_audio sweep: standard bucket at %.0f%% (blocked=%s) — skipping night",
+                     ratio * 100, bool(status.get("is_blocked")))
+        return {"audio": 0, "stopped": "ceiling"}
+
+    # Ordered theme list: priority first (dedup, keep order), then every other active theme.
+    seen: set[str] = set()
+    priority_order: list[str] = []
+    for t in (priority_themes or []):
+        t = str(t or "").strip()
+        if t and t != "gemischt" and t not in seen:
+            seen.add(t)
+            priority_order.append(t)
+    other_order: list[str] = []
+    try:
+        for row in (await asyncio.to_thread(list_article_sprint_themes)) or []:
+            t = str(row.get("theme_key") or "").strip()
+            if t and t != "gemischt" and bool(row.get("active", True)) and t not in seen:
+                seen.add(t)
+                other_order.append(t)
+    except Exception:
+        logging.warning("artikel_audio sweep: theme list failed", exc_info=True)
+
+    # Missing-audio words per theme (already ordered by freq_rank). Priority themes may be
+    # drained up to the full cap; others only need a round-robin slice.
+    per_theme: dict[str, list[dict]] = {}
+    for t in priority_order:
+        per_theme[t] = await asyncio.to_thread(get_article_nouns_without_audio, t, cap)
+    other_slice = max(1, cap // max(1, len(other_order))) + 5 if other_order else 0
+    for t in other_order:
+        per_theme[t] = await asyncio.to_thread(get_article_nouns_without_audio, t, other_slice)
+
+    # Build the warm queue: priority themes drained in order, then round-robin the rest.
+    queue: list[dict] = []
+    for t in priority_order:
+        queue.extend(per_theme.get(t) or [])
+    depth = 0
+    while len(queue) < cap:
+        progressed = False
+        for t in other_order:
+            words = per_theme.get(t) or []
+            if depth < len(words):
+                queue.append(words[depth])
+                progressed = True
+                if len(queue) >= cap:
+                    break
+        if not progressed:
+            break
+        depth += 1
+
+    res = await _backfill_artikel_audio(queue[:cap], limit=cap)
+    return {"audio": int(res.get("made") or 0), "stopped": res.get("stopped")}
+
+
 async def _prewarm_artikel_focus_job(context: CallbackContext) -> None:
-    """Overnight: fill media (mnemonics + audio + images) for the WHOLE of each
-    ACTIVE theme — today's daily-set theme + tomorrow's scheduled theme + every Pro
-    focus theme for tomorrow — so any batch a user pages to is ready. Bounded per
-    night (ARTIKEL_NIGHTLY_MEDIA_CAP); themes complete over a couple of nights."""
+    """Overnight media prewarm. Mnemonics + images are filled for the ACTIVE themes
+    (today's daily-set theme + tomorrow's scheduled theme + tomorrow's Pro focus themes).
+    Audio is handled separately by a GLOBAL, budget-aware sweep that warms the theme-of-day
+    first, then spreads the remaining nightly cap round-robin across EVERY theme — so the
+    whole bank gets voiced over several nights instead of only the 1-2 active themes, and it
+    stops the moment the cheap Standard TTS bucket nears its ceiling."""
     if not _artikel_sprint_enabled():
         return
     try:
@@ -33671,25 +33757,37 @@ async def _prewarm_artikel_focus_job(context: CallbackContext) -> None:
         )
         now = _get_quiz_schedule_now().date()
         tomorrow = now + timedelta(days=1)
-        themes: set[str] = set()
+        # Priority order for audio: today's theme, tomorrow's theme, tomorrow's Pro focus.
+        priority: list[str] = []
+        seen: set[str] = set()
+        def _add_priority(tk: str) -> None:
+            tk = str(tk or "").strip()
+            if tk and tk != "gemischt" and tk not in seen:
+                seen.add(tk)
+                priority.append(tk)
         for d in (now, tomorrow):
             sid = await asyncio.to_thread(get_daily_article_sprint_set_id, d)
             if sid:
                 s = await asyncio.to_thread(get_article_sprint_set, sid)
                 if s and s.get("theme_key"):
-                    themes.add(str(s["theme_key"]))
-        tk = await asyncio.to_thread(get_article_sprint_theme_for_date, tomorrow)
-        if tk:
-            themes.add(str(tk))
-        themes.update(await asyncio.to_thread(list_article_learn_focus_themes, tomorrow))
-        themes.discard("gemischt")
+                    _add_priority(str(s["theme_key"]))
+        _add_priority(str(await asyncio.to_thread(get_article_sprint_theme_for_date, tomorrow) or ""))
+        for tk in (await asyncio.to_thread(list_article_learn_focus_themes, tomorrow) or []):
+            _add_priority(str(tk))
+
         totals = {"mnemonics": 0, "audio": 0, "images": 0}
-        for theme_key in themes:
-            res = await _fill_artikel_theme_media(theme_key)
-            for k in totals:
+        # Mnemonics + images: only the active (priority) themes, as before. Audio is left
+        # to the global sweep below, so we skip it here to avoid double work.
+        for theme_key in priority:
+            res = await _fill_artikel_theme_media(theme_key, include_audio=False)
+            for k in ("mnemonics", "images"):
                 totals[k] += int(res.get(k) or 0)
             logging.info("artikel_media: theme=%s filled %s", theme_key, res)
-        logging.info("artikel_media prewarm done themes=%s", len(themes))
+        # Audio: one global, even, budget-aware sweep (theme-of-day first, then round-robin).
+        sweep = await _nightly_artikel_audio_sweep(priority)
+        totals["audio"] = int(sweep.get("audio") or 0)
+        logging.info("artikel_media prewarm done priority_themes=%s audio=%s stopped=%s",
+                     len(priority), totals["audio"], sweep.get("stopped"))
         try:
             from backend.database import record_artikel_nightly_metrics
             await asyncio.to_thread(
@@ -35886,25 +35984,30 @@ def _artikel_audio_key(word: str, article: str) -> str:
 
 async def _backfill_artikel_audio(items: list[dict], limit: int = 30) -> dict:
     """Synthesize '<article> <word>' → MP3 → R2 for nouns missing a clip, and cache
-    the key on the noun bank. Off the hot path (morning pre-warm / admin). The
-    trainer plays this so the learner hears the article fused with the noun."""
-    from backend.r2_storage import r2_put_bytes
+    the key on the noun bank. Off the hot path (morning pre-warm / admin). Uses the cheap
+    Standard voice on the google_tts_standard bucket (see synthesize_and_store_artikel_audio)
+    so it never competes with Reader/SRS for the premium tier. Stops early — returns
+    stopped='blocked' — the moment the Standard bucket is exhausted."""
+    from backend.backend_server import synthesize_and_store_artikel_audio
+    from backend.tts_generation import GoogleTTSBudgetBlockedError
     made = 0
+    stopped: str | None = None
     for it in (items or [])[:limit]:
         word = str(it.get("word") or "").strip()
         article = str(it.get("article") or "").strip().lower()
         if not word or article not in ("der", "die", "das"):
             continue
         try:
-            seg = await asyncio.to_thread(get_or_create_tts_clip, "de", f"{article} {word}", 0.95)
-            mp3 = await asyncio.to_thread(_audiosegment_to_mp3_bytes, seg)
-            key = _artikel_audio_key(word, article)
-            await asyncio.to_thread(r2_put_bytes, key, mp3, content_type="audio/mpeg")
-            await asyncio.to_thread(store_article_noun_audio, word=word, article=article, audio_object_key=key)
-            made += 1
+            key = await asyncio.to_thread(synthesize_and_store_artikel_audio, word=word, article=article)
+            if key:
+                made += 1
+        except GoogleTTSBudgetBlockedError:
+            logging.info("artikel_audio backfill: standard bucket blocked at made=%s — stopping", made)
+            stopped = "blocked"
+            break
         except Exception:
             logging.warning("artikel_audio backfill failed word=%s", word, exc_info=True)
-    return {"requested": len(items or []), "made": made}
+    return {"requested": len(items or []), "made": made, "stopped": stopped}
 
 
 async def _backfill_artikel_audio_for_set(set_id: str, limit: int = 25) -> int:

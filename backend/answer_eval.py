@@ -1771,6 +1771,16 @@ def load_artikel_review_batch(*, user_id: int, limit: int = 20) -> dict:
             "audio": r2_public_url(akey) if akey else "",
             "tip": tip,
         })
+    # Mistakes span every theme the user ever played, so many words were never reached by
+    # the nightly theme-of-day warm-up and arrive here silent. Lazily voice the missing
+    # ones in the background (cheap Standard bucket) so the next pass through review speaks
+    # — mirrors the learn deck's lazy fill.
+    try:
+        from backend.backend_server import _ensure_artikel_audio_async
+        _ensure_artikel_audio_async(cards)
+    except Exception:
+        import logging
+        logging.debug("artikel review lazy audio fill skipped", exc_info=True)
     return {"kind": "artikel_review", "cards": cards,
             "remaining": count_due_mistakes(int(user_id), family="artikel")}
 

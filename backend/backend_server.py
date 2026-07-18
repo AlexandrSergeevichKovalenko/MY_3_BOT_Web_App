@@ -20256,6 +20256,46 @@ def _artikel_audio_key(word: str, article: str) -> str:
     return f"artikel/audio/{str(article).lower()}-{slug}.mp3"
 
 
+# A single '<article> <word>' clip does NOT need the premium Polyglot voice — a Google
+# Standard German voice is plenty for one noun, and it bills the roomy Standard free
+# bucket (google_tts_standard) instead of the constrained 1M premium tier that Reader
+# Audio / SRS depend on. This is the lever that lets us warm the WHOLE noun bank without
+# competing for the premium quota. Env-overridable.
+ARTIKEL_TTS_VOICE = os.getenv("ARTIKEL_TTS_VOICE", "").strip() or PUBLIC_LIBRARY_TTS_VOICE
+
+
+def synthesize_and_store_artikel_audio(*, word: str, article: str) -> str | None:
+    """Synthesize one '<article> <word>' clip in the cheap Standard voice, store it in
+    R2, cache the key on the noun bank, and bill the google_tts_standard bucket. Returns
+    the R2 object key, or None if the input is invalid. Raises GoogleTTSBudgetBlockedError
+    when the Standard bucket is blocked/exhausted, so nightly/lazy callers stop cleanly."""
+    w = str(word or "").strip()
+    a = str(article or "").strip().lower()
+    if not w or a not in ("der", "die", "das"):
+        return None
+    from backend.tts_generation import _synthesize_mp3
+    from backend.database import store_article_noun_audio
+    text = f"{a} {w}"
+    mp3 = _synthesize_mp3(text, language="de-DE", voice=ARTIKEL_TTS_VOICE, speed=0.95,
+                          budget_provider="google_tts_standard")
+    key = _artikel_audio_key(w, a)
+    r2_put_bytes(key, mp3, content_type="audio/mpeg")
+    store_article_noun_audio(word=w, article=a, audio_object_key=key)
+    _billing_log_event_safe(
+        user_id=int(PUBLIC_LIBRARY_OWNER_ID),
+        action_type="artikel_audio_tts",
+        provider="google_tts_standard",
+        units_type="chars",
+        units_value=float(len(text)),
+        source_lang="de",
+        target_lang="de",
+        idempotency_seed=f"artikel_audio:{a}:{w.lower()}:{time.time_ns()}",
+        status="estimated",
+        metadata={"voice": ARTIKEL_TTS_VOICE, "word": w, "article": a},
+    )
+    return key
+
+
 def _ensure_artikel_audio_async(cards: list[dict]) -> None:
     """Lazily synthesize '<article> <word>' → MP3 → R2 for trainer cards missing
     audio, in a background thread (so the learn deck responds instantly).
@@ -20273,8 +20313,7 @@ def _ensure_artikel_audio_async(cards: list[dict]) -> None:
         return
 
     def _run():
-        from backend.r2_storage import r2_put_bytes
-        from backend.database import store_article_noun_audio
+        from backend.tts_generation import GoogleTTSBudgetBlockedError
         for word, article in missing[:20]:
             guard = f"{article} {word}".lower()
             with _artikel_audio_inflight_lock:
@@ -20282,12 +20321,10 @@ def _ensure_artikel_audio_async(cards: list[dict]) -> None:
                     continue
                 _artikel_audio_inflight.add(guard)
             try:
-                seg = get_or_create_tts_clip("de", f"{article} {word}", 0.95)
-                buf = io.BytesIO()
-                seg.export(buf, format="mp3")
-                key = _artikel_audio_key(word, article)
-                r2_put_bytes(key, buf.getvalue(), content_type="audio/mpeg")
-                store_article_noun_audio(word=word, article=article, audio_object_key=key)
+                synthesize_and_store_artikel_audio(word=word, article=article)
+            except GoogleTTSBudgetBlockedError:
+                logging.info("artikel audio lazy-fill: standard bucket blocked — stopping")
+                break
             except Exception:
                 logging.warning("artikel audio lazy-fill failed word=%s", word, exc_info=True)
             finally:
