@@ -4068,6 +4068,80 @@ body:has(.webapp-page.is-theme-light),
   line-height: 1.45;
 }
 
+/* «Оплата в Telegram» handoff modal (PWA/browser can't charge Stars in place). Centered,
+   unmissable, with a big pulsing CTA so it's obviously a button to tap. */
+.billing-pay-tg-modal {
+  width: min(440px, 100%);
+  text-align: center;
+  padding: 22px 20px 18px;
+}
+
+.billing-pay-tg-modal__emoji {
+  font-size: 40px;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.billing-pay-tg-modal__title {
+  margin: 0 0 8px;
+  color: #f8fafc;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.billing-pay-tg-modal__text {
+  margin: 0 0 18px;
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.billing-pay-tg-modal__cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 16px 18px;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #2AABEE, #229ED9);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  animation: billingPayTgPulse 1.5s ease-in-out infinite;
+}
+
+.billing-pay-tg-modal__cta:hover {
+  filter: brightness(1.05);
+}
+
+.billing-pay-tg-modal__cta:active {
+  transform: translateY(1px);
+}
+
+@keyframes billingPayTgPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(42, 171, 238, 0.5); }
+  50% { box-shadow: 0 0 0 12px rgba(42, 171, 238, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .billing-pay-tg-modal__cta { animation: none; }
+}
+
+.billing-pay-tg-modal__cancel {
+  margin-top: 10px;
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: rgba(148, 163, 184, 0.9);
+  font-size: 14px;
+  cursor: pointer;
+}
+
 .economics-voice-card {
   border-width: 1px;
 }
@@ -26882,6 +26956,18 @@ body.worldnews-active .webapp-topbar {
 
 .webapp-page.is-theme-light .billing-plan-details-modal li {
   color: #3a3127;
+}
+
+.webapp-page.is-theme-light .billing-pay-tg-modal__title {
+  color: #2f271f;
+}
+
+.webapp-page.is-theme-light .billing-pay-tg-modal__text {
+  color: #3a3127;
+}
+
+.webapp-page.is-theme-light .billing-pay-tg-modal__cancel {
+  color: #6b5c48;
 }
 
 .webapp-page.is-theme-light .billing-zone__title,

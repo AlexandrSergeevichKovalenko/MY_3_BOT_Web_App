@@ -40283,18 +40283,6 @@ function AppInner() {
                     {billingReturnMessage}
                   </div>
                 )}
-                {billingPayInTelegram?.url && (
-                  <button
-                    type="button"
-                    className="billing-trial-banner billing-trial-banner--tappable"
-                    onClick={openBillingPayInTelegram}
-                  >
-                    💫 <strong>{tr('Открыть в Telegram, чтобы оплатить →', 'In Telegram öffnen und bezahlen →')}</strong>{' '}
-                    {billingPayInTelegram.isSupport
-                      ? tr('Звёздами можно платить только внутри Telegram. Нажми — откроем бота прямо на этой поддержке.', 'Sterne funktionieren nur in Telegram. Tippe — wir öffnen den Bot direkt bei dieser Unterstützung.')
-                      : tr('Звёздами можно платить только внутри Telegram. Нажми — откроем бота прямо на оплате Pro.', 'Sterne funktionieren nur in Telegram. Tippe — wir öffnen den Bot direkt bei der Pro-Zahlung.')}
-                  </button>
-                )}
                 {billingStatusNotice && (
                   <div className="billing-trial-banner">
                     💫 <strong>{tr('Оплата — в Telegram.', 'Zahlung — in Telegram.')}</strong>{' '}
@@ -40451,6 +40439,47 @@ function AppInner() {
                               <li key={`${billingPlanDetailsOpenFor}_limit_${index}`}>{item}</li>
                             ))}
                           </ul>
+                        </div>
+                      </div>
+                    )}
+
+                    {billingPayInTelegram?.url && (
+                      <div
+                        role="presentation"
+                        className="billing-plan-details-modal"
+                        onClick={() => setBillingPayInTelegram(null)}
+                      >
+                        <div
+                          className="billing-plan-details-modal__panel billing-pay-tg-modal"
+                          role="dialog"
+                          aria-modal="true"
+                          aria-label={tr('Оплата в Telegram', 'Zahlung in Telegram')}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <div className="billing-pay-tg-modal__emoji" aria-hidden="true">💫</div>
+                          <h3 className="billing-pay-tg-modal__title">
+                            {tr('Оплата проходит в Telegram', 'Die Zahlung läuft in Telegram')}
+                          </h3>
+                          <p className="billing-pay-tg-modal__text">
+                            {billingPayInTelegram.isSupport
+                              ? tr('Звёздами можно платить только внутри Telegram. Нажми кнопку — откроем бота прямо на этой поддержке, и оплата пройдёт в пару тапов.', 'Sterne funktionieren nur in Telegram. Tippe den Button — wir öffnen den Bot direkt bei dieser Unterstützung, in wenigen Taps erledigt.')
+                              : tr('Звёздами можно платить только внутри Telegram. Нажми кнопку — откроем бота прямо на оплате Pro, и оплата пройдёт в пару тапов.', 'Sterne funktionieren nur in Telegram. Tippe den Button — wir öffnen den Bot direkt bei der Pro-Zahlung, in wenigen Taps erledigt.')}
+                          </p>
+                          <button
+                            type="button"
+                            className="billing-pay-tg-modal__cta"
+                            onClick={openBillingPayInTelegram}
+                            autoFocus
+                          >
+                            {tr('Открыть в Telegram и оплатить →', 'In Telegram öffnen und bezahlen →')}
+                          </button>
+                          <button
+                            type="button"
+                            className="billing-pay-tg-modal__cancel"
+                            onClick={() => setBillingPayInTelegram(null)}
+                          >
+                            {tr('Не сейчас', 'Nicht jetzt')}
+                          </button>
                         </div>
                       </div>
                     )}
