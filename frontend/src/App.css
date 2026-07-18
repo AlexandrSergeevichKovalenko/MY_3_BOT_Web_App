@@ -14765,6 +14765,13 @@ body:has(.webapp-page.is-theme-light),
   background: #111827;
 }
 
+/* На планшете (Telegram) в правом верхнем углу висит РОДНАЯ плашка Telegram (⌄
+   свернуть / ⋯), и наша кнопка «Свернуть/Minimieren» оказывалась прямо под ней.
+   Telegram-кнопку сдвинуть нельзя — поэтому опускаем НАШУ чуть ниже, под плашку. */
+.webapp-page.is-telegram-tablet .youtube-app-fullscreen-close {
+  top: calc(env(safe-area-inset-top, 0px) + 58px) !important;
+}
+
 .youtube-learning-topbar {
   padding: 16px 20px;
   display: grid;
