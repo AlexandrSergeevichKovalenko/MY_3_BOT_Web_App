@@ -9482,6 +9482,27 @@ def _youtube_search_videos(
             query,
         )
         return []
+    # Optional cap on how many curated channels we sweep per query. Each channel is
+    # a separate search.list (100 units), so all 11 = 1100 units/query. Default is
+    # all channels (no behaviour change); set YOUTUBE_SEARCH_MAX_CHANNELS to trade a
+    # little breadth for a much lower per-query quota cost.
+    curated_channels = list(_TODAY_PREFERRED_CHANNELS)
+    try:
+        _max_channels = int(str(os.getenv("YOUTUBE_SEARCH_MAX_CHANNELS") or "").strip() or 0)
+    except Exception:
+        _max_channels = 0
+    if _max_channels > 0:
+        curated_channels = curated_channels[:_max_channels]
+    # Daily-quota guard: estimate this call's cost and fall back to pool/empty when
+    # the day's budget is exhausted, instead of hitting a hard 403.
+    _estimated_units = 100.0 * (len(curated_channels) if prefer_curated_channels else 1)
+    if not youtube_live_search_allowed(estimated_units=_estimated_units):
+        logging.warning(
+            "YT live search skipped: daily quota guard (est=%s units, query='%s')",
+            _estimated_units,
+            query,
+        )
+        return []
     collected: list[dict] = []
     preferred_hits = 0
     fallback_hits = 0
@@ -9495,7 +9516,7 @@ def _youtube_search_videos(
             "key": YOUTUBE_API_KEY,
         }
         if prefer_curated_channels:
-            for channel_id in _TODAY_PREFERRED_CHANNELS:
+            for channel_id in curated_channels:
                 params = {**common_params, "channelId": channel_id}
                 resp = requests.get(base_url, params=params, timeout=12)
                 _billing_log_youtube_quota_usage(
@@ -12061,6 +12082,89 @@ def _get_youtube_daily_quota_status() -> dict | None:
     }
 
 
+# --- YouTube daily-quota guard --------------------------------------------
+# search.list costs 100 units/call; the free daily quota is 10 000. Live search
+# is the dominant spender (weekly grammar recommendation). This guard stops live
+# searches once the day's budget is (nearly) exhausted so we fall back to the
+# shared pool instead of hitting a hard 403 that would also break other features.
+#
+# _get_youtube_daily_quota_status() reads bt_3_billing_events, which is the only
+# cross-service source of truth but can lag (billing writes may be async on some
+# tiers). We keep an in-process accumulator too and take max(db, local) so a
+# burst inside one process is counted immediately, before the DB reflects it.
+_YT_QUOTA_LOCAL_LOCK = threading.Lock()
+_YT_QUOTA_LOCAL = {"day": None, "units": 0.0}
+
+
+def _youtube_quota_day_key() -> str:
+    quota_tz_name = str(os.getenv("YOUTUBE_API_QUOTA_RESET_TZ") or "America/Los_Angeles").strip() or "America/Los_Angeles"
+    try:
+        quota_tz = ZoneInfo(quota_tz_name)
+    except Exception:
+        quota_tz = timezone.utc
+    return datetime.now(timezone.utc).astimezone(quota_tz).date().isoformat()
+
+
+def _youtube_quota_local_add(units: float) -> None:
+    day = _youtube_quota_day_key()
+    with _YT_QUOTA_LOCAL_LOCK:
+        if _YT_QUOTA_LOCAL["day"] != day:
+            _YT_QUOTA_LOCAL["day"] = day
+            _YT_QUOTA_LOCAL["units"] = 0.0
+        _YT_QUOTA_LOCAL["units"] += max(0.0, float(units or 0.0))
+
+
+def _youtube_quota_local_units() -> float:
+    day = _youtube_quota_day_key()
+    with _YT_QUOTA_LOCAL_LOCK:
+        if _YT_QUOTA_LOCAL["day"] != day:
+            return 0.0
+        return float(_YT_QUOTA_LOCAL["units"] or 0.0)
+
+
+def _youtube_daily_quota_snapshot() -> tuple[float | None, float, float | None]:
+    """Return (limit, used, remaining) for the current quota day.
+
+    ``used`` is max(billing-events total, this-process accumulator). ``limit`` and
+    ``remaining`` are None when no daily limit is configured (guard disabled).
+    """
+    try:
+        status = _get_youtube_daily_quota_status() or {}
+    except Exception:
+        status = {}
+    limit = status.get("effective_limit_units")
+    db_used = float(status.get("used_units") or 0.0)
+    used = max(db_used, _youtube_quota_local_units())
+    if not limit:
+        return None, used, None
+    return float(limit), used, max(0.0, float(limit) - used)
+
+
+def _youtube_live_search_reserve_units(limit: float) -> float:
+    reserve = _billing_env_float("YOUTUBE_LIVE_SEARCH_RESERVE_UNITS")
+    if reserve > 0:
+        return reserve
+    # Default: keep 10% headroom so a hard 403 never breaks unrelated features.
+    return round(float(limit) * 0.10, 3)
+
+
+def youtube_live_search_allowed(estimated_units: float = 100.0) -> bool:
+    """True when a live YouTube search of ~estimated_units may proceed today."""
+    limit, _used, remaining = _youtube_daily_quota_snapshot()
+    if not limit or remaining is None:
+        return True  # no configured limit → never block
+    reserve = _youtube_live_search_reserve_units(limit)
+    return (remaining - max(0.0, float(estimated_units or 0.0))) >= reserve
+
+
+def youtube_daily_quota_remaining() -> float | None:
+    """Remaining daily quota units above the reserve, or None if unlimited."""
+    limit, _used, remaining = _youtube_daily_quota_snapshot()
+    if not limit or remaining is None:
+        return None
+    return max(0.0, remaining - _youtube_live_search_reserve_units(limit))
+
+
 def _estimate_stripe_fee_usd(amount_minor: int) -> float:
     amount_usd = max(0.0, float(amount_minor or 0) / 100.0)
     if amount_usd <= 0:
@@ -12815,6 +12919,9 @@ def _billing_log_youtube_quota_usage(
     units = max(0.0, float(quota_units or 0.0))
     if units <= 0:
         return
+    # Count spend in-process immediately so the daily-quota guard sees a burst
+    # before bt_3_billing_events (which can lag) reflects it.
+    _youtube_quota_local_add(units)
     meta = metadata if isinstance(metadata, dict) else {}
     seed = f"yt_quota:{user_id}:{action_type}:{endpoint}:{units}:{time.time_ns()}"
     try:

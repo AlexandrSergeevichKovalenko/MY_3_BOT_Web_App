@@ -57,6 +57,8 @@ from backend.backend_server import (
     _video_conflicts_with_target_language,
     _youtube_search_videos_manual,
     _youtube_fill_view_counts,
+    youtube_live_search_allowed,
+    youtube_daily_quota_remaining,
     _sanitize_focus_topic,
     _start_shortcut_lookup_enqueue_runner,
     get_or_create_tts_clip,
@@ -20437,6 +20439,115 @@ def _select_weekly_video_for_user(
     return None
 
 
+async def warm_grammar_video_pool(context: CallbackContext = None, *, source_lang="ru", target_lang="de"):
+    """Pre-fill the shared grammar-video pool ahead of the Friday recommendation.
+
+    Why: a live YouTube search per grammar topic is expensive (~100 units/channel,
+    up to 1100/topic) and the free daily quota is only 10 000. The Friday send is
+    pool-first, so once a topic's pool is warm every user reuses it for ZERO quota
+    regardless of how many Pro subscribers there are. This job warms a few cold
+    topics per run, paced across the week and capped by a daily budget, so by Friday
+    the send does no live searches at all. It never changes what a live search
+    returns — it just moves the (bounded, per-topic) spend off the send path.
+
+    Guard-aware: stops early when the day's remaining quota drops below a floor, and
+    every underlying search is itself gated by youtube_live_search_allowed().
+    """
+    if str(os.getenv("GRAMMAR_VIDEO_WARMER_ENABLED", "1")).strip().lower() in ("0", "false", "no", "off"):
+        logging.info("grammar video warmer disabled via GRAMMAR_VIDEO_WARMER_ENABLED")
+        return
+
+    def _env_int(name, default):
+        try:
+            return int(str(os.getenv(name) or "").strip() or default)
+        except Exception:
+            return default
+
+    warm_target = max(1, _env_int("GRAMMAR_VIDEO_WARM_TARGET", 4))
+    max_topics = max(1, _env_int("GRAMMAR_VIDEO_WARMER_MAX_TOPICS", 6))
+    min_remaining = float(_env_int("GRAMMAR_VIDEO_WARMER_MIN_REMAINING_UNITS", 1500))
+
+    warmed = 0
+    attempted = 0
+    for topic_key, entry in grammar_video_catalog.GRAMMAR_VIDEO_TOPICS.items():
+        if warmed >= max_topics:
+            break
+        remaining = youtube_daily_quota_remaining()
+        if remaining is not None and remaining < min_remaining:
+            logging.info(
+                "grammar video warmer: stopping, low quota remaining=%.0f floor=%.0f warmed=%s",
+                remaining,
+                min_remaining,
+                warmed,
+            )
+            break
+        query = str((entry or {}).get("query") or "").strip()
+        if not query:
+            continue
+        try:
+            existing = list_active_video_recommendations_for_focus(
+                source_lang=source_lang,
+                target_lang=target_lang,
+                skill_id=topic_key,
+                limit=warm_target,
+            )
+        except Exception:
+            existing = []
+        if len(existing) >= warm_target:
+            continue  # topic already warm — skip, no quota spent
+
+        attempted += 1
+        try:
+            found = await asyncio.to_thread(
+                search_youtube_videos_structured,
+                "",
+                main_category=None,
+                sub_category=None,
+                target_lang=target_lang,
+                preferred_queries=[query],
+                limit=6,
+            )
+        except Exception:
+            logging.debug("grammar video warmer: search failed topic=%s", topic_key, exc_info=True)
+            found = []
+
+        stored = 0
+        for video in found or []:
+            vid = str((video or {}).get("video_id") or "").strip()
+            if not vid:
+                continue
+            try:
+                upsert_video_recommendation(
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    skill_id=topic_key,
+                    main_category=None,
+                    sub_category=None,
+                    search_query=query,
+                    video_id=vid,
+                    video_url=video.get("url"),
+                    video_title=video.get("title"),
+                )
+                stored += 1
+            except Exception:
+                logging.debug(
+                    "grammar video warmer: pool upsert failed topic=%s video=%s",
+                    topic_key,
+                    vid,
+                    exc_info=True,
+                )
+        if stored:
+            warmed += 1
+        await asyncio.sleep(2)
+
+    logging.info(
+        "grammar video warmer done: warmed=%s attempted=%s remaining_quota=%s",
+        warmed,
+        attempted,
+        youtube_daily_quota_remaining(),
+    )
+
+
 # 📌📌📌📌📌
 async def send_me_analytics_and_recommend_me(context: CallbackContext, only_user_id: int | None = None):
     task_name = "send_me_analytics_and_recommend_me"
@@ -38753,6 +38864,10 @@ def main():
     
         # Weekly grammar analytics + video recommendation: once a week, Friday only.
         scheduler.add_job(lambda: submit_async(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="fri", hour=15, minute=15)
+        # Pre-warm the shared grammar-video pool through the week so Friday's send is
+        # pool-only (zero YouTube quota). Paced/budget-capped inside the job; runs at a
+        # low-traffic hour Mon–Fri, incl. Friday morning before the 15:15 send.
+        scheduler.add_job(lambda: submit_async(warm_grammar_video_pool, CallbackContext(application=application)), "cron", day_of_week="mon-fri", hour=4, minute=20, timezone=QUIZ_SCHEDULE_TZ_NAME, coalesce=True, max_instances=1, misfire_grace_time=3600)
     #scheduler.add_job(lambda: run_async_job(send_me_analytics_and_recommend_me, CallbackContext(application=application)), "cron", day_of_week="sun", hour=7, minute=7)
     
     # Legacy auto-close disabled.
