@@ -30611,39 +30611,44 @@ function AppInner() {
     if (!youtubeSectionVisible || youtubeNewsMode) { setYoutubeTopbarTucked(false); return undefined; }
     const scroller = webappPageRef.current;
     if (!scroller) return undefined;
-    let raf = null;
-    const measure = () => {
-      raf = null;
+
+    // Does the sticky top bar currently cover any part of the player? getBoundingClientRect is
+    // viewport-relative, so this is correct no matter which ancestor is the actual scroller.
+    const measureOverlap = () => {
       const shell = youtubePlayerShellRef.current;
       const bar = scroller.querySelector('.webapp-topbar');
-      if (!shell || !bar) { setYoutubeTopbarTucked(false); return; }
-      const playerRect = shell.getBoundingClientRect();
+      if (!shell || !bar) return false;
       const barRect = bar.getBoundingClientRect();
-      // Overlap along the vertical axis only — opacity:0 keeps the bar's box in place,
-      // so this measurement stays stable and can't oscillate at the boundary.
-      const overlaps = playerRect.top < barRect.bottom && playerRect.bottom > barRect.top;
-      setYoutubeTopbarTucked(overlaps);
+      // The bar must actually be on screen — in watch-focus it's display:none (zero box).
+      if (barRect.height === 0) return false;
+      const playerRect = shell.getBoundingClientRect();
+      // Overlap along the vertical axis only — opacity:0 keeps the bar's box in place, so this
+      // measurement stays stable and can't oscillate at the boundary.
+      return playerRect.top < barRect.bottom && playerRect.bottom > barRect.top;
     };
-    const onScroll = () => { if (raf == null) raf = window.requestAnimationFrame(measure); };
-    measure();
-    // The scroll container varies by environment, so we attach one listener per case (they're
-    // all rAF-debounced, so extra ones are harmless):
-    //   • `.webapp-page` element — Android/Chromium (is-contained-scroll / is-sticky-topbar
-    //     give it overflow-y:auto, so the element itself scrolls).
-    //   • `window` (bubble) — standalone PWA, where the document/window scrolls. (A capture
-    //     listener on window did NOT catch this in the iOS webview, so keep the bubble one.)
-    //   • `document` (capture) — the iOS Telegram Mini-App wrapper scrolls yet another inner
-    //     element (neither window nor `.webapp-page`); scroll doesn't bubble, but the capture
-    //     phase runs document → … → target, so this catches scroll from ANY nested scroller.
-    scroller.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('scroll', onScroll, { passive: true });
-    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
-    window.addEventListener('resize', onScroll);
+
+    // Drive the check from a continuous rAF loop instead of scroll events. The real scroll
+    // container varies per platform (Android = the `.webapp-page` element, standalone PWA = the
+    // window, iOS Telegram = yet another inner wrapper) and, worse, some webviews don't deliver
+    // `scroll` reliably during momentum — which is exactly why this tuck kept regressing on
+    // iOS/PWA. A rAF loop side-steps all of it: it re-measures every frame while on the YouTube
+    // screen and only touches React state when the boolean flips (so no re-render churn). It's
+    // scoped to this one screen and paused when the tab is hidden, so it's cheap.
+    let raf = null;
+    let lastOverlap = null;
+    const tick = () => {
+      if (typeof document === 'undefined' || !document.hidden) {
+        const overlaps = measureOverlap();
+        if (overlaps !== lastOverlap) {
+          lastOverlap = overlaps;
+          setYoutubeTopbarTucked(overlaps);
+        }
+      }
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+
     return () => {
-      scroller.removeEventListener('scroll', onScroll);
-      window.removeEventListener('scroll', onScroll);
-      document.removeEventListener('scroll', onScroll, { capture: true });
-      window.removeEventListener('resize', onScroll);
       if (raf != null) window.cancelAnimationFrame(raf);
       setYoutubeTopbarTucked(false);
     };
