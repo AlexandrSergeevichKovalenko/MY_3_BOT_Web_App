@@ -31310,6 +31310,32 @@ def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]
         sponsor_flag, sponsor_tier = is_user_sponsor(int(user_id))
     except Exception:
         sponsor_flag, sponsor_tier = (False, None)
+    # Bonus Pro days (referrals + coffee/cheesecake support + welcome trial + streaks). Surface a
+    # friendly count so BOTH Free and Pro users see what they've banked. For a Free user the grant
+    # IS their current Pro → count from now. For a paying Pro user the grant is banked to start
+    # AFTER the paid period → count the reserve from current_period_end and mark it `banked`.
+    bonus_pro = None
+    try:
+        bonus_until_dt = _parse_iso_datetime_utc(entitlement.get("bonus_until"))
+        if bonus_until_dt is not None:
+            source = str(entitlement.get("source_of_entitlement") or "")
+            period_end_dt = _parse_iso_datetime_utc(subscription.get("current_period_end"))
+            if source == "paid_subscription" and period_end_dt is not None and period_end_dt > now_utc:
+                reference, banked = period_end_dt, True
+            else:
+                reference, banked = now_utc, False
+            remaining_seconds = (bonus_until_dt - reference).total_seconds()
+            # ceil to whole days so "6.3 days left" reads as a reassuring "7".
+            bonus_days = int((remaining_seconds + 86399) // 86400) if remaining_seconds > 0 else 0
+            if bonus_days > 0:
+                bonus_pro = {
+                    "days": bonus_days,
+                    "until": bonus_until_dt.isoformat(),
+                    "banked": banked,
+                    "reason": entitlement.get("bonus_reason"),
+                }
+    except Exception:
+        bonus_pro = None
     response_payload = {
         "plan_code": plan_code,
         "plan_name": plan_name,
@@ -31319,6 +31345,7 @@ def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]
         "sponsor_tier": sponsor_tier,
         "is_welcome_trial": bool(entitlement.get("is_welcome_trial")),
         "trial_ends_at": entitlement.get("trial_ends_at"),
+        "bonus_pro": bonus_pro,
         "current_period_end": subscription.get("current_period_end"),
         "spent_today_eur": float(round(spent_today, 6)),
         "cap_today_eur": float(cap_today) if cap_today is not None else None,

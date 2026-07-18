@@ -34296,6 +34296,48 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
     return _subscription_row_to_dict(row)
 
 
+def _shift_banked_grants_on_extension(
+    user_id: int,
+    plan_code: str,
+    old_period_end: datetime | None,
+    new_period_end: datetime | None,
+) -> None:
+    """Keep banked bonus Pro days sitting AFTER the paid period when coverage extends.
+
+    `grant_pro_days` banks a paying user's bonus days to start at the paid-period end, but
+    it fixes an absolute `granted_until`. A later renewal moves the paid period forward and
+    would otherwise SWALLOW those banked days (they'd expire inside newly paid time, wasted).
+    Here, whenever the paid coverage extends (a renewal, or a Free user with an active bonus
+    switching to Pro), we push every still-future grant forward by the same amount so the
+    reserve days always remain beyond the paid period. No-op for downgrades to Free (bonus
+    should activate immediately) and for cancellations (period end unchanged → no extension)."""
+    try:
+        if str(plan_code or "free").strip().lower() == "free" or not new_period_end:
+            return
+        new_end = _to_aware_datetime(new_period_end)
+        now_ref = datetime.now(timezone.utc)
+        old_end = _to_aware_datetime(old_period_end) if old_period_end else None
+        # Boundary the banked grants were anchored at (start of the coverage being extended).
+        # max(now, old_end): renewal → old_end is in the future; free→paid or repurchase after
+        # a lapse → old_end is None/past, so we bank past `now`.
+        reference = old_end if (old_end and old_end > now_ref) else now_ref
+        if new_end <= reference:
+            return  # not an extension (cancellation keeps period_end unchanged)
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE bt_3_pro_grants
+                       SET granted_until = granted_until + (%s - %s)
+                     WHERE user_id = %s AND granted_until > %s;
+                    """,
+                    (new_end, reference, int(user_id), reference),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("shift banked grants on extension failed user=%s", user_id, exc_info=True)
+
+
 def set_subscription_from_stripe(
     user_id: int,
     plan_code: str,
@@ -34309,6 +34351,14 @@ def set_subscription_from_stripe(
     plan_code_value = str(plan_code or "pro").strip().lower() or "pro"
     status_value = _normalize_subscription_status(status)
     period_end_value = _to_aware_datetime(current_period_end) if current_period_end else None
+    # Capture the pre-existing paid period end BEFORE the upsert overwrites it, so we can
+    # re-bank bonus grants forward when this call extends the coverage (see helper above).
+    _old_period_end = None
+    try:
+        _existing_sub = get_user_subscription(user_id_value)
+        _old_period_end = _existing_sub.get("current_period_end") if _existing_sub else None
+    except Exception:
+        _old_period_end = None
     customer_id_value = str(stripe_customer_id or "").strip() or None
     subscription_id_value = str(stripe_subscription_id or "").strip() or None
     owns_conn = db_conn is None
@@ -34405,6 +34455,10 @@ def set_subscription_from_stripe(
             row = cursor.fetchone()
     if not row:
         raise RuntimeError("Failed to upsert Stripe subscription")
+    # Extension (renewal / free→paid) → push banked bonus days past the new paid period.
+    _shift_banked_grants_on_extension(
+        user_id_value, plan_code_value, _old_period_end, period_end_value
+    )
     _bust_entitlement_cache(user_id_value)  # Stripe webhook changed the plan → re-resolve
     return _subscription_row_to_dict(row)
 
@@ -35754,6 +35808,11 @@ def resolve_entitlement(
         "effective_mode": effective_mode,
         "source_of_entitlement": source_of_entitlement,
         "is_welcome_trial": bool(is_welcome_trial),
+        # Furthest still-active earned-Pro grant (welcome trial + referral/support/streak bonus
+        # days). The billing payload turns this into a friendly "days" count — either the Pro
+        # the user has RIGHT NOW (Free) or the reserve banked past their paid period (Pro).
+        "bonus_until": (_to_aware_datetime(_earned_until).isoformat() if _earned_until else None),
+        "bonus_reason": (str(_earned_reason) if _earned_reason else None),
         "cap_eur": float(cap_eur) if cap_eur is not None else None,
         "reset_at": _next_local_midnight_iso(now_utc, tz=tz),
     }
