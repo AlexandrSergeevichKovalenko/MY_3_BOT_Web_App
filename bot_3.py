@@ -37999,8 +37999,13 @@ def main():
     application.add_handler(CommandHandler("reader_audio_churn_preview", reader_audio_churn_preview_command))
     application.add_handler(CommandHandler("admin_auto_purge_preview", admin_auto_purge_preview_command))
     # Telegram Stars payments (Mini App digital purchases): approve pre-checkout + fulfil.
+    # ⚠️ The fulfil handler MUST live in its OWN group. group=-1 already holds a catch-all
+    # TypeHandler(Update, _set_billing_user_context); PTB runs only the FIRST matching handler
+    # per group, so in group=-1 that TypeHandler swallowed every successful_payment and this
+    # handler never ran → paid Stars purchases were charged but never fulfilled (no grant,
+    # no sponsor, no DM). A dedicated group guarantees it always runs.
     application.add_handler(PreCheckoutQueryHandler(on_stars_pre_checkout))
-    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_stars_successful_payment), group=-1)
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_stars_successful_payment), group=1)
     application.add_handler(CommandHandler("admin_cw_revive", admin_crossword_revive_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
     application.add_handler(CommandHandler("admin_ls_pool", admin_listening_pool_command))
