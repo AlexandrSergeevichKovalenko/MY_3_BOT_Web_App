@@ -58,13 +58,7 @@ const REF_PARAM = (() => {
 // so a fresh user (nothing stored) sees RU regardless of their Telegram interface
 // language. Only an explicit earlier choice (stored 'ui_lang') is honoured — a user who
 // already switched to German stays in German. The 🌐 globe toggle switches in-wizard,
-// and on the very first RU start we point it out with a short toast (see LANG_HINTED).
-const HAS_STORED_LANG = (() => {
-  try {
-    const stored = (localStorage.getItem('ui_lang') || '').toLowerCase();
-    return stored === 'de' || stored === 'ru';
-  } catch (_e) { return false; }
-})();
+// and on the first RU open we point it out once with a short toast (see ob_lang_hinted).
 const LANG = (() => {
   try {
     const stored = (localStorage.getItem('ui_lang') || '').toLowerCase();
@@ -1042,12 +1036,13 @@ export default function OnboardingWizard() {
   const [proPrice, setProPrice] = useState('');           // live Pro price label (Stripe-configured)
   const [langHint, setLangHint] = useState(false);        // one-time «switch to German» toast + globe glow
 
-  // On the very first RU start (no language ever chosen), point out the 🌐 globe: the
-  // wizard defaults to Russian, but a learner who wants the German UI can tap here. Show
-  // a gentle 6s toast once and glow the globe while it's up. Shown only when we actually
-  // defaulted (nothing stored) and are in RU — never nags a user who already switched.
+  // On the first RU open, point out the 🌐 globe: the wizard is in Russian, but a learner
+  // who wants the German UI can tap here. Show a gentle 6s toast once and glow the globe
+  // while it's up. Only when currently in RU (a user already on DE isn't nagged), and only
+  // once ever (ob_lang_hinted). No ui_lang gate — existing users we drive into onboarding
+  // have a stored language too, and they should still be told they can switch.
   useEffect(() => {
-    if (HAS_STORED_LANG || LANG !== 'ru') return;
+    if (LANG !== 'ru') return;
     try { if (localStorage.getItem('ob_lang_hinted') === '1') return; } catch (_e) { /* noop */ }
     const show = setTimeout(() => {
       setLangHint(true);
