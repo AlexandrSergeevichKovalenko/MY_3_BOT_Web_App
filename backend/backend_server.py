@@ -57949,6 +57949,132 @@ def _run_weekly_group_summary_scheduler_job() -> None:
         logging.exception("❌ Weekly group summary scheduler failed")
 
 
+_RU_MONTHS_NOM = {
+    1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 5: "Май", 6: "Июнь",
+    7: "Июль", 8: "Август", 9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь",
+}
+
+
+def _group_month_member_totals(cohort: set, start: date, end_exclusive: date) -> dict[int, int]:
+    """Per-member activity total (games + translations + words) over [start, end_exclusive),
+    calendar-aligned via certificate_stats_for_window. {user_id: total}."""
+    try:
+        from backend.database import certificate_stats_for_window
+        stats = certificate_stats_for_window(start, end_exclusive) or {}
+    except Exception:
+        logging.warning("group month: certificate_stats_for_window failed", exc_info=True)
+        return {}
+    out: dict[int, int] = {}
+    for uid, s in stats.items():
+        if int(uid) not in cohort:
+            continue
+        out[int(uid)] = int(s.get("games") or 0) + int(s.get("translations") or 0) + int(s.get("words") or 0)
+    return out
+
+
+def _dispatch_monthly_group_summary(*, target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict[str, Any]:
+    # Fired on the 1st → celebrate the month that JUST ended (the month containing yesterday).
+    month_ref = target_date.replace(day=1) - timedelta(days=1)
+    bounds = get_period_bounds("month", today=month_ref)
+    next_month_start = bounds.end_date + timedelta(days=1)
+    prior_ref = bounds.start_date - timedelta(days=1)
+    prior_bounds = get_period_bounds("month", today=prior_ref)
+    prior_next = prior_bounds.end_date + timedelta(days=1)
+    month_label = f"{_RU_MONTHS_NOM.get(bounds.start_date.month, '')} {bounds.start_date.year}".strip()
+    month_days = (bounds.end_date - bounds.start_date).days + 1
+
+    targets = _collect_group_summary_targets()
+    if not targets:
+        return {"ok": True, "date": target_date.isoformat(), "month": month_label,
+                "sent": 0, "groups": 0, "errors": [], "tz": tz_name}
+
+    from backend.database import get_display_names_for_users
+    try:
+        fox_png = r2_get_bytes("battle/fox_reminder.png")
+    except Exception:
+        fox_png = None
+    active_getter = _make_active_on_date_cache()
+
+    sent = 0
+    errors: list[str] = []
+    groups = 0
+    for target in targets:
+        chat_id = int(target.get("chat_id") or 0)
+        if chat_id >= 0:
+            continue
+        groups += 1
+        try:
+            member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
+            cohort = {int(u) for u in member_user_ids}
+            if not cohort:
+                continue
+            per = _group_month_member_totals(cohort, bounds.start_date, next_month_start)
+            total = sum(per.values())
+            if total <= 0:
+                continue  # nothing happened this month — skip the empty celebration
+            prev_total = sum(_group_month_member_totals(cohort, prior_bounds.start_date, prior_next).values())
+            champion_uid = max(per, key=lambda u: per[u]) if per else None
+            champion_name = ""
+            if champion_uid is not None and per.get(champion_uid, 0) > 0:
+                try:
+                    champion_name = str((get_display_names_for_users([champion_uid]) or {}).get(champion_uid) or "").strip()
+                except Exception:
+                    champion_name = ""
+            together = _group_all_together_days(cohort, bounds.start_date, bounds.end_date, active_getter)
+            group_name = str(target.get("chat_title") or "").strip()
+
+            from backend.certificate_poster import render_monthly_group_poster
+            poster = render_monthly_group_poster(
+                group_name=group_name, month_label=month_label, total=total,
+                prev_total=(prev_total or None), champion_name=(champion_name or None),
+                together_days=together, month_days=month_days, hero_png=fox_png,
+            )
+            caption = f"🎉 <b>Итог месяца — {month_label}</b>. Так держать всей группой! 👏"
+            if poster:
+                _send_group_photo(
+                    image_bytes=poster,
+                    filename=f"group_month_{abs(chat_id)}_{bounds.start_date.isoformat()}.png",
+                    caption=caption, chat_id=chat_id, parse_mode="HTML",
+                )
+            else:
+                _send_group_message(text=caption, chat_id=chat_id, parse_mode="HTML")
+            sent += 1
+        except Exception as exc:
+            errors.append(f"chat {chat_id}: {exc}")
+            logging.warning("⚠️ Failed to send monthly group summary chat_id=%s", chat_id, exc_info=True)
+
+    return {"ok": True, "date": target_date.isoformat(), "month": month_label, "tz": tz_name,
+            "groups": groups, "sent": sent, "errors": errors}
+
+
+def _run_monthly_group_summary_scheduler_job() -> None:
+    tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    target_date = _get_local_today_date(tz_name)
+    month_ref = target_date.replace(day=1) - timedelta(days=1)
+    run_period = month_ref.strftime("%Y-%m")
+    if not claim_scheduler_run_guard(
+        job_key="monthly_group_summary_auto",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": tz_name, "month": run_period},
+    ):
+        logging.info("ℹ️ Monthly group summary scheduler skipped: run guard already claimed for %s", run_period)
+        return
+    try:
+        result = _dispatch_monthly_group_summary(target_date=target_date, tz_name=tz_name)
+        finish_scheduler_run_guard(
+            job_key="monthly_group_summary_auto", run_period=run_period, target_scope="global",
+            status="completed", metadata=result if isinstance(result, dict) else {},
+        )
+        logging.info("✅ Monthly group summary scheduler finished: %s", result)
+    except Exception as exc:
+        finish_scheduler_run_guard(
+            job_key="monthly_group_summary_auto", run_period=run_period, target_scope="global",
+            status="failed", metadata={"error": str(exc)[:1000], "tz": tz_name},
+        )
+        logging.exception("❌ Monthly group summary scheduler failed")
+
+
 def _format_today_plan_message(plan: dict) -> str:
     total = int(plan.get("total_minutes") or 0)
     lines = ["Твои задачи на сегодня готовы ✅", f"Всего {total} минут:"]
@@ -59652,6 +59778,28 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=300,
         )
+    monthly_group_summary_enabled = (os.getenv("GROUP_MONTHLY_SUMMARY_ENABLED") or "1").strip().lower()
+    if monthly_group_summary_enabled in ("1", "true", "yes", "on"):
+        monthly_group_summary_day = int((os.getenv("GROUP_MONTHLY_SUMMARY_DAY") or "1").strip())
+        monthly_group_summary_hour = int((os.getenv("GROUP_MONTHLY_SUMMARY_HOUR") or "12").strip())
+        monthly_group_summary_minute = int((os.getenv("GROUP_MONTHLY_SUMMARY_MINUTE") or "0").strip())
+        monthly_group_summary_tz_name = (os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ or "UTC").strip() or "UTC"
+        try:
+            monthly_group_summary_tz = ZoneInfo(monthly_group_summary_tz_name)
+        except Exception:
+            logging.warning("⚠️ Invalid GROUP_SUMMARY_TZ for monthly group summary: %s. Falling back to UTC", monthly_group_summary_tz_name)
+            monthly_group_summary_tz = ZoneInfo("UTC")
+        _audio_scheduler.add_job(
+            _run_monthly_group_summary_scheduler_job,
+            "cron",
+            day=monthly_group_summary_day,
+            hour=monthly_group_summary_hour,
+            minute=monthly_group_summary_minute,
+            timezone=monthly_group_summary_tz,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
     # HARD-DISABLED in code (owner decision): the «Твои задачи на сегодня готовы» morning DM
     # must NEVER go out. We intentionally no longer honor TODAY_PLAN_SCHEDULER_ENABLED — a
     # leftover env=1 on some service kept the cron alive, and a queued run got processed late
@@ -60540,6 +60688,30 @@ def send_weekly_group_summary_now():
         target_date = _get_local_today_date(tz_name)
 
     result = _dispatch_weekly_group_summary(target_date=target_date, tz_name=tz_name)
+    return jsonify(result)
+
+
+@app.route("/api/admin/send-monthly-group-summary", methods=["POST"])
+def send_monthly_group_summary_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    tz_name = (payload.get("tz") or os.getenv("GROUP_SUMMARY_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+    date_str = (payload.get("date") or "").strip()
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Неверный формат даты, нужен YYYY-MM-DD"}), 400
+    else:
+        target_date = _get_local_today_date(tz_name)
+
+    result = _dispatch_monthly_group_summary(target_date=target_date, tz_name=tz_name)
     return jsonify(result)
 
 

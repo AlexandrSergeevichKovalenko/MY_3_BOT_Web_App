@@ -144,3 +144,65 @@ def render_certificate(*, name: str, title: str, subtitle: str, rows: list[dict]
     out = BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
+
+
+def render_monthly_group_poster(*, group_name: str, month_label: str, total: int,
+                                prev_total: int | None, champion_name: str | None,
+                                together_days: int, month_days: int,
+                                hero_png: bytes | None = None) -> bytes | None:
+    """Co-op monthly milestone card for a GROUP: big hero number (задания вместе за
+    месяц), growth vs the previous month, month champion, and 'all together' days.
+    Cream/gold Fuchs style with a Felix seal. NO color emoji in drawn text (server
+    font has none) — celebratory emoji live in the Telegram caption instead."""
+    if Image is None:
+        return None
+    img = Image.new("RGB", (W, H))
+    d = ImageDraw.Draw(img)
+    for y in range(H):
+        d.line([(0, y), (W, y)], fill=_lerp(CREAM_TOP, CREAM_BOT, y / H))
+    d.rounded_rectangle([26, 26, W - 26, H - 26], radius=34, outline=GOLD, width=6)
+    d.rounded_rectangle([44, 44, W - 44, H - 44], radius=26, outline=GOLD_LT, width=2)
+
+    # Felix seal (or a vector medal) top-center.
+    seal = _avatar_circle(hero_png, 168, GOLD) if hero_png else None
+    if seal:
+        img.paste(seal, (W // 2 - 84, 92), seal)
+    else:
+        _medal(d, W // 2, 176, 60)
+
+    _ctext(d, W // 2, 300, "ИТОГ МЕСЯЦА", _fit_font(d, "ИТОГ МЕСЯЦА", W - 160, 78), GOLD)
+    _ctext(d, W // 2, 398, month_label, _font(40, False), MUTED)
+    if group_name:
+        _ctext(d, W // 2, 456, group_name, _fit_font(d, group_name, W - 200, 54, min_size=30), INK)
+    d.line([(W // 2 - 180, 540), (W // 2 + 180, 540)], fill=GOLD, width=3)
+
+    # Hero number.
+    hero = str(int(total))
+    _ctext(d, W // 2, 596, hero, _fit_font(d, hero, W - 240, 250, min_size=90), GOLD)
+    _ctext(d, W // 2, 892, "заданий вместе за месяц", _font(44, False), INK)
+
+    # Growth vs previous month.
+    if prev_total and int(prev_total) > 0:
+        pct = round((int(total) - int(prev_total)) / int(prev_total) * 100)
+        if pct >= 0:
+            _ctext(d, W // 2, 968, f"на {pct}% больше, чем в прошлом месяце", _font(38, False), GREEN)
+        else:
+            _ctext(d, W // 2, 968, f"на {abs(pct)}% меньше, чем в прошлом месяце", _font(38, False), MUTED)
+    else:
+        _ctext(d, W // 2, 968, "первый месяц вместе — так держать!", _font(38, False), MUTED)
+
+    # Highlights.
+    y = 1074
+    if champion_name:
+        line = f"Чемпион месяца — {champion_name}"
+        _ctext(d, W // 2, y, line, _fit_font(d, line, W - 200, 46, min_size=28), INK)
+        y += 76
+    if together_days and month_days:
+        _ctext(d, W // 2, y, f"Все вместе занимались {together_days} из {month_days} дней",
+               _font(36, False), MUTED)
+
+    _ctext(d, W // 2, H - 96, "Schlaufuchs", _font(32, False), MUTED)
+
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
