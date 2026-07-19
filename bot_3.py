@@ -30546,78 +30546,12 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
         {**r, "name": display_names.get(int(r["user_id"])) or str(r.get("name") or "")}
         for r in rows
     ]
-    try:
-        groups = await asyncio.to_thread(list_known_webapp_group_chats, 500)
-    except Exception:
-        groups = []
-    sent = 0
-    dm_fallback = 0
-    dead_groups = 0
-    served: set[int] = set()  # members already reached this run (via group post or DM)
-    for g in groups or []:
-        try:
-            chat_id = int(g.get("chat_id") or 0)
-        except Exception:
-            continue
-        if chat_id == 0:
-            continue
-        try:
-            participants = set(await asyncio.to_thread(list_group_participants, chat_id))
-        except Exception:
-            participants = set()
-        if not participants:
-            continue
-        grows = [r for r in rows if int(r["user_id"]) in participants]
-        if not grows:
-            continue
-        lb = _compute_quiz_leaderboard(grows)
-        text = _build_group_daily_report(lb, g.get("chat_title"))
-        if not text:
-            continue
-        # A ready-made card (rendered PNG) + a Mini-App button that opens the same
-        # leaderboard in the app. No user-facing slash command in the chat.
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-            text="🏅 Открыть рейтинг", url=get_webapp_deeplink("lb1"))]])
-        poster = None
-        try:
-            avatars: dict[int, bytes] = {}
-            for ldr in (lb.get("leaders") or [])[:3]:
-                av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
-                if av:
-                    avatars[int(ldr["user_id"])] = av
-            from backend.champion_poster import render_champion_poster
-            poster = await asyncio.to_thread(
-                render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
-                header="CHAMPION DER GRUPPE", subtitle=_get_quiz_schedule_now().strftime("%d.%m.%Y"),
-            )
-        except Exception:
-            logging.warning("group daily report: poster render failed chat_id=%s", chat_id, exc_info=True)
-        try:
-            if poster:
-                champ_msg = await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(poster),
-                                             caption=text, parse_mode="HTML", reply_markup=kb)
-                await _preserve_system_message(champ_msg, "champion")  # winner keepsake, don't auto-delete
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
-            sent += 1
-            served |= {int(u) for u in participants}  # they saw it in the group
-        except Exception as exc:
-            if _is_dead_group_error(exc):
-                # Group is gone for good → retire its membership. Its active members
-                # get picked up by the solo/global daily pass below (as normal users).
-                logging.warning("group daily report: group %s is dead (%s) → deactivating", chat_id, exc)
-                try:
-                    await asyncio.to_thread(deactivate_group_chat, chat_id)
-                    dead_groups += 1
-                except Exception:
-                    logging.warning("deactivate_group_chat failed chat_id=%s", chat_id, exc_info=True)
-            else:
-                # Transient failure (network/timeout) → DM the poster to members so
-                # they still get it now; the group stays live and is retried next run.
-                logging.warning("group daily report send failed chat_id=%s — DM fallback", chat_id, exc_info=True)
-                dm_fallback += await _dm_group_champion_fallback(
-                    context, participants=participants, poster=poster, text=text, kb=kb, served=served)
-    logging.info("group_daily_report sent=%d groups dm_fallback=%d dead_groups=%d", sent, dm_fallback, dead_groups)
+    # Group-scoped daily champion poster: DISABLED (2026-07-19). Replaced by the unified
+    # daily group PULSE (backend_server._dispatch_daily_group_summary — tiny text: who
+    # trained today + blame-free group streak + today's total). Posting this heavy poster
+    # into the group too was a duplicate. The SOLO/global DM pass below is UNCHANGED —
+    # group members are excluded from it via _collect_all_group_participant_ids, so nobody
+    # is double-served.
 
     # Solo/global daily champion: users NOT in any live group who played today get the
     # GLOBAL "кто лучший за день" грамота in DM (1-2-3 place + their own rank via the

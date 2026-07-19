@@ -18601,6 +18601,7 @@ def _send_group_message(
     reply_markup: dict | None = None,
     disable_web_page_preview: bool = True,
     chat_id: int | None = None,
+    parse_mode: str | None = None,
 ) -> None:
     target_chat_id = int(chat_id) if chat_id is not None else (int(TELEGRAM_GROUP_CHAT_ID) if TELEGRAM_GROUP_CHAT_ID else None)
     if target_chat_id is None:
@@ -18611,6 +18612,8 @@ def _send_group_message(
         "text": text,
         "disable_web_page_preview": bool(disable_web_page_preview),
     }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = reply_markup
     response = requests.post(
@@ -57321,10 +57324,125 @@ def _apply_group_summary_labels(rows: list[dict[str, Any]]) -> list[dict[str, An
     return normalized
 
 
+def _ru_plural(n: int, one: str, few: str, many: str) -> str:
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not (12 <= n % 100 <= 14):
+        return few
+    return many
+
+
+def _get_users_active_on_date_safe(day) -> set:
+    try:
+        from backend.database import get_users_active_on_date
+        return {int(u) for u in (get_users_active_on_date(day) or set())}
+    except Exception:
+        logging.warning("group: get_users_active_on_date failed for %s", day, exc_info=True)
+        return set()
+
+
+def _make_active_on_date_cache():
+    """Memoise the (heavy) per-date active-user set within one dispatch run so multiple
+    groups + a multi-day streak walk don't re-query the same day."""
+    cache: dict = {}
+
+    def getter(day):
+        if day not in cache:
+            cache[day] = _get_users_active_on_date_safe(day)
+        return cache[day]
+
+    return getter
+
+
+def _group_streak_days(cohort: set, today: date, active_getter, max_lookback: int = 60) -> int:
+    """Consecutive days ending today the group was 'on the go' — at least ONE member
+    active. Blame-free by design: a single member skipping never breaks it."""
+    if not cohort:
+        return 0
+    streak = 0
+    day = today
+    for _ in range(max_lookback):
+        if active_getter(day) & cohort:
+            streak += 1
+            day = day - timedelta(days=1)
+        else:
+            break
+    return streak
+
+
+def _group_all_together_days(cohort: set, start: date, end: date, active_getter) -> int:
+    """Days in [start, end] EVERY member trained — the weekly 'all together' pride stat
+    (kept out of the daily streak so one skipped day never blames anyone)."""
+    if not cohort:
+        return 0
+    days = 0
+    day = start
+    while day <= end:
+        if cohort <= active_getter(day):
+            days += 1
+        day = day + timedelta(days=1)
+    return days
+
+
+def _group_day_total(cohort: set, day: date) -> int:
+    """Total activities the group did on `day`: translations + interactive/quiz answers
+    + words learned. (Quiz uses the last-24h window — valid for today's pulse only.)"""
+    total = 0
+    try:
+        trows = _fetch_group_daily_summary_rows(target_date=day, cohort_user_ids=list(cohort))
+        total += sum(int(r.get("translated") or 0) for r in (trows or []))
+    except Exception:
+        logging.warning("group day total: translations failed", exc_info=True)
+    try:
+        from backend.quiz_leaderboard import get_leaderboard_rows_since, compute_quiz_leaderboard
+        qrows = [r for r in (get_leaderboard_rows_since(24) or []) if int(r.get("user_id") or 0) in cohort]
+        total += sum(int(l.get("answered") or 0) for l in (compute_quiz_leaderboard(qrows).get("leaders") or []))
+    except Exception:
+        logging.warning("group day total: quiz failed", exc_info=True)
+    try:
+        from backend.database import _cert_learned_words_by_user
+        wmap = _cert_learned_words_by_user(day, day + timedelta(days=1))
+        total += sum(int(c or 0) for u, c in (wmap or {}).items() if int(u) in cohort)
+    except Exception:
+        logging.warning("group day total: words failed", exc_info=True)
+    return int(total)
+
+
+def _format_group_daily_pulse(*, target_date: date, member_names: dict, active_ids: set, streak_days: int, day_total: int) -> str:
+    """Tiny co-op end-of-day pulse (Telegram HTML): who trained, group streak, day total."""
+    from html import escape as _esc
+
+    def nm(uid: int) -> str:
+        n = str(member_names.get(int(uid)) or "").strip()
+        return _esc(n) if n else "участник"
+
+    ordered = list(member_names.keys())
+    active = [uid for uid in ordered if int(uid) in active_ids]
+    absent = [uid for uid in ordered if int(uid) not in active_ids]
+    lines = [f"🦊 <b>Итоги дня</b> · {target_date.strftime('%d.%m')}"]
+    if active:
+        lines.append("Занимались: " + " · ".join(f"✅ {nm(u)}" for u in active))
+    else:
+        lines.append("Сегодня пока тихо — завтра наверстаем 🙂")
+    if absent and active:
+        verb = "сегодня отдохнул" if len(absent) == 1 else "сегодня отдыхают"
+        lines.append("🌙 " + ", ".join(nm(u) for u in absent) + " " + verb)
+    if streak_days >= 2:
+        lines.append(f"🔥 Группа на ходу — {streak_days}-й день подряд")
+    if day_total > 0:
+        word = _ru_plural(day_total, "задание", "задания", "заданий")
+        lines.append(f"📚 Сегодня вместе: {day_total} {word}")
+    return "\n".join(lines)
+
+
 def _dispatch_daily_group_summary(*, target_date: date, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict[str, Any]:
     targets = _collect_group_summary_targets()
     if not targets:
         return {"ok": True, "date": target_date.isoformat(), "sent": 0, "groups": 0, "errors": [], "tz": tz_name}
+
+    active_getter = _make_active_on_date_cache()
+    from backend.database import get_display_names_for_users
 
     sent = 0
     errors: list[str] = []
@@ -57336,28 +57454,27 @@ def _dispatch_daily_group_summary(*, target_date: date, tz_name: str = TODAY_PLA
         groups += 1
         try:
             member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
-            rows = _fetch_group_daily_summary_rows(target_date=target_date, cohort_user_ids=member_user_ids)
-            labeled_rows = _apply_group_summary_labels(rows)
-            text = _format_group_daily_summary_message(target_date=target_date, rows=labeled_rows)
-            _send_group_message(text=text, chat_id=chat_id)
-            chart_png = _build_compare_leaderboard_chart_png(
-                rows=labeled_rows,
-                title="Итоги дня на текущий момент",
-                subtitle=target_date.isoformat(),
-                highlight_user_id=None,
-                max_items=8,
+            cohort = {int(u) for u in member_user_ids}
+            if not cohort:
+                continue
+            try:
+                member_names = dict(get_display_names_for_users(list(cohort)) or {})
+            except Exception:
+                member_names = {}
+            for uid in cohort:
+                member_names.setdefault(int(uid), "")
+            active_ids = active_getter(target_date) & cohort
+            streak = _group_streak_days(cohort, target_date, active_getter)
+            day_total = _group_day_total(cohort, target_date)
+            text = _format_group_daily_pulse(
+                target_date=target_date, member_names=member_names,
+                active_ids=active_ids, streak_days=streak, day_total=day_total,
             )
-            if chart_png:
-                _send_group_photo(
-                    image_bytes=chart_png,
-                    filename=f"group_daily_compare_{abs(chat_id)}_{target_date.isoformat()}.png",
-                    caption=f"📊 Диаграмма сравнения за день\n{target_date.isoformat()}",
-                    chat_id=chat_id,
-                )
+            _send_group_message(text=text, chat_id=chat_id, parse_mode="HTML")
             sent += 1
         except Exception as exc:
             errors.append(f"chat {chat_id}: {exc}")
-            logging.warning("⚠️ Failed to send daily group summary chat_id=%s", chat_id, exc_info=True)
+            logging.warning("⚠️ Failed to send daily group pulse chat_id=%s", chat_id, exc_info=True)
 
     return {
         "ok": True,
@@ -57478,7 +57595,8 @@ def _collect_group_weekly_activity(*, member_user_ids: list[int], week_start: da
 
 def _format_group_weekly_hybrid_caption(
     *, activity: dict, avg4: float | None, record: int | None,
-    week_start: date, week_end: date, global_rank: dict, global_total: int
+    week_start: date, week_end: date, global_rank: dict, global_total: int,
+    all_together_days: int = 0, week_days: int = 7
 ) -> str:
     """Short co-op caption (Telegram HTML): group-vs-usual hero line, who led each activity,
     and each member's global top-N%. The chart image carries the visual comparison."""
@@ -57506,6 +57624,10 @@ def _format_group_weekly_hybrid_caption(
             lines.append(f"💪 <b>{group_total}</b> заданий вместе — обычно {avg_i}. Чуть меньше — наверстаем!")
         if record and group_total >= int(record) and group_total > avg_i:
             lines.append("🏆 Новый рекорд группы!")
+
+    if all_together_days and week_days:
+        dword = _ru_plural(all_together_days, "день", "дня", "дней")
+        lines.append(f"👨‍👩‍👧 Все вместе занимались {all_together_days} из {week_days} {dword}")
 
     def top_by(key: str):
         cand = [(uid, m) for uid, m in members.items() if int(m.get(key) or 0) > 0]
@@ -57566,6 +57688,7 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
         logging.warning("weekly group: global leaderboard failed", exc_info=True)
 
     from backend.database import upsert_group_weekly_total, get_group_recent_weekly_totals
+    active_getter = _make_active_on_date_cache()
 
     sent = 0
     errors: list[str] = []
@@ -57587,10 +57710,15 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
             avg4 = (sum(past) / len(past)) if past else None
             record = max(past + [group_total]) if past else None
 
+            all_together = _group_all_together_days(
+                {int(u) for u in member_user_ids}, bounds.start_date, bounds.end_date, active_getter
+            )
             caption = _format_group_weekly_hybrid_caption(
                 activity=activity, avg4=avg4, record=record,
                 week_start=bounds.start_date, week_end=bounds.end_date,
                 global_rank=global_rank, global_total=global_total,
+                all_together_days=all_together,
+                week_days=(bounds.end_date - bounds.start_date).days + 1,
             )
             subtitle = f"{bounds.start_date.strftime('%d.%m')} — {bounds.end_date.strftime('%d.%m')}"
             chart_png = _build_group_week_vs_avg_chart_png(
