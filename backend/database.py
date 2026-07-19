@@ -47083,13 +47083,14 @@ def mark_analytics_snapshots_dirty_for_user(
     """Mark a user's snapshots dirty so they get recomputed. Returns rows touched.
     If source/target lang given, scope to that pair; otherwise all pairs.
     When include_member_groups=True, also marks dirty the group-scope snapshots
-    (keyed by the group's chat_id) for every group the user is a confirmed
-    member of — so group analytics reflect the member's same-day activity."""
+    (keyed by the group's chat_id) for every group the user has been SEEN in — so
+    group analytics reflect the member's same-day activity. No button confirmation
+    required (all-seen model, 2026-07-19); excludes groups retired as dead."""
     # Snapshot rows the activity affects: the user's own (personal) rows plus
     # the group rows (stored under the group's chat_id) for their groups.
     group_subquery = (
         " OR user_id IN (SELECT chat_id FROM bt_3_webapp_group_contexts "
-        "WHERE user_id = %s AND participation_confirmed = TRUE)"
+        "WHERE user_id = %s AND participation_confirmed_source IS DISTINCT FROM 'auto_group_dead')"
         if include_member_groups else ""
     )
     with get_db_connection_context() as conn:
