@@ -6871,12 +6871,12 @@ def _group_welcome_text(chat_title: str | None = None) -> str:
 
 
 def _group_welcome_keyboard() -> InlineKeyboardMarkup:
-    # Open the in-app Analytics section (startapp=analytics) — that's where the group
-    # comparison / scope selector lives and it shows real activity. NOT "lb1" (the global
-    # QUIZ leaderboard, quiz-only + 1-day window → usually empty) and NOT "review" (word
-    # practice, the get_webapp_deeplink() default).
+    # Open the app HOME (startapp=today) — free and useful for EVERY member. NOT "analytics"
+    # (the in-app group comparison is Pro-gated → Free users would hit a paywall), NOT "lb1"
+    # (global quiz-only board, often empty), NOT "review" (word practice). The group RESULTS
+    # themselves reach everyone as the in-chat daily/weekly posts regardless of plan.
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(text="📊 Открыть статистику", url=get_webapp_deeplink("analytics"))]]
+        [[InlineKeyboardButton(text="📲 Открыть приложение", url=get_webapp_deeplink("today"))]]
     )
 
 
