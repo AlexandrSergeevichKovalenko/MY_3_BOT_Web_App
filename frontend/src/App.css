@@ -16553,6 +16553,9 @@ body.worldnews-active .webapp-topbar {
   .youtube-puzzle-bar .ypb-seg button:hover:not(:disabled) { color: var(--d-title); }
   .youtube-puzzle-bar .ypb-seg button:disabled { opacity: .45; cursor: default; }
   .youtube-puzzle-bar .ypb-seg button.on { background: var(--d-accent); color: var(--d-on-accent); box-shadow: 0 4px 12px var(--d-accent-soft); }
+  /* тап по DE/RU когда субтитры ещё грузятся — мягкая пульсация */
+  .youtube-puzzle-bar .ypb-seg button.is-loading { animation: ypb-seg-pulse 1s ease-in-out infinite; color: var(--d-accent-2); }
+  @keyframes ypb-seg-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 
   /* CC — родные субтитры YouTube (маленькая кнопка рядом с DE/RU) */
   .youtube-puzzle-bar .ypb-cc {

@@ -5934,6 +5934,19 @@ function AppInner() {
       return next;
     });
   };
+  // Тап по DE/RU: если субтитры ещё не загружены — тянем их сами (без ручного шага в ⚙)
+  // и заранее включаем нужную дорожку, чтобы она показалась, как только подтянется.
+  // Если уже загружены — просто переключаем. «Нет субтитров» покажет штатная заглушка.
+  const handleSubtitleTrackTap = (track) => {
+    if (!youtubeSubtitlesReady) {
+      if (track === 'de') setYoutubeOriginalEnabled(true);
+      if (track === 'ru') setYoutubeTranslationEnabled(true);
+      if (!youtubeLoadDisabled) fetchTranscript();
+      return;
+    }
+    if (track === 'de') setYoutubeOriginalEnabled((v) => !v);
+    if (track === 'ru') handleCatalogRuToggle();
+  };
   const [youtubeIsPaused, setYoutubeIsPaused] = useState(false);
   const [youtubePlaybackStarted, setYoutubePlaybackStarted] = useState(false);
   const [youtubeForceShowPanel, setYoutubeForceShowPanel] = useState(false);
@@ -27909,17 +27922,29 @@ function AppInner() {
           <b>Aa</b>
           <button type="button" onClick={() => setYoutubeSubFontStep((s) => Math.min(4, s + 1))} disabled={youtubeSubFontStep >= 4} aria-label={tr('Больше', 'Größer')}>+</button>
         </div>
-        {/* языки субтитров */}
+        {/* языки субтитров — тап сам подтягивает субтитры (без ручного шага в ⚙) */}
         <div className="ypb-seg" role="group" aria-label={tr('Субтитры', 'Untertitel')}>
-          <button type="button" className={youtubeOriginalEnabled ? 'on' : ''} onClick={() => setYoutubeOriginalEnabled((v) => !v)} disabled={!subsReady} title={tr('Немецкие субтитры', 'Deutsche Untertitel')}>DE</button>
-          <button type="button" className={youtubeTranslationEnabled ? 'on' : ''} onClick={handleCatalogRuToggle} disabled={!subsReady} title={tr('Русские субтитры', 'Russische Untertitel')}>RU</button>
+          <button
+            type="button"
+            className={`${youtubeOriginalEnabled && subsReady ? 'on' : ''} ${youtubeTranscriptLoading && !subsReady ? 'is-loading' : ''}`}
+            onClick={() => handleSubtitleTrackTap('de')}
+            disabled={!youtubeId || youtubeTranscriptLoading}
+            title={tr('Немецкие субтитры', 'Deutsche Untertitel')}
+          >DE</button>
+          <button
+            type="button"
+            className={`${youtubeTranslationEnabled && subsReady ? 'on' : ''} ${youtubeTranscriptLoading && !subsReady ? 'is-loading' : ''}`}
+            onClick={() => handleSubtitleTrackTap('ru')}
+            disabled={!youtubeId || youtubeTranscriptLoading}
+            title={tr('Русские субтитры', 'Russische Untertitel')}
+          >RU</button>
         </div>
-        {/* CC — родные субтитры YouTube (по умолчанию выкл, чтобы не дублировать наши) */}
+        {/* CC — родные субтитры YouTube (независимо от наших; по умолчанию выкл) */}
         <button
           type="button"
           className={`ypb-cc ${youtubeNativeCcOn ? 'on' : ''}`}
           onClick={toggleYoutubeNativeCc}
-          disabled={!subsReady}
+          disabled={!youtubeId}
           title={youtubeNativeCcOn ? tr('Выключить субтитры YouTube', 'YouTube-Untertitel aus') : tr('Включить субтитры YouTube', 'YouTube-Untertitel an')}
           aria-pressed={youtubeNativeCcOn}
         >
