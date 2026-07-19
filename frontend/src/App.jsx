@@ -27320,8 +27320,21 @@ function AppInner() {
     setYoutubeDictEnriching(true);
 
     // Kick the slow structured lookup off immediately so it runs in parallel with the
-    // instant translate below — not after it.
-    const structuredPromise = fetchYoutubeDictStructured(q).catch((err) => {
+    // instant translate below — not after it. Mirror the main dictionary: normalize the
+    // query first (backend /normalize is noun-aware and article-aware) so a typed noun like
+    // "Das Rennen" resolves to the noun, not the verb "rennen". Normalization is scoped to
+    // the structured path only — the instant MT below still runs on the raw query, so a
+    // subtitle tap stays instant even if /normalize is slow.
+    const structuredPromise = (async () => {
+      let lookupWord = q;
+      try {
+        const norm = await normalizeForLookup(q);
+        if (norm && String(norm).trim()) lookupWord = String(norm).trim();
+      } catch (_e) {
+        // normalization failed — fall back to the raw query
+      }
+      return fetchYoutubeDictStructured(lookupWord);
+    })().catch((err) => {
       throw err;
     });
 
