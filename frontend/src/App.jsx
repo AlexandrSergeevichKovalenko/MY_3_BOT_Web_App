@@ -5983,6 +5983,10 @@ function AppInner() {
   // While the (slow, ~10s) structured lookup is still running in the background after the
   // instant translation has already painted. Save/Feel need the canonical entry, so they wait.
   const [youtubeDictEnriching, setYoutubeDictEnriching] = useState(false);
+  // Article (der/die/das) resolved from the FAST side — the structured item's own article is
+  // often empty, so like the quick dict we keep the MT/Wiktionary/probe article and fall back
+  // to it in the head. Survives the phase-2 structured replace.
+  const [youtubeDictQuickArticle, setYoutubeDictQuickArticle] = useState('');
   const [manualTranscript, setManualTranscript] = useState('');
   const translationResultCardRefsRef = useRef(new Map());
   const [readerInput, setReaderInput] = useState('');
@@ -6988,6 +6992,10 @@ function AppInner() {
   // normalized word. Re-tapping the same word paints instantly instead of paying the LLM again.
   const youtubeDictStructuredCacheRef = useRef(new Map());
   const youtubeDictStructuredInFlightRef = useRef(new Map());
+  // Resolved der/die/das per word, so re-taps (and the phase-2 replace) keep the article.
+  const youtubeDictArticleCacheRef = useRef(new Map());
+  // Guards the async article probe against a stale lookup overwriting a newer one.
+  const youtubeDictLookupSeqRef = useRef(0);
   // Scroll position captured when the floating dict input gains focus. iOS WKWebView
   // (standalone PWA especially) natively scrolls the document/layout viewport to "reveal"
   // a focused input — even one inside a position:fixed overlay — which drags the YouTube
@@ -27258,9 +27266,33 @@ function AppInner() {
     return promise;
   };
 
+  // German der/die/das for a single noun that missed the instant Wiktionary lookup — an LLM
+  // job patches the cache, so poll the probe a few times (mirrors the quick dict). `seq` guards
+  // against a newer lookup: a stale probe must never overwrite the current word's article.
+  const resolveYoutubeDictArticleProbe = async (germanWord, sourceLang, targetLang, seq) => {
+    const g = String(germanWord || '').trim();
+    if (!g || /\s/.test(g) || g[0] !== g[0].toUpperCase()) return; // single, capitalized noun only
+    for (const delay of [900, 1300, 1600, 2000, 2500]) {
+      await new Promise((r) => setTimeout(r, delay));
+      if (seq !== youtubeDictLookupSeqRef.current) return;
+      let art = '';
+      try {
+        const a = await dictApi('/api/translate/quick/article', { text: g, source_lang: sourceLang || 'de', target_lang: targetLang || 'ru' });
+        art = String(a?.article || '').trim();
+      } catch (_e) { /* keep polling */ }
+      if (seq !== youtubeDictLookupSeqRef.current) return;
+      if (art) {
+        youtubeDictArticleCacheRef.current.set(g.toLowerCase(), art);
+        setYoutubeDictQuickArticle((prev) => prev || art);
+        return;
+      }
+    }
+  };
+
   const lookupYoutubeDict = async (word) => {
     const q = (word || '').trim();
     if (!q) return;
+    const seq = (youtubeDictLookupSeqRef.current += 1);
     setYoutubeDictOpen(true);
     setYoutubeDictQuery(q);
     setYoutubeDictError('');
@@ -27268,6 +27300,8 @@ function AppInner() {
     setYoutubeDictSaved(false);
     setYoutubeDictSavedEntryId(0);
     setYoutubeDictFeelStatus('');
+    // Seed the article from cache (re-tap) so it never flickers away.
+    setYoutubeDictQuickArticle(youtubeDictArticleCacheRef.current.get(q.toLowerCase()) || '');
 
     // Fast path: if the structured result is already cached, show it straight away — no
     // instant-translate flicker, save is immediately available.
@@ -27275,6 +27309,9 @@ function AppInner() {
     if (cachedStructured) {
       setYoutubeDictLoading(false);
       setYoutubeDictEnriching(false);
+      if (String(cachedStructured.article || '').trim()) {
+        setYoutubeDictQuickArticle(String(cachedStructured.article).trim());
+      }
       setYoutubeDictResult(cachedStructured);
       return;
     }
@@ -27292,10 +27329,22 @@ function AppInner() {
     // Phase 1 — instant translation (external MT, sub-second, cached/coalesced).
     try {
       const quick = await requestQuickTranslation(q);
+      if (seq !== youtubeDictLookupSeqRef.current) return;
       if (String(quick?.translation || '').trim()) {
         setYoutubeDictResult(buildYoutubeDictPartial(quick));
         setYoutubeDictLoading(false);
         paintedPartial = true;
+      }
+      // Article: from the instant translate if present, else probe (German single noun).
+      const src = String(quick?.detectedSource || quick?.sourceLangHint || '').toLowerCase();
+      const tgt = String(quick?.targetLang || '').toLowerCase();
+      const germanWord = src === 'de' ? q : (tgt === 'de' ? String(quick?.translation || '').trim() : '');
+      const instantArticle = String(quick?.article || '').trim();
+      if (instantArticle) {
+        youtubeDictArticleCacheRef.current.set(q.toLowerCase(), instantArticle);
+        setYoutubeDictQuickArticle((prev) => prev || instantArticle);
+      } else if (germanWord) {
+        resolveYoutubeDictArticleProbe(germanWord, src || 'de', tgt || 'ru', seq);
       }
     } catch (_e) {
       // MT failed — fall through and just wait on the structured result below.
@@ -27304,8 +27353,19 @@ function AppInner() {
     // Phase 2 — structured breakdown replaces the partial card and unlocks save/feel.
     try {
       const item = await structuredPromise;
-      if (item) setYoutubeDictResult(item);
-      else if (!paintedPartial) setYoutubeDictError('Fehler');
+      if (seq !== youtubeDictLookupSeqRef.current) return;
+      if (item) {
+        // Carry the fast-side article onto the structured item so it never disappears when
+        // the card upgrades (the structured item's own article is often empty).
+        const carried = youtubeDictArticleCacheRef.current.get(q.toLowerCase()) || '';
+        const structuredArticle = String(item.article || '').trim();
+        if (!structuredArticle && carried) item.article = carried;
+        else if (structuredArticle) {
+          youtubeDictArticleCacheRef.current.set(q.toLowerCase(), structuredArticle);
+          setYoutubeDictQuickArticle((prev) => prev || structuredArticle);
+        }
+        setYoutubeDictResult(item);
+      } else if (!paintedPartial) setYoutubeDictError('Fehler');
     } catch (err) {
       if (!paintedPartial) setYoutubeDictError(String(err.message || 'Fehler'));
       // If the partial already painted, keep it — a translation beats an error.
@@ -36207,7 +36267,7 @@ function AppInner() {
                           <button
                             type="button"
                             className="yt-dict-widget-close"
-                            onClick={() => { setYoutubeDictOpen(false); setYoutubeDictResult(null); setYoutubeDictQuery(''); setYoutubeDictError(''); setYoutubeDictEnriching(false); }}
+                            onClick={() => { setYoutubeDictOpen(false); setYoutubeDictResult(null); setYoutubeDictQuery(''); setYoutubeDictError(''); setYoutubeDictEnriching(false); setYoutubeDictQuickArticle(''); }}
                             aria-label={tr('Закрыть', 'Schließen')}
                           >×</button>
                         </div>
@@ -36247,12 +36307,18 @@ function AppInner() {
                             <div className="yt-dict-word-row">
                               <span className="yt-dict-word-main">
                                 {/* word_de already includes the article, so strip a leading
-                                    one before re-adding it — avoids "der der Architekt". */}
+                                    one before re-adding it — avoids "der der Architekt". The
+                                    article is colored der/die/das (blue/pink/green) and falls
+                                    back to the fast-side article when the structured item lacks it. */}
                                 {(() => {
                                   const w = String(youtubeDictResult.word_de || youtubeDictResult.word_ru || youtubeDictQuery || '');
-                                  const art = String(youtubeDictResult.article || '').trim();
-                                  if (!art) return w;
-                                  return `${art} ${w.replace(/^(der|die|das)\s+/i, '')}`.trim();
+                                  const bare = w.replace(/^(der|die|das)\s+/i, '');
+                                  const art = String(youtubeDictResult.article || youtubeDictQuickArticle || '').trim();
+                                  // German head only (article is der/die/das); RU heads stay bare.
+                                  const isGermanHead = !!String(youtubeDictResult.word_de || '').trim()
+                                    || String(youtubeDictResult.direction || '').toLowerCase().startsWith('de');
+                                  if (!art || !isGermanHead) return bare;
+                                  return <><span className={`dq-art ${dictGenderClass(art)}`}>{art}</span> {bare}</>;
                                 })()}
                               </span>
                               {youtubeDictResult.part_of_speech && (
@@ -36275,6 +36341,8 @@ function AppInner() {
                                     ? `⏳ ${tr('Уточняем…', 'Wird verfeinert…')}`
                                     : `+ ${tr('В словарь', 'Speichern')}`}
                               </button>
+                              {/* «Почувствовать слово» temporarily hidden in the YouTube dict —
+                                  restore by uncommenting when we bring it back.
                               <button
                                 type="button"
                                 className="yt-dict-feel-btn"
@@ -36288,6 +36356,7 @@ function AppInner() {
                               {youtubeDictFeelStatus && (
                                 <div className="yt-dict-feel-status">{youtubeDictFeelStatus}</div>
                               )}
+                              */}
                             </div>
                           </div>
                         )}
