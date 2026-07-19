@@ -24788,10 +24788,14 @@ body.worldnews-active .webapp-topbar {
   box-shadow: none !important;
 }
 
-/* Планшет/браузер (≥700): скругляем внешнюю бежевую сцену тренировки во ВСЕХ режимах
-   (превью + сессия: blocks/quiz/sentence) — раньше углы были прямые («топором»).
-   Радиус согласован с внутренней карточкой. Телефон (<700) не трогаем. */
+/* Планшет/браузер (≥700): скругляем ВСЕ большие бежевые контейнеры тренировки во всех
+   режимах — и внешнюю панель (.flashcards-panel), и сцену (.flashcard-stage: превью +
+   сессия blocks/quiz/sentence). Раньше у всех были прямые углы («топором»). Телефон не трогаем. */
 @media (min-width: 700px) {
+  .webapp-flashcards .flashcards-panel,
+  .webapp-flashcards .flashcards-panel.is-session,
+  .webapp-flashcards .flashcards-panel.is-setup,
+  .webapp-flashcards .flashcard-stage,
   .webapp-flashcards .flashcard-stage.is-session,
   .webapp-flashcards .flashcard-stage.is-preview {
     border-radius: 24px !important;
