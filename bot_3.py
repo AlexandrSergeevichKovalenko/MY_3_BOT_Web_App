@@ -3230,6 +3230,103 @@ async def _admin_run_streaks_command(update: Update, context: CallbackContext) -
         await message.reply_text(f"❌ Ошибка: {exc}")
 
 
+async def _trigger_group_summary(update: Update, context: CallbackContext, *, path: str, label: str, payload: dict | None = None) -> None:
+    """Admin-only: POST to the backend's group-summary admin endpoint (these are HTTP
+    endpoints, not chat commands — this wraps them so they can be fired from the chat)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    token = (os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    if not token:
+        await message.reply_text("AUDIO_DISPATCH_TOKEN не задан на этом сервисе.")
+        return
+    base = get_public_web_url().rstrip("/")
+    url = f"{base}/api/admin/{path}"
+    body = {"token": token}
+    if payload:
+        body.update(payload)
+    await message.reply_text(f"⏳ Запускаю: {label}\n{url}")
+    try:
+        resp = await asyncio.to_thread(lambda: requests.post(url, json=body, timeout=180))
+        await message.reply_text(f"HTTP {resp.status_code}\n{(resp.text or '')[:900]}")
+    except Exception as exc:
+        await message.reply_text(f"❌ Ошибка запроса: {exc}")
+
+
+async def _admin_group_daily_command(update: Update, context: CallbackContext) -> None:
+    """/admin_group_daily — post the daily group PULSE into all groups now (preview)."""
+    await _trigger_group_summary(update, context, path="send-daily-group-summary", label="дневной пульс")
+
+
+async def _admin_group_weekly_command(update: Update, context: CallbackContext) -> None:
+    """/admin_group_weekly — post the weekly group report into all groups now (preview)."""
+    await _trigger_group_summary(update, context, path="send-weekly-group-summary", label="недельный отчёт")
+
+
+async def _admin_group_monthly_command(update: Update, context: CallbackContext) -> None:
+    """/admin_group_monthly [YYYY-MM-DD] — post the monthly group poster now (preview).
+    Celebrates the month containing (date − 1 day); to preview a given month pass the 1st
+    of the NEXT month (e.g. 2026-08-01 → July)."""
+    payload = {"date": str(context.args[0]).strip()} if getattr(context, "args", None) else None
+    await _trigger_group_summary(update, context, path="send-monthly-group-summary", label="месячный постер", payload=payload)
+
+
+async def _admin_fix_group_pins_command(update: Update, context: CallbackContext) -> None:
+    """/admin_fix_group_pins — replace the OLD pinned «confirm participation» prompt in
+    existing groups with the new buttonless welcome (removes the now-meaningless button)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _is_admin_user(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        groups = await asyncio.to_thread(list_known_webapp_group_chats, 500)
+    except Exception as exc:
+        await message.reply_text(f"❌ Не удалось получить список групп: {exc}")
+        return
+    checked = fixed = errors = 0
+    for g in groups or []:
+        try:
+            chat_id = int(g.get("chat_id") or 0)
+        except Exception:
+            continue
+        if chat_id >= 0:
+            continue
+        checked += 1
+        try:
+            chat = await context.bot.get_chat(chat_id)
+        except Exception:
+            errors += 1
+            continue
+        if not _chat_has_group_enrollment_pin(chat):
+            continue
+        mid = getattr(getattr(chat, "pinned_message", None), "message_id", None)
+        if not mid:
+            continue
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=int(mid),
+                text=_group_welcome_text(getattr(chat, "title", None)),
+                reply_markup=_group_welcome_keyboard(),
+            )
+            fixed += 1
+        except Exception:
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=chat_id, message_id=int(mid), reply_markup=_group_welcome_keyboard())
+                fixed += 1
+            except Exception:
+                errors += 1
+    await message.reply_text(
+        f"Готово. Групп проверено: {checked}, закрепов обновлено: {fixed}, ошибок: {errors}")
+
+
 def _build_shortcut_runs_report_text(days: int = 7) -> str:
     """Shared SYNC formatter for the «Ночной Переводчик» run-check report — used by the
     /shortcut_runs command AND the weekly Friday auto-report."""
@@ -6753,6 +6850,28 @@ def _build_group_enroll_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _group_welcome_text(chat_title: str | None = None) -> str:
+    """Honest pinned welcome for a study group (all-seen model): tasks are personal,
+    results are shared, everyone is auto-counted — no confirmation button."""
+    group_title = str(chat_title or "").strip()
+    prefix = f"Группа: {group_title}\n\n" if group_title else ""
+    return (
+        "👨‍👩‍👧 Это ваша учебная группа\n\n"
+        f"{prefix}"
+        "Занимайтесь вместе — а я буду присылать сюда итоги.\n\n"
+        "📚 Задания у каждого свои — они приходят вам в личку со мной.\n"
+        "🏅 Итоги дня и недели со сравнением всех участников я присылаю прямо в эту группу.\n"
+        "👥 Учитываю всех, кого вижу в группе — ничего подтверждать не нужно.\n"
+        "🏆 Кубок чемпиона — общий для всех игроков бота; участие в группе на него не влияет."
+    )
+
+
+def _group_welcome_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(text="📊 Открыть приложение", url=get_webapp_deeplink())]]
+    )
+
+
 def _message_has_group_enrollment_button(message) -> bool:
     if not message:
         return False
@@ -6786,22 +6905,10 @@ async def _send_group_enrollment_prompt(
     chat_id: int,
     chat_title: str | None = None,
 ) -> None:
-    group_title = str(chat_title or "").strip()
-    prefix = f"Группа: {group_title}\n\n" if group_title else ""
-    text = (
-        "👨‍👩‍👧 Это ваша учебная группа\n\n"
-        f"{prefix}"
-        "Занимайтесь вместе — а я буду присылать сюда итоги.\n\n"
-        "📚 Задания у каждого свои — они приходят вам в личку со мной.\n"
-        "🏅 Итоги дня и недели со сравнением всех участников я присылаю прямо в эту группу.\n"
-        "👥 Учитываю всех, кого вижу в группе — ничего подтверждать не нужно.\n"
-        "🏆 Кубок чемпиона — общий для всех игроков бота; участие в группе на него не влияет."
-    )
     sent_message = await context.bot.send_message(
         chat_id=int(chat_id),
-        text=text,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-            text="📊 Открыть приложение", url=get_webapp_deeplink())]]),
+        text=_group_welcome_text(chat_title),
+        reply_markup=_group_welcome_keyboard(),
     )
     try:
         await context.bot.pin_chat_message(
@@ -37816,6 +37923,10 @@ def main():
     application.add_handler(CommandHandler("onboarding_announce", _onboarding_announce_command))
     application.add_handler(CommandHandler("admin_reset_onboarding", _admin_reset_onboarding_command))
     application.add_handler(CommandHandler("admin_run_streaks", _admin_run_streaks_command))
+    application.add_handler(CommandHandler("admin_group_daily", _admin_group_daily_command))
+    application.add_handler(CommandHandler("admin_group_weekly", _admin_group_weekly_command))
+    application.add_handler(CommandHandler("admin_group_monthly", _admin_group_monthly_command))
+    application.add_handler(CommandHandler("admin_fix_group_pins", _admin_fix_group_pins_command))
     application.add_handler(CommandHandler("shortcut_runs", _admin_shortcut_runs_command))
     application.add_handler(CommandHandler("shortcut_reset", _admin_shortcut_reset_command))
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
