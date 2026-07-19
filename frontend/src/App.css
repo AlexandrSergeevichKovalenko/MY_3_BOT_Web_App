@@ -18289,12 +18289,13 @@ body.worldnews-active .webapp-topbar {
 
 .yt-dict-save-btn {
   flex: 1;
-  height: 34px;
-  border-radius: 10px;
+  width: 100%;
+  height: 46px;
+  border-radius: 13px;
   background: linear-gradient(135deg, rgba(79, 70, 229, 0.85), rgba(99, 102, 241, 0.9));
   border: 1px solid rgba(99, 102, 241, 0.4);
   color: #fff;
-  font-size: 12px;
+  font-size: 14.5px;
   font-weight: 700;
   cursor: pointer;
   letter-spacing: 0.02em;

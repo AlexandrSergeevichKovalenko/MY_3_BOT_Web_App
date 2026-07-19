@@ -27487,6 +27487,7 @@ function AppInner() {
     }
     let availTop = vv ? Math.round(vv.offsetTop) : 0;
     if (!Number.isFinite(availTop) || availTop < 0) availTop = 0;
+    el.style.transition = ''; // follow the keyboard instantly; the glide is only for the drop
     el.style.top = `${availTop + 10}px`;
     el.style.bottom = 'auto';
     el.style.maxHeight = `${Math.max(240, availHeight - 20)}px`;
@@ -27553,9 +27554,29 @@ function AppInner() {
     youtubeDictScrollLockRef.current = null;
     const el = youtubeDictWidgetRef.current;
     if (!el) return;
-    el.style.top = '';
-    el.style.bottom = '';
     el.style.maxHeight = '';
+    // If the user dragged the widget somewhere, leave it exactly there.
+    if (youtubeDictDragRef.current?.moved) return;
+    // Glide back to the resting position instead of teleporting — the keyboard-close
+    // "падение". Animate `top` (not top→auto, which can't transition) toward the CSS
+    // resting spot (~bottom:72px), then hand the anchor back to CSS once it settles.
+    const h = el.offsetHeight || 300;
+    const layoutH = (typeof window !== 'undefined' && window.innerHeight) || 700;
+    const restTop = Math.max(16, layoutH - h - 72); // matches CSS default bottom:72px
+    el.style.transition = 'top 0.26s cubic-bezier(0.22, 1, 0.36, 1)';
+    el.style.bottom = 'auto';
+    window.requestAnimationFrame(() => {
+      const n = youtubeDictWidgetRef.current;
+      if (n) n.style.top = `${restTop}px`;
+    });
+    window.setTimeout(() => {
+      const n = youtubeDictWidgetRef.current;
+      if (n && !youtubeDictDragRef.current?.moved) {
+        n.style.transition = '';
+        n.style.top = '';
+        n.style.bottom = ''; // back to the CSS default (bottom:72px) so future opens anchor correctly
+      }
+    }, 300);
   };
 
   const renderClickableText = (text, options = {}) => {
@@ -36332,6 +36353,9 @@ function AppInner() {
                               <button
                                 type="button"
                                 className="yt-dict-save-btn"
+                                // Keep the text-input focused: without this, tapping Save blurs the
+                                // input, the keyboard closes and the lifted widget snaps to the bottom.
+                                onMouseDown={(e) => e.preventDefault()}
                                 onClick={saveYoutubeDictWord}
                                 disabled={youtubeDictSaved || youtubeDictEnriching}
                               >
