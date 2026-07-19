@@ -11355,6 +11355,88 @@ body:has(.webapp-page.is-theme-light),
   gap: 12px;
 }
 
+/* ═══ Flashcard «Block/Quiz mode» превью — редизайн Fuchs UI (≥700 планшет+браузер) ═══
+   Заполняет окно, читаемый текст (никакого белого на бежевом), мягкие плашки вместо
+   «топорных» тёмно-синих блоков, DE/RU янтарным сегментом; длинные фразы → 2 колонки.
+   Телефон (<700) не трогаем. */
+@media (min-width: 700px) {
+  .webapp-page .webapp-flashcards .flashcard-preview-shell {
+    max-width: min(720px, 94%) !important;
+    grid-template-rows: auto minmax(0, 1fr) auto !important;
+    gap: 14px !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-topline {
+    font-size: 12px !important; font-weight: 700 !important; letter-spacing: .06em !important;
+    text-transform: uppercase !important; color: #8b8072 !important; padding: 0 4px !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-title { color: #8b8072 !important; }
+  .webapp-page .webapp-flashcards .flashcard-preview-mode {
+    font-size: 11.5px !important; font-weight: 800 !important; letter-spacing: .02em !important; text-transform: none !important;
+    color: #b45f13 !important; background: rgba(214, 122, 36, .12) !important; border-radius: 999px !important; padding: 4px 11px !important;
+  }
+  /* карта: кремовая, мягкая тень, заполняет высоту, контент по центру, прокрутка внутри */
+  .webapp-page .webapp-flashcards .flashcard-preview-card {
+    align-self: stretch !important; height: 100% !important; min-height: 0 !important;
+    border: 0 !important; border-radius: 24px !important;
+    background: #fffdf8 !important; box-shadow: 0 26px 60px -28px rgba(60, 40, 12, .5) !important;
+    padding: clamp(20px, 3vw, 34px) !important;
+    display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important;
+    gap: 16px !important; overflow-y: auto !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif !important;
+  }
+  /* DE/RU — янтарный сегмент вместо сине-фиолетовых пилюль */
+  .webapp-page .webapp-flashcards .flashcard-preview-lang-row {
+    gap: 3px !important; padding: 4px !important; border-radius: 12px !important;
+    background: #f7f1e6 !important; border: 1px solid rgba(60, 48, 30, .12) !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-card .flashcard-lang-tag {
+    min-width: 0 !important; padding: 6px 14px !important; font-size: 13px !important; font-weight: 800 !important;
+    border: 0 !important; border-radius: 9px !important; background: transparent !important; color: #8b8072 !important; box-shadow: none !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-card .flashcard-lang-tag.is-native { background: transparent !important; color: #8b8072 !important; }
+  .webapp-page .webapp-flashcards .flashcard-preview-card .flashcard-lang-tag:first-child { background: #d67a24 !important; color: #fff !important; }
+  /* заголовок — чернильный, адаптивный */
+  .webapp-page .webapp-flashcards .flashcard-preview-word {
+    color: #201b14 !important; font-weight: 800 !important; letter-spacing: -.02em !important;
+    font-size: clamp(26px, 3.4vw, 44px) !important; line-height: 1.12 !important;
+  }
+  /* перевод — мягкая кремовая плашка + янтарный текст (не тёмно-синий блок) */
+  .webapp-page .webapp-flashcards .flashcard-preview-native-box {
+    border: 1px solid rgba(60, 48, 30, .12) !important; border-radius: 16px !important;
+    background: #f7f1e6 !important; box-shadow: none !important; padding: 14px 18px !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-native-box .flashcard-native-translation {
+    color: #b45f13 !important; font-weight: 650 !important;
+    font-size: clamp(18px, 2.4vw, 30px) !important; line-height: 1.25 !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-native-box .flashcard-meaning-text { color: #5d5244 !important; }
+  /* «Слушать», разделители, кнопка аудио — читаемо, на бренде */
+  .webapp-page .webapp-flashcards .flashcard-preview-listen-label { color: #5d5244 !important; font-weight: 700 !important; font-size: 13px !important; }
+  .webapp-page .webapp-flashcards .flashcard-preview-divider { background: rgba(60, 48, 30, .12) !important; }
+  .webapp-page .webapp-flashcards .flashcard-preview-card .flashcard-preview-listen {
+    width: 48px !important; height: 48px !important; font-size: 20px !important;
+    background: rgba(214, 122, 36, .12) !important; color: #b45f13 !important; border: 0 !important;
+  }
+  /* nav всегда снизу и виден */
+  .webapp-page .webapp-flashcards .flashcard-preview-footer-row { flex: 0 0 auto !important; }
+  .webapp-page .webapp-flashcards .flashcard-preview-feel-btn {
+    background: #fffdf8 !important; border: 1px solid rgba(60, 48, 30, .12) !important; color: #5d5244 !important;
+  }
+
+  /* ── длинные фразы: DE слева, RU справа (используем ширину планшета) ── */
+  .webapp-page .webapp-flashcards .flashcard-preview-card.is-long-content {
+    display: grid !important; grid-template-columns: 1fr 1fr !important;
+    align-items: center !important; justify-items: center !important; column-gap: 24px !important; row-gap: 14px !important;
+  }
+  .flashcard-preview-card.is-long-content .flashcard-preview-lang-row { grid-column: 1 / -1 !important; }
+  .flashcard-preview-card.is-long-content .flashcard-preview-word { grid-column: 1 !important; margin: 0 !important; }
+  .flashcard-preview-card.is-long-content .flashcard-preview-native-box { grid-column: 2 !important; width: 100% !important; }
+  .flashcard-preview-card.is-long-content .flashcard-preview-divider { display: none !important; }
+  .flashcard-preview-card.is-long-content .flashcard-preview-listen,
+  .flashcard-preview-card.is-long-content .flashcard-preview-listen-label,
+  .flashcard-preview-card.is-long-content .flashcard-preview-feel-row { grid-column: 1 / -1 !important; }
+}
+
 .flashcard-word-block {
   display: grid;
   gap: 6px;

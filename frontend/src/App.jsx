@@ -38492,10 +38492,10 @@ function AppInner() {
                               return (
                                 <div className="flashcard flashcard-preview flashcard-preview-shell">
                                   <div className="flashcard-preview-topline">
-                                    <span className="flashcard-preview-title">Preview</span>
+                                    <span className="flashcard-preview-title">{tr('Обзор', 'Vorschau')}</span>
                                     <span className="flashcard-preview-mode">{previewModeLabel}</span>
                                   </div>
-                                  <div className="flashcard-preview-card">
+                                  <div className={`flashcard-preview-card ${(String(previewLearningText).length > 22 || String(previewNativeText).length > 22) ? 'is-long-content' : ''}`}>
                                     <div className="flashcard-preview-lang-row">
                                       <span className="flashcard-lang-tag">{learningCode}</span>
                                       <span className="flashcard-lang-tag is-native">{nativeCode}</span>
