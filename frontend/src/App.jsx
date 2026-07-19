@@ -17,9 +17,6 @@ import StarsInfoModal from './components/StarsInfoModal';
 import BonusProDaysModal from './components/BonusProDaysModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
-// Быстрый словарь-оверлей (тот же, что в standalone-PWA) — грузим лениво, открываем
-// значком в верхней полосе на планшете/браузере.
-const QuickDictionaryOverlay = lazy(() => import('./dictionary/DictionaryOverlay.jsx'));
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
@@ -5868,8 +5865,6 @@ function AppInner() {
       ? window.matchMedia('(min-width: 700px)').matches
       : false,
   );
-  // Быстрый словарь-оверлей поверх приложения (планшет/браузер).
-  const [quickDictOpen, setQuickDictOpen] = useState(false);
   // Размер overlay-субтитров: шаг 0..4 (2 = как сейчас). Масштаб → --yt-overlay-scale.
   const YT_SUB_SCALES = [0.8, 0.9, 1, 1.15, 1.32];
   const [youtubeSubFontStep, setYoutubeSubFontStep] = useState(() => {
@@ -27785,10 +27780,10 @@ function AppInner() {
     const dictBtn = (
       <button
         type="button"
-        className="youtube-topdict-open"
-        onClick={() => setQuickDictOpen(true)}
-        title={tr('Быстрый словарь', 'Schnellwörterbuch')}
-        aria-label={tr('Быстрый словарь', 'Schnellwörterbuch')}
+        className={`youtube-topdict-open ${youtubeDictOpen ? 'is-active' : ''}`}
+        onClick={() => setYoutubeDictOpen((v) => !v)}
+        title={tr('Словарь', 'Wörterbuch')}
+        aria-label={tr('Словарь', 'Wörterbuch')}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
       </button>
@@ -34977,19 +34972,6 @@ function AppInner() {
               until={billingStatus?.bonus_pro?.until || null}
             />
 
-            {quickDictOpen && (
-              <Suspense fallback={null}>
-                <div className="quick-dict-portal" data-dq-tablet>
-                  <button
-                    type="button"
-                    className="quick-dict-backdrop"
-                    aria-label={tr('Закрыть словарь', 'Wörterbuch schließen')}
-                    onClick={() => setQuickDictOpen(false)}
-                  />
-                  <QuickDictionaryOverlay onClose={() => setQuickDictOpen(false)} />
-                </div>
-              </Suspense>
-            )}
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
