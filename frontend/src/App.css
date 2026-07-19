@@ -10097,7 +10097,7 @@ body:has(.webapp-page.is-theme-light),
   display: flex;
   flex-direction: column;
   gap: 18px;
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .flashcards-panel.is-session {
@@ -11435,6 +11435,45 @@ body:has(.webapp-page.is-theme-light),
   .flashcard-preview-card.is-long-content .flashcard-preview-listen,
   .flashcard-preview-card.is-long-content .flashcard-preview-listen-label,
   .flashcard-preview-card.is-long-content .flashcard-preview-feel-row { grid-column: 1 / -1 !important; }
+}
+
+/* ═══ Тот же редизайн превью для ТЕЛЕФОНА (<700) ═══
+   Раньше эти правки жили только в блоке ≥700, поэтому на телефоне рамка тренировки
+   была с «топором» вырубленными прямыми углами, подписи «Обзор»/режим/«Слушать» —
+   почти белые на бежевом, а низ уезжал за экран с пустым провалом. Правим превью всех
+   режимов (Quiz 4 Options / Blocks / Satz Ergänzen). Spaced Repetition НЕ трогаем —
+   у него отдельный .fsrs-study-screen и класс .is-fsrs-study на странице. */
+@media (max-width: 699.98px) {
+  /* Верная сетка: карточка тянется на всю высоту, футер сразу под ней — без провала */
+  .webapp-page:not(.is-fsrs-study) .webapp-flashcards .flashcard-preview-shell {
+    grid-template-rows: auto minmax(0, 1fr) auto !important;
+  }
+  .webapp-page:not(.is-fsrs-study) .webapp-flashcards .flashcard-preview-footer-row {
+    flex: 0 0 auto !important;
+  }
+
+  /* Скругляем бежевую рамку тренировки (верх + низ), как на планшете */
+  .webapp-page:not(.is-fsrs-study) .webapp-flashcards .flashcards-panel,
+  .webapp-page:not(.is-fsrs-study) .webapp-flashcards .flashcards-panel.is-session,
+  .webapp-page:not(.is-fsrs-study) .webapp-flashcards .flashcard-stage.is-preview,
+  .webapp-page:not(.is-fsrs-study) .webapp-flashcards .flashcard-stage.is-session {
+    border-radius: 24px !important;
+  }
+
+  /* Читаемый текст вместо белого на бежевом */
+  .webapp-page .webapp-flashcards .flashcard-preview-topline,
+  .webapp-page .webapp-flashcards .flashcard-preview-title {
+    color: #8b8072 !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-mode {
+    color: #b45f13 !important;
+    background: rgba(214, 122, 36, .12) !important;
+    border-radius: 999px !important;
+    padding: 4px 11px !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-listen-label {
+    color: #5d5244 !important;
+  }
 }
 
 .flashcard-word-block {
