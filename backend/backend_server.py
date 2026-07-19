@@ -55273,61 +55273,85 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
     if str(os.getenv("WEEKLY_GLOBAL_RANKING_ENABLED") or "1").strip().lower() not in {"1", "true", "yes", "on"}:
         return {"ok": True, "skipped": True, "reason": "disabled", "sent": 0}
 
-    _ensure_weekly_global_ranking_schema()
-    rows = _collect_weekly_global_ranking_rows(start_date, end_date)
-    _persist_weekly_global_ranking_snapshot(start_date, end_date, rows)
-    if not rows:
-        return {"ok": True, "skipped": True, "reason": "no_users", "sent": 0}
+    # Run guard: one delivery per (job, week) even if the scheduler fires twice or the
+    # Dramatiq actor is redelivered (at-least-once). The per-user delivered-set below is a
+    # check-then-act that races under concurrent runs → this guard is what actually stops
+    # the duplicate weekly DM. Same pattern as the group-summary jobs.
+    run_period = end_date.isoformat()
+    if not claim_scheduler_run_guard(
+        job_key="weekly_global_ranking",
+        run_period=run_period,
+        target_scope="global",
+        metadata={"tz": tz_name, "start": start_date.isoformat(), "end": end_date.isoformat()},
+    ):
+        logging.info("weekly_global_ranking skipped: run guard already claimed for %s", run_period)
+        return {"ok": True, "skipped": True, "reason": "run_guard", "sent": 0}
 
-    limit = max(1, int((os.getenv("WEEKLY_GLOBAL_RANKING_SEND_LIMIT") or "5000").strip() or "5000"))
-    top_rows = rows[:3]
-    already_delivered = _weekly_global_ranking_delivered_user_ids(start_date)
-    sent = 0
-    skipped_delivered = 0
-    errors: list[str] = []
-    for row in rows[:limit]:
-        user_id = int(row.get("user_id") or 0)
-        if user_id <= 0 or not is_telegram_user_allowed(user_id):
-            continue
-        if user_id in already_delivered:
-            skipped_delivered += 1
-            continue
-        try:
-            image_bytes = _render_weekly_global_ranking_card_png(row, start_date=start_date, end_date=end_date, top_rows=top_rows)
-            if not image_bytes:
-                raise RuntimeError("ranking card renderer unavailable")
-            caption = f"🏆 Твой weekly ranking: #{int(row.get('rank') or 0)} из {int(row.get('total_users') or 0)}"
-            _send_private_photo(
-                user_id=user_id,
-                image_bytes=image_bytes,
-                filename=f"weekly_ranking_{user_id}_{start_date.isoformat()}.png",
-                caption=caption,
-            )
-            _mark_weekly_global_ranking_delivery(week_start=start_date, user_id=user_id, status="sent")
-            already_delivered.add(user_id)
-            sent += 1
-        except Exception as exc:
-            errors.append(f"user {user_id}: {exc}")
-            _mark_weekly_global_ranking_delivery(
-                week_start=start_date,
-                user_id=user_id,
-                status="failed",
-                error=str(exc),
-            )
-            logging.warning("weekly_global_ranking delivery failed user_id=%s", user_id, exc_info=True)
+    try:
+        _ensure_weekly_global_ranking_schema()
+        rows = _collect_weekly_global_ranking_rows(start_date, end_date)
+        _persist_weekly_global_ranking_snapshot(start_date, end_date, rows)
+        if not rows:
+            result = {"ok": True, "skipped": True, "reason": "no_users", "sent": 0}
+            finish_scheduler_run_guard(job_key="weekly_global_ranking", run_period=run_period,
+                                       target_scope="global", status="completed", metadata=result)
+            return result
 
-    result = {
-        "ok": True,
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
-        "users": len(rows),
-        "sent": sent,
-        "skipped_delivered": skipped_delivered,
-        "errors": errors[:20],
-        "duration_ms": _elapsed_ms_since(started_perf),
-    }
-    logging.info("weekly_global_ranking dispatch_finish result=%s", result)
-    return result
+        limit = max(1, int((os.getenv("WEEKLY_GLOBAL_RANKING_SEND_LIMIT") or "5000").strip() or "5000"))
+        top_rows = rows[:3]
+        already_delivered = _weekly_global_ranking_delivered_user_ids(start_date)
+        sent = 0
+        skipped_delivered = 0
+        errors: list[str] = []
+        for row in rows[:limit]:
+            user_id = int(row.get("user_id") or 0)
+            if user_id <= 0 or not is_telegram_user_allowed(user_id):
+                continue
+            if user_id in already_delivered:
+                skipped_delivered += 1
+                continue
+            try:
+                image_bytes = _render_weekly_global_ranking_card_png(row, start_date=start_date, end_date=end_date, top_rows=top_rows)
+                if not image_bytes:
+                    raise RuntimeError("ranking card renderer unavailable")
+                caption = f"🏆 Твой weekly ranking: #{int(row.get('rank') or 0)} из {int(row.get('total_users') or 0)}"
+                _send_private_photo(
+                    user_id=user_id,
+                    image_bytes=image_bytes,
+                    filename=f"weekly_ranking_{user_id}_{start_date.isoformat()}.png",
+                    caption=caption,
+                )
+                _mark_weekly_global_ranking_delivery(week_start=start_date, user_id=user_id, status="sent")
+                already_delivered.add(user_id)
+                sent += 1
+            except Exception as exc:
+                errors.append(f"user {user_id}: {exc}")
+                _mark_weekly_global_ranking_delivery(
+                    week_start=start_date,
+                    user_id=user_id,
+                    status="failed",
+                    error=str(exc),
+                )
+                logging.warning("weekly_global_ranking delivery failed user_id=%s", user_id, exc_info=True)
+
+        result = {
+            "ok": True,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "users": len(rows),
+            "sent": sent,
+            "skipped_delivered": skipped_delivered,
+            "errors": errors[:20],
+            "duration_ms": _elapsed_ms_since(started_perf),
+        }
+        finish_scheduler_run_guard(job_key="weekly_global_ranking", run_period=run_period,
+                                   target_scope="global", status="completed", metadata=result)
+        logging.info("weekly_global_ranking dispatch_finish result=%s", result)
+        return result
+    except Exception as exc:
+        finish_scheduler_run_guard(job_key="weekly_global_ranking", run_period=run_period,
+                                   target_scope="global", status="failed", metadata={"error": str(exc)[:1000]})
+        raise
 
 
 def _build_plan_goals_chart_png(
