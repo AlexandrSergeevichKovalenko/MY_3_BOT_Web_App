@@ -1438,7 +1438,8 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'Wofür die App gedacht ist',
             items: [
               'Schlaufuchs verbindet Übersetzungen, Wörterbuch, Karten, Video, Lesen, Sprechpraxis und Analytik in einem Lernfluss.',
-              'Du kannst zwischen Telegram Mini App und Web wechseln, ohne deine Lernlogik zu verlieren.',
+              'Läuft in Telegram und als eigene App mit Symbol auf Handy und Tablet — deine Wörter und dein Fortschritt bleiben synchron.',
+              'Die vollwertige Browser-Version ist noch in der Design-Entwicklung: Sie funktioniert, sieht aber noch nicht optimal aus — auf Handy oder Tablet ist es bequemer. Der YouTube-Bereich im Browser läuft aber schon hervorragend: Filme auf großem Bildschirm.',
               'Die tiefste und am vollständigsten ausgebaute Lernstrecke ist aktuell RU ↔ DE.',
             ],
           },
@@ -2119,7 +2120,8 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Для чего нужно приложение',
           items: [
             'Schlaufuchs — твой помощник в немецком: переводы, словарь, карточки для запоминания, видео, чтение и разговор — всё в одном месте.',
-            'Работает прямо в Telegram и в браузере: твои слова и прогресс сохраняются и доступны с любого устройства.',
+            'Работает в Telegram и как отдельное приложение с иконкой на телефоне и планшете — твои слова и прогресс сохраняются и синхронизируются.',
+            'Полноценная веб-версия для браузера пока в разработке дизайна: она работает, но визуально уступает — удобнее пользоваться телефоном или планшетом. При этом раздел YouTube в браузере уже работает отлично: можно смотреть фильмы на большом экране.',
           ],
         },
         {
