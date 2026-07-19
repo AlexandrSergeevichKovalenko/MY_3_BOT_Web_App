@@ -26,6 +26,15 @@ const IS_STANDALONE_PWA = (() => {
 })();
 const IS_PWA_TOUR = IS_PUBLIC && IS_STANDALONE_PWA;
 
+// Тур открыт ПОВЕРХ текущего окна приложения (standalone PWA, ИЛИ ?ob_inplace=1 —
+// планшетный тур из Guide, который перезагрузил широкое окно вместо запуска отдельного
+// мини-аппа). В этом случае финал = «Закрыть» и возврат назад в приложение, а не
+// «Перейти в приложение» (иначе открылось бы второе окно поверх уже открытого).
+const OB_INPLACE = (() => {
+  try { return new URLSearchParams(window.location.search).get('ob_inplace') === '1'; } catch (_e) { return false; }
+})();
+const TOUR_IN_PLACE = IS_STANDALONE_PWA || OB_INPLACE;
+
 // A ✕ close affordance so the tour can be abandoned at ANY step (not only by reaching
 // the finale). Hidden only in the pure public web tour (plain browser, no bot), where
 // there's no app to return to. In the standalone PWA the tour opened IN PLACE over the
@@ -1023,7 +1032,7 @@ function StepBody(props) {
     case 'info':
       return <p className="ob-lead">Короткое объяснение + медиа. Пока — заглушка каркаса.</p>;
     case 'finale': {
-      const finaleText = IS_PWA_TOUR ? (
+      const finaleText = TOUR_IN_PLACE ? (
         <p className="ob-lead">
           {t('Вот и весь обзор 🎉 Это был краткий тур по возможностям бота. Закрой его — и продолжай пользоваться приложением.',
              'Das war der Überblick 🎉 Ein kurzer Rundgang durch die Möglichkeiten des Bots. Schließe ihn — und nutze die App weiter.')}
@@ -1200,7 +1209,10 @@ export default function OnboardingWizard() {
     // Finale. Standalone PWA → viewer already has the bot: just close the tour and
     // return to the app. Public browser tour → send the viewer to install the bot.
     // In Telegram → complete + open the main Mini-App.
-    if (IS_PWA_TOUR) {
+    if (TOUR_IN_PLACE) {
+      // Открыто поверх приложения (PWA или планшетный in-place тур) → просто закрываем
+      // тур и возвращаемся назад. В Telegram заодно отметим онбординг завершённым.
+      if (!IS_PUBLIC) { try { await api('/api/webapp/onboarding/complete'); } catch (_e) { /* noop */ } }
       try {
         if (window.history.length > 1) window.history.back();
         else window.location.href = '/';
@@ -1555,7 +1567,7 @@ export default function OnboardingWizard() {
             {done ? t('✅ Готово', '✅ Fertig')
               : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
               : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
-              : isLast ? (IS_PWA_TOUR ? t('Закрыть', 'Schließen') : IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Перейти в приложение', '🎯 Zur App'))
+              : isLast ? (TOUR_IN_PLACE ? t('Закрыть', 'Schließen') : IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Перейти в приложение', '🎯 Zur App'))
               : t('Далее →', 'Weiter →')}
           </button>
         </footer>
