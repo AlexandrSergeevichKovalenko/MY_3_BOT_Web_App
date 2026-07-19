@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import './settings.css';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 // Standalone Mini-App settings page — opened from the reply-keyboard «⚙️ Настройки»
 // button (startapp=settings). Bot-native prefs that used to be scattered reply
@@ -73,7 +74,7 @@ export default function SettingsScreen() {
   const [dictBusy, setDictBusy] = useState(false);
 
   useEffect(() => {
-    try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* noop */ }
+    try { tg?.ready?.(); tg?.expand?.(); requestTabletFullscreen(tg); } catch (_e) { /* noop */ }
     // Stop the Mini-App sheet from collapsing on any downward swipe/scroll.
     try { tg?.disableVerticalSwipes?.(); } catch (_e) { /* noop */ }
     try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* noop */ }

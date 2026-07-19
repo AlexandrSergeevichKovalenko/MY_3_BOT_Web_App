@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import './plan.css';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 
@@ -23,7 +24,7 @@ export default function PlanTable() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
+    try { tg?.ready?.(); tg?.expand?.(); requestTabletFullscreen(tg); } catch (_e) { /* ignore */ }
     const scheme = (tg?.colorScheme === 'light') ? 'light' : 'dark';
     try { document.documentElement.setAttribute('data-scheme', scheme); } catch (_e) { /* ignore */ }
   }, []);

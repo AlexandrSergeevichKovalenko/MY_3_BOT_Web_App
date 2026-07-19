@@ -18,6 +18,7 @@ import WoFrageLearnGame from './WoFrageLearnGame.jsx';
 import AdjektivLearnGame from './AdjektivLearnGame.jsx';
 import BattleHistory from './BattleHistory.jsx';
 import AskOverlay from './AskOverlay.jsx';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 /**
  * Lightweight in-place answer overlay for in-group tasks (rebus + crossword).
@@ -602,6 +603,10 @@ export default function AnswerOverlay({ startParam }) {
     try {
       tg?.ready?.();
       tg?.expand?.();
+      // On tablet fill the whole screen instead of Telegram's narrow compact
+      // sheet, so the game/interactive uses the full iPad width & height. No-op
+      // on phones.
+      requestTabletFullscreen(tg);
       tg?.setHeaderColor?.('secondary_bg_color');
       // Lock the sheet vertically: a careless swipe-down must NOT close/minimize
       // the page (Bot API 7.7+). Closing is only via dragging the header.

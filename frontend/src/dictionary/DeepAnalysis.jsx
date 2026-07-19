@@ -4,6 +4,7 @@ import './dict.css';
 import './deep.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic } from './WordBreakdown';
 import { guessPair, extractRichTranslation, buildDictionarySavePayload } from './saveUtils';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 /**
  * «Полный разбор» — the full word/phrase breakdown, opened directly from the DM
@@ -125,6 +126,7 @@ export default function DeepAnalysis({ startParam }) {
   useEffect(() => {
     try {
       tg?.ready?.(); tg?.expand?.();
+      requestTabletFullscreen(tg); // fill the whole tablet, not a narrow sheet (phone untouched)
       tg?.setHeaderColor?.('secondary_bg_color');
       tg?.disableVerticalSwipes?.();
     } catch (_e) { /* ignore */ }

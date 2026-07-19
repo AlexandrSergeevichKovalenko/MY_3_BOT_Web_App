@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './answer.css';
 import AskOverlay from './AskOverlay.jsx';
 import { renderRich } from './richText.jsx';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 /**
  * Deep-dive overlay for a quiz result — the in-place replacement for the four
@@ -211,6 +212,7 @@ export default function DeepDiveOverlay({ startParam }) {
     try {
       tg?.ready?.();
       tg?.expand?.();
+      requestTabletFullscreen(tg); // fill the whole tablet, not a narrow sheet (phone untouched)
       tg?.setHeaderColor?.('secondary_bg_color');
       tg?.disableVerticalSwipes?.();
     } catch (_e) { /* ignore */ }

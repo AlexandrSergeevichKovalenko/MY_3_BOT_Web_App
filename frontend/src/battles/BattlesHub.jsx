@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import './battles.css';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 // Standalone «⚔️ Battles» hub — create a duel (type · opponents · themes) right in the
 // app, plus links to the existing history/my-battles overlays. Create ENQUEUES on the
@@ -47,7 +48,7 @@ export default function BattlesHub() {
   const [toast, setToast] = useState('');
 
   useEffect(() => {
-    try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* noop */ }
+    try { tg?.ready?.(); tg?.expand?.(); requestTabletFullscreen(tg); } catch (_e) { /* noop */ }
     try { tg?.disableVerticalSwipes?.(); } catch (_e) { /* noop */ }
     try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* noop */ }
   }, []);

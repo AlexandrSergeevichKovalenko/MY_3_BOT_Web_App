@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import './interactive.css';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 // Standalone «📚 Интерактив» hub — one reply-keyboard button opens this page instead
 // of scattering a learn/play button per topic. Each action opens the SAME existing
@@ -33,7 +34,7 @@ export default function InteractiveHub() {
   const [botUrl, setBotUrl] = useState('');
 
   useEffect(() => {
-    try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* noop */ }
+    try { tg?.ready?.(); tg?.expand?.(); requestTabletFullscreen(tg); } catch (_e) { /* noop */ }
     // Stop the Mini-App sheet from collapsing on any downward swipe/scroll.
     try { tg?.disableVerticalSwipes?.(); } catch (_e) { /* noop */ }
     try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* noop */ }

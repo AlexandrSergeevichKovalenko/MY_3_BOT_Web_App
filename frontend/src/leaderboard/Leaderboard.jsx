@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import './leaderboard.css';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 
@@ -47,7 +48,7 @@ export default function Leaderboard({ startParam }) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
+    try { tg?.ready?.(); tg?.expand?.(); requestTabletFullscreen(tg); } catch (_e) { /* ignore */ }
     const scheme = (tg?.colorScheme === 'light') ? 'light' : 'dark';
     try { document.documentElement.setAttribute('data-scheme', scheme); } catch (_e) { /* ignore */ }
   }, []);

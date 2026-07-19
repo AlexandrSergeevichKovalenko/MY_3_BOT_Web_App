@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import './shortcut.css';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 // Standalone Mini-App screen for setting up screenshot→vocab word capture.
 // Opened via startapp=shortcut. ONE method only — the nightly batch (collector
@@ -122,7 +123,7 @@ export default function ShortcutGuide() {
   const [pairingErr, setPairingErr] = useState('');
 
   useEffect(() => {
-    try { tg?.ready?.(); tg?.expand?.(); } catch (_e) { /* ignore */ }
+    try { tg?.ready?.(); tg?.expand?.(); requestTabletFullscreen(tg); } catch (_e) { /* ignore */ }
     // Force LIGHT — consistent with the onboarding wizard (owner: the whole
     // onboarding is light, so the Shortcut setup screen must not open dark).
     try { document.documentElement.setAttribute('data-scheme', 'light'); } catch (_e) { /* ignore */ }
