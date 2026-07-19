@@ -3276,8 +3276,11 @@ async def _admin_group_monthly_command(update: Update, context: CallbackContext)
 
 
 async def _admin_fix_group_pins_command(update: Update, context: CallbackContext) -> None:
-    """/admin_fix_group_pins — replace the OLD pinned «confirm participation» prompt in
-    existing groups with the new buttonless welcome (removes the now-meaningless button)."""
+    """/admin_fix_group_pins — (re)send the CURRENT group welcome (honest text +
+    «🏅 Открыть рейтинг» button) to every known group and pin it. Reliably fixes existing
+    groups whose welcome had the wrong button or was never pinned (editing the old message
+    is unreliable — it may be unpinned or unfetchable). Posts a fresh message; the old one
+    can be deleted in the chat manually. Dead groups are retired."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -3290,7 +3293,7 @@ async def _admin_fix_group_pins_command(update: Update, context: CallbackContext
     except Exception as exc:
         await message.reply_text(f"❌ Не удалось получить список групп: {exc}")
         return
-    checked = fixed = errors = 0
+    sent = pinned = dead = errors = 0
     for g in groups or []:
         try:
             chat_id = int(g.get("chat_id") or 0)
@@ -3298,33 +3301,34 @@ async def _admin_fix_group_pins_command(update: Update, context: CallbackContext
             continue
         if chat_id >= 0:
             continue
-        checked += 1
         try:
-            chat = await context.bot.get_chat(chat_id)
-        except Exception:
-            errors += 1
-            continue
-        if not _chat_has_group_enrollment_pin(chat):
-            continue
-        mid = getattr(getattr(chat, "pinned_message", None), "message_id", None)
-        if not mid:
-            continue
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=int(mid),
-                text=_group_welcome_text(getattr(chat, "title", None)),
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=_group_welcome_text(g.get("chat_title")),
                 reply_markup=_group_welcome_keyboard(),
             )
-            fixed += 1
-        except Exception:
+            sent += 1
             try:
-                await context.bot.edit_message_reply_markup(
-                    chat_id=chat_id, message_id=int(mid), reply_markup=_group_welcome_keyboard())
-                fixed += 1
+                await context.bot.pin_chat_message(
+                    chat_id=chat_id, message_id=msg.message_id, disable_notification=True)
+                pinned += 1
             except Exception:
+                pass  # bot not admin here — can't pin, that's fine
+        except Exception as exc:
+            if _is_dead_group_error(exc):
+                try:
+                    await asyncio.to_thread(deactivate_group_chat, chat_id)
+                    dead += 1
+                except Exception:
+                    errors += 1
+            else:
                 errors += 1
+            logging.warning("fix_group_pins: send failed chat_id=%s: %s", chat_id, exc)
     await message.reply_text(
-        f"Готово. Групп проверено: {checked}, закрепов обновлено: {fixed}, ошибок: {errors}")
+        f"Готово. Свежее приветствие отправлено в группы: {sent} (закреплено: {pinned}); "
+        f"мёртвых ретайрнуто: {dead}, ошибок: {errors}.\n"
+        f"Старое приветствие с прежней кнопкой можно удалить в чате вручную."
+    )
 
 
 def _build_shortcut_runs_report_text(days: int = 7) -> str:
