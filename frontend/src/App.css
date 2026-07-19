@@ -24733,9 +24733,14 @@ body.worldnews-active .webapp-topbar {
     min-height: 0;
     overflow: hidden;
     align-items: stretch; /* stretch the shell to full height, not just its content */
-    /* Lift «Перевести» + the card's rounded bottom off the screen edge / home indicator
-       (this layout otherwise pins the card flush to the very bottom). */
-    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  /* The card (.webapp-dictionary) is rounded (28px), but its clipping ancestors
+     (.webapp-video-dictionary / main / shell — overflow:hidden, no radius) share the
+     card's exact bottom edge and shear its rounded corners into a hard rectangle.
+     Reserve space below the card INSIDE the clipping parent (≥ the 28px radius, plus
+     the home-indicator safe area) so the rounded bottom clears the clip line. */
+  .webapp-page.is-dict-fill .webapp-video-dictionary {
+    padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
   }
   .webapp-page.is-dict-fill .webapp-shell {
     display: flex;
@@ -28721,9 +28726,13 @@ html[data-scheme="light"] .story-modal-guess-answer,
   min-height:0;
   overflow:hidden;
   align-items:stretch;            /* растянуть shell на всю высоту */
-  /* Приподнять низ: список и скруглённый низ карточки не должны упираться
-     в самый край экрана / домашний индикатор. */
-  padding-bottom:calc(14px + env(safe-area-inset-bottom, 0px));
+}
+/* Карточка (.webapp-dictionary) скруглена (28px), но её родители с overflow:hidden
+   (.webapp-video-dictionary / main / shell, без radius) совпадают с ней по нижнему
+   краю и срезают скругление в прямой угол. Резервируем место под карточкой ВНУТРИ
+   обрезающего родителя (≥ радиуса 28px + домашний индикатор), чтобы низ скруглился. */
+.webapp-page.is-vocab-library-fixed .webapp-video-dictionary{
+  padding-bottom:calc(32px + env(safe-area-inset-bottom, 0px));
 }
 .webapp-page.is-vocab-library-fixed .webapp-shell{
   display:flex; flex-direction:column;
