@@ -16521,7 +16521,13 @@ function AppInner() {
         && window.matchMedia('(display-mode: standalone)').matches)
       || window.navigator?.standalone === true;
     const inRealTelegram = Boolean(telegramApp?.initData) && !isStandalonePwa;
-    if (inRealTelegram && telegramApp?.openTelegramLink) {
+    // На планшете/широком окне НЕ запускаем отдельный (узкий) мини-апп через deep-link —
+    // Telegram фиксирует его ширину под телефон. Вместо этого перезагружаем ТЕКУЩЕЕ
+    // (широкое) окно в онбординг: initData едет в hash текущего URL, поэтому сохранение
+    // не теряется, а тур открывается крупной модалкой (см. onboarding.css ≥700).
+    const isWideTablet = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      && window.matchMedia('(min-width: 700px)').matches;
+    if (inRealTelegram && telegramApp?.openTelegramLink && !isWideTablet) {
       let botUrl = '';
       try {
         const r = await fetch('/api/public/tour-info');
@@ -16541,6 +16547,9 @@ function AppInner() {
     try {
       const url = new URL(window.location.href);
       url.searchParams.set('startapp', 'onboarding');
+      // Метка «открыто поверх текущего окна» → закрытие тура вернёт назад (history.back),
+      // а не закроет мини-апп (важно на планшете, где мы открываем тур in-place).
+      url.searchParams.set('ob_inplace', '1');
       window.location.assign(url.toString());
     } catch (_e) {
       try { window.location.href = '/onboarding'; } catch (_e2) { /* noop */ }

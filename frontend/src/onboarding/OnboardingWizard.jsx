@@ -1243,8 +1243,11 @@ export default function OnboardingWizard() {
   // reopening later continues where it stopped.
   const onClose = useCallback(() => {
     try { tg?.HapticFeedback?.impactOccurred?.('light'); } catch (_e) { /* noop */ }
-    // Standalone PWA: the tour opened IN PLACE over the app (same window) — return to it.
-    if (IS_STANDALONE_PWA) {
+    // Тур открыли IN-PLACE поверх текущего окна (планшет: ?ob_inplace=1, или standalone
+    // PWA) — просто возвращаемся назад в приложение, НЕ закрывая мини-апп.
+    let openedInPlace = IS_STANDALONE_PWA;
+    try { if (new URL(window.location.href).searchParams.get('ob_inplace') === '1') openedInPlace = true; } catch (_e) { /* noop */ }
+    if (openedInPlace) {
       try {
         if (window.history.length > 1) window.history.back();
         else window.location.href = '/';
