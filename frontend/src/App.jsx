@@ -6981,6 +6981,11 @@ function AppInner() {
   const youtubeDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
   const youtubeDictWidgetRef = useRef(null);
   const youtubeDictKbCleanupRef = useRef(null);
+  // Scroll position captured when the floating dict input gains focus. iOS WKWebView
+  // (standalone PWA especially) natively scrolls the document/layout viewport to "reveal"
+  // a focused input — even one inside a position:fixed overlay — which drags the YouTube
+  // player up off-screen. We pin the scroll back to this value while the input is focused.
+  const youtubeDictScrollLockRef = useRef(null);
   const translationDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
   const translationDictWidgetRef = useRef(null);
   // Cleanup for the visualViewport listeners that keep the floating dict above the keyboard
@@ -27324,6 +27329,11 @@ function AppInner() {
   // widget. The input is tagged data-floating-dict-input="true" so the shared page-field
   // logic (--app-height shrink + scrollIntoView centering) leaves the player alone; these
   // handlers lift the bottom-anchored widget above the on-screen keyboard from visualViewport.
+  // The YouTube view's real page container (NOT the display:contents portal wrappers that
+  // also carry the .webapp-page class). Used both to pin its scroll and to counter-translate it.
+  const getYoutubeDictPageEl = () => (typeof document !== 'undefined'
+    ? document.querySelector('.webapp-page.is-youtube-active')
+    : null);
   const positionYoutubeDictAboveKeyboard = () => {
     const el = youtubeDictWidgetRef.current;
     if (!el) return;
@@ -27340,25 +27350,67 @@ function AppInner() {
     el.style.top = `${availTop + 10}px`;
     el.style.bottom = 'auto';
     el.style.maxHeight = `${Math.max(240, availHeight - 20)}px`;
+    // When the page can't scroll to reveal the (body-portaled) input, iOS instead shifts the
+    // VISUAL viewport up by `offsetTop`, dragging the player off the top. Push the page back
+    // down by exactly that much so it visually stays put. (offsetTop is 0 whenever iOS uses a
+    // document scroll instead — that path is handled by pinYoutubeDictScroll — so the two
+    // corrections never double-apply.)
+    const page = youtubeDictScrollLockRef.current?.page || getYoutubeDictPageEl();
+    if (page) {
+      page.style.transform = availTop > 0 ? `translateY(${availTop}px)` : '';
+      page.style.willChange = availTop > 0 ? 'transform' : '';
+    }
+  };
+  // Hold the document/layout scroll where it was at focus time. On iOS the native
+  // "scroll focused input into view" fires repeatedly as the keyboard animates in; we
+  // re-pin on every scroll event so the player can't drift up. The widget lifts itself
+  // above the keyboard via visualViewport, so the page never needs to move at all.
+  const pinYoutubeDictScroll = () => {
+    const lock = youtubeDictScrollLockRef.current;
+    if (!lock) return;
+    if (typeof window !== 'undefined' && (window.scrollX !== lock.x || window.scrollY !== lock.y)) {
+      window.scrollTo(lock.x, lock.y);
+    }
+    const scroller = lock.page;
+    if (scroller && scroller.scrollTop !== lock.scrollerTop) {
+      scroller.scrollTop = lock.scrollerTop;
+    }
   };
   const liftYoutubeDictForKeyboard = () => {
     if (youtubeDictDragRef.current) youtubeDictDragRef.current.moved = false;
+    // Capture the current scroll so iOS can't shift the page to reveal the input. The
+    // widget is portaled to <body>, so the page content lives in the .webapp-page scroller.
+    const page = getYoutubeDictPageEl();
+    youtubeDictScrollLockRef.current = {
+      x: typeof window !== 'undefined' ? window.scrollX : 0,
+      y: typeof window !== 'undefined' ? window.scrollY : 0,
+      page,
+      scrollerTop: page?.scrollTop || 0,
+    };
     positionYoutubeDictAboveKeyboard();
     const t1 = window.setTimeout(positionYoutubeDictAboveKeyboard, 120);
     const t2 = window.setTimeout(positionYoutubeDictAboveKeyboard, 350);
     const vv = typeof window !== 'undefined' ? window.visualViewport : null;
-    vv?.addEventListener('resize', positionYoutubeDictAboveKeyboard);
-    vv?.addEventListener('scroll', positionYoutubeDictAboveKeyboard);
+    const onVvChange = () => { pinYoutubeDictScroll(); positionYoutubeDictAboveKeyboard(); };
+    vv?.addEventListener('resize', onVvChange);
+    vv?.addEventListener('scroll', onVvChange);
+    window.addEventListener('scroll', pinYoutubeDictScroll, { passive: true });
+    page?.addEventListener('scroll', pinYoutubeDictScroll, { passive: true });
     youtubeDictKbCleanupRef.current = () => {
       window.clearTimeout(t1);
       window.clearTimeout(t2);
-      vv?.removeEventListener('resize', positionYoutubeDictAboveKeyboard);
-      vv?.removeEventListener('scroll', positionYoutubeDictAboveKeyboard);
+      vv?.removeEventListener('resize', onVvChange);
+      vv?.removeEventListener('scroll', onVvChange);
+      window.removeEventListener('scroll', pinYoutubeDictScroll);
+      page?.removeEventListener('scroll', pinYoutubeDictScroll);
     };
   };
   const dropYoutubeDictAfterKeyboard = () => {
     youtubeDictKbCleanupRef.current?.();
     youtubeDictKbCleanupRef.current = null;
+    const page = youtubeDictScrollLockRef.current?.page || getYoutubeDictPageEl();
+    if (page) { page.style.transform = ''; page.style.willChange = ''; }
+    youtubeDictScrollLockRef.current = null;
     const el = youtubeDictWidgetRef.current;
     if (!el) return;
     el.style.top = '';
