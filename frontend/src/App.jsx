@@ -5980,6 +5980,9 @@ function AppInner() {
   const [youtubeDictSavedEntryId, setYoutubeDictSavedEntryId] = useState(0);
   const [youtubeDictFeelLoading, setYoutubeDictFeelLoading] = useState(false);
   const [youtubeDictFeelStatus, setYoutubeDictFeelStatus] = useState('');
+  // While the (slow, ~10s) structured lookup is still running in the background after the
+  // instant translation has already painted. Save/Feel need the canonical entry, so they wait.
+  const [youtubeDictEnriching, setYoutubeDictEnriching] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const translationResultCardRefsRef = useRef(new Map());
   const [readerInput, setReaderInput] = useState('');
@@ -6981,6 +6984,10 @@ function AppInner() {
   const youtubeDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
   const youtubeDictWidgetRef = useRef(null);
   const youtubeDictKbCleanupRef = useRef(null);
+  // Per-session cache + in-flight dedup of the structured dictionary lookup, keyed by
+  // normalized word. Re-tapping the same word paints instantly instead of paying the LLM again.
+  const youtubeDictStructuredCacheRef = useRef(new Map());
+  const youtubeDictStructuredInFlightRef = useRef(new Map());
   // Scroll position captured when the floating dict input gains focus. iOS WKWebView
   // (standalone PWA especially) natively scrolls the document/layout viewport to "reveal"
   // a focused input — even one inside a position:fixed overlay — which drags the YouTube
@@ -27204,18 +27211,27 @@ function AppInner() {
       .trim();
   };
 
-  const lookupYoutubeDict = async (word) => {
-    const q = (word || '').trim();
-    if (!q) return;
-    setYoutubeDictOpen(true);
-    setYoutubeDictQuery(q);
-    setYoutubeDictLoading(true);
-    setYoutubeDictError('');
-    setYoutubeDictResult(null);
-    setYoutubeDictSaved(false);
-    setYoutubeDictSavedEntryId(0);
-    setYoutubeDictFeelStatus('');
-    try {
+  // Build a display-ready partial card from the instant quick-translate result, so the widget
+  // paints in <1s while the structured breakdown (which needs a ~10s LLM call) loads in the
+  // background. Maps source word + translation onto the fields the card reads.
+  const buildYoutubeDictPartial = (quick) => {
+    const src = String(quick.detectedSource || quick.sourceLangHint || '').toLowerCase();
+    const tgt = String(quick.targetLang || '').toLowerCase();
+    const item = { article: String(quick.article || '').trim(), part_of_speech: '', __partial: true };
+    if (src === 'ru') item.word_ru = quick.cleaned; else item.word_de = quick.cleaned;
+    if (tgt === 'de') item.translation_de = quick.translation; else item.translation_ru = quick.translation;
+    return { ...item, direction: `${src || 'auto'}-${tgt}` };
+  };
+
+  // Fetch the full structured lookup (cached + deduped). This is the slow, LLM-backed call —
+  // kept OFF the first-paint critical path; the card upgrades in place when it resolves.
+  const fetchYoutubeDictStructured = (q) => {
+    const key = q.toLowerCase();
+    const cached = youtubeDictStructuredCacheRef.current.get(key);
+    if (cached) return Promise.resolve(cached);
+    const inFlight = youtubeDictStructuredInFlightRef.current.get(key);
+    if (inFlight) return inFlight;
+    const promise = (async () => {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -27223,15 +27239,79 @@ function AppInner() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Fehler');
-      setYoutubeDictResult(data.item ? {
+      const item = data.item ? {
         ...data.item,
         direction: data.direction || '',
         language_pair: data.language_pair || null,
-      } : null);
+      } : null;
+      if (item) {
+        youtubeDictStructuredCacheRef.current.set(key, item);
+        if (youtubeDictStructuredCacheRef.current.size > 120) {
+          const firstKey = youtubeDictStructuredCacheRef.current.keys().next().value;
+          if (firstKey) youtubeDictStructuredCacheRef.current.delete(firstKey);
+        }
+      }
+      return item;
+    })();
+    youtubeDictStructuredInFlightRef.current.set(key, promise);
+    promise.finally(() => { youtubeDictStructuredInFlightRef.current.delete(key); });
+    return promise;
+  };
+
+  const lookupYoutubeDict = async (word) => {
+    const q = (word || '').trim();
+    if (!q) return;
+    setYoutubeDictOpen(true);
+    setYoutubeDictQuery(q);
+    setYoutubeDictError('');
+    setYoutubeDictResult(null);
+    setYoutubeDictSaved(false);
+    setYoutubeDictSavedEntryId(0);
+    setYoutubeDictFeelStatus('');
+
+    // Fast path: if the structured result is already cached, show it straight away — no
+    // instant-translate flicker, save is immediately available.
+    const cachedStructured = youtubeDictStructuredCacheRef.current.get(q.toLowerCase());
+    if (cachedStructured) {
+      setYoutubeDictLoading(false);
+      setYoutubeDictEnriching(false);
+      setYoutubeDictResult(cachedStructured);
+      return;
+    }
+
+    setYoutubeDictLoading(true);
+    setYoutubeDictEnriching(true);
+
+    // Kick the slow structured lookup off immediately so it runs in parallel with the
+    // instant translate below — not after it.
+    const structuredPromise = fetchYoutubeDictStructured(q).catch((err) => {
+      throw err;
+    });
+
+    let paintedPartial = false;
+    // Phase 1 — instant translation (external MT, sub-second, cached/coalesced).
+    try {
+      const quick = await requestQuickTranslation(q);
+      if (String(quick?.translation || '').trim()) {
+        setYoutubeDictResult(buildYoutubeDictPartial(quick));
+        setYoutubeDictLoading(false);
+        paintedPartial = true;
+      }
+    } catch (_e) {
+      // MT failed — fall through and just wait on the structured result below.
+    }
+
+    // Phase 2 — structured breakdown replaces the partial card and unlocks save/feel.
+    try {
+      const item = await structuredPromise;
+      if (item) setYoutubeDictResult(item);
+      else if (!paintedPartial) setYoutubeDictError('Fehler');
     } catch (err) {
-      setYoutubeDictError(String(err.message || 'Fehler'));
+      if (!paintedPartial) setYoutubeDictError(String(err.message || 'Fehler'));
+      // If the partial already painted, keep it — a translation beats an error.
     } finally {
       setYoutubeDictLoading(false);
+      setYoutubeDictEnriching(false);
     }
   };
 
@@ -36127,7 +36207,7 @@ function AppInner() {
                           <button
                             type="button"
                             className="yt-dict-widget-close"
-                            onClick={() => { setYoutubeDictOpen(false); setYoutubeDictResult(null); setYoutubeDictQuery(''); setYoutubeDictError(''); }}
+                            onClick={() => { setYoutubeDictOpen(false); setYoutubeDictResult(null); setYoutubeDictQuery(''); setYoutubeDictError(''); setYoutubeDictEnriching(false); }}
                             aria-label={tr('Закрыть', 'Schließen')}
                           >×</button>
                         </div>
@@ -36187,15 +36267,19 @@ function AppInner() {
                                 type="button"
                                 className="yt-dict-save-btn"
                                 onClick={saveYoutubeDictWord}
-                                disabled={youtubeDictSaved}
+                                disabled={youtubeDictSaved || youtubeDictEnriching}
                               >
-                                {youtubeDictSaved ? `✓ ${tr('Сохранено', 'Gespeichert')}` : `+ ${tr('В словарь', 'Speichern')}`}
+                                {youtubeDictSaved
+                                  ? `✓ ${tr('Сохранено', 'Gespeichert')}`
+                                  : youtubeDictEnriching
+                                    ? `⏳ ${tr('Уточняем…', 'Wird verfeinert…')}`
+                                    : `+ ${tr('В словарь', 'Speichern')}`}
                               </button>
                               <button
                                 type="button"
                                 className="yt-dict-feel-btn"
                                 onClick={handleYoutubeDictFeel}
-                                disabled={youtubeDictFeelLoading}
+                                disabled={youtubeDictFeelLoading || youtubeDictEnriching}
                               >
                                 {youtubeDictFeelLoading
                                   ? tr('Обрабатываем...', 'Verarbeitung...')
