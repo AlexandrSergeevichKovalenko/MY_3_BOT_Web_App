@@ -650,6 +650,26 @@ body {
   padding: 11px 18px !important;
   border-radius: 14px !important;
 }
+/* Same square inner box in the LIVE GAME (after preview): the Quiz/Sätze wrapper
+   .flashcard-quiz-layout and the Blocks wrapper .flashcard-blocks both inherit a cream
+   backdrop from .flashcard but keep border-radius:0 → a square box shows inside the
+   rounded stage. Make them transparent so the inner card (.quiz-study-card / .blocks-trainer)
+   is the single rounded surface. Spaced Repetition is excluded (its own is-fsrs-study). */
+.webapp-page.is-flashcard-study .flashcard-quiz-layout,
+.webapp-page.is-flashcard-study .flashcard-blocks {
+  background: transparent !important;
+  border: 0 !important;
+}
+/* Gray-on-beige labels in the live game head (Quiz Mode / Block Mode + «1/15» counter):
+   they keep near-white dark-theme colors, unreadable on the beige light-theme surface.
+   Recolor to the readable «Обзор» tone. Light theme only — in dark theme the light text
+   is correct on the dark surface. */
+.webapp-page.is-theme-light.is-flashcard-study .quiz-layout-head,
+.webapp-page.is-theme-light.is-flashcard-study .quiz-layout-head .flashcard-counter,
+.webapp-page.is-theme-light.is-flashcard-study .blocks-session-topline,
+.webapp-page.is-theme-light.is-flashcard-study .blocks-session-topline .flashcard-counter {
+  color: #8b8072 !important;
+}
 /* Live session (answering quiz/blocks/sentence, NOT the preview): if its own content is
    taller than the pinned frame, let it scroll internally instead of being clipped. */
 .webapp-page.is-flashcard-study .flashcard-stage.is-session:not(.is-preview) {
