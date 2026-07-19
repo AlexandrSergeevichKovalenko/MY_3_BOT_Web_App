@@ -17246,6 +17246,8 @@ function AppInner() {
     startFlashcardsDailyTimer,
   ]);
 
+  const tabletAutoFullscreenDoneRef = useRef(false);
+
   const requestTelegramFullscreen = useCallback(() => {
     if (!telegramApp) return;
     try {
@@ -17265,6 +17267,22 @@ function AppInner() {
       // ignore
     }
   }, [telegramApp]);
+
+  // On tablet, open the WHOLE app fullscreen automatically — like the lightweight
+  // game/interactive overlays do — instead of leaving it in Telegram's narrow
+  // compact sheet and relying on the user to tap the ⤢ button. Flashcards, morning
+  // news (Wörter→Video→Quiz), and every other in-app flow launched from a chat
+  // button then fill the iPad. Fires ONCE (guarded) so a user who deliberately
+  // exits fullscreen isn't forced back in on the next viewport sync. Phones never
+  // hit this branch (telegramTabletLike is false there); the manual ⤢ button stays
+  // as a fallback for clients where the auto-request is rejected.
+  useEffect(() => {
+    if (tabletAutoFullscreenDoneRef.current) return;
+    if (!telegramTabletLike || telegramFullscreenMode) return;
+    if (typeof telegramApp?.requestFullscreen !== 'function') return;
+    tabletAutoFullscreenDoneRef.current = true;
+    requestTelegramFullscreen();
+  }, [telegramTabletLike, telegramFullscreenMode, telegramApp, requestTelegramFullscreen]);
 
   useEffect(() => {
     if (!telegramApp) return;
