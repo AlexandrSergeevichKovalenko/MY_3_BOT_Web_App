@@ -1194,6 +1194,12 @@ export default function OnboardingWizard() {
   useEffect(() => {
     setAtBottom(false);
     setContentReady(false);
+    // The body is ONE persistent element across steps, so its scrollTop carries over.
+    // Because «Далее» only unlocks after scrolling to the bottom, arriving on the next
+    // (shorter) step left it scrolled past the content → the step looked blank until the
+    // user went back+forward. Reset to the top so every step starts with content in view.
+    const el = bodyRef.current;
+    if (el) el.scrollTop = 0;
     const r = requestAnimationFrame(checkScrollBottom);
     const t1 = setTimeout(checkScrollBottom, 350);
     const t2 = setTimeout(checkScrollBottom, 900);
