@@ -595,6 +595,71 @@ body {
   margin-bottom: clamp(32px, 8vh, 76px);
 }
 
+/* ═══ Non-fsrs training modes (Quiz / Blocks / Satz preview + session) ═══
+   Mirror the fsrs fit-to-viewport chain so the beige frame no longer scrolls as a
+   whole page (which exposed hard rectangular top/bottom edges on rubber-band, pushed
+   the footer off-screen, and left the «Назад/timer» header scrolling away). Pinning the
+   chain to --app-height moves the scroll INSIDE the card, so: the header stays fixed on
+   top, the footer stays on-screen, corners read as a real card, and long sentences fit
+   (card scrolls internally + height-aware font). Applies to phone/PWA/tablet/browser.
+   Spaced Repetition (fsrs) keeps its own is-fsrs-study block above. */
+.webapp-page.is-flashcard-study {
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+  /* .webapp-page is a flex ROW with align-items:flex-start, so without this the shell
+     keeps its content height and the whole chain never shrinks to the viewport. */
+  align-items: stretch;
+}
+.webapp-page.is-flashcard-study .webapp-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.webapp-page.is-flashcard-study .webapp-main,
+.webapp-page.is-flashcard-study .webapp-flashcards,
+.webapp-page.is-flashcard-study .flashcards-panel.is-session,
+.webapp-page.is-flashcard-study .flashcard-stage.is-session,
+.webapp-page.is-flashcard-study .flashcard-stage.is-preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0;
+  overflow: hidden;
+}
+/* The preview shell fills the stage; the card fills the shell and scrolls internally
+   only if its own content is taller than the available height. */
+.webapp-page.is-flashcard-study .flashcard-preview-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+/* Live session (answering quiz/blocks/sentence, NOT the preview): if its own content is
+   taller than the pinned frame, let it scroll internally instead of being clipped. */
+.webapp-page.is-flashcard-study .flashcard-stage.is-session:not(.is-preview) {
+  overflow-y: auto;
+}
+.webapp-page.is-flashcard-study .flashcard-preview-card {
+  align-self: stretch;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  /* Lighter than the beige stage behind it, so the 24px rounding + border actually read
+     as a bounded card on phone (stage/page are both #efe4d1). */
+  background: var(--t-bg-card-alt, #fff8ee) !important;
+}
+/* Height-aware sizing: on short screens the German phrase and the translation shrink so
+   the whole card fits the viewport instead of overflowing. */
+.webapp-page.is-flashcard-study .flashcard-preview-word {
+  font-size: clamp(28px, min(8.6vw, 5.4vh), 46px) !important;
+}
+.webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-native-translation {
+  font-size: clamp(21px, min(7vw, 3.9vh), 34px) !important;
+}
+
 /* Home dashboard (phone): pin the whole chain to the EXACT visible viewport
    (--app-height) and let the Bento grid flex to fill the leftover height, so the
    12 tiles always fit ANY phone height and the screen can't drift/jitter. With no
