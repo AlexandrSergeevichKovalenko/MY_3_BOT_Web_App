@@ -253,6 +253,8 @@
 
 /* Step-by-step "how to" box (e.g. home-screen icon install) */
 .ob-howbox {
+  width: 100%;
+  box-sizing: border-box;
   background: #f4f8ff;
   border: 1px solid var(--ob-line);
   border-radius: 16px;
