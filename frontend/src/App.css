@@ -636,6 +636,19 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   height: auto;
+  /* The shell (.flashcard .flashcard-preview-shell) carries a cream backdrop with SQUARE
+     corners — the "inner rectangular contour" the user sees inside the rounded stage.
+     Drop that backdrop so the card is the single bounded surface; no nested square box. */
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 22px;
+}
+/* Neat, proportional footer buttons — were min-height:60px / font-size:29px (huge). */
+.webapp-page.is-flashcard-study .flashcard-preview-footer-btn {
+  min-height: 46px !important;
+  font-size: 16px !important;
+  padding: 11px 18px !important;
+  border-radius: 14px !important;
 }
 /* Live session (answering quiz/blocks/sentence, NOT the preview): if its own content is
    taller than the pinned frame, let it scroll internally instead of being clipped. */
