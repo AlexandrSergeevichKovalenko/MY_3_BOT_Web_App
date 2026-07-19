@@ -6867,8 +6867,10 @@ def _group_welcome_text(chat_title: str | None = None) -> str:
 
 
 def _group_welcome_keyboard() -> InlineKeyboardMarkup:
+    # Open the leaderboard (lb1) — relevant to a group about results. get_webapp_deeplink()
+    # with no arg defaults to startapp=review (word practice), which is the wrong target here.
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(text="📊 Открыть приложение", url=get_webapp_deeplink())]]
+        [[InlineKeyboardButton(text="🏅 Открыть рейтинг", url=get_webapp_deeplink("lb1"))]]
     )
 
 
