@@ -24733,6 +24733,9 @@ body.worldnews-active .webapp-topbar {
     min-height: 0;
     overflow: hidden;
     align-items: stretch; /* stretch the shell to full height, not just its content */
+    /* Lift «Перевести» + the card's rounded bottom off the screen edge / home indicator
+       (this layout otherwise pins the card flush to the very bottom). */
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
   }
   .webapp-page.is-dict-fill .webapp-shell {
     display: flex;
@@ -28718,6 +28721,9 @@ html[data-scheme="light"] .story-modal-guess-answer,
   min-height:0;
   overflow:hidden;
   align-items:stretch;            /* растянуть shell на всю высоту */
+  /* Приподнять низ: список и скруглённый низ карточки не должны упираться
+     в самый край экрана / домашний индикатор. */
+  padding-bottom:calc(14px + env(safe-area-inset-bottom, 0px));
 }
 .webapp-page.is-vocab-library-fixed .webapp-shell{
   display:flex; flex-direction:column;
