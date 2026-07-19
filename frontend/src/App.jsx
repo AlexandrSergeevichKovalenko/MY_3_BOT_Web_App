@@ -35436,6 +35436,24 @@ function AppInner() {
                               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                             />
                           )}
+                          {/* Нет наших субтитров к видео → аккуратная заглушка с маскотом (Fuchs UI). */}
+                          {isWideLayout && youtubeId && youtubeTranscript.length === 0 && !youtubeTranscriptLoading && youtubeTranscriptError && (
+                            <div className="yt-nosubs-overlay">
+                              <div className="yt-nosubs-card">
+                                <img className="yt-nosubs-fox" src={heroStickerSrc} alt="" aria-hidden="true" />
+                                <strong className="yt-nosubs-title">{tr('Субтитры недоступны', 'Untertitel nicht verfügbar')}</strong>
+                                <span className="yt-nosubs-copy">{tr('К этому видео у нас пока нет субтитров. Попробуй оригинальные субтитры YouTube (CC) или смени видео.', 'Für dieses Video haben wir noch keine Untertitel. Versuch die YouTube-Untertitel (CC) oder wähle ein anderes Video.')}</span>
+                                <div className="yt-nosubs-actions">
+                                  <button type="button" className={`yt-nosubs-btn is-primary ${youtubeNativeCcOn ? 'is-on' : ''}`} onClick={toggleYoutubeNativeCc}>
+                                    {youtubeNativeCcOn ? tr('CC включены', 'CC an') : tr('Попробовать CC', 'CC versuchen')}
+                                  </button>
+                                  <button type="button" className="yt-nosubs-btn" onClick={() => setYoutubeForceShowPanel(true)}>
+                                    {tr('Сменить видео', 'Video wechseln')}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                           {(youtubeOverlayEnabled || isWideLayout) && youtubeTranscript.length > 0 && (() => {
                             const activeIndex = getActiveSubtitleIndex();
                             const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
@@ -35669,7 +35687,7 @@ function AppInner() {
                       </div>
                     )}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
-                    {youtubeTranscriptError && (
+                    {youtubeTranscriptError && !(isWideLayout && youtubeId && youtubeTranscript.length === 0) && (
                       renderYoutubeTranscriptNotice(youtubeTranscriptError) || <div className="webapp-error">{youtubeTranscriptError}</div>
                     )}
                     {youtubeSearchExpanded && !youtubeNewsMode && !(isWideLayout && !youtubeNewsMode) && (

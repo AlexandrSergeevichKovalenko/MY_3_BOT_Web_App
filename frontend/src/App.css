@@ -16530,6 +16530,30 @@ body.worldnews-active .webapp-topbar {
   .youtube-video-back svg { width: 22px; height: 22px; }
   .youtube-video-back:hover { background: rgba(15, 18, 26, .72); }
 
+  /* Заглушка «нет субтитров» — маскот-лис в фирменном Fuchs UI поверх видео */
+  .yt-nosubs-overlay {
+    position: absolute; inset: 0; z-index: 7;
+    display: flex; align-items: center; justify-content: center; padding: 18px;
+    background: rgba(8, 10, 16, .42); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+  }
+  .yt-nosubs-card {
+    display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px;
+    max-width: 420px; padding: 24px 26px 22px; border-radius: 22px;
+    background: #fffdf8; box-shadow: 0 24px 60px -24px rgba(60, 40, 12, .55);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  }
+  .yt-nosubs-fox { width: 76px; height: 76px; object-fit: contain; }
+  .yt-nosubs-title { font-size: 19px; font-weight: 800; letter-spacing: -.015em; color: #201b14; }
+  .yt-nosubs-copy { font-size: 14px; line-height: 1.45; color: #5d5244; }
+  .yt-nosubs-actions { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; justify-content: center; }
+  .yt-nosubs-btn {
+    height: 40px; padding: 0 16px; border-radius: 13px; border: 1px solid rgba(60, 48, 30, .14);
+    background: #fff; color: #5d5244; font-family: inherit; font-size: 13.5px; font-weight: 700; cursor: pointer; transition: .15s;
+  }
+  .yt-nosubs-btn.is-primary { background: #d67a24; border-color: transparent; color: #fff; }
+  .yt-nosubs-btn.is-primary.is-on { background: #b45f13; }
+  .yt-nosubs-btn:hover { filter: brightness(.97); }
+
   /* ===== панель управления (Puzzle) ===== */
   .youtube-puzzle-bar {
     display: flex; align-items: center; gap: 9px;
