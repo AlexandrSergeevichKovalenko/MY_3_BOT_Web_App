@@ -27322,31 +27322,20 @@ function AppInner() {
     setYoutubeDictEnriching(true);
 
     // Kick the slow structured lookup off immediately so it runs in parallel with the
-    // instant translate below — not after it. Mirror the main dictionary: normalize the
-    // query first (backend /normalize is noun-aware and article-aware) so a typed noun like
-    // "Das Rennen" resolves to the noun, not the verb "rennen". Normalization is scoped to
-    // the structured path only — the instant MT below still runs on the raw query, so a
-    // subtitle tap stays instant even if /normalize is slow.
-    const structuredPromise = (async () => {
-      let lookupWord = q;
-      try {
-        const norm = await normalizeForLookup(q);
-        if (norm && String(norm).trim()) lookupWord = String(norm).trim();
-      } catch (_e) {
-        // normalization failed — fall back to the raw query
-      }
-      return fetchYoutubeDictStructured(lookupWord);
-    })().catch((err) => {
+    // instant translate below — not after it.
+    const structuredPromise = fetchYoutubeDictStructured(q).catch((err) => {
       throw err;
     });
 
     let paintedPartial = false;
+    let quickPartial = null;
     // Phase 1 — instant translation (external MT, sub-second, cached/coalesced).
     try {
       const quick = await requestQuickTranslation(q);
       if (seq !== youtubeDictLookupSeqRef.current) return;
       if (String(quick?.translation || '').trim()) {
-        setYoutubeDictResult(buildYoutubeDictPartial(quick));
+        quickPartial = buildYoutubeDictPartial(quick);
+        setYoutubeDictResult(quickPartial);
         setYoutubeDictLoading(false);
         paintedPartial = true;
       }
@@ -27378,6 +27367,18 @@ function AppInner() {
         else if (structuredArticle) {
           youtubeDictArticleCacheRef.current.set(q.toLowerCase(), structuredArticle);
           setYoutubeDictQuickArticle((prev) => prev || structuredArticle);
+        }
+        // Substantivierte Verben (nominalised verbs) like "das Rennen" / "das Gehen" are real
+        // nouns, but the structured breakdown collapses them to the base verb
+        // ("rennen" → «бежать», "gehen" → «идти»). When the query carries an explicit article
+        // the instant MT already rendered the noun sense correctly — keep that translation and
+        // article-bearing headword instead of the verb the breakdown returns. The structured
+        // item is still used for the rest of the card (save, extras).
+        const queryHasArticle = /^\s*(der|die|das)\s+/i.test(q);
+        if (queryHasArticle && quickPartial) {
+          if (String(quickPartial.translation_ru || '').trim()) item.translation_ru = quickPartial.translation_ru;
+          if (String(quickPartial.translation_de || '').trim()) item.translation_de = quickPartial.translation_de;
+          if (String(quickPartial.word_de || '').trim()) item.word_de = quickPartial.word_de;
         }
         setYoutubeDictResult(item);
       } else if (!paintedPartial) setYoutubeDictError('Fehler');
@@ -27533,6 +27534,10 @@ function AppInner() {
     }
   };
   const liftYoutubeDictForKeyboard = () => {
+    // Tablet/browser (wide) layout: the floating dict sits near the top and the on-screen
+    // keyboard (if any) covers only the bottom, so the lift-above-keyboard dance is not needed
+    // and its focus/blur animation makes the widget jump top↔bottom. Only lift on phone.
+    if (isWideLayout) return;
     if (youtubeDictDragRef.current) youtubeDictDragRef.current.moved = false;
     // Capture the current scroll so iOS can't shift the page to reveal the input. The
     // widget is portaled to <body>, so the page content lives in the .webapp-page scroller.
@@ -27562,6 +27567,9 @@ function AppInner() {
     };
   };
   const dropYoutubeDictAfterKeyboard = () => {
+    // Mirror the lift guard: on tablet/browser we never lifted, so there is nothing to drop
+    // back — skipping avoids the snap-to-bottom-then-up animation on blur.
+    if (isWideLayout) return;
     youtubeDictKbCleanupRef.current?.();
     youtubeDictKbCleanupRef.current = null;
     const page = youtubeDictScrollLockRef.current?.page || getYoutubeDictPageEl();
