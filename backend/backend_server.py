@@ -57333,6 +57333,34 @@ def _ru_plural(n: int, one: str, few: str, many: str) -> str:
     return many
 
 
+def _is_dead_group_error(exc) -> bool:
+    """True when a group-send failure means the bot can no longer post there (kicked,
+    chat deleted/not found, not a member, upgraded to supergroup) — as opposed to a
+    transient network/timeout error we should retry next run."""
+    msg = str(exc or "").lower()
+    return any(s in msg for s in (
+        "bot was kicked", "bot is not a member", "chat not found", "forbidden",
+        "chat was upgraded", "group chat was deactivated", "the group chat was deleted",
+        "user_deactivated", "peer_id_invalid", "chat_write_forbidden",
+    ))
+
+
+def _retire_group_if_dead(chat_id: int, exc) -> bool:
+    """If a group send failed because the group is dead, retire it (deactivate_group_chat)
+    so its members fall back to individual delivery — or to another live group they're in
+    (only this chat's rows are marked). No-op on transient errors. Returns True if retired."""
+    if not _is_dead_group_error(exc):
+        return False
+    try:
+        from backend.database import deactivate_group_chat
+        deactivate_group_chat(int(chat_id))
+        logging.warning("group summary: chat %s is dead (%s) → retired", chat_id, exc)
+        return True
+    except Exception:
+        logging.warning("group summary: deactivate_group_chat failed chat_id=%s", chat_id, exc_info=True)
+        return False
+
+
 def _get_users_active_on_date_safe(day) -> set:
     try:
         from backend.database import get_users_active_on_date
@@ -57474,6 +57502,7 @@ def _dispatch_daily_group_summary(*, target_date: date, tz_name: str = TODAY_PLA
             sent += 1
         except Exception as exc:
             errors.append(f"chat {chat_id}: {exc}")
+            _retire_group_if_dead(chat_id, exc)
             logging.warning("⚠️ Failed to send daily group pulse chat_id=%s", chat_id, exc_info=True)
 
     return {
@@ -57700,6 +57729,8 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
         groups += 1
         try:
             member_user_ids = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=False)
+            if not member_user_ids:
+                continue  # retired/dead group (or no members) — nothing to report
             activity = _collect_group_weekly_activity(
                 member_user_ids=member_user_ids,
                 week_start=bounds.start_date,
@@ -57745,6 +57776,7 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
             sent += 1
         except Exception as exc:
             errors.append(f"chat {chat_id}: {exc}")
+            _retire_group_if_dead(chat_id, exc)
             logging.warning("⚠️ Failed to send weekly group summary chat_id=%s", chat_id, exc_info=True)
 
     return {
@@ -58041,6 +58073,7 @@ def _dispatch_monthly_group_summary(*, target_date: date, tz_name: str = TODAY_P
             sent += 1
         except Exception as exc:
             errors.append(f"chat {chat_id}: {exc}")
+            _retire_group_if_dead(chat_id, exc)
             logging.warning("⚠️ Failed to send monthly group summary chat_id=%s", chat_id, exc_info=True)
 
     return {"ok": True, "date": target_date.isoformat(), "month": month_label, "tz": tz_name,

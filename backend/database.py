@@ -14022,6 +14022,7 @@ def list_webapp_group_contexts(
                 FROM bt_3_webapp_group_contexts
                 WHERE user_id = %s
                   AND (%s = FALSE OR participation_confirmed = TRUE)
+                  AND participation_confirmed_source IS DISTINCT FROM 'auto_group_dead'
                 ORDER BY last_seen_at DESC, chat_id DESC
                 LIMIT %s;
                 """,
@@ -14059,6 +14060,7 @@ def list_webapp_group_member_user_ids(
                 FROM bt_3_webapp_group_contexts
                 WHERE chat_id = %s
                   AND (%s = FALSE OR participation_confirmed = TRUE)
+                  AND participation_confirmed_source IS DISTINCT FROM 'auto_group_dead'
                 ORDER BY last_seen_at DESC, user_id DESC
                 LIMIT %s;
                 """,
@@ -14139,10 +14141,11 @@ def get_group_recent_weekly_totals(chat_id: int, before_week_start, limit: int =
 
 
 def deactivate_group_chat(chat_id: int) -> int:
-    """Clear confirmed-participation for a group that no longer exists (deleted, bot
-    kicked, or migrated to a new supergroup id). Its members stop being counted as
-    group members, so they fall back to the solo (global) delivery path instead of
-    silently getting nothing. Returns how many membership rows were cleared."""
+    """Retire a group that no longer exists (deleted, bot kicked, or migrated to a new
+    supergroup id). Marks ALL of the chat's membership rows as 'auto_group_dead' (not
+    just the confirmed ones — the all-seen model counts every member), so its members
+    stop being counted as group members and fall back to individual delivery (or to
+    another live group they belong to, whose rows are untouched). Returns rows retired."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -14150,7 +14153,8 @@ def deactivate_group_chat(chat_id: int) -> int:
                 UPDATE bt_3_webapp_group_contexts
                 SET participation_confirmed = FALSE,
                     participation_confirmed_source = 'auto_group_dead'
-                WHERE chat_id = %s AND participation_confirmed = TRUE
+                WHERE chat_id = %s
+                  AND participation_confirmed_source IS DISTINCT FROM 'auto_group_dead'
                 """,
                 (int(chat_id),),
             )
