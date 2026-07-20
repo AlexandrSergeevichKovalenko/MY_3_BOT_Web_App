@@ -23430,6 +23430,11 @@ body.worldnews-active .webapp-topbar {
   color: var(--tr-text-primary);
 }
 
+/* Ответ пользователя в «Результате проверки» — теми же чернилами, что он писал. */
+.webapp-section.webapp-section-translations .webapp-feedback-line.is-user-answer .webapp-feedback-value {
+  color: var(--tr-ink, var(--tr-text-primary));
+}
+
 .webapp-section.webapp-section-translations .webapp-result-text strong,
 .webapp-section.webapp-section-translations .webapp-explanation strong {
   color: var(--tr-text-title);

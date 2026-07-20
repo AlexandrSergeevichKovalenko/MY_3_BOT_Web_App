@@ -29795,8 +29795,11 @@ function AppInner() {
         <span>Correct Translation:</span>
       </span>
     );
-    const renderLabeledFeedbackLine = (key, label, value = '') => (
-      <div key={key} className="webapp-feedback-line">
+    // variant 'user' помечает строку с ответом пользователя: она красится его
+    // чернилами (см. --tr-ink), чтобы «что я написал» и «как это оценили»
+    // читались как одно целое.
+    const renderLabeledFeedbackLine = (key, label, value = '', variant = '') => (
+      <div key={key} className={`webapp-feedback-line ${variant === 'user' ? 'is-user-answer' : ''}`}>
         <span className="webapp-feedback-label">{label}</span>
         {String(value || '').trim() ? (
           <span className="webapp-feedback-value">
@@ -29826,6 +29829,7 @@ function AppInner() {
         {
           pattern: /^🟡\s*\*?User Translation:\*?\s*(.+)$/i,
           label: '🟡 User Translation:',
+          variant: 'user',
         },
         {
           pattern: /^(?:🟣\s*)?\*?Correct Translation:\*?\s*(.+)$/i,
@@ -29856,7 +29860,12 @@ function AppInner() {
       for (const matcher of matchers) {
         const match = line.match(matcher.pattern);
         if (match) {
-          return renderLabeledFeedbackLine(`fb-${index}`, matcher.label, match[match.length - 1]);
+          return renderLabeledFeedbackLine(
+            `fb-${index}`,
+            matcher.label,
+            match[match.length - 1],
+            matcher.variant,
+          );
         }
       }
 
