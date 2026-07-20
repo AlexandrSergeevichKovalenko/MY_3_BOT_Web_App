@@ -337,10 +337,12 @@ from backend.database import (
     count_shortcut_runs_today,
     count_shortcut_denied_runs_today,
     count_shortcut_runs_total,
+    count_shortcut_setup_runs_today,
     record_shortcut_run,
     record_shortcut_run_check,
     mark_announcement_sent,
     get_shortcut_installation_stats,
+    is_shortcut_setup_day,
     get_shortcut_runs_report,
     get_shortcut_installations_for_user,
     revoke_shortcut_installation,
@@ -45071,6 +45073,12 @@ def shortcut_link_installation():
 
 _SHORTCUT_RUN_PRO_DAILY = max(1, int((os.getenv("SHORTCUT_RUN_PRO_DAILY") or "2").strip() or "2"))
 _SHORTCUT_RUN_FREE_TOTAL = max(0, int((os.getenv("SHORTCUT_RUN_FREE_TOTAL") or "5").strip() or "5"))
+# One-time first-day «наладка» pool: on the CALENDAR day of the user's first-ever shortcut
+# activation, allow this many SUCCESSFUL runs that do NOT consume the Pro/Free quota — so
+# setup fumbling (wrong response-key, re-tests, empty album) never burns the real limit. On
+# the setup day the normal quota is NOT also granted; these N runs are the whole day-one
+# allowance. From the next calendar day → normal Pro=2/day, Free=5-total. Same pool for both.
+_SHORTCUT_RUN_SETUP_POOL = max(0, int((os.getenv("SHORTCUT_RUN_SETUP_POOL") or "5").strip() or "5"))
 # Alert admins when one user racks up more than this many BLOCKED attempts in a day
 # (broken/edited shortcut or a stolen token hammering the endpoint).
 _SHORTCUT_ABUSE_ALERT_THRESHOLD = max(1, int((os.getenv("SHORTCUT_ABUSE_ALERT_THRESHOLD") or "5").strip() or "5"))
@@ -45148,6 +45156,22 @@ def _shortcut_run_gate(user_id: int) -> tuple[bool, str, dict]:
     total_runs = count_shortcut_runs_total(int(user_id))
     in_window, _local = _shortcut_within_send_window()
     base = {"is_pro": is_pro, "is_admin": is_admin, "in_window": in_window, "total_runs": total_runs}
+    # 0) first-day SETUP POOL — on the user's first-ever activation calendar day, hand out a
+    # one-time «наладка» allowance that does NOT touch the Pro/Free quota (setup runs are
+    # recorded with reason='setup' and excluded from the quota counters), so setup fumbling
+    # doesn't burn the real limit. Anti-farm: the setup day is pinned to the FIRST pairing
+    # (is_shortcut_setup_day), so re-pairing later never re-grants it. On the setup day the
+    # normal quota is NOT additionally granted — these N runs are day-one's whole allowance —
+    # and the time window is skipped (наладка at any hour). Admins bypass everything below.
+    if not is_admin and _SHORTCUT_RUN_SETUP_POOL > 0 and is_shortcut_setup_day(int(user_id)):
+        setup_used = count_shortcut_setup_runs_today(int(user_id))
+        base["setup_day"] = True
+        base["setup_used"] = setup_used
+        if setup_used >= _SHORTCUT_RUN_SETUP_POOL:
+            return False, "setup_used_up", {**base, "used": setup_used, "limit": _SHORTCUT_RUN_SETUP_POOL,
+                "message": (f"Наладочные запуски на сегодня ({_SHORTCUT_RUN_SETUP_POOL}) закончились. "
+                            "Ты всё настроил — завтра утром «Ночной Переводчик» заработает в обычном режиме.")}
+        return True, "setup", base
     # 1) quota (count) — only approved runs count; admins exempt
     if not is_admin:
         if is_pro:
@@ -45237,6 +45261,15 @@ def _notify_shortcut_run_status(user_id: int, reason: str, extra: dict) -> None:
                     f"На Pro — <b>{limit}</b> отправки в день. Этот запуск <b>не обработан</b>, фото из папки удалены.\n\n"
                     "Не запускай больше сегодня — завтра утром снова доступно.")
             _shortcut_send_dm(user_id, caption, poster, pro_button=False)
+        elif reason == "setup_used_up":
+            # First-day setup pool spent — one gentle DM/day, no poster, no upsell.
+            if not mark_announcement_sent(int(user_id), f"shortcut_setup_used_up_{today}"):
+                return
+            limit = int(extra.get("limit") or _SHORTCUT_RUN_SETUP_POOL)
+            caption = (f"✅ <b>Наладка завершена — {limit} пробных запусков за сегодня использованы</b>\n\n"
+                "«Ночной Переводчик» настроен. Этот запуск дальше <b>не обрабатывался</b>.\n\n"
+                "⏰ Завтра утром он заработает в обычном режиме — поставь автозапуск на утро, и всё пойдёт само.")
+            _shortcut_send_dm(user_id, caption, None, pro_button=False)
     except Exception:
         logging.warning("shortcut run-status DM failed user=%s reason=%s", user_id, reason, exc_info=True)
 

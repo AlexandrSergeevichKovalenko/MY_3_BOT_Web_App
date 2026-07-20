@@ -23996,7 +23996,9 @@ def _ensure_shortcut_runs_schema() -> None:
 
 def count_shortcut_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> int:
     """APPROVED «Ночной Переводчик» runs on the current CALENDAR day in tz (Pro cap).
-    Only allowed runs count — blocked attempts don't consume the daily quota."""
+    Only allowed runs count — blocked attempts don't consume the daily quota. First-day
+    setup-pool runs (reason='setup') are EXCLUDED — they have their own counter and never
+    touch the Pro/Free quota (see count_shortcut_setup_runs_today)."""
     try:
         _ensure_shortcut_runs_schema()
         with get_db_connection_context() as conn:
@@ -24004,6 +24006,7 @@ def count_shortcut_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> i
                 cur.execute(
                     "SELECT COUNT(*) FROM bt_3_shortcut_runs "
                     "WHERE user_id=%s AND allowed IS NOT FALSE "
+                    "AND (reason IS DISTINCT FROM 'setup') "
                     "AND (ran_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date;",
                     (int(user_id), str(tz_name), str(tz_name)),
                 )
@@ -24033,14 +24036,35 @@ def count_shortcut_denied_runs_today(user_id: int, tz_name: str = "Europe/Vienna
 
 
 def count_shortcut_runs_total(user_id: int) -> int:
-    """Lifetime APPROVED «Ночной Переводчик» runs (Free trial cap + grace index)."""
+    """Lifetime APPROVED «Ночной Переводчик» runs (Free trial cap + grace index). First-day
+    setup-pool runs (reason='setup') are EXCLUDED so the наладка never eats the Free 5-total."""
     try:
         _ensure_shortcut_runs_schema()
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT COUNT(*) FROM bt_3_shortcut_runs WHERE user_id=%s AND allowed IS NOT FALSE;",
+                    "SELECT COUNT(*) FROM bt_3_shortcut_runs "
+                    "WHERE user_id=%s AND allowed IS NOT FALSE AND (reason IS DISTINCT FROM 'setup');",
                     (int(user_id),),
+                )
+                r = cur.fetchone()
+        return int(r[0] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def count_shortcut_setup_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> int:
+    """APPROVED first-day «наладка» runs today (reason='setup'). Tracks the one-time setup
+    pool separately from the Pro/Free quota — these runs never consume the real limit."""
+    try:
+        _ensure_shortcut_runs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_shortcut_runs "
+                    "WHERE user_id=%s AND allowed IS NOT FALSE AND reason='setup' "
+                    "AND (ran_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date;",
+                    (int(user_id), str(tz_name), str(tz_name)),
                 )
                 r = cur.fetchone()
         return int(r[0] or 0) if r else 0
@@ -24223,6 +24247,26 @@ def get_shortcut_installation_stats(user_id: int) -> dict:
         return {"install_count": int((r or [0])[0] or 0), "last_installed_at": (r[1] if r and len(r) > 1 else None)}
     except Exception:
         return {"install_count": 0, "last_installed_at": None}
+
+
+def is_shortcut_setup_day(user_id: int, tz_name: str = "Europe/Vienna") -> bool:
+    """True iff TODAY (in tz) is the calendar day of this user's FIRST-EVER shortcut
+    activation (the earliest pairing row). The one-time first-day setup pool («наладка»)
+    applies ONLY on this day. Anti-farm by construction: the setup day is pinned to
+    MIN(created_at), so re-pairing on a LATER day never re-grants it, and a user whose
+    first activation was on an earlier day gets no pool now. No pairing rows → False."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT (MIN(created_at) AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date "
+                    "FROM bt_3_shortcut_installations WHERE user_id=%s;",
+                    (str(tz_name), str(tz_name), int(user_id)),
+                )
+                r = cur.fetchone()
+        return bool(r and r[0])
+    except Exception:
+        return False
 
 
 def get_shortcut_runs_report(days: int = 7, tz_name: str = "Europe/Vienna") -> dict:
