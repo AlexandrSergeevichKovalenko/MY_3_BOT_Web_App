@@ -16857,11 +16857,33 @@ body.worldnews-active .webapp-topbar {
   .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-player-first-head {
     display: none !important;
   }
-  /* Peek, видео и транспорт держат натуральную высоту — растягивается только панель. */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-focus-peek,
+  /* Панель управления, видео и транспорт держат натуральную высоту — растягивается только субтитры. */
+  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-watchbar-wrap,
   .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-player-card,
   .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-sentence-jump-bar {
     flex: 0 0 auto;
+  }
+  /* «Идёт воспроизведение»-peek не нужен: на паузе есть панель, в игре — чистый экран. */
+  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-focus-peek {
+    display: none !important;
+  }
+  /* Убираем бейджи-заголовки DE/RU с карточек субтитров — язык и так виден, а места
+     станет больше (переключатели DE/RU переехали на панель управления). */
+  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-card-head {
+    display: none !important;
+  }
+  /* Транспорт компактный — место важнее для субтитров (лингвистическое приложение). */
+  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-sentence-jump-bar {
+    margin: 0 !important;
+    gap: 6px !important;
+  }
+  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-sentence-jump-btn {
+    height: 30px !important;
+    min-width: 38px !important;
+  }
+  /* Пока видео ИГРАЕТ — панель уезжает вверх, остаются только видео + субтитры (иммерсия). */
+  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-player-first.is-playing-focus .youtube-watchbar-wrap {
+    display: none !important;
   }
   /* Панель субтитров заполняет остаток; списки скроллятся внутри. */
   .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-panel {
@@ -16902,6 +16924,64 @@ body.worldnews-active .webapp-topbar {
     flex: 1 1 auto;
     min-height: 0;
     max-height: none !important;
+  }
+
+  /* ─────────── Slim watch control bar — Fuchs UI (phone only) ─────────── */
+  .youtube-watchbar-wrap{
+    --wb-card:#1e2534;--wb-edge:#3a4557;--wb-ink:#f1f5fb;--wb-muted:#9fb0c4;--wb-subtle:#7c8aa0;
+    --wb-accent:#e6b566;--wb-accent-soft:rgba(230,181,102,.17);--wb-accent-line:rgba(230,181,102,.4);--wb-on-accent:#231a0d;
+    --wb-ru:#7db1e8;--wb-panel:rgba(30,37,52,.9);
+    display:flex;flex-direction:column;gap:8px;
+  }
+  .webapp-page.is-theme-light .youtube-watchbar-wrap{
+    --wb-card:#fff8ee;--wb-edge:#d8c8b0;--wb-ink:#17120d;--wb-muted:#5a4a39;--wb-subtle:#8a765f;
+    --wb-accent:#c1873f;--wb-accent-soft:rgba(193,135,63,.15);--wb-accent-line:rgba(193,135,63,.42);--wb-on-accent:#fffdf8;
+    --wb-ru:#2f6bb0;--wb-panel:rgba(255,248,238,.92);
+  }
+  .youtube-watchbar{
+    display:flex;align-items:center;justify-content:space-between;gap:6px;
+    padding:5px;border-radius:16px;background:var(--wb-panel);
+    border:1px solid var(--wb-edge);box-shadow:0 6px 18px rgba(0,0,0,.14);
+    -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
+  }
+  .youtube-watchbar-cluster{display:flex;align-items:center;gap:5px;min-width:0}
+  .youtube-watchbar-btn{
+    width:37px;height:37px;border-radius:11px;border:1px solid var(--wb-edge);
+    background:var(--wb-card);color:var(--wb-muted);display:inline-flex;align-items:center;justify-content:center;
+    cursor:pointer;flex:0 0 auto;transition:background .15s ease,color .15s ease,border-color .15s ease;padding:0;
+  }
+  .youtube-watchbar-btn:active{transform:translateY(.5px)}
+  .youtube-watchbar-btn.is-on{background:var(--wb-accent-soft);border-color:var(--wb-accent-line);color:var(--wb-accent)}
+  .youtube-watchbar-btn.is-primary{background:var(--wb-accent-soft);border-color:var(--wb-accent-line);color:var(--wb-accent)}
+  .youtube-watchbar-btn.is-primary.is-open{background:var(--wb-accent);border-color:transparent;color:var(--wb-on-accent)}
+  .youtube-watchbar-btn svg{width:18px;height:18px}
+  /* DE / RU language toggles — two letters, connected segment */
+  .youtube-langseg{display:inline-flex;flex:0 0 auto;border:1px solid var(--wb-edge);border-radius:11px;overflow:hidden;background:var(--wb-card)}
+  .youtube-langbtn{
+    border:0;background:transparent;font-family:inherit;font-weight:800;font-size:12.5px;letter-spacing:.03em;
+    color:var(--wb-subtle);width:34px;height:37px;cursor:pointer;transition:.15s;padding:0;
+  }
+  .youtube-langbtn+.youtube-langbtn{border-left:1px solid var(--wb-edge)}
+  .youtube-langbtn.is-de.is-on{background:var(--wb-accent);color:var(--wb-on-accent)}
+  .youtube-langbtn.is-ru.is-on{background:var(--wb-ru);color:#fff}
+  /* change-video reveal: URL field + optional transcript, scrolls internally if tall */
+  .youtube-watchbar-changer{
+    display:flex;flex-direction:column;gap:8px;padding:11px;border-radius:15px;
+    background:var(--wb-card);border:1px solid var(--wb-edge);box-shadow:0 6px 18px rgba(0,0,0,.12);
+    max-height:46vh;overflow:auto;
+  }
+  .youtube-watchbar-changer .webapp-field{margin:0}
+  .youtube-watchbar-changer .webapp-field>span{font-size:11.5px;color:var(--wb-subtle);font-weight:600}
+  .youtube-watchbar-find{
+    align-self:stretch;border:0;background:var(--wb-accent);color:var(--wb-on-accent);
+    font-family:inherit;font-weight:800;font-size:13.5px;padding:11px 14px;border-radius:12px;cursor:pointer;
+  }
+  .youtube-watchbar-find:disabled{opacity:.6;cursor:default}
+  .youtube-watchbar-ta{display:flex;flex-direction:column;gap:6px}
+  .youtube-watchbar-ta-label{font-size:11.5px;color:var(--wb-subtle);font-weight:600;padding-left:2px}
+  .youtube-watchbar-ta textarea{
+    width:100%;border:1px dashed var(--wb-edge);background:transparent;border-radius:12px;
+    padding:10px 12px;font-family:inherit;font-size:13px;color:var(--wb-ink);resize:vertical;outline:none;
   }
 }
 

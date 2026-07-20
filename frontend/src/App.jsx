@@ -5974,6 +5974,8 @@ function AppInner() {
   // once the player has scrolled clear of it. World-news mode is intentionally excluded.
   const [youtubeTopbarTucked, setYoutubeTopbarTucked] = useState(false);
   const [youtubeDictOpen, setYoutubeDictOpen] = useState(false);
+  // Phone watch-view: «Сменить видео» reveal (URL + optional transcript) opened from the slim control bar.
+  const [youtubeChangeOpen, setYoutubeChangeOpen] = useState(false);
   const [youtubeDictQuery, setYoutubeDictQuery] = useState('');
   const [youtubeDictResult, setYoutubeDictResult] = useState(null);
   const [youtubeDictLoading, setYoutubeDictLoading] = useState(false);
@@ -21902,6 +21904,17 @@ function AppInner() {
     }
     setYoutubeTranslationEnabled((v) => !v);
   };
+  // PHONE-ONLY fullscreen button (slim watch bar): overlay rides on fullscreen — entering
+  // fullscreen with subtitles visible auto-enables the on-video overlay; with subtitles off it
+  // goes fullscreen without overlay; exiting fullscreen always clears the overlay. Tablet/browser
+  // keep their separate Overlay control and are never routed through here (isWideLayout path).
+  const handlePhoneFullscreenToggle = () => {
+    const next = !youtubeAppFullscreen;
+    const subtitlesVisible = youtubeOriginalEnabled || youtubeTranslationEnabled;
+    setYoutubeAppFullscreen(next);
+    setYoutubeOverlayEnabled(next && subtitlesVisible);
+    setYoutubeSettingsOpen(false);
+  };
   useEffect(() => () => {
     if (worldNewsRuLockedTimerRef.current) {
       clearTimeout(worldNewsRuLockedTimerRef.current);
@@ -35642,6 +35655,162 @@ function AppInner() {
                         )}
                       </div>
                     </div>
+                    {/* ── PHONE watch view: slim control bar (shown on pause, hidden while playing via CSS).
+                         Replaces the bulky header during watch so the player pulls to the top and the
+                         subtitles fill the screen. Every control is preserved — just reformatted:
+                         Home · Сменить видео (reveals URL + optional transcript) · Словарь · DE/RU
+                         subtitle toggles · Fullscreen (couples overlay on phone) · Настройки.
+                         Tablet/browser (isWideLayout) keep their own dock and are never rendered here. ── */}
+                    {youtubeWatchFocusMode && !isWideLayout && !youtubeNewsMode && youtubeSubtitlesReady && (
+                      <div className="youtube-watchbar-wrap">
+                        <div className="youtube-watchbar" role="toolbar" aria-label={tr('Управление просмотром', 'Wiedergabe-Steuerung')}>
+                          <div className="youtube-watchbar-cluster">
+                            <button
+                              type="button"
+                              className="youtube-watchbar-btn"
+                              onClick={goHomeScreen}
+                              aria-label={tr('На главную', 'Startseite')}
+                              title={tr('На главную', 'Startseite')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 11l9-8 9 8" /><path d="M5 10v10h14V10" /></svg>
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-watchbar-btn is-primary ${youtubeChangeOpen ? 'is-open' : ''}`}
+                              onClick={() => setYoutubeChangeOpen((v) => !v)}
+                              aria-expanded={youtubeChangeOpen}
+                              aria-label={tr('Сменить видео', 'Video ändern')}
+                              title={tr('Сменить видео', 'Video ändern')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h12v12H4z" /><path d="M16 9l4-2v10l-4-2" /></svg>
+                            </button>
+                            <button
+                              type="button"
+                              className={`youtube-watchbar-btn ${youtubeDictOpen ? 'is-on' : ''}`}
+                              onClick={() => setYoutubeDictOpen((v) => !v)}
+                              aria-pressed={youtubeDictOpen}
+                              aria-label={tr('Словарь', 'Wörterbuch')}
+                              title={tr('Словарь', 'Wörterbuch')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+                            </button>
+                          </div>
+                          <div className="youtube-watchbar-cluster">
+                            <div className="youtube-langseg" role="group" aria-label={tr('Субтитры', 'Untertitel')}>
+                              <button
+                                type="button"
+                                className={`youtube-langbtn is-de ${youtubeOriginalEnabled ? 'is-on' : ''}`}
+                                onClick={() => setYoutubeOriginalEnabled((v) => !v)}
+                                aria-pressed={youtubeOriginalEnabled}
+                                title={tr('Немецкие субтитры', 'Deutsche Untertitel')}
+                              >
+                                {String(languageProfile?.learning_language || 'de').toUpperCase()}
+                              </button>
+                              <button
+                                type="button"
+                                className={`youtube-langbtn is-ru ${youtubeTranslationEnabled ? 'is-on' : ''}`}
+                                onClick={handleCatalogRuToggle}
+                                aria-pressed={youtubeTranslationEnabled}
+                                title={tr('Русские субтитры', 'Russische Untertitel')}
+                              >
+                                {getNativeSubtitleCode()}
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              className={`youtube-watchbar-btn ${youtubeAppFullscreen ? 'is-on' : ''}`}
+                              onClick={handlePhoneFullscreenToggle}
+                              aria-pressed={youtubeAppFullscreen}
+                              aria-label={tr('Во весь экран', 'Vollbild')}
+                              title={tr('Во весь экран', 'Vollbild')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+                            </button>
+                            <button
+                              type="button"
+                              className="youtube-watchbar-btn"
+                              onClick={() => setYoutubeSettingsOpen(true)}
+                              aria-label={tr('Настройки', 'Einstellungen')}
+                              title={tr('Настройки', 'Einstellungen')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2.2-1.3L14 1h-4l-.3 2.4a7 7 0 0 0-2.2 1.3l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12a7 7 0 0 0 .1 1.3l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2.2 1.3L10 23h4l.3-2.4a7 7 0 0 0 2.2-1.3l2.4 1 2-3.4-2-1.6A7 7 0 0 0 19 12z" /></svg>
+                            </button>
+                          </div>
+                        </div>
+                        {youtubeChangeOpen && (
+                          <div className="youtube-watchbar-changer">
+                            <YoutubeQueryInputField
+                              value={youtubeInput}
+                              label={tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}
+                              placeholder={tr('https://youtu.be/VIDEO_ID или Deutsch Grammatik B1', 'https://youtu.be/VIDEO_ID oder Deutsch Grammatik B1')}
+                              clearLabel={tr('Очистить', 'Löschen')}
+                              onDraftChange={(nextValue) => { youtubeInputDraftRef.current = String(nextValue ?? ''); }}
+                              onCommit={commitYoutubeInputDraft}
+                              onSubmit={searchYoutubeVideos}
+                            />
+                            <button
+                              type="button"
+                              className="youtube-watchbar-find"
+                              onClick={() => searchYoutubeVideos()}
+                              disabled={youtubeSearchLoading}
+                            >
+                              {youtubeSearchLoading
+                                ? tr('Ищем в YouTube…', 'Suche auf YouTube…')
+                                : tr('Найти на YouTube', 'Auf YouTube suchen')}
+                            </button>
+                            {youtubeSearchError && <div className="webapp-error">{youtubeSearchError}</div>}
+                            {youtubeSearchResults.length > 0 && (
+                              <div className="youtube-search-results">
+                                {youtubeSearchResults.map((item) => (
+                                  <button
+                                    type="button"
+                                    key={item.video_id}
+                                    className="youtube-search-item"
+                                    onClick={() => {
+                                      setYoutubeInput(item.video_url || `https://youtu.be/${item.video_id}`);
+                                      setYoutubeSearchResults([]);
+                                      setYoutubeSearchError('');
+                                    }}
+                                  >
+                                    <img src={item.thumbnail || `https://i.ytimg.com/vi/${item.video_id}/mqdefault.jpg`} alt="" loading="lazy" />
+                                    <span>{item.title || item.video_id}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {canManageYoutubeTranscripts && (
+                              <div className="youtube-watchbar-ta">
+                                <label className="youtube-watchbar-ta-label">{tr('Своя транскрипция — необязательно', 'Eigenes Transkript — optional')}</label>
+                                <textarea
+                                  rows={4}
+                                  value={manualTranscript}
+                                  onChange={(event) => setManualTranscript(event.target.value)}
+                                  placeholder={tr('Вставьте .srt/.vtt с таймкодами. Без таймкодов покажем статично.', 'Paste .srt/.vtt with timecodes. Without timecodes we show static lines.')}
+                                />
+                                <div className="webapp-video-actions">
+                                  <button type="button" className="secondary-button" onClick={() => handleManualTranscript()}>
+                                    {tr('Использовать транскрипцию', 'Transkript verwenden')}
+                                  </button>
+                                  {youtubeManualOverride && (
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={() => {
+                                        setYoutubeManualOverride(false);
+                                        setManualTranscript('');
+                                        setYoutubeTranscriptHasTiming(true);
+                                      }}
+                                    >
+                                      {tr('Сбросить', 'Reset')}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className="youtube-player-card">
                       <div
                         ref={youtubePlayerShellRef}
