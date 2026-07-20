@@ -3596,6 +3596,8 @@ const TR_TEXT_INK_KEY = 'tr_text_ink_v1';
 const TR_TEXT_SCALES = [0.9, 1, 1.15, 1.3, 1.5];
 const TR_TEXT_SCALE_DEFAULT = 1; // индекс: 1.0 = как было до настройки
 const TR_TEXT_INKS = ['blue', 'graphite', 'amber', 'green', 'soft'];
+const TR_TEXT_HINT_KEY = 'tr_text_hint_seen_v1';
+const TR_TEXT_HINT_MS = 6000;
 
 function readStoredTextScaleIndex() {
   const raw = Number.parseInt(readStoredDraftValue(TR_TEXT_SCALE_KEY, ''), 10);
@@ -3619,7 +3621,19 @@ const TranslationTextControl = React.memo(function TranslationTextControl({
   onInk,
 }) {
   const [open, setOpen] = useState(false);
+  const [hintVisible, setHintVisible] = useState(false);
   const closeTimerRef = useRef(null);
+
+  // Первый раз показываем подсказку: без неё «Aa» — просто буква, и человек
+  // не догадается, что размер и цвет вообще настраиваются. Ровно один раз
+  // за всё время, 6 секунд, дальше кнопка говорит сама за себя.
+  useEffect(() => {
+    if (readStoredDraftValue(TR_TEXT_HINT_KEY, '')) return undefined;
+    writeStoredValue(TR_TEXT_HINT_KEY, '1');
+    setHintVisible(true);
+    const timer = window.setTimeout(() => setHintVisible(false), TR_TEXT_HINT_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // Раскрытая панель сама сворачивается — она не должна занимать шапку насовсем.
   const scheduleClose = useCallback(() => {
@@ -3653,15 +3667,27 @@ const TranslationTextControl = React.memo(function TranslationTextControl({
 
   if (!open) {
     return (
-      <button
-        type="button"
-        className="tr-text-pill"
-        onClick={() => { trTextHaptic(); setOpen(true); }}
-        title={openLabel}
-        aria-label={openLabel}
-      >
-        <span aria-hidden="true">Aa</span>
-      </button>
+      <>
+        <button
+          type="button"
+          className={`tr-text-pill ${hintVisible ? 'is-hinting' : ''}`}
+          onClick={() => { trTextHaptic(); setHintVisible(false); setOpen(true); }}
+          title={openLabel}
+          aria-label={openLabel}
+        >
+          {/* Крупная A рядом с мелкой a читается как «размер текста» даже без слов. */}
+          <span className="tr-text-pill-glyph" aria-hidden="true">A<em>a</em></span>
+          <span className="tr-text-pill-label">{tr('Размер', 'Größe')}</span>
+        </button>
+        {hintVisible && (
+          <div className="tr-text-hint" role="status" onClick={() => setHintVisible(false)}>
+            <span className="tr-text-hint-title">{tr('Текст мелкий?', 'Text zu klein?')}</span>
+            <span className="tr-text-hint-copy">
+              {tr('Нажмите «Aa» — здесь настраивается размер и цвет текста.', 'Tippen Sie auf «Aa» — hier stellen Sie Größe und Farbe ein.')}
+            </span>
+          </div>
+        )}
+      </>
     );
   }
 

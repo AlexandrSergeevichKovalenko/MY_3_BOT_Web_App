@@ -22845,6 +22845,10 @@ body.worldnews-active .webapp-topbar {
 /* Заголовок и ручка «Aa» в одной строке; логотипу-лису оставлен правый отступ.
    На узком экране раскрытая панель не сжимает заголовок, а переносится под него. */
 .webapp-section.webapp-section-translations .translations-title-line {
+  /* Якорь для всплывающей подсказки. z-index обязателен: без него карточка
+     с заданием (она ниже по DOM и позиционирована) рисуется поверх подсказки. */
+  position: relative;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -22869,20 +22873,112 @@ body.worldnews-active .webapp-topbar {
   box-shadow: none;
 }
 
+/* Голая буква «A» ничего не сообщает, поэтому кнопка носит и подпись, и
+   амбер-акцент: её видно как активный элемент, а не как декор. */
 .tr-text-pill {
-  min-height: 34px;
-  padding: 0 14px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px 0 11px;
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.13);
+  color: var(--tr-text-title);
   cursor: pointer;
-  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
 }
 
 .tr-text-pill:hover {
-  background: var(--tr-bg-hover);
-  border-color: var(--tr-primary);
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(245, 158, 11, 0.7);
+}
+
+.tr-text-pill:active { transform: scale(0.96); }
+
+/* Крупная A + мелкая a: сам знак показывает, что тут про размер текста. */
+.tr-text-pill-glyph {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.tr-text-pill-glyph em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tr-text-pill-label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--tr-text-secondary);
+  white-space: nowrap;
+}
+
+/* Мигает только в первый раз, пока висит подсказка. */
+.tr-text-pill.is-hinting {
+  animation: tr-text-pill-pulse 1.5s ease-in-out 4;
+}
+
+@keyframes tr-text-pill-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+  50% { box-shadow: 0 0 0 7px rgba(245, 158, 11, 0.16); }
+}
+
+.tr-text-hint {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 6;
+  display: grid;
+  gap: 3px;
+  max-width: min(268px, 100%);
+  padding: 10px 13px;
+  border-radius: 14px;
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  background: var(--tr-bg-card);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  animation: tr-text-hint-in 0.28s ease-out;
+}
+
+/* Уголок, указывающий на кнопку «Aa». */
+.tr-text-hint::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  right: 22px;
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  border-left: 1px solid rgba(245, 158, 11, 0.42);
+  border-top: 1px solid rgba(245, 158, 11, 0.42);
+  background: var(--tr-bg-card);
+}
+
+.tr-text-hint-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
   color: var(--tr-text-title);
+}
+
+.tr-text-hint-copy {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--tr-text-secondary);
+}
+
+@keyframes tr-text-hint-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tr-text-hint { animation: none; }
+  .tr-text-pill.is-hinting { animation: none; }
 }
 
 .tr-text-panel {
