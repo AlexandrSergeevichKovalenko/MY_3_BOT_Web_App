@@ -36032,13 +36032,27 @@ function AppInner() {
                               {/* Premium Dock §2: the single transport lives centered under the
                                   player; the inline duplicate in the subtitle head is removed. */}
                               <div className="youtube-subtitles-card-head-spacer">
-                                {youtubeNewsMode && (
+                                {youtubeNewsMode ? (
                                   <button
                                     type="button"
                                     className={`worldnews-sub-btn ${youtubeTranslationEnabled ? 'is-on' : ''}`}
                                     onClick={handleWorldNewsRuToggle}
                                   >
                                     {tr('Русский', 'Russisch')}
+                                  </button>
+                                ) : (
+                                  /* Slim RU toggle inside the panel (like news): keeps the
+                                     translation column reachable while watching, since the top
+                                     YouTube header (with its RU chip) is hidden in the watch view. */
+                                  <button
+                                    type="button"
+                                    className={`youtube-panel-ru-btn ${youtubeTranslationEnabled ? 'is-on' : ''}`}
+                                    onClick={handleCatalogRuToggle}
+                                    aria-pressed={youtubeTranslationEnabled}
+                                    aria-label={tr('Русские субтитры', 'Russische Untertitel')}
+                                    title={tr('Русские субтитры', 'Russische Untertitel')}
+                                  >
+                                    {getNativeSubtitleCode()}
                                   </button>
                                 )}
                               </div>

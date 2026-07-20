@@ -16645,6 +16645,38 @@ body.worldnews-active .webapp-topbar {
 }
 .worldnews-sub-btn.is-on { background: #2563eb; color: #ffffff; }
 .youtube-subtitles-card-head-spacer { display: flex; justify-content: flex-end; }
+
+/* Slim RU toggle living in the regular-YouTube subtitle panel head (right side).
+   Mirrors the news «Русский» button so the translation column stays reachable
+   during the watch view (where the top header + its RU chip are hidden). Amber
+   accent = app house style; off-state uses theme-aware --yt-* tokens. */
+.youtube-panel-ru-btn {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--yt-border-default, #d8c8b0);
+  background: var(--yt-bg-card-alt, #fff8ee);
+  color: var(--yt-text-muted, #5a4a39);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+/* ON: amber fill (dark theme = brighter amber + dark ink; light theme below). */
+.youtube-panel-ru-btn.is-on {
+  background: #e0ad5b;
+  border-color: transparent;
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .youtube-panel-ru-btn.is-on {
+  background: #c1873f;
+  color: #ffffff;
+}
 /* Free-user plaque shown for ~5s where the Pro RU subtitles would sit. */
 .worldnews-ru-locked {
   display: flex;
@@ -16808,6 +16840,7 @@ body.worldnews-active .webapp-topbar {
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0; /* без этого flex-элементы не сжимаются по ширине → горизонт. переполнение */
     overflow: hidden;
   }
   .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-player-first {
@@ -16815,6 +16848,7 @@ body.worldnews-active .webapp-topbar {
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
     overflow: hidden;
     /* Низ последней карточки субтитров — ~0.5 см над краём (+ home-indicator). */
     padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5cm) !important;
@@ -16833,6 +16867,7 @@ body.worldnews-active .webapp-topbar {
   .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-panel {
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -16840,6 +16875,7 @@ body.worldnews-active .webapp-topbar {
   .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-panel-content {
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
   }
@@ -16847,6 +16883,7 @@ body.worldnews-active .webapp-topbar {
   .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-block {
     flex: 1 1 0;
     min-height: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
