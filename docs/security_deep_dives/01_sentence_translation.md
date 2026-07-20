@@ -389,6 +389,90 @@ If you put step 3 before step 2, you'd be reading "the user's sentences" before 
 user is. If you skipped step 3, you'd grade any id the client claims. Both are real bugs; the real
 code does 2 then 3 for exactly this reason.
 
+## 1.7 Operational reliability — why a grade can go missing, and the two fixes (Layers A & B)
+
+This is not about the request code — it's about **how the background worker is deployed**, and it's
+the real-world reason a user (Irina) once saw *"часть не проверилась"* — some of her 7 sentences
+never got a score. Understanding it teaches you how our hosting (Railway) actually runs the grading
+worker.
+
+### The symptom and the mechanism
+
+Recall the async pipeline (§1.3–1.4): endpoint ② opens a **grading session** with N items (e.g. 7),
+then the **translation_check_worker** — a separate background process (`Procfile`:
+`translation_check_worker: python -m backend.run_dramatiq_worker`) — grades each item one by one,
+and endpoint ③ polls until all N are done. A **session** here = one submission's set of 7 sentences
+being graded; an **item** = one sentence in it.
+
+Now the failure: if that worker process is **stopped and restarted while it's mid-session**, the
+sentences it hadn't finished yet are left **orphaned** — stuck in `pending`, never graded. The user
+sees "5 of 7 checked" and the rest silently missing. Two separate things caused this, so there are
+two fixes, at two layers.
+
+### Layer B — fast recovery (soften the consequence)
+
+First, the good news about our queue: jobs are **not lost** when a worker dies. Our queue uses
+**at-least-once delivery** (explained in
+[autosave_scaling_explained.md §3.5](../autosave_scaling_explained.md#35-queues-brokers-workers-dramatiq)):
+the broker (Redis) holds a job until a worker *confirms* it finished. If the worker dies first, the
+job is re-delivered to another worker.
+
+The catch is **how long** re-delivery takes. The broker doesn't instantly know a worker vanished —
+it waits for the worker to miss its **heartbeat** (a periodic "I'm still alive" signal) and for a
+**redelivery timeout** (how long an un-confirmed job is held before being handed to someone else) to
+expire. Those timeouts were long, so re-pickup took **90–180 seconds** — long enough that a polling
+user gives up thinking it failed.
+
+**Layer B = four environment variables on the worker** (set in Railway's config for the
+TRANSLATION_CHECK_WORKER service — see [env vars](../toolbox/stack_explained.md)) that shrink those
+heartbeat/redelivery timeouts. Result: an orphaned job is re-picked-up in **~30–35 seconds** instead
+of 90–180. (The exact variable names + values live in that service's Railway environment, not in the
+repo, because they're deploy config, not code.) This is a **safety net**, not a cure — it makes
+recovery 3× faster, but it'd be better if sessions never orphaned in the first place. That's Layer A.
+
+### Layer A — stop the needless restarts (remove the cause)
+
+**Why was the worker restarting mid-session at all?** Because Railway was **redeploying** it on
+*every* push to our repo — including pure **frontend** pushes that don't touch any worker code. Each
+redeploy = the old worker process is killed and a new one started (a new **deployment**). If a
+grading session was in flight during a frontend deploy, it got orphaned. So a frontend change with
+nothing to do with grading was silently breaking grading.
+
+**The fix = Railway "Watch Paths".** *Watch Paths* is a per-service setting: a list of file-path
+**glob patterns**, and Railway only rebuilds/redeploys that service when a push changes a file
+**matching one of them**. (A *glob* is a wildcard path pattern; `/backend/**` means "any file under
+`backend/`, at any depth" — `**` matches nested folders too.) We set the
+TRANSLATION_CHECK_WORKER's Watch Paths to:
+
+```
+/backend/**                  ← the worker's actual code lives here
+/Dockerfile.jobs.queue       ← the build file for this specific worker (see Procfile → this service)
+```
+
+Now a frontend-only push (which touches `frontend/**`, not `backend/**`) matches **neither** pattern,
+so Railway leaves the worker **running untouched** — no restart, no orphaned sessions.
+
+### The two layers together
+
+- **Layer A** removes the *cause*: the worker no longer restarts for changes that don't concern it,
+  so sessions stop orphaning from frontend deploys.
+- **Layer B** softens the *consequence*: if a session ever does orphan (e.g. a real worker-code
+  deploy, or a crash), it recovers in ~30–35s instead of 90–180s.
+- Both sit on top of the **code-level** safety net already in the grader: the durable "6 of 7"
+  finalize with bounded retry (§3 "bonus defenses", constants at `backend_server.py:866`), which
+  guarantees an item is never left `pending` once the worker *does* process it.
+
+### How to confirm Layer A is working
+
+On your next **pure-frontend** push: open Railway → **TRANSLATION_CHECK_WORKER → Deployments**. A new
+deployment should **not** appear. If one does, the Watch Paths didn't take effect — check them.
+
+### The trade-off to remember
+
+The flip side of Watch Paths: this worker will **no longer redeploy for changes outside those two
+paths**. So if the worker ever seems to be running stale/old behavior, **check its Watch Paths
+first** — a change may live in a path Railway isn't watching for this service.
+
 # 🥷 2. Threats — what an attacker tries
 
 The attacker's tool is the browser dev-tools "Network" tab inside the Telegram webview: they see

@@ -76,6 +76,15 @@ House rules that matter here (from how this repo is run):
 
 After pushing, watch the deploy/logs (next section) to confirm it came up.
 
+**Watch Paths (selective redeploy per service).** By default a push redeploys *every* service. Each
+Railway service can set **Watch Paths** — a list of file-path glob patterns; that service only
+rebuilds when a push changes a matching file (`/backend/**` = any file under `backend/`, `**` =
+nested folders included). This stops, e.g., a pure-frontend push from restarting a background worker
+(and orphaning its in-flight jobs). Trade-off: a service with Watch Paths won't redeploy for changes
+*outside* those paths — so if a service looks stale, check its Watch Paths first. Worked example (why
+this mattered for translation grading):
+[security_deep_dives/01 §1.7](../security_deep_dives/01_sentence_translation.md).
+
 ## 3. Railway CLI — logs, running commands against prod, querying the DB
 
 The **Railway CLI** is a command-line tool to talk to our hosting. Common uses:
