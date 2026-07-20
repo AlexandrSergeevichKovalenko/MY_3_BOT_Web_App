@@ -16872,14 +16872,27 @@ body.worldnews-active .webapp-topbar {
   .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-subtitles-card-head {
     display: none !important;
   }
-  /* Транспорт компактный — место важнее для субтитров (лингвистическое приложение). */
+  /* Транспорт компактный и В ОДНУ СТРОКУ: ползунок слева (тянется), кнопки ⏮▶⏭ справа —
+     экономим вертикаль ради субтитров (как в макете). Было flex-column (две строки). */
   .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-sentence-jump-bar {
+    flex-direction: row !important;
+    align-items: center !important;
     margin: 0 !important;
+    gap: 10px !important;
+  }
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-scrubber {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    margin: 0 !important;
+  }
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-transport-buttons {
+    flex: 0 0 auto !important;
     gap: 6px !important;
   }
   .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-sentence-jump-btn {
-    height: 30px !important;
-    min-width: 38px !important;
+    height: 32px !important;
+    min-width: 36px !important;
   }
   /* Пока видео ИГРАЕТ — панель уезжает вверх, остаются только видео + субтитры (иммерсия). */
   .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-player-first.is-playing-focus .youtube-watchbar-wrap {
