@@ -917,11 +917,13 @@ body:has(.webapp-page.is-theme-light),
   --telegram-tablet-inline-safe-offset: clamp(18px, 3vw, 34px);
 }
 
-.webapp-page.is-youtube-watch-focus .webapp-topbar {
+.webapp-page.is-youtube-watch-focus .webapp-topbar,
+.webapp-page.is-youtube-phone-watch .webapp-topbar {
   display: none;
 }
 
-.webapp-page.is-youtube-watch-focus .webapp-main {
+.webapp-page.is-youtube-watch-focus .webapp-main,
+.webapp-page.is-youtube-phone-watch .webapp-main {
   gap: 8px;
 }
 
@@ -16813,18 +16815,16 @@ body.worldnews-active .webapp-topbar {
 }
 
 /* ═══════════ ОБЫЧНЫЙ YouTube — «просмотр»: плеер к верху, субтитры в экран (<700) ═══════════
-   Как только видео запущено (is-youtube-watch-focus: playback started, одна секция YouTube,
-   без overlay/fullscreen) — по просьбе пользователя плеер подтягивается к верхней кромке
-   нашего блока, а ползунок + карточки субтитров вписываются в остаток высоты экрана и НЕ
-   уходят вниз за край. Тот же принцип, что в «Начни день»: пиним секцию к реально видимой
-   высоте (--app-height = visualViewport.height, т.е. под конкретный телефон), прячем верхнюю
-   шапку YouTube (заголовок/настройки/чипы), а панель субтитров растягиваем на остаток — один
-   блок (DE) заполняет всё до 0.5 см от низа; два блока (DE+RU) делят место пополам, нижний
-   отстоит 0.5 см от кромки; каждый список скроллится внутри себя.
-   Только этап просмотра — до старта видео (поиск/настройка) остаётся обычная прокрутка.
-   Исключаем .is-worldnews-page — у новостей свой блок выше. */
+   is-youtube-phone-watch (см. youtubePhoneWatchLayout) включается СРАЗУ, как только открыто
+   видео с субтитрами — НЕ только после старта воспроизведения. Плеер подтягивается к верхней
+   кромке, вместо громоздкой шапки — тонкая панель управления, а ползунок + карточки субтитров
+   вписываются в остаток высоты и НЕ уходят за край. Пиним секцию к реально видимой высоте
+   (--app-height = visualViewport.height, под конкретный телефон): один блок (DE) заполняет всё
+   до 0.5 см от низа; два блока (DE+RU) делят место пополам, нижний отстоит 0.5 см; каждый
+   список скроллится внутри. Класс ставится только на телефоне и вне новостей — планшет/браузер
+   не трогаем. Панель прячется, пока видео активно ИГРАЕТ (.is-playing-focus). */
 @media (max-width: 699px) {
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) {
     height: var(--app-height, 100dvh) !important;
     max-height: var(--app-height, 100dvh) !important;
     min-height: 0 !important;
@@ -16833,9 +16833,9 @@ body.worldnews-active .webapp-topbar {
     /* Базовый нижний паддинг страницы (24px) убираем — зазор задаёт padding секции. */
     padding-bottom: 0 !important;
   }
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .webapp-shell,
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .webapp-main,
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .webapp-video-dictionary {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .webapp-shell,
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .webapp-main,
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .webapp-video-dictionary {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
@@ -16843,7 +16843,7 @@ body.worldnews-active .webapp-topbar {
     min-width: 0; /* без этого flex-элементы не сжимаются по ширине → горизонт. переполнение */
     overflow: hidden;
   }
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-player-first {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-player-first {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
@@ -16854,39 +16854,39 @@ body.worldnews-active .webapp-topbar {
     padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5cm) !important;
   }
   /* Прячем верхнюю шапку YouTube — плеер уходит к верхней кромке блока (как в новостях). */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-player-first-head {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-player-first-head {
     display: none !important;
   }
   /* Панель управления, видео и транспорт держат натуральную высоту — растягивается только субтитры. */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-watchbar-wrap,
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-player-card,
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-sentence-jump-bar {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-watchbar-wrap,
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-player-card,
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-sentence-jump-bar {
     flex: 0 0 auto;
   }
   /* «Идёт воспроизведение»-peek не нужен: на паузе есть панель, в игре — чистый экран. */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-focus-peek {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-focus-peek {
     display: none !important;
   }
   /* Убираем бейджи-заголовки DE/RU с карточек субтитров — язык и так виден, а места
      станет больше (переключатели DE/RU переехали на панель управления). */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-card-head {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-subtitles-card-head {
     display: none !important;
   }
   /* Транспорт компактный — место важнее для субтитров (лингвистическое приложение). */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-sentence-jump-bar {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-sentence-jump-bar {
     margin: 0 !important;
     gap: 6px !important;
   }
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-sentence-jump-btn {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-sentence-jump-btn {
     height: 30px !important;
     min-width: 38px !important;
   }
   /* Пока видео ИГРАЕТ — панель уезжает вверх, остаются только видео + субтитры (иммерсия). */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-player-first.is-playing-focus .youtube-watchbar-wrap {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-player-first.is-playing-focus .youtube-watchbar-wrap {
     display: none !important;
   }
   /* Панель субтитров заполняет остаток; списки скроллятся внутри. */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-panel {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-subtitles-panel {
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
@@ -16894,7 +16894,7 @@ body.worldnews-active .webapp-topbar {
     flex-direction: column;
     overflow: hidden;
   }
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-panel-content {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-subtitles-panel-content {
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
@@ -16902,7 +16902,7 @@ body.worldnews-active .webapp-topbar {
     flex-direction: column;
   }
   /* Блоки делят место поровну: один (DE) — всё; два (DE+RU) — пополам. */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-block {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-subtitles-block {
     flex: 1 1 0;
     min-height: 0;
     min-width: 0;
@@ -16911,16 +16911,16 @@ body.worldnews-active .webapp-topbar {
     overflow: hidden;
   }
   /* Шапка блока (тег DE/RU) фиксирована; список берёт остаток и скроллит. */
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-block .youtube-subtitles-card-head {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-subtitles-block .youtube-subtitles-card-head {
     flex: 0 0 auto;
   }
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-block .webapp-subtitles {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-subtitles-block .webapp-subtitles {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;
   }
-  .webapp-page.is-youtube-watch-focus:not(.is-worldnews-page):has(.youtube-subtitles-panel) .youtube-subtitles-block .webapp-subtitles-list {
+  .webapp-page.is-youtube-phone-watch:has(.youtube-subtitles-panel) .youtube-subtitles-block .webapp-subtitles-list {
     flex: 1 1 auto;
     min-height: 0;
     max-height: none !important;

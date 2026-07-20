@@ -15115,6 +15115,23 @@ function AppInner() {
     && !youtubeAppFullscreen
   );
   const youtubeSubtitlesReady = youtubeTranscript.length > 0;
+  // PHONE watch layout: the redesigned one-screen watch UI (slim control bar + fitted subtitles,
+  // no bulky header / standalone search block) applies as soon as a YouTube video with subtitles
+  // is open — NOT only after playback starts — so users see the new screen from the moment they
+  // open the section. Phone only; tablet/browser (isWideLayout) keep their existing layout. This
+  // is youtubeWatchFocusMode minus the playbackStarted requirement, scoped to phone + non-news.
+  const youtubePhoneWatchLayout = Boolean(
+    !flashcardsOnly
+    && !isWideLayout
+    && !youtubeNewsMode
+    && selectedSections.size === 1
+    && selectedSections.has('youtube')
+    && youtubeId
+    && youtubeSubtitlesReady
+    && !youtubeForceShowPanel
+    && !youtubeOverlayEnabled
+    && !youtubeAppFullscreen
+  );
   const youtubeLearningMode = Boolean((youtubePlaybackStarted || youtubeAppFullscreen) && !youtubeForceShowPanel);
   // Focus mode: the video is ACTIVELY playing (started + not paused) and nothing is
   // forcing the setup panel open. In this state we hide the whole command bar and
@@ -33559,7 +33576,7 @@ function AppInner() {
     return (
       <div
         ref={webappPageRef}
-        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${flashcardsOnly && flashcardActiveMode && flashcardActiveMode !== 'fsrs' ? 'is-flashcard-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${readerSectionVisible && !(readerHasContent && readerImmersive) ? 'is-reader-library' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${youtubeTopbarTucked ? 'is-youtube-topbar-tucked' : ''} ${youtubeNewsMode && youtubeSectionVisible ? 'is-worldnews-page' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'search' && !dictionaryResult ? 'is-dict-fill' : ''} ${isWebAppMode && !flashcardsOnly && !(readerHasContent && readerImmersive) && !(isHomeScreen && !activeHomeSubsectionKey) && !(dictionarySectionVisible && vocabTab === 'library') && !youtubeWatchFocusMode ? 'is-sticky-topbar' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
+        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${flashcardsOnly && flashcardActiveMode === 'fsrs' ? 'is-fsrs-study' : ''} ${flashcardsOnly && flashcardActiveMode && flashcardActiveMode !== 'fsrs' ? 'is-flashcard-study' : ''} ${isHomeScreen && !activeHomeSubsectionKey ? 'is-home-bento' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${readerSectionVisible && !(readerHasContent && readerImmersive) ? 'is-reader-library' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${youtubePhoneWatchLayout ? 'is-youtube-phone-watch' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${youtubeTopbarTucked ? 'is-youtube-topbar-tucked' : ''} ${youtubeNewsMode && youtubeSectionVisible ? 'is-worldnews-page' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'library' ? 'is-vocab-library-fixed' : ''} ${!flashcardsOnly && dictionarySectionVisible && vocabTab === 'search' && !dictionaryResult ? 'is-dict-fill' : ''} ${isWebAppMode && !flashcardsOnly && !(readerHasContent && readerImmersive) && !(isHomeScreen && !activeHomeSubsectionKey) && !(dictionarySectionVisible && vocabTab === 'library') && !youtubeWatchFocusMode && !youtubePhoneWatchLayout ? 'is-sticky-topbar' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
         data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
       >
         <pre id="app-perf-report" style={{ display: 'none' }} />
@@ -35661,7 +35678,7 @@ function AppInner() {
                          Home · Сменить видео (reveals URL + optional transcript) · Словарь · DE/RU
                          subtitle toggles · Fullscreen (couples overlay on phone) · Настройки.
                          Tablet/browser (isWideLayout) keep their own dock and are never rendered here. ── */}
-                    {youtubeWatchFocusMode && !isWideLayout && !youtubeNewsMode && youtubeSubtitlesReady && (
+                    {youtubePhoneWatchLayout && (
                       <div className="youtube-watchbar-wrap">
                         <div className="youtube-watchbar" role="toolbar" aria-label={tr('Управление просмотром', 'Wiedergabe-Steuerung')}>
                           <div className="youtube-watchbar-cluster">
@@ -36113,7 +36130,7 @@ function AppInner() {
                     {youtubeTranscriptError && !(isWideLayout && youtubeId && youtubeTranscript.length === 0) && (
                       renderYoutubeTranscriptNotice(youtubeTranscriptError) || <div className="webapp-error">{youtubeTranscriptError}</div>
                     )}
-                    {youtubeSearchExpanded && !youtubeNewsMode && !(isWideLayout && !youtubeNewsMode) && (
+                    {youtubeSearchExpanded && !youtubeNewsMode && !(isWideLayout && !youtubeNewsMode) && !youtubePhoneWatchLayout && (
                       <div className="webapp-video-form youtube-setup-form">
                         <YoutubeQueryInputField
                           value={youtubeInput}
