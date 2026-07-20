@@ -19,7 +19,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 import contextvars
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
+from telegram import InlineQueryResultPhoto
+from telegram.ext import CallbackQueryHandler, InlineQueryHandler
 from telegram.ext import PreCheckoutQueryHandler
 import hashlib
 import hmac
@@ -3163,6 +3164,56 @@ async def _invite_command(update: Update, context: CallbackContext) -> None:
         f"🔗 {link}\n\n"
         f"✅ Успешных приглашений: <b>{n}</b>",
         parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def _handle_share_inline_query(update: Update, context: CallbackContext) -> None:
+    """Inline-режим: «Поделиться» кладёт в чат друга КАРТОЧКУ С ЖИВОЙ КНОПКОЙ.
+
+    Через t.me/share/url так нельзя: он умеет переслать только текст и ссылку, а
+    inline-кнопку может поставить лишь бот под собственным сообщением. Inline-режим —
+    единственный путь: Telegram открывает выбор чата, и сообщение публикует бот,
+    поэтому кнопка «Пройти тур» рабочая и ведёт на реферальную ссылку пригласившего.
+
+    Картинка общая для всех (рендер один раз в R2), персональный ref — в кнопке.
+    """
+    inline_query = getattr(update, "inline_query", None)
+    if inline_query is None or not update.effective_user:
+        return
+    uid = int(update.effective_user.id)
+    try:
+        from backend.share_card import share_card_url
+
+        bot_username = context.bot.username or (await context.bot.get_me()).username
+        photo_url = await asyncio.to_thread(share_card_url, "tg", bot_username)
+        if not photo_url:
+            # Без картинки inline-результат бессмыслен — молча отдаём пустой ответ,
+            # фронт в этом случае откатится на обычный t.me/share/url.
+            await inline_query.answer([], cache_time=10, is_personal=True)
+            return
+        link = f"https://t.me/{bot_username}?start=ref_{uid}"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Пройти короткий тур", url=link)]])
+        result = InlineQueryResultPhoto(
+            id=f"invite-{uid}",
+            photo_url=photo_url,
+            thumbnail_url=photo_url,
+            photo_width=1080,
+            photo_height=1080,
+            title="Пригласить друга",
+            description="Карточка с кнопкой «Пройти короткий тур»",
+            caption=(
+                "Смотри, что умеет этот бот для немецкого — пройди короткий тур 👇\n\n"
+                f"Как позанимаешься {REFERRAL_STREAK_TRIGGER} дня подряд — "
+                f"оба получим +{REFERRAL_REWARD_DAYS} дней Pro 🔥"
+            ),
+            reply_markup=kb,
+        )
+        await inline_query.answer([result], cache_time=300, is_personal=True)
+    except Exception as exc:
+        logger.warning("inline share failed for %s: %s", uid, exc)
+        try:
+            await inline_query.answer([], cache_time=5, is_personal=True)
+        except Exception:
+            pass
 
 
 async def handle_digest_group_callback(update: Update, context: CallbackContext) -> None:
@@ -37946,6 +37997,9 @@ def main():
     application.add_handler(CommandHandler("deny", deny_user_command))
     application.add_handler(CommandHandler("streak", _streak_command))
     application.add_handler(CommandHandler("invite", _invite_command))
+    # Inline-режим: «Поделиться» из Mini-App кладёт другу карточку с рабочей кнопкой.
+    # Требует включённого inline mode у @BotFather — иначе апдейты просто не придут.
+    application.add_handler(InlineQueryHandler(_handle_share_inline_query))
     application.add_handler(CommandHandler("announce_schedule", _announce_schedule_command))
     application.add_handler(CommandHandler("onboarding_announce", _onboarding_announce_command))
     application.add_handler(CommandHandler("admin_reset_onboarding", _admin_reset_onboarding_command))

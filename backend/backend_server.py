@@ -3380,6 +3380,59 @@ def _serve_dict_entry_html(token: str = ""):
     return _apply_webapp_entry_cache_headers(response)
 
 
+_TOUR_OG_TITLE = "Со мной немецкий идёт легче"
+_TOUR_OG_DESCRIPTION = (
+    "Разбор любого слова за секунду, тренажёры вместо зубрёжки и YouTube "
+    "с двойными субтитрами. Пройди короткий тур."
+)
+
+
+def _serve_tour_entry_html():
+    """index.html + Open Graph теги для пригласительной ссылки /tour.
+
+    Мессенджер (Telegram, WhatsApp, Viber…) при вставке ссылки скачивает эту
+    страницу и строит превью по og:*-тегам. Без них уходит голая синяя ссылка —
+    именно то, что мы чиним. Кнопку так дать нельзя (её умеет только бот через
+    inline-режим), поэтому картинка берётся в варианте "web": на ней нарисован
+    адрес, чтобы человек видел, куда идти.
+
+    Картинка общая для всех, лежит в R2 и рендерится один раз; если R2 недоступен,
+    просто отдаём страницу без og:image — превью будет беднее, но ничего не падает.
+    """
+    from html import escape
+
+    image_url = ""
+    try:
+        from backend.share_card import share_card_url
+        image_url = share_card_url("web", _resolve_bot_username()) or ""
+    except Exception as exc:
+        logging.warning("tour OG image unavailable: %s", exc)
+
+    try:
+        html = (FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
+        page_url = request.url
+        tags = [
+            '<meta property="og:type" content="website">',
+            f'<meta property="og:title" content="{escape(_TOUR_OG_TITLE)}">',
+            f'<meta property="og:description" content="{escape(_TOUR_OG_DESCRIPTION)}">',
+            f'<meta property="og:url" content="{escape(page_url)}">',
+            f'<meta name="description" content="{escape(_TOUR_OG_DESCRIPTION)}">',
+        ]
+        if image_url:
+            tags += [
+                f'<meta property="og:image" content="{escape(image_url)}">',
+                '<meta property="og:image:width" content="1080">',
+                '<meta property="og:image:height" content="1080">',
+                '<meta name="twitter:card" content="summary_large_image">',
+                f'<meta name="twitter:image" content="{escape(image_url)}">',
+            ]
+        html = html.replace("</head>", "\n    ".join([""] + tags) + "\n  </head>", 1)
+        response = Response(html, mimetype="text/html")
+    except Exception:
+        response = send_from_directory(FRONTEND_DIST, "index.html")
+    return _apply_webapp_entry_cache_headers(response)
+
+
 @app.route("/dict/t/<token>")
 def serve_dict_entry_with_token(token):
     """Path-token entry for the home-screen dictionary: /dict/t/<token>. iOS preserves a
@@ -3476,6 +3529,11 @@ def serve_frontend(path):
     # the app root, and shows a dictionary icon instead of the app hero.
     if str(path or "").strip("/").lower() in ("dict", "d"):
         return _serve_dict_entry_html()
+
+    # /tour: the shareable invite link. Messengers fetch this HTML to build the link
+    # preview, so the Felix card has to be in the <head> as Open Graph tags.
+    if str(path or "").strip("/").lower() == "tour":
+        return _serve_tour_entry_html()
 
     # если запросили конкретный файл (например assets/...), отдаём его
     file_path = FRONTEND_DIST / path

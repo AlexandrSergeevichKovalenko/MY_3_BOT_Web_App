@@ -1299,7 +1299,18 @@ export default function OnboardingWizard() {
     const text = t('Смотри, что умеет этот бот для немецкого — пройди короткий тур 👇',
                    'Schau, was dieser Deutsch-Bot kann — mach den kurzen Rundgang 👇');
     const tgShare = `https://t.me/share/url?url=${encodeURIComponent(tourUrl)}&text=${encodeURIComponent(text)}`;
-    // Inside Telegram → native «share to chat» picker. Otherwise → Web Share sheet, else
+    // Внутри Telegram сначала пробуем inline-режим: тогда другу уходит КАРТОЧКА
+    // с Феликсом и рабочей кнопкой «Пройти тур». t.me/share/url так не умеет —
+    // он шлёт только текст и ссылку, inline-кнопку может поставить лишь бот под
+    // собственным сообщением. Если inline-режим недоступен (старый клиент или он
+    // не включён у @BotFather) — откатываемся на прежний путь, ничего не теряя.
+    try {
+      if (!IS_PUBLIC && typeof tg?.switchInlineQuery === 'function') {
+        tg.switchInlineQuery('', ['users', 'groups']);
+        return;
+      }
+    } catch (_e) { /* нет inline-режима — идём дальше по цепочке */ }
+    // Otherwise → native «share to chat» picker, else Web Share sheet, else
     // open Telegram's share URL, else copy the link to the clipboard.
     try {
       if (!IS_PUBLIC && tg?.openTelegramLink) { tg.openTelegramLink(tgShare); return; }
