@@ -31589,7 +31589,15 @@ function AppInner() {
     }
     const previous = youtubeForceShowPanelVideoRef.current;
     youtubeForceShowPanelVideoRef.current = current;
-    if (previous && previous !== current) setYoutubeForceShowPanel(false);
+    // Сбрасываем и при появлении ПЕРВОГО видео (previous === ''): в этот экран можно
+    // войти с уже поднятым флагом — например из тренажёра навыков (openSkillTrainingVideo),
+    // который открывает поиск с подставленной ссылкой. Как только видео есть — мы смотрим.
+    if (previous !== current) {
+      setYoutubeForceShowPanel(false);
+      // Видео выбрано — сворачиваем и встроенный сменщик, иначе он остаётся
+      // раскрытым поверх просмотра.
+      setYoutubeChangeOpen(false);
+    }
   }, [youtubeId]);
 
   useEffect(() => {
@@ -36458,7 +36466,7 @@ function AppInner() {
                               <button
                                 type="button"
                                 className="yt-panel-empty-btn"
-                                onClick={() => setYoutubeForceShowPanel(true)}
+                                onClick={() => setYoutubeChangeOpen(true)}
                               >
                                 {tr('Сменить видео', 'Video wechseln')}
                               </button>
@@ -36619,8 +36627,13 @@ function AppInner() {
                                 type="button"
                                 className="youtube-settings-row"
                                 onClick={() => {
-                                  setYoutubeForceShowPanel(true);
                                   setYoutubeSettingsOpen(false);
+                                  // Открываем сменщик ВНУТРИ панели управления. Раньше здесь
+                                  // поднимался youtubeForceShowPanel, и человек проваливался
+                                  // в планшетный экран (шапка с чипсами + отдельный поиск) —
+                                  // ровно то, от чего мы уходили.
+                                  if (youtubePhoneWatchLayout) setYoutubeChangeOpen(true);
+                                  else setYoutubeForceShowPanel(true);
                                 }}
                               >
                                 <span>{tr('Сменить видео', 'Change video')}</span>
