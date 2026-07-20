@@ -36363,7 +36363,10 @@ function AppInner() {
                       </div>
                     )}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
-                    {youtubeTranscriptError && !(isWideLayout && youtubeId && youtubeTranscript.length === 0) && (
+                    {/* На телефоне про отсутствие субтитров говорит панель с лисом внутри
+                        watch-раскладки — вторая плашка была бы дублем и, занимая высоту,
+                        выталкивала бы саму панель за нижнюю кромку экрана. */}
+                    {youtubeTranscriptError && !youtubePhoneWatchLayout && !(isWideLayout && youtubeId && youtubeTranscript.length === 0) && (
                       renderYoutubeTranscriptNotice(youtubeTranscriptError) || <div className="webapp-error">{youtubeTranscriptError}</div>
                     )}
                     {youtubeSearchExpanded && !youtubeNewsMode && !(isWideLayout && !youtubeNewsMode) && !youtubePhoneWatchLayout && (

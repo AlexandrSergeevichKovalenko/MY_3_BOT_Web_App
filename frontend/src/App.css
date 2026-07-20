@@ -16941,6 +16941,9 @@ body.worldnews-active .webapp-topbar {
 
   /* Нет субтитров — состояние показывается ВНУТРИ новой раскладки, а не откатом
      всего экрана на планшетную вёрстку. Панель занимает то же место, что и обычная. */
+  /* Панель тёмная (как вся watch-раскладка), поэтому цвета задаём ЯВНО: наследование
+     от светлой темы давало тёмный текст на тёмном фоне — надпись пропадала.
+     Значения те же, что у панели управления (--wb-ink / --wb-muted). */
   .webapp-page.is-youtube-phone-watch .youtube-subtitles-panel-empty {
     flex: 1 1 auto;
     min-height: 0;
@@ -16948,26 +16951,33 @@ body.worldnews-active .webapp-topbar {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 10px;
+    gap: 8px;
     text-align: center;
-    padding: 18px 20px;
+    padding: 16px 20px;
+    overflow: auto;
+    color: #f1f5fb;
   }
 
+  /* Лис ужимается вместе с панелью: на коротком экране он должен уменьшиться,
+     а не обрезаться. */
   .webapp-page.is-youtube-phone-watch .yt-panel-empty-fox {
-    width: 92px;
-    height: 92px;
+    width: clamp(48px, 18vh, 88px);
+    height: clamp(48px, 18vh, 88px);
+    flex: 0 1 auto;
+    min-height: 0;
     object-fit: contain;
   }
 
   .webapp-page.is-youtube-phone-watch .yt-panel-empty-title {
     font-size: 16px;
     font-weight: 700;
+    color: #f1f5fb;
   }
 
   .webapp-page.is-youtube-phone-watch .yt-panel-empty-copy {
     font-size: 13px;
     line-height: 1.4;
-    opacity: 0.75;
+    color: #9fb0c4;
     max-width: 300px;
   }
 
@@ -16983,9 +16993,9 @@ body.worldnews-active .webapp-topbar {
     min-height: 34px;
     padding: 0 14px;
     border-radius: 999px;
-    border: 1px solid var(--wb-edge, #3a4557);
+    border: 1px solid #3a4557;
     background: transparent;
-    color: inherit;
+    color: #f1f5fb;
     font-size: 13px;
     font-weight: 600;
   }
