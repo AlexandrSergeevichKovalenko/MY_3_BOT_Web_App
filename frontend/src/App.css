@@ -16985,6 +16985,55 @@ body.worldnews-active .webapp-topbar {
   }
 }
 
+/* ─── Phone watch subtitles = «Начни день» treatment: dark cinema panel + white cards,
+   DE near-black vs RU blue, clean SF Pro. Clear language contrast, high readability.
+   (is-youtube-phone-watch is phone-only; tablet/browser keep their own subtitle styling.) ─── */
+.webapp-page.is-youtube-phone-watch .youtube-subtitles-card.youtube-subtitles-panel {
+  background: #0f1729 !important;
+  border: 1px solid #223049 !important;
+  box-shadow: 0 12px 30px rgba(3, 7, 18, 0.28) !important;
+  padding: 10px !important;
+}
+.webapp-page.is-youtube-phone-watch .youtube-subtitles-block-de,
+.webapp-page.is-youtube-phone-watch .youtube-subtitles-block-ru {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+/* The actual text box: white in every theme so the dark captions read cleanly. */
+.webapp-page.is-youtube-phone-watch .webapp-subtitles-list {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 14px !important;
+  padding: 12px 14px !important;
+}
+.webapp-page.is-youtube-phone-watch .webapp-subtitles-list p {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.1px;
+}
+/* DE = near-black (bold), RU = blue — unmistakably different languages. */
+.webapp-page.is-youtube-phone-watch .youtube-subtitles-block-de .webapp-subtitles-list p {
+  color: #111111 !important;
+  font-weight: 600;
+}
+.webapp-page.is-youtube-phone-watch .youtube-subtitles-block-ru .webapp-subtitles-list p {
+  color: #1e3a8a !important;
+}
+/* Active (currently-spoken) line — subtle tinted highlight so it pops. */
+.webapp-page.is-youtube-phone-watch .youtube-subtitles-block-de .webapp-subtitles-list p.is-active {
+  background: rgba(37, 99, 235, 0.12) !important;
+  color: #000000 !important;
+  border-radius: 10px;
+}
+.webapp-page.is-youtube-phone-watch .youtube-subtitles-block-ru .webapp-subtitles-list p.is-active {
+  background: rgba(30, 58, 138, 0.12) !important;
+  color: #1e3a8a !important;
+  border-radius: 10px;
+}
+
 /* ═══════════════ Puzzle-режим (≥700): overlay-only + панель под видео ═══════════════ */
 @media (min-width: 700px) {
   /* ПИН высоты страницы под экран — видео заполняет всё, панель снизу, без прокрутки */

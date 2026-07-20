@@ -31119,6 +31119,18 @@ function AppInner() {
     fetchTranscript();
   }, [youtubeNewsMode, isWideLayout, youtubeSectionVisible, youtubeId, initData, youtubeManualOverride, youtubeTranscriptLoading, youtubeTranscript]);
 
+  // PHONE: the on-video overlay is coupled to fullscreen (there's no separate overlay button).
+  // Enforce it so overlay can never get "stuck" ON outside fullscreen — otherwise the phone watch
+  // layout (which needs the subtitle panel, hidden while overlay is on) stays off and the OLD
+  // header/search screen reappears after a fullscreen+overlay round-trip (e.g. via landscape).
+  // Tablet/browser (isWideLayout) keep overlay independent — untouched.
+  useEffect(() => {
+    if (isWideLayout) return;
+    if (youtubeOverlayEnabled && !youtubeAppFullscreen) {
+      setYoutubeOverlayEnabled(false);
+    }
+  }, [isWideLayout, youtubeOverlayEnabled, youtubeAppFullscreen]);
+
   // Paint the whole page the interactive cool background (not the app's warm cream) while the
   // news view is open, so the environment matches the games/breakdown — not just the cards.
   useEffect(() => {
