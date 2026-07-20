@@ -1299,17 +1299,41 @@ export default function OnboardingWizard() {
     const text = t('Смотри, что умеет этот бот для немецкого — пройди короткий тур 👇',
                    'Schau, was dieser Deutsch-Bot kann — mach den kurzen Rundgang 👇');
     const tgShare = `https://t.me/share/url?url=${encodeURIComponent(tourUrl)}&text=${encodeURIComponent(text)}`;
+    // Обычная отправка ссылки — общий запасной путь для всех веток ниже.
+    const shareLinkOnly = () => {
+      try {
+        if (!IS_PUBLIC && tg?.openTelegramLink) { tg.openTelegramLink(tgShare); return true; }
+      } catch (_e) { /* noop */ }
+      try { window.open(tgShare, '_blank'); return true; } catch (_e) { /* noop */ }
+      return false;
+    };
+
     // Внутри Telegram сначала пробуем inline-режим: тогда другу уходит КАРТОЧКА
     // с Феликсом и рабочей кнопкой «Пройти тур». t.me/share/url так не умеет —
     // он шлёт только текст и ссылку, inline-кнопку может поставить лишь бот под
-    // собственным сообщением. Если inline-режим недоступен (старый клиент или он
-    // не включён у @BotFather) — откатываемся на прежний путь, ничего не теряя.
+    // собственным сообщением.
+    //
+    // switchInlineQuery умеет отказать ДВУМЯ способами: бросить исключение (старый
+    // клиент) и — хуже — молча ничего не сделать, если Mini App открыт не с той
+    // кнопки. Во втором случае человек нажал бы «Поделиться» и не увидел ничего.
+    // Поэтому: версия ≥ 6.7, try/catch и контрольная проверка — если через 900 мс
+    // окно всё ещё перед нами, значит выбор чата не открылся, шлём просто ссылку.
+    let inlineTried = false;
     try {
-      if (!IS_PUBLIC && typeof tg?.switchInlineQuery === 'function') {
+      const versionOk = typeof tg?.isVersionAtLeast === 'function' ? tg.isVersionAtLeast('6.7') : false;
+      if (!IS_PUBLIC && versionOk && typeof tg.switchInlineQuery === 'function') {
         tg.switchInlineQuery('', ['users', 'groups']);
-        return;
+        inlineTried = true;
       }
-    } catch (_e) { /* нет inline-режима — идём дальше по цепочке */ }
+    } catch (_e) { inlineTried = false; }
+    if (inlineTried) {
+      setTimeout(() => {
+        const stillHere = document.visibilityState === 'visible'
+          && (typeof document.hasFocus !== 'function' || document.hasFocus());
+        if (stillHere) shareLinkOnly();
+      }, 900);
+      return;
+    }
     // Otherwise → native «share to chat» picker, else Web Share sheet, else
     // open Telegram's share URL, else copy the link to the clipboard.
     try {
