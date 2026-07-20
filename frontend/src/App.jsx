@@ -15308,14 +15308,18 @@ function AppInner() {
   // is open — NOT only after playback starts — so users see the new screen from the moment they
   // open the section. Phone only; tablet/browser (isWideLayout) keep their existing layout. This
   // is youtubeWatchFocusMode minus the playbackStarted requirement, scoped to phone + non-news.
+  // Условий намеренно МАЛО. Раньше сюда входили `selectedSections.size === 1` и
+  // `youtubeSubtitlesReady`, и любое из них роняло телефон на планшетную вёрстку
+  // (шапка с чипсами + отдельный поиск + плашки DE/RU). Открылась вторая секция —
+  // старый экран; у видео нет наших субтитров — старый экран. Теперь: одна секция
+  // не требуется, а отсутствие субтитров показывается пустым состоянием ВНУТРИ
+  // новой раскладки (см. youtube-subtitles-panel-empty), а не откатом всего экрана.
   const youtubePhoneWatchLayout = Boolean(
     !flashcardsOnly
     && !isWideLayout
     && !youtubeNewsMode
-    && selectedSections.size === 1
     && selectedSections.has('youtube')
     && youtubeId
-    && youtubeSubtitlesReady
     && !youtubeForceShowPanel
     && !youtubeOverlayEnabled
     && !youtubeAppFullscreen
@@ -36418,6 +36422,45 @@ function AppInner() {
                               </button>
                             ))}
                           </div>
+                        )}
+                      </div>
+                    )}
+                    {/* Телефон, новая раскладка, субтитров ещё/уже нет. Раньше в этом случае
+                        весь экран откатывался на планшетную вёрстку. Теперь показываем
+                        состояние прямо в панели: раскладка остаётся новой, а CSS-условие
+                        :has(.youtube-subtitles-panel) продолжает выполняться. */}
+                    {youtubePhoneWatchLayout && !youtubeSubtitlesReady && (
+                      <div className="youtube-subtitles-card youtube-subtitles-panel youtube-subtitles-panel-empty">
+                        {youtubeTranscriptLoading ? (
+                          <>
+                            <span className="yt-panel-empty-spinner" aria-hidden="true" />
+                            <strong className="yt-panel-empty-title">{tr('Загружаем субтитры…', 'Untertitel werden geladen…')}</strong>
+                          </>
+                        ) : (
+                          <>
+                            <img className="yt-panel-empty-fox" src={heroStickerSrc} alt="" aria-hidden="true" />
+                            <strong className="yt-panel-empty-title">{tr('Субтитры недоступны', 'Untertitel nicht verfügbar')}</strong>
+                            <span className="yt-panel-empty-copy">
+                              {tr('К этому видео у нас пока нет субтитров. Попробуй оригинальные субтитры YouTube или выбери другое видео.',
+                                  'Für dieses Video haben wir noch keine Untertitel. Versuch die YouTube-Untertitel oder wähle ein anderes Video.')}
+                            </span>
+                            <div className="yt-panel-empty-actions">
+                              <button
+                                type="button"
+                                className={`yt-panel-empty-btn is-primary ${youtubeNativeCcOn ? 'is-on' : ''}`}
+                                onClick={toggleYoutubeNativeCc}
+                              >
+                                {youtubeNativeCcOn ? tr('CC включены', 'CC an') : tr('Попробовать CC', 'CC versuchen')}
+                              </button>
+                              <button
+                                type="button"
+                                className="yt-panel-empty-btn"
+                                onClick={() => setYoutubeForceShowPanel(true)}
+                              >
+                                {tr('Сменить видео', 'Video wechseln')}
+                              </button>
+                            </div>
+                          </>
                         )}
                       </div>
                     )}

@@ -16939,6 +16939,77 @@ body.worldnews-active .webapp-topbar {
     max-height: none !important;
   }
 
+  /* Нет субтитров — состояние показывается ВНУТРИ новой раскладки, а не откатом
+     всего экрана на планшетную вёрстку. Панель занимает то же место, что и обычная. */
+  .webapp-page.is-youtube-phone-watch .youtube-subtitles-panel-empty {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    text-align: center;
+    padding: 18px 20px;
+  }
+
+  .webapp-page.is-youtube-phone-watch .yt-panel-empty-fox {
+    width: 92px;
+    height: 92px;
+    object-fit: contain;
+  }
+
+  .webapp-page.is-youtube-phone-watch .yt-panel-empty-title {
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  .webapp-page.is-youtube-phone-watch .yt-panel-empty-copy {
+    font-size: 13px;
+    line-height: 1.4;
+    opacity: 0.75;
+    max-width: 300px;
+  }
+
+  .webapp-page.is-youtube-phone-watch .yt-panel-empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .webapp-page.is-youtube-phone-watch .yt-panel-empty-btn {
+    min-height: 34px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 1px solid var(--wb-edge, #3a4557);
+    background: transparent;
+    color: inherit;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .webapp-page.is-youtube-phone-watch .yt-panel-empty-btn.is-primary,
+  .webapp-page.is-youtube-phone-watch .yt-panel-empty-btn.is-on {
+    background: rgba(230, 181, 102, 0.17);
+    border-color: rgba(230, 181, 102, 0.4);
+    color: #e6b566;
+  }
+
+  .webapp-page.is-youtube-phone-watch .yt-panel-empty-spinner {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2.5px solid rgba(230, 181, 102, 0.28);
+    border-top-color: #e6b566;
+    animation: yt-panel-empty-spin 0.85s linear infinite;
+  }
+
+  @keyframes yt-panel-empty-spin {
+    to { transform: rotate(360deg); }
+  }
+
   /* ─────────── Slim watch control bar — Fuchs UI (phone only) ─────────── */
   .youtube-watchbar-wrap{
     --wb-card:#1e2534;--wb-edge:#3a4557;--wb-ink:#f1f5fb;--wb-muted:#9fb0c4;--wb-subtle:#7c8aa0;
