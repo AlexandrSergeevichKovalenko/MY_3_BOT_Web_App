@@ -10802,7 +10802,26 @@ async def _weekly_r2_cleanup_job(context: CallbackContext) -> None:
     so nothing has to be run by hand: reader objects (PDF / page renders / audio) of DELETED
     books + retired game-pool images (rebus / article_quiz / crossword). Measures R2 before &
     after and DMs admins a short summary (было → стало, сколько МБ, по категориям). Primary
-    bot process only; best-effort."""
+    bot process only; best-effort.
+
+    Idempotent per ISO week: claims a DB run-guard keyed to the year+week, so a second
+    invocation in the same week (e.g. a Railway redeploy landing on the Monday slot, or a
+    second scheduler-enabled process) is skipped instead of re-sending the report."""
+    try:
+        _vien_day = datetime.now(ZoneInfo("Europe/Vienna")).date()
+        _iso_y, _iso_w, _ = _vien_day.isocalendar()
+        _run_period = f"{_iso_y}-W{_iso_w:02d}"
+        from backend.database import claim_scheduler_run_guard
+        if not claim_scheduler_run_guard(
+            job_key="weekly_r2_cleanup", run_period=_run_period, target_scope="global",
+        ):
+            logging.info("weekly R2 cleanup skipped: already ran this ISO week (%s)", _run_period)
+            return
+    except Exception:
+        # Guard is best-effort — if the guard table is unreachable, fall through and run
+        # (the fixed weekly slot already prevents the per-deploy spam on its own).
+        logging.debug("weekly R2 cleanup: run-guard claim failed, running unguarded", exc_info=True)
+
     def _gb(b):
         return (b or 0) / 1024 / 1024 / 1024
 
@@ -38222,7 +38241,10 @@ def main():
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
                 application.job_queue.run_repeating(_app_spend_ceiling_tick_job, interval=int(os.getenv("APP_SPEND_CEILING_TICK_SECONDS", "3600") or 3600), first=180),
-                application.job_queue.run_repeating(_weekly_r2_cleanup_job, interval=int(os.getenv("WEEKLY_R2_CLEANUP_SECONDS", str(7 * 24 * 3600)) or 7 * 24 * 3600), first=600),
+                # NB: weekly R2 cleanup is NOT registered here as run_repeating(first=...) —
+                # a first=600 fires ~10 min after EVERY process start, so each Railway redeploy
+                # re-sent the "Недельная авто-чистка R2" report. It now runs on a FIXED weekly
+                # slot (run_daily, Monday) below + a per-ISO-week DB guard inside the job.
             ),
             enabled=True,
             category="housekeeping",
@@ -38246,6 +38268,20 @@ def main():
             logging.info("scheduled nightly_frequency_backfill at 03:30 Europe/Vienna")
         except Exception:
             logging.warning("failed to schedule nightly_frequency_backfill", exc_info=True)
+        try:
+            # Weekly R2 cleanup on a FIXED slot: Monday 09:00 Europe/Vienna (days=(1,) — in
+            # PTB 22 the days tuple is 0-6 = Sun-Sat, so Monday is 1). A per-ISO-week DB guard
+            # inside the job makes it idempotent, so even a redeploy that happens to land on
+            # that exact slot can't send the report twice.
+            application.job_queue.run_daily(
+                _weekly_r2_cleanup_job,
+                time=time(hour=9, minute=0, tzinfo=ZoneInfo("Europe/Vienna")),
+                days=(1,),
+                name="weekly_r2_cleanup",
+            )
+            logging.info("scheduled weekly_r2_cleanup at Mon 09:00 Europe/Vienna")
+        except Exception:
+            logging.warning("failed to schedule weekly_r2_cleanup", exc_info=True)
     elif application.job_queue:
         logging.info("Skipping bot startup run_once jobs in this process")
         _emit_bot_startup_phase(
