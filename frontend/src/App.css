@@ -29440,15 +29440,19 @@ html[data-scheme="light"] .story-modal-guess-answer,
   min-height:0;
   overflow:hidden;
   align-items:stretch;            /* растянуть shell на всю высоту */
+  /* Базовые 24px снизу отдаём карточке: иначе она заканчивается высоко над краем
+     и выглядит «обгрызенной». Весь зазор задаётся ОДНИМ местом — ниже. */
+  padding-bottom:0;
 }
 /* Карточка (.webapp-dictionary) скруглена (28px), но её родители с overflow:hidden
    (.webapp-video-dictionary / main / shell, без radius) совпадают с ней по нижнему
    краю и срезают скругление в прямой угол. Резервируем место под карточкой ВНУТРИ
    обрезающего родителя (≥ радиуса 28px + домашний индикатор), чтобы низ скруглился. */
 .webapp-page.is-vocab-library-fixed .webapp-video-dictionary{
-  /* 28px = радиус карточки + ~0.5 см видимого зазора, чтобы низ не выглядел
-     обгрызенным и не липнул к нижнему краю экрана (любой телефон). */
-  padding-bottom:calc(48px + env(safe-area-inset-bottom, 0px));
+  /* ЕДИНСТВЕННЫЙ нижний зазор экрана: карточка тянется вниз и заканчивается
+     ровно в 0.5 см (≈18px) от нижнего края — на любом телефоне. Padding здесь же
+     держит скруглённый низ внутри обрезающего родителя (overflow:hidden). */
+  padding-bottom:18px;
 }
 .webapp-page.is-vocab-library-fixed .webapp-shell{
   display:flex; flex-direction:column;
