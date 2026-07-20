@@ -396,7 +396,7 @@ def set_reader_audio_page_job_status(
         ttl = _READER_AUDIO_PAGE_READY_TTL_SEC
     elif payload["status"] == "failed":
         ttl = _READER_AUDIO_PAGE_FAILED_TTL_SEC
-    client.setex(_reader_audio_page_job_key(safe_key), ttl, json.dumps(payload, ensure_ascii=False))
+    client.set(_reader_audio_page_job_key(safe_key), json.dumps(payload, ensure_ascii=False), ex=ttl)
     return payload
 
 
@@ -828,10 +828,10 @@ def _store_json_payload(redis_key: str, payload: dict[str, Any], *, ttl_sec: int
     normalized_payload = dict(payload or {})
     normalized_payload["updated_at_ms"] = int(time.time() * 1000)
     try:
-        client.setex(
+        client.set(
             redis_key,
-            _json_payload_ttl(ttl_sec),
             json.dumps(normalized_payload, ensure_ascii=False),
+            ex=_json_payload_ttl(ttl_sec),
         )
     except Exception:
         logging.warning("Failed to store redis JSON payload key=%s", redis_key, exc_info=True)
@@ -1205,7 +1205,7 @@ def set_youtube_transcript_job_status(
         ttl = _YOUTUBE_TRANSCRIPT_READY_TTL_SEC
     elif payload["status"] == "failed":
         ttl = _YOUTUBE_TRANSCRIPT_FAILED_TTL_SEC
-    client.setex(_youtube_transcript_job_key(video_id, lang), ttl, json.dumps(payload, ensure_ascii=False))
+    client.set(_youtube_transcript_job_key(video_id, lang), json.dumps(payload, ensure_ascii=False), ex=ttl)
     return payload
 
 
@@ -1460,7 +1460,7 @@ def set_translation_check_job_status(
         ttl = _TRANSLATION_CHECK_READY_TTL_SEC
     elif payload["status"] == "failed":
         ttl = _TRANSLATION_CHECK_FAILED_TTL_SEC
-    client.setex(_translation_check_job_key(int(session_id)), ttl, json.dumps(payload, ensure_ascii=False))
+    client.set(_translation_check_job_key(int(session_id)), json.dumps(payload, ensure_ascii=False), ex=ttl)
     return payload
 
 
@@ -1801,7 +1801,7 @@ def set_translation_fill_job_status(
         ttl = _TRANSLATION_FILL_READY_TTL_SEC
     elif payload["status"] == "failed":
         ttl = _TRANSLATION_FILL_FAILED_TTL_SEC
-    client.setex(_translation_fill_job_key(int(session_id)), ttl, json.dumps(payload, ensure_ascii=False))
+    client.set(_translation_fill_job_key(int(session_id)), json.dumps(payload, ensure_ascii=False), ex=ttl)
     return payload
 
 

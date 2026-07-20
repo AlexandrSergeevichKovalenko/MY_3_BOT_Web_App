@@ -1505,9 +1505,18 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
     return False
 
 
-def _purge_degenerate_aufgabe(table: str, *, id_col: str = "id") -> int:
-    """Shared: delete degenerate wortbildung/error rows from an aufgabe table
-    (bank or mistakes) by checking each candidate in Python. Returns count removed."""
+def _purge_degenerate_aufgabe(
+    table: str, *, id_col: str = "id", retire_col: str | None = None
+) -> int:
+    """Shared: remove degenerate wortbildung/error rows from an aufgabe table
+    (bank or mistakes) by checking each candidate in Python. Returns count removed.
+
+    When ``retire_col`` is given the rows are soft-retired (UPDATE SET <col>=TRUE)
+    instead of hard-deleted: the bank is referenced by bt_3_aufgabe_dispatches via
+    a NO ACTION foreign key, so DELETE-ing an already-dispatched item raises
+    ForeignKeyViolation and rolls back the whole purge. Retiring mirrors what
+    pick_next_aufgabe already does at serve time. Tables with no FK/retired column
+    (mistakes) pass retire_col=None and are hard-deleted."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
@@ -1522,9 +1531,16 @@ def _purge_degenerate_aufgabe(table: str, *, id_col: str = "id") -> int:
                     if is_degenerate_aufgabe(r[1], payload):
                         bad_ids.append(r[0])
                 if bad_ids:
-                    cur.execute(
-                        f"DELETE FROM {table} WHERE {id_col} = ANY(%s);", (bad_ids,)
-                    )
+                    if retire_col:
+                        cur.execute(
+                            f"UPDATE {table} SET {retire_col} = TRUE "
+                            f"WHERE {id_col} = ANY(%s) AND {retire_col} = FALSE;",
+                            (bad_ids,),
+                        )
+                    else:
+                        cur.execute(
+                            f"DELETE FROM {table} WHERE {id_col} = ANY(%s);", (bad_ids,)
+                        )
             conn.commit()
         return len(bad_ids)
     except Exception:
@@ -1533,8 +1549,13 @@ def _purge_degenerate_aufgabe(table: str, *, id_col: str = "id") -> int:
 
 
 def purge_degenerate_aufgabe_bank() -> int:
-    """Remove degenerate wortbildung/error items from the aufgabe pool."""
-    return _purge_degenerate_aufgabe("bt_3_aufgabe_bank", id_col="aufgabe_id")
+    """Remove degenerate wortbildung/error items from the aufgabe pool.
+
+    Soft-retire (not DELETE): the bank is referenced by bt_3_aufgabe_dispatches,
+    so hard-deleting an already-dispatched item raises ForeignKeyViolation."""
+    return _purge_degenerate_aufgabe(
+        "bt_3_aufgabe_bank", id_col="aufgabe_id", retire_col="retired"
+    )
 
 
 def purge_degenerate_aufgabe_mistakes() -> int:
@@ -19737,10 +19758,10 @@ def _shortcut_cache_set_installation(token_hash: str, payload: dict) -> None:
     if client is None:
         return
     try:
-        client.setex(
+        client.set(
             _get_shortcut_install_token_cache_key(token_hash),
-            SHORTCUT_INSTALL_TOKEN_CACHE_TTL_SEC,
             _shortcut_cache_encode_installation(payload),
+            ex=SHORTCUT_INSTALL_TOKEN_CACHE_TTL_SEC,
         )
     except Exception as exc:
         logging.warning("shortcut install token cache set failed: %s", exc)

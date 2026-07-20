@@ -4184,7 +4184,7 @@ def _pubaudit_write_digest(digest_id: str, state: dict, ttl: int = 604800) -> No
     client = get_redis_client()
     if client is None:
         return
-    client.setex(_pubaudit_digest_redis_key(digest_id), ttl, json.dumps(state, ensure_ascii=False))
+    client.set(_pubaudit_digest_redis_key(digest_id), json.dumps(state, ensure_ascii=False), ex=ttl)
 
 
 def _pubaudit_delete_digest(digest_id: str) -> None:
@@ -4513,7 +4513,7 @@ def _pubrepl_write(repl_id: str, state: dict, ttl: int = 604800) -> None:
     client = get_redis_client()
     if client is None:
         return
-    client.setex(_pubrepl_redis_key(repl_id), ttl, json.dumps(state, ensure_ascii=False))
+    client.set(_pubrepl_redis_key(repl_id), json.dumps(state, ensure_ascii=False), ex=ttl)
 
 
 def _pubrepl_delete(repl_id: str) -> None:
@@ -4990,7 +4990,7 @@ def _autosave_write_digest(digest_id: str, state: dict, ttl: int = 86400) -> Non
     client = get_redis_client()
     if client is None:
         return
-    client.setex(_autosave_digest_redis_key(digest_id), ttl, json.dumps(state, ensure_ascii=False))
+    client.set(_autosave_digest_redis_key(digest_id), json.dumps(state, ensure_ascii=False), ex=ttl)
 
 
 def _autosave_delete_digest(digest_id: str) -> None:
@@ -13425,10 +13425,10 @@ def _sync_pending_to_redis(user_id: int) -> bool:
                 client.hset(hash_key, key, json.dumps(entry, ensure_ascii=False))
         if entries:
             client.expire(hash_key, _DICT_PENDING_REDIS_TTL_SEC)
-        client.setex(
+        client.set(
             _dict_pending_redis_key(user_id),
-            _DICT_PENDING_REDIS_TTL_SEC,
             json.dumps(entries, ensure_ascii=False),
+            ex=_DICT_PENDING_REDIS_TTL_SEC,
         )
         return True
     except Exception:
@@ -13601,7 +13601,7 @@ def _remove_pending_from_redis(user_id: int, request_key: str) -> None:
             if len(filtered) == len(entries):
                 return
             if filtered:
-                client.setex(redis_key, _DICT_PENDING_REDIS_TTL_SEC, json.dumps(filtered, ensure_ascii=False))
+                client.set(redis_key, json.dumps(filtered, ensure_ascii=False), ex=_DICT_PENDING_REDIS_TTL_SEC)
             else:
                 client.delete(redis_key)
 
@@ -14680,10 +14680,10 @@ def _store_deep_request(
             "target_lang": str(target_lang or "").strip().lower(),
             "created_at": int(pytime.time()),
         }
-        client.setex(
+        client.set(
             f"dict:deepreq:{request_key}",
-            _DEEP_REQUEST_STORE_TTL_SEC,
             json.dumps(record, ensure_ascii=False, default=str),
+            ex=_DEEP_REQUEST_STORE_TTL_SEC,
         )
         return True
     except Exception:
@@ -14719,10 +14719,10 @@ def _store_deep_analysis_lookup(
             "direction": str(lookup.get("direction") or "").strip().lower(),
             "created_at": int(pytime.time()),
         }
-        client.setex(
+        client.set(
             f"dict:deep:{deep_id}",
-            _DEEP_ANALYSIS_STORE_TTL_SEC,
             json.dumps(record, ensure_ascii=False, default=str),
+            ex=_DEEP_ANALYSIS_STORE_TTL_SEC,
         )
         return deep_id
     except Exception:

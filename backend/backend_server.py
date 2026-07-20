@@ -1321,18 +1321,18 @@ def _set_shared_dictionary_enrichment_job(job: dict[str, Any]) -> None:
     if client is None or not lookup_id:
         return
     payload = copy.deepcopy(job if isinstance(job, dict) else {})
-    client.setex(
+    client.set(
         _dictionary_enrichment_job_redis_key(lookup_id),
-        int(_DICTIONARY_ENRICHMENT_JOB_TTL_SEC),
         json.dumps(payload, ensure_ascii=False),
+        ex=int(_DICTIONARY_ENRICHMENT_JOB_TTL_SEC),
     )
     for key_name in ("cache_key", "cache_key_shared"):
         cache_key = str(payload.get(key_name) or "").strip()
         if cache_key:
-            client.setex(
+            client.set(
                 _dictionary_enrichment_cache_redis_key(cache_key),
-                int(_DICTIONARY_ENRICHMENT_JOB_TTL_SEC),
                 lookup_id,
+                ex=int(_DICTIONARY_ENRICHMENT_JOB_TTL_SEC),
             )
 
 
@@ -1450,10 +1450,10 @@ def _store_quick_dict_deep_record(
         return ""
     deep_id = _quick_dict_deep_id(int(user_id), word, source_lang, target_lang)
     try:
-        client.setex(
+        client.set(
             _deep_analysis_redis_key(deep_id),
-            _DEEP_ANALYSIS_STORE_TTL_SEC,
-            json.dumps(
+            ex=_DEEP_ANALYSIS_STORE_TTL_SEC,
+            value=json.dumps(
                 {
                     "user_id": int(user_id),
                     "lookup": raw,
@@ -2956,10 +2956,10 @@ def _store_shared_json_payload(redis_key: str, payload: dict[str, Any], *, ttl_s
     if client is None:
         return False
     try:
-        client.setex(
+        client.set(
             str(redis_key or "").strip(),
-            max(1, int(ttl_sec or 1)),
             json.dumps(dict(payload or {}), ensure_ascii=False),
+            ex=max(1, int(ttl_sec or 1)),
         )
         return True
     except Exception:
@@ -4236,7 +4236,7 @@ def _dict_user_has_left_bot(user_id: int | None) -> bool:
         blocked = False
     if client is not None:
         try:
-            client.setex(key, _DICT_GATE_CACHE_TTL_SEC, "1" if blocked else "0")
+            client.set(key, "1" if blocked else "0", ex=_DICT_GATE_CACHE_TTL_SEC)
         except Exception:
             pass
     return blocked
@@ -35448,10 +35448,10 @@ def lookup_webapp_dictionary_by_request():
     try:
         client = get_redis_client()
         if client is not None:
-            client.setex(
+            client.set(
                 _deep_analysis_redis_key(cache_id),
-                _DEEP_ANALYSIS_STORE_TTL_SEC,
-                json.dumps(
+                ex=_DEEP_ANALYSIS_STORE_TTL_SEC,
+                value=json.dumps(
                     {
                         "user_id": int(user_id),
                         "lookup": full.get("raw") if isinstance(full.get("raw"), dict) else item,
@@ -35990,10 +35990,10 @@ def _remember_recent_finish_no_active_session(user_id: int) -> None:
     if client is None:
         return
     try:
-        client.setex(
+        client.set(
             _recent_finish_session_redis_key(int(user_id)),
-            int(WEBAPP_RECENT_FINISH_SESSION_CACHE_TTL_SEC),
             json.dumps(payload, ensure_ascii=False),
+            ex=int(WEBAPP_RECENT_FINISH_SESSION_CACHE_TTL_SEC),
         )
     except Exception:
         logging.warning(
@@ -43612,7 +43612,7 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
         _sc_raw_client = _grc_sc()
         if _sc_raw_client is not None:
             _sc_raw_key = f"dict_pending_shortcut_raw:{user_id}"
-            _sc_raw_client.setex(_sc_raw_key, 28800, text)
+            _sc_raw_client.set(_sc_raw_key, text, ex=28800)
             _sc_raw_list_key = f"dict_pending_shortcut_raw_list:{user_id}"
             _sc_raw_client.rpush(_sc_raw_list_key, text)
             _sc_raw_client.expire(_sc_raw_list_key, 28800)
@@ -43720,7 +43720,7 @@ def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_tex
         if not isinstance(existing, list):
             existing = []
         existing.append({"key": request_key, "user_id": user_id, "text": lookup_text, "created_at": created_at})
-        client.setex(redis_key, _SHORTCUT_PENDING_REDIS_TTL, json.dumps(existing, ensure_ascii=False))
+        client.set(redis_key, json.dumps(existing, ensure_ascii=False), ex=_SHORTCUT_PENDING_REDIS_TTL)
         logging.info(
             "shortcut_pending: stored user_id=%s key=%s word=%r total_pending=%d redis_key=%s",
             user_id, request_key, lookup_text[:30], len(existing), redis_key,
@@ -43949,10 +43949,10 @@ def _run_shortcut_autosave_staging(
         length = int(client.rpush(raw_key, normalized_text))
         client.expire(raw_key, _AUTOSAVE_RAW_TTL)
         # (re)arm debounce: the sweep flushes ~DEBOUNCE seconds after the LAST photo arrives.
-        client.setex(
+        client.set(
             _autosave_flush_at_key(safe_user_id),
-            _AUTOSAVE_RAW_TTL,
             f"{time.time() + _AUTOSAVE_DEBOUNCE_SECONDS:.3f}",
+            ex=_AUTOSAVE_RAW_TTL,
         )
         # The HTTP shortcut route writes a card-flow "safety-net" copy (dict_pending_shortcut_raw*)
         # on EVERY request. The card delivery clears it, but the autosave path didn't — so it
@@ -44199,7 +44199,7 @@ def _autosave_send_digest_from_blocks(user_id: int, blocks: list[tuple[str, str]
             "selected": selected,
             "created_at": time.time(),
         }
-        client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
+        client.set(_autosave_digest_key(digest_id), json.dumps(digest_state, ensure_ascii=False), ex=_AUTOSAVE_DIGEST_TTL)
         page_label = (page_idx + 1, total_pages) if total_pages > 1 else None
         try:
             _send_private_message(
