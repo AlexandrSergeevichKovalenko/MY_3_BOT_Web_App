@@ -297,11 +297,22 @@
 
 /* Footer nav */
 .ob-nav {
-  display: flex;
-  gap: 10px;
   margin-top: 16px;
   padding-top: 14px;
   border-top: 1px solid var(--ob-line);
+}
+.ob-nav-row {
+  display: flex;
+  gap: 10px;
+}
+/* Финал отдельного мини-аппа: «Закрыть» рядом с «Назад», а широкая основная кнопка
+   «Закрыть и открыть приложение» переносится на свою строку — чтобы влезала на телефоне. */
+.ob-nav-finale .ob-nav-row { flex-wrap: wrap; }
+.ob-nav-finale .ob-next { flex: 1 0 100%; }
+.ob-finish-close {
+  flex: 1 1 auto;
+  background: #f1f4fa;
+  color: var(--ob-ink);
 }
 .ob-btn {
   appearance: none;

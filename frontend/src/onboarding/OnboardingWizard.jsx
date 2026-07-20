@@ -54,6 +54,11 @@ const CAN_SHARE = !IS_PUBLIC || IS_STANDALONE_PWA;
 // onboarding (with the bot) offers working buttons. NOT the installed PWA (has the bot).
 const IS_GUEST_TOUR = IS_PUBLIC && !IS_STANDALONE_PWA;
 
+// Тур открыт как ОТДЕЛЬНЫЙ мини-апп из личка (кнопка «Как пользоваться»), а не поверх
+// уже открытого приложения. Здесь у финала ДВЕ кнопки: «Закрыть» (вернуться в переписку,
+// где человек и был) и «Закрыть и открыть приложение» (сразу пойти заниматься).
+const TG_SHEET_TOUR = !TOUR_IN_PLACE && !IS_PUBLIC;
+
 // A friend-shared tour is opened as /tour?ref=<referrer id>. Thread that code into the
 // finale install CTA (→ t.me/<bot>?start=ref_<code>) so the referral is attributed when
 // the friend installs the bot — the existing streak-triggered payout then rewards both.
@@ -1047,6 +1052,9 @@ function StepBody(props) {
           {t('Всё настроено! Задания уже ждут в чате. Захочешь что-то поменять — всё здесь же, под кнопкой ',
              'Alles eingerichtet! Die Aufgaben warten schon im Chat. Willst du etwas ändern — alles ist hier, unter der Taste ')}
           <b>{t('🎬 Как пользоваться', '🎬 Wie man es benutzt')}</b>.
+          {' '}
+          {t('Можно просто закрыть тур и остаться в переписке — или сразу открыть приложение и начать заниматься.',
+             'Du kannst den Rundgang einfach schließen und im Chat bleiben — oder gleich die App öffnen und loslegen.')}
         </p>
       );
       return (
@@ -1252,6 +1260,16 @@ export default function OnboardingWizard() {
       setFinishing(false);
     }
   }, [canNext, isLast, botUrl]);
+
+  // Финал в отдельном мини-аппе из личка: «Закрыть» = отметить онбординг пройденным и
+  // вернуться в переписку с ботом, откуда человек и пришёл (без открытия приложения).
+  const finishAndClose = useCallback(async () => {
+    try { tg?.HapticFeedback?.impactOccurred?.('light'); } catch (_e) { /* noop */ }
+    setFinishing(true);
+    try { await api('/api/webapp/onboarding/complete'); } catch (_e) { /* всё равно закрываем */ }
+    try { tg?.close?.(); } catch (_e) { /* noop */ }
+    setFinishing(false);
+  }, []);
 
   const goBack = useCallback(() => {
     setIdx((i) => Math.max(i - 1, 0));
@@ -1595,22 +1613,35 @@ export default function OnboardingWizard() {
           />
         </main>
 
-        <footer className="ob-nav">
-          <button type="button" className="ob-btn ob-back" onClick={goBack} disabled={idx === 0 || finishing}>
-            ← {t('Назад', 'Zurück')}
-          </button>
-          <button
-            type="button"
-            className="ob-btn ob-next"
-            onClick={goNext}
-            disabled={!canNext || finishing || done || !contentReady || !atBottom}
-          >
-            {done ? t('✅ Готово', '✅ Fertig')
-              : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
-              : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
-              : isLast ? (TOUR_IN_PLACE ? t('Закрыть', 'Schließen') : IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Перейти в приложение', '🎯 Zur App'))
-              : t('Далее →', 'Weiter →')}
-          </button>
+        <footer className={`ob-nav${isLast && TG_SHEET_TOUR ? ' ob-nav-finale' : ''}`}>
+          <div className="ob-nav-row">
+            <button type="button" className="ob-btn ob-back" onClick={goBack} disabled={idx === 0 || finishing}>
+              ← {t('Назад', 'Zurück')}
+            </button>
+            {isLast && TG_SHEET_TOUR ? (
+              // Двойной финал: остаться в переписке ИЛИ сразу перейти в приложение.
+              <button
+                type="button"
+                className="ob-btn ob-finish-close"
+                onClick={finishAndClose}
+                disabled={finishing || done || !contentReady || !atBottom}
+              >
+                {t('Закрыть', 'Schließen')}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="ob-btn ob-next"
+              onClick={goNext}
+              disabled={!canNext || finishing || done || !contentReady || !atBottom}
+            >
+              {done ? t('✅ Готово', '✅ Fertig')
+                : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
+                : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
+                : isLast ? (TOUR_IN_PLACE ? t('Закрыть', 'Schließen') : IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Закрыть и открыть приложение', '🎯 Schließen und App öffnen'))
+                : t('Далее →', 'Weiter →')}
+            </button>
+          </div>
         </footer>
       </div>
     </div>
