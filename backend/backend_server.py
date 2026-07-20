@@ -43660,6 +43660,7 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
     # run is a conscious choice on their side (and their shortcut can stop on it).
     try:
         if (_gate_extra.get("is_pro") and not _gate_extra.get("is_admin")
+                and not _gate_extra.get("setup_day")  # never the Pro «both sends used» copy on a наладка run
                 and int(_gate_extra.get("used_today", 0)) + 1 >= _SHORTCUT_RUN_PRO_DAILY):
             _notify_shortcut_run_status(int(user_id), "pro_used_up", _gate_extra)
     except Exception:

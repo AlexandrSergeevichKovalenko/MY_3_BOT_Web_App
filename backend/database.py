@@ -24018,7 +24018,9 @@ def count_shortcut_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> i
 
 def count_shortcut_denied_runs_today(user_id: int, tz_name: str = "Europe/Vienna") -> int:
     """BLOCKED «Ночной Переводчик» attempts today (allowed=FALSE) — for the abuse alert
-    (a broken/edited shortcut or a stolen token hammering the endpoint)."""
+    (a broken/edited shortcut or a stolen token hammering the endpoint). First-day setup-pool
+    exhaustion (reason='setup_used_up') is EXCLUDED — that's a fumbling new user, not abuse;
+    the setup pool exists precisely to forgive that, so it must not trip the admin alert."""
     try:
         _ensure_shortcut_runs_schema()
         with get_db_connection_context() as conn:
@@ -24026,6 +24028,7 @@ def count_shortcut_denied_runs_today(user_id: int, tz_name: str = "Europe/Vienna
                 cur.execute(
                     "SELECT COUNT(*) FROM bt_3_shortcut_runs "
                     "WHERE user_id=%s AND allowed IS FALSE "
+                    "AND (reason IS DISTINCT FROM 'setup_used_up') "
                     "AND (ran_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date;",
                     (int(user_id), str(tz_name), str(tz_name)),
                 )
