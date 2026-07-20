@@ -31571,6 +31571,23 @@ function AppInner() {
     document.body.appendChild(script);
   }, []);
 
+  // «Сменить видео» (⚙ → Открыть поиск) поднимает youtubeForceShowPanel, а тот выключает
+  // новую watch-раскладку. Сбрасывался он только при ПУСТОМ youtubeId или при старте
+  // воспроизведения — поэтому, выбрав следующее видео, человек до нажатия play видел
+  // старый экран (шапка с чипсами + отдельный поиск + плашки DE/RU). Намерение «хочу
+  // выбрать другое видео» разовое: как только видео сменилось, оно исполнено.
+  const youtubeForceShowPanelVideoRef = useRef('');
+  useEffect(() => {
+    const current = String(youtubeId || '');
+    if (!current) {
+      youtubeForceShowPanelVideoRef.current = '';
+      return;
+    }
+    const previous = youtubeForceShowPanelVideoRef.current;
+    youtubeForceShowPanelVideoRef.current = current;
+    if (previous && previous !== current) setYoutubeForceShowPanel(false);
+  }, [youtubeId]);
+
   useEffect(() => {
     if (!youtubeId) {
       setYoutubePlayerReady(false);

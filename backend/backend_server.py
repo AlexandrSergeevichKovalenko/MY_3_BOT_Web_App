@@ -49194,15 +49194,31 @@ def get_youtube_catalog():
     try:
         with db_acquire_scope("youtube_catalog"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
+                # «Фильмы» = эта же таблица субтитров, поэтому список нужно чистить прямо здесь.
+                #
+                # 1) items > 0. Строка может существовать с пустым items (её создаёт запись
+                #    переводов). Такое видео видно в каталоге, но при открытии отдаёт 403
+                #    «Субтитры недоступны» всем, кроме админа — в списке ему не место.
+                # 2) Новости исключаем. Вечерняя подготовка пишет субтитры завтрашней новости
+                #    в эту же таблицу, из-за чего видео появлялось в общем каталоге у всех ещё
+                #    до публикации и висело там до ночной чистки. Новость должна жить только на
+                #    своём экране и только в свой день. Сами субтитры НЕ трогаем — они нужны
+                #    самой новости, прячем только из каталога.
                 cursor.execute(
                     """
-                    SELECT video_id,
-                           language,
-                           is_generated,
-                           updated_at,
-                           jsonb_array_length(items) AS items_count
-                    FROM bt_3_youtube_transcripts
-                    ORDER BY updated_at DESC
+                    SELECT t.video_id,
+                           t.language,
+                           t.is_generated,
+                           t.updated_at,
+                           jsonb_array_length(t.items) AS items_count
+                    FROM bt_3_youtube_transcripts AS t
+                    WHERE jsonb_array_length(t.items) > 0
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM bt_3_world_news_daily AS n
+                          WHERE n.video_id = t.video_id
+                      )
+                    ORDER BY t.updated_at DESC
                     LIMIT %s;
                     """,
                     (limit,),
