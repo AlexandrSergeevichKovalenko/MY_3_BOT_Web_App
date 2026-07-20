@@ -16691,6 +16691,95 @@ body.worldnews-active .webapp-topbar {
   display: none !important;
 }
 
+/* ═══════════ «Начни день» ВИДЕО — субтитры вписываются в экран телефона (<700) ═══════════
+   Раньше на телефоне видео + карточки субтитров (DE / DE+RU) лежали в обычном потоке со
+   списками фикс-высоты, поэтому последний блок уходил за нижний край экрана. Пиним весь
+   ЭТАП «Видео» к реально видимой высоте окна (--app-height = visualViewport.height, т.е.
+   высота определяется автоматически под конкретный телефон) и растягиваем панель субтитров
+   на всё оставшееся место так, чтобы её низ заканчивался ~0.5 см над нижним краем (с учётом
+   home-indicator). Один блок (только DE) — заполняет всё; два блока (DE+RU) — делят место
+   пополам. Каждый список скроллится ВНУТРИ себя, а не толкает страницу вниз.
+   Ограничено :has(.youtube-subtitles-panel) — правило включается ТОЛЬКО на этапе «Видео»
+   (этапы «Слова» / «Тест» сохраняют обычную прокрутку). */
+@media (max-width: 699px) {
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) {
+    height: var(--app-height, 100dvh) !important;
+    max-height: var(--app-height, 100dvh) !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    align-items: stretch; /* .webapp-page — flex-строка; даём шеллу занять всю высоту */
+    /* Базовый нижний паддинг страницы (24px, без safe-area) убираем — нижний зазор
+       целиком задаёт padding-bottom секции ниже (0.5 см + home-indicator). */
+    padding-bottom: 0 !important;
+  }
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .webapp-shell,
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .webapp-main,
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .webapp-video-dictionary {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-player-first.is-worldnews {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    /* Низ последней карточки субтитров — ~0.5 см над краём (плюс home-indicator). */
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5cm);
+  }
+  /* Степпер, видео и транспорт держат свою натуральную высоту — растягивается только панель. */
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .worldnews-stepper,
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-focus-peek,
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-player-card,
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-sentence-jump-bar {
+    flex: 0 0 auto;
+  }
+  /* Панель субтитров заполняет остаток высоты; списки скроллятся внутри. */
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-subtitles-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-subtitles-panel-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  /* Блоки делят место поровну: один (DE) — всё; два (DE+RU) — пополам. */
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-subtitles-block {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  /* Оригинал OFF: немецкий список скрыт — блок ужимается до кнопок, RU забирает остаток. */
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-subtitles-panel.wn-hide-de .youtube-subtitles-block-de {
+    flex: 0 0 auto;
+  }
+  /* Шапка (кнопки Оригинал/Русский или тег RU) фиксирована; список берёт остаток и скроллит. */
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-subtitles-block .youtube-subtitles-card-head {
+    flex: 0 0 auto;
+  }
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-subtitles-block .webapp-subtitles {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .webapp-page.is-worldnews-page:has(.youtube-subtitles-panel) .youtube-subtitles-block .webapp-subtitles-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none !important;
+  }
+}
+
 /* ═══════════════ Puzzle-режим (≥700): overlay-only + панель под видео ═══════════════ */
 @media (min-width: 700px) {
   /* ПИН высоты страницы под экран — видео заполняет всё, панель снизу, без прокрутки */
