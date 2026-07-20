@@ -31103,15 +31103,21 @@ function AppInner() {
     })();
   }, [youtubeNewsMode, initData]);
 
-  // In news mode, auto-load subtitles once the video id resolves — the user shouldn't have to
-  // tap «Загрузить субтитры» for the curated daily video. Guarded per-video so it fires once.
+  // Auto-load subtitles once the video id resolves — the user shouldn't have to tap «Субтитры»:
+  //  • News mode (curated daily video), and
+  //  • the PHONE watch UI (regular YouTube on phone), whose one-screen redesign needs subtitles
+  //    to render — without this the new layout can't activate and the old screen shows on open.
+  // Guarded per-video (ref) so it fires once; skipped when the user pasted their own transcript.
+  // Tablet/browser (isWideLayout) keep the manual «Субтитры» button — behaviour unchanged there.
   useEffect(() => {
-    if (!youtubeNewsMode || !youtubeId || !initData) return;
+    const wantsAutoLoad = youtubeNewsMode || (!isWideLayout && youtubeSectionVisible);
+    if (!wantsAutoLoad || !youtubeId || !initData) return;
+    if (youtubeManualOverride) return;
     if (youtubeTranscriptLoading || youtubeTranscript.length > 0) return;
     if (youtubeNewsTranscriptRequestedRef.current === youtubeId) return;
     youtubeNewsTranscriptRequestedRef.current = youtubeId;
     fetchTranscript();
-  }, [youtubeNewsMode, youtubeId, initData, youtubeTranscriptLoading, youtubeTranscript]);
+  }, [youtubeNewsMode, isWideLayout, youtubeSectionVisible, youtubeId, initData, youtubeManualOverride, youtubeTranscriptLoading, youtubeTranscript]);
 
   // Paint the whole page the interactive cool background (not the app's warm cream) while the
   // news view is open, so the environment matches the games/breakdown — not just the cards.
