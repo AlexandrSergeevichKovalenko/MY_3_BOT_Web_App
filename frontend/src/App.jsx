@@ -3584,6 +3584,139 @@ function useStableCallback(callback) {
   return useCallback((...args) => callbackRef.current(...args), []);
 }
 
+/* ── «Переводы»: размер текста и чернила ──────────────────────────────────────
+   Люди читают по-разному, поэтому и задание, и поле ввода масштабируются одной
+   переменной --tr-text-scale (её CSS применяет через calc). Ступени дискретные,
+   а не свободный слайдер: так вёрстка не разъезжается ни на одном экране.
+   Цвет — не свободная палитра, а 5 готовых «чернил»: id хранится, а конкретный
+   тон подставляет тема (см. --tr-ink в App.css), поэтому текст остаётся
+   читаемым и в светлой, и в тёмной. Настройка живёт только в «Переводах». */
+const TR_TEXT_SCALE_KEY = 'tr_text_scale_v1';
+const TR_TEXT_INK_KEY = 'tr_text_ink_v1';
+const TR_TEXT_SCALES = [0.9, 1, 1.15, 1.3, 1.5];
+const TR_TEXT_SCALE_DEFAULT = 1; // индекс: 1.0 = как было до настройки
+const TR_TEXT_INKS = ['blue', 'graphite', 'amber', 'green', 'soft'];
+
+function readStoredTextScaleIndex() {
+  const raw = Number.parseInt(readStoredDraftValue(TR_TEXT_SCALE_KEY, ''), 10);
+  return Number.isInteger(raw) && raw >= 0 && raw < TR_TEXT_SCALES.length ? raw : TR_TEXT_SCALE_DEFAULT;
+}
+
+function readStoredTextInk() {
+  const raw = readStoredDraftValue(TR_TEXT_INK_KEY, '');
+  return TR_TEXT_INKS.includes(raw) ? raw : TR_TEXT_INKS[0];
+}
+
+function trTextHaptic() {
+  try { window.Telegram?.WebApp?.HapticFeedback?.selectionChanged?.(); } catch (_error) { /* noop */ }
+}
+
+const TranslationTextControl = React.memo(function TranslationTextControl({
+  tr,
+  scaleIndex,
+  onScaleIndex,
+  ink,
+  onInk,
+}) {
+  const [open, setOpen] = useState(false);
+  const closeTimerRef = useRef(null);
+
+  // Раскрытая панель сама сворачивается — она не должна занимать шапку насовсем.
+  const scheduleClose = useCallback(() => {
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = window.setTimeout(() => setOpen(false), 3200);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    scheduleClose();
+    return () => { if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current); };
+  }, [open, scheduleClose]);
+
+  const inkLabels = {
+    blue: tr('Синие', 'Blau'),
+    graphite: tr('Графит', 'Graphit'),
+    amber: tr('Амбер', 'Bernstein'),
+    green: tr('Зелёные', 'Grün'),
+    soft: tr('Мягкий', 'Sanft'),
+  };
+
+  const step = (delta) => {
+    const next = Math.min(TR_TEXT_SCALES.length - 1, Math.max(0, scaleIndex + delta));
+    scheduleClose();
+    if (next === scaleIndex) return;
+    trTextHaptic();
+    onScaleIndex(next);
+  };
+
+  const openLabel = tr('Размер и цвет текста', 'Textgröße und Farbe');
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="tr-text-pill"
+        onClick={() => { trTextHaptic(); setOpen(true); }}
+        title={openLabel}
+        aria-label={openLabel}
+      >
+        <span aria-hidden="true">Aa</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="tr-text-panel" role="group" aria-label={openLabel} onMouseMove={scheduleClose}>
+      <div className="tr-text-panel-row">
+        <button
+          type="button"
+          className="tr-text-step"
+          onClick={() => step(-1)}
+          disabled={scaleIndex <= 0}
+          aria-label={tr('Мельче', 'Kleiner')}
+        >
+          A<span className="tr-text-step-sign">−</span>
+        </button>
+        <div className="tr-text-ticks" aria-hidden="true">
+          {TR_TEXT_SCALES.map((value, index) => (
+            <span key={value} className={`tr-text-tick ${index <= scaleIndex ? 'is-on' : ''}`} />
+          ))}
+        </div>
+        <button
+          type="button"
+          className="tr-text-step"
+          onClick={() => step(1)}
+          disabled={scaleIndex >= TR_TEXT_SCALES.length - 1}
+          aria-label={tr('Крупнее', 'Größer')}
+        >
+          A<span className="tr-text-step-sign">+</span>
+        </button>
+        <button
+          type="button"
+          className="tr-text-close"
+          onClick={() => setOpen(false)}
+          aria-label={tr('Закрыть', 'Schließen')}
+        >
+          ✕
+        </button>
+      </div>
+      <div className="tr-text-panel-row tr-text-inks">
+        {TR_TEXT_INKS.map((id) => (
+          <button
+            key={id}
+            type="button"
+            className={`tr-text-ink tr-text-ink-${id} ${id === ink ? 'is-active' : ''}`}
+            onClick={() => { scheduleClose(); if (id === ink) return; trTextHaptic(); onInk(id); }}
+            title={inkLabels[id]}
+            aria-label={inkLabels[id]}
+            aria-pressed={id === ink}
+          />
+        ))}
+      </div>
+    </div>
+  );
+});
+
 const TranslationsSection = React.memo(function TranslationsSection({
   tr,
   translationsRef,
@@ -3772,9 +3905,29 @@ const TranslationsSection = React.memo(function TranslationsSection({
   // ≥700: рейл настройки можно сворачивать (☰), чтобы поле ввода растянулось на всю ширину.
   const [railCollapsed, setRailCollapsed] = useState(false);
 
+  // Размер текста и чернила: применяем мгновенно (оптимистично), пишем в localStorage
+  // фоном — настройка внешнего вида не должна ничего ждать.
+  const [textScaleIndex, setTextScaleIndex] = useState(readStoredTextScaleIndex);
+  const [textInk, setTextInk] = useState(readStoredTextInk);
+
+  const handleTextScaleIndex = useCallback((index) => {
+    setTextScaleIndex(index);
+    writeStoredValue(TR_TEXT_SCALE_KEY, String(index));
+  }, []);
+
+  const handleTextInk = useCallback((id) => {
+    setTextInk(id);
+    writeStoredValue(TR_TEXT_INK_KEY, id);
+  }, []);
+
   return (
     <PerfProfiler id="section.translations">
-      <section className={`webapp-section webapp-section-translations ${railCollapsed ? 'is-rail-collapsed' : ''}`} ref={translationsRef}>
+      <section
+        className={`webapp-section webapp-section-translations ${railCollapsed ? 'is-rail-collapsed' : ''}`}
+        ref={translationsRef}
+        data-tr-ink={textInk}
+        style={{ '--tr-text-scale': TR_TEXT_SCALES[textScaleIndex] }}
+      >
         <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
           {isWideLayout && (
             <button
@@ -3789,7 +3942,16 @@ const TranslationsSection = React.memo(function TranslationsSection({
             </button>
           )}
           <div className="translations-title-main">
-            <h2>{tr('Ваши переводы', 'Ihre Übersetzungen')}</h2>
+            <div className="translations-title-line">
+              <h2>{tr('Ваши переводы', 'Ihre Übersetzungen')}</h2>
+              <TranslationTextControl
+                tr={tr}
+                scaleIndex={textScaleIndex}
+                onScaleIndex={handleTextScaleIndex}
+                ink={textInk}
+                onInk={handleTextInk}
+              />
+            </div>
           </div>
           <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
         </div>

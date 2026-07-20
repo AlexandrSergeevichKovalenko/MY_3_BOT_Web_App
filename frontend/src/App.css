@@ -22827,11 +22827,174 @@ body.worldnews-active .webapp-topbar {
   color: var(--tr-primary, #2563eb);
 }
 
+/* ── Чернила (тёмная тема — база) ──────────────────────────────────────────
+   Хранится id чернил, а тон подставляет тема: так «синие» остаются читаемыми
+   и на тёмном, и на кремовом фоне. Светлая тема переопределяет ниже. */
+.webapp-section.webapp-section-translations[data-tr-ink='blue'] { --tr-ink: #93c5fd; }
+.webapp-section.webapp-section-translations[data-tr-ink='graphite'] { --tr-ink: #f8fafc; }
+.webapp-section.webapp-section-translations[data-tr-ink='amber'] { --tr-ink: #fcd34d; }
+.webapp-section.webapp-section-translations[data-tr-ink='green'] { --tr-ink: #86efac; }
+.webapp-section.webapp-section-translations[data-tr-ink='soft'] { --tr-ink: #cbd5e1; }
+
 .webapp-section.webapp-section-translations .translations-title-main {
   display: grid;
   gap: 12px;
   min-width: 0;
 }
+
+/* Заголовок и ручка «Aa» в одной строке; логотипу-лису оставлен правый отступ.
+   На узком экране раскрытая панель не сжимает заголовок, а переносится под него. */
+.webapp-section.webapp-section-translations .translations-title-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.webapp-section.webapp-section-translations .translations-title-line h2 {
+  flex: 1 1 auto;
+  min-width: 140px;
+  overflow-wrap: anywhere;
+}
+
+.tr-text-pill,
+.tr-text-panel {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-secondary);
+  box-shadow: none;
+}
+
+.tr-text-pill {
+  min-height: 34px;
+  padding: 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.tr-text-pill:hover {
+  background: var(--tr-bg-hover);
+  border-color: var(--tr-primary);
+  color: var(--tr-text-title);
+}
+
+.tr-text-panel {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 20px;
+  animation: tr-text-panel-in 0.18s ease-out;
+}
+
+@keyframes tr-text-panel-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tr-text-panel { animation: none; }
+}
+
+.tr-text-panel-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.tr-text-step {
+  min-width: 32px;
+  min-height: 30px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--tr-border);
+  background: transparent;
+  color: var(--tr-text-title);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tr-text-step-sign { margin-left: 1px; }
+
+.tr-text-step:hover:not(:disabled) {
+  background: var(--tr-bg-hover);
+  border-color: var(--tr-primary);
+}
+
+.tr-text-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tr-text-ticks {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tr-text-tick {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tr-border);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.tr-text-tick.is-on {
+  background: var(--tr-primary);
+  transform: scale(1.15);
+}
+
+.tr-text-close {
+  min-width: 26px;
+  min-height: 26px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--tr-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tr-text-close:hover { color: var(--tr-text-title); }
+
+.tr-text-ink {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.tr-text-ink:hover { transform: scale(1.1); }
+
+.tr-text-ink.is-active {
+  border-color: var(--tr-text-title);
+  transform: scale(1.12);
+}
+
+.tr-text-ink-blue { background-color: #93c5fd; }
+.tr-text-ink-graphite { background-color: #f8fafc; }
+.tr-text-ink-amber { background-color: #fcd34d; }
+.tr-text-ink-green { background-color: #86efac; }
+.tr-text-ink-soft { background-color: #cbd5e1; }
+
+.webapp-page.is-theme-light .tr-text-ink-blue { background-color: #183a68; }
+.webapp-page.is-theme-light .tr-text-ink-graphite { background-color: #2b2724; }
+.webapp-page.is-theme-light .tr-text-ink-amber { background-color: #7a4a12; }
+.webapp-page.is-theme-light .tr-text-ink-green { background-color: #1f5137; }
+.webapp-page.is-theme-light .tr-text-ink-soft { background-color: #4a443d; }
 
 .webapp-section.webapp-section-translations .translations-title-main h2 {
   margin: 0;
@@ -23058,7 +23221,7 @@ body.worldnews-active .webapp-topbar {
   overflow-wrap: anywhere;
   word-break: break-word;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 17px;
+  font-size: calc(17px * var(--tr-text-scale, 1));
   line-height: 1.55;
   font-weight: 600;
 }
@@ -23067,11 +23230,14 @@ body.worldnews-active .webapp-topbar {
   border-radius: 16px;
   border: 1px solid var(--tr-border);
   background: var(--tr-bg-card-alt);
-  color: var(--tr-text-primary);
+  color: var(--tr-ink, var(--tr-text-primary));
+  caret-color: var(--tr-ink, var(--tr-text-primary));
   padding: 12px;
   box-shadow: none;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 17px;
+  /* max(16px, …): ниже 16px iOS Safari сам зумит страницу при фокусе в поле,
+     поэтому мелкая ступень уменьшает только задание, а поле ввода держит 16px. */
+  font-size: max(16px, calc(17px * var(--tr-text-scale, 1)));
   line-height: 1.5;
   font-weight: 400;
   max-width: 100%;
@@ -23544,9 +23710,12 @@ body.worldnews-active .webapp-topbar {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .webapp-section.webapp-section-translations .translation-sentence,
+  .webapp-section.webapp-section-translations .translation-sentence {
+    font-size: calc(16px * var(--tr-text-scale, 1));
+  }
+
   .webapp-section.webapp-section-translations .webapp-translation-item textarea {
-    font-size: 16px;
+    font-size: max(16px, calc(16px * var(--tr-text-scale, 1)));
   }
 }
 
@@ -26787,10 +26956,17 @@ body.worldnews-active .webapp-topbar {
 }
 
 .webapp-page.is-theme-light .webapp-section.webapp-section-translations .webapp-translation-item textarea {
-  color: #183a68;
-  caret-color: #183a68;
+  color: var(--tr-ink, #183a68);
+  caret-color: var(--tr-ink, #183a68);
   font-weight: 700;
 }
+
+/* Чернила в светлой теме: подобраны под кремовый фон #fff8ee, контраст ≥ 7:1. */
+.webapp-page.is-theme-light .webapp-section.webapp-section-translations[data-tr-ink='blue'] { --tr-ink: #183a68; }
+.webapp-page.is-theme-light .webapp-section.webapp-section-translations[data-tr-ink='graphite'] { --tr-ink: #2b2724; }
+.webapp-page.is-theme-light .webapp-section.webapp-section-translations[data-tr-ink='amber'] { --tr-ink: #7a4a12; }
+.webapp-page.is-theme-light .webapp-section.webapp-section-translations[data-tr-ink='green'] { --tr-ink: #1f5137; }
+.webapp-page.is-theme-light .webapp-section.webapp-section-translations[data-tr-ink='soft'] { --tr-ink: #4a443d; }
 
 .webapp-page.is-theme-light .webapp-section.webapp-section-translations .webapp-translation-item textarea::placeholder {
   color: rgba(47, 39, 31, 0.68);
