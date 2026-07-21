@@ -8672,6 +8672,19 @@ def _dictionary_payload_needs_enrichment(response_json: dict | None) -> bool:
     # The caller still gates on _is_single_word_dictionary_entry before spending an LLM call.
     if entry_kind and entry_kind != "word":
         return False
+    # Примеры и таблицы — самый надёжный признак настоящей карточки. Без этой проверки
+    # карточка с двумя примерами и формами (но одним смыслом без контекста) считалась
+    # «пустой», и мы платили за её обогащение СНОВА при каждом открытии и каждом проходе
+    # бэкфилла (найдено замером 21.07 на «der Zufall»).
+    if isinstance(payload.get("usage_examples"), list) and any(
+        str(item).strip() if not isinstance(item, dict) else (
+            str(item.get("source") or item.get("target") or "").strip()
+        )
+        for item in payload["usage_examples"]
+    ):
+        return False
+    if isinstance(payload.get("grammar_tables"), (dict, list)) and payload["grammar_tables"]:
+        return False
     if isinstance(payload.get("meanings"), dict):
         primary = payload["meanings"].get("primary")
         secondary = payload["meanings"].get("secondary")
