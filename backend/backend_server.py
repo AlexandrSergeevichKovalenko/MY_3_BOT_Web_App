@@ -6847,6 +6847,19 @@ def _load_dictionary_item_from_pool(*, word: str, source_lang: str, target_lang:
         return None
     if _dictionary_payload_needs_enrichment(payload):
         return None
+    # У части старых записей сам перевод лежит только в колонках строки, а в карточке его
+    # нет. Без этой подстановки пользователь получил бы «готовый» ответ без перевода.
+    payload = dict(payload)
+    if not str(payload.get("source_text") or "").strip():
+        payload["source_text"] = str(entry.get("source_text") or "").strip()
+    if not str(payload.get("target_text") or "").strip():
+        payload["target_text"] = str(entry.get("target_text") or "").strip()
+    if not str(payload.get("target_text") or "").strip():
+        return None  # перевода нет нигде — отдавать нечего
+    if target_lang == "ru" and not str(payload.get("translation_ru") or "").strip():
+        payload["translation_ru"] = payload["target_text"]
+    if source_lang == "de" and not str(payload.get("word_de") or "").strip():
+        payload["word_de"] = payload["source_text"]
     return payload
 
 

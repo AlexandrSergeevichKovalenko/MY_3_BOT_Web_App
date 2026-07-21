@@ -3272,11 +3272,19 @@ def get_dict_dedup_report(*, days: int = 7) -> dict:
 # «Богатая» карточка на уровне SQL: есть хотя бы один блок разбора. Это дешёвый
 # JSONB-прокси того же условия, что _dictionary_payload_needs_enrichment проверяет в
 # Python; держим оба определения синхронными.
-_DICTIONARY_POOL_RICH_KEYS = ("usage_examples", "dictionary_senses", "meanings", "grammar_tables", "forms", "translations")
+# «Богатая» карточка = та, которую пул РЕАЛЬНО отдаст. Держать в согласии с питоновским
+# `_dictionary_payload_needs_enrichment`, иначе записи зависают: SQL считает их полными
+# (значит ночной добор их не берёт), а выдача — тонкими (значит и не отдаёт).
+# Именно поэтому `forms` и одиночный `dictionary_senses` сюда НЕ входят: артикль со
+# склонением без единого примера карточкой не является.
+_DICTIONARY_POOL_RICH_KEYS = ("usage_examples", "meanings", "grammar_tables", "translations")
 
 
 def _dictionary_pool_rich_sql(alias: str) -> str:
-    return "(" + " OR ".join(f"{alias} ? '{key}'" for key in _DICTIONARY_POOL_RICH_KEYS) + ")"
+    parts = [f"{alias} ? '{key}'" for key in _DICTIONARY_POOL_RICH_KEYS]
+    # два и более смысла — тоже полноценная карточка (совпадает с питоновским гейтом)
+    parts.append(f"COALESCE(jsonb_array_length({alias}->'dictionary_senses'), 0) >= 2")
+    return "(" + " OR ".join(parts) + ")"
 
 
 DICTIONARY_POOL_RICH_SQL_STORED = _dictionary_pool_rich_sql("bt_3_dictionary_entries.response_json")
@@ -47046,7 +47054,7 @@ def list_pin_items_for_audit() -> list:
             cursor.execute(
                 """
                 SELECT aufgabe_id, payload->>'target_label', payload->>'image_object_key',
-                       payload->'bbox'
+                       payload->'bbox', coalesce((payload->>'bbox_human_ok')::boolean, false)
                 FROM bt_3_aufgabe_bank
                 WHERE format = 'pin' AND retired = FALSE
                   AND coalesce(payload->>'image_object_key', '') <> ''
@@ -47055,8 +47063,28 @@ def list_pin_items_for_audit() -> list:
                 """
             )
             rows = cursor.fetchall() or []
-    return [{"aufgabe_id": r[0], "target_label": r[1], "image_object_key": r[2], "bbox": r[3]}
-            for r in rows]
+    return [{"aufgabe_id": r[0], "target_label": r[1], "image_object_key": r[2], "bbox": r[3],
+             "bbox_human_ok": bool(r[4])} for r in rows]
+
+
+def mark_aufgabe_bbox_human_ok(aufgabe_id: str) -> bool:
+    """Stamp an item as 'a person looked at this frame and approved it'. Automatic sweeps
+    must leave it alone — they run the same model that produced the bad frames."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_aufgabe_bank "
+                    "SET payload = jsonb_set(payload, '{bbox_human_ok}', 'true'::jsonb, true) "
+                    "WHERE aufgabe_id = %s",
+                    (str(aufgabe_id),),
+                )
+                changed = cursor.rowcount or 0
+            conn.commit()
+        return changed > 0
+    except Exception:
+        logging.warning("mark_aufgabe_bbox_human_ok failed id=%s", aufgabe_id, exc_info=True)
+        return False
 
 
 def update_aufgabe_bbox_by_image_key(image_key: str, bbox: list) -> bool:
