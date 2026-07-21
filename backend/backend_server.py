@@ -9049,6 +9049,7 @@ def _publish_enriched_card_to_shared_stores(
         logging.debug("enriched card → shared cache failed: %s", exc)
 
 
+_POOL_ENRICH_SINGLE_PAIR = False  # True = только заданная пара (для ручной отладки)
 POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "150").strip() or "150")
 _POOL_NIGHT_ENRICH_LOCK = threading.Lock()
 _POOL_NIGHT_ENRICH_RUNNING = False
@@ -9089,8 +9090,17 @@ def run_pool_night_enrichment(
         rows = get_thin_pool_entries_for_enrichment(
             limit=cap, source_lang=source_lang, target_lang=target_lang,
         )
+        # Обе стороны пула в одном прогоне: когда de→ru закончится (711 слов), ночной
+        # бюджет обязан перетечь на ru→de (1523), иначе джоб начнёт вхолостую просыпаться,
+        # а половина пула так и останется тонкой.
+        if len(rows) < cap and not _POOL_ENRICH_SINGLE_PAIR:
+            rows += get_thin_pool_entries_for_enrichment(
+                limit=cap - len(rows), source_lang=target_lang, target_lang=source_lang,
+            )
         report["picked"] = len(rows)
         for row in rows:
+            row_source_lang = str(row.get("source_lang") or source_lang).strip().lower()
+            row_target_lang = str(row.get("target_lang") or target_lang).strip().lower()
             source_text = str(row.get("source_text") or "").strip()
             target_text = str(row.get("target_text") or "").strip()
             if len(report["samples"]) < 20:
@@ -9100,12 +9110,12 @@ def run_pool_night_enrichment(
             if dry_run:
                 continue
             try:
-                if _is_legacy_ru_de_pair(source_lang, target_lang):
+                if _is_legacy_ru_de_pair(row_source_lang, row_target_lang):
                     enrich = asyncio.run(run_enrich_word(source_text, target_text))
                 else:
                     enrich = asyncio.run(run_enrich_word_multilang(
                         source_text=source_text, target_text=target_text,
-                        source_lang=source_lang, target_lang=target_lang,
+                        source_lang=row_source_lang, target_lang=row_target_lang,
                     ))
                 enrich_data = _normalize_dictionary_enrich_payload(enrich)
                 if not enrich_data:
@@ -9116,7 +9126,7 @@ def run_pool_night_enrichment(
                 merged = _prepare_dictionary_response_json_for_save(
                     response_json=merged,
                     source_text=source_text, target_text=target_text,
-                    source_lang=source_lang, target_lang=target_lang,
+                    source_lang=row_source_lang, target_lang=row_target_lang,
                     word_ru=row.get("word_ru"), word_de=row.get("word_de"),
                     translation_de=row.get("translation_de"), translation_ru=row.get("translation_ru"),
                 )
@@ -9126,7 +9136,7 @@ def run_pool_night_enrichment(
                     report["skipped"] += 1
                     continue
                 _publish_enriched_card_to_shared_stores(
-                    payload=merged, source_lang=source_lang, target_lang=target_lang,
+                    payload=merged, source_lang=row_source_lang, target_lang=row_target_lang,
                     source_text=source_text, target_text=target_text,
                 )
                 report["enriched"] += 1
@@ -9140,6 +9150,10 @@ def run_pool_night_enrichment(
             report["remaining"] = count_thin_pool_entries(
                 source_lang=source_lang, target_lang=target_lang,
             )
+            if not _POOL_ENRICH_SINGLE_PAIR:
+                report["remaining"] += count_thin_pool_entries(
+                    source_lang=target_lang, target_lang=source_lang,
+                )
         except Exception:
             report["remaining"] = 0
         return report

@@ -8451,6 +8451,54 @@ def _run_provider_cost_truth_report_safe() -> None:
         logging.exception("provider cost truth report (bot scheduler) failed")
 
 
+def _send_pool_enrich_morning_report() -> None:
+    """Утренний отчёт (07:00 Вена) об итогах ночного добора пула.
+
+    Читает heartbeat, который записала сама ночная работа, поэтому отчёт честно скажет и
+    «упало», и «не запускалось» — молчание планировщика иначе неотличимо от успеха."""
+    try:
+        from backend.database import get_admin_telegram_ids, get_latest_scheduler_run_guard
+        row = get_latest_scheduler_run_guard(job_key="pool_night_enrichment")
+        meta = (row or {}).get("metadata") or {}
+        status = str((row or {}).get("status") or "").lower()
+        finished_at = (row or {}).get("finished_at")
+        stamp = finished_at.astimezone(ZoneInfo("Europe/Vienna")).strftime("%d.%m %H:%M") if finished_at else "—"
+        if not row:
+            text = ("🌙 <b>Ночной добор словаря</b>\n\n"
+                    "⚠️ Записей о запуске нет — работа ни разу не отрабатывала. "
+                    "Проверь, жив ли планировщик бота.")
+        elif status == "failed":
+            text = (f"🌙 <b>Ночной добор словаря</b> — {stamp}\n\n"
+                    f"❌ Упал. {meta.get('error') or 'Подробности в логах.'}")
+        else:
+            enriched = int(meta.get("enriched") or 0)
+            remaining = int(meta.get("remaining") or 0)
+            cap = int(meta.get("cap") or 0)
+            nights_left = (remaining + cap - 1) // cap if cap else 0
+            text = (
+                f"🌙 <b>Ночной добор словаря</b> — {stamp}\n\n"
+                f"Наполнено за ночь: <b>{enriched}</b> из {int(meta.get('picked') or 0)} взятых\n"
+                f"Пропущено (GPT не дал карточку): {int(meta.get('skipped') or 0)}\n"
+                f"Ошибок: {int(meta.get('errors') or 0)}\n\n"
+                f"Осталось наполнить: <b>{remaining}</b>\n"
+                + (f"Это ещё ~{nights_left} ноч{'ь' if nights_left == 1 else 'и' if nights_left < 5 else 'ей'} "
+                   f"по {cap} слов." if remaining else "✅ Пул наполнен полностью.")
+            )
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids:
+            return
+        for uid in admin_ids:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": uid, "text": text, "parse_mode": "HTML",
+                      "disable_web_page_preview": True},
+                timeout=20,
+            )
+    except Exception:
+        logging.exception("pool enrich morning report failed")
+
+
 def _run_pool_night_enrichment_safe() -> None:
     """Ночной добор тонких записей общего пула (03:10 Вена — после ретенции, до утра).
     Крутится в потоке BackgroundScheduler → обязан быть синхронным. Потолок задаёт
@@ -8460,9 +8508,9 @@ def _run_pool_night_enrichment_safe() -> None:
         stats = run_pool_night_enrichment()
         _record_sched_heartbeat("pool_night_enrichment", "completed", stats)
         logging.info("pool night enrichment result=%s", stats)
-    except Exception:
+    except Exception as exc:
         logging.exception("pool night enrichment failed")
-        _record_sched_heartbeat("pool_night_enrichment", "failed", {})
+        _record_sched_heartbeat("pool_night_enrichment", "failed", {"error": str(exc)[:300]})
 
 
 def _run_dictionary_pool_report_safe() -> None:
@@ -31857,6 +31905,35 @@ _PIN_TRIVIAL_NOUNS = {
 }
 
 
+# Two independent vision locates must agree at least this much before a pin item is
+# allowed into the pool — below it, one of them is looking at a different object.
+_PIN_BBOX_MIN_IOU = 0.35
+
+
+def _bbox_iou(a: list, b: list) -> float:
+    """Intersection-over-union of two [x, y, w, h] boxes in 0..1 coords."""
+    try:
+        ax, ay, aw, ah = (float(v) for v in a)
+        bx, by, bw, bh = (float(v) for v in b)
+    except (TypeError, ValueError):
+        return 0.0
+    ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    inter = ix * iy
+    union = aw * ah + bw * bh - inter
+    return (inter / union) if union > 0 else 0.0
+
+
+def _bbox_union(a: list, b: list) -> list:
+    """Smallest box covering both, clamped to the image. Stored as the answer region so a
+    slightly-off locate still accepts an honest tap."""
+    ax, ay, aw, ah = (float(v) for v in a)
+    bx, by, bw, bh = (float(v) for v in b)
+    x, y = max(0.0, min(ax, bx)), max(0.0, min(ay, by))
+    x2, y2 = min(1.0, max(ax + aw, bx + bw)), min(1.0, max(ay + ah, by + bh))
+    return [round(x, 4), round(y, 4), round(max(0.0, x2 - x), 4), round(max(0.0, y2 - y), 4)]
+
+
 def _pin_target_noun(target_label: str) -> str:
     """The bare noun of a pin target ('der Wasserkocher' → 'wasserkocher')."""
     parts = str(target_label or "").strip().split()
@@ -32215,15 +32292,30 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
                 mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
                 if not img:
                     continue
+                # TWO independent locate calls. One vision guess is not trustworthy for a
+                # small object in a scene that deliberately holds a bigger decoy of the same
+                # category: a wrong bbox makes the item unwinnable for everyone. If the two
+                # boxes don't agree (IoU), drop the item; if they do, store their UNION so a
+                # slightly-off box still accepts an honest tap.
                 loc = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
                 if not loc.get("present") or not loc.get("bbox"):
                     logging.info("aufgabe_pool: pin target not located, skipping (%s)", payload["target_label"])
+                    continue
+                loc2 = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
+                if not loc2.get("present") or not loc2.get("bbox"):
+                    logging.info("aufgabe_pool: pin target not confirmed on re-check, skipping (%s)",
+                                 payload["target_label"])
+                    continue
+                iou = _bbox_iou(loc["bbox"], loc2["bbox"])
+                if iou < _PIN_BBOX_MIN_IOU:
+                    logging.info("aufgabe_pool: pin bbox disagreement iou=%.2f, skipping (%s) %s vs %s",
+                                 iou, payload["target_label"], loc["bbox"], loc2["bbox"])
                     continue
                 ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
                 key = f"aufgabe/images/{aufgabe_id}.{ext}"
                 await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
                 payload["image_object_key"] = key
-                payload["bbox"] = loc["bbox"]
+                payload["bbox"] = _bbox_union(loc["bbox"], loc2["bbox"])
                 payload.pop("image_prompt", None)  # not needed at runtime
             except Exception:
                 logging.warning("aufgabe_pool: pin image/vision failed, skipping item", exc_info=True)
@@ -32287,6 +32379,21 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
                          removed_bank, removed_rev)
     except Exception:
         logging.warning("aufgabe_pool: degenerate purge failed", exc_info=True)
+    # Crowd self-heal: an item everybody fails is broken, not hard (for `pin` = a bbox
+    # on the wrong object). Retire it so it stops being served, and tell the admin —
+    # a steady trickle here means generation-time bbox validation is slipping.
+    try:
+        from backend.database import retire_impossible_aufgabe_items
+        dead = await asyncio.to_thread(retire_impossible_aufgabe_items, fmt="pin", min_answers=6)
+        if dead:
+            await _alert_admin_interactive(
+                context,
+                f"🧹 <b>«Finde im Bild»: снято {len(dead)} заданий</b> — их не смог решить "
+                f"никто (≥6 ответов, 0 верных). Обычно это неверный bbox от vision-модели.",
+                throttle_key="au_pin_impossible",
+            )
+    except Exception:
+        logging.warning("aufgabe_pool: impossible-item retire failed", exc_info=True)
     # One-shot LLM re-verify of the pool + review queue: the deterministic purge above only
     # catches tapped==correction. It CANNOT see the fake-case-error ("über die Fehler" is
     # already correct Akkusativ) or the hidden-second-error ("hat … ärgern" instead of
@@ -38956,6 +39063,19 @@ def main():
             "cron",
             hour=int((os.getenv("POOL_NIGHT_ENRICH_HOUR") or "3").strip() or "3"),
             minute=int((os.getenv("POOL_NIGHT_ENRICH_MINUTE") or "10").strip() or "10"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Утренний отчёт об итогах ночного добора (07:00 Europe/Vienna) --
+        # Читает heartbeat ночной работы, поэтому честно скажет «упало» и «не
+        # запускалось»: молчание планировщика иначе неотличимо от успеха.
+        scheduler.add_job(
+            _send_pool_enrich_morning_report,
+            "cron",
+            hour=int((os.getenv("POOL_ENRICH_REPORT_HOUR") or "7").strip() or "7"),
+            minute=int((os.getenv("POOL_ENRICH_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
