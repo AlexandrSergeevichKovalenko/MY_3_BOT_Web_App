@@ -16753,6 +16753,17 @@ def _ingest_public_library_book(book, *, source_lang: str = "ru", target_lang: s
     )
     if not normalized_text or len(normalized_text) < 500:
         return {"slug": book.slug, "ok": False, "error": "extract_too_short", "chars": len(normalized_text or "")}
+    # Only PDF/EPUB extraction produces content_pages; a plain-text download leaves it
+    # empty, and a pageless public book is dead weight — the reader has nothing to
+    # paginate and the audio pre-gen (which walks content_pages) can never warm it, so
+    # it sits at 0% forever. That is exactly how the LibriVox audiobook README for
+    # «Kleider machen Leute» (Gutenberg 21141, the only German match) got shelved: 21k
+    # chars of boilerplate cleared the 500-char guard above. Refuse it loudly instead.
+    if not content_pages:
+        return {
+            "slug": book.slug, "ok": False, "error": "no_pages",
+            "chars": len(normalized_text), "source_type": source_type,
+        }
 
     gutenberg_id = resolved.get("gutenberg_id")
     source_url = f"https://www.gutenberg.org/ebooks/{gutenberg_id}" if gutenberg_id else None
