@@ -3718,7 +3718,7 @@ def web_auth_telegram():
 
 @app.route("/api/user/language-profile", methods=["GET", "POST"])
 def user_language_profile():
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    user_id, _username, error = _resolve_webapp_user_allowed()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -3824,7 +3824,7 @@ def user_language_profile():
 
 @app.route("/api/webapp/starter-dictionary/status", methods=["POST"])
 def webapp_starter_dictionary_status():
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    user_id, _username, error = _resolve_webapp_user_allowed()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -3843,7 +3843,7 @@ def webapp_starter_dictionary_status():
 
 @app.route("/api/webapp/starter-dictionary/apply", methods=["POST"])
 def webapp_starter_dictionary_apply():
-    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    user_id, _username, error = _resolve_webapp_user_allowed()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -4261,6 +4261,27 @@ def _resolve_webapp_user_id(payload: dict | None = None) -> int | None:
         except Exception:
             logging.debug("app browser token resolve failed", exc_info=True)
     return None
+
+
+def _resolve_webapp_user_allowed(payload: dict | None = None) -> tuple[int | None, str | None, str | None]:
+    """Token-aware twin of _get_authenticated_user_from_request_init_data: same
+    (user_id, username, error) contract and the same allow-list gate, but the user may
+    also authenticate with the durable app/dict browser token. Needed by everything the
+    standalone home-screen app reaches — it has no Telegram initData, so an initData-only
+    handler would 400 there and force the UI into a read-only stub."""
+    body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    username = None
+    init_data = _extract_request_init_data(body)
+    if init_data:
+        _uid, uname = _extract_webapp_user_from_init_data(init_data)
+        if _uid:
+            username = uname
+    user_id = _resolve_webapp_user_id(body)
+    if not user_id:
+        return None, None, "initData не прошёл проверку и токен недействителен"
+    if not _is_webapp_user_allowed(int(user_id)):
+        return None, None, "Доступ к WebApp закрыт. Ожидайте одобрения администратора."
+    return int(user_id), username, None
 
 
 # Standalone-dictionary abandonment gate. Someone who BLOCKED/DELETED the bot must not keep
@@ -44541,10 +44562,29 @@ def webapp_shortcut_pairing_code():
     return jsonify(_build_shortcut_pairing_code_response(result)), 200
 
 
+def _onboarding_auth_user_id() -> tuple[int | None, str, tuple]:
+    """Auth for the onboarding wizard: Telegram initData OR the durable app/dict browser
+    token. The wizard also runs OUTSIDE Telegram — from the home-screen app icon, which has
+    no initData — and there its choices (language, base dictionary, pace, windows, battles)
+    must save for real. Same (user_id, user_name, error_response) shape as
+    _answer_auth_user_id; user_name is known only on the initData path (empty otherwise,
+    which the battle-readiness upsert treats as "keep the stored name")."""
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return None, "", (jsonify({"error": "Нужна авторизация"}), 401)
+    user_name = ""
+    init_data = _extract_request_init_data(payload)
+    if init_data and _telegram_hash_is_valid(init_data):
+        user_data = _parse_telegram_init_data(init_data).get("user") or {}
+        user_name = str(user_data.get("first_name") or user_data.get("username") or "").strip()
+    return int(user_id), user_name, ()
+
+
 @app.route("/api/webapp/onboarding/status", methods=["POST"])
 def webapp_onboarding_status():
-    """First-run onboarding state + tier for the Mini-App onboarding screen (initData auth)."""
-    user_id, _user_name, err = _answer_auth_user_id()
+    """First-run onboarding state + tier for the Mini-App onboarding screen."""
+    user_id, _user_name, err = _onboarding_auth_user_id()
     if user_id is None:
         return err
     state = get_onboarding_state(int(user_id))
@@ -44564,7 +44604,7 @@ def webapp_onboarding_status():
 @app.route("/api/webapp/onboarding/step", methods=["POST"])
 def webapp_onboarding_step():
     """Persist the onboarding resume point (current step index)."""
-    user_id, _user_name, err = _answer_auth_user_id()
+    user_id, _user_name, err = _onboarding_auth_user_id()
     if user_id is None:
         return err
     body = request.get_json(silent=True) or {}
@@ -44578,7 +44618,7 @@ def webapp_onboarding_step():
 @app.route("/api/webapp/onboarding/complete", methods=["POST"])
 def webapp_onboarding_complete():
     """Mark onboarding done (final step of the wizard)."""
-    user_id, _user_name, err = _answer_auth_user_id()
+    user_id, _user_name, err = _onboarding_auth_user_id()
     if user_id is None:
         return err
     return jsonify({"ok": bool(mark_onboarding_completed(int(user_id)))})
@@ -44598,7 +44638,7 @@ _ONBOARDING_WINDOWS = {
 @app.route("/api/webapp/onboarding/preset", methods=["POST"])
 def webapp_onboarding_preset():
     """Set the delivery intensity preset (intensive/normal/rare/silent)."""
-    user_id, _user_name, err = _answer_auth_user_id()
+    user_id, _user_name, err = _onboarding_auth_user_id()
     if user_id is None:
         return err
     preset = str((request.get_json(silent=True) or {}).get("preset") or "").strip().lower()
@@ -44610,7 +44650,7 @@ def webapp_onboarding_preset():
 @app.route("/api/webapp/onboarding/window", methods=["POST"])
 def webapp_onboarding_window():
     """Set the active-hours window (allday/morning/evening/morneve)."""
-    user_id, _user_name, err = _answer_auth_user_id()
+    user_id, _user_name, err = _onboarding_auth_user_id()
     if user_id is None:
         return err
     key = str((request.get_json(silent=True) or {}).get("window") or "").strip().lower()
@@ -44624,7 +44664,7 @@ def webapp_onboarding_window():
 @app.route("/api/webapp/onboarding/battles", methods=["POST"])
 def webapp_onboarding_battles():
     """Set battle-invite readiness (opt-in) during onboarding."""
-    user_id, user_name, err = _answer_auth_user_id()
+    user_id, user_name, err = _onboarding_auth_user_id()
     if user_id is None:
         return err
     opt_in = bool((request.get_json(silent=True) or {}).get("opt_in"))

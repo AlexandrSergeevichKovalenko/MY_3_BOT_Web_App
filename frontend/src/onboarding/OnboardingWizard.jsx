@@ -26,6 +26,29 @@ const IS_STANDALONE_PWA = (() => {
 })();
 const IS_PWA_TOUR = IS_PUBLIC && IS_STANDALONE_PWA;
 
+// The durable APP token: minted once per account and carried by the home-screen app (and by
+// any browser tab launched with ?aqt=). Outside Telegram there is no initData, but this token
+// identifies the SAME account — so the tour can really SAVE what the user picks here.
+const APP_TOKEN = (() => {
+  if (typeof window === 'undefined') return '';
+  try {
+    const q = String(new URLSearchParams(window.location.search).get('aqt') || '').trim();
+    if (q) return q;
+  } catch (_e) { /* noop */ }
+  try {
+    const m = String(window.location.pathname || '').match(/^\/webapp\/t\/([^/?#]+)/);
+    if (m && m[1]) return decodeURIComponent(m[1]);
+  } catch (_e) { /* noop */ }
+  try { return String(localStorage.getItem('app_browser_token_v1') || '').trim(); }
+  catch (_e) { return ''; }
+})();
+
+// Does the viewer have an ACCOUNT we can save to? Telegram (initData) or the standalone app
+// (durable token). This — NOT «are we inside Telegram» — is what decides whether a step shows
+// real controls or an informational stub. Previously the two were conflated, so the installed
+// home-screen app degraded to text-only even though it was fully authenticated.
+const HAS_ACCOUNT = !IS_PUBLIC || !!APP_TOKEN;
+
 // Тур открыт ПОВЕРХ текущего окна приложения (standalone PWA, ИЛИ ?ob_inplace=1 —
 // планшетный тур из Guide, который перезагрузил широкое окно вместо запуска отдельного
 // мини-аппа). В этом случае финал = «Закрыть» и возврат назад в приложение, а не
@@ -39,20 +62,23 @@ const TOUR_IN_PLACE = IS_STANDALONE_PWA || OB_INPLACE;
 // the finale). Hidden only in the pure public web tour (plain browser, no bot), where
 // there's no app to return to. In the standalone PWA the tour opened IN PLACE over the
 // app, so leaving = go back to the app; in Telegram it's a sheet → tg.close().
-const CAN_CLOSE = IS_STANDALONE_PWA || !IS_PUBLIC;
+const CAN_CLOSE = IS_STANDALONE_PWA || HAS_ACCOUNT;
 
 // An existing user viewing their OWN finale (Telegram sheet OR their installed PWA) — as
 // opposed to a cold public-web visitor. Only they get the «share the tour with a friend»
 // button (a public visitor has no bot / no referral code yet).
-const CAN_SHARE = !IS_PUBLIC || IS_STANDALONE_PWA;
+const CAN_SHARE = HAS_ACCOUNT || IS_STANDALONE_PWA;
 
 // A guest viewing the shared tour in a plain browser — they DON'T have the bot yet (no
 // account). The install-the-icon / dictionary-icon / Shortcut / buy-Pro actions all need
 // an account (they open the app/dict → the «войдите через Telegram» gate, which is a
 // dead end for a guest). So in the guest tour those steps stay as INFO but their action
 // buttons are replaced with a note: install the bot from the finale first, then the real
-// onboarding (with the bot) offers working buttons. NOT the installed PWA (has the bot).
-const IS_GUEST_TOUR = IS_PUBLIC && !IS_STANDALONE_PWA;
+// onboarding (with the bot) offers working buttons. Anyone with an account — Telegram OR the
+// installed app carrying its durable token — is NOT a guest and keeps the real buttons. The
+// installed icon is never a guest either, even if its token went missing (it HAS the bot —
+// telling it to «install the bot» would be nonsense; only saving degrades, see HAS_ACCOUNT).
+const IS_GUEST_TOUR = !HAS_ACCOUNT && !IS_STANDALONE_PWA;
 
 // Тур открыт как ОТДЕЛЬНЫЙ мини-апп из личка (кнопка «Как пользоваться»), а не поверх
 // уже открытого приложения. Здесь у финала ДВЕ кнопки: «Закрыть» (вернуться в переписку,
@@ -123,14 +149,40 @@ function switchLang() {
 
 async function api(path, extra) {
   const initData = tg?.initData || '';
+  const headers = { 'Content-Type': 'application/json' };
+  // Carry the durable app token explicitly (not only via the global fetch shim): outside
+  // Telegram it IS the authentication, and the tour must work even when the shim never ran
+  // (e.g. the wizard opened directly at /tour on a cold PWA launch).
+  if (APP_TOKEN) headers['X-App-Token'] = APP_TOKEN;
+  const payload = { initData, ...(extra || {}) };
+  if (APP_TOKEN && !payload.aqt) payload.aqt = APP_TOKEN;
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData, ...(extra || {}) }),
+    headers,
+    body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) throw new Error(data.error || 'Fehler');
   return data;
+}
+
+// A guest (no bot yet) still gets the real pickers — we just can't save server-side. Park the
+// choice locally and replay it on the first open WITH an account, so «выбери сколько слов» in
+// the shared tour isn't a dead end and the answer isn't asked twice.
+const PENDING_KEY = 'ob_pending_choices_v1';
+function readPendingChoices() {
+  try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '{}') || {}; }
+  catch (_e) { return {}; }
+}
+function rememberChoice(key, value) {
+  try {
+    const cur = readPendingChoices();
+    cur[key] = value;
+    localStorage.setItem(PENDING_KEY, JSON.stringify(cur));
+  } catch (_e) { /* a guest without storage simply re-picks later */ }
+}
+function clearPendingChoices() {
+  try { localStorage.removeItem(PENDING_KEY); } catch (_e) { /* noop */ }
 }
 
 // kind: 'welcome' | 'core' (mandatory) | 'pro' (teaser for Free) | 'opt' | 'info' | 'finale'
@@ -247,6 +299,9 @@ async function openAppInBrowser() {
   const initData = tg?.initData || '';
   const origin = window.location.origin;
   let url = initData ? `${origin}/webapp?initData=${encodeURIComponent(initData)}` : `${origin}/webapp`;
+  // Already outside Telegram (home-screen app) → we can't mint a token (that needs initData),
+  // but we HAVE one: reuse it, so the Safari tab opens logged in instead of at the login gate.
+  if (!initData && APP_TOKEN) url = `${origin}/webapp?aqt=${encodeURIComponent(APP_TOKEN)}`;
   try {
     const res = await fetch('/api/webapp/app/token', {
       method: 'POST',
@@ -367,7 +422,7 @@ function StepBody(props) {
         </div>
       );
     case 'welcome':
-      return IS_PUBLIC ? (
+      return !HAS_ACCOUNT ? (
         <p className="ob-lead">
           {t('Это бот для изучения немецкого. Пролистай за пару минут — покажу, что он умеет. В конце сможешь установить его себе.',
              'Das ist ein Bot zum Deutschlernen. Blättere in ein paar Minuten durch — ich zeige, was er kann. Am Ende kannst du ihn installieren.')}
@@ -393,7 +448,7 @@ function StepBody(props) {
             <span className="ob-pair-arrow">↔</span>
             <span className="ob-pair-item"><b>🗣 {t('Русский', 'Russisch')}</b><small>{t('объясняем', 'wir erklären')}</small></span>
           </div>
-          {!IS_PUBLIC && (
+          {HAS_ACCOUNT && (
             <button
               type="button"
               className={`ob-confirm ${confirmed ? 'is-done' : ''}`}
@@ -419,7 +474,16 @@ function StepBody(props) {
             {t('Подключим слова, с которых начнём тренировки и повторения. Выбери, сколько:',
                'Verbinden wir Wörter, mit denen Training und Wiederholungen starten. Wähle, wie viele:')}
           </p>
-          {done ? (
+          {done && !HAS_ACCOUNT ? (
+            // Guest tour: nothing was connected yet — the pick is parked until the bot is installed.
+            <span className="ob-lock ob-ok">
+              {dictChoice === 'decline'
+                ? t('⏭ Понятно — базовый словарь не подключаем.', '⏭ Alles klar — kein Basis-Wörterbuch.')
+                : IS_GUEST_TOUR
+                  ? t('✅ Запомнили твой выбор — подключим сразу, как установишь бота.', '✅ Deine Wahl ist gemerkt — wir verbinden sie, sobald du den Bot installierst.')
+                  : t('✅ Запомнили твой выбор — подключим при следующем входе.', '✅ Deine Wahl ist gemerkt — wir verbinden sie beim nächsten Start.')}
+            </span>
+          ) : done ? (
             dictChoice === 'decline' && !have ? (
               <span className="ob-lock">{t('⏭ Пропущено — базовый словарь можно подключить позже в ⚙️ Настройках.', '⏭ Übersprungen — das Basis-Wörterbuch kannst du später in ⚙️ Einstellungen verbinden.')}</span>
             ) : (
@@ -453,7 +517,7 @@ function StepBody(props) {
                 </>
               )}
             </div>
-          ) : IS_PUBLIC ? null : (
+          ) : (
             <div className="ob-actions ob-actions-col">
               <button
                 type="button"
@@ -463,14 +527,16 @@ function StepBody(props) {
               >
                 {dictBusy === 'quick' ? t('Подключаю…', 'Verbinde…') : `${t('📚 Быстрый старт', '📚 Schnellstart')}${n ? ` — ~${n} ${t('слов', 'Wörter')}` : ''}`}
               </button>
-              {total > n ? (
+              {/* Guest: the offer endpoint needs an account, so there are no counts — still show
+                  BOTH sizes (unlabelled) so the choice itself isn't lost. */}
+              {total > n || !HAS_ACCOUNT ? (
                 <button
                   type="button"
                   className="ob-confirm ob-alt"
                   onClick={() => onDictAction('accept', true)}
                   disabled={busy}
                 >
-                  {dictBusy === 'full' ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Весь словарь', '🔓 Ganzes Wörterbuch')} — ~${total} ${t('слов', 'Wörter')}`}
+                  {dictBusy === 'full' ? t('Подключаю…', 'Verbinde…') : `${t('🔓 Весь словарь', '🔓 Ganzes Wörterbuch')}${total ? ` — ~${total} ${t('слов', 'Wörter')}` : ''}`}
                 </button>
               ) : null}
               <button
@@ -484,6 +550,15 @@ function StepBody(props) {
             </div>
           )}
           <p className="ob-muted-note">{t('Быстрый старт — меньше слов, проще начать. Весь словарь — сразу весь набор. Здесь — подключаешь, а отключить эти базовые словари (если захочешь только свои слова) можно потом в ⚙️ Настройках.', 'Schnellstart — weniger Wörter, leichter Einstieg. Ganzes Wörterbuch — der volle Satz. Hier verbindest du sie; später kannst du diese Basis-Wörterbücher in ⚙️ Einstellungen wieder abschalten (wenn du nur deine eigenen Wörter willst).')}</p>
+          {!HAS_ACCOUNT ? (
+            <p className="ob-muted-note">
+              {IS_GUEST_TOUR
+                ? t('📌 Бота у тебя ещё нет — выбор мы запомним и применим сразу, как установишь его.',
+                     '📌 Du hast den Bot noch nicht — wir merken uns die Wahl und wenden sie an, sobald du ihn installierst.')
+                : t('📌 Сейчас не получается сохранить на сервере — выбор запомним и применим при следующем входе.',
+                     '📌 Gerade lässt es sich nicht am Server speichern — wir merken uns die Wahl und wenden sie beim nächsten Start an.')}
+            </p>
+          ) : null}
           {stepErr ? <p className="ob-err">{stepErr}</p> : null}
         </div>
       );
@@ -1042,7 +1117,7 @@ function StepBody(props) {
           {t('Вот и весь обзор 🎉 Это был краткий тур по возможностям бота. Закрой его — и продолжай пользоваться приложением.',
              'Das war der Überblick 🎉 Ein kurzer Rundgang durch die Möglichkeiten des Bots. Schließe ihn — und nutze die App weiter.')}
         </p>
-      ) : IS_PUBLIC ? (
+      ) : !HAS_ACCOUNT ? (
         <p className="ob-lead">
           {t('Вот и всё, что умеет бот 🎉 Понравилось? Установи его и начни учить немецкий по-настоящему — каждый день. Жми кнопку ниже 👇',
              'Das war alles, was der Bot kann 🎉 Gefällt es dir? Installiere ihn und lerne Deutsch richtig — jeden Tag. Tippe auf die Taste unten 👇')}
@@ -1150,24 +1225,48 @@ export default function OnboardingWizard() {
     return () => { off = true; };
   }, []);
 
-  // Load state (resume point + tier).
+  // Load state (resume point + tier). A failed status used to silently mean isPro=false, so a
+  // paying Pro user saw «🔒 Только в Pro» on the schedule steps — retry once before believing it.
   useEffect(() => {
     let off = false;
     (async () => {
-      try {
-        const d = await api('/api/webapp/onboarding/status');
-        if (off) return;
+      let d = null;
+      for (let attempt = 0; attempt < 2 && !d; attempt += 1) {
+        try {
+          d = await api('/api/webapp/onboarding/status');
+        } catch (_e) {
+          if (attempt === 0) await new Promise((r) => setTimeout(r, 800));
+        }
+      }
+      if (off) { return; }
+      if (d) {
         setIsPro(!!d.is_pro);
         const resume = d.completed ? 0 : Math.max(0, Math.min(Number(d.current_step) || 0, STEPS.length - 1));
         setIdx(resume);
-      } catch (_e) {
-        /* start from the top if status is unreachable */
-      } finally {
-        if (!off) setLoading(false);
       }
+      /* else: unreachable → start from the top */
+      setLoading(false);
     })();
     return () => { off = true; };
   }, []);
+
+  // Replay what was picked in the guest tour (before the bot existed): the first open WITH an
+  // account applies it for real, then the parked choice is dropped.
+  useEffect(() => {
+    if (loading || !HAS_ACCOUNT) return;
+    const pending = readPendingChoices();
+    if (!pending || !Object.keys(pending).length) return;
+    clearPendingChoices();
+    (async () => {
+      if (pending.dict === 'quick' || pending.dict === 'full') {
+        try { await api('/api/webapp/starter-dictionary/apply', { action: 'accept', full: pending.dict === 'full' }); }
+        catch (_e) { /* the step still offers the buttons */ }
+      }
+      if (typeof pending.battles === 'boolean') {
+        api('/api/webapp/onboarding/battles', { opt_in: pending.battles }).catch(() => {});
+      }
+    })();
+  }, [loading]);
 
   // Persist the resume point when the step changes (fire-and-forget).
   useEffect(() => {
@@ -1179,8 +1278,9 @@ export default function OnboardingWizard() {
 
   const step = STEPS[idx];
   const isLast = idx === STEPS.length - 1;
-  // Public tour: no gating (just click through). Telegram: core steps need confirm.
-  const canNext = IS_PUBLIC || step.kind !== 'core' || !!confirmed[step.id];
+  // Guest tour: no gating (just click through — nothing to save). With an account (Telegram OR
+  // the standalone app): core steps must be confirmed before «Далее».
+  const canNext = !HAS_ACCOUNT || step.kind !== 'core' || !!confirmed[step.id];
 
   // «Далее» unlocks only after the user has scrolled the step to the bottom — so long
   // pages (with an install button / more info below) are actually read to the end.
@@ -1226,11 +1326,18 @@ export default function OnboardingWizard() {
     if (TOUR_IN_PLACE) {
       // Открыто поверх приложения (PWA или планшетный in-place тур) → просто закрываем
       // тур и возвращаемся назад. В Telegram заодно отметим онбординг завершённым.
-      if (!IS_PUBLIC) { try { await api('/api/webapp/onboarding/complete'); } catch (_e) { /* noop */ } }
+      if (HAS_ACCOUNT) { try { await api('/api/webapp/onboarding/complete'); } catch (_e) { /* noop */ } }
       try {
         if (window.history.length > 1) window.history.back();
         else window.location.href = '/';
       } catch (_e) { try { window.location.href = '/'; } catch (_e2) { /* ignore */ } }
+      return;
+    }
+    if (HAS_ACCOUNT && IS_PUBLIC) {
+      // Browser tab of the app (durable token, not an installed icon): the tour is done and
+      // saved — go into the app itself, NOT to the «install the bot» CTA meant for guests.
+      try { await api('/api/webapp/onboarding/complete'); } catch (_e) { /* noop */ }
+      try { window.location.href = '/'; } catch (_e) { /* ignore */ }
       return;
     }
     if (IS_PUBLIC) {
@@ -1496,7 +1603,7 @@ export default function OnboardingWizard() {
   useEffect(() => {
     if (loading || step.id !== 'battles' || selBattle !== null) return;
     setSelBattle('yes');
-    api('/api/webapp/onboarding/battles', { opt_in: true }).catch(() => {});
+    if (HAS_ACCOUNT) api('/api/webapp/onboarding/battles', { opt_in: true }).catch(() => {});
   }, [step.id, loading, selBattle]);
 
   // Intensity/window are [R] (optional, default-accept): pick = optimistic + save.
@@ -1512,7 +1619,8 @@ export default function OnboardingWizard() {
   }, []);
   const pickBattle = useCallback((optIn) => {
     setSelBattle(optIn ? 'yes' : 'no');
-    api('/api/webapp/onboarding/battles', { opt_in: !!optIn }).catch(() => {});
+    if (HAS_ACCOUNT) api('/api/webapp/onboarding/battles', { opt_in: !!optIn }).catch(() => {});
+    else rememberChoice('battles', !!optIn);
     try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
   }, []);
 
@@ -1527,7 +1635,16 @@ export default function OnboardingWizard() {
       try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
       return;
     }
-    setDictBusy(action === 'decline' ? 'decline' : (full ? 'full' : 'quick'));
+    const choice = action === 'decline' ? 'decline' : (full ? 'full' : 'quick');
+    if (!HAS_ACCOUNT) {
+      // Guest tour — nothing to save to yet. Park the pick; the first open with an account applies it.
+      rememberChoice('dict', choice);
+      setConfirmed((c) => ({ ...c, dictionary: true }));
+      setDictChoice(choice);
+      try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
+      return;
+    }
+    setDictBusy(choice);
     setBusy(true);
     try {
       await api('/api/webapp/starter-dictionary/apply', { action, full: !!full });
@@ -1638,7 +1755,7 @@ export default function OnboardingWizard() {
               {done ? t('✅ Готово', '✅ Fertig')
                 : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
                 : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
-                : isLast ? (TOUR_IN_PLACE ? t('Закрыть', 'Schließen') : IS_PUBLIC ? t('🚀 Установить бота', '🚀 Bot installieren') : t('🎯 Закрыть и открыть приложение', '🎯 Schließen und App öffnen'))
+                : isLast ? (TOUR_IN_PLACE ? t('Закрыть', 'Schließen') : !HAS_ACCOUNT ? t('🚀 Установить бота', '🚀 Bot installieren') : IS_PUBLIC ? t('🎯 Открыть приложение', '🎯 App öffnen') : t('🎯 Закрыть и открыть приложение', '🎯 Schließen und App öffnen'))
                 : t('Далее →', 'Weiter →')}
             </button>
           </div>
