@@ -18908,25 +18908,42 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
 def get_quick_dictionary_entries_for_backfill(
     user_id: int | None = None,
     limit: int = 2000,
+    days: int | None = None,
 ) -> list[dict]:
-    """Candidate rows for the translation backfill: de→ru entries whose translation_ru
-    has NO Cyrillic (empty or bare German). Detection is by CONTENT, not origin_process,
-    because the broken synonym/related saves can come from several save paths. Requiring
-    source_lang=de/target_lang=ru keeps ru→de entries (whose translation_ru is the
-    Russian source) safely out of scope."""
+    """Candidate rows for the translation backfill. Detection is by CONTENT, not
+    origin_process, because the broken saves come from several paths:
+
+      1. de→ru entries whose translation_ru has NO Cyrillic (empty or bare German) —
+         the synonym/related chip saves.
+      2. ru→de entries with NO Cyrillic on the Russian side at all — grammar-trainer word
+         taps that posted a German headword with an inverted language pair, so the German
+         got copied into both columns. Legit ru→de rows always carry Cyrillic in
+         word_ru/translation_ru and stay out of scope.
+
+    `days` limits the scan to entries created in the last N days."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             where = (
-                "WHERE LOWER(COALESCE(source_lang,'')) = 'de' "
-                "AND LOWER(COALESCE(target_lang,'')) = 'ru' "
-                "AND (translation_ru IS NULL OR translation_ru = '' "
-                "     OR translation_ru !~ '[А-Яа-яЁё]') "
-                "AND COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL"
+                "WHERE ("
+                "  (LOWER(COALESCE(source_lang,'')) = 'de' "
+                "   AND LOWER(COALESCE(target_lang,'')) = 'ru' "
+                "   AND (translation_ru IS NULL OR translation_ru = '' "
+                "        OR translation_ru !~ '[А-Яа-яЁё]')) "
+                "  OR "
+                "  (LOWER(COALESCE(source_lang,'')) = 'ru' "
+                "   AND LOWER(COALESCE(target_lang,'')) = 'de' "
+                "   AND COALESCE(word_ru,'') !~ '[А-Яа-яЁё]' "
+                "   AND COALESCE(translation_ru,'') !~ '[А-Яа-яЁё]') "
+                ") "
+                "AND COALESCE(NULLIF(word_de,''), NULLIF(translation_de,''), NULLIF(word_ru,'')) IS NOT NULL"
             )
             params: list = []
             if user_id is not None:
                 where += " AND user_id = %s"
                 params.append(int(user_id))
+            if days is not None:
+                where += " AND created_at >= NOW() - (%s || ' days')::interval"
+                params.append(int(days))
             params.append(int(limit))
             cursor.execute(f"""
                 SELECT id, user_id, word_ru, translation_de, word_de, translation_ru,
@@ -18952,6 +18969,44 @@ def get_quick_dictionary_entries_for_backfill(
             "response_json": row[9],
         })
     return items
+
+
+def get_dictionary_entries_for_metainfo_scan(
+    user_id: int | None = None,
+    limit: int = 500,
+    days: int | None = None,
+) -> list[dict]:
+    """Recent single-word entries for the "card has no metainfo" scan (empty detail
+    screen: no examples/grammar/senses). The actual emptiness check runs in Python on
+    response_json — encoding it in SQL would be brittle across the payload variants."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            where = "WHERE COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL"
+            params: list = []
+            if user_id is not None:
+                where += " AND user_id = %s"
+                params.append(int(user_id))
+            if days is not None:
+                where += " AND created_at >= NOW() - (%s || ' days')::interval"
+                params.append(int(days))
+            params.append(int(limit))
+            cursor.execute(f"""
+                SELECT id, user_id, word_ru, translation_de, word_de, translation_ru,
+                       source_lang, target_lang, origin_process, response_json
+                FROM bt_3_webapp_dictionary_queries
+                {where}
+                ORDER BY created_at DESC
+                LIMIT %s;
+            """, params)
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "id": r[0], "user_id": r[1], "word_ru": r[2], "translation_de": r[3],
+            "word_de": r[4], "translation_ru": r[5], "source_lang": r[6],
+            "target_lang": r[7], "origin_process": r[8], "response_json": r[9],
+        }
+        for r in rows
+    ]
 
 
 def get_dictionary_backfill_diagnostics(user_id: int | None = None) -> dict:
@@ -19013,21 +19068,29 @@ def update_dictionary_entry_full_columns(
     translation_de: str | None,
     translation_ru: str | None,
     response_json: dict,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
 ) -> None:
     """Overwrite ALL legacy translation columns + response_json for a single entry.
     Used by the quick-dictionary translation backfill (the regular update helper only
-    touches response_json + translation_de, which is not enough to fix the RU column)."""
+    touches response_json + translation_de, which is not enough to fix the RU column).
+    Pass source_lang/target_lang to also re-file an entry saved with an inverted pair."""
     if not entry_id:
         return
+    pair_sql = ""
+    pair_params: list = []
+    if source_lang and target_lang:
+        pair_sql = ", source_lang = %s, target_lang = %s"
+        pair_params = [str(source_lang).strip().lower(), str(target_lang).strip().lower()]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE bt_3_webapp_dictionary_queries
                 SET word_ru = %s,
                     word_de = %s,
                     translation_de = %s,
                     translation_ru = %s,
-                    response_json = %s
+                    response_json = %s{pair_sql}
                 WHERE id = %s;
             """, (
                 (str(word_ru).strip() or None) if word_ru else None,
@@ -19035,6 +19098,7 @@ def update_dictionary_entry_full_columns(
                 (str(translation_de).strip() or None) if translation_de else None,
                 (str(translation_ru).strip() or None) if translation_ru else None,
                 json.dumps(response_json, ensure_ascii=False),
+                *pair_params,
                 int(entry_id),
             ))
 

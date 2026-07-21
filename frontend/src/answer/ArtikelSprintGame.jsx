@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
+import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
 
 // 2-minute der/die/das speed game. The whole word set is preloaded, so each tap
 // is graded LOCALLY (instant green/red flash + auto-advance, zero round-trip).
@@ -127,11 +128,13 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
     // save runs in the background. Revert only if it genuinely fails.
     setSavedWords((s) => new Set(s).add(key));
     haptic?.('ok');
+    // Canonical lookup→save: the raw save posted only the bare German text, so when the
+    // deck had no Russian gloss the entry stored German on both sides and never got the
+    // card metainfo (no response_json → no server-side enrichment).
     Promise.resolve(
-      api('/api/webapp/dictionary/save', {
-        source_text: key, target_text: String(ru || '').trim(),
-        source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
-        origin_process: 'artikel_sprint_save',
+      saveGermanWordViaLookup({
+        api, word: key, fallbackTranslation: String(ru || '').trim(),
+        origin: 'artikel_sprint_save',
       }),
     ).catch(() => {
       setSavedWords((s) => { const n = new Set(s); n.delete(key); return n; });

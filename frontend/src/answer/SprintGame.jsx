@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
 
 // 60-second "name as many synonyms/antonyms as you can" game. Winner = most
 // correct. The hot path (typing for 60s) makes ZERO server calls: the server
@@ -124,11 +125,11 @@ export default function SprintGame({ id, api, haptic, onClose }) {
     // network save runs in the background. Revert only if it genuinely fails.
     setSaved((s) => new Set(s).add(de));
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
+    // Canonical lookup→save (see saveUtils): a bare source_text/target_text save loses the
+    // Russian when the chip carries none, and never gets the card metainfo.
     Promise.resolve(
-      api('/api/webapp/dictionary/save', {
-        source_text: de, target_text: ru || '',
-        source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
-        origin_process: 'synonym_save',
+      saveGermanWordViaLookup({
+        api, word: de, fallbackTranslation: ru || '', origin: 'synonym_save',
       }),
     ).catch(() => {
       setSaved((s) => { const n = new Set(s); n.delete(de); return n; });

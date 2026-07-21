@@ -53,6 +53,46 @@ export function pickTargetTranslation(targetLang, candidates) {
   return list[0];
 }
 
+// Save a GERMAN word/phrase tapped inside a game or trainer through the SAME canonical
+// pipeline the dictionary overlay uses: first the breakdown lookup (real Russian
+// translation + article + Grundform + examples), then persist THAT card. Posting the
+// German text straight to /save — the old behaviour of the grammar trainers — produced
+// entries with German on both sides (translation == headword) and, because they carried
+// no response_json, the server-side enrichment never ran either, so the card stayed empty.
+// `fallbackTranslation` is the gloss the game already knows (may be empty); it is only
+// used when the lookup returns nothing usable.
+export async function saveGermanWordViaLookup({ api, word, fallbackTranslation = '', origin }) {
+  const text = String(word || '').trim();
+  if (!text) return null;
+  const lookup = await api('/api/webapp/dictionary', { word: text });
+  const item = (lookup && lookup.item) || {};
+  const direction = String(lookup?.direction || '').toLowerCase();
+  const isDeRu = direction !== 'ru-de'; // game words are German → de-ru
+  const targetLang = isDeRu ? 'ru' : 'de';
+  const sourceText = String(
+    (isDeRu ? (item.word_de || item.translation_de) : (item.word_ru || item.translation_ru)) || text,
+  ).trim();
+  // Validate the script so a German string can never land in the Russian slot.
+  const targetText = pickTargetTranslation(targetLang, [
+    isDeRu ? extractRichTranslation(item) : '',
+    isDeRu ? item.translation_ru : item.translation_de,
+    isDeRu ? item.word_ru : item.word_de,
+    fallbackTranslation,
+  ]);
+  await api('/api/webapp/dictionary/save', {
+    source_text: sourceText,
+    target_text: targetText,
+    translation_ru: String(isDeRu ? targetText : (item.translation_ru || '')).trim(),
+    translation_de: String(isDeRu ? (item.translation_de || '') : targetText).trim(),
+    source_lang: isDeRu ? 'de' : 'ru',
+    target_lang: targetLang,
+    direction: direction || 'de-ru',
+    response_json: item,
+    origin_process: origin,
+  });
+  return { sourceText, targetText };
+}
+
 // Build the canonical /api/webapp/dictionary/save payload from a GPT breakdown item.
 // EVERY save source (typed word OR tapped synonym/related chip) goes through this so
 // the entry always lands in the same standard card format (article+Grundform /

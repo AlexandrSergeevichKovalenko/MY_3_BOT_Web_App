@@ -47,6 +47,7 @@ _BOT_BACKEND_SERVER_IMPORT_STARTED_AT = pytime.perf_counter()
 from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
     backfill_quick_dictionary_translations,
+    backfill_dictionary_card_metainfo,
     _build_shortcut_onboarding_code_text,
     _build_shortcut_onboarding_instructions,
     _build_tts_prewarm_quota_control_text,
@@ -10554,9 +10555,12 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
     bare German text without a Russian translation.
 
     Usage:
-      /admin_fix_dict_translations            → dry-run, caller's own entries
-      /admin_fix_dict_translations apply      → write fixes, caller's own entries
-      /admin_fix_dict_translations apply all  → write fixes, ALL users
+      /admin_fix_dict_translations                    → dry-run, caller's own entries
+      /admin_fix_dict_translations apply              → write fixes, caller's own entries
+      /admin_fix_dict_translations apply all          → write fixes, ALL users
+      /admin_fix_dict_translations apply all 30d      → only entries from the last 30 days
+      /admin_fix_dict_translations apply all 30d meta → ALSO re-enrich entries that have a
+                                                        translation but an empty card
     """
     sender = update.effective_user
     message = update.effective_message
@@ -10568,11 +10572,18 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
     args = [a.strip().lower() for a in (context.args or [])]
     apply = "apply" in args
     all_users = "all" in args
+    with_meta = "meta" in args
+    days = None
+    for a in args:
+        if re.fullmatch(r"\d+d", a):
+            days = int(a[:-1])
+            break
     target_user_id = None if all_users else int(sender.id)
     scope = "ВСЕ пользователи" if all_users else "только ваши записи"
     mode = "ПРИМЕНЯЮ изменения" if apply else "пробный прогон (ничего не пишу)"
+    window = f"последние {days} дн." if days else "без ограничения по дате"
     await message.reply_text(
-        f"🔧 Бэкфилл переводов словаря: {mode}, {scope}.\n"
+        f"🔧 Бэкфилл переводов словаря: {mode}, {scope}, {window}.\n"
         "Это может занять время (по одному запросу на слово)…"
     )
     try:
@@ -10581,6 +10592,7 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
             dry_run=not apply,
             max_entries=2000 if all_users else 1000,
             user_id=target_user_id,
+            days=days,
         )
     except Exception as exc:
         logging.exception("admin fix dict translations failed user_id=%s", int(sender.id))
@@ -10616,6 +10628,36 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
     if not apply and report.get("broken", 0):
         text += "\n\nЗапустите с <code>apply</code>, чтобы исправить."
     for part in _split_telegram_text(text):
+        await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+
+    if not with_meta:
+        return
+    # Second pass: entries with a translation but an empty card (no examples/grammar).
+    await message.reply_text("🧩 Второй проход: карточки без метаинформации…")
+    try:
+        meta_report = await asyncio.to_thread(
+            backfill_dictionary_card_metainfo,
+            dry_run=not apply,
+            max_entries=1000 if all_users else 500,
+            user_id=target_user_id,
+            days=days,
+        )
+    except Exception as exc:
+        logging.exception("admin dict metainfo backfill failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Второй проход упал: {exc}")
+        return
+    meta_samples = meta_report.get("samples") or []
+    meta_lines = "\n".join(f"  • #{s.get('id')} {s.get('german')}" for s in meta_samples[:15])
+    meta_text = (
+        f"🧩 <b>Карточки без метаинформации</b> ({'apply' if apply else 'dry-run'})\n\n"
+        f"Просмотрено: <b>{meta_report.get('scanned', 0)}</b>\n"
+        f"Пустых карточек: <b>{meta_report.get('empty_cards', 0)}</b>\n"
+        f"Дозаполнено: <b>{meta_report.get('enriched', 0)}</b>\n"
+        f"Ошибок: {meta_report.get('errors', 0)}"
+    )
+    if meta_lines:
+        meta_text += f"\n\n<b>Примеры:</b>\n{meta_lines}"
+    for part in _split_telegram_text(meta_text):
         await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
 
 

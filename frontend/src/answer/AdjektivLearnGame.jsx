@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import useFitText from './useFitText.js';
 import AskOverlay from './AskOverlay.jsx';
+import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
 
 // Adjektiv Trainer — self-paced learning deck for adjective endings (companion to
 // the Adjektiv Sprint, same look). Each card: a phrase with a blanked ending +
@@ -73,14 +74,19 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
     // flips to ✓ and auto-dismisses, so the user goes straight back to learning.
     if (!wordPop || wordPop.saved) return;
     const word_de = wordPop.save_de;
+    const fallbackRu = wordPop.ru;
     setWordPop((w) => (w ? { ...w, saving: false, saved: true } : w));
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
+    // Canonical lookup→save (same pipeline as the dictionary overlay / Reader): the deck's
+    // own gloss is often empty (noun_ru/adj_ru are optional), and the old raw save posted
+    // the German headword with an INVERTED ru→de pair, so the entry landed with German on
+    // both sides and no card content. Now the breakdown supplies the Russian + metainfo.
     Promise.resolve(
-      api('/api/webapp/dictionary/save', {
-        word_de,
-        translation_ru: wordPop.ru,
-        source_lang: 'ru', target_lang: 'de',
-        origin_process: 'adjektiv_trainer',
+      saveGermanWordViaLookup({
+        api,
+        word: word_de,
+        fallbackTranslation: fallbackRu,
+        origin: 'adjektiv_trainer',
       }),
     ).catch(() => { /* best-effort background save */ });
     // Auto-close shortly after the ✓ shows; guard so we don't close a different

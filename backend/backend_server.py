@@ -327,6 +327,7 @@ from backend.openai_manager import (
 )
 from backend.database import (
     get_quick_dictionary_entries_for_backfill,
+    get_dictionary_entries_for_metainfo_scan,
     get_dictionary_backfill_diagnostics,
     update_dictionary_entry_full_columns,
     is_telegram_user_allowed,
@@ -7993,6 +7994,41 @@ def _save_dictionary_entry_with_inserted_schema_retry(**kwargs) -> tuple[int, bo
     return save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
 
 
+def _flip_inverted_ru_de_dictionary_payload(
+    *,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    target_text: str,
+    word_ru: str,
+    word_de: str,
+    translation_de: str,
+    translation_ru: str,
+) -> tuple[str, str, str, str, str, str, str, str]:
+    """Server-side guard: a ru→de save whose Russian side carries NO Cyrillic is in fact a
+    German headword posted with an inverted language pair (the grammar-trainer word taps
+    did exactly this). Left alone, the ru→de column alignment copies the German into
+    translation_de/word_de and the entry renders German on both sides with no translation.
+    Re-file such a payload as de→ru so the German can only ever land in the German columns.
+    Returns the (possibly unchanged) tuple of pair + texts."""
+    if source_lang != "ru" or target_lang != "de":
+        return source_lang, target_lang, source_text, target_text, word_ru, word_de, translation_de, translation_ru
+    ru_side = [source_text, word_ru, translation_ru]
+    de_side = [target_text, word_de, translation_de]
+    if any(_text_has_cyrillic(v) for v in ru_side):
+        return source_lang, target_lang, source_text, target_text, word_ru, word_de, translation_de, translation_ru
+    german = next((str(v or "").strip() for v in (word_de, target_text, translation_de, source_text) if str(v or "").strip()), "")
+    if not german:
+        return source_lang, target_lang, source_text, target_text, word_ru, word_de, translation_de, translation_ru
+    logging.warning(
+        "Dictionary save: inverted ru→de payload without Cyrillic, re-filed as de→ru: german=%r",
+        german,
+    )
+    # No Russian anywhere (that is the bug) → leave the RU columns empty and let the
+    # background enrichment fill the real translation instead of echoing the German.
+    return "de", "ru", german, "", "", german, "", ""
+
+
 def _align_dictionary_legacy_ru_de_columns(
     *,
     source_lang: str,
@@ -8461,6 +8497,7 @@ def _run_saved_dictionary_entry_enrichment(
     target_lang: str,
     source_text_hint: str,
     target_text_hint: str,
+    force: bool = False,
 ) -> None:
     try:
         entry = get_dictionary_entry_by_id(int(entry_id))
@@ -8474,7 +8511,7 @@ def _run_saved_dictionary_entry_enrichment(
                 response_json = {}
         if not isinstance(response_json, dict):
             response_json = {}
-        if not _dictionary_payload_needs_enrichment(response_json):
+        if not force and not _dictionary_payload_needs_enrichment(response_json):
             return
 
         source_text, target_text = _resolve_entry_texts_for_pair(
@@ -8516,7 +8553,26 @@ def _run_saved_dictionary_entry_enrichment(
             translation_de=str(entry.get("translation_de") or merged_response_json.get("translation_de") or "").strip() or None,
             translation_ru=str(entry.get("translation_ru") or merged_response_json.get("translation_ru") or "").strip() or None,
         )
-        update_webapp_dictionary_entry(int(entry_id), merged_response_json)
+        # A de→ru row whose RU column carries no Cyrillic was saved German-on-both-sides
+        # (bare-text save with no gloss). response_json alone would not repair the list
+        # view, so rewrite the legacy columns from the freshly enriched card as well.
+        russian = _extract_target_translation_from_breakdown(merged_response_json)
+        if (
+            source_lang == "de"
+            and target_lang == "ru"
+            and _text_has_cyrillic(russian)
+            and not _text_has_cyrillic(entry.get("translation_ru"))
+        ):
+            update_dictionary_entry_full_columns(
+                int(entry_id),
+                word_ru=str(merged_response_json.get("word_ru") or russian),
+                word_de=str(merged_response_json.get("word_de") or source_text),
+                translation_de=str(merged_response_json.get("translation_de") or source_text),
+                translation_ru=russian,
+                response_json=merged_response_json,
+            )
+        else:
+            update_webapp_dictionary_entry(int(entry_id), merged_response_json)
         logging.info(
             "Dictionary save enrichment ready: entry_id=%s source_lang=%s target_lang=%s source_text=%r",
             int(entry_id),
@@ -8591,6 +8647,7 @@ def backfill_quick_dictionary_translations(
     dry_run: bool = True,
     max_entries: int = 400,
     user_id: int | None = None,
+    days: int | None = None,
 ) -> dict:
     """Repair quick-dictionary entries (incl. tapped synonym chips) that were stored as
     bare German text without a Russian translation. For each broken de→ru entry, re-run
@@ -8598,6 +8655,7 @@ def backfill_quick_dictionary_translations(
     dry_run=True only scans and reports; pass dry_run=False to actually write."""
     report = {
         "dry_run": bool(dry_run),
+        "days": days,
         "scanned": 0,
         "broken": 0,
         "fixed": 0,
@@ -8612,7 +8670,7 @@ def backfill_quick_dictionary_translations(
     except Exception as exc:
         report["diagnostics"] = {"error": str(exc)}
     try:
-        rows = get_quick_dictionary_entries_for_backfill(user_id=user_id, limit=max_entries)
+        rows = get_quick_dictionary_entries_for_backfill(user_id=user_id, limit=max_entries, days=days)
     except Exception as exc:
         report["errors"] += 1
         report["error_detail"] = str(exc)
@@ -8630,8 +8688,11 @@ def backfill_quick_dictionary_translations(
         if _dictionary_entry_already_has_russian(row):
             report["skipped_has_ru"] += 1
             continue
-        # The German headword the chip/word was saved under.
+        # The German headword the chip/word was saved under. On rows saved with an
+        # inverted ru→de pair the German sits in word_ru, so fall back to it too.
         german = str(row.get("word_de") or row.get("translation_de") or "").strip()
+        if not german and not _text_has_cyrillic(row.get("word_ru")):
+            german = str(row.get("word_ru") or "").strip()
         if not german and isinstance(response_json, dict):
             german = str(response_json.get("word_de") or response_json.get("source_text") or "").strip()
         if not german:
@@ -8667,12 +8728,78 @@ def backfill_quick_dictionary_translations(
                 translation_de=str(prepared.get("translation_de") or german),
                 translation_ru=str(prepared.get("translation_ru") or russian),
                 response_json=prepared,
+                # Rows saved with an inverted pair are re-filed as de→ru, otherwise the
+                # reader would keep interpreting the German column as the source.
+                source_lang="de",
+                target_lang="ru",
             )
             report["fixed"] += 1
         except Exception as exc:
             report["errors"] += 1
             logging.warning(
                 "dictionary translation backfill failed entry_id=%s german=%r error=%s",
+                row.get("id"), german, exc, exc_info=True,
+            )
+    return report
+
+
+def backfill_dictionary_card_metainfo(
+    *,
+    dry_run: bool = True,
+    max_entries: int = 200,
+    user_id: int | None = None,
+    days: int | None = None,
+) -> dict:
+    """Second repair pass: entries that DO have a translation but were stored without the
+    card metainfo (no examples / grammar / senses — the empty detail screen). Those came
+    from save paths that posted bare text with no response_json, so the save-time
+    enrichment gate never fired. Re-runs the SAME enrichment the canonical save uses."""
+    report = {
+        "dry_run": bool(dry_run), "days": days,
+        "scanned": 0, "empty_cards": 0, "enriched": 0, "errors": 0, "samples": [],
+    }
+    try:
+        rows = get_dictionary_entries_for_metainfo_scan(user_id=user_id, limit=max_entries, days=days)
+    except Exception as exc:
+        report["errors"] += 1
+        report["error_detail"] = str(exc)
+        return report
+
+    for row in rows:
+        report["scanned"] += 1
+        response_json = row.get("response_json")
+        if isinstance(response_json, str):
+            try:
+                response_json = json.loads(response_json)
+            except Exception:
+                response_json = {}
+        if not isinstance(response_json, dict):
+            response_json = {}
+        source_lang = str(row.get("source_lang") or "de").strip().lower() or "de"
+        target_lang = str(row.get("target_lang") or "ru").strip().lower() or "ru"
+        german = str(row.get("word_de") or row.get("translation_de") or "").strip()
+        if not _dictionary_payload_needs_enrichment(response_json):
+            continue
+        if not _is_single_word_dictionary_entry(german, "de"):
+            continue
+        report["empty_cards"] += 1
+        if len(report["samples"]) < 25:
+            report["samples"].append({"id": row.get("id"), "german": german})
+        if dry_run:
+            continue
+        try:
+            _run_saved_dictionary_entry_enrichment(
+                entry_id=int(row.get("id")),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                source_text_hint=german,
+                target_text_hint=str(row.get("translation_ru") or ""),
+            )
+            report["enriched"] += 1
+        except Exception as exc:
+            report["errors"] += 1
+            logging.warning(
+                "dictionary metainfo backfill failed entry_id=%s german=%r error=%s",
                 row.get("id"), german, exc, exc_info=True,
             )
     return report
@@ -8686,12 +8813,13 @@ def _start_saved_dictionary_entry_enrichment(
     target_lang: str,
     source_text_hint: str,
     target_text_hint: str,
+    force: bool = False,
 ) -> None:
     safe_entry_id = int(entry_id or 0)
     if safe_entry_id <= 0:
         return
     payload = response_json if isinstance(response_json, dict) else {}
-    if not _dictionary_payload_needs_enrichment(payload):
+    if not force and not _dictionary_payload_needs_enrichment(payload):
         return
     with _DICTIONARY_SAVE_ENRICHMENT_LOCK:
         if safe_entry_id in _DICTIONARY_SAVE_ENRICHMENT_INFLIGHT:
@@ -8705,6 +8833,7 @@ def _start_saved_dictionary_entry_enrichment(
             "target_lang": target_lang,
             "source_text_hint": source_text_hint,
             "target_text_hint": target_text_hint,
+            "force": bool(force),
         },
         daemon=True,
         name=f"dictionary-save-enrich-{safe_entry_id}",
@@ -42026,6 +42155,20 @@ def save_webapp_dictionary_entry():
         response_json=response_json if isinstance(response_json, dict) else None,
     )
 
+    (
+        source_lang, target_lang, source_text, target_text,
+        word_ru, word_de, translation_de, translation_ru,
+    ) = _flip_inverted_ru_de_dictionary_payload(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        target_text=target_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_de=translation_de,
+        translation_ru=translation_ru,
+    )
+
     if source_lang == "ru" and target_lang == "de":
         if generic_translation and not target_text:
             target_text = generic_translation
@@ -42193,6 +42336,15 @@ def save_webapp_dictionary_entry():
                     "origin_process": origin_process,
                 },
             )
+        # A de→ru entry that arrived without a real Russian gloss (bare-text saves from the
+        # games: target_text empty or just echoing the German) must be enriched even when
+        # the payload gate says otherwise — otherwise it stays German-on-both-sides forever.
+        missing_russian = (
+            source_lang == "de"
+            and target_lang == "ru"
+            and not _text_has_cyrillic(resolved_translation_ru)
+            and not _text_has_cyrillic(resolved_word_ru)
+        )
         _start_saved_dictionary_entry_enrichment(
             entry_id=int(entry_id or 0),
             response_json=response_json,
@@ -42200,6 +42352,7 @@ def save_webapp_dictionary_entry():
             target_lang=target_lang,
             source_text_hint=source_text,
             target_text_hint=target_text,
+            force=missing_russian,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
