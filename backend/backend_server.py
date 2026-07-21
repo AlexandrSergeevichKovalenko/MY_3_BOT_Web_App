@@ -6726,6 +6726,69 @@ def _store_dictionary_item_in_pool(
         logging.debug("dictionary pool upsert skipped: %s", exc)
 
 
+def _store_quick_translate_in_pool(
+    *, text: str, result: dict | None, source_lang: str | None, target_lang: str | None,
+) -> None:
+    """Положить результат быстрого перевода в общий пул.
+
+    Осознанно кладём ТОНКУЮ запись (слово + перевод + артикль, без разбора): она делает
+    слово находимым для всех, а полноту добирает обогащение, которое по правилу
+    «побеждает более полная карточка» просто перезапишет её. Единственное, чего нельзя, —
+    затереть тонким уже существующий разбор; за это отвечает тот же upsert."""
+    if not isinstance(result, dict):
+        return
+    translation = str(result.get("translation") or "").strip()
+    source = str(text or "").strip()
+    resolved_source_lang = str(
+        source_lang or result.get("detected_source_lang") or ""
+    ).strip().lower()
+    resolved_target_lang = str(target_lang or "").strip().lower()
+    if not source or not translation or not resolved_source_lang or not resolved_target_lang:
+        return
+    if resolved_source_lang == resolved_target_lang:
+        return
+    try:
+        payload = {
+            "source_lang": resolved_source_lang,
+            "target_lang": resolved_target_lang,
+            "source_text": source,
+            "target_text": translation,
+            "language_pair": {
+                "code": f"{resolved_source_lang}-{resolved_target_lang}",
+                "source_lang": resolved_source_lang,
+                "target_lang": resolved_target_lang,
+            },
+            "entry_kind": _detect_dictionary_entry_kind(
+                source_text=source, target_text=translation,
+                source_lang=resolved_source_lang, target_lang=resolved_target_lang,
+            ),
+        }
+        article = str(result.get("article") or "").strip()
+        if article:
+            payload["article"] = article
+        if resolved_source_lang == "de":
+            payload["word_de"], payload["translation_de"] = source, source
+        if resolved_target_lang == "ru":
+            payload["word_ru"], payload["translation_ru"] = translation, translation
+        if resolved_source_lang == "ru":
+            payload["word_ru"], payload["translation_ru"] = source, source
+        if resolved_target_lang == "de":
+            payload["word_de"], payload["translation_de"] = translation, translation
+        upsert_dictionary_pool_entry(
+            source_lang=resolved_source_lang,
+            target_lang=resolved_target_lang,
+            source_text=source,
+            target_text=translation,
+            word_ru=payload.get("word_ru"),
+            translation_de=payload.get("translation_de"),
+            word_de=payload.get("word_de"),
+            translation_ru=payload.get("translation_ru"),
+            response_json=payload,
+        )
+    except Exception as exc:
+        logging.debug("quick translate → pool skipped: %s", exc)
+
+
 def _load_reverse_pool_item(*, word: str, source_lang: str, target_lang: str) -> dict | None:
     """Обратное сопоставление: слово, известное нам как ЦЕЛЬ перевода в противоположном
     направлении. Карточка собирается разворотом (см. dictionary_pool_reverse) — она почти
@@ -34814,6 +34877,13 @@ def translate_quick():
                     metadata={"cached": False, "price_sku": billing_sku},
                 )
             _set_cached_quick_translate(cache_key, result)
+            # В ОБЩИЙ ПУЛ: быстрый перевод — самый частый вход слова к нам. Пара
+            # «слово ↔ перевод» без разбора всё равно ценна: следующий пользователь
+            # получит её от нас, а разбор дозакажется отдельно. Своим кешем этот путь
+            # раньше ни с кем не делился.
+            _store_quick_translate_in_pool(
+                text=text, result=result, source_lang=source_lang, target_lang=target_lang,
+            )
             # Background: fill a missing noun article (der/die/das) via one LLM call and
             # patch the cache, so the next identical lookup is complete — off hot path.
             _schedule_quick_translate_article_fill(
