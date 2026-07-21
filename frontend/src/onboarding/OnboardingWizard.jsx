@@ -756,6 +756,11 @@ function StepBody(props) {
                  ' Sein Symbol kannst du auf den Startbildschirm legen und wie eine normale Übersetzer-App öffnen, wenn du ein Wort nachschlagen oder einen Satz übersetzen willst. Nur mit viel mehr Infos: Übersetzung, Artikel, Synonyme, Antonyme, Beispiele und häufige Wortverbindungen. Und mit einem Knopf speicherst du all das (nicht nur das Wort, auch Wortverbindungen und Synonyme) in dein Wörterbuch — zum späteren Lernen. ')}
               <i>{t('(как поставить иконку — покажем отдельно)', '(wie man das Symbol anlegt — zeigen wir separat)')}</i>
             </li>
+            <li>
+              <b>{t('🎮 Участвуй в интерактивах', '🎮 Mach bei den Interaktiven mit')}</b>
+              {t(' — играя в игры и проходя задания, ты прямо оттуда одним нажатием сохраняешь понравившееся слово или словосочетание в свой личный словарик, чтобы выучить его позже.',
+                 ' — beim Spielen und beim Lösen der Aufgaben speicherst du direkt von dort mit einem Tippen ein Wort oder eine Wortverbindung in dein persönliches Wörterbuch, um es später zu lernen.')}
+            </li>
           </ul>
           <div className="ob-howbox">
             <p className="ob-howbox-title">{t('📌 Как вынести иконку переводчика на экран (iPhone)', '📌 Wie du das Übersetzer-Symbol auf den Bildschirm legst (iPhone)')}</p>
@@ -773,6 +778,14 @@ function StepBody(props) {
             )}
             <MediaTile src="https://pub-6ebcbf6d9aec43d488d3f6a3ba222c14.r2.dev/shortcuts/%D0%98%D0%BA%D0%BE%D0%BD%D0%BA%D0%B0%20%D1%81%D0%BB%D0%BE%D0%B2%D0%B0%D1%80%D1%8C%20%D0%BD%D0%B0%20%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9%20%D1%81%D1%82%D0%BE%D0%BB/translator_icon.mp4" type="video" caption={t('🎥 Как вынести иконку на экран', '🎥 Wie man das Symbol anlegt')} />
           </div>
+          <p className="ob-lead">
+            {t('Все интерактивы и вся твоя деятельность в приложении синхронизированы: ',
+               'Alle Interaktiven und deine gesamte Aktivität in der App sind synchronisiert: ')}
+            <b>{t('одним нажатием ты всегда отправляешь слово или словосочетание в словарь',
+                  'mit einem Tippen schickst du jederzeit ein Wort oder eine Wortverbindung ins Wörterbuch')}</b>
+            {t(' — чтобы потом выучить его в режиме интервального повторения.',
+               ' — um es später im Modus der spaced repetition zu lernen.')}
+          </p>
           <p className="ob-lead ob-muted-note">
             {t('Всё, что читаешь и сохраняешь, само копится в твоём словаре — заходишь и учишь, когда захочешь.',
                'Alles, was du liest und speicherst, sammelt sich von selbst in deinem Wörterbuch — du gehst rein und lernst, wann du willst.')}
@@ -972,6 +985,19 @@ function StepBody(props) {
             <span><b style={{ color: '#1b7a53' }}>∞</b>{t('без ограничений', 'unbegrenzt')}</span>
           </div>
 
+          <div className="ob-info is-articles">
+            <div className="ic">📰</div>
+            <div>
+              <h4>{t('Статьи из интернета — кликабельные', 'Web-Artikel — antippbar')}</h4>
+              <p>{t('Свежие статьи из немецких изданий (DW, Tagesschau…) открываются прямо в Читалке. Тут ',
+                    'Frische Artikel deutscher Medien (DW, Tagesschau…) öffnen sich direkt im Reader. Hier ist ')}
+                <b>{t('каждое слово и предложение кликабельно', 'jedes Wort und jeder Satz antippbar')}</b>{' '}
+                {t('— нажми, чтобы увидеть перевод, и сразу сохрани нужные слова в свой словарь для изучения. ',
+                   '— tippe drauf für die Übersetzung und speichere passende Wörter direkt in dein Wörterbuch zum Lernen. ')}
+                <b>{t('На Free — 1 статья в день, на Pro — без ограничений.', 'Free — 1 Artikel pro Tag, Pro — unbegrenzt.')}</b></p>
+            </div>
+          </div>
+
           <div className="ob-info is-trial">
             <div className="ic">🎁</div>
             <div>
@@ -990,19 +1016,6 @@ function StepBody(props) {
                 <b>{t('Классика озвучена бесплатно для всех.', 'Klassiker sind für alle gratis vertont.')}</b>{' '}
                 {t('Озвучить книгу можно прямо в Читалке: открываешь книгу → кнопка ▶.',
                    'Ein Buch vertonst du direkt im Reader: Buch öffnen → ▶-Knopf.')}</p>
-            </div>
-          </div>
-
-          <div className="ob-info is-articles">
-            <div className="ic">📰</div>
-            <div>
-              <h4>{t('Статьи из интернета — кликабельные', 'Web-Artikel — antippbar')}</h4>
-              <p>{t('Свежие статьи из немецких изданий (DW, Tagesschau…) открываются прямо в Читалке. Тут ',
-                    'Frische Artikel deutscher Medien (DW, Tagesschau…) öffnen sich direkt im Reader. Hier ist ')}
-                <b>{t('каждое слово и предложение кликабельно', 'jedes Wort und jeder Satz antippbar')}</b>{' '}
-                {t('— нажми, чтобы увидеть перевод, и сразу сохрани нужные слова в свой словарь для изучения. ',
-                   '— tippe drauf für die Übersetzung und speichere passende Wörter direkt in dein Wörterbuch zum Lernen. ')}
-                <b>{t('На Free — 1 статья в день, на Pro — без ограничений.', 'Free — 1 Artikel pro Tag, Pro — unbegrenzt.')}</b></p>
             </div>
           </div>
 
