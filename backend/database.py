@@ -763,6 +763,19 @@ def _normalize_dictionary_text_key(value: str | None) -> str:
     return compact.casefold()
 
 
+_GERMAN_LEADING_ARTICLE_RE = re.compile(r"^(?:der|die|das|ein|eine|einen|einem|einer|eines)\s+")
+
+
+def _normalize_dictionary_headword_key(value: str | None) -> str:
+    """Ключ БЕЗ артикля: «der Durchfall» и «Durchfall» — одно и то же слово, и запрос
+    любого из вариантов обязан находить запись.
+
+    ВАЖНО: это ключ ПОИСКА, а не ключ уникальности. Сливать записи по нему нельзя —
+    «der Kiefer» (челюсть) и «die Kiefer» (сосна) дают один заголовок, но это разные
+    слова (замер 2026-07-21: из 733 «дублей» одинаковый перевод лишь у 3 групп)."""
+    return _GERMAN_LEADING_ARTICLE_RE.sub("", _normalize_dictionary_text_key(value)).strip()
+
+
 def _resolve_dictionary_source_target_texts(
     *,
     source_lang: str,
@@ -3303,6 +3316,8 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             target_text,
             source_text_norm,
             target_text_norm,
+            source_headword_norm,
+            target_headword_norm,
             word_ru,
             translation_de,
             word_de,
@@ -3311,9 +3326,11 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             created_at,
             updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
         ON CONFLICT (source_lang, target_lang, source_text_norm, target_text_norm)
         DO UPDATE SET
+            source_headword_norm = COALESCE(bt_3_dictionary_entries.source_headword_norm, EXCLUDED.source_headword_norm),
+            target_headword_norm = COALESCE(bt_3_dictionary_entries.target_headword_norm, EXCLUDED.target_headword_norm),
             source_text = COALESCE(NULLIF(bt_3_dictionary_entries.source_text, ''), EXCLUDED.source_text),
             target_text = COALESCE(NULLIF(bt_3_dictionary_entries.target_text, ''), EXCLUDED.target_text),
             word_ru = COALESCE(NULLIF(bt_3_dictionary_entries.word_ru, ''), EXCLUDED.word_ru),
@@ -3341,6 +3358,8 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             resolved_target_text,
             normalized_source_text,
             normalized_target_text,
+            _normalize_dictionary_headword_key(resolved_source_text) or None,
+            _normalize_dictionary_headword_key(resolved_target_text) or None,
             str(word_ru or "").strip() or None,
             str(translation_de or "").strip() or None,
             str(word_de or "").strip() or None,
@@ -6471,6 +6490,24 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_entries_pair_target_text
                 ON bt_3_dictionary_entries (source_lang, target_lang, target_text_norm);
+            """)
+            # Ключи БЕЗ артикля — чтобы «Durchfall» находил «der Durchfall». Только для
+            # поиска: уникальность по-прежнему по полным текстам (der Kiefer ≠ die Kiefer).
+            cursor.execute("""
+                ALTER TABLE bt_3_dictionary_entries
+                ADD COLUMN IF NOT EXISTS source_headword_norm TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_dictionary_entries
+                ADD COLUMN IF NOT EXISTS target_headword_norm TEXT;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_entries_source_headword
+                ON bt_3_dictionary_entries (source_lang, target_lang, source_headword_norm);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_entries_target_headword
+                ON bt_3_dictionary_entries (source_lang, target_lang, target_headword_norm);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_canonical
@@ -19111,6 +19148,35 @@ def get_dictionary_pool_report_stats(*, window_start) -> dict:
     return stats
 
 
+def backfill_dictionary_pool_headwords(limit: int = 20000) -> int:
+    """Проставить ключи без артикля старым строкам пула. Чистый SQL, без LLM.
+    Идемпотентно: трогает только строки, где ключа ещё нет."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH candidates AS (
+                    SELECT id FROM bt_3_dictionary_entries
+                    WHERE source_headword_norm IS NULL OR target_headword_norm IS NULL
+                    LIMIT %s
+                )
+                UPDATE bt_3_dictionary_entries e
+                SET source_headword_norm = regexp_replace(
+                        e.source_text_norm, '^(der|die|das|ein|eine|einen|einem|einer|eines)\\s+', ''),
+                    target_headword_norm = regexp_replace(
+                        e.target_text_norm, '^(der|die|das|ein|eine|einen|einem|einer|eines)\\s+', '')
+                FROM candidates c
+                WHERE e.id = c.id;
+                """,
+                (int(limit),),
+            )
+            updated = cursor.rowcount or 0
+        conn.commit()
+    if updated:
+        logging.info("dictionary pool headword backfill: updated=%s", updated)
+    return int(updated)
+
+
 def get_pool_dictionary_entry(
     *,
     source_lang: str,
@@ -19128,6 +19194,7 @@ def get_pool_dictionary_entry(
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
     normalized_source_text = _normalize_dictionary_text_key(source_text)
+    normalized_source_headword = _normalize_dictionary_headword_key(source_text) or normalized_source_text
     if not normalized_source_lang or not normalized_target_lang or not normalized_source_text:
         return None
     with get_db_connection_context() as conn:
@@ -19137,14 +19204,22 @@ def get_pool_dictionary_entry(
                 SELECT id, source_text, target_text, word_ru, translation_de,
                        word_de, translation_ru, response_json, updated_at
                 FROM bt_3_dictionary_entries
-                WHERE source_lang = %s AND target_lang = %s AND source_text_norm = %s
-                ORDER BY (
-                    CASE WHEN response_json IS NOT NULL
-                          AND {DICTIONARY_POOL_RICH_SQL_STORED} THEN 1 ELSE 0 END
-                ) DESC, updated_at DESC
+                WHERE source_lang = %s AND target_lang = %s
+                  AND (source_text_norm = %s OR source_headword_norm = %s)
+                ORDER BY
+                    -- точное совпадение важнее совпадения без артикля: «der Kiefer» и
+                    -- «die Kiefer» — разные слова, и запрос с артиклем должен получить своё
+                    (CASE WHEN source_text_norm = %s THEN 1 ELSE 0 END) DESC,
+                    (CASE WHEN response_json IS NOT NULL
+                           AND {DICTIONARY_POOL_RICH_SQL_STORED} THEN 1 ELSE 0 END) DESC,
+                    updated_at DESC
                 LIMIT 1;
                 """,
-                (normalized_source_lang, normalized_target_lang, normalized_source_text),
+                (
+                    normalized_source_lang, normalized_target_lang,
+                    normalized_source_text, normalized_source_headword,
+                    normalized_source_text,
+                ),
             )
             row = cursor.fetchone()
     if not row:
@@ -19177,6 +19252,7 @@ def get_pool_dictionary_entry_reverse(
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
     normalized_source_text = _normalize_dictionary_text_key(source_text)
+    normalized_source_headword = _normalize_dictionary_headword_key(source_text) or normalized_source_text
     if not normalized_source_lang or not normalized_target_lang or not normalized_source_text:
         return None
     with get_db_connection_context() as conn:
@@ -19186,14 +19262,20 @@ def get_pool_dictionary_entry_reverse(
                 SELECT id, source_lang, target_lang, source_text, target_text,
                        word_ru, translation_de, word_de, translation_ru, response_json
                 FROM bt_3_dictionary_entries
-                WHERE source_lang = %s AND target_lang = %s AND target_text_norm = %s
-                ORDER BY (
-                    CASE WHEN response_json IS NOT NULL
-                          AND {DICTIONARY_POOL_RICH_SQL_STORED} THEN 1 ELSE 0 END
-                ) DESC, updated_at DESC
+                WHERE source_lang = %s AND target_lang = %s
+                  AND (target_text_norm = %s OR target_headword_norm = %s)
+                ORDER BY
+                    (CASE WHEN target_text_norm = %s THEN 1 ELSE 0 END) DESC,
+                    (CASE WHEN response_json IS NOT NULL
+                           AND {DICTIONARY_POOL_RICH_SQL_STORED} THEN 1 ELSE 0 END) DESC,
+                    updated_at DESC
                 LIMIT 1;
                 """,
-                (normalized_target_lang, normalized_source_lang, normalized_source_text),
+                (
+                    normalized_target_lang, normalized_source_lang,
+                    normalized_source_text, normalized_source_headword,
+                    normalized_source_text,
+                ),
             )
             row = cursor.fetchone()
     if not row:
