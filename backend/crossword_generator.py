@@ -148,6 +148,11 @@ def _validate_word_entry(entry: dict) -> Optional[str]:
 
 _MAX_GRID = 25
 
+# Puzzle shape floor: every shipped crossword has at least 3 blanks, which needs
+# at least 4 placed words (so some letters stay visible as anchors).
+_MIN_HIDDEN = 3
+_MIN_PLACED = 4
+
 
 def _can_place(grid: dict, word: str, row: int, col: int, direction: str) -> bool:
     n = len(word)
@@ -412,26 +417,23 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
 
     # 3. Place words in grid
     raw_grid, placed = _place_words(valid_words)
-    if len(placed) < 3:
+    if len(placed) < _MIN_PLACED:
         raise RuntimeError(f"Only {len(placed)} words placed — crossword too sparse")
 
     # 4. Normalize and number words
     grid_2d, words_numbered = _normalize_and_number(raw_grid, placed)
 
     # 5. Select hidden words — aim for 4 mutually-intersecting words (each crossing
-    #    the chain so solving one reveals letters of the next), falling back to
-    #    3 / 2 / 1 only on sparser grids.
-    if len(words_numbered) >= 6:
-        hidden_count = 4
-    elif len(words_numbered) >= 5:
-        hidden_count = 3
-    elif len(words_numbered) >= 4:
-        hidden_count = 2
-    else:
-        hidden_count = 1
+    #    the chain so solving one reveals letters of the next). _MIN_HIDDEN is a
+    #    hard floor: a puzzle with fewer blanks is rejected, never shipped.
+    hidden_count = 4 if len(words_numbered) >= 6 else _MIN_HIDDEN
     words_final = _select_hidden_words(words_numbered, hidden_count)
 
     hidden_count_actual = sum(1 for w in words_final if w.get("hidden"))
+    if hidden_count_actual < _MIN_HIDDEN:
+        raise RuntimeError(
+            f"Only {hidden_count_actual} hidden words (need {_MIN_HIDDEN}) — puzzle rejected"
+        )
     logging.info(
         "crossword_generator: placed=%d hidden=%d grid=%dx%d topic=%r",
         len(words_final), hidden_count_actual,
@@ -463,12 +465,23 @@ def prepare_crossword_pool(
     force_fresh=True retires all existing entries first, so the whole pool is
     regenerated with the current puzzle format (used after format changes).
     """
-    from backend.database import count_crossword_bank_entries, retire_all_crossword_bank_entries
+    from backend.database import (
+        count_crossword_bank_entries,
+        retire_all_crossword_bank_entries,
+        retire_undersized_crossword_bank_entries,
+    )
 
     stats = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0, "retired": 0}
     if force_fresh:
         stats["retired"] = retire_all_crossword_bank_entries()
         logging.info("crossword_pool: force_fresh retired=%d", stats["retired"])
+    else:
+        # Drop legacy puzzles that predate the 3-blank format before topping up,
+        # so the refill actually replaces them instead of sitting behind them.
+        undersized = retire_undersized_crossword_bank_entries(_MIN_HIDDEN)
+        stats["retired"] += undersized
+        if undersized:
+            logging.info("crossword_pool: retired undersized=%d", undersized)
     existing = count_crossword_bank_entries()
     needed = max(0, target_ready - existing)
 
