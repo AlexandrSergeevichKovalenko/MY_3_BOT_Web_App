@@ -7159,6 +7159,25 @@ def _mark_tap_on_image(image_bytes: bytes, x: float, y: float) -> bytes:
     return out.getvalue()
 
 
+def draw_pin_bbox_preview(image_bytes: bytes, bbox) -> bytes:
+    """The picture with the stored answer region framed — what the admin judges before a
+    pin task is released. The frame is the ONLY thing that decides right/wrong, so it must
+    be shown literally, not described. Returns PNG bytes."""
+    import io
+    from PIL import Image, ImageDraw
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    w, h = img.size
+    x0, y0, bw, bh = (float(v) for v in bbox)
+    left, top = int(x0 * w), int(y0 * h)
+    right, bottom = int(min(1.0, x0 + bw) * w), int(min(1.0, y0 + bh) * h)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([left, top, right, bottom], outline=(255, 255, 255), width=7)
+    draw.rectangle([left, top, right, bottom], outline=(34, 197, 94), width=4)
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
 def run_vision_point_check(image_bytes: bytes, target_label: str, x: float, y: float,
                            *, mime: str = "image/png") -> bool:
     """Second-chance grading for a pin task: did the learner's tap land ON the target?

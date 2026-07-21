@@ -32223,6 +32223,106 @@ async def _alert_admin_interactive(context: CallbackContext, text: str, *, throt
         logging.warning("interactive alert failed", exc_info=True)
 
 
+# Formats that may NOT reach a learner before an admin approves them. Only «Finde im
+# Bild»: its verdict rests on a vision-guessed box, and a wrong box fails honest answers
+# silently. Every other format is text the generator's own verifiers can check.
+_AUFGABE_REVIEW_FORMATS = {"pin"}
+
+
+async def _send_aufgabe_review_card(aufgabe_id: str, fmt: str, level: str, payload: dict) -> None:
+    """DM every admin the freshly generated task with its answer region drawn on the
+    picture + Approve/Reject buttons. Best-effort: a failure here leaves the item
+    'pending' (unservable), which is the safe side."""
+    try:
+        from backend.database import get_admin_telegram_ids
+        from backend.openai_manager import draw_pin_bbox_preview
+        from backend.r2_storage import r2_get_bytes
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+        if not admin_ids or application is None:
+            return
+        key = str(payload.get("image_object_key") or "")
+        bbox = payload.get("bbox")
+        img = await asyncio.to_thread(r2_get_bytes, key) if key else None
+        preview = None
+        if img and isinstance(bbox, list) and len(bbox) == 4:
+            preview = await asyncio.to_thread(draw_pin_bbox_preview, img, bbox)
+        target = str(payload.get("target_label") or "")
+        caption = (
+            f"🔎 <b>Проверка задания «Finde im Bild»</b> · {html.escape(level)}\n\n"
+            f"Загаданный предмет: <b>{html.escape(target)}</b>\n"
+            f"Зелёная рамка = зона, которую засчитает ответ.\n\n"
+            f"<i>{html.escape(str(payload.get('erklaerung') or ''))[:300]}</i>\n\n"
+            f"Одобришь — задание пойдёт людям. Забракуешь — снимается, "
+            f"и я сразу сгенерирую замену на проверку."
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Одобрить", callback_data=f"aurev:ok:{aufgabe_id}"),
+            InlineKeyboardButton("🔁 Забраковать", callback_data=f"aurev:no:{aufgabe_id}"),
+        ]])
+        for admin_id in admin_ids:
+            try:
+                if preview:
+                    await application.bot.send_photo(
+                        chat_id=admin_id, photo=io.BytesIO(preview), caption=caption,
+                        parse_mode="HTML", reply_markup=kb,
+                    )
+                else:
+                    await application.bot.send_message(
+                        chat_id=admin_id,
+                        text=caption + "\n\n⚠️ Картинку или рамку показать не удалось.",
+                        parse_mode="HTML", reply_markup=kb,
+                    )
+            except Exception:
+                logging.warning("aufgabe review card: DM failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("aufgabe review card failed id=%s", aufgabe_id, exc_info=True)
+
+
+async def aufgabe_review_callback(update: Update, context: CallbackContext) -> None:
+    """Admin verdict on a pending task: approve → released to learners; reject → retired
+    and a replacement is generated straight away (the pool counts only approved items, so
+    the top-up sees the gap)."""
+    query = update.callback_query
+    if not query:
+        return
+    user_id = getattr(getattr(query, "from_user", None), "id", None)
+    if not _can_use_image_quiz_test_commands(user_id):
+        await query.answer("Allowed users only.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")
+    if len(parts) != 3:
+        await query.answer()
+        return
+    _, verdict, aufgabe_id = parts
+    from backend.database import set_aufgabe_review_status
+    if verdict == "ok":
+        await asyncio.to_thread(set_aufgabe_review_status, aufgabe_id, "approved")
+        await query.answer("Одобрено")
+        try:
+            await query.edit_message_caption(
+                caption="✅ <b>Одобрено</b> — задание в ротации.", parse_mode="HTML")
+        except Exception:
+            pass
+        return
+    await asyncio.to_thread(set_aufgabe_review_status, aufgabe_id, "rejected")
+    await query.answer("Забраковано, генерирую замену")
+    try:
+        await query.edit_message_caption(
+            caption="🔁 <b>Забраковано</b> — снято. Генерирую замену…", parse_mode="HTML")
+    except Exception:
+        pass
+    try:
+        made = await _aufgabe_topup_format("pin", _AUFGABE_LEVEL.get("pin", "B2"), 1)
+        if not made:
+            await application.bot.send_message(
+                chat_id=int(user_id),
+                text="⚠️ Замену сгенерировать не удалось (LLM/DALL·E/vision). "
+                     "Попробуй /admin_aufgabe_pool.",
+            )
+    except Exception:
+        logging.warning("aufgabe review: regeneration failed", exc_info=True)
+
+
 async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
     """Generate up to `want` ready items of ONE format into the pool. All heavy
     work (LLM + TTS/DALL-E/vision) is here, off the user's critical path; bad
@@ -32326,9 +32426,17 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
             except Exception:
                 logging.warning("aufgabe_pool: 'error' verifier failed, skipping item", exc_info=True)
                 continue
+        # «Finde im Bild» ships only after a human looks at it: its verdict rests on a
+        # vision-guessed box that has been wrong on real items, and a wrong box fails an
+        # honest answer. Created as 'pending' (invisible to pick_next_aufgabe) and sent
+        # to the admin with the box drawn on the picture.
+        pending = fmt in _AUFGABE_REVIEW_FORMATS
         await asyncio.to_thread(
             create_aufgabe, aufgabe_id=aufgabe_id, format=fmt, level=level, payload=payload,
+            review_status=("pending" if pending else "approved"),
         )
+        if pending:
+            await _send_aufgabe_review_card(aufgabe_id, fmt, level, payload)
         made += 1
     return made
 
@@ -36216,6 +36324,55 @@ async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -
         await message.reply_text(f"❌ manual aufgabe pool refill failed: {exc}")
 
 
+async def admin_pin_review_command(update: Update, context: CallbackContext) -> None:
+    """Send the acceptance cards for «Finde im Bild». /admin_pin_review [all]
+
+    No arg — re-sends the cards for items still awaiting a verdict (e.g. the DM was
+    lost). `all` — puts EVERY live pin item back into review, including ones already in
+    rotation: they were generated before the gate existed and nobody has ever looked at
+    their answer region. Pending items are unservable, so this pauses the format until
+    you work through them."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.database import (
+        get_db_connection_context, list_pin_items_for_audit, set_aufgabe_review_status,
+    )
+    want_all = any(str(a).strip().lower() == "all" for a in (context.args or []))
+    if want_all:
+        items = await asyncio.to_thread(list_pin_items_for_audit)
+        for it in items:
+            await asyncio.to_thread(set_aufgabe_review_status, it["aufgabe_id"], "pending")
+
+    def _pending_rows() -> list:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT aufgabe_id, level, payload FROM bt_3_aufgabe_bank "
+                    "WHERE format='pin' AND retired=FALSE AND review_status='pending' "
+                    "ORDER BY created_at"
+                )
+                return cursor.fetchall() or []
+
+    rows = await asyncio.to_thread(_pending_rows)
+    if not rows:
+        await message.reply_text("Заданий на проверке нет.")
+        return
+    await message.reply_text(
+        f"📬 Отправляю на проверку: {len(rows)}. Пока они не одобрены, «Finde im Bild» "
+        f"людям не уходит."
+    )
+    for aufgabe_id, level, payload in rows:
+        await _send_aufgabe_review_card(
+            str(aufgabe_id), "pin", str(level or "B2"),
+            payload if isinstance(payload, dict) else {},
+        )
+
+
 _PIN_AUDIT_INFLIGHT = {"active": False}
 
 
@@ -38759,6 +38916,8 @@ def main():
     application.add_handler(CommandHandler("admin_pool_remind", admin_pool_remind_command))
     application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
     application.add_handler(CommandHandler("admin_pin_audit", admin_pin_bbox_audit_command))
+    application.add_handler(CommandHandler("admin_pin_review", admin_pin_review_command))
+    application.add_handler(CallbackQueryHandler(aufgabe_review_callback, pattern=r"^aurev:"))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("cw_health", admin_crossword_health_command))

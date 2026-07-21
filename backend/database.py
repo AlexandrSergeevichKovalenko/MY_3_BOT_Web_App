@@ -10686,6 +10686,12 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_aufgabe_bank_available
                 ON bt_3_aufgabe_bank (retired, last_sent_at NULLS FIRST, format);
             """)
+            # Admin acceptance gate. DEFAULT 'approved' so every existing item stays
+            # servable; only formats that opt in (pin) are created as 'pending'.
+            cursor.execute(
+                "ALTER TABLE bt_3_aufgabe_bank ADD COLUMN IF NOT EXISTS "
+                "review_status TEXT NOT NULL DEFAULT 'approved';"
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_aufgabe_dispatches (
                     id                  BIGSERIAL PRIMARY KEY,
@@ -19158,6 +19164,48 @@ _DICTIONARY_POOL_SINGLE_WORD_SQL = (
     "     '^(der|die|das|ein|eine|einen|einem|einer|eines)\\s+', '') !~ '\\s' "
     " AND COALESCE(target_text,'') <> '' "
 )
+
+
+def backfill_dictionary_pool_entry_kind(limit: int = 50000) -> int:
+    """Проставить вид записи (слово / фраза / предложение) там, где он пуст.
+
+    Зачем: без вида пул применяет к записи правило для ОДИНОЧНЫХ СЛОВ («нет разбора —
+    не отдавать») и гонит запрос в GPT даже для фразы, чей перевод у нас уже лежит.
+    У фразы разбора и быть не может — её перевод и есть весь ответ.
+
+    Классификация повторяет `_detect_dictionary_entry_kind` и делается по самому тексту:
+    GPT здесь не нужен вовсе."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH candidates AS (
+                    SELECT id, source_text FROM bt_3_dictionary_entries
+                    WHERE COALESCE(response_json->>'entry_kind','') = ''
+                      AND COALESCE(source_text,'') <> ''
+                    LIMIT %s
+                )
+                UPDATE bt_3_dictionary_entries e
+                SET response_json = COALESCE(e.response_json, '{}'::jsonb)
+                    || jsonb_build_object('entry_kind', CASE
+                        WHEN c.source_text ~ '[.!?]'
+                             AND array_length(regexp_split_to_array(trim(c.source_text), '\\s+'), 1) >= 3
+                            THEN 'sentence'
+                        WHEN array_length(regexp_split_to_array(trim(c.source_text), '\\s+'), 1) >= 5
+                            THEN 'sentence'
+                        WHEN regexp_replace(lower(c.source_text),
+                             '^(der|die|das|ein|eine|einen|einem|einer|eines)\\s+', '') ~ '\\s'
+                            THEN 'phrase'
+                        ELSE 'word' END)
+                FROM candidates c
+                WHERE e.id = c.id;
+                """,
+                (int(limit),),
+            )
+            updated = cursor.rowcount or 0
+        conn.commit()
+    logging.info("dictionary pool entry_kind backfill: updated=%s", updated)
+    return int(updated)
 
 
 def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru") -> int:
@@ -44280,18 +44328,19 @@ def get_display_names_for_users(user_ids: list[int]) -> dict[int, str]:
 
 # ─── B2+ text tasks ("Aufgabe") DB functions ──────────────────────────────────
 
-def create_aufgabe(*, aufgabe_id: str, format: str, level: str, payload: dict) -> None:
+def create_aufgabe(*, aufgabe_id: str, format: str, level: str, payload: dict,
+                   review_status: str = "approved") -> None:
     import json as _json
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO bt_3_aufgabe_bank (aufgabe_id, format, level, payload)
-                VALUES (%s, %s, %s, %s::jsonb)
+                INSERT INTO bt_3_aufgabe_bank (aufgabe_id, format, level, payload, review_status)
+                VALUES (%s, %s, %s, %s::jsonb, %s)
                 ON CONFLICT (aufgabe_id) DO NOTHING
                 """,
                 (str(aufgabe_id), str(format), str(level or "B2"),
-                 _json.dumps(payload or {}, ensure_ascii=False)),
+                 _json.dumps(payload or {}, ensure_ascii=False), str(review_status or "approved")),
             )
         conn.commit()
 
@@ -44313,15 +44362,20 @@ def get_aufgabe_by_id(aufgabe_id: str) -> dict | None:
 
 
 def count_available_aufgaben(*, format: str | None = None) -> int:
+    """Servable items only. Anything awaiting admin review does NOT count — otherwise a
+    pool full of unreviewed items looks full, top-up never runs, and the format silently
+    starves."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             if format:
                 cursor.execute(
-                    "SELECT count(*) FROM bt_3_aufgabe_bank WHERE retired=FALSE AND format=%s",
+                    "SELECT count(*) FROM bt_3_aufgabe_bank "
+                    "WHERE retired=FALSE AND review_status='approved' AND format=%s",
                     (str(format),),
                 )
             else:
-                cursor.execute("SELECT count(*) FROM bt_3_aufgabe_bank WHERE retired=FALSE")
+                cursor.execute("SELECT count(*) FROM bt_3_aufgabe_bank "
+                               "WHERE retired=FALSE AND review_status='approved'")
             return int(cursor.fetchone()[0])
 
 
@@ -44341,6 +44395,7 @@ def pick_next_aufgabe(*, cooldown_days: int = 14, format: str | None = None) -> 
                 SELECT aufgabe_id, format, level, payload
                 FROM bt_3_aufgabe_bank
                 WHERE retired = FALSE
+                  AND review_status = 'approved'
                   AND (%s IS NULL OR format = %s)
                   AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
                 ORDER BY last_sent_at NULLS FIRST, created_at
@@ -46949,6 +47004,39 @@ def get_aufgabe_answer(*, dispatch_id: int, user_id: int) -> dict | None:
     if not row:
         return None
     return {"answer": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
+
+
+def set_aufgabe_review_status(aufgabe_id: str, status: str) -> bool:
+    """Admin verdict on a pending item: 'approved' releases it to learners, 'rejected'
+    also retires it so the pool top-up generates a replacement."""
+    status = str(status or "").strip().lower()
+    if status not in ("approved", "rejected", "pending"):
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_aufgabe_bank SET review_status=%s, "
+                    "retired = (retired OR %s) WHERE aufgabe_id=%s",
+                    (status, status == "rejected", str(aufgabe_id)),
+                )
+                changed = cursor.rowcount or 0
+            conn.commit()
+        return changed > 0
+    except Exception:
+        logging.warning("set_aufgabe_review_status failed id=%s", aufgabe_id, exc_info=True)
+        return False
+
+
+def count_pending_aufgaben(*, format: str | None = None) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM bt_3_aufgabe_bank "
+                "WHERE retired=FALSE AND review_status='pending' AND (%s IS NULL OR format=%s)",
+                (format, format),
+            )
+            return int(cursor.fetchone()[0])
 
 
 def list_pin_items_for_audit() -> list:
