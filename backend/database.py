@@ -46951,6 +46951,46 @@ def get_aufgabe_answer(*, dispatch_id: int, user_id: int) -> dict | None:
     return {"answer": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
 
 
+def update_aufgabe_bbox_by_image_key(image_key: str, bbox: list) -> bool:
+    """Replace a pin item's answer region. Keyed by the R2 image key (unique per item),
+    so the caller doesn't need to carry the aufgabe_id through the grading path."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_aufgabe_bank
+                    SET payload = jsonb_set(payload, '{bbox}', %s::jsonb, true)
+                    WHERE format = 'pin' AND payload->>'image_object_key' = %s
+                    """,
+                    (json.dumps([float(v) for v in bbox]), str(image_key)),
+                )
+                changed = cursor.rowcount or 0
+            conn.commit()
+        return changed > 0
+    except Exception:
+        logging.warning("update_aufgabe_bbox_by_image_key failed key=%s", image_key, exc_info=True)
+        return False
+
+
+def retire_aufgabe_by_image_key(image_key: str) -> bool:
+    """Retire the pin item that owns this R2 image (its answer region can't be reproduced)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_aufgabe_bank SET retired = TRUE "
+                    "WHERE format = 'pin' AND payload->>'image_object_key' = %s AND retired = FALSE",
+                    (str(image_key),),
+                )
+                changed = cursor.rowcount or 0
+            conn.commit()
+        return changed > 0
+    except Exception:
+        logging.warning("retire_aufgabe_by_image_key failed key=%s", image_key, exc_info=True)
+        return False
+
+
 def retire_impossible_aufgabe_items(*, fmt: str = "pin", min_answers: int = 6) -> list:
     """Retire pool items NOBODY can get right: ≥min_answers answers and 0 correct.
 

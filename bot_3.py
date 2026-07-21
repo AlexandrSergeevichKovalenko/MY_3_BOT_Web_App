@@ -31905,35 +31905,6 @@ _PIN_TRIVIAL_NOUNS = {
 }
 
 
-# Two independent vision locates must agree at least this much before a pin item is
-# allowed into the pool — below it, one of them is looking at a different object.
-_PIN_BBOX_MIN_IOU = 0.35
-
-
-def _bbox_iou(a: list, b: list) -> float:
-    """Intersection-over-union of two [x, y, w, h] boxes in 0..1 coords."""
-    try:
-        ax, ay, aw, ah = (float(v) for v in a)
-        bx, by, bw, bh = (float(v) for v in b)
-    except (TypeError, ValueError):
-        return 0.0
-    ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
-    iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
-    inter = ix * iy
-    union = aw * ah + bw * bh - inter
-    return (inter / union) if union > 0 else 0.0
-
-
-def _bbox_union(a: list, b: list) -> list:
-    """Smallest box covering both, clamped to the image. Stored as the answer region so a
-    slightly-off locate still accepts an honest tap."""
-    ax, ay, aw, ah = (float(v) for v in a)
-    bx, by, bw, bh = (float(v) for v in b)
-    x, y = max(0.0, min(ax, bx)), max(0.0, min(ay, by))
-    x2, y2 = min(1.0, max(ax + aw, bx + bw)), min(1.0, max(ay + ah, by + bh))
-    return [round(x, 4), round(y, 4), round(max(0.0, x2 - x), 4), round(max(0.0, y2 - y), 4)]
-
-
 def _pin_target_noun(target_label: str) -> str:
     """The bare noun of a pin target ('der Wasserkocher' → 'wasserkocher')."""
     parts = str(target_label or "").strip().split()
@@ -32306,8 +32277,9 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
                     logging.info("aufgabe_pool: pin target not confirmed on re-check, skipping (%s)",
                                  payload["target_label"])
                     continue
-                iou = _bbox_iou(loc["bbox"], loc2["bbox"])
-                if iou < _PIN_BBOX_MIN_IOU:
+                from backend.answer_eval import PIN_BBOX_MIN_IOU, pin_bbox_iou, pin_bbox_union
+                iou = pin_bbox_iou(loc["bbox"], loc2["bbox"])
+                if iou < PIN_BBOX_MIN_IOU:
                     logging.info("aufgabe_pool: pin bbox disagreement iou=%.2f, skipping (%s) %s vs %s",
                                  iou, payload["target_label"], loc["bbox"], loc2["bbox"])
                     continue
@@ -32315,7 +32287,7 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
                 key = f"aufgabe/images/{aufgabe_id}.{ext}"
                 await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
                 payload["image_object_key"] = key
-                payload["bbox"] = _bbox_union(loc["bbox"], loc2["bbox"])
+                payload["bbox"] = pin_bbox_union(loc["bbox"], loc2["bbox"])
                 payload.pop("image_prompt", None)  # not needed at runtime
             except Exception:
                 logging.warning("aufgabe_pool: pin image/vision failed, skipping item", exc_info=True)

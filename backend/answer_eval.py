@@ -2155,6 +2155,72 @@ def _pin_bbox_hit(payload: dict, tap: tuple) -> bool:
     return (bx - m) <= x <= (bx + bw + m) and (by - m) <= y <= (by + bh + m)
 
 
+def pin_bbox_iou(a, b) -> float:
+    """Intersection-over-union of two [x, y, w, h] boxes in 0..1 coords."""
+    try:
+        ax, ay, aw, ah = (float(v) for v in a)
+        bx, by, bw, bh = (float(v) for v in b)
+    except (TypeError, ValueError):
+        return 0.0
+    ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    inter = ix * iy
+    union = aw * ah + bw * bh - inter
+    return (inter / union) if union > 0 else 0.0
+
+
+def pin_bbox_union(a, b) -> list:
+    """Smallest box covering both, clamped to the image. Stored as the answer region so a
+    slightly-off locate still accepts an honest tap."""
+    ax, ay, aw, ah = (float(v) for v in a)
+    bx, by, bw, bh = (float(v) for v in b)
+    x, y = max(0.0, min(ax, bx)), max(0.0, min(ay, by))
+    x2, y2 = min(1.0, max(ax + aw, bx + bw)), min(1.0, max(ay + ah, by + bh))
+    return [round(x, 4), round(y, 4), round(max(0.0, x2 - x), 4), round(max(0.0, y2 - y), 4)]
+
+
+PIN_BBOX_MIN_IOU = 0.35  # two locates below this are looking at different objects
+
+_PIN_REPAIR_IN_FLIGHT = set()  # image keys currently being re-located (per process)
+
+
+def _pin_bbox_repair(image_key: str, target_label: str) -> None:
+    """Recompute a bbox the grader just PROVED wrong (the vision re-check credited a tap
+    the box rejected). Two fresh locates: store their union if they agree, retire the item
+    if they don't — a box nobody can reproduce keeps mis-grading everyone and makes the
+    result card point at the wrong object. Runs off the request thread."""
+    try:
+        from backend.r2_storage import r2_get_bytes
+        from backend.openai_manager import run_vision_locate
+        from backend.database import retire_aufgabe_by_image_key, update_aufgabe_bbox_by_image_key
+        img = r2_get_bytes(image_key)
+        if not img:
+            return
+        a = run_vision_locate(img, target_label)
+        b = run_vision_locate(img, target_label)
+        if not (a.get("bbox") and b.get("bbox")) or pin_bbox_iou(a["bbox"], b["bbox"]) < PIN_BBOX_MIN_IOU:
+            retire_aufgabe_by_image_key(image_key)
+            logging.info("pin bbox repair: locates disagree → retired (%s)", image_key)
+            return
+        fixed = pin_bbox_union(a["bbox"], b["bbox"])
+        update_aufgabe_bbox_by_image_key(image_key, fixed)
+        logging.info("pin bbox repair: %s → %s (%s)", image_key, fixed, target_label)
+    except Exception:
+        logging.warning("pin bbox repair failed (%s)", image_key, exc_info=True)
+    finally:
+        _PIN_REPAIR_IN_FLIGHT.discard(image_key)
+
+
+def _spawn_pin_bbox_repair(payload: dict) -> None:
+    key = str(payload.get("image_object_key") or "")
+    target = str(payload.get("target_label") or "")
+    if not key or not target or key in _PIN_REPAIR_IN_FLIGHT:
+        return
+    _PIN_REPAIR_IN_FLIGHT.add(key)
+    import threading
+    threading.Thread(target=_pin_bbox_repair, args=(key, target), daemon=True).start()
+
+
 def _pin_vision_hit(payload: dict, tap: tuple) -> bool:
     """Ask a vision model whether the tap actually landed on the target. Second chance
     ONLY on a bbox miss: the stored bbox is a single vision guess made at pool time and
@@ -2191,6 +2257,11 @@ def _grade_pin(payload: dict, raw_input: str) -> tuple:
     # the tap is the sole reason for a ❌. Bounded spend, off nobody's happy path.
     if not ok_tap and ok_article:
         ok_tap = _pin_vision_hit(payload, tap)
+        if ok_tap:
+            # The box rejected a tap vision credits → the box is on the wrong object.
+            # Re-locate it in the background so the next learner (and the result card's
+            # answer frame) stops being pointed at nothing.
+            _spawn_pin_bbox_repair(payload)
     if ok_tap and ok_article:
         return True, ""
     target = str(payload.get("target_label") or "").strip()
