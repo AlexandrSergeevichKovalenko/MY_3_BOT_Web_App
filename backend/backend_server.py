@@ -50040,6 +50040,36 @@ def ingest_reader_content():
                     "error_code": "LIMIT_FREE_PLAN_1_BOOK",
                 }
             ), 403
+        # Free users get 1 web article/day (shared «Классика» stays unlimited). Pro/trial
+        # bypass this via reserve_free_feature_usage (returns ok for non-free tiers).
+        if incoming_is_article:
+            now_value = datetime.now(timezone.utc)
+            day_local = now_value.astimezone(ZoneInfo("Europe/Vienna")).date().isoformat()
+            url_fingerprint = hashlib.sha1(input_url.encode("utf-8", "ignore")).hexdigest()[:24]
+            article_reservation = reserve_free_feature_usage(
+                user_id=int(user_id),
+                feature_key="reader_web_article_daily",
+                idempotency_key=f"reader_article:{int(user_id)}:{day_local}:{url_fingerprint}",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                metadata={"origin": "reader_ingest_article", "url": input_url[:300]},
+                now_ts_utc=now_value,
+                tz="Europe/Vienna",
+            )
+            if article_reservation.get("blocked"):
+                reset_at = ""
+                if isinstance(article_reservation.get("error"), dict):
+                    reset_at = str(article_reservation["error"].get("reset_at") or "")
+                return jsonify(
+                    {
+                        "error": (
+                            "На бесплатном плане можно открыть 1 статью из интернета в день. "
+                            "Лимит обновится завтра в 00:00 по Вене. Оформи Pro — и читай статьи без ограничений."
+                        ),
+                        "error_code": "LIMIT_FREE_PLAN_1_ARTICLE",
+                        "reset_at": reset_at,
+                    }
+                ), 429
     except Exception as exc:
         return jsonify({"error": f"Ошибка проверки лимита плана: {exc}"}), 500
 

@@ -1163,7 +1163,7 @@ export default function ReaderSection(props) {
                   {readerError && (
                     <div className="webapp-error">
                       <span>{readerError}</span>
-                      {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
+                      {(readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' || readerErrorCode === 'LIMIT_FREE_PLAN_1_ARTICLE') && (
                         <div>
                           <button
                             type="button"

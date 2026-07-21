@@ -492,6 +492,7 @@
 .ob-info.is-trial .ic { background: #e3f5ec; }
 .ob-info.is-audio .ic { background: #fbf1dc; }
 .ob-info.is-stars .ic { background: #e7f0fd; }
+.ob-info.is-articles .ic { background: #e6f2ef; }
 .ob-info.is-cancel .ic { background: #eef1f5; }
 .ob-info.is-maint { border-style: dashed; }
 .ob-info.is-maint .ic { background: #fbe7e4; }

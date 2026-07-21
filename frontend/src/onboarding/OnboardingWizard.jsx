@@ -908,7 +908,7 @@ function StepBody(props) {
         ] },
         { title: t('📚 Читалка', '📚 Reader'), rows: [
           { f: t('Классика (общие книги)', 'Klassiker (geteilte Bücher)'), free: YES, pro: YES },
-          { f: t('Статьи из интернета (DW, Tagesschau…)', 'Web-Artikel (DW, Tagesschau…)'), free: YES, pro: YES },
+          { f: t('Статьи из интернета (DW, Tagesschau…)', 'Web-Artikel (DW, Tagesschau…)'), free: D(1), pro: INF },
           { f: t('Добавлять свои книги', 'Eigene Bücher hinzufügen'), free: NO, pro: INF, ex: true },
         ] },
         { title: t('▶️ Видео (YouTube)', '▶️ Videos (YouTube)'), rows: [
@@ -990,6 +990,19 @@ function StepBody(props) {
                 <b>{t('Классика озвучена бесплатно для всех.', 'Klassiker sind für alle gratis vertont.')}</b>{' '}
                 {t('Озвучить книгу можно прямо в Читалке: открываешь книгу → кнопка ▶.',
                    'Ein Buch vertonst du direkt im Reader: Buch öffnen → ▶-Knopf.')}</p>
+            </div>
+          </div>
+
+          <div className="ob-info is-articles">
+            <div className="ic">📰</div>
+            <div>
+              <h4>{t('Статьи из интернета — кликабельные', 'Web-Artikel — antippbar')}</h4>
+              <p>{t('Свежие статьи из немецких изданий (DW, Tagesschau…) открываются прямо в Читалке. Тут ',
+                    'Frische Artikel deutscher Medien (DW, Tagesschau…) öffnen sich direkt im Reader. Hier ist ')}
+                <b>{t('каждое слово и предложение кликабельно', 'jedes Wort und jeder Satz antippbar')}</b>{' '}
+                {t('— нажми, чтобы увидеть перевод, и сразу сохрани нужные слова в свой словарь для изучения. ',
+                   '— tippe drauf für die Übersetzung und speichere passende Wörter direkt in dein Wörterbuch zum Lernen. ')}
+                <b>{t('На Free — 1 статья в день, на Pro — без ограничений.', 'Free — 1 Artikel pro Tag, Pro — unbegrenzt.')}</b></p>
             </div>
           </div>
 

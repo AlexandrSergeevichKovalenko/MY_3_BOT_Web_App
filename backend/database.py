@@ -34987,6 +34987,13 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
         "free_limit": max(1, int((os.getenv("NUMDICT_PRACTICE_FREE_LIMIT") or "3").strip() or "3")),
         "reset_policy": "daily_europe_vienna",
     },
+    "reader_web_article_daily": {
+        "title": "Статьи из интернета (Читалка)",
+        # Free taster: 1 web article/day. Free users read shared «Классика» freely,
+        # but opening fresh web articles (DW/Tagesschau/…) is capped to one per day.
+        "free_limit": 1,
+        "reset_policy": "daily_europe_vienna",
+    },
 }
 
 

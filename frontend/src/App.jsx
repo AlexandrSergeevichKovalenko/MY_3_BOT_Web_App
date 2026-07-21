@@ -26363,6 +26363,21 @@ function AppInner() {
           'Загрузка своих книг — функция Pro. На бесплатном плане можно читать «Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги.',
           'Eigene Bücher hochladen ist eine Pro-Funktion. Im Free-Plan liest du «Klassiker» und Web-Artikel. Hol dir Pro, um eigene Bücher hinzuzufügen.'
         ));
+      } else if (code === 'LIMIT_FREE_PLAN_1_ARTICLE') {
+        const articleLimitMsg = tr(
+          'На бесплатном плане можно открыть 1 статью из интернета в день. Лимит обновится завтра в 00:00 по Вене. Оформи Pro — и читай статьи без ограничений.',
+          'Im Free-Plan kannst du 1 Web-Artikel pro Tag öffnen. Das Limit wird morgen um 00:00 Uhr (Wien) zurückgesetzt. Hol dir Pro und lies Artikel ohne Limit.'
+        );
+        setReaderError(articleLimitMsg);
+        // Feed opens close the add panel, so the inline error above isn't visible —
+        // surface the limit via a Telegram popup too.
+        try {
+          window.Telegram?.WebApp?.showPopup?.({
+            title: tr('Лимит статей на сегодня', 'Artikel-Limit für heute'),
+            message: articleLimitMsg,
+            buttons: [{ id: 'ok', type: 'default', text: 'OK' }],
+          });
+        } catch (_popupError) { /* noop */ }
       } else {
         setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить текст в читалку.', 'Text konnte nicht in den Leser geladen werden.'));
       }
