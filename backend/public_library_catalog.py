@@ -51,7 +51,13 @@ PUBLIC_LIBRARY_CATALOG: list[CatalogBook] = [
     CatalogBook("maerchen-hauff", "Märchen", "Wilhelm Hauff", "A2", "Märchen Hauff", 30),
     CatalogBook("taugenichts", "Aus dem Leben eines Taugenichts", "Joseph von Eichendorff", "B1", "Aus dem Leben eines Taugenichts Eichendorff", 40),
     CatalogBook("schimmelreiter", "Der Schimmelreiter", "Theodor Storm", "B1", "Der Schimmelreiter Storm", 50, gutenberg_id=74008),
-    CatalogBook("kleider-machen-leute", "Kleider machen Leute", "Gottfried Keller", "B1", "Kleider machen Leute Keller", 60),
+    # Gutendex has exactly ONE German match for "Kleider machen Leute" — id 21141 — and
+    # it is a LibriVox AUDIOBOOK readme stub (no novella text, plain-text only, so no
+    # content_pages → unreadable + never warms). The novella itself only exists on
+    # Gutenberg inside this collection, where it is the FIRST story; pin the id so the
+    # search can never wander back to the audio stub. Slug kept (stable public id) so
+    # the re-ingest overwrites the broken row in place instead of orphaning it.
+    CatalogBook("kleider-machen-leute", "Die Leute von Seldwyla — Band 2", "Gottfried Keller", "B1", "Die Leute von Seldwyla Keller", 60, gutenberg_id=28042),
     CatalogBook("peter-schlemihl", "Peter Schlemihls wundersame Geschichte", "Adelbert von Chamisso", "B1", "Peter Schlemihl Chamisso", 70),
     # DEFERRED — Gutenberg id 21798 exposes only a README stub, no full German text.
     # CatalogBook("winnetou-1", "Winnetou I", "Karl May", "B1", "Winnetou Karl May", 80, gutenberg_id=21798),

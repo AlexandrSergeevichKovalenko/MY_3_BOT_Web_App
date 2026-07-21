@@ -35268,10 +35268,34 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
     await message.reply_text("\n".join(lines), parse_mode="HTML")
 
     if arg == "ingest":
-        await message.reply_text("⏳ Заливаю каталог классики (скачивание с Gutenberg) — это до пары минут…")
+        # Optional slug → ingest ONE book. A full run re-downloads and re-extracts every
+        # classic, which rewrites their page text and therefore the per-page text_hash the
+        # warm audio cache is keyed on — i.e. it silently throws away everything the
+        # nightly pre-gen has built. Fixing a single broken book must not cost that.
+        slug = (context.args[1].strip().strip(".!,;:").lower() if len(context.args) > 1 else "")
+        if slug:
+            from backend.public_library_catalog import CATALOG_BY_SLUG
+            if slug not in CATALOG_BY_SLUG:
+                known = ", ".join(sorted(CATALOG_BY_SLUG))
+                await message.reply_text(
+                    f"❌ Нет такой книги в каталоге: <code>{html.escape(slug)}</code>\n\nДоступные: <code>{html.escape(known)}</code>",
+                    parse_mode="HTML",
+                )
+                return
+            await message.reply_text(f"⏳ Заливаю одну книгу: <code>{html.escape(slug)}</code>…", parse_mode="HTML")
+        else:
+            await message.reply_text(
+                "⏳ Заливаю ВЕСЬ каталог классики (скачивание с Gutenberg) — это до пары минут.\n"
+                "⚠️ Полный прогон перезаписывает текст всех книг, поэтому уже прогретое аудио "
+                "теряет привязку и прогревается заново. Для одной книги: "
+                "<code>/reader_public_status ingest &lt;slug&gt;</code>",
+                parse_mode="HTML",
+            )
         try:
             from backend.backend_server import ingest_public_library_catalog
-            res = await asyncio.to_thread(ingest_public_library_catalog, dry_run=False)
+            res = await asyncio.to_thread(
+                ingest_public_library_catalog, slugs=[slug] if slug else None, dry_run=False
+            )
         except Exception as exc:
             logging.exception("public library ingest via bot failed")
             await message.reply_text(f"❌ ingest failed: {exc}")
@@ -35279,7 +35303,7 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
         failed = [r for r in (res.get("results") or []) if not r.get("ok")]
         tail = ""
         if failed:
-            names = ", ".join(str(r.get("slug")) for r in failed[:8])
+            names = ", ".join(f"{r.get('slug')} ({r.get('error')})" for r in failed[:8])
             tail = f"\n❌ не удалось: {names}"
         after = await asyncio.to_thread(get_public_library_diagnostics)
         await message.reply_text(
