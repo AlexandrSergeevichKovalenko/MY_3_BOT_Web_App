@@ -61,11 +61,12 @@ Every block is explained with the same skeleton, so you get used to it:
 | 02 | **Telegram authentication (`initData`)** — the security foundation | [02_telegram_auth_initdata.md](02_telegram_auth_initdata.md) | ✅ |
 | 03 | **Payments: Stripe + Telegram Stars** — webhooks, payment forgery | _(planned)_ | ⚪ |
 | 04 | **Shared, reusable word cache** (dictionary lookups & breakdowns; cache poisoning + Prompt Injection) | [04_shared_word_cache.md](04_shared_word_cache.md) | ✅ |
-| 05 | **Reader / books** | _(planned)_ | ⚪ |
-| 06 | **YouTube block (news / video recommendations)** | _(planned)_ | ⚪ |
-| 07 | **Text-to-speech (TTS) and budget limits** | _(planned)_ | ⚪ |
-| 08 | **Voice / calls (LiveKit)** | _(planned)_ | ⚪ |
-| 09 | **Shortcut / iOS Share Extension / auto-save** | _(planned)_ | ⚪ |
+| 05 | **Interactive exercises** — tap→grade→result pipeline; deep dive on image tap hit-testing | [05_interactive_exercises.md](05_interactive_exercises.md) | ✅ |
+| 06 | **Reader / books** | _(planned)_ | ⚪ |
+| 07 | **YouTube block (news / video recommendations)** | _(planned)_ | ⚪ |
+| 08 | **Text-to-speech (TTS) and budget limits** | _(planned)_ | ⚪ |
+| 09 | **Voice / calls (LiveKit)** | _(planned)_ | ⚪ |
+| 10 | **Shortcut / iOS Share Extension / auto-save** | _(planned)_ | ⚪ |
 
 > The list grows one block at a time. Finished blocks get a ✅. The order isn't random: the top is
 > what you use every day and what's easiest to understand; lower down is infrastructure and
