@@ -32294,9 +32294,11 @@ async def aufgabe_review_callback(update: Update, context: CallbackContext) -> N
         await query.answer()
         return
     _, verdict, aufgabe_id = parts
-    from backend.database import set_aufgabe_review_status
+    from backend.database import mark_aufgabe_bbox_human_ok, set_aufgabe_review_status
     if verdict == "ok":
         await asyncio.to_thread(set_aufgabe_review_status, aufgabe_id, "approved")
+        # Stamped so /admin_pin_audit never overrules a human verdict later.
+        await asyncio.to_thread(mark_aufgabe_bbox_human_ok, aufgabe_id)
         await query.answer("Одобрено")
         try:
             await query.edit_message_caption(
@@ -36413,6 +36415,12 @@ async def admin_pin_bbox_audit_command(update: Update, context: CallbackContext)
             key = str(it.get("image_object_key") or "")
             target = str(it.get("target_label") or "")
             old = it.get("bbox") if isinstance(it.get("bbox"), list) else None
+            if it.get("bbox_human_ok"):
+                # A person has looked at this frame and said it's right. No automatic
+                # sweep — running the same model that produced the bad boxes — gets to
+                # overrule that.
+                kept += 1
+                continue
             try:
                 img = await asyncio.to_thread(r2_get_bytes, key)
                 if not img:
@@ -36426,22 +36434,32 @@ async def admin_pin_bbox_audit_command(update: Update, context: CallbackContext)
                     retired += 1
                     lines.append(f"🗑 {html.escape(target)} — предмет не найден на картинке")
                     continue
+                # THREE votes, not two: the stored box counts too. On a small object the
+                # model is unstable, so two fresh guesses can disagree while the stored box
+                # is right — demanding that the fresh pair agree with EACH OTHER threw away
+                # a hand-verified item. Retire only when nothing corroborates anything.
                 iou = pin_bbox_iou(a["bbox"], b["bbox"])
-                if iou < PIN_BBOX_MIN_IOU:
-                    await asyncio.to_thread(retire_aufgabe_by_image_key, key)
-                    retired += 1
-                    lines.append(f"🗑 {html.escape(target)} — два прохода разошлись (IoU {iou:.2f})")
+                if iou >= PIN_BBOX_MIN_IOU:
+                    new = pin_bbox_union(a["bbox"], b["bbox"])
+                    drift = pin_bbox_iou(old, new) if old else 0.0
+                    await asyncio.to_thread(update_aufgabe_bbox_by_image_key, key, new)
+                    if drift < 0.5:
+                        fixed += 1
+                        lines.append(f"🔧 {html.escape(target)} — рамка была мимо (IoU со старой {drift:.2f})")
+                    else:
+                        kept += 1
                     continue
-                new = pin_bbox_union(a["bbox"], b["bbox"])
-                # How far the OLD box was from the freshly confirmed one decides whether
-                # this was a silent mis-grader or just an imprecise frame.
-                drift = pin_bbox_iou(old, new) if old else 0.0
-                await asyncio.to_thread(update_aufgabe_bbox_by_image_key, key, new)
-                if drift < 0.5:
-                    fixed += 1
-                    lines.append(f"🔧 {html.escape(target)} — рамка была мимо (IoU со старой {drift:.2f})")
-                else:
+                # The fresh pair disagrees. Does either one back the stored box? If so the
+                # stored box is the corroborated one — keep it AS IS (it may be tighter or
+                # hand-measured; unioning it with a sloppy locate would only inflate it).
+                back = max(pin_bbox_iou(old, a["bbox"]), pin_bbox_iou(old, b["bbox"])) if old else 0.0
+                if back >= PIN_BBOX_MIN_IOU:
                     kept += 1
+                    lines.append(f"✅ {html.escape(target)} — проходы разошлись, но старая рамка подтверждена (IoU {back:.2f})")
+                    continue
+                await asyncio.to_thread(retire_aufgabe_by_image_key, key)
+                retired += 1
+                lines.append(f"🗑 {html.escape(target)} — никто ни с кем не сошёлся (пара {iou:.2f}, со старой {back:.2f})")
             except Exception as exc:
                 failed += 1
                 lines.append(f"⚠️ {html.escape(target)} — {html.escape(str(exc))[:80]}")
