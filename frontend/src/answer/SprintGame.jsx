@@ -49,6 +49,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const [input, setInput] = useState('');
   const [result, setResult] = useState(null);
   const [saved, setSaved] = useState(() => new Set());
+  const [saveError, setSaveError] = useState('');
   const startRef = useRef(0);
   const wordsRef = useRef([]);
   const timerRef = useRef(null);
@@ -124,15 +125,16 @@ export default function SprintGame({ id, api, haptic, onClose }) {
     // Optimistic: flip the chip to 💾 saved instantly and release the user; the
     // network save runs in the background. Revert only if it genuinely fails.
     setSaved((s) => new Set(s).add(de));
+    setSaveError('');
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
-    // Canonical lookup→save (see saveUtils): a bare source_text/target_text save loses the
-    // Russian when the chip carries none, and never gets the card metainfo.
     Promise.resolve(
       saveGermanWordViaLookup({
         api, word: de, fallbackTranslation: ru || '', origin: 'synonym_save',
       }),
     ).catch(() => {
+      // Say it out loud — an error vibration alone left the user thinking it saved.
       setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
+      setSaveError('Не удалось сохранить слово. Нажми ещё раз.');
       try { haptic?.('bad'); } catch (_e2) { /* noop */ }
     });
   }, [api, saved, haptic]);
@@ -247,6 +249,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
               );
             })}
           </div>
+          {saveError ? <div className="as-save-error">{saveError}</div> : null}
         </div>
       ) : null}
       {r.erklaerung ? <div className="ans-explain">{r.erklaerung}</div> : null}

@@ -53,44 +53,109 @@ export function pickTargetTranslation(targetLang, candidates) {
   return list[0];
 }
 
-// Save a GERMAN word/phrase tapped inside a game or trainer through the SAME canonical
-// pipeline the dictionary overlay uses: first the breakdown lookup (real Russian
-// translation + article + Grundform + examples), then persist THAT card. Posting the
-// German text straight to /save — the old behaviour of the grammar trainers — produced
-// entries with German on both sides (translation == headword) and, because they carried
-// no response_json, the server-side enrichment never ran either, so the card stayed empty.
-// `fallbackTranslation` is the gloss the game already knows (may be empty); it is only
-// used when the lookup returns nothing usable.
+// Save a GERMAN word/phrase tapped inside a game or trainer.
+//
+// The word is persisted FIRST with the gloss the game already knows — one cheap call,
+// no LLM. Only then does the full breakdown (article + Grundform + examples) get fetched
+// and re-saved over the same entry, in the background.
+//
+// The order matters: the breakdown endpoint is billed and sits behind the daily cost cap,
+// so a lookup-first pipeline silently dropped every tap once the cap was reached (429 →
+// nothing saved at all, only an error haptic). Saving cannot depend on a paid request.
+// A card that stays thin is not lost either — `bt_3_dictionary_entries` is a SHARED pool,
+// so the nightly enricher or the next lookup of that word by anyone fills it in.
+//
+// `fallbackTranslation` is the gloss the game already knows. When it is present (the
+// normal case — the Artikel/Sprint decks all carry a Russian meaning) the word goes in
+// instantly and the breakdown follows. When the game knows NO translation there is
+// nothing to store yet, so the breakdown has to come first — but a failed lookup still
+// ends in a save, so a tap never silently loses the word.
+//
+// Resolves once the word is safely stored; rejects only if THAT fails.
 export async function saveGermanWordViaLookup({ api, word, fallbackTranslation = '', origin }) {
   const text = String(word || '').trim();
   if (!text) return null;
-  const lookup = await api('/api/webapp/dictionary', { word: text });
-  const item = (lookup && lookup.item) || {};
-  const direction = String(lookup?.direction || '').toLowerCase();
-  const isDeRu = direction !== 'ru-de'; // game words are German → de-ru
-  const targetLang = isDeRu ? 'ru' : 'de';
-  const sourceText = String(
-    (isDeRu ? (item.word_de || item.translation_de) : (item.word_ru || item.translation_ru)) || text,
-  ).trim();
   // Validate the script so a German string can never land in the Russian slot.
-  const targetText = pickTargetTranslation(targetLang, [
-    isDeRu ? extractRichTranslation(item) : '',
-    isDeRu ? item.translation_ru : item.translation_de,
-    isDeRu ? item.word_ru : item.word_de,
-    fallbackTranslation,
+  const knownRu = pickTargetTranslation('ru', [fallbackTranslation]);
+  if (!knownRu) {
+    let item = null;
+    let direction = '';
+    try {
+      const lookup = await api('/api/webapp/dictionary', { word: text });
+      item = (lookup && lookup.item) || null;
+      direction = String(lookup?.direction || '').toLowerCase();
+    } catch (_e) {
+      item = null; // cap reached / offline — save the bare word rather than lose it
+    }
+    return saveDictionaryCard({ api, word: text, item, direction, fallbackRu: '', origin });
+  }
+  await api('/api/webapp/dictionary/save', {
+    source_text: text,
+    target_text: knownRu,
+    translation_ru: knownRu,
+    source_lang: 'de',
+    target_lang: 'ru',
+    direction: 'de-ru',
+    origin_process: origin,
+  });
+  // Background enrichment — best effort, never surfaced. A capped/offline user keeps the
+  // word; the card fills in later.
+  void enrichSavedGermanWord({ api, word: text, knownRu, origin });
+  return { sourceText: text, targetText: knownRu };
+}
+
+// Persist a card built from a breakdown `item` (which may be null — then only the bare
+// German text is stored). `pinnedSource`/`pinnedTarget` force the dedup keys the server
+// matches on (see get_existing_user_dictionary_entry_id_for_save: source_text_norm +
+// target_text_norm), so an enrichment pass UPDATES the row the thin save created instead
+// of adding a second, near-identical entry.
+async function saveDictionaryCard({
+  api, word, item, direction, fallbackRu, origin, pinnedSource = '', pinnedTarget = '',
+}) {
+  const dir = String(direction || '').toLowerCase();
+  const isDeRu = dir !== 'ru-de'; // game words are German → de-ru
+  const targetLang = isDeRu ? 'ru' : 'de';
+  const card = item && typeof item === 'object' ? item : {};
+  const sourceText = pinnedSource || String(
+    (isDeRu ? (card.word_de || card.translation_de) : (card.word_ru || card.translation_ru)) || word,
+  ).trim();
+  const targetText = pinnedTarget || pickTargetTranslation(targetLang, [
+    isDeRu ? extractRichTranslation(card) : '',
+    isDeRu ? card.translation_ru : card.translation_de,
+    isDeRu ? card.word_ru : card.word_de,
+    fallbackRu,
   ]);
   await api('/api/webapp/dictionary/save', {
     source_text: sourceText,
     target_text: targetText,
-    translation_ru: String(isDeRu ? targetText : (item.translation_ru || '')).trim(),
-    translation_de: String(isDeRu ? (item.translation_de || '') : targetText).trim(),
+    translation_ru: String(isDeRu ? targetText : (card.translation_ru || '')).trim(),
+    translation_de: String(isDeRu ? (card.translation_de || '') : targetText).trim(),
     source_lang: isDeRu ? 'de' : 'ru',
     target_lang: targetLang,
-    direction: direction || 'de-ru',
-    response_json: item,
+    direction: dir || 'de-ru',
+    response_json: item || undefined,
     origin_process: origin,
   });
   return { sourceText, targetText };
+}
+
+// Fetch the full breakdown for an ALREADY-SAVED German word and re-save the complete card
+// over the SAME entry. Split out of saveGermanWordViaLookup so the user's save never waits
+// on — or dies with — this billed call.
+async function enrichSavedGermanWord({ api, word, knownRu, origin }) {
+  try {
+    const lookup = await api('/api/webapp/dictionary', { word });
+    const item = (lookup && lookup.item) || null;
+    if (!item || !Object.keys(item).length) return;
+    await saveDictionaryCard({
+      api, word, item, direction: lookup?.direction, fallbackRu: knownRu, origin,
+      // Keep the thin save's keys so this lands on that entry, not next to it.
+      pinnedSource: word, pinnedTarget: knownRu,
+    });
+  } catch (_e) {
+    // Cap reached / offline / lookup failed — the word is already saved, so this is a
+    // no-op by design. The shared pool fills the card in later.
+  }
 }
 
 // Build the canonical /api/webapp/dictionary/save payload from a GPT breakdown item.

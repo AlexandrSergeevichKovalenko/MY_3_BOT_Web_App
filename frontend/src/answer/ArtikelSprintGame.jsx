@@ -19,6 +19,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
   const [flash, setFlash] = useState(null); // {ok:bool} transient
   const [result, setResult] = useState(null);
   const [savedWords, setSavedWords] = useState(() => new Set());
+  const [saveError, setSaveError] = useState('');
   const answersRef = useRef([]);
   const wordsRef = useRef([]);
   const startRef = useRef(0);
@@ -127,17 +128,18 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
     // Optimistic: mark the row 💾 saved instantly and release the user; the network
     // save runs in the background. Revert only if it genuinely fails.
     setSavedWords((s) => new Set(s).add(key));
+    setSaveError('');
     haptic?.('ok');
-    // Canonical lookup→save: the raw save posted only the bare German text, so when the
-    // deck had no Russian gloss the entry stored German on both sides and never got the
-    // card metainfo (no response_json → no server-side enrichment).
     Promise.resolve(
       saveGermanWordViaLookup({
         api, word: key, fallbackTranslation: String(ru || '').trim(),
         origin: 'artikel_sprint_save',
       }),
     ).catch(() => {
+      // A failed save used to be signalled by an error vibration alone — the 💾 just
+      // flipped back and the word was gone without a word of explanation.
       setSavedWords((s) => { const n = new Set(s); n.delete(key); return n; });
+      setSaveError('Не удалось сохранить слово. Нажми ещё раз.');
       haptic?.('bad');
     });
   }, [api, haptic, savedWords]);
@@ -270,6 +272,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       {items.length ? (
         <>
           <div className="as-save-hint">👆 нажми на слово, чтобы сохранить в словарь (с артиклем)</div>
+          {saveError ? <div className="as-save-error">{saveError}</div> : null}
           <div className="as-result-list">
             {items.map((it, i) => {
               const de = `${it.a} ${it.w}`.trim();
