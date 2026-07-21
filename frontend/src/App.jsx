@@ -22283,6 +22283,11 @@ function AppInner() {
     const primary = getDictionaryPrimaryMeaning(responseJson);
     if (primary) {
       fallback.push({ ...primary, rank: 1, label: 'main' });
+    } else if (entryTargetLang === 'de') {
+      // ru→de запись: значения в payload немецкие и отброшены выше. Настоящее значение
+      // для читателя — русская сторона записи, иначе блок «Значения» просто исчезает.
+      const nativeValue = String(item?.translation_ru || item?.word_ru || responseJson.word_ru || '').trim();
+      if (nativeValue) fallback.push({ value: nativeValue, rank: 1, label: 'main' });
     }
     getDictionarySecondaryMeanings(responseJson).forEach((entry, index) => {
       fallback.push({ ...entry, rank: index + 2, label: 'secondary' });

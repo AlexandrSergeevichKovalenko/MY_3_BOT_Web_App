@@ -19391,6 +19391,18 @@ def get_quick_dictionary_entries_for_backfill(
     return items
 
 
+# Обогащение карточки делается ТОЛЬКО для одиночных слов (разбор фразы или предложения
+# бессмысленен), и питоновский гейт `_is_single_word_dictionary_entry` их отбрасывает.
+# Если не отсечь их ещё в SQL, батч раз за разом набирает одни и те же предложения и
+# проход не двигается вовсе — ровно это и случилось 21.07 («Просмотрено: 100, Пустых
+# карточек: 0», «Осталось: 790» после каждого запуска).
+_DICTIONARY_SINGLE_WORD_SQL = (
+    "AND COALESCE(word_de,'') !~ '[.!?]' "
+    "AND regexp_replace(COALESCE(word_de,''), "
+    "    '^(der|die|das|ein|eine|einen|einem|einer|eines)\\s+', '') !~ '\\s' "
+)
+
+
 def count_dictionary_entries_missing_card(
     user_id: int | None = None,
     days: int | None = None,
@@ -19403,7 +19415,8 @@ def count_dictionary_entries_missing_card(
         "AND (response_json->'dictionary_senses') IS NULL "
         "AND (response_json->'usage_examples') IS NULL "
         "AND (response_json->'meanings') IS NULL "
-        "AND (response_json->'translations') IS NULL"
+        "AND (response_json->'translations') IS NULL "
+        + _DICTIONARY_SINGLE_WORD_SQL
     )
     params: list = []
     if user_id is not None:
@@ -19437,7 +19450,8 @@ def get_dictionary_entries_for_metainfo_scan(
                 "AND (response_json->'dictionary_senses') IS NULL "
                 "AND (response_json->'usage_examples') IS NULL "
                 "AND (response_json->'meanings') IS NULL "
-                "AND (response_json->'translations') IS NULL"
+                "AND (response_json->'translations') IS NULL "
+                + _DICTIONARY_SINGLE_WORD_SQL
             )
             params: list = []
             if user_id is not None:
