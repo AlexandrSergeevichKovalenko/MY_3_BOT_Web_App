@@ -3256,6 +3256,20 @@ def get_dict_dedup_report(*, days: int = 7) -> dict:
     }
 
 
+# «Богатая» карточка на уровне SQL: есть хотя бы один блок разбора. Это дешёвый
+# JSONB-прокси того же условия, что _dictionary_payload_needs_enrichment проверяет в
+# Python; держим оба определения синхронными.
+_DICTIONARY_POOL_RICH_KEYS = ("usage_examples", "dictionary_senses", "meanings", "grammar_tables", "forms", "translations")
+
+
+def _dictionary_pool_rich_sql(alias: str) -> str:
+    return "(" + " OR ".join(f"{alias} ? '{key}'" for key in _DICTIONARY_POOL_RICH_KEYS) + ")"
+
+
+DICTIONARY_POOL_RICH_SQL_STORED = _dictionary_pool_rich_sql("bt_3_dictionary_entries.response_json")
+DICTIONARY_POOL_RICH_SQL_EXCLUDED = _dictionary_pool_rich_sql("EXCLUDED.response_json")
+
+
 def _upsert_dictionary_canonical_entry_with_cursor(
     cursor,
     *,
@@ -3281,7 +3295,7 @@ def _upsert_dictionary_canonical_entry_with_cursor(
         raise ValueError("dictionary canonical entry requires source and target text")
     payload = _coerce_json_object(response_json)
     cursor.execute(
-        """
+        f"""
         INSERT INTO bt_3_dictionary_entries (
             source_lang,
             target_lang,
@@ -3306,7 +3320,17 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             translation_de = COALESCE(NULLIF(bt_3_dictionary_entries.translation_de, ''), EXCLUDED.translation_de),
             word_de = COALESCE(NULLIF(bt_3_dictionary_entries.word_de, ''), EXCLUDED.word_de),
             translation_ru = COALESCE(NULLIF(bt_3_dictionary_entries.translation_ru, ''), EXCLUDED.translation_ru),
-            response_json = COALESCE(bt_3_dictionary_entries.response_json, EXCLUDED.response_json),
+            -- Общий пул: побеждает БОЛЕЕ ПОЛНАЯ карточка, а не первый писатель.
+            -- Раньше стоял COALESCE(старое, новое) — тонкая запись (сохранение из
+            -- личного чата бота, импорт, тап в тренажёре) навсегда фиксировала пустую
+            -- карточку, и богатый разбор поверх неё уже не ложился.
+            response_json = CASE
+                WHEN bt_3_dictionary_entries.response_json IS NULL THEN EXCLUDED.response_json
+                WHEN EXCLUDED.response_json IS NULL THEN bt_3_dictionary_entries.response_json
+                WHEN {DICTIONARY_POOL_RICH_SQL_EXCLUDED} AND NOT {DICTIONARY_POOL_RICH_SQL_STORED}
+                    THEN EXCLUDED.response_json
+                ELSE bt_3_dictionary_entries.response_json
+            END,
             updated_at = NOW()
         RETURNING id;
         """,
@@ -18906,6 +18930,94 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
                     json.dumps(response_json, ensure_ascii=False),
                     entry_id,
                 ))
+
+
+def get_pool_dictionary_entry(
+    *,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+) -> dict | None:
+    """ОБЩИЙ ПУЛ СЛОВ. Любое слово, попавшее к нам ЛЮБЫМ путём (запрос в словаре, тап в
+    интерактиве, сохранение из личного чата бота, ночной шорткат, импорт), лежит в
+    bt_3_dictionary_entries и принадлежит ВСЕМ, а не тому, кто его первым принёс. Этот
+    геттер — первая инстанция для любого запроса перевода: сначала свой пул, и только
+    потом переводчик/GPT.
+
+    Отдаём САМУЮ ПОЛНУЮ строку по (пара языков + нормализованный исходный текст):
+    сначала те, у кого в response_json есть блоки разбора, внутри них — свежайшую."""
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    normalized_source_text = _normalize_dictionary_text_key(source_text)
+    if not normalized_source_lang or not normalized_target_lang or not normalized_source_text:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, source_text, target_text, word_ru, translation_de,
+                       word_de, translation_ru, response_json, updated_at
+                FROM bt_3_dictionary_entries
+                WHERE source_lang = %s AND target_lang = %s AND source_text_norm = %s
+                ORDER BY (
+                    CASE WHEN response_json IS NOT NULL
+                          AND {DICTIONARY_POOL_RICH_SQL_STORED} THEN 1 ELSE 0 END
+                ) DESC, updated_at DESC
+                LIMIT 1;
+                """,
+                (normalized_source_lang, normalized_target_lang, normalized_source_text),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "source_text": row[1],
+        "target_text": row[2],
+        "word_ru": row[3],
+        "translation_de": row[4],
+        "word_de": row[5],
+        "translation_ru": row[6],
+        "response_json": _coerce_json_object(row[7]),
+        "updated_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def upsert_dictionary_pool_entry(
+    *,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    target_text: str,
+    word_ru: str | None = None,
+    translation_de: str | None = None,
+    word_de: str | None = None,
+    translation_ru: str | None = None,
+    response_json: dict | None = None,
+) -> int:
+    """Положить слово в общий пул ВНЕ пути сохранения — так в пул попадают и обычные
+    запросы перевода (никто ничего не сохранял), и результаты дообогащения карточки.
+    Конфликт разрешает тот же upsert: более полная карточка вытесняет тонкую."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                entry_id = _upsert_dictionary_canonical_entry_with_cursor(
+                    cursor,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    source_text=source_text,
+                    target_text=target_text,
+                    word_ru=word_ru,
+                    translation_de=translation_de,
+                    word_de=word_de,
+                    translation_ru=translation_ru,
+                    response_json=response_json,
+                )
+            conn.commit()
+        return int(entry_id or 0)
+    except ValueError:
+        # Нет пары языков или пустой текст — в пул такое не кладём, это не ошибка.
+        return 0
 
 
 def get_quick_dictionary_entries_for_backfill(

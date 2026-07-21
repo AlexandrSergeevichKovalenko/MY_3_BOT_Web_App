@@ -327,6 +327,8 @@ from backend.openai_manager import (
 )
 from backend.database import (
     get_quick_dictionary_entries_for_backfill,
+    get_pool_dictionary_entry,
+    upsert_dictionary_pool_entry,
     get_dictionary_entries_for_metainfo_scan,
     get_dictionary_backfill_diagnostics,
     update_dictionary_entry_full_columns,
@@ -6538,6 +6540,17 @@ def _set_cached_dictionary_lookup_all(
     lookup_lang: str,
     normalized_word: str,
 ) -> None:
+    # Тонкую карточку одиночного слова не публикуем в общий (shared) ключ: она осела бы
+    # там на 10 лет и раздавалась всем вместо настоящего разбора.
+    item = payload.get("item") if isinstance(payload, dict) else None
+    if (
+        "|shared|" in str(cache_key or "")
+        and isinstance(item, dict)
+        and _is_single_word_dictionary_entry(str(item.get("source_text") or normalized_word), source_lang)
+        and _dictionary_payload_needs_enrichment(item)
+    ):
+        logging.debug("shared dictionary cache write skipped (thin card): %s", normalized_word)
+        return
     _set_cached_dictionary_lookup(cache_key, payload)
     if not DICTIONARY_PERSISTENT_CACHE_ENABLED:
         return
@@ -6638,6 +6651,83 @@ def _get_dictionary_enrichment_job_for_cache_keys(*cache_keys: str) -> dict[str,
             if isinstance(job, dict):
                 return _clone_dictionary_enrichment_job(job)
     return None
+
+
+def _dictionary_pool_langs_from_item(item: dict, direction: str, source_lang: str, target_lang: str) -> tuple[str, str]:
+    """Пара языков САМОЙ карточки: направление запроса (de-ru / ru-de) важнее профиля —
+    иначе немецкое слово легло бы в пул как русское."""
+    parts = [p.strip().lower() for p in str(direction or "").split("-") if p.strip()]
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    payload_pair = item.get("language_pair") if isinstance(item, dict) else None
+    if isinstance(payload_pair, dict):
+        src = str(payload_pair.get("source_lang") or "").strip().lower()
+        tgt = str(payload_pair.get("target_lang") or "").strip().lower()
+        if src and tgt:
+            return src, tgt
+    return str(source_lang or "").strip().lower(), str(target_lang or "").strip().lower()
+
+
+def _store_dictionary_item_in_pool(
+    item: dict | None,
+    *,
+    direction: str = "",
+    source_lang: str = "",
+    target_lang: str = "",
+) -> None:
+    """Положить результат в ОБЩИЙ ПУЛ. Вызывается на КАЖДОМ пути, каким слово к нам
+    попадает — не только при сохранении: обычный запрос перевода тоже пополняет пул,
+    чтобы следующий пользователь получил слово от нас, а не из GPT."""
+    if not isinstance(item, dict) or not item:
+        return
+    try:
+        pool_source_lang, pool_target_lang = _dictionary_pool_langs_from_item(item, direction, source_lang, target_lang)
+        source_text = str(item.get("source_text") or "").strip()
+        target_text = str(item.get("target_text") or "").strip()
+        if not source_text:
+            source_text = str(item.get("word_de") if pool_source_lang == "de" else item.get("word_ru") or "").strip()
+        if not target_text:
+            target_text = str(
+                item.get("translation_ru") if pool_target_lang == "ru" else item.get("translation_de") or ""
+            ).strip()
+        if not source_text or not target_text:
+            return
+        upsert_dictionary_pool_entry(
+            source_lang=pool_source_lang,
+            target_lang=pool_target_lang,
+            source_text=source_text,
+            target_text=target_text,
+            word_ru=str(item.get("word_ru") or "").strip() or None,
+            translation_de=str(item.get("translation_de") or "").strip() or None,
+            word_de=str(item.get("word_de") or "").strip() or None,
+            translation_ru=str(item.get("translation_ru") or "").strip() or None,
+            response_json=item,
+        )
+    except Exception as exc:
+        logging.debug("dictionary pool upsert skipped: %s", exc)
+
+
+def _load_dictionary_item_from_pool(*, word: str, source_lang: str, target_lang: str) -> dict | None:
+    """Первая инстанция любого запроса перевода: наш собственный пул. Отдаём карточку
+    только если она ПОЛНАЯ — тонкую отдавать нельзя, иначе пользователь навсегда получит
+    обрезанный разбор вместо настоящего."""
+    try:
+        entry = get_pool_dictionary_entry(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_text=word,
+        )
+    except Exception as exc:
+        logging.debug("dictionary pool lookup failed: %s", exc)
+        return None
+    if not isinstance(entry, dict):
+        return None
+    payload = entry.get("response_json")
+    if not isinstance(payload, dict) or not payload:
+        return None
+    if _dictionary_payload_needs_enrichment(payload):
+        return None
+    return payload
 
 
 def _create_dictionary_enrichment_job(
@@ -8578,6 +8668,13 @@ def _run_saved_dictionary_entry_enrichment(
             )
         else:
             update_webapp_dictionary_entry(int(entry_id), merged_response_json)
+        _publish_enriched_card_to_shared_stores(
+            payload=merged_response_json,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_text=source_text,
+            target_text=target_text or russian,
+        )
         logging.info(
             "Dictionary save enrichment ready: entry_id=%s source_lang=%s target_lang=%s source_text=%r",
             int(entry_id),
@@ -8746,6 +8843,77 @@ def backfill_quick_dictionary_translations(
                 row.get("id"), german, exc, exc_info=True,
             )
     return report
+
+
+def _publish_enriched_card_to_shared_stores(
+    *,
+    payload: dict | None,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    target_text: str,
+) -> None:
+    """Обогащённая карточка — ОБЩЕЕ достояние. Кто бы её ни оплатил (сохранение, открытие
+    пустой карточки, бэкфилл), она уходит в общий пул и в общий кеш запросов, чтобы
+    следующий пользователь получил слово от нас, а не из GPT."""
+    if not isinstance(payload, dict) or not payload:
+        return
+    if _dictionary_payload_needs_enrichment(payload):
+        return  # неполную карточку в общие хранилища не кладём
+    src = str(source_text or "").strip()
+    tgt = str(target_text or "").strip()
+    if not src or not tgt:
+        return
+    try:
+        upsert_dictionary_pool_entry(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_text=src,
+            target_text=tgt,
+            word_ru=str(payload.get("word_ru") or "").strip() or None,
+            translation_de=str(payload.get("translation_de") or "").strip() or None,
+            word_de=str(payload.get("word_de") or "").strip() or None,
+            translation_ru=str(payload.get("translation_ru") or "").strip() or None,
+            response_json=payload,
+        )
+    except Exception as exc:
+        logging.debug("enriched card → pool failed: %s", exc)
+    if not DICTIONARY_SHARED_CACHE_ENABLED:
+        return
+    try:
+        normalized_word = _normalize_dictionary_lookup_word(src)
+        query_source_lang, query_target_lang = _resolve_dictionary_query_languages(
+            word=src,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            lookup_lang=source_lang,
+        )
+        cache_key_shared = _build_dictionary_lookup_cache_key(
+            user_id=None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang=source_lang,
+            word=src,
+        )
+        _set_cached_dictionary_lookup_all(
+            cache_key=cache_key_shared,
+            payload={
+                "item": payload,
+                "direction": f"{query_source_lang}-{query_target_lang}",
+                "lookup_status": "ready",
+                "enrichment_pending": False,
+            },
+            source_lang=source_lang,
+            target_lang=target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang=source_lang,
+            normalized_word=normalized_word,
+        )
+    except Exception as exc:
+        logging.debug("enriched card → shared cache failed: %s", exc)
 
 
 def backfill_dictionary_card_metainfo(
@@ -18373,6 +18541,13 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
             "lookup_status": "ready",
             "enrichment_pending": False,
         }
+        # В общий пул — даже если пользователь ничего не сохранял: слово теперь наше общее.
+        _store_dictionary_item_in_pool(
+            final_item,
+            direction=final_direction,
+            source_lang=str(job.get("query_source_lang") or ""),
+            target_lang=str(job.get("query_target_lang") or ""),
+        )
         _set_cached_dictionary_lookup_all(
             cache_key=str(job.get("cache_key") or ""),
             payload=cache_payload,
@@ -34779,13 +34954,28 @@ def lookup_webapp_dictionary():
             word=word_ru,
         )
 
+        # Кеш живёт 10 лет и раздаётся ВСЕМ, поэтому обрезанная карточка в нём — это
+        # обрезанная карточка навсегда и для каждого. Отдаём из кеша только полный разбор;
+        # тонкий трактуем как промах и переспрашиваем (свежий результат его перезапишет).
+        # Проверка только для ОДИНОЧНЫХ слов: у фраз и предложений разбора и не бывает,
+        # иначе мы бы гоняли GPT на каждый их запрос.
+        def _cached_payload_is_servable(payload: dict | None) -> bool:
+            if not isinstance(payload, dict):
+                return False
+            item = payload.get("item")
+            if not isinstance(item, dict):
+                return False
+            if not _is_single_word_dictionary_entry(word_ru, query_source_lang):
+                return True
+            return not _dictionary_payload_needs_enrichment(item)
+
         def _load_cache_payload() -> tuple[dict | None, str]:
             local_payload, local_tier = _get_cached_dictionary_lookup_with_tier(cache_key)
-            if local_payload:
+            if local_payload and _cached_payload_is_servable(local_payload):
                 return local_payload, f"user_{local_tier}"
             if DICTIONARY_SHARED_CACHE_ENABLED:
                 shared_payload, shared_tier = _get_cached_dictionary_lookup_with_tier(cache_key_shared)
-                if shared_payload:
+                if shared_payload and _cached_payload_is_servable(shared_payload):
                     _set_cached_dictionary_lookup(cache_key, shared_payload)
                     return shared_payload, f"shared_{shared_tier}"
             return None, "none"
@@ -34838,6 +35028,57 @@ def lookup_webapp_dictionary():
                         "enrichment_pending": False,
                         "save_locked": False,
                         "deep_id": _cached_deep if _get_deep_analysis_record(_cached_deep) else None,
+                        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                    }
+                )
+
+        # ОБЩИЙ ПУЛ — вторая инстанция после кеша и ДО переводчика/GPT. Слово могло
+        # попасть к нам как угодно (личный чат бота, ночной шорткат, тап в тренажёре,
+        # чужой запрос) — оно общее, и отдаём мы его из своего словаря бесплатно.
+        if not cached_payload:
+            pool_item = _load_dictionary_item_from_pool(
+                word=word_ru,
+                source_lang=query_source_lang,
+                target_lang=query_target_lang,
+            )
+            if isinstance(pool_item, dict) and pool_item:
+                pool_direction = f"{query_source_lang}-{query_target_lang}"
+                pool_payload = {
+                    "item": pool_item,
+                    "direction": pool_direction,
+                    "lookup_status": "ready",
+                    "enrichment_pending": False,
+                }
+                # Прогреваем оба ключа кеша, чтобы следующий запрос не ходил даже в пул.
+                for key in ([cache_key, cache_key_shared] if DICTIONARY_SHARED_CACHE_ENABLED else [cache_key]):
+                    _set_cached_dictionary_lookup_all(
+                        cache_key=key,
+                        payload=pool_payload,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        query_source_lang=query_source_lang,
+                        query_target_lang=query_target_lang,
+                        lookup_lang=lookup_lang,
+                        normalized_word=normalized_word,
+                    )
+                mark("cache_hit")
+                log_limit_runtime_event(
+                    user_id=int(user_id),
+                    feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+                    event_type="cache_hit",
+                    origin="webapp_dictionary",
+                    metadata={"word": word_ru, "cache_scope": "shared_pool"},
+                )
+                _log_dictionary_profile()
+                return jsonify(
+                    {
+                        "ok": True,
+                        "item": _with_grammar_tables(pool_item),
+                        "direction": pool_direction,
+                        "lookup_status": "ready",
+                        "enrichment_pending": False,
+                        "save_locked": False,
+                        "deep_id": None,
                         "language_pair": _build_language_pair_payload(source_lang, target_lang),
                     }
                 )
@@ -35054,6 +35295,10 @@ def lookup_webapp_dictionary():
         "lookup_status": "ready",
         "enrichment_pending": False,
     }
+    _store_dictionary_item_in_pool(
+        result, direction=direction,
+        source_lang=query_source_lang, target_lang=query_target_lang,
+    )
     _set_cached_dictionary_lookup_all(
         cache_key=cache_key,
         payload=cache_payload,
@@ -35236,6 +35481,33 @@ def stream_webapp_dictionary():
     cached_payload, _tier = _get_cached_dictionary_lookup_with_tier(cache_key)
     if not cached_payload and DICTIONARY_SHARED_CACHE_ENABLED:
         cached_payload, _tier = _get_cached_dictionary_lookup_with_tier(cache_key_shared)
+    _is_word_query = _is_single_word_dictionary_entry(word_ru, query_source_lang)
+    if (
+        isinstance(cached_payload, dict)
+        and _is_word_query
+        and isinstance(cached_payload.get("item"), dict)
+        and _dictionary_payload_needs_enrichment(cached_payload.get("item"))
+    ):
+        cached_payload = None  # тонкая карточка в кеше = промах, а не «готово»
+    # Промах кеша → ОБЩИЙ ПУЛ, и только если и там пусто — GPT.
+    if not isinstance(cached_payload, dict) or not isinstance(cached_payload.get("item"), dict):
+        pool_item = _load_dictionary_item_from_pool(
+            word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
+        )
+        if isinstance(pool_item, dict) and pool_item:
+            pool_payload = {
+                "item": pool_item,
+                "direction": f"{query_source_lang}-{query_target_lang}",
+                "lookup_status": "ready",
+                "enrichment_pending": False,
+            }
+            for key in ([cache_key, cache_key_shared] if DICTIONARY_SHARED_CACHE_ENABLED else [cache_key]):
+                _set_cached_dictionary_lookup_all(
+                    cache_key=key, payload=pool_payload, source_lang=source_lang, target_lang=target_lang,
+                    query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+                    lookup_lang=lookup_lang, normalized_word=normalized_word,
+                )
+            cached_payload = pool_payload
     if isinstance(cached_payload, dict) and isinstance(cached_payload.get("item"), dict):
         _cached_deep = _quick_dict_deep_id(user_id, word_ru, source_lang, target_lang)
         return jsonify({
@@ -35289,6 +35561,10 @@ def stream_webapp_dictionary():
             direction=direction, raw=raw if isinstance(raw, dict) else {},
         )
         cache_payload = {"item": item, "direction": direction, "lookup_status": "ready", "enrichment_pending": False}
+        _store_dictionary_item_in_pool(
+            item, direction=direction,
+            source_lang=query_source_lang, target_lang=query_target_lang,
+        )
         try:
             _set_cached_dictionary_lookup_all(
                 cache_key=cache_key, payload=cache_payload, source_lang=source_lang, target_lang=target_lang,
@@ -48475,6 +48751,14 @@ def enrich_flashcard_entry():
         update_webapp_dictionary_entry(int(entry_id), response_json)
     except Exception:
         pass
+    # Наполнили карточку по требованию одного пользователя — она сразу общая.
+    _publish_enriched_card_to_shared_stores(
+        payload=response_json,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        target_text=target_text,
+    )
 
     return jsonify(
         {
