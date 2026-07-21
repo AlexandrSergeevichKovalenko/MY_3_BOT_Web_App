@@ -8683,6 +8683,78 @@ def _run_telemetry_retention_safe() -> None:
         _record_sched_heartbeat("telemetry_retention", status="failed")
 
 
+def _run_public_library_audio_pregen_safe() -> None:
+    """Bot-side NIGHTLY warm-up of the «Классика» audio (Standard voice, free bucket).
+
+    Sync (BackgroundScheduler thread → stays sync). Capped per night so one run can't
+    hold a scheduler thread for hours: it resumes exactly where it stopped the next
+    night, since already-cached pages are skipped. Never raises."""
+    try:
+        from backend.backend_server import run_public_library_audio_pregen
+
+        cap_env = (os.getenv("PUBLIC_LIBRARY_PREGEN_NIGHTLY_MAX_PAGES") or "500").strip()
+        cap = int(cap_env) if cap_env.isdigit() and int(cap_env) > 0 else 500
+        res = run_public_library_audio_pregen(max_pages=cap, dry_run=False, trigger="bot_cron")
+        logging.info("[PUBLIC_LIBRARY_PREGEN] bot nightly run: %s", res)
+    except Exception:
+        logging.exception("public library audio pregen (bot scheduler) failed")
+        _record_sched_heartbeat("public_library_audio_pregen", status="failed")
+
+
+def _build_classics_pregen_last_run_line(esc) -> str:
+    """One line for the readiness DM: did the nightly warm-up actually DO anything?
+
+    Reads the `public_library_audio_pregen` heartbeat written by
+    run_public_library_audio_pregen. A run that generated nothing while pages failed is
+    called out loudly — that exact state (0 generated, every page throwing) stalled the
+    whole shelf unnoticed for five nights."""
+    from datetime import timezone as _tz_utc
+    try:
+        from backend.database import get_all_latest_scheduler_run_guards
+
+        row = next(
+            (
+                r for r in (get_all_latest_scheduler_run_guards() or [])
+                if str(r.get("job_key") or "") == "public_library_audio_pregen"
+            ),
+            None,
+        )
+    except Exception:
+        logging.exception("classics pregen heartbeat read failed")
+        return "🔧 Прогрев: статус последнего прогона недоступен."
+    if not row:
+        return "⚠️ <b>Прогрев ни разу не отчитался</b> — ночной джоб не запускался. Ручной запуск: <code>/reader_public_status pregen</code>"
+
+    ts = row.get("finished_at") or row.get("updated_at") or row.get("claimed_at")
+    age_txt = "?"
+    stale = False
+    if ts is not None:
+        try:
+            hours = (datetime.now(_tz_utc.utc) - ts).total_seconds() / 3600.0
+            age_txt = f"{int(hours)} ч назад" if hours >= 1 else "меньше часа назад"
+            stale = hours > 36
+        except Exception:
+            pass
+
+    meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    generated = int(meta.get("generated_pages") or 0)
+    failed = int(meta.get("failed_pages") or 0)
+    stopped = str(meta.get("stopped") or "") or "дошёл до конца"
+    where = str(meta.get("service") or meta.get("trigger") or "?")
+
+    head = f"🔧 <b>Последний прогрев</b> ({age_txt}, {esc(where)}): +{generated} стр., ошибок {failed}, итог: {esc(stopped)}"
+    if failed and not generated:
+        sample = "; ".join(str(s) for s in (meta.get("failed_samples") or [])[:2])
+        return (
+            f"⛔️ <b>ПРОГРЕВ НЕ РАБОТАЕТ</b> ({age_txt}, {esc(where)}): 0 новых страниц, {failed} ошибок.\n"
+            f"<code>{esc(sample)}</code>\n"
+            "Проценты выше не растут — это не «догревается», это стоит."
+        )
+    if stale:
+        return head + "\n⚠️ Прогрев не отчитывался больше суток — проверь, жив ли ночной джоб."
+    return head
+
+
 def _run_classics_audio_readiness_report_safe() -> None:
     """Bot-side MORNING DM: which «Классика» books are fully warmed (audio ready) so
     the admin knows which to test. Sync (BackgroundScheduler thread → stays sync).
@@ -8713,6 +8785,11 @@ def _run_classics_audio_readiness_report_safe() -> None:
         lines.append("🟡 <b>Догреваются (топ-6):</b>")
         for r in partial[:6]:
             lines.append(f"• {_esc(r['title'])} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
+    # Last warm-up run, so a stalled percentage can never again read as "прогревается".
+    # Without this the job could synthesize 0 pages every night (every page throwing into
+    # a swallowed except) and the report looked exactly like healthy slow progress.
+    lines.append("")
+    lines.append(_build_classics_pregen_last_run_line(_esc))
     text = "\n".join(lines)
     token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
     admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
@@ -35166,7 +35243,12 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
         )
         try:
             from backend.backend_server import run_public_library_audio_pregen
-            res = await asyncio.to_thread(run_public_library_audio_pregen, max_pages=pregen_cap, dry_run=False)
+            res = await asyncio.to_thread(
+                run_public_library_audio_pregen,
+                max_pages=pregen_cap,
+                dry_run=False,
+                trigger="admin_command",
+            )
         except Exception as exc:
             logging.exception("public library audio pregen via bot failed")
             await message.reply_text(f"❌ pregen failed: {exc}")
@@ -35183,9 +35265,10 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
             f"• уже было в кэше: {res.get('skipped_cached')}\n"
             f"• просмотрено страниц: {res.get('pages_visited')}\n"
             f"• потрачено символов: {res.get('spent_chars')} из бюджета {res.get('budget_chars')}\n"
+            f"• ошибок синтеза: <b>{res.get('failed_pages') or 0}</b>\n"
             f"• итог: {stopped_txt}\n\n"
             "Проверить готовность книг: <code>/reader_public_status audio</code>. "
-            "Прогрев идёт и сам ночью в 04:45.",
+            "Прогрев идёт и сам ночью в 03:30.",
             parse_mode="HTML",
         )
 
@@ -38679,6 +38762,23 @@ def main():
             hour=int((os.getenv("PROVIDER_COST_TRUTH_REPORT_HOUR") or "9").strip() or "9"),
             minute=int((os.getenv("PROVIDER_COST_TRUTH_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("PROVIDER_COST_TRUTH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Nightly warm-up of the «Классика» audio (03:30 Europe/Vienna) --
+        # Driven from the BOT scheduler, not the backend one: the backend copy fires on
+        # SCHEDULER_SERVICE, which has no GOOGLE_CREDS_JSON/R2_* at all, so every page
+        # threw into a swallowed except and the warm-up silently produced 0 pages for
+        # five straight nights. The bot process has the credentials (the manual
+        # /reader_public_status pregen has always worked) and this scheduler is the
+        # proven-reliable one — same reason the readiness DM below lives here.
+        scheduler.add_job(
+            _run_public_library_audio_pregen_safe,
+            "cron",
+            hour=int((os.getenv("PUBLIC_LIBRARY_PREGEN_BOT_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("PUBLIC_LIBRARY_PREGEN_BOT_MINUTE") or "30").strip() or "30"),
+            timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,

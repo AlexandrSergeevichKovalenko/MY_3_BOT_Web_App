@@ -16998,12 +16998,18 @@ def _get_or_create_voice_sample_url(tier: str, lang_short: str = "de") -> str | 
 
 
 def run_public_library_audio_pregen(
-    *, target_lang: str = "de", max_pages: int | None = None, dry_run: bool = False
+    *, target_lang: str = "de", max_pages: int | None = None, dry_run: bool = False,
+    trigger: str = "job",
 ) -> dict:
     """Pre-generate shared audio for the public-domain library in the Standard voice,
     spending only what the separate Standard free bucket allows (× the safety
     fraction). Idempotent: already-cached pages are skipped, so it can run daily and
     simply resumes where the budget ran out. One synthesized mp3 serves every reader.
+
+    Per-page failures are counted (not just logged): a run that synthesizes nothing
+    because every page throws used to report ok/0 pages and look identical to "already
+    warm", which hid a 5-night stall. The summary is also written to the scheduler
+    heartbeat so the morning readiness DM can say who ran it and what broke.
     """
     status = get_google_tts_standard_monthly_budget_status() or {}
     remaining_units = 0.0 if status.get("is_blocked") else float(status.get("remaining_units") or 0.0)
@@ -17013,6 +17019,8 @@ def run_public_library_audio_pregen(
     generated_pages = 0
     skipped_cached = 0
     pages_visited = 0
+    failed_pages = 0
+    failed_samples: list[str] = []
     stopped: str | None = None
     if budget_chars <= 0:
         stopped = "no_budget"
@@ -17089,7 +17097,10 @@ def run_public_library_audio_pregen(
             except GoogleTTSBudgetBlockedError:
                 stopped = "provider_blocked"
                 break
-            except Exception:
+            except Exception as exc:
+                failed_pages += 1
+                if len(failed_samples) < 3:
+                    failed_samples.append(f"doc{doc['id']}/p{page_no}: {exc.__class__.__name__}: {exc}"[:200])
                 logging.exception("public library pregen failed doc=%s page=%s", doc["id"], page_no)
         if stopped:
             break
@@ -17102,10 +17113,29 @@ def run_public_library_audio_pregen(
         "generated_pages": generated_pages,
         "skipped_cached": skipped_cached,
         "pages_visited": pages_visited,
+        "failed_pages": failed_pages,
+        "failed_samples": failed_samples,
         "stopped": stopped,
         "dry_run": dry_run,
+        "trigger": trigger,
+        "service": _railway_service_name or "",
     }
+    if failed_pages:
+        logging.warning(
+            "[PUBLIC_LIBRARY_PREGEN] %s pages FAILED to synthesize (generated=%s): %s",
+            failed_pages, generated_pages, "; ".join(failed_samples),
+        )
     logging.info("[PUBLIC_LIBRARY_PREGEN] %s", summary)
+    try:
+        from backend.database import record_scheduler_heartbeat
+
+        record_scheduler_heartbeat(
+            job_key="public_library_audio_pregen",
+            status="failed" if (failed_pages and not generated_pages) else "completed",
+            metadata=summary,
+        )
+    except Exception:
+        logging.debug("public library pregen heartbeat failed", exc_info=True)
     return summary
 
 
@@ -17121,7 +17151,7 @@ def _run_public_library_audio_pregen_job() -> None:
         max_pages_env = (os.getenv("PUBLIC_LIBRARY_PREGEN_MAX_PAGES") or "").strip()
         max_pages = int(max_pages_env) if max_pages_env.isdigit() else None
         for target_lang in target_langs:
-            run_public_library_audio_pregen(target_lang=target_lang, max_pages=max_pages)
+            run_public_library_audio_pregen(target_lang=target_lang, max_pages=max_pages, trigger="cron")
     except Exception:
         logging.exception("public library audio pregen job failed")
 
