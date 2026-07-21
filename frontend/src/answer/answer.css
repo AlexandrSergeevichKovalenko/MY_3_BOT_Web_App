@@ -1124,6 +1124,7 @@ html[data-scheme="light"] .adj-wordpop-ru { color: #334155; }
 .as-mine { color: #ef4444; }
 .as-ru { opacity: .65; }
 .as-save-hint { font-size: 12.5px; color: var(--dmps-text-muted, #94A3B8); margin-bottom: 8px; }
+.as-save-error { font-size: 12.5px; color: #F0A03C; margin: -4px 0 8px; }
 .as-row-tap {
   width: 100%; text-align: left; cursor: pointer; font-family: inherit;
   color: var(--dmps-text-primary, #F8FAFC);
@@ -1308,3 +1309,31 @@ html[data-scheme="light"] .ask-pop { background: #ffffff; border-color: #c9d2e0;
 html[data-scheme="light"] .ask-pop-title { color: #0f172a; }
 html[data-scheme="light"] .ask-bubble.bot { color: #0f172a; background: #eef1f7; }
 html[data-scheme="light"] .ask-pop-input textarea { background: #f4f6fa; color: #0f172a; }
+
+/* ── Admin acceptance for «Finde im Bild»: draw the answer region by hand ─────── */
+.pinrev { display: flex; flex-direction: column; gap: 10px; }
+.pinrev-head { display: flex; align-items: baseline; gap: 10px; }
+.pinrev-count { font-size: 13px; font-weight: 700; color: var(--dmps-text-muted, #94A3B8); }
+.pinrev-word { font-size: 18px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
+.pinrev-hint { margin: 0; font-size: 13px; line-height: 1.4; color: var(--dmps-text-secondary, #CBD5E1); }
+.pinrev-wrap {
+  position: relative; width: 100%; overflow: hidden; cursor: crosshair;
+  border-radius: var(--dmps-radius-inner, 20px);
+  border: 1px solid var(--dmps-border, #334155);
+  touch-action: none;              /* the drag draws a box, it must not scroll the page */
+  -webkit-touch-callout: none; user-select: none;
+}
+.pinrev-box {
+  position: absolute; box-sizing: border-box;
+  border: 3px solid #22C55E; border-radius: 8px;
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,0.5);
+  pointer-events: none;
+}
+.pinrev-box.live { border-style: dashed; border-color: #FBBF24; }
+.pinrev-meta { font-size: 14px; color: var(--dmps-text-primary, #F8FAFC); }
+.pinrev-dim { color: var(--dmps-text-muted, #94A3B8); }
+.pinrev-err { font-size: 13px; color: #F87171; }
+.pinrev-actions { display: flex; flex-direction: column; gap: 8px; }
+.pinrev-empty { display: flex; flex-direction: column; gap: 8px; align-items: center; padding: 24px 0; }
+.pinrev-empty-title { font-size: 20px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
+.pinrev-empty-sub { font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }

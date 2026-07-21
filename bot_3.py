@@ -32250,15 +32250,15 @@ async def _send_aufgabe_review_card(aufgabe_id: str, fmt: str, level: str, paylo
         caption = (
             f"🔎 <b>Проверка задания «Finde im Bild»</b> · {html.escape(level)}\n\n"
             f"Загаданный предмет: <b>{html.escape(target)}</b>\n"
-            f"Зелёная рамка = зона, которую засчитает ответ.\n\n"
+            f"Зелёная рамка = черновик модели: именно эта зона засчитает тап ученика.\n\n"
             f"<i>{html.escape(str(payload.get('erklaerung') or ''))[:300]}</i>\n\n"
-            f"Одобришь — задание пойдёт людям. Забракуешь — снимается, "
-            f"и я сразу сгенерирую замену на проверку."
+            f"Попала — жми «Рамка верна». Не попала — открой и обведи предмет пальцем, "
+            f"твоя рамка станет эталоном."
         )
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Одобрить", callback_data=f"aurev:ok:{aufgabe_id}"),
-            InlineKeyboardButton("🔁 Забраковать", callback_data=f"aurev:no:{aufgabe_id}"),
-        ]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Открыть и обвести", url=get_webapp_deeplink("ans_pv_0"))],
+            [InlineKeyboardButton("✅ Рамка верна", callback_data=f"aurev:ok:{aufgabe_id}")],
+        ])
         for admin_id in admin_ids:
             try:
                 if preview:
@@ -36364,15 +36364,17 @@ async def admin_pin_review_command(update: Update, context: CallbackContext) -> 
     if not rows:
         await message.reply_text("Заданий на проверке нет.")
         return
+    # One message with a link into the review screen — NOT one photo per task. The screen
+    # walks the whole queue itself, and 20 photo cards in a DM is not a workflow.
     await message.reply_text(
-        f"📬 Отправляю на проверку: {len(rows)}. Пока они не одобрены, «Finde im Bild» "
-        f"людям не уходит."
+        f"📬 На приёмке: <b>{len(rows)}</b>.\n\n"
+        f"Открой экран, обведи предмет пальцем — твоя рамка станет эталоном для тапа "
+        f"ученика. Пока задание не принято, людям оно не уходит.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✏️ Открыть приёмку", url=get_webapp_deeplink("ans_pv_0")),
+        ]]),
     )
-    for aufgabe_id, level, payload in rows:
-        await _send_aufgabe_review_card(
-            str(aufgabe_id), "pin", str(level or "B2"),
-            payload if isinstance(payload, dict) else {},
-        )
 
 
 _PIN_AUDIT_INFLIGHT = {"active": False}

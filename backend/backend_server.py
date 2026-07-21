@@ -26892,6 +26892,63 @@ def _maybe_record_weak_topic(user_id, kind, correct, answered) -> None:
         logging.debug("record weak topic failed kind=%s user=%s", kind, user_id, exc_info=True)
 
 
+def _pin_review_admin_id():
+    """Auth for the «Finde im Bild» acceptance screen: a logged-in admin. Returns
+    (user_id, None) or (None, error response)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return None, err
+    from backend.database import get_admin_telegram_ids
+    if int(user_id) not in {int(a) for a in (get_admin_telegram_ids() or [])}:
+        return None, (jsonify({"error": "Только для админов"}), 403)
+    return int(user_id), None
+
+
+@app.route("/api/answer/pinreview/queue", methods=["POST"])
+def answer_pin_review_queue():
+    """Tasks awaiting acceptance, with the model's DRAFT box. The admin redraws it by
+    hand — the drawn box becomes the answer region, so a mediocre draft costs a drag
+    instead of a whole regeneration."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    from backend.database import list_pending_pin_reviews
+    return jsonify({"ok": True, "items": list_pending_pin_reviews()})
+
+
+@app.route("/api/answer/pinreview/save", methods=["POST"])
+def answer_pin_review_save():
+    """Store the hand-drawn region and release the task, or reject it outright (the
+    object isn't in the picture at all — no box can save it)."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    aufgabe_id = str(payload.get("aufgabe_id") or "").strip()
+    if not aufgabe_id:
+        return jsonify({"error": "нет aufgabe_id"}), 400
+    from backend.database import (
+        mark_aufgabe_bbox_human_ok, set_aufgabe_review_status, update_aufgabe_bbox_by_id,
+    )
+    if str(payload.get("action") or "").strip().lower() == "reject":
+        set_aufgabe_review_status(aufgabe_id, "rejected")
+        return jsonify({"ok": True, "status": "rejected"})
+    bbox = payload.get("bbox")
+    if not (isinstance(bbox, list) and len(bbox) == 4):
+        return jsonify({"error": "нет рамки"}), 400
+    try:
+        x, y, w, h = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return jsonify({"error": "рамка не читается"}), 400
+    if not (0 <= x <= 1 and 0 <= y <= 1 and w > 0.005 and h > 0.005 and x + w <= 1.001 and y + h <= 1.001):
+        return jsonify({"error": "рамка вне картинки или слишком мелкая"}), 400
+    if not update_aufgabe_bbox_by_id(aufgabe_id, [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]):
+        return jsonify({"error": "задание не найдено"}), 404
+    mark_aufgabe_bbox_human_ok(aufgabe_id)
+    set_aufgabe_review_status(aufgabe_id, "approved")
+    return jsonify({"ok": True, "status": "approved"})
+
+
 @app.route("/api/answer/review/overview", methods=["POST"])
 def answer_review_overview():
     """Mistakes review sections + due-counts (Artikel vs Grammatik) for the section picker."""

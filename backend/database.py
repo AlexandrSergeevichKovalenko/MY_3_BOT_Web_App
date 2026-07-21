@@ -47067,6 +47067,64 @@ def list_pin_items_for_audit() -> list:
              "bbox_human_ok": bool(r[4])} for r in rows]
 
 
+def list_pending_pin_reviews() -> list:
+    """Pin tasks awaiting acceptance, oldest first, with everything the review screen
+    needs: the picture, the draft box and what the learner will be asked."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT aufgabe_id, level, payload
+                FROM bt_3_aufgabe_bank
+                WHERE format='pin' AND retired=FALSE AND review_status='pending'
+                ORDER BY created_at
+                """
+            )
+            rows = cursor.fetchall() or []
+    out = []
+    for aufgabe_id, level, payload in rows:
+        p = payload if isinstance(payload, dict) else {}
+        key = str(p.get("image_object_key") or "")
+        url = ""
+        if key:
+            try:
+                from backend.r2_storage import r2_public_url
+                url = r2_public_url(key)
+            except Exception:
+                url = ""
+        bbox = p.get("bbox")
+        out.append({
+            "aufgabe_id": str(aufgabe_id),
+            "level": str(level or "B2"),
+            "target_label": str(p.get("target_label") or ""),
+            "article": str(p.get("article") or ""),
+            "hint_ru": str(p.get("hint_ru") or ""),
+            "erklaerung": str(p.get("erklaerung") or ""),
+            "image_url": url,
+            "bbox": [float(v) for v in bbox] if isinstance(bbox, list) and len(bbox) == 4 else None,
+        })
+    return out
+
+
+def update_aufgabe_bbox_by_id(aufgabe_id: str, bbox: list) -> bool:
+    """Replace a pin item's answer region by task id (the review screen knows the id)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_aufgabe_bank "
+                    "SET payload = jsonb_set(payload, '{bbox}', %s::jsonb, true) "
+                    "WHERE format='pin' AND aufgabe_id = %s",
+                    (json.dumps([float(v) for v in bbox]), str(aufgabe_id)),
+                )
+                changed = cursor.rowcount or 0
+            conn.commit()
+        return changed > 0
+    except Exception:
+        logging.warning("update_aufgabe_bbox_by_id failed id=%s", aufgabe_id, exc_info=True)
+        return False
+
+
 def mark_aufgabe_bbox_human_ok(aufgabe_id: str) -> bool:
     """Stamp an item as 'a person looked at this frame and approved it'. Automatic sweeps
     must leave it alone — they run the same model that produced the bad frames."""
