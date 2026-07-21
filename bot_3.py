@@ -10638,7 +10638,10 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
         meta_report = await asyncio.to_thread(
             backfill_dictionary_card_metainfo,
             dry_run=not apply,
-            max_entries=1000 if all_users else 500,
+            # The scan takes the N most RECENT rows, so a low cap silently hides the older
+            # part of the window — and re-running does not help, because the rows it did
+            # reach are no longer empty. Keep the cap above the window's row count.
+            max_entries=5000 if all_users else 2000,
             user_id=target_user_id,
             days=days,
         )
