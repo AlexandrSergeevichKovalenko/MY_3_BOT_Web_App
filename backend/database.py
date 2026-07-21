@@ -6466,6 +6466,12 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_entries_pair_updated
                 ON bt_3_dictionary_entries (source_lang, target_lang, updated_at DESC);
             """)
+            # Под обратный поиск в пуле (слово как ЦЕЛЬ перевода): уникальный индекс
+            # начинается с source_text_norm и для поиска по target_text_norm не годится.
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_entries_pair_target_text
+                ON bt_3_dictionary_entries (source_lang, target_lang, target_text_norm);
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_canonical
                 ON bt_3_webapp_dictionary_queries (canonical_entry_id);
@@ -19153,6 +19159,50 @@ def get_pool_dictionary_entry(
         "translation_ru": row[6],
         "response_json": _coerce_json_object(row[7]),
         "updated_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def get_pool_dictionary_entry_reverse(
+    *,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+) -> dict | None:
+    """Обратный поиск в пуле: слово, известное нам как ЦЕЛЬ перевода в противоположном
+    направлении. «die Fusion» лежит записью ru→de (источник «слияние») — прямой поиск
+    de→ru её не видит, а таких слов 5470 (замер 2026-07-21).
+
+    Возвращает СЫРУЮ строку пула; разворот карточки делает
+    backend.dictionary_pool_reverse.build_reverse_pool_item — здесь только выборка."""
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    normalized_source_text = _normalize_dictionary_text_key(source_text)
+    if not normalized_source_lang or not normalized_target_lang or not normalized_source_text:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, source_lang, target_lang, source_text, target_text,
+                       word_ru, translation_de, word_de, translation_ru, response_json
+                FROM bt_3_dictionary_entries
+                WHERE source_lang = %s AND target_lang = %s AND target_text_norm = %s
+                ORDER BY (
+                    CASE WHEN response_json IS NOT NULL
+                          AND {DICTIONARY_POOL_RICH_SQL_STORED} THEN 1 ELSE 0 END
+                ) DESC, updated_at DESC
+                LIMIT 1;
+                """,
+                (normalized_target_lang, normalized_source_lang, normalized_source_text),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0], "source_lang": row[1], "target_lang": row[2],
+        "source_text": row[3], "target_text": row[4], "word_ru": row[5],
+        "translation_de": row[6], "word_de": row[7], "translation_ru": row[8],
+        "response_json": _coerce_json_object(row[9]),
     }
 
 

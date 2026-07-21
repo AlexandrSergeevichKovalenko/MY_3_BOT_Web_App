@@ -195,6 +195,7 @@ from backend.job_queue import (
 )
 from backend.translation_workflow import _extract_correct_translation
 from backend.german_grammar_tables import build_grammar_tables
+from backend.dictionary_pool_reverse import build_reverse_pool_item
 from backend.reader_audio_singleflight import (
     acquire_reader_audio_singleflight_slot,
     release_reader_audio_singleflight_slot,
@@ -328,6 +329,7 @@ from backend.openai_manager import (
 from backend.database import (
     get_quick_dictionary_entries_for_backfill,
     get_pool_dictionary_entry,
+    get_pool_dictionary_entry_reverse,
     upsert_dictionary_pool_entry,
     get_dictionary_entries_for_metainfo_scan,
     get_dictionary_backfill_diagnostics,
@@ -1161,6 +1163,9 @@ DICTIONARY_COALESCE_STALE_SEC = max(
     min(120.0, float((os.getenv("DICTIONARY_COALESCE_STALE_SEC") or "45").strip() or "45")),
 )
 DICTIONARY_SHARED_CACHE_ENABLED = str(os.getenv("DICTIONARY_SHARED_CACHE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+# Обратное сопоставление в пуле (слово, известное как ЦЕЛЬ перевода). По умолчанию
+# ВЫКЛЮЧЕНО: включается переменной окружения без деплоя и так же мгновенно откатывается.
+DICTIONARY_POOL_REVERSE_ENABLED = str(os.getenv("DICTIONARY_POOL_REVERSE_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK = str(os.getenv("DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK") or "0").strip().lower() in {"1", "true", "yes", "on"}
 # When ON, the in-app dictionary consults our bundled DE↔RU dictionaries (FreeDict ~22k →
 # WikDict) BEFORE the CORE GPT call. On a hit we serve the base translation/article/forms
@@ -6718,6 +6723,42 @@ def _store_dictionary_item_in_pool(
         )
     except Exception as exc:
         logging.debug("dictionary pool upsert skipped: %s", exc)
+
+
+def _load_reverse_pool_item(*, word: str, source_lang: str, target_lang: str) -> dict | None:
+    """Обратное сопоставление: слово, известное нам как ЦЕЛЬ перевода в противоположном
+    направлении. Карточка собирается разворотом (см. dictionary_pool_reverse) — она почти
+    всегда НЕПОЛНАЯ, и это нормально: вызывающая сторона использует её как готовое ядро и
+    экономит основной запрос к GPT, оставляя только дообогащение."""
+    if not DICTIONARY_POOL_REVERSE_ENABLED:
+        return None
+    try:
+        row = get_pool_dictionary_entry_reverse(
+            source_lang=source_lang, target_lang=target_lang, source_text=word,
+        )
+        if not isinstance(row, dict):
+            return None
+        return build_reverse_pool_item(
+            row, want_source_lang=source_lang, want_target_lang=target_lang,
+        )
+    except Exception as exc:
+        logging.debug("reverse pool lookup failed: %s", exc)
+        return None
+
+
+def _reverse_pool_item_to_core_raw(item: dict, *, detected: str = "source") -> dict:
+    """Превратить развёрнутую карточку в `raw` того же вида, что отдаёт основной запрос к
+    GPT, — чтобы дальше сработал ОБЫЧНЫЙ конвейер обогащения (job → кеш → пул) и ничего
+    специального для фронта не понадобилось."""
+    return {
+        "detected_language": detected,
+        "word_source": str(item.get("source_text") or "").strip(),
+        "word_target": str(item.get("target_text") or "").strip(),
+        "part_of_speech": item.get("part_of_speech"),
+        "article": item.get("article"),
+        "forms": item.get("forms") if isinstance(item.get("forms"), dict) else {},
+        "usage_examples": item.get("usage_examples") if isinstance(item.get("usage_examples"), list) else [],
+    }
 
 
 def _load_dictionary_item_from_pool(*, word: str, source_lang: str, target_lang: str) -> dict | None:
@@ -35096,6 +35137,39 @@ def lookup_webapp_dictionary():
                     }
                 )
 
+        # ОБРАТНОЕ СОПОСТАВЛЕНИЕ: слово знакомо нам как цель перевода в другую сторону.
+        # Полную карточку отдаём сразу; неполную (обычный случай — есть только перевод)
+        # используем как ядро и запускаем ОБЫЧНЫЙ job обогащения: экономим основной
+        # запрос к GPT, а фронту ничего нового знать не надо — путь тот же, что при промахе.
+        reverse_item = None
+        if not cached_payload:
+            reverse_item = _load_reverse_pool_item(
+                word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
+            )
+            if isinstance(reverse_item, dict) and not _dictionary_payload_needs_enrichment(reverse_item):
+                reverse_direction = f"{query_source_lang}-{query_target_lang}"
+                mark("cache_hit")
+                log_limit_runtime_event(
+                    user_id=int(user_id),
+                    feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+                    event_type="cache_hit",
+                    origin="webapp_dictionary",
+                    metadata={"word": word_ru, "cache_scope": "shared_pool_reverse"},
+                )
+                _log_dictionary_profile()
+                return jsonify(
+                    {
+                        "ok": True,
+                        "item": _with_grammar_tables(reverse_item),
+                        "direction": reverse_direction,
+                        "lookup_status": "ready",
+                        "enrichment_pending": False,
+                        "save_locked": False,
+                        "deep_id": None,
+                        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                    }
+                )
+
         active_job = _get_dictionary_enrichment_job_for_cache_keys(cache_key, cache_key_shared)
         if isinstance(active_job, dict):
             active_status = str(active_job.get("status") or "").strip().lower()
@@ -35170,7 +35244,24 @@ def lookup_webapp_dictionary():
 
         try:
             base_seed = None
-            if DICTIONARY_BASE_BEFORE_GPT_ENABLED and {query_source_lang, query_target_lang} == {"de", "ru"}:
+            # Обратная находка в пуле — такой же «сид», как попадание в FreeDict: основной
+            # запрос к GPT пропускаем, остаётся только дообогащение (1 вызов вместо 2).
+            if isinstance(reverse_item, dict) and reverse_item:
+                base_seed = {
+                    "item": reverse_item,
+                    "raw": _reverse_pool_item_to_core_raw(reverse_item),
+                    "direction": f"{query_source_lang}-{query_target_lang}",
+                    "usage": None,
+                    "gateway_path": "shared_pool_reverse",
+                }
+                log_limit_runtime_event(
+                    user_id=int(user_id),
+                    feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+                    event_type="cache_hit",
+                    origin="webapp_dictionary",
+                    metadata={"word": word_ru, "cache_scope": "shared_pool_reverse_seed"},
+                )
+            if base_seed is None and DICTIONARY_BASE_BEFORE_GPT_ENABLED and {query_source_lang, query_target_lang} == {"de", "ru"}:
                 base_seed = _base_dict_core_seed(
                     word=word_ru,
                     query_source_lang=query_source_lang,
@@ -35507,6 +35598,15 @@ def stream_webapp_dictionary():
         pool_item = _load_dictionary_item_from_pool(
             word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
         )
+        if not pool_item:
+            # Обратная находка — только если карточка получилась ПОЛНОЙ. Неполную здесь не
+            # используем: стриминговый путь не умеет досоздавать job, а отдать обрезок как
+            # готовый ответ хуже, чем честно сходить в GPT.
+            reverse_candidate = _load_reverse_pool_item(
+                word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
+            )
+            if isinstance(reverse_candidate, dict) and not _dictionary_payload_needs_enrichment(reverse_candidate):
+                pool_item = reverse_candidate
         if isinstance(pool_item, dict) and pool_item:
             pool_payload = {
                 "item": pool_item,
