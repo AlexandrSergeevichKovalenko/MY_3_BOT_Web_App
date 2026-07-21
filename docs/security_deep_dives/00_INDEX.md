@@ -60,7 +60,7 @@ Every block is explained with the same skeleton, so you get used to it:
 | 01 | **Sentence translation** (frontend ↔ Flask ↔ OpenAI ↔ DB) | [01_sentence_translation.md](01_sentence_translation.md) | ✅ |
 | 02 | **Telegram authentication (`initData`)** — the security foundation | [02_telegram_auth_initdata.md](02_telegram_auth_initdata.md) | ✅ |
 | 03 | **Payments: Stripe + Telegram Stars** — webhooks, payment forgery | _(planned)_ | ⚪ |
-| 04 | **Quick dictionary / word breakdown + Prompt Injection** | _(planned)_ | ⚪ |
+| 04 | **Shared, reusable word cache** (dictionary lookups & breakdowns; cache poisoning + Prompt Injection) | [04_shared_word_cache.md](04_shared_word_cache.md) | ✅ |
 | 05 | **Reader / books** | _(planned)_ | ⚪ |
 | 06 | **YouTube block (news / video recommendations)** | _(planned)_ | ⚪ |
 | 07 | **Text-to-speech (TTS) and budget limits** | _(planned)_ | ⚪ |
