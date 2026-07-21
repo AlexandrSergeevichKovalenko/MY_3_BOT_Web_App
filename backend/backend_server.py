@@ -3718,7 +3718,7 @@ def web_auth_telegram():
 
 @app.route("/api/user/language-profile", methods=["GET", "POST"])
 def user_language_profile():
-    user_id, _username, error = _resolve_webapp_user_allowed()
+    user_id, _username, error = _authenticate_webapp_request()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -3824,7 +3824,7 @@ def user_language_profile():
 
 @app.route("/api/webapp/starter-dictionary/status", methods=["POST"])
 def webapp_starter_dictionary_status():
-    user_id, _username, error = _resolve_webapp_user_allowed()
+    user_id, _username, error = _authenticate_webapp_request()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -3843,7 +3843,7 @@ def webapp_starter_dictionary_status():
 
 @app.route("/api/webapp/starter-dictionary/apply", methods=["POST"])
 def webapp_starter_dictionary_apply():
-    user_id, _username, error = _resolve_webapp_user_allowed()
+    user_id, _username, error = _authenticate_webapp_request()
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
@@ -4263,7 +4263,7 @@ def _resolve_webapp_user_id(payload: dict | None = None) -> int | None:
     return None
 
 
-def _resolve_webapp_user_allowed(payload: dict | None = None) -> tuple[int | None, str | None, str | None]:
+def _authenticate_webapp_request(payload: dict | None = None) -> tuple[int | None, str | None, str | None]:
     """Token-aware twin of _get_authenticated_user_from_request_init_data: same
     (user_id, username, error) contract and the same allow-list gate, but the user may
     also authenticate with the durable app/dict browser token. Needed by everything the
