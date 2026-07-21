@@ -10670,32 +10670,61 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
 
     if not with_meta:
         return
-    # Second pass: entries with a translation but an empty card (no examples/grammar).
-    await message.reply_text("🧩 Второй проход: карточки без метаинформации…")
+    # Второй проход: записи с переводом, но с пустой карточкой. Один вызов GPT на слово,
+    # ~2-3 слова в минуту, поэтому идём БАТЧАМИ и шлём прогресс — молчащая команда
+    # неотличима от зависшей. Размер батча: /admin_fix_dict_translations … meta 300
+    batch = 100
+    for a in args:
+        if a.isdigit() and 1 <= int(a) <= 2000:
+            batch = int(a)
+            break
+    await message.reply_text(
+        f"🧩 Второй проход: карточки без метаинформации. Беру до {batch} записей за раз, "
+        "по одному запросу к GPT на слово — это минуты. Пришлю прогресс."
+    )
+
+    def _progress(done: int, total: int) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                message.reply_text(f"🧩 Дозаполнено {done} из {total}…"),
+                loop,
+            )
+        except Exception:
+            pass
+
+    loop = asyncio.get_running_loop()
     try:
         meta_report = await asyncio.to_thread(
             backfill_dictionary_card_metainfo,
             dry_run=not apply,
-            # The scan takes the N most RECENT rows, so a low cap silently hides the older
-            # part of the window — and re-running does not help, because the rows it did
-            # reach are no longer empty. Keep the cap above the window's row count.
-            max_entries=5000 if all_users else 2000,
+            max_entries=batch,
             user_id=target_user_id,
             days=days,
+            progress_cb=_progress if apply else None,
         )
     except Exception as exc:
         logging.exception("admin dict metainfo backfill failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Второй проход упал: {exc}")
         return
+    if meta_report.get("already_running"):
+        await message.reply_text(
+            "⏳ Проход уже идёт — второй запуск только удвоил бы траты на те же слова. "
+            f"Осталось записей: {meta_report.get('remaining', 0)}."
+        )
+        return
     meta_samples = meta_report.get("samples") or []
     meta_lines = "\n".join(f"  • #{s.get('id')} {s.get('german')}" for s in meta_samples[:15])
+    remaining = int(meta_report.get("remaining") or 0)
     meta_text = (
         f"🧩 <b>Карточки без метаинформации</b> ({'apply' if apply else 'dry-run'})\n\n"
         f"Просмотрено: <b>{meta_report.get('scanned', 0)}</b>\n"
         f"Пустых карточек: <b>{meta_report.get('empty_cards', 0)}</b>\n"
         f"Дозаполнено: <b>{meta_report.get('enriched', 0)}</b>\n"
-        f"Ошибок: {meta_report.get('errors', 0)}"
+        f"Ошибок: {meta_report.get('errors', 0)}\n"
+        f"Осталось в базе: <b>{remaining}</b>"
     )
+    if remaining and apply:
+        meta_text += "\n\nЗапусти команду ещё раз, чтобы взять следующий батч."
     if meta_lines:
         meta_text += f"\n\n<b>Примеры:</b>\n{meta_lines}"
     for part in _split_telegram_text(meta_text):

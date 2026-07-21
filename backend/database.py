@@ -19391,17 +19391,54 @@ def get_quick_dictionary_entries_for_backfill(
     return items
 
 
+def count_dictionary_entries_missing_card(
+    user_id: int | None = None,
+    days: int | None = None,
+) -> int:
+    """Сколько ещё записей БЕЗ карточки — чтобы отчёт мог сказать «осталось N», а не
+    молчать полчаса. Фильтр тот же, что в выборке кандидатов."""
+    where = (
+        "WHERE COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL "
+        "AND COALESCE(response_json->>'entry_kind','') IN ('','word') "
+        "AND (response_json->'dictionary_senses') IS NULL "
+        "AND (response_json->'usage_examples') IS NULL "
+        "AND (response_json->'meanings') IS NULL "
+        "AND (response_json->'translations') IS NULL"
+    )
+    params: list = []
+    if user_id is not None:
+        where += " AND user_id = %s"
+        params.append(int(user_id))
+    if days is not None:
+        where += " AND created_at >= NOW() - (%s || ' days')::interval"
+        params.append(int(days))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries {where};", params)
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 def get_dictionary_entries_for_metainfo_scan(
     user_id: int | None = None,
     limit: int = 500,
     days: int | None = None,
 ) -> list[dict]:
-    """Recent single-word entries for the "card has no metainfo" scan (empty detail
-    screen: no examples/grammar/senses). The actual emptiness check runs in Python on
-    response_json — encoding it in SQL would be brittle across the payload variants."""
+    """Кандидаты на дозаполнение карточки (пустой экран разбора).
+
+    Пустоту отсекаем ПРЯМО В SQL: раньше тянули тысячи строк вместе с response_json и
+    фильтровали в Python — выборка одна занимала минуты и тащила десятки мегабайт.
+    Точную проверку всё равно делает `_dictionary_payload_needs_enrichment`, этот фильтр
+    лишь отбрасывает заведомо полные карточки."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            where = "WHERE COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL"
+            where = (
+                "WHERE COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL "
+                "AND COALESCE(response_json->>'entry_kind','') IN ('','word') "
+                "AND (response_json->'dictionary_senses') IS NULL "
+                "AND (response_json->'usage_examples') IS NULL "
+                "AND (response_json->'meanings') IS NULL "
+                "AND (response_json->'translations') IS NULL"
+            )
             params: list = []
             if user_id is not None:
                 where += " AND user_id = %s"

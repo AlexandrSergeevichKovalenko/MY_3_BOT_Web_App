@@ -22259,9 +22259,13 @@ function AppInner() {
   };
   const getSavedEntryRankedMeanings = (item) => {
     const responseJson = item?.response_json && typeof item.response_json === 'object' ? item.response_json : {};
-    const dictionarySenses = Array.isArray(responseJson.dictionary_senses)
-      ? responseJson.dictionary_senses.filter((entry) => entry && typeof entry === 'object' && String(entry.value || '').trim())
-      : [];
+    // Значения хранятся на ЦЕЛЕВОМ языке записи. У ru→de записи цель — немецкий, и блок
+    // «Значения» показывал бы немецкий заголовок вместо перевода («die Fusion» под
+    // заголовком «die Fusion»). Для таких записей senses не годятся — берём фолбэк.
+    const entryTargetLang = String(item?.target_lang || responseJson.target_lang || '').toLowerCase();
+    const dictionarySenses = (entryTargetLang === 'de' || !Array.isArray(responseJson.dictionary_senses))
+      ? []
+      : responseJson.dictionary_senses.filter((entry) => entry && typeof entry === 'object' && String(entry.value || '').trim());
     if (dictionarySenses.length > 0) return dictionarySenses;
     const entryKind = String(responseJson.entry_kind || '').trim().toLowerCase();
     const sourceText = String(

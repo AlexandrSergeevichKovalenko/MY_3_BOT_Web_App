@@ -332,6 +332,7 @@ from backend.database import (
     get_pool_dictionary_entry_reverse,
     upsert_dictionary_pool_entry,
     get_dictionary_entries_for_metainfo_scan,
+    count_dictionary_entries_missing_card,
     get_dictionary_backfill_diagnostics,
     update_dictionary_entry_full_columns,
     is_telegram_user_allowed,
@@ -8970,12 +8971,17 @@ def _publish_enriched_card_to_shared_stores(
         logging.debug("enriched card → shared cache failed: %s", exc)
 
 
+_DICTIONARY_METAINFO_BACKFILL_LOCK = threading.Lock()
+_DICTIONARY_METAINFO_BACKFILL_RUNNING = False
+
+
 def backfill_dictionary_card_metainfo(
     *,
     dry_run: bool = True,
     max_entries: int = 200,
     user_id: int | None = None,
     days: int | None = None,
+    progress_cb=None,
 ) -> dict:
     """Second repair pass: entries that DO have a translation but were stored without the
     card metainfo (no examples / grammar / senses — the empty detail screen). Those came
@@ -8984,7 +8990,33 @@ def backfill_dictionary_card_metainfo(
     report = {
         "dry_run": bool(dry_run), "days": days,
         "scanned": 0, "empty_cards": 0, "enriched": 0, "errors": 0, "samples": [],
+        "remaining": 0,
     }
+    global _DICTIONARY_METAINFO_BACKFILL_RUNNING
+    # Один вызов = один-два запроса к GPT В СЕКУНДУ в лучшем случае, поэтому повторный
+    # запуск, пока идёт первый, просто удваивал бы трату токенов на те же слова.
+    if not dry_run:
+        with _DICTIONARY_METAINFO_BACKFILL_LOCK:
+            if _DICTIONARY_METAINFO_BACKFILL_RUNNING:
+                report["already_running"] = True
+                report["remaining"] = count_dictionary_entries_missing_card(user_id=user_id, days=days)
+                return report
+            _DICTIONARY_METAINFO_BACKFILL_RUNNING = True
+    try:
+        return _run_dictionary_card_metainfo_backfill(
+            report=report, dry_run=dry_run, max_entries=max_entries,
+            user_id=user_id, days=days, progress_cb=progress_cb,
+        )
+    finally:
+        if not dry_run:
+            with _DICTIONARY_METAINFO_BACKFILL_LOCK:
+                _DICTIONARY_METAINFO_BACKFILL_RUNNING = False
+
+
+def _run_dictionary_card_metainfo_backfill(
+    *, report: dict, dry_run: bool, max_entries: int, user_id: int | None,
+    days: int | None, progress_cb=None,
+) -> dict:
     try:
         rows = get_dictionary_entries_for_metainfo_scan(user_id=user_id, limit=max_entries, days=days)
     except Exception as exc:
@@ -9023,12 +9055,23 @@ def backfill_dictionary_card_metainfo(
                 target_text_hint=str(row.get("translation_ru") or ""),
             )
             report["enriched"] += 1
+            # Прогресс наружу: проход идёт минуты-часы, и молчащая команда неотличима
+            # от зависшей (ровно так и выглядело 21.07).
+            if progress_cb and report["enriched"] % 25 == 0:
+                try:
+                    progress_cb(report["enriched"], report["empty_cards"])
+                except Exception:
+                    pass
         except Exception as exc:
             report["errors"] += 1
             logging.warning(
                 "dictionary metainfo backfill failed entry_id=%s german=%r error=%s",
                 row.get("id"), german, exc, exc_info=True,
             )
+    try:
+        report["remaining"] = count_dictionary_entries_missing_card(user_id=user_id, days=days)
+    except Exception:
+        report["remaining"] = 0
     return report
 
 
