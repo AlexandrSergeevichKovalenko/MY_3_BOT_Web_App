@@ -9049,6 +9049,29 @@ def _publish_enriched_card_to_shared_stores(
         logging.debug("enriched card → shared cache failed: %s", exc)
 
 
+def _drop_wrong_language_examples(enrich_data: dict | None, *, learning_lang: str = "de") -> dict:
+    """Выбросить примеры, написанные не на изучаемом языке.
+
+    Страховка на случай, если модель снова напишет примеры на родном языке: пустить такую
+    карточку в ОБЩИЙ пул хуже, чем оставить её без примеров, — ошибку увидят все."""
+    data = dict(enrich_data) if isinstance(enrich_data, dict) else {}
+    examples = data.get("usage_examples")
+    if not isinstance(examples, list) or learning_lang != "de":
+        return data
+    kept = []
+    for item in examples:
+        text = str(item.get("source") or item.get("example_source") or "") if isinstance(item, dict) else str(item or "")
+        if text.strip() and not _text_has_cyrillic(text):
+            kept.append(item)
+    if len(kept) != len(examples):
+        logging.warning(
+            "enrichment returned %s non-German usage examples — dropped",
+            len(examples) - len(kept),
+        )
+    data["usage_examples"] = kept
+    return data
+
+
 _POOL_ENRICH_SINGLE_PAIR = False  # True = только заданная пара (для ручной отладки)
 POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "150").strip() or "150")
 _POOL_NIGHT_ENRICH_LOCK = threading.Lock()
@@ -9110,14 +9133,26 @@ def run_pool_night_enrichment(
             if dry_run:
                 continue
             try:
-                if _is_legacy_ru_de_pair(row_source_lang, row_target_lang):
-                    enrich = asyncio.run(run_enrich_word(source_text, target_text))
+                # Промпт enrich_word_multilang пишет примеры на TARGET_LANGUAGE и заполняет
+                # немецкие формы, только когда target — немецкий. Поэтому изучаемый язык
+                # ВСЕГДА идёт целью, даже если сама запись лежит как de→ru: иначе для
+                # «der Zufall» приходят русские примеры («Это был просто случай»), которые
+                # изучающему немецкий бесполезны, — и уходят в общий пул для всех.
+                if row_source_lang == "de":
+                    call_source_text, call_target_text = target_text, source_text
+                    call_source_lang, call_target_lang = row_target_lang, row_source_lang
+                else:
+                    call_source_text, call_target_text = source_text, target_text
+                    call_source_lang, call_target_lang = row_source_lang, row_target_lang
+                if _is_legacy_ru_de_pair(call_source_lang, call_target_lang):
+                    enrich = asyncio.run(run_enrich_word(call_source_text, call_target_text))
                 else:
                     enrich = asyncio.run(run_enrich_word_multilang(
-                        source_text=source_text, target_text=target_text,
-                        source_lang=row_source_lang, target_lang=row_target_lang,
+                        source_text=call_source_text, target_text=call_target_text,
+                        source_lang=call_source_lang, target_lang=call_target_lang,
                     ))
                 enrich_data = _normalize_dictionary_enrich_payload(enrich)
+                enrich_data = _drop_wrong_language_examples(enrich_data, learning_lang="de")
                 if not enrich_data:
                     report["skipped"] += 1
                     continue
