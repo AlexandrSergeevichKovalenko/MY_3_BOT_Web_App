@@ -46951,6 +46951,26 @@ def get_aufgabe_answer(*, dispatch_id: int, user_id: int) -> dict | None:
     return {"answer": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
 
 
+def list_pin_items_for_audit() -> list:
+    """Every live pin item that has an image + a target, for a bbox re-audit."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT aufgabe_id, payload->>'target_label', payload->>'image_object_key',
+                       payload->'bbox'
+                FROM bt_3_aufgabe_bank
+                WHERE format = 'pin' AND retired = FALSE
+                  AND coalesce(payload->>'image_object_key', '') <> ''
+                  AND coalesce(payload->>'target_label', '') <> ''
+                ORDER BY created_at
+                """
+            )
+            rows = cursor.fetchall() or []
+    return [{"aufgabe_id": r[0], "target_label": r[1], "image_object_key": r[2], "bbox": r[3]}
+            for r in rows]
+
+
 def update_aufgabe_bbox_by_image_key(image_key: str, bbox: list) -> bool:
     """Replace a pin item's answer region. Keyed by the R2 image key (unique per item),
     so the caller doesn't need to carry the aufgabe_id through the grading path."""

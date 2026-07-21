@@ -36216,6 +36216,94 @@ async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -
         await message.reply_text(f"❌ manual aufgabe pool refill failed: {exc}")
 
 
+_PIN_AUDIT_INFLIGHT = {"active": False}
+
+
+async def admin_pin_bbox_audit_command(update: Update, context: CallbackContext) -> None:
+    """Re-audit the answer region of every live «Finde im Bild» item. /admin_pin_audit
+
+    The stored bbox came from ONE vision call at generation time and is often on the
+    wrong object (found live: a box framing the book stack instead of the marker below
+    it, and 6 of 12 items with a box running off the frame). Two fresh independent
+    locates per item: they agree → store the union, they disagree → retire the item.
+    Read-only until a verdict, so a passing item is never touched."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    if _PIN_AUDIT_INFLIGHT["active"]:
+        await message.reply_text("Аудит уже идёт — дождись отчёта.")
+        return
+    _PIN_AUDIT_INFLIGHT["active"] = True
+    try:
+        from backend.database import (
+            list_pin_items_for_audit, retire_aufgabe_by_image_key,
+            update_aufgabe_bbox_by_image_key,
+        )
+        from backend.answer_eval import PIN_BBOX_MIN_IOU, pin_bbox_iou, pin_bbox_union
+        from backend.openai_manager import run_vision_locate
+        from backend.r2_storage import r2_get_bytes
+        items = await asyncio.to_thread(list_pin_items_for_audit)
+        if not items:
+            await message.reply_text("Живых pin-заданий нет.")
+            return
+        status = await message.reply_text(f"⏳ Аудит рамок: 0/{len(items)}…")
+        fixed, kept, retired, failed, lines = 0, 0, 0, 0, []
+        for i, it in enumerate(items, 1):
+            key = str(it.get("image_object_key") or "")
+            target = str(it.get("target_label") or "")
+            old = it.get("bbox") if isinstance(it.get("bbox"), list) else None
+            try:
+                img = await asyncio.to_thread(r2_get_bytes, key)
+                if not img:
+                    failed += 1
+                    lines.append(f"⚠️ {html.escape(target)} — картинки нет в R2")
+                    continue
+                a = await asyncio.to_thread(run_vision_locate, img, target)
+                b = await asyncio.to_thread(run_vision_locate, img, target)
+                if not (a.get("bbox") and b.get("bbox")):
+                    await asyncio.to_thread(retire_aufgabe_by_image_key, key)
+                    retired += 1
+                    lines.append(f"🗑 {html.escape(target)} — предмет не найден на картинке")
+                    continue
+                iou = pin_bbox_iou(a["bbox"], b["bbox"])
+                if iou < PIN_BBOX_MIN_IOU:
+                    await asyncio.to_thread(retire_aufgabe_by_image_key, key)
+                    retired += 1
+                    lines.append(f"🗑 {html.escape(target)} — два прохода разошлись (IoU {iou:.2f})")
+                    continue
+                new = pin_bbox_union(a["bbox"], b["bbox"])
+                # How far the OLD box was from the freshly confirmed one decides whether
+                # this was a silent mis-grader or just an imprecise frame.
+                drift = pin_bbox_iou(old, new) if old else 0.0
+                await asyncio.to_thread(update_aufgabe_bbox_by_image_key, key, new)
+                if drift < 0.5:
+                    fixed += 1
+                    lines.append(f"🔧 {html.escape(target)} — рамка была мимо (IoU со старой {drift:.2f})")
+                else:
+                    kept += 1
+            except Exception as exc:
+                failed += 1
+                lines.append(f"⚠️ {html.escape(target)} — {html.escape(str(exc))[:80]}")
+            if i % 3 == 0 or i == len(items):
+                try:
+                    await status.edit_text(f"⏳ Аудит рамок: {i}/{len(items)}…")
+                except Exception:
+                    pass
+        head = (f"✅ <b>Аудит рамок «Finde im Bild»</b>\n"
+                f"Проверено: {len(items)} · исправлено: {fixed} · подтверждено: {kept} · "
+                f"снято: {retired} · ошибок: {failed}")
+        body = ("\n\n" + "\n".join(lines[:30])) if lines else ""
+        await status.edit_text(head + body, parse_mode="HTML")
+    except Exception as exc:
+        await message.reply_text(f"❌ pin bbox audit failed: {exc}")
+    finally:
+        _PIN_AUDIT_INFLIGHT["active"] = False
+
+
 async def admin_crossword_pool_command(update: Update, context: CallbackContext) -> None:
     """Trigger crossword pool generation (admin). /admin_cw_pool"""
     user    = update.effective_user
@@ -38670,6 +38758,7 @@ def main():
     application.add_handler(CommandHandler("translationpool", admin_translation_pool_report_command))
     application.add_handler(CommandHandler("admin_pool_remind", admin_pool_remind_command))
     application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
+    application.add_handler(CommandHandler("admin_pin_audit", admin_pin_bbox_audit_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("cw_health", admin_crossword_health_command))
