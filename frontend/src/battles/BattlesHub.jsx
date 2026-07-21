@@ -45,6 +45,7 @@ export default function BattlesHub() {
   const [selThemes, setSelThemes] = useState([]);
   const [themesOpen, setThemesOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [done, setDone] = useState(false);
   const [toast, setToast] = useState('');
 
   useEffect(() => {
@@ -83,13 +84,29 @@ export default function BattlesHub() {
       const d = await api('/api/webapp/battles/create', {
         kind, mode, users: selUsers, themes: kind === 'artikel' ? selThemes : [],
       });
-      showToast(d.message || (d.ok ? 'Приглашения уходят ⚔️' : 'Не удалось.'));
-      if (d.ok) haptic();
+      if (d.ok) {
+        // Clear confirmation, THEN close the Mini-App — so it's obvious the invite
+        // was sent (the bot's status card lands in the chat right behind it).
+        haptic();
+        setDone(true);
+        setTimeout(() => { try { tg?.close?.(); } catch (_e) { /* noop */ } }, 1600);
+      } else {
+        showToast(d.message || 'Не удалось.');
+      }
     } catch (_e) { showToast('Не удалось. Попробуй ещё раз.'); }
     finally { setSending(false); }
   }, [sending, mode, selUsers, selThemes, kind]);
 
   if (!state) return <div className="bt-root"><div className="bt-card"><p className="bt-loading">Загрузка…</p></div></div>;
+  if (done) return (
+    <div className="bt-root">
+      <div className="bt-card bt-done">
+        <div className="bt-done-emoji">⚔️</div>
+        <h1 className="bt-title">Приглашения отправлены!</h1>
+        <p className="bt-sub">Соперники получат вызов в личке. Подтверждение — в чате с ботом.</p>
+      </div>
+    </div>
+  );
   const isPro = !!state.is_pro;
 
   return (

@@ -94,3 +94,19 @@ html[data-scheme="light"] body { background: #eef3fb; }
   transform: translateX(-50%); max-width: 92%; background: #1c2536; color: #fff;
   padding: 12px 16px; border-radius: 13px; font-size: 14px; font-weight: 600;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3); z-index: 50; text-align: center; }
+
+/* Success confirmation shown after «Отправить» before the Mini-App auto-closes. */
+.bt-done {
+  align-items: center; text-align: center; justify-content: center;
+  min-height: 60vh; gap: 10px; animation: bt-done-in 0.25s ease-out;
+}
+.bt-done-emoji {
+  font-size: 56px; line-height: 1;
+  filter: drop-shadow(0 6px 14px rgba(58, 123, 213, 0.28));
+}
+.bt-done .bt-title { font-size: 22px; }
+.bt-done .bt-sub { max-width: 300px; }
+@keyframes bt-done-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

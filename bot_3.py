@@ -27899,12 +27899,84 @@ async def admin_artikel_focus_command(update: Update, context: CallbackContext) 
 pending_battle_invites: dict[int, dict] = {}
 
 
+async def _dm_one_battle_invite(context: CallbackContext, *, uid: int, img_url: str | None,
+                                caption: str, kb) -> str:
+    """Send ONE battle-invite DM (two-Fox-knights art if available, else text).
+    Returns the delivery OUTCOME instead of swallowing it silently, so undelivered
+    invites are diagnosable in the logs and countable in the creator's card:
+      'ok'      — delivered;
+      'blocked' — user never started / blocked the bot (Telegram 403 Forbidden) —
+                  the bot physically cannot DM someone who hasn't opened a chat with it;
+      'error'   — anything else (logged with traceback).
+    If the image can't be sent (e.g. that kind's art isn't generated yet), the invite
+    degrades to a text DM rather than being lost."""
+    try:
+        if img_url:
+            try:
+                await context.bot.send_photo(chat_id=int(uid), photo=img_url,
+                                             caption=caption, parse_mode="HTML", reply_markup=kb)
+                return "ok"
+            except Forbidden:
+                raise
+            except Exception:
+                logging.info("battle invite photo failed uid=%s — sending text instead", uid)
+        await context.bot.send_message(chat_id=int(uid), text=caption,
+                                       parse_mode="HTML", reply_markup=kb)
+        return "ok"
+    except Forbidden:
+        logging.info("battle invite not delivered: user %s hasn't started or blocked the bot", uid)
+        return "blocked"
+    except Exception:
+        logging.warning("battle invite send failed uid=%s", uid, exc_info=True)
+        return "error"
+
+
+async def _deliver_battle_invites(context: CallbackContext, *, creator_id: int,
+                                  targets: list[int], caption: str, kb,
+                                  kind: str = "artikel") -> tuple[int, int, int]:
+    """DM the battle invite to every target (skipping the creator). Every battle kind
+    uses the two-Fox-knights invite art (per-kind armor letters via
+    battle_invite_image_url(kind)) so an invite always looks like a battle — never a
+    plain game card. Returns (sent, blocked, error)."""
+    try:
+        from backend.battle_card import battle_invite_image_url
+        img_url = battle_invite_image_url(kind)
+    except Exception:
+        img_url = None
+    sent = blocked = error = 0
+    for uid in targets or []:
+        if int(uid) == int(creator_id):
+            continue
+        outcome = await _dm_one_battle_invite(context, uid=uid, img_url=img_url,
+                                              caption=caption, kb=kb)
+        if outcome == "ok":
+            sent += 1
+        elif outcome == "blocked":
+            blocked += 1
+        else:
+            error += 1
+    return sent, blocked, error
+
+
+def _battle_delivery_caption_line(sent: int, blocked: int, error: int) -> str:
+    """The «Вызов получили / не дошло» lines for the creator's status card. Undelivered
+    invites are SURFACED (not hidden), so the creator knows the invite silently failed
+    and who to nudge to open the bot — instead of thinking everyone got it."""
+    line = f"📨 Вызов получили: {sent}\n"
+    missed = int(blocked) + int(error)
+    if missed:
+        if blocked and not error:
+            line += f"🚫 Не дошло: {missed} — не запускали бота\n"
+        else:
+            line += f"🚫 Не дошло: {missed}\n"
+    return line
+
+
 async def _send_battle_invites(context: CallbackContext, *, battle_id: int,
                                creator_name: str, target_ids: list[int],
-                               exclude: int | None = None) -> int:
-    """DM the battle invite (Smurf-knights image if generated, else text) with
-    Accept/Decline buttons. Returns how many were sent."""
-    from backend.battle_card import battle_invite_image_url
+                               exclude: int | None = None) -> tuple[int, int, int]:
+    """DM the Artikel battle invite (two-Fox-knights art) with Accept/Decline buttons.
+    Returns (sent, blocked, error)."""
     caption = (
         f"⚔️ <b>{html.escape(creator_name)}</b> вызывает тебя на батл по артиклям!\n"
         f"2 минуты · der/die/das · играй когда удобно <b>до 23:59</b>."
@@ -27913,22 +27985,9 @@ async def _send_battle_invites(context: CallbackContext, *, battle_id: int,
         InlineKeyboardButton("✅ Принять", callback_data=f"asb_acc:{battle_id}"),
         InlineKeyboardButton("❌ Отклонить", callback_data=f"asb_dec:{battle_id}"),
     ]])
-    img_url = battle_invite_image_url()
-    sent = 0
-    for uid in target_ids:
-        if exclude and int(uid) == int(exclude):
-            continue
-        try:
-            if img_url:
-                await context.bot.send_photo(chat_id=int(uid), photo=img_url,
-                                             caption=caption, parse_mode="HTML", reply_markup=kb)
-            else:
-                await context.bot.send_message(chat_id=int(uid), text=caption,
-                                               parse_mode="HTML", reply_markup=kb)
-            sent += 1
-        except Exception:
-            pass
-    return sent
+    return await _deliver_battle_invites(
+        context, creator_id=(int(exclude) if exclude else -1),
+        targets=list(target_ids), caption=caption, kb=kb, kind="artikel")
 
 
 def _battle_wizard_render(draft: dict) -> tuple[str, InlineKeyboardMarkup]:
@@ -28193,18 +28252,20 @@ async def _create_and_broadcast_artikel_wizard(context: CallbackContext, *, crea
                             battle_id=battle_id, user_id=int(creator_id), user_name=creator_name)
     targets = ind_targets if ind_targets is not None else await asyncio.to_thread(list_allowed_telegram_user_ids)
     try:
-        sent = await _send_battle_invites(context, battle_id=battle_id, creator_name=creator_name,
-                                          target_ids=list(targets), exclude=int(creator_id))
+        sent, blocked, error = await _send_battle_invites(
+            context, battle_id=battle_id, creator_name=creator_name,
+            target_ids=list(targets), exclude=int(creator_id))
     except Exception:
         logging.warning("artikel wizard invites broadcast failed bid=%s", battle_id, exc_info=True)
-        sent = 0
+        sent, blocked, error = 0, 0, 0
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Artikel-батл #{battle_id} в бою!</b>\n"
                  f"{html.escape(themes_txt)} · дедлайн 23:59\n"
-                 f"📨 Вызов получили: {sent}\nСыграй первым — задай темп! 👇")
+                 f"{_battle_delivery_caption_line(sent, blocked, error)}"
+                 f"Сыграй первым — задай темп! 👇")
     eff_msg_id = await _present_battle_status(context, chat_id=int(status_chat_id),
                                               old_msg_id=int(status_msg_id),
                                               caption=final_cap, kb=play_kb)
@@ -28295,46 +28356,21 @@ async def _broadcast_artikel_cmd_invites(context: CallbackContext, *, battle_id:
         InlineKeyboardButton("✅ Принять", callback_data=f"asb_acc:{battle_id}"),
         InlineKeyboardButton("❌ Отклонить", callback_data=f"asb_dec:{battle_id}"),
     ]])
-    invite_img = None
-    try:
-        from backend.battle_card import battle_invite_image_url
-        invite_img = battle_invite_image_url()
-    except Exception:
-        invite_img = None
     try:
         targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
     except Exception:
         targets = []
-    sent = 0
-    for uid in targets or []:
-        if int(uid) == int(creator_id):
-            continue
-        try:
-            if invite_img:
-                await context.bot.send_photo(
-                    chat_id=int(uid),
-                    photo=invite_img,
-                    caption=invite_text,
-                    parse_mode="HTML",
-                    reply_markup=join_kb,
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=int(uid),
-                    text=invite_text,
-                    parse_mode="HTML",
-                    reply_markup=join_kb,
-                )
-            sent += 1
-        except Exception:
-            pass
+    sent, blocked, error = await _deliver_battle_invites(
+        context, creator_id=int(creator_id), targets=list(targets),
+        caption=invite_text, kb=join_kb, kind="artikel")
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Artikel-батл #{battle_id} в бою!</b>\n"
                  f"2 минуты на der/die/das · дедлайн 23:59\n"
-                 f"📨 Вызов получили: {sent}\nСыграй первым — задай темп! 👇")
+                 f"{_battle_delivery_caption_line(sent, blocked, error)}"
+                 f"Сыграй первым — задай темп! 👇")
     await _present_battle_status(context, chat_id=status_chat_id, old_msg_id=status_msg_id,
                                  caption=final_cap, kb=play_kb)
 
@@ -28782,16 +28818,29 @@ async def admin_battle_images_command(update: Update, context: CallbackContext) 
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Генерирую боевые лис-картинки…")
+    # By default only generate MISSING images (so the existing arts you like aren't
+    # replaced by a fresh non-deterministic render). Pass «force» to regenerate all.
+    force = any(str(a).strip().lower() in ("force", "-f", "all") for a in (context.args or []))
+    status_msg = await message.reply_text(
+        "Генерирую боевые лис-картинки…" + (" (force: перегенерю все)" if force else " (только недостающие)"))
 
     def _gen() -> dict:
         from backend.image_generation_provider import generate_image_bytes
-        from backend.r2_storage import r2_put_bytes
+        from backend.r2_storage import r2_put_bytes, r2_get_bytes
         from backend.battle_card import BATTLE_IMAGE_PROMPTS
         made = 0
+        skipped = 0
         errs: list[str] = []
         for key, prompt in BATTLE_IMAGE_PROMPTS:
             try:
+                if not force:
+                    try:
+                        existing = r2_get_bytes(key)
+                    except Exception:
+                        existing = None
+                    if existing:
+                        skipped += 1
+                        continue
                 res = generate_image_bytes(prompt=prompt, template_id=0, user_id=0, action_type="battle_image")
                 data = bytes(res.get("data") or b"")
                 if not data:
@@ -28801,14 +28850,17 @@ async def admin_battle_images_command(update: Update, context: CallbackContext) 
                 made += 1
             except Exception as exc:
                 errs.append(f"{key}: {str(exc)[:120]}")
-        return {"made": made, "total": len(BATTLE_IMAGE_PROMPTS), "errs": errs}
+        return {"made": made, "skipped": skipped, "total": len(BATTLE_IMAGE_PROMPTS), "errs": errs}
 
     try:
         result = await asyncio.to_thread(_gen)
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
         return
-    text = f"✅ Сгенерировано: {result.get('made')}/{result.get('total')} (R2: battle/fox_invite.png, battle/fox_reminder.png)"
+    text = (f"✅ Сгенерировано: {result.get('made')}, пропущено (уже есть): "
+            f"{result.get('skipped')} из {result.get('total')}\n"
+            "R2: fox_invite (der/das), fox_invite_adjektiv (-en/-es), "
+            "fox_invite_wofrage (Wo?/Wie?), fox_reminder")
     if result.get("errs"):
         text += "\n🔴 " + "\n".join(result["errs"][:5])
     await status_msg.edit_text(text[:4000])
@@ -33128,12 +33180,6 @@ async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle
     )
     join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "✅ Принять вызов", callback_data=f"adb_join:{battle_id}")]])
-    poster = None
-    try:
-        from backend.interactive_card import render_adjektiv_card
-        poster = await asyncio.to_thread(render_adjektiv_card)
-    except Exception:
-        poster = None
     if target_ids is not None:
         targets = list(target_ids)
     else:
@@ -33141,27 +33187,17 @@ async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle
             targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
         except Exception:
             targets = []
-    sent = 0
-    for uid in targets or []:
-        if int(uid) == int(creator_id):
-            continue
-        try:
-            if poster:
-                await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(poster),
-                                             caption=invite_text, parse_mode="HTML", reply_markup=join_kb)
-            else:
-                await context.bot.send_message(chat_id=int(uid), text=invite_text,
-                                               parse_mode="HTML", reply_markup=join_kb)
-            sent += 1
-        except Exception:
-            pass
+    sent, blocked, error = await _deliver_battle_invites(
+        context, creator_id=int(creator_id), targets=list(targets),
+        caption=invite_text, kb=join_kb, kind="adjektiv")
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Adjektiv-батл #{battle_id} в бою!</b>\n"
                  f"15 ситуаций на окончания прилагательных · дедлайн 23:59\n"
-                 f"📨 Вызов получили: {sent}\nСыграй первым — задай темп! 👇")
+                 f"{_battle_delivery_caption_line(sent, blocked, error)}"
+                 f"Сыграй первым — задай темп! 👇")
     return await _present_battle_status(context, chat_id=int(status_chat_id),
                                         old_msg_id=int(status_msg_id),
                                         caption=final_cap, kb=play_kb)
@@ -33551,12 +33587,6 @@ async def _broadcast_wofrage_battle_invites(context: CallbackContext, *, battle_
     )
     join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "✅ Принять вызов", callback_data=f"wfb_join:{battle_id}")]])
-    poster = None
-    try:
-        from backend.interactive_card import render_wofrage_card
-        poster = await asyncio.to_thread(render_wofrage_card)
-    except Exception:
-        poster = None
     if target_ids is not None:
         targets = list(target_ids)
     else:
@@ -33564,27 +33594,17 @@ async def _broadcast_wofrage_battle_invites(context: CallbackContext, *, battle_
             targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
         except Exception:
             targets = []
-    sent = 0
-    for uid in targets or []:
-        if int(uid) == int(creator_id):
-            continue
-        try:
-            if poster:
-                await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(poster),
-                                             caption=invite_text, parse_mode="HTML", reply_markup=join_kb)
-            else:
-                await context.bot.send_message(chat_id=int(uid), text=invite_text,
-                                               parse_mode="HTML", reply_markup=join_kb)
-            sent += 1
-        except Exception:
-            pass
+    sent, blocked, error = await _deliver_battle_invites(
+        context, creator_id=int(creator_id), targets=list(targets),
+        caption=invite_text, kb=join_kb, kind="wofrage")
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚔️ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_wfb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_wfbl_0"))],
     ])
     final_cap = (f"⚔️ <b>Wo-Frage-батл #{battle_id} в бою!</b>\n"
                  f"12 вопросов на Wo-Fragen · дедлайн 23:59\n"
-                 f"📨 Вызов получили: {sent}\nСыграй первым — задай темп! 👇")
+                 f"{_battle_delivery_caption_line(sent, blocked, error)}"
+                 f"Сыграй первым — задай темп! 👇")
     return await _present_battle_status(context, chat_id=int(status_chat_id),
                                         old_msg_id=int(status_msg_id),
                                         caption=final_cap, kb=play_kb)
