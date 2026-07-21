@@ -24842,12 +24842,20 @@ def list_user_vocabulary(
             ),
             "",
         )
+        # dictionary_senses hold meanings in the entry's TARGET language. For a ru→de
+        # entry (user looked a Russian word up and got German) the target IS German, so
+        # taking the sense unconditionally printed the German headword on the translation
+        # line as well — the card showed German twice and the Russian never appeared.
+        # Use the senses only when the native (Russian) side is the target side.
+        senses_are_native = entry_target_lang != "de"
         native_display = str(
-            primary_sense
+            (primary_sense if senses_are_native else "")
             or response_json.get("translation_ru")
             or row[4]
             or (response_source_text if entry_source_lang == "ru" else "")
             or (response_target_text if entry_target_lang == "ru" else "")
+            or response_json.get("word_ru")
+            or row[1]
             or row[22]
             or ""
         ).strip()

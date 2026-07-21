@@ -8457,7 +8457,12 @@ def _normalize_dictionary_enrich_payload(enrich: dict | None) -> dict:
 
 def _dictionary_payload_needs_enrichment(response_json: dict | None) -> bool:
     payload = response_json if isinstance(response_json, dict) else {}
-    if str(payload.get("entry_kind") or "").strip().lower() != "word":
+    entry_kind = str(payload.get("entry_kind") or "").strip().lower()
+    # A payload that DECLARES another kind (sentence, phrase…) is out of scope. A payload
+    # with no entry_kind at all is a thin save (bot private chat, quick game saves): it
+    # carries only the word + translation, so the card stays empty unless we enrich it.
+    # The caller still gates on _is_single_word_dictionary_entry before spending an LLM call.
+    if entry_kind and entry_kind != "word":
         return False
     if isinstance(payload.get("meanings"), dict):
         primary = payload["meanings"].get("primary")

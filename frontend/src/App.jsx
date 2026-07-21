@@ -37421,7 +37421,10 @@ function AppInner() {
                                   const displayWord = item.display_word || item.word_de || item.word_ru || '—';
                                   const displayTrans = sanitizeBilingualTargetText(
                                     displayWord,
-                                    item.display_translation || item.translation_ru || item.translation_de || '',
+                                    // The second line is the NATIVE (Russian) side. translation_de is
+                                    // German and must never be used as a fallback here — on ru→de
+                                    // entries it equals the headword and the row showed German twice.
+                                    item.display_translation || item.translation_ru || item.word_ru || '',
                                     item.target_lang || '',
                                   );
                                   const savedMeanings = getSavedEntryRankedMeanings(item);
