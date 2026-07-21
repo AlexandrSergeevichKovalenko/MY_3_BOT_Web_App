@@ -122,6 +122,8 @@ const MEDIA = {
   world_news:    `${R2}/youtube_video_morningnews/morning_news_video.mp4`,             // howto_interactives — «Starte den Tag mit Nachrichten»
   youtube_dual_subs: `${R2}/youtube_video_morningnews/youtube_double_subtitles.mp4`,   // howto_tools — «YouTube mit doppelten Untertiteln»
   youtube_browser:   `${R2}/youtube_video_morningnews/youtube_in_browser.mp4`,         // howto_tools — то же в браузере
+  skill_map_photo: `${R2}/skill_map/skill_map.png`,                                   // skill_map — карта навыков (скрин)
+  skill_training:  `${R2}/skill_map/skill_training.mp4`,                              // skill_map — точечная тренировка слабого навыка
   interactives: [                                                                     // howto_interactives
     { src: `${R2}/interactives/interactive_1.mp4`, caption: t('🎥 Артикли der/die/das — Artikelquiz', '🎥 Artikel der/die/das — Artikelquiz') },
     { src: `${R2}/interactives/interactive_2.mp4`, caption: t('🎥 Вопросы Wo-Fragen', '🎥 Wo-Fragen') },
@@ -198,6 +200,7 @@ const STEPS = [
   { id: 'howto_words',        title: t('Твой словарь пополняется сам 📖', 'Dein Wörterbuch füllt sich von selbst 📖'), kind: 'info' },
   { id: 'howto_interactives', title: t('Игры-тренировки приходят сами 🎮', 'Übungsspiele kommen von selbst 🎮'), kind: 'info' },
   { id: 'howto_translations', title: t('Переводы с разбором ✍️', 'Übersetzungen mit Analyse ✍️'),          kind: 'info' },
+  { id: 'skill_map',          title: t('Карта твоих навыков 🗺', 'Karte deiner Skills 🗺'),        kind: 'info' },
   { id: 'howto_tools',        title: t('Ещё инструменты 🧰', 'Weitere Werkzeuge 🧰'),              kind: 'info' },
   { id: 'howto_youtube',      title: t('Смотри YouTube в приложении ▶️', 'Schau YouTube in der App ▶️'), kind: 'info' },
   { id: 'keyboard',   title: t('Меню бота — где нажимать ⌨️', 'Bot-Menü — wo man tippt ⌨️'), kind: 'info' },
@@ -361,7 +364,7 @@ const GUEST_NOTE = (
 // Body per step. Real controls land case-by-case (Stage 1); the rest stay stubs.
 const REAL_STEPS = new Set(['install_app', 'language', 'dictionary', 'intensity', 'windows',
   'battles', 'groups', 'shortcut', 'howto_words', 'howto_interactives', 'howto_translations',
-  'howto_tools', 'howto_youtube', 'keyboard', 'howto_morning', 'howto_learn', 'plans']);
+  'skill_map', 'howto_tools', 'howto_youtube', 'keyboard', 'howto_morning', 'howto_learn', 'plans']);
 function StepBody(props) {
   const { step, isPro, confirmed, busy, dictBusy, dictChoice, stepErr, onConfirm, dictOffer, onDictAction,
     selPreset, selWindow, onPickPreset, onPickWindow, selBattle, onPickBattle,
@@ -978,6 +981,43 @@ function StepBody(props) {
             {t('Есть режимы и уровни сложности — от простого к продвинутому. Незнакомые слова из перевода тоже сохраняешь в словарь одной кнопкой.',
                'Es gibt Modi und Schwierigkeitsstufen — von einfach bis fortgeschritten. Unbekannte Wörter aus der Übersetzung speicherst du auch mit einem Knopf ins Wörterbuch.')}
           </p>
+        </div>
+      );
+    case 'skill_map':
+      return (
+        <div className="ob-stub">
+          <p className="ob-lead">
+            {t('Когда ты переводишь предложения, бот под капотом оценивает каждую твою ошибку — и по ним строит ',
+               'Wenn du Sätze übersetzt, bewertet der Bot im Hintergrund jeden deiner Fehler — und baut daraus ')}
+            <b>{t('карту твоих навыков', 'eine Karte deiner Skills')}</b>
+            {t(': где ты уже силён, а где слабые места. Эту карту ты видишь прямо в приложении.',
+               ': wo du schon stark bist und wo die Schwächen liegen. Diese Karte siehst du direkt in der App.')}
+          </p>
+          <MediaTile
+            src={MEDIA.skill_map_photo}
+            type="image"
+            caption={t('🗺 Карта навыков: сильные и слабые темы с процентами', '🗺 Skill-Karte: starke und schwache Themen mit Prozenten')}
+          />
+          <p className="ob-lead">
+            {t('Дальше выбираешь любой слабый навык и прокачиваешь его точечно: короткая ',
+               'Dann wählst du eine schwache Fähigkeit und trainierst sie gezielt: kurze ')}
+            <b>{t('теория', 'Theorie')}</b>{t(', ', ', ')}
+            <b>{t('видео с объяснением', 'ein Erklärvideo')}</b>{t(', ', ', ')}
+            <b>{t('ссылка на материал', 'ein Link zum Nachlesen')}</b>
+            {t(' — и короткое упражнение, чтобы сразу закрепить.',
+               ' — und eine kurze Übung, um es gleich zu festigen.')}
+          </p>
+          <MediaTile
+            src={MEDIA.skill_training}
+            type="video"
+            caption={t('🎥 Выбираешь слабый навык → теория, видео, материал и короткое упражнение',
+                       '🎥 Du wählst eine schwache Fähigkeit → Theorie, Video, Material und eine kurze Übung')}
+          />
+          <p className="ob-lead ob-muted-note">
+            {t('Так ты работаешь не «вообще», а именно над тем, что проседает — и слабые темы постепенно переходят в сильные.',
+               'So arbeitest du nicht «allgemein», sondern genau an dem, was hakt — und schwache Themen werden nach und nach zu starken.')}
+          </p>
+          <span className="ob-lock">{t('🔒 Карта навыков и точечная тренировка — в Pro', '🔒 Skill-Karte und gezieltes Training — mit Pro')}</span>
         </div>
       );
     case 'howto_tools':
