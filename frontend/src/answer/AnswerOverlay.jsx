@@ -339,6 +339,22 @@ function BattleSummaryCard({ kind, battle, onClose, onOpenBattle }) {
   );
 }
 
+// Frame for the pin answer region. Two corrections over the raw bbox: a floor on the
+// size (a target can be 5% of the frame tall — the frame would vanish under the tap
+// dot), and a clamp inside the image (a box flush with an edge got sliced off by the
+// rounded, overflow-hidden wrapper). Grows around the box's CENTER so it keeps
+// pointing at the real object.
+function pinBoxStyle(bbox) {
+  const MIN = 0.11;
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  const bw = Math.max(num(bbox[2], 0), 0), bh = Math.max(num(bbox[3], 0), 0);
+  const w = Math.min(1, Math.max(bw, MIN)), h = Math.min(1, Math.max(bh, MIN));
+  const cx = num(bbox[0], 0) + bw / 2, cy = num(bbox[1], 0) + bh / 2;
+  const x = Math.min(Math.max(0, cx - w / 2), 1 - w);
+  const y = Math.min(Math.max(0, cy - h / 2), 1 - h);
+  return { left: `${x * 100}%`, top: `${y * 100}%`, width: `${w * 100}%`, height: `${h * 100}%` };
+}
+
 // LCS word alignment for the sentence diff (case/punctuation-insensitive match,
 // original tokens kept for display).
 function wordDiff(userText, correctText) {
@@ -454,13 +470,7 @@ function AufgabeResult({ result }) {
           <div className="pin-result-wrap">
             <img className="pin-img" src={result.image_url} alt="" draggable="false" />
             {Array.isArray(result.bbox) ? (
-              <span
-                className="pin-result-box"
-                style={{
-                  left: `${result.bbox[0] * 100}%`, top: `${result.bbox[1] * 100}%`,
-                  width: `${result.bbox[2] * 100}%`, height: `${result.bbox[3] * 100}%`,
-                }}
-              />
+              <span className="pin-result-box" style={pinBoxStyle(result.bbox)} />
             ) : null}
             {result.tap ? (
               <span
