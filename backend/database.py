@@ -6500,6 +6500,14 @@ def ensure_webapp_tables() -> None:
                     delivered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            # message_id of the DM message that currently carries this user's reply
+            # keyboard (the "anchor"). Kept cleanup-exempt so the nightly purge never
+            # deletes it (which would drop the keyboard on Telegram's side). When a new
+            # anchor is set, the old one is un-preserved so it gets cleaned normally.
+            cursor.execute("""
+                ALTER TABLE bt_3_reply_keyboard_state
+                ADD COLUMN IF NOT EXISTS anchor_message_id BIGINT;
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_pair_created
                 ON bt_3_webapp_dictionary_queries (user_id, source_lang, target_lang, created_at DESC);
@@ -24389,6 +24397,39 @@ def mark_reply_keyboard_delivered(user_id: int, keyboard_version: str) -> None:
                 DO UPDATE SET keyboard_version = EXCLUDED.keyboard_version, delivered_at = NOW();
                 """,
                 (int(user_id), str(keyboard_version)),
+            )
+        conn.commit()
+
+
+def get_reply_keyboard_anchor(user_id: int) -> int | None:
+    """message_id of the DM message currently holding this user's reply keyboard,
+    or None if none recorded. Read-only; best-effort (swallows errors)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT anchor_message_id FROM bt_3_reply_keyboard_state WHERE user_id = %s LIMIT 1;",
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception:
+        logging.debug("get_reply_keyboard_anchor failed user_id=%s", user_id, exc_info=True)
+        return None
+
+
+def set_reply_keyboard_anchor(user_id: int, message_id: int) -> None:
+    """Record the message_id that now carries this user's reply keyboard (upsert)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_reply_keyboard_state (user_id, anchor_message_id, delivered_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET anchor_message_id = EXCLUDED.anchor_message_id;
+                """,
+                (int(user_id), int(message_id)),
             )
         conn.commit()
 

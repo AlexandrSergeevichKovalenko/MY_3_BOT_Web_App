@@ -144,6 +144,8 @@ from backend.database import (
     set_shortcut_autosave_enabled,
     get_reply_keyboard_delivered_version,
     mark_reply_keyboard_delivered,
+    get_reply_keyboard_anchor,
+    set_reply_keyboard_anchor,
     init_db,
     db_acquire_scope,
     get_db_connection,
@@ -1287,7 +1289,12 @@ SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES = [
 # Achievement keepsakes — грамоты и пьедесталы батлов: these are awards users want
 # to keep, so the nightly system-message cleanup must NEVER delete them, regardless
 # of how SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES is configured in the environment.
-ALWAYS_PRESERVE_MESSAGE_TYPES = ["certificate", "battle_podium", "champion"]
+# "reply_keyboard": the DM message that currently carries a user's reply-keyboard
+# (the anchor). Deleting it would drop the keyboard on Telegram's side (→ "no buttons
+# in the morning"), so the nightly cleanup must never touch it. When a newer anchor is
+# set, the old one is re-tagged to a deletable type (see _set_reply_keyboard_anchor).
+ALWAYS_PRESERVE_MESSAGE_TYPES = ["certificate", "battle_podium", "champion", "reply_keyboard"]
+REPLY_KEYBOARD_ANCHOR_TYPE = "reply_keyboard"
 ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE = (
     os.getenv("ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE") or "0"
@@ -1752,8 +1759,12 @@ class TrackingExtBot(ExtBot):
         if chat_id is not None and not suppress_private_keyboard_attach:
             if carried_keyboard:
                 await _mark_kb_delivered(chat_id)
-            else:
-                await self._ensure_dm_keyboard_after_send(args, kwargs, suppress_private_keyboard_attach)
+                # This DM message carries the reply keyboard → make it the cleanup-exempt
+                # anchor (records it itself) instead of a deletable "text" row, so the
+                # nightly purge can't delete it and drop the keyboard.
+                await _set_reply_keyboard_anchor(chat_id, msg)
+                return msg
+            await self._ensure_dm_keyboard_after_send(args, kwargs, suppress_private_keyboard_attach)
         return await self._track_single(msg, "text")
 
     async def send_photo(self, *args, **kwargs):
@@ -6301,7 +6312,7 @@ def _kb_should_attach(user_id: int) -> bool:
 # it once, sending a single lightweight standalone menu message if not.
 # Bump REPLY_KEYBOARD_VERSION to force a one-time re-delivery to everyone (e.g. after a
 # layout change) — the next DM push to each user re-sends the fresh keyboard.
-REPLY_KEYBOARD_VERSION = "2026-07-11"
+REPLY_KEYBOARD_VERSION = "2026-07-21"
 # In-memory cache of "user already has version X" so the hot send path stays O(1) once
 # warmed. Empty on a fresh process → first DM send per user does one DB read.
 _kb_delivered_versions: dict[int, str] = {}
@@ -6318,6 +6329,36 @@ async def _mark_kb_delivered(chat_id: int) -> None:
         await asyncio.to_thread(mark_reply_keyboard_delivered, uid, REPLY_KEYBOARD_VERSION)
     except Exception:
         logging.debug("mark_reply_keyboard_delivered failed chat_id=%s", chat_id, exc_info=True)
+
+
+async def _set_reply_keyboard_anchor(chat_id: int, message) -> None:
+    """Make `message` the user's reply-keyboard anchor: record it with the cleanup-exempt
+    type so the nightly purge never deletes it (deleting the message that holds a reply
+    keyboard drops the keyboard on Telegram's side → "no buttons in the morning"), and
+    release the previous anchor back to a deletable type so anchors don't pile up.
+    Best-effort — never raises."""
+    try:
+        uid = int(chat_id)
+        new_mid = int(message.message_id)
+    except Exception:
+        return
+    try:
+        old_mid = await asyncio.to_thread(get_reply_keyboard_anchor, uid)
+        await asyncio.to_thread(
+            record_telegram_system_message, uid, new_mid, REPLY_KEYBOARD_ANCHOR_TYPE
+        )
+        await asyncio.to_thread(set_reply_keyboard_anchor, uid, new_mid)
+        if old_mid and old_mid != new_mid:
+            # The new anchor is already the active keyboard-setter, so the old message
+            # is now safe to clean; re-tag it so the nightly purge picks it up.
+            await asyncio.to_thread(
+                update_telegram_system_message_type,
+                chat_id=uid,
+                message_id=old_mid,
+                message_type="text",
+            )
+    except Exception:
+        logging.debug("set reply keyboard anchor failed chat_id=%s", chat_id, exc_info=True)
 
 
 async def _ensure_reply_keyboard_delivered(bot, chat_id: int) -> None:
@@ -6340,9 +6381,9 @@ async def _ensure_reply_keyboard_delivered(bot, chat_id: int) -> None:
     try:
         kb = _build_private_language_tutor_reply_keyboard(uid)
         # Call the base ExtBot method directly to bypass our overridden send_message
-        # (avoids re-entrancy). This message is meant to persist, so it isn't tracked
-        # for auto-cleanup.
-        await ExtBot.send_message(
+        # (avoids re-entrancy). This message holds the keyboard, so we register it as the
+        # cleanup-exempt anchor (below) instead of letting the nightly purge delete it.
+        sent = await ExtBot.send_message(
             bot,
             chat_id=uid,
             text="📋 Меню под рукой — задания, тренажёры и словарь на кнопках снизу.",
@@ -6350,6 +6391,7 @@ async def _ensure_reply_keyboard_delivered(bot, chat_id: int) -> None:
         )
         _kb_last_attach[uid] = pytime.time()
         await asyncio.to_thread(mark_reply_keyboard_delivered, uid, REPLY_KEYBOARD_VERSION)
+        await _set_reply_keyboard_anchor(uid, sent)
     except Exception:
         _kb_delivered_versions.pop(uid, None)
         logging.debug("ensure reply keyboard delivery failed chat_id=%s", chat_id, exc_info=True)
