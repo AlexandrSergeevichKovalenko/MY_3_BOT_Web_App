@@ -1537,6 +1537,22 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
         result["explanation"] = ""
         result["hint_ru"] = ""
         result["tip"] = ""
+    if fmt == "pin":
+        # Show WHERE the object actually was: the same image with the target region
+        # framed and the learner's own tap marked. A bare ❌ leaves them guessing
+        # whether the article or the tap was wrong — and unable to learn the object.
+        bbox = payload.get("bbox")
+        result["bbox"] = [float(v) for v in bbox] if isinstance(bbox, list) and len(bbox) == 4 else None
+        result["image_url"] = ""
+        key = str(payload.get("image_object_key") or "")
+        if key:
+            try:
+                from backend.r2_storage import r2_public_url
+                result["image_url"] = r2_public_url(key)
+            except Exception:
+                result["image_url"] = ""
+        tap, _article = _parse_pin_answer(user_answer)
+        result["tap"] = {"x": tap[0], "y": tap[1]} if tap else None
     return result
 
 
@@ -2110,7 +2126,81 @@ def _grade_aufgabe(fmt: str, payload: dict, raw_input: str) -> tuple:
         return is_correct, wrong_reason
     if fmt == "error":
         return _grade_error(payload, raw_input)
+    if fmt == "pin":
+        return _grade_pin(payload, raw_input)
     return _check_aufgabe(fmt, payload, raw_input), ""
+
+
+def _parse_pin_answer(raw_input: str) -> tuple:
+    """'x,y' or 'x,y|article' → ((x, y) | None, article). Never raises."""
+    coords, sep, article = str(raw_input or "").strip().partition("|")
+    x_str, _, y_str = coords.partition(",")
+    try:
+        tap = (float(x_str), float(y_str))
+    except (TypeError, ValueError):
+        tap = None
+    return tap, (article.strip() if sep else "")
+
+
+def _pin_bbox_hit(payload: dict, tap: tuple) -> bool:
+    bbox = payload.get("bbox")
+    if not tap or not (isinstance(bbox, list) and len(bbox) == 4):
+        return False
+    try:
+        bx, by, bw, bh = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return False
+    x, y = tap
+    m = 0.06  # forgiving margin so a near-miss on a clear object still counts
+    return (bx - m) <= x <= (bx + bw + m) and (by - m) <= y <= (by + bh + m)
+
+
+def _pin_vision_hit(payload: dict, tap: tuple) -> bool:
+    """Ask a vision model whether the tap actually landed on the target. Second chance
+    ONLY on a bbox miss: the stored bbox is a single vision guess made at pool time and
+    is often off for small objects, so trusting it alone can make an item unwinnable."""
+    key = str(payload.get("image_object_key") or "")
+    target = str(payload.get("target_label") or "")
+    if not tap or not key or not target:
+        return False
+    try:
+        from backend.r2_storage import r2_get_bytes
+        from backend.openai_manager import run_vision_point_check
+        img = r2_get_bytes(key)
+        if not img:
+            return False
+        return bool(run_vision_point_check(img, target, tap[0], tap[1]))
+    except Exception:
+        logging.warning("pin: vision point check failed (key=%s)", key, exc_info=True)
+        return False
+
+
+def _grade_pin(payload: dict, raw_input: str) -> tuple:
+    """Grade 'Finde im Bild': the tap must land on the target AND the typed article must
+    match. Verdict order: bbox hit-test → (on a miss, with the article right) one vision
+    re-check → honest per-part reason, so the learner is told WHICH half failed instead of
+    a bare ❌ against a possibly-wrong bbox."""
+    tap, article = _parse_pin_answer(raw_input)
+    if not tap:
+        return False, ""
+    req_article = str(payload.get("article") or "").strip().lower()
+    ok_article = (not req_article) or check_quiz_freeform_deterministic(
+        user_text=article, correct_text=req_article)
+    ok_tap = _pin_bbox_hit(payload, tap)
+    # Only worth re-checking when it would flip the verdict: the article is right and
+    # the tap is the sole reason for a ❌. Bounded spend, off nobody's happy path.
+    if not ok_tap and ok_article:
+        ok_tap = _pin_vision_hit(payload, tap)
+    if ok_tap and ok_article:
+        return True, ""
+    target = str(payload.get("target_label") or "").strip()
+    if ok_tap and not ok_article:
+        reason = f"предмет ты нашёл верно, но артикль другой — {target or 'см. ответ выше'}."
+    elif ok_article and not ok_tap:
+        reason = "артикль верный, но на картинке ты указал не на тот предмет."
+    else:
+        reason = "и предмет на картинке, и артикль — оба мимо."
+    return False, reason
 
 
 def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
@@ -2161,24 +2251,15 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
                 return False
         return True
     if fmt == "pin":
-        # raw_input = "x,y" or "x,y|article": tap inside the bbox AND (if required) the article.
-        coords, _, article = answer.partition("|")
-        bbox = payload.get("bbox")
-        if not (isinstance(bbox, list) and len(bbox) == 4):
+        # Deterministic half only (bbox hit-test + article). The authoritative grader is
+        # _grade_pin, which adds the vision re-check on a bbox miss.
+        tap, article = _parse_pin_answer(answer)
+        if not tap or not _pin_bbox_hit(payload, tap):
             return False
-        try:
-            x_str, _, y_str = coords.partition(",")
-            x, y = float(x_str), float(y_str)
-            bx, by, bw, bh = (float(v) for v in bbox)
-        except (TypeError, ValueError):
-            return False
-        m = 0.06  # forgiving margin so a near-miss on a clear object still counts
-        in_box = (bx - m) <= x <= (bx + bw + m) and (by - m) <= y <= (by + bh + m)
         req_article = str(payload.get("article") or "").strip().lower()
-        if req_article:
-            ok_article = check_quiz_freeform_deterministic(user_text=article.strip(), correct_text=req_article)
-            return in_box and ok_article
-        return in_box
+        if not req_article:
+            return True
+        return check_quiz_freeform_deterministic(user_text=article, correct_text=req_article)
     if fmt == "hoerluecke":
         gaps = payload.get("gaps")
         if isinstance(gaps, list) and gaps:  # multi-gap: answers joined by "|", in order

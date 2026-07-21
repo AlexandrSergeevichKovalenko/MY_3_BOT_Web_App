@@ -46951,6 +46951,43 @@ def get_aufgabe_answer(*, dispatch_id: int, user_id: int) -> dict | None:
     return {"answer": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
 
 
+def retire_impossible_aufgabe_items(*, fmt: str = "pin", min_answers: int = 6) -> list:
+    """Retire pool items NOBODY can get right: ≥min_answers answers and 0 correct.
+
+    That is not a hard task, it's a broken one — for `pin` it means the stored bbox
+    points at the wrong thing, so every honest tap is graded ❌. Crowd data is the only
+    signal that catches an item the generation-time checks let through. Returns the
+    retired aufgabe_ids."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_aufgabe_bank b
+                    SET retired = TRUE
+                    WHERE b.retired = FALSE AND b.format = %s AND b.aufgabe_id IN (
+                        SELECT d.aufgabe_id
+                        FROM bt_3_aufgabe_dispatches d
+                        JOIN bt_3_aufgabe_answers a ON a.dispatch_id = d.id
+                        GROUP BY d.aufgabe_id
+                        HAVING COUNT(*) >= %s
+                           AND COUNT(*) FILTER (WHERE a.is_correct) = 0
+                    )
+                    RETURNING b.aufgabe_id
+                    """,
+                    (str(fmt), int(min_answers)),
+                )
+                ids = [str(r[0]) for r in (cursor.fetchall() or [])]
+            conn.commit()
+        if ids:
+            logging.info("retire_impossible_aufgabe_items[%s]: retired %s (%s)",
+                         fmt, len(ids), ", ".join(ids[:10]))
+        return ids
+    except Exception:
+        logging.warning("retire_impossible_aufgabe_items failed fmt=%s", fmt, exc_info=True)
+        return []
+
+
 def retire_all_crossword_bank_entries() -> int:
     """Retire every active crossword entry. Returns count retired.
 

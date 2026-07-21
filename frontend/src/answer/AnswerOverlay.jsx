@@ -449,6 +449,32 @@ function AufgabeResult({ result }) {
         </div>
       )}
       {!isErr && good && result.hint_ru ? <div className="ans-meaning">{result.hint_ru}</div> : null}
+      {result.format === 'pin' && !good && result.image_url ? (
+        <div className="pin-result">
+          <div className="pin-result-wrap">
+            <img className="pin-img" src={result.image_url} alt="" draggable="false" />
+            {Array.isArray(result.bbox) ? (
+              <span
+                className="pin-result-box"
+                style={{
+                  left: `${result.bbox[0] * 100}%`, top: `${result.bbox[1] * 100}%`,
+                  width: `${result.bbox[2] * 100}%`, height: `${result.bbox[3] * 100}%`,
+                }}
+              />
+            ) : null}
+            {result.tap ? (
+              <span
+                className="pin-result-tap"
+                style={{ left: `${result.tap.x * 100}%`, top: `${result.tap.y * 100}%` }}
+              />
+            ) : null}
+          </div>
+          <div className="pin-result-legend">
+            <span className="pin-legend-box" /> hier war es
+            {result.tap ? <><span className="pin-legend-tap" /> dein Tipp</> : null}
+          </div>
+        </div>
+      ) : null}
       {!isErr && !good && result.wrong_reason ? (
         <div className="ans-why-wrong">⚠️ Твой ответ{mine ? <> «{mine}»</> : null}: {result.wrong_reason}</div>
       ) : null}

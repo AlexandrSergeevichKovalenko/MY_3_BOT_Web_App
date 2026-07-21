@@ -7136,6 +7136,81 @@ def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "ima
     return {"present": True, "bbox": [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]}
 
 
+def _mark_tap_on_image(image_bytes: bytes, x: float, y: float) -> bytes:
+    """Copy of the image with a bright ring + crosshair drawn at the normalized tap
+    point. We ASK ABOUT A DRAWN MARK, never about raw numbers: vision models ground
+    coordinates poorly but read a visual marker reliably. Returns PNG bytes."""
+    import io
+    from PIL import Image, ImageDraw
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    w, h = img.size
+    cx, cy = int(x * w), int(y * h)
+    r = max(10, int(min(w, h) * 0.035))
+    draw = ImageDraw.Draw(img)
+    # white halo under the red ring so the mark stays visible on any background
+    draw.ellipse([cx - r - 3, cy - r - 3, cx + r + 3, cy + r + 3], outline=(255, 255, 255), width=6)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 0, 0), width=5)
+    draw.line([cx - r * 2, cy, cx - r, cy], fill=(255, 0, 0), width=4)
+    draw.line([cx + r, cy, cx + r * 2, cy], fill=(255, 0, 0), width=4)
+    draw.line([cx, cy - r * 2, cx, cy - r], fill=(255, 0, 0), width=4)
+    draw.line([cx, cy + r, cx, cy + r * 2], fill=(255, 0, 0), width=4)
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def run_vision_point_check(image_bytes: bytes, target_label: str, x: float, y: float,
+                           *, mime: str = "image/png") -> bool:
+    """Second-chance grading for a pin task: did the learner's tap land ON the target?
+
+    The stored bbox comes from ONE vision call at pool time and is routinely off for
+    small objects (the scene deliberately contains a BIGGER decoy of the same
+    category — see the pin blueprint prompt), so a genuinely correct tap could be
+    graded wrong with no recourse. Here the tap is drawn onto the image and the model
+    is asked whether the MARK sits on the target. Runs only on a bbox miss, so the
+    spend is bounded to actual disputes.
+
+    Returns True only on an explicit yes; any failure → False (bbox verdict stands)."""
+    import base64
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key or not image_bytes or not str(target_label or "").strip():
+        return False
+    try:
+        marked = _mark_tap_on_image(bytes(image_bytes), float(x), float(y))
+    except Exception:
+        logging.warning("run_vision_point_check: could not mark the tap", exc_info=True)
+        return False
+    b64 = base64.b64encode(marked).decode("ascii")
+    prompt = (
+        f"The image has a red ring with a crosshair drawn on it. Target object: \"{target_label}\". "
+        "Answer ONLY with strict JSON: {\"on_target\": true|false}. "
+        "on_target=true if the ring marks that object (or clearly touches it — a tap on the "
+        "edge of the right object still counts). "
+        "on_target=false if the ring marks a DIFFERENT object, even a similar-looking one, "
+        "or empty space. Be strict about which object, forgiving about precision."
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=25)
+        resp = client.chat.completions.create(
+            model=_DEFAULT_GATEWAY_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                ],
+            }],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(str(resp.choices[0].message.content or "").strip())
+    except Exception:
+        logging.warning("run_vision_point_check failed for target=%s", target_label, exc_info=True)
+        return False
+    return bool(data.get("on_target"))
+
+
 def run_quick_ask(*, question: str, context_text: str = "", source_lang: str = "ru",
                   target_lang: str = "de", history: list | None = None) -> str:
     """Fast in-app "ask the model" for the floating ask-window. A SINGLE
