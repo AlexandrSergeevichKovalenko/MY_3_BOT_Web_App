@@ -8694,6 +8694,13 @@ body:has(.webapp-page.is-theme-light),
   color: #94A3B8;
   line-height: 1.35;
 }
+/* Placeholder while a thin saved entry gets its card filled on demand. */
+.vocab-word-card-hint {
+  padding: 14px 2px;
+  font-size: 14px;
+  color: #94A3B8;
+}
+.webapp-page.is-theme-light .vocab-word-card-hint { color: #a08870; }
 .vocab-word-fullscreen-meta {
   display: flex;
   flex-wrap: wrap;

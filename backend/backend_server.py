@@ -48393,27 +48393,43 @@ def enrich_flashcard_entry():
     source_text_hint = (payload.get("source_text") or "").strip()
     target_text_hint = (payload.get("target_text") or "").strip()
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
     if not entry_id:
         return jsonify({"error": "entry_id обязателен"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
+    # initData OR durable app/browser token — same resolution as the save endpoint, so the
+    # standalone PWA can fill a card too.
+    user_id = _resolve_webapp_user_id(payload)
     if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
+        return jsonify({"error": "initData не прошёл проверку"}), 401
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     entry = get_dictionary_entry_by_id(int(entry_id))
-    response_json = entry.get("response_json") if entry else None
+    if not entry:
+        return jsonify({"error": "Запись не найдена"}), 404
+    if int(entry.get("user_id") or 0) != int(user_id):
+        return jsonify({"error": "Запись принадлежит другому пользователю"}), 403
+    # The entry's OWN pair wins over the profile default: a ru→de row must not be enriched
+    # as if it were de→ru.
+    entry_source_lang = str(entry.get("source_lang") or "").strip().lower()
+    entry_target_lang = str(entry.get("target_lang") or "").strip().lower()
+    if entry_source_lang and entry_target_lang:
+        source_lang, target_lang = entry_source_lang, entry_target_lang
+    response_json = entry.get("response_json")
     if isinstance(response_json, str):
         try:
             response_json = json.loads(response_json)
         except Exception:
             response_json = None
+    # Already a full card → no LLM call. Opening the same word twice must stay free.
+    if isinstance(response_json, dict) and not _dictionary_payload_needs_enrichment(response_json):
+        return jsonify(
+            {
+                "ok": True,
+                "response_json": response_json,
+                "cached": True,
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+        )
 
     source_text, target_text = _resolve_entry_texts_for_pair(
         entry=entry,

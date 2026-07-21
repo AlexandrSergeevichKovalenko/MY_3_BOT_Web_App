@@ -18235,7 +18235,8 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
                     origin_meta,
                     response_json,
                     folder_id,
-                    created_at
+                    created_at,
+                    user_id
                 FROM bt_3_webapp_dictionary_queries
                 WHERE id = %s
                 LIMIT 1;
@@ -18246,6 +18247,8 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
 
             return {
                 "id": row[0],
+                # Ownership check for the on-demand card fill (/api/webapp/flashcards/enrich).
+                "user_id": row[12],
                 "word_ru": row[1],
                 "translation_de": row[2],
                 "word_de": row[3],

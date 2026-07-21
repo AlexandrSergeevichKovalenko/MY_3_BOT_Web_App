@@ -155,9 +155,51 @@ function EmbeddedWordCard({ item, hideMeanings }) {
   );
 }
 
+// A saved entry keeps whatever card it was saved with. Entries that came from thin save
+// paths (bot private chat, starter-dictionary import, quick game saves) carry only the
+// word + translation, so the body used to render as a blank sheet forever — there was no
+// enrich-on-read anywhere. Now opening such an entry fills it ON DEMAND (one LLM call,
+// persisted server-side), so we pay only for words the learner actually opens.
 function LibraryWordDetail({ item }) {
-  const data = (item && typeof item.response_json === 'object' && item.response_json) ? item.response_json : null;
-  if (!data) return null;
+  const [filled, setFilled] = useState(null); // card fetched on demand for this entry
+  const stored = (item && typeof item.response_json === 'object' && item.response_json) ? item.response_json : null;
+  const data = filled || stored;
+  const hasCard = !!data && !!(
+    data.part_of_speech || data.meanings || data.grammar_tables || data.forms
+    || data.etymology_note || data.memory_tip
+    || (data.synonyms || []).length || (data.antonyms || []).length
+    || (data.related_words || []).length || (data.common_collocations || []).length
+    || (data.usage_examples || []).length || (data.government_patterns || []).length
+  );
+  const [filling, setFilling] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const requestedRef = useRef(null);
+
+  useEffect(() => {
+    const entryId = Number(item?.id || 0);
+    if (!entryId || hasCard) return;
+    if (requestedRef.current === entryId) return; // one attempt per entry
+    requestedRef.current = entryId;
+    setFilling(true);
+    setFailed(false);
+    (async () => {
+      try {
+        const res = await dictApi('/api/webapp/flashcards/enrich', { entry_id: entryId });
+        if (res && res.response_json) setFilled(res.response_json);
+        else setFailed(true);
+      } catch (_e) {
+        setFailed(true);
+      } finally {
+        setFilling(false);
+      }
+    })();
+  }, [item?.id, hasCard]);
+
+  if (!hasCard) {
+    if (filling) return <div className="vocab-word-card-hint">Собираю карточку…</div>;
+    if (failed) return <div className="vocab-word-card-hint">Не получилось собрать карточку — открой слово ещё раз.</div>;
+    return null;
+  }
   return <EmbeddedWordCard item={data} hideMeanings />;
 }
 
