@@ -18932,6 +18932,179 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
                 ))
 
 
+def ensure_dictionary_pool_snapshot_table() -> None:
+    """Снимки метрик словаря. Нужны потому, что телеметрия (bt_3_limit_runtime_events,
+    bt_3_billing_events) чистится ретенцией через 30 дней — без снимков длинную динамику
+    построить будет не из чего."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_dictionary_pool_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    taken_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    window_start TIMESTAMPTZ NULL,
+                    payload JSONB NOT NULL DEFAULT '{}'::jsonb
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_dictionary_pool_snapshots_taken
+                ON bt_3_dictionary_pool_snapshots (taken_at DESC);
+            """)
+        conn.commit()
+
+
+def save_dictionary_pool_snapshot(*, payload: dict, window_start=None) -> None:
+    ensure_dictionary_pool_snapshot_table()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO bt_3_dictionary_pool_snapshots (window_start, payload) VALUES (%s, %s);",
+                (window_start, Json(_coerce_json_object(payload))),
+            )
+        conn.commit()
+
+
+def get_last_dictionary_pool_snapshot() -> dict | None:
+    ensure_dictionary_pool_snapshot_table()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT taken_at, payload FROM bt_3_dictionary_pool_snapshots ORDER BY taken_at DESC LIMIT 1;"
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"taken_at": row[0], "payload": _coerce_json_object(row[1])}
+
+
+def get_dictionary_pool_report_stats(*, window_start) -> dict:
+    """Все числа для отчёта «Словарь: база и экономия» одним проходом.
+
+    Окно (window_start → сейчас) считается по СОБЫТИЯМ телеметрии, всё «всего» —
+    по текущему состоянию таблиц. Считаем ТОЛЬКО SQL, без LLM."""
+    stats: dict = {}
+    rich_sql = DICTIONARY_POOL_RICH_SQL_STORED.replace("bt_3_dictionary_entries.response_json", "response_json")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            # --- ПУЛ: объём и прирост
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE created_at >= %s)
+                FROM bt_3_dictionary_entries;
+                """,
+                (window_start,),
+            )
+            row = cursor.fetchone() or (0, 0)
+            stats["pool_total"] = int(row[0] or 0)
+            stats["pool_new"] = int(row[1] or 0)
+
+            # --- ПУЛ: слово / фраза / предложение
+            cursor.execute(
+                """
+                SELECT COALESCE(response_json->>'entry_kind', 'unknown') AS kind,
+                       COUNT(*), COUNT(*) FILTER (WHERE created_at >= %s)
+                FROM bt_3_dictionary_entries
+                GROUP BY 1 ORDER BY 2 DESC;
+                """,
+                (window_start,),
+            )
+            stats["pool_kinds"] = [
+                {"kind": r[0], "total": int(r[1] or 0), "new": int(r[2] or 0)}
+                for r in (cursor.fetchall() or [])
+            ]
+
+            # --- ПУЛ: качество
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) FILTER (WHERE response_json IS NOT NULL AND {rich_sql}),
+                       COUNT(*) FILTER (WHERE response_json IS NULL OR NOT {rich_sql}),
+                       COUNT(*) FILTER (WHERE target_lang = 'ru' AND COALESCE(target_text,'') !~ '[А-Яа-яЁё]')
+                FROM bt_3_dictionary_entries;
+                """
+            )
+            row = cursor.fetchone() or (0, 0, 0)
+            stats["pool_rich"] = int(row[0] or 0)
+            stats["pool_thin"] = int(row[1] or 0)
+            stats["pool_missing_native"] = int(row[2] or 0)
+
+            # Дубли «der Durchfall» vs «Durchfall» — одно слово, две записи.
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_dictionary_entries a
+                WHERE a.source_lang = 'de' AND EXISTS (
+                    SELECT 1 FROM bt_3_dictionary_entries b
+                    WHERE b.source_lang = 'de' AND b.target_lang = a.target_lang
+                      AND b.source_text_norm = regexp_replace(a.source_text_norm, '^(der|die|das) ', '')
+                      AND b.id <> a.id
+                );
+                """
+            )
+            stats["pool_article_dupes"] = int((cursor.fetchone() or [0])[0] or 0)
+
+            # --- Личные словари пользователей (без системных источников)
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE created_at >= %s),
+                       COUNT(DISTINCT user_id) FILTER (WHERE created_at >= %s)
+                FROM bt_3_webapp_dictionary_queries
+                WHERE origin_process <> ALL(%s);
+                """,
+                (window_start, window_start, ["import", "sentence_gpt_seed"]),
+            )
+            row = cursor.fetchone() or (0, 0, 0)
+            stats["saved_total"] = int(row[0] or 0)
+            stats["saved_new"] = int(row[1] or 0)
+            stats["saved_users"] = int(row[2] or 0)
+
+            # --- Запросы перевода за окно: отдано из своих запасов
+            cursor.execute(
+                """
+                SELECT COALESCE(metadata->>'cache_scope', 'unknown'), COUNT(*)
+                FROM bt_3_limit_runtime_events
+                WHERE feature_code = 'dictionary_lookup_daily'
+                  AND event_type IN ('cache_hit', 'db_cache_hit', 'memory_cache_hit')
+                  AND event_time >= %s
+                GROUP BY 1 ORDER BY 2 DESC;
+                """,
+                (window_start,),
+            )
+            scopes = [{"scope": r[0], "count": int(r[1] or 0)} for r in (cursor.fetchall() or [])]
+            stats["hits_by_scope"] = scopes
+            stats["hits_total"] = sum(s["count"] for s in scopes)
+
+            # --- Запросы перевода за окно: реальные походы наружу (GPT)
+            # units_type='requests' обязателен, иначе токенные строки утроят счёт.
+            cursor.execute(
+                """
+                SELECT action_type, COUNT(*), COALESCE(SUM(cost_amount), 0)
+                FROM bt_3_billing_events
+                WHERE provider = 'openai' AND units_type = 'requests'
+                  AND action_type LIKE 'dictionary%%'
+                  AND event_time >= %s
+                GROUP BY 1 ORDER BY 2 DESC;
+                """,
+                (window_start,),
+            )
+            calls = [
+                {"action": r[0], "count": int(r[1] or 0), "cost": float(r[2] or 0.0)}
+                for r in (cursor.fetchall() or [])
+            ]
+            stats["llm_by_action"] = calls
+            stats["llm_total"] = sum(c["count"] for c in calls)
+            stats["llm_cost"] = sum(c["cost"] for c in calls)
+
+            # --- Кеш запросов: размер и самые переиспользуемые слова (за всё время)
+            cursor.execute(
+                "SELECT COUNT(*), COALESCE(SUM(hit_count), 0) FROM bt_3_dictionary_lookup_cache;"
+            )
+            row = cursor.fetchone() or (0, 0)
+            stats["cache_rows"] = int(row[0] or 0)
+            stats["cache_hits_alltime"] = int(row[1] or 0)
+    return stats
+
+
 def get_pool_dictionary_entry(
     *,
     source_lang: str,
@@ -46531,6 +46704,31 @@ def retire_all_crossword_bank_entries() -> int:
                 SET retired = TRUE, updated_at = NOW()
                 WHERE retired = FALSE
                 """
+            )
+            count = cursor.rowcount or 0
+        conn.commit()
+    return count
+
+
+def retire_undersized_crossword_bank_entries(min_hidden: int = 3) -> int:
+    """Retire active crosswords with fewer than min_hidden blanks. Returns count.
+
+    Legacy entries generated before the 3-blank format are still 'ready' in the
+    bank and get served as 2-blank puzzles; this drops them from rotation.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET retired = TRUE, updated_at = NOW()
+                WHERE retired = FALSE
+                  AND (
+                    SELECT COUNT(*) FROM jsonb_array_elements(words_json::jsonb) w
+                    WHERE (w->>'hidden')::boolean IS TRUE
+                  ) < %s
+                """,
+                (min_hidden,),
             )
             count = cursor.rowcount or 0
         conn.commit()

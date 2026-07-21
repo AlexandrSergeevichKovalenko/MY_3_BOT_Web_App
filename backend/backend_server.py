@@ -6692,6 +6692,19 @@ def _store_dictionary_item_in_pool(
             ).strip()
         if not source_text or not target_text:
             return
+        # Проставляем вид записи (слово/фраза/предложение) прямо при укладке в пул —
+        # без него база не отвечает на вопрос «чего у нас накоплено».
+        if isinstance(item, dict) and not str(item.get("entry_kind") or "").strip():
+            try:
+                item = {**item, "entry_kind": _detect_dictionary_entry_kind(
+                    source_text=source_text,
+                    target_text=target_text,
+                    source_lang=pool_source_lang,
+                    target_lang=pool_target_lang,
+                    response_json=item,
+                )}
+            except Exception:
+                pass
         upsert_dictionary_pool_entry(
             source_lang=pool_source_lang,
             target_lang=pool_target_lang,
@@ -35500,6 +35513,7 @@ def stream_webapp_dictionary():
                 "direction": f"{query_source_lang}-{query_target_lang}",
                 "lookup_status": "ready",
                 "enrichment_pending": False,
+                "__scope": "shared_pool",
             }
             for key in ([cache_key, cache_key_shared] if DICTIONARY_SHARED_CACHE_ENABLED else [cache_key]):
                 _set_cached_dictionary_lookup_all(
@@ -35510,6 +35524,20 @@ def stream_webapp_dictionary():
             cached_payload = pool_payload
     if isinstance(cached_payload, dict) and isinstance(cached_payload.get("item"), dict):
         _cached_deep = _quick_dict_deep_id(user_id, word_ru, source_lang, target_lang)
+        # Стриминговый путь тоже обязан отмечать попадание, иначе отчёт покажет, что мы
+        # почти всегда ходим в GPT, хотя на деле отдали из своих запасов.
+        log_limit_runtime_event(
+            user_id=int(user_id),
+            feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+            event_type="cache_hit",
+            origin="webapp_dictionary_stream",
+            metadata={
+                "word": word_ru,
+                "cache_scope": str(cached_payload.get("__scope") or "stream_cache"),
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+            },
+        )
         return jsonify({
             "ok": True,
             "item": _with_grammar_tables(cached_payload.get("item")),

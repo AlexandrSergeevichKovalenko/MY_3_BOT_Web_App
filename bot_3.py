@@ -8451,6 +8451,18 @@ def _run_provider_cost_truth_report_safe() -> None:
         logging.exception("provider cost truth report (bot scheduler) failed")
 
 
+def _run_dictionary_pool_report_safe() -> None:
+    """Пн/Пт отчёт «Словарь: база и экономия». Крутится в потоке BackgroundScheduler →
+    обязан быть синхронным. force=True: от повторов уже защищают coalesce + max_instances,
+    а run-guard по дате мешал бы ручному перезапуску в тот же день."""
+    try:
+        from backend.dictionary_pool_report import send_dictionary_pool_report
+        result = send_dictionary_pool_report(force=True)
+        logging.info("dictionary pool report result=%s", result)
+    except Exception:
+        logging.exception("dictionary pool report failed")
+
+
 def _run_remedial_video_job_safe() -> None:
     """Bot-side nightly remedial-video assembly. Reads weak-topic events and drops a
     theory-video card into «Работа над ошибками» for users who struggled. Runs in a
@@ -10528,6 +10540,32 @@ async def admin_dedup_enqueue_command(update: Update, context: CallbackContext):
     except Exception as exc:
         logging.exception("admin dedup enqueue failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Не удалось поставить в очередь: {exc}")
+
+
+async def admin_dict_pool_report_command(update: Update, context: CallbackContext):
+    """Отчёт «Словарь: база и экономия» по требованию (тот же, что приходит Пн/Пт в 12:00).
+    Пишет снимок метрик — по нему считается окно следующего отчёта."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    await message.reply_text("📚 Считаю словарь…")
+    try:
+        from backend.dictionary_pool_report import (
+            build_dictionary_pool_report_text,
+            collect_dictionary_pool_report,
+        )
+        stats = await asyncio.to_thread(collect_dictionary_pool_report)
+        text = build_dictionary_pool_report_text(stats)
+    except Exception as exc:
+        logging.exception("dict pool report command failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось собрать отчёт по словарю: {exc}")
+        return
+    for part in _split_telegram_text(text):
+        await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def admin_dedup_report_command(update: Update, context: CallbackContext):
@@ -38242,6 +38280,7 @@ def main():
     application.add_handler(CommandHandler("provider_costs", admin_provider_costs_command))
     application.add_handler(CommandHandler("openai_audit", admin_openai_audit_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
+    application.add_handler(CommandHandler("dict_pool_report", admin_dict_pool_report_command))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
     application.add_handler(CommandHandler("fix_translation_sessions", admin_fix_translation_sessions_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
@@ -38804,6 +38843,21 @@ def main():
             hour=int((os.getenv("STARS_REPORT_HOUR") or "10").strip() or "10"),
             minute=int((os.getenv("STARS_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("STARS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Пн и Пт, 12:00 Europe/Vienna: «Словарь: база и экономия» --
+        # Показывает, растёт ли наша собственная база слов и насколько реже мы из-за неё
+        # ходим в GPT. Каждый запуск кладёт снимок метрик в БД, потому что телеметрия
+        # живёт всего 30 дней и длинную динамику иначе не построить.
+        scheduler.add_job(
+            _run_dictionary_pool_report_safe,
+            "cron",
+            day_of_week=(os.getenv("DICTIONARY_POOL_REPORT_DAYS") or "mon,fri").strip() or "mon,fri",
+            hour=int((os.getenv("DICTIONARY_POOL_REPORT_HOUR") or "12").strip() or "12"),
+            minute=int((os.getenv("DICTIONARY_POOL_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("DICTIONARY_POOL_REPORT_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,
