@@ -225,6 +225,70 @@ const WINDOWS = [
   ['morneve', t('🌅🌆 Утро+вечер', '🌅🌆 Morgens+abends'), '06–09 · 18–22:30'],
 ];
 
+// ПОВТОРНЫЙ вход (онбординг уже пройден) = справочник, а не мастер настройки. Тогда тур
+// открывается оглавлением: сверху то, что можно ИЗМЕНИТЬ (с текущими значениями), ниже —
+// объяснения «что где находится». Так человек попадает в нужный раздел одним тапом, а не
+// листает 19 экранов и не переподтверждает то, что уже настроил.
+const TOC_GROUPS = [
+  {
+    title: t('⚙️ Настройки', '⚙️ Einstellungen'),
+    ids: ['language', 'dictionary', 'intensity', 'windows', 'battles', 'groups', 'shortcut'],
+  },
+  {
+    title: t('📖 Как это работает', '📖 Wie es funktioniert'),
+    ids: ['install_app', 'howto_words', 'howto_interactives', 'howto_translations', 'skill_map',
+      'howto_tools', 'howto_youtube', 'keyboard', 'howto_morning', 'howto_learn', 'plans'],
+  },
+];
+
+// Текущее значение шага для оглавления — показываем РЕАЛЬНОЕ состояние, а не дефолт.
+function tocValue(id, s) {
+  const label = (list, code) => (list.find((o) => o[0] === code) || [])[1] || '';
+  switch (id) {
+    case 'language':
+      return '🇩🇪 ↔ 🇷🇺';
+    case 'dictionary':
+      if (s.dictTier === 'full') return t('✅ весь словарь', '✅ ganzes Wörterbuch');
+      if (s.dictTier === 'base') return t('✅ подключён', '✅ verbunden');
+      return t('не подключён', 'nicht verbunden');
+    case 'intensity':
+      return s.isPro ? label(PRESETS, s.preset) : t('🔒 Pro', '🔒 Pro');
+    case 'windows':
+      return s.isPro ? label(WINDOWS, s.window) : t('🔒 Pro', '🔒 Pro');
+    case 'battles':
+      return s.battleReady ? t('⚔️ да', '⚔️ ja') : t('нет', 'nein');
+    default:
+      return '';
+  }
+}
+
+function TableOfContents({ state, onPick }) {
+  return (
+    <div className="ob-toc">
+      <p className="ob-lead">
+        {t('Ты это уже настраивал — так что выбери, куда зайти. Ничего подтверждать заново не нужно.',
+           'Das hast du schon eingerichtet — wähle einfach, wohin du willst. Du musst nichts erneut bestätigen.')}
+      </p>
+      {TOC_GROUPS.map((group) => (
+        <section className="ob-toc-group" key={group.title}>
+          <h3 className="ob-toc-title">{group.title}</h3>
+          {group.ids.map((id) => {
+            const at = STEPS.findIndex((s) => s.id === id);
+            if (at < 0) return null;
+            const value = tocValue(id, state);
+            return (
+              <button type="button" className="ob-toc-row" key={id} onClick={() => onPick(at)}>
+                <span className="ob-toc-row-title">{STEPS[at].title}</span>
+                {value ? <span className="ob-toc-row-value">{value}</span> : null}
+              </button>
+            );
+          })}
+        </section>
+      ))}
+    </div>
+  );
+}
+
 // Media slot that hides itself if the asset isn't there yet (drop the file later).
 function MediaTile({ src, type = 'video', caption }) {
   // Only render once we've confirmed the URL is a REAL media file. A missing asset is
@@ -1221,6 +1285,12 @@ export default function OnboardingWizard() {
   const [shortcutOpening, setShortcutOpening] = useState(false); // «Настроить сейчас» in flight
   const [shareHint, setShareHint] = useState('');                // «Поделиться» feedback (copied)
   const [proPrice, setProPrice] = useState('');           // live Pro price label (Stripe-configured)
+  const [review, setReview] = useState(false);            // онбординг уже пройден → режим справочника
+  const [showToc, setShowToc] = useState(false);          // оглавление (только в режиме справочника)
+  const [dictTier, setDictTier] = useState('');           // none|base|full — реальное состояние словаря
+  const [settingsReady, setSettingsReady] = useState(false); // текущие настройки подгружены
+  // Что уже лежит на сервере: тап по ТОМУ ЖЕ значению не должен слать запрос.
+  const savedRef = useRef({ preset: '', window: '', battleReady: null });
   const [langHint, setLangHint] = useState(false);        // one-time «switch to German» toast + globe glow
 
   // On EVERY fresh RU open, point out the 🌐 globe: the wizard is in Russian, but a learner
@@ -1283,9 +1353,39 @@ export default function OnboardingWizard() {
         setIsPro(!!d.is_pro);
         const resume = d.completed ? 0 : Math.max(0, Math.min(Number(d.current_step) || 0, STEPS.length - 1));
         setIdx(resume);
+        // Уже проходил → открываем оглавлением и снимаем обязательные подтверждения.
+        if (d.completed) { setReview(true); setShowToc(true); }
       }
       /* else: unreachable → start from the top */
       setLoading(false);
+    })();
+    return () => { off = true; };
+  }, []);
+
+  // ТЕКУЩИЕ настройки пользователя. Без этого тур показывал зашитые дефолты («Обычно», «Весь
+  // день») как будто это твой выбор — то есть врал, и изменить одну настройку было нельзя:
+  // можно было только переназначить всё заново.
+  useEffect(() => {
+    if (!HAS_ACCOUNT) { setSettingsReady(true); return; }
+    let off = false;
+    (async () => {
+      try {
+        const d = await api('/api/webapp/settings');
+        if (off) return;
+        const preset = String(d.preset || 'normal');
+        const win = String(d.window || 'allday');
+        const battleReady = !!d.battle_ready;
+        setSelPreset(preset);
+        setSelWindow(win);
+        setSelBattle(battleReady ? 'yes' : 'no');
+        setDictTier(String(d.dict_tier || 'none'));
+        setIsPro(!!d.is_pro);
+        savedRef.current = { preset, window: win, battleReady };
+      } catch (_e) {
+        /* остаёмся на визуальных дефолтах — тур всё равно проходим */
+      } finally {
+        if (!off) setSettingsReady(true);
+      }
     })();
     return () => { off = true; };
   }, []);
@@ -1308,19 +1408,23 @@ export default function OnboardingWizard() {
     })();
   }, [loading]);
 
-  // Persist the resume point when the step changes (fire-and-forget).
+  // Persist the resume point when the step changes (fire-and-forget). В режиме справочника
+  // это не прогресс, а листание — сохранять точку возобновления нечего (и незачем грузить
+  // сервер записью на каждый экран).
   useEffect(() => {
     if (loading) return;
     setStepErr('');
     setBusy(false);
+    if (review) return;
     api('/api/webapp/onboarding/step', { step: idx }).catch(() => {});
-  }, [idx, loading]);
+  }, [idx, loading, review]);
 
   const step = STEPS[idx];
   const isLast = idx === STEPS.length - 1;
   // Guest tour: no gating (just click through — nothing to save). With an account (Telegram OR
   // the standalone app): core steps must be confirmed before «Далее».
-  const canNext = !HAS_ACCOUNT || step.kind !== 'core' || !!confirmed[step.id];
+  // В режиме справочника тоже не гейтим: человек уже всё подтвердил, второй раз не надо.
+  const canNext = !HAS_ACCOUNT || review || step.kind !== 'core' || !!confirmed[step.id];
 
   // «Далее» unlocks only after the user has scrolled the step to the bottom — so long
   // pages (with an install button / more info below) are actually read to the end.
@@ -1639,29 +1743,46 @@ export default function OnboardingWizard() {
     return () => { off = true; };
   }, [step.id, loading, dictOffer]);
 
-  // Battle readiness defaults ON: opt the user in the first time they reach the step.
+  // Battle readiness defaults ON — но ТОЛЬКО при первом прохождении. Раньше этот эффект
+  // срабатывал на каждом заходе и молча возвращал «да, зовите на дуэли» человеку, который
+  // однажды выбрал «нет»: открыл тур как шпаргалку — и незаметно снова подписался.
+  const battlesDefaultedRef = useRef(false);
   useEffect(() => {
-    if (loading || step.id !== 'battles' || selBattle !== null) return;
+    if (loading || review || !settingsReady || step.id !== 'battles') return;
+    if (battlesDefaultedRef.current || savedRef.current.battleReady) return;
+    battlesDefaultedRef.current = true;
     setSelBattle('yes');
-    if (HAS_ACCOUNT) api('/api/webapp/onboarding/battles', { opt_in: true }).catch(() => {});
-  }, [step.id, loading, selBattle]);
+    if (HAS_ACCOUNT) {
+      savedRef.current.battleReady = true;
+      api('/api/webapp/onboarding/battles', { opt_in: true }).catch(() => {});
+    } else {
+      rememberChoice('battles', true);
+    }
+  }, [step.id, loading, review, settingsReady]);
 
   // Intensity/window are [R] (optional, default-accept): pick = optimistic + save.
+  // Тап по УЖЕ выбранному значению ничего не меняет — значит и запрос слать не за что.
   const pickPreset = useCallback((code) => {
     setSelPreset(code);
-    api('/api/webapp/onboarding/preset', { preset: code }).catch(() => {});
     try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
+    if (savedRef.current.preset === code) return;
+    savedRef.current.preset = code;
+    api('/api/webapp/onboarding/preset', { preset: code }).catch(() => {});
   }, []);
   const pickWindow = useCallback((key) => {
     setSelWindow(key);
-    api('/api/webapp/onboarding/window', { window: key }).catch(() => {});
     try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
+    if (savedRef.current.window === key) return;
+    savedRef.current.window = key;
+    api('/api/webapp/onboarding/window', { window: key }).catch(() => {});
   }, []);
   const pickBattle = useCallback((optIn) => {
     setSelBattle(optIn ? 'yes' : 'no');
+    try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
+    if (savedRef.current.battleReady === !!optIn) return;
+    savedRef.current.battleReady = !!optIn;
     if (HAS_ACCOUNT) api('/api/webapp/onboarding/battles', { opt_in: !!optIn }).catch(() => {});
     else rememberChoice('battles', !!optIn);
-    try { tg?.HapticFeedback?.selectionChanged?.(); } catch (_e) { /* noop */ }
   }, []);
 
   // Connect / skip the base dictionary (accept starts a background import job).
@@ -1736,18 +1857,35 @@ export default function OnboardingWizard() {
               )}
             </div>
           </div>
-          <div className="ob-progress">
-            <span className="ob-step-label">{t('Шаг', 'Schritt')} {idx + 1} {t('из', 'von')} {STEPS.length}</span>
-            <div className="ob-bar"><div className="ob-bar-fill" style={{ width: `${pct}%` }} /></div>
-          </div>
-          <h1 className="ob-title">{step.title}</h1>
+          {showToc ? null : (
+            <div className="ob-progress">
+              <span className="ob-step-label">
+                {review
+                  ? `${t('Раздел', 'Abschnitt')} ${idx + 1} ${t('из', 'von')} ${STEPS.length}`
+                  : `${t('Шаг', 'Schritt')} ${idx + 1} ${t('из', 'von')} ${STEPS.length}`}
+              </span>
+              <div className="ob-bar"><div className="ob-bar-fill" style={{ width: `${pct}%` }} /></div>
+            </div>
+          )}
+          <h1 className="ob-title">
+            {showToc ? t('Как пользоваться 🎬', 'Wie man es benutzt 🎬') : step.title}
+          </h1>
         </header>
 
         <main className="ob-body" ref={bodyRef} onScroll={checkScrollBottom}>
+          {showToc ? (
+            <TableOfContents
+              state={{ preset: selPreset, window: selWindow, battleReady: selBattle === 'yes', dictTier, isPro }}
+              onPick={(at) => { setShowToc(false); setIdx(at); }}
+            />
+          ) : (
           <StepBody
             step={step}
             isPro={isPro}
-            confirmed={!!confirmed[step.id]}
+            /* В справочнике языковая пара уже подтверждена — показываем это, а не просим тапнуть
+               ещё раз. Словарь НЕ подставляем: его реальное состояние приходит из dictOffer, и
+               если он не подключён, кнопки подключения должны остаться. */
+            confirmed={!!confirmed[step.id] || (review && step.id === 'language')}
             busy={busy}
             dictBusy={dictBusy}
             dictChoice={dictChoice}
@@ -1768,13 +1906,22 @@ export default function OnboardingWizard() {
             onShareTour={shareTour}
             shareHint={shareHint}
           />
+          )}
         </main>
 
+        {showToc ? null : (
         <footer className={`ob-nav${isLast && TG_SHEET_TOUR ? ' ob-nav-finale' : ''}`}>
           <div className="ob-nav-row">
-            <button type="button" className="ob-btn ob-back" onClick={goBack} disabled={idx === 0 || finishing}>
-              ← {t('Назад', 'Zurück')}
-            </button>
+            {review ? (
+              // В режиме справочника оглавление — это хаб: возврат туда одним тапом.
+              <button type="button" className="ob-btn ob-back" onClick={() => setShowToc(true)} disabled={finishing}>
+                ☰ {t('Оглавление', 'Inhalt')}
+              </button>
+            ) : (
+              <button type="button" className="ob-btn ob-back" onClick={goBack} disabled={idx === 0 || finishing}>
+                ← {t('Назад', 'Zurück')}
+              </button>
+            )}
             {isLast && TG_SHEET_TOUR ? (
               // Двойной финал: остаться в переписке ИЛИ сразу перейти в приложение.
               <button
@@ -1790,16 +1937,17 @@ export default function OnboardingWizard() {
               type="button"
               className="ob-btn ob-next"
               onClick={goNext}
-              disabled={!canNext || finishing || done || !contentReady || !atBottom}
+              disabled={!canNext || finishing || done || (!review && (!contentReady || !atBottom))}
             >
               {done ? t('✅ Готово', '✅ Fertig')
-                : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
-                : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
+                : !review && !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
+                : !review && !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
                 : isLast ? (TOUR_IN_PLACE ? t('Закрыть', 'Schließen') : !HAS_ACCOUNT ? t('🚀 Установить бота', '🚀 Bot installieren') : IS_PUBLIC ? t('🎯 Открыть приложение', '🎯 App öffnen') : t('🎯 Закрыть и открыть приложение', '🎯 Schließen und App öffnen'))
                 : t('Далее →', 'Weiter →')}
             </button>
           </div>
         </footer>
+        )}
       </div>
     </div>
   );

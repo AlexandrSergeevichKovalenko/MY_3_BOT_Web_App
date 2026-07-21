@@ -44562,7 +44562,7 @@ def webapp_shortcut_pairing_code():
     return jsonify(_build_shortcut_pairing_code_response(result)), 200
 
 
-def _onboarding_auth_user_id() -> tuple[int | None, str, tuple]:
+def _miniapp_auth_user_id() -> tuple[int | None, str, tuple]:
     """Auth for the onboarding wizard: Telegram initData OR the durable app/dict browser
     token. The wizard also runs OUTSIDE Telegram — from the home-screen app icon, which has
     no initData — and there its choices (language, base dictionary, pace, windows, battles)
@@ -44584,7 +44584,7 @@ def _onboarding_auth_user_id() -> tuple[int | None, str, tuple]:
 @app.route("/api/webapp/onboarding/status", methods=["POST"])
 def webapp_onboarding_status():
     """First-run onboarding state + tier for the Mini-App onboarding screen."""
-    user_id, _user_name, err = _onboarding_auth_user_id()
+    user_id, _user_name, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     state = get_onboarding_state(int(user_id))
@@ -44604,7 +44604,7 @@ def webapp_onboarding_status():
 @app.route("/api/webapp/onboarding/step", methods=["POST"])
 def webapp_onboarding_step():
     """Persist the onboarding resume point (current step index)."""
-    user_id, _user_name, err = _onboarding_auth_user_id()
+    user_id, _user_name, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     body = request.get_json(silent=True) or {}
@@ -44618,7 +44618,7 @@ def webapp_onboarding_step():
 @app.route("/api/webapp/onboarding/complete", methods=["POST"])
 def webapp_onboarding_complete():
     """Mark onboarding done (final step of the wizard)."""
-    user_id, _user_name, err = _onboarding_auth_user_id()
+    user_id, _user_name, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     return jsonify({"ok": bool(mark_onboarding_completed(int(user_id)))})
@@ -44638,7 +44638,7 @@ _ONBOARDING_WINDOWS = {
 @app.route("/api/webapp/onboarding/preset", methods=["POST"])
 def webapp_onboarding_preset():
     """Set the delivery intensity preset (intensive/normal/rare/silent)."""
-    user_id, _user_name, err = _onboarding_auth_user_id()
+    user_id, _user_name, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     preset = str((request.get_json(silent=True) or {}).get("preset") or "").strip().lower()
@@ -44650,7 +44650,7 @@ def webapp_onboarding_preset():
 @app.route("/api/webapp/onboarding/window", methods=["POST"])
 def webapp_onboarding_window():
     """Set the active-hours window (allday/morning/evening/morneve)."""
-    user_id, _user_name, err = _onboarding_auth_user_id()
+    user_id, _user_name, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     key = str((request.get_json(silent=True) or {}).get("window") or "").strip().lower()
@@ -44664,7 +44664,7 @@ def webapp_onboarding_window():
 @app.route("/api/webapp/onboarding/battles", methods=["POST"])
 def webapp_onboarding_battles():
     """Set battle-invite readiness (opt-in) during onboarding."""
-    user_id, user_name, err = _onboarding_auth_user_id()
+    user_id, user_name, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     opt_in = bool((request.get_json(silent=True) or {}).get("opt_in"))
@@ -44688,7 +44688,7 @@ def _settings_current_window_key(prefs) -> str:
 def webapp_settings_state():
     """Current values for the Mini-App settings page (autosave, battle-readiness,
     schedule preset+window) + is_pro / is_admin for gating."""
-    user_id, _user_name, err = _answer_auth_user_id()
+    user_id, _user_name, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     try:
@@ -44729,7 +44729,7 @@ def webapp_settings_state():
 
 @app.route("/api/webapp/settings/autosave", methods=["POST"])
 def webapp_settings_autosave():
-    user_id, _n, err = _answer_auth_user_id()
+    user_id, _n, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     enabled = bool((request.get_json(silent=True) or {}).get("enabled"))
@@ -44738,7 +44738,7 @@ def webapp_settings_autosave():
 
 @app.route("/api/webapp/settings/battle-ready", methods=["POST"])
 def webapp_settings_battle_ready():
-    user_id, user_name, err = _answer_auth_user_id()
+    user_id, user_name, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     enabled = bool((request.get_json(silent=True) or {}).get("enabled"))
@@ -44749,7 +44749,7 @@ def webapp_settings_battle_ready():
 @app.route("/api/webapp/settings/preset", methods=["POST"])
 def webapp_settings_preset():
     """Schedule intensity (Pro). Reuses the same store as onboarding."""
-    user_id, _n, err = _answer_auth_user_id()
+    user_id, _n, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     preset = str((request.get_json(silent=True) or {}).get("preset") or "").strip().lower()
@@ -44761,7 +44761,7 @@ def webapp_settings_preset():
 @app.route("/api/webapp/settings/window", methods=["POST"])
 def webapp_settings_window():
     """Schedule active-hours window (Pro). Reuses the same store as onboarding."""
-    user_id, _n, err = _answer_auth_user_id()
+    user_id, _n, err = _miniapp_auth_user_id()
     if user_id is None:
         return err
     key = str((request.get_json(silent=True) or {}).get("window") or "").strip().lower()

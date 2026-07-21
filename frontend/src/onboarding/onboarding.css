@@ -495,3 +495,39 @@
 .ob-info.is-cancel .ic { background: #eef1f5; }
 .ob-info.is-maint { border-style: dashed; }
 .ob-info.is-maint .ic { background: #fbe7e4; }
+
+/* Оглавление (режим справочника: онбординг уже пройден) */
+.ob-toc { display: flex; flex-direction: column; gap: 18px; }
+.ob-toc-group { display: flex; flex-direction: column; gap: 6px; }
+.ob-toc-title {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ob-muted);
+}
+.ob-toc-row {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: #f4f8ff;
+  border: 1.5px solid var(--ob-line);
+  border-radius: 14px;
+  padding: 12px 15px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.ob-toc-row:active { background: #eaf2ff; border-color: var(--ob-accent); }
+.ob-toc-row-title { font-size: 15px; font-weight: 600; color: var(--ob-ink); }
+.ob-toc-row-value {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ob-accent);
+  white-space: nowrap;
+}
