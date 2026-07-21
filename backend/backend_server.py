@@ -333,6 +333,8 @@ from backend.database import (
     upsert_dictionary_pool_entry,
     get_dictionary_entries_for_metainfo_scan,
     count_dictionary_entries_missing_card,
+    get_thin_pool_entries_for_enrichment,
+    count_thin_pool_entries,
     get_dictionary_backfill_diagnostics,
     update_dictionary_entry_full_columns,
     is_telegram_user_allowed,
@@ -9045,6 +9047,106 @@ def _publish_enriched_card_to_shared_stores(
         )
     except Exception as exc:
         logging.debug("enriched card → shared cache failed: %s", exc)
+
+
+POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "150").strip() or "150")
+_POOL_NIGHT_ENRICH_LOCK = threading.Lock()
+_POOL_NIGHT_ENRICH_RUNNING = False
+
+
+def run_pool_night_enrichment(
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    source_lang: str = "de",
+    target_lang: str = "ru",
+) -> dict:
+    """Ночной добор ТОНКИХ записей общего пула.
+
+    Пул отдаёт запрос без GPT только если карточка полная; тонкие записи (слово+перевод
+    из быстрого перевода или тонкого сохранения) заставляют каждый повторный запрос идти
+    в GPT. Здесь мы добираем их заранее — один раз за всех.
+
+    Берём ТОЛЬКО одиночные слова: 71% тонких записей — фразы и предложения (замер
+    2026-07-21: 2234 слова из 7819), разбор со склонением им не нужен, а бюджет бы съели.
+    Порядок — по востребованности (hit_count), чтобы сначала добрать то, что реально ищут.
+    Потолок в POOL_NIGHT_ENRICH_DAILY_CAP: без него это тысячи вызовов подряд."""
+    cap = int(limit if limit is not None else POOL_NIGHT_ENRICH_DAILY_CAP)
+    report = {
+        "dry_run": bool(dry_run), "cap": cap, "picked": 0,
+        "enriched": 0, "skipped": 0, "errors": 0, "remaining": 0, "samples": [],
+    }
+    if cap <= 0:
+        return report
+    global _POOL_NIGHT_ENRICH_RUNNING
+    if not dry_run:
+        with _POOL_NIGHT_ENRICH_LOCK:
+            if _POOL_NIGHT_ENRICH_RUNNING:
+                report["already_running"] = True
+                return report
+            _POOL_NIGHT_ENRICH_RUNNING = True
+    try:
+        rows = get_thin_pool_entries_for_enrichment(
+            limit=cap, source_lang=source_lang, target_lang=target_lang,
+        )
+        report["picked"] = len(rows)
+        for row in rows:
+            source_text = str(row.get("source_text") or "").strip()
+            target_text = str(row.get("target_text") or "").strip()
+            if len(report["samples"]) < 20:
+                report["samples"].append({
+                    "word": source_text, "translation": target_text, "demand": row.get("demand"),
+                })
+            if dry_run:
+                continue
+            try:
+                if _is_legacy_ru_de_pair(source_lang, target_lang):
+                    enrich = asyncio.run(run_enrich_word(source_text, target_text))
+                else:
+                    enrich = asyncio.run(run_enrich_word_multilang(
+                        source_text=source_text, target_text=target_text,
+                        source_lang=source_lang, target_lang=target_lang,
+                    ))
+                enrich_data = _normalize_dictionary_enrich_payload(enrich)
+                if not enrich_data:
+                    report["skipped"] += 1
+                    continue
+                merged = dict(row.get("response_json") or {})
+                merged.update(enrich_data)
+                merged = _prepare_dictionary_response_json_for_save(
+                    response_json=merged,
+                    source_text=source_text, target_text=target_text,
+                    source_lang=source_lang, target_lang=target_lang,
+                    word_ru=row.get("word_ru"), word_de=row.get("word_de"),
+                    translation_de=row.get("translation_de"), translation_ru=row.get("translation_ru"),
+                )
+                # Если после обогащения карточка всё ещё тонкая — не пишем: пусть строка
+                # останется кандидатом, а не притворяется полной.
+                if _dictionary_payload_needs_enrichment(merged):
+                    report["skipped"] += 1
+                    continue
+                _publish_enriched_card_to_shared_stores(
+                    payload=merged, source_lang=source_lang, target_lang=target_lang,
+                    source_text=source_text, target_text=target_text,
+                )
+                report["enriched"] += 1
+            except Exception as exc:
+                report["errors"] += 1
+                logging.warning(
+                    "pool night enrichment failed entry_id=%s word=%r error=%s",
+                    row.get("id"), source_text, exc, exc_info=True,
+                )
+        try:
+            report["remaining"] = count_thin_pool_entries(
+                source_lang=source_lang, target_lang=target_lang,
+            )
+        except Exception:
+            report["remaining"] = 0
+        return report
+    finally:
+        if not dry_run:
+            with _POOL_NIGHT_ENRICH_LOCK:
+                _POOL_NIGHT_ENRICH_RUNNING = False
 
 
 _DICTIONARY_METAINFO_BACKFILL_LOCK = threading.Lock()

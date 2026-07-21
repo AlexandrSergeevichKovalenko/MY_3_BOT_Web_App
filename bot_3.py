@@ -8451,6 +8451,20 @@ def _run_provider_cost_truth_report_safe() -> None:
         logging.exception("provider cost truth report (bot scheduler) failed")
 
 
+def _run_pool_night_enrichment_safe() -> None:
+    """Ночной добор тонких записей общего пула (03:10 Вена — после ретенции, до утра).
+    Крутится в потоке BackgroundScheduler → обязан быть синхронным. Потолок задаёт
+    POOL_NIGHT_ENRICH_DAILY_CAP; тратит GPT, поэтому лимит жёсткий."""
+    try:
+        from backend.backend_server import run_pool_night_enrichment
+        stats = run_pool_night_enrichment()
+        _record_sched_heartbeat("pool_night_enrichment", "completed", stats)
+        logging.info("pool night enrichment result=%s", stats)
+    except Exception:
+        logging.exception("pool night enrichment failed")
+        _record_sched_heartbeat("pool_night_enrichment", "failed", {})
+
+
 def _run_dictionary_pool_report_safe() -> None:
     """Пн/Пт отчёт «Словарь: база и экономия». Крутится в потоке BackgroundScheduler →
     обязан быть синхронным. force=True: от повторов уже защищают coalesce + max_instances,
@@ -10540,6 +10554,61 @@ async def admin_dedup_enqueue_command(update: Update, context: CallbackContext):
     except Exception as exc:
         logging.exception("admin dedup enqueue failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Не удалось поставить в очередь: {exc}")
+
+
+async def admin_pool_enrich_command(update: Update, context: CallbackContext):
+    """Ночной добор пула вручную (тот же, что идёт в 03:10).
+
+    /admin_pool_enrich            → пробный прогон, покажет очередь и «осталось»
+    /admin_pool_enrich apply      → добрать (потолок из env)
+    /admin_pool_enrich apply 50   → добрать не больше 50 за раз
+    /admin_pool_enrich apply ru   → сторону ru→de вместо de→ru
+    """
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = [a.strip().lower() for a in (context.args or [])]
+    apply = "apply" in args
+    limit = next((int(a) for a in args if a.isdigit() and 1 <= int(a) <= 2000), None)
+    src, tgt = ("ru", "de") if "ru" in args else ("de", "ru")
+    await message.reply_text(
+        f"🌙 Добор пула {src}→{tgt}: {'ПРИМЕНЯЮ' if apply else 'пробный прогон'}"
+        f"{f', до {limit} слов' if limit else ''}. Один запрос к GPT на слово — это минуты."
+    )
+    try:
+        from backend.backend_server import run_pool_night_enrichment
+        report = await asyncio.to_thread(
+            run_pool_night_enrichment,
+            limit=limit, dry_run=not apply, source_lang=src, target_lang=tgt,
+        )
+    except Exception as exc:
+        logging.exception("pool enrich command failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Добор пула упал: {exc}")
+        return
+    if report.get("already_running"):
+        await message.reply_text("⏳ Добор уже идёт — второй запуск удвоил бы траты.")
+        return
+    samples = report.get("samples") or []
+    lines = "\n".join(
+        f"  • {s.get('word')} — {s.get('translation')} (спрашивали: {s.get('demand')})"
+        for s in samples[:12]
+    )
+    text = (
+        f"🌙 <b>Добор общего пула</b> ({'apply' if apply else 'dry-run'}, {src}→{tgt})\n\n"
+        f"Взято в работу: <b>{report.get('picked', 0)}</b> (потолок {report.get('cap', 0)})\n"
+        f"Обогащено: <b>{report.get('enriched', 0)}</b>\n"
+        f"Пропущено (GPT не дал карточку): {report.get('skipped', 0)}\n"
+        f"Ошибок: {report.get('errors', 0)}\n"
+        f"Осталось тонких: <b>{report.get('remaining', 0)}</b>"
+    )
+    if lines:
+        text += f"\n\n<b>Очередь (по востребованности):</b>\n{lines}"
+    for part in _split_telegram_text(text):
+        await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def admin_dict_pool_report_command(update: Update, context: CallbackContext):
@@ -38310,6 +38379,7 @@ def main():
     application.add_handler(CommandHandler("openai_audit", admin_openai_audit_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dict_pool_report", admin_dict_pool_report_command))
+    application.add_handler(CommandHandler("admin_pool_enrich", admin_pool_enrich_command))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
     application.add_handler(CommandHandler("fix_translation_sessions", admin_fix_translation_sessions_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
@@ -38872,6 +38942,21 @@ def main():
             hour=int((os.getenv("STARS_REPORT_HOUR") or "10").strip() or "10"),
             minute=int((os.getenv("STARS_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("STARS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Ночной добор тонких записей общего пула (03:10 Europe/Vienna) --
+        # Пул отдаёт слово без GPT только с полной карточкой. Тонкие записи добираем
+        # заранее и один раз за всех — по востребованности, с жёстким потолком
+        # POOL_NIGHT_ENRICH_DAILY_CAP (тратит GPT). Только одиночные слова: 71% тонких
+        # записей — фразы и предложения, им разбор не нужен.
+        scheduler.add_job(
+            _run_pool_night_enrichment_safe,
+            "cron",
+            hour=int((os.getenv("POOL_NIGHT_ENRICH_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("POOL_NIGHT_ENRICH_MINUTE") or "10").strip() or "10"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,

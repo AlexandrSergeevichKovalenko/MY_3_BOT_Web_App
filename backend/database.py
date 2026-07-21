@@ -19148,6 +19148,84 @@ def get_dictionary_pool_report_stats(*, window_start) -> dict:
     return stats
 
 
+# Пул забит предложениями и фразами («Zufall? Wohl kaum!», «unter vier Augen»), а разбор
+# со склонением и формами имеет смысл только для ОДИНОЧНОГО слова. Без этого фильтра
+# ночной бюджет уходил бы на предложения, которым карточка не нужна вовсе.
+# Артикль в начале не считаем вторым словом: «der Zufall» — одно слово.
+_DICTIONARY_POOL_SINGLE_WORD_SQL = (
+    " AND COALESCE(source_text,'') !~ '[.!?]' "
+    " AND regexp_replace(COALESCE(source_text,''), "
+    "     '^(der|die|das|ein|eine|einen|einem|einer|eines)\\s+', '') !~ '\\s' "
+    " AND COALESCE(target_text,'') <> '' "
+)
+
+
+def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru") -> int:
+    """Сколько записей пула ещё нельзя отдать без GPT (тонкие). Для отчёта «осталось»."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) FROM bt_3_dictionary_entries
+                WHERE source_lang = %s AND target_lang = %s
+                  AND (response_json IS NULL OR NOT {DICTIONARY_POOL_RICH_SQL_STORED})
+                  {_DICTIONARY_POOL_SINGLE_WORD_SQL}
+                """,
+                (_normalize_lang_code(source_lang), _normalize_lang_code(target_lang)),
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def get_thin_pool_entries_for_enrichment(
+    *,
+    limit: int = 100,
+    source_lang: str = "de",
+    target_lang: str = "ru",
+) -> list[dict]:
+    """Тонкие записи пула в порядке ВОСТРЕБОВАННОСТИ.
+
+    Приоритет — не дата, а сколько раз слово реально спрашивали: `hit_count` в кеше
+    запросов (счётчик за всё время). Сначала добираем то, что люди действительно ищут,
+    иначе ночной бюджет уйдёт на случайный хвост.
+
+    Только одиночные слова: разбор фразы или предложения бессмысленен, а без фильтра
+    выборка раз за разом набирала бы одни и те же предложения (проверено 21.07)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT e.id, e.source_lang, e.target_lang, e.source_text, e.target_text,
+                       e.word_ru, e.translation_de, e.word_de, e.translation_ru,
+                       e.response_json,
+                       COALESCE(MAX(c.hit_count), 0) AS demand
+                FROM bt_3_dictionary_entries e
+                -- Соединяем ТОЛЬКО по самому слову: в кеше source_lang/target_lang —
+                -- это пара ПРОФИЛЯ пользователя, а не направление запроса, поэтому
+                -- сверка по языкам не совпадала никогда и приоритет всегда был нулевым.
+                LEFT JOIN bt_3_dictionary_lookup_cache c
+                       ON c.normalized_word IN (e.source_headword_norm, e.source_text_norm)
+                WHERE e.source_lang = %s AND e.target_lang = %s
+                  AND (e.response_json IS NULL OR NOT {DICTIONARY_POOL_RICH_SQL_STORED.replace(
+                      'bt_3_dictionary_entries.response_json', 'e.response_json')})
+                  {_DICTIONARY_POOL_SINGLE_WORD_SQL.replace('source_text', 'e.source_text')}
+                GROUP BY e.id
+                ORDER BY demand DESC, e.updated_at DESC
+                LIMIT %s;
+                """,
+                (_normalize_lang_code(source_lang), _normalize_lang_code(target_lang), int(limit)),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "id": r[0], "source_lang": r[1], "target_lang": r[2],
+            "source_text": r[3], "target_text": r[4], "word_ru": r[5],
+            "translation_de": r[6], "word_de": r[7], "translation_ru": r[8],
+            "response_json": _coerce_json_object(r[9]), "demand": int(r[10] or 0),
+        }
+        for r in rows
+    ]
+
+
 def backfill_dictionary_pool_headwords(limit: int = 20000) -> int:
     """Проставить ключи без артикля старым строкам пула. Чистый SQL, без LLM.
     Идемпотентно: трогает только строки, где ключа ещё нет."""
