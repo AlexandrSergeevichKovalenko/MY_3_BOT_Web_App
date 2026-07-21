@@ -8755,22 +8755,21 @@ def _build_classics_pregen_last_run_line(esc) -> str:
     return head
 
 
-def _run_classics_audio_readiness_report_safe() -> None:
-    """Bot-side MORNING DM: which «Классика» books are fully warmed (audio ready) so
-    the admin knows which to test. Sync (BackgroundScheduler thread → stays sync).
-    Best-effort; mirrors _send_shortcut_runs_report's delivery."""
-    import requests as _requests
-    try:
-        from backend.backend_server import PUBLIC_LIBRARY_TTS_VOICE
-        from backend.database import get_public_library_audio_readiness, get_admin_telegram_ids
-        rows = get_public_library_audio_readiness(PUBLIC_LIBRARY_TTS_VOICE)
-    except Exception:
-        logging.exception("classics audio readiness gather failed")
-        return
+def build_classics_audio_readiness_text(*, partial_limit: int | None = 6) -> str | None:
+    """The «Аудио классики — готовность» report body. SYNC (called from a
+    BackgroundScheduler thread and, via to_thread, from /reader_public_status audio) so
+    the morning DM and the on-demand command can never drift apart.
+    partial_limit=None lists every warming book; the DM caps it at the top-6."""
+    from backend.backend_server import PUBLIC_LIBRARY_TTS_VOICE
+    from backend.database import get_public_library_audio_readiness
+
+    rows = get_public_library_audio_readiness(PUBLIC_LIBRARY_TTS_VOICE)
     if not rows:
-        return
+        return None
+
     def _esc(s):  # titles can contain & / < / > → escape for parse_mode=HTML
         return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
     ready = [r for r in rows if r["ready"]]
     partial = sorted([r for r in rows if not r["ready"]], key=lambda x: -x["pct"])
     lines = ["🎧 <b>Аудио классики — готовность</b>", ""]
@@ -8782,15 +8781,32 @@ def _run_classics_audio_readiness_report_safe() -> None:
     else:
         lines.append("Пока ни одна книга не прогрета полностью — идёт постепенный прогрев в рамках бесплатного бакета.\n")
     if partial:
-        lines.append("🟡 <b>Догреваются (топ-6):</b>")
-        for r in partial[:6]:
+        shown = partial if partial_limit is None else partial[:partial_limit]
+        header = "🟡 <b>Догреваются:</b>" if partial_limit is None else f"🟡 <b>Догреваются (топ-{partial_limit}):</b>"
+        lines.append(header)
+        for r in shown:
             lines.append(f"• {_esc(r['title'])} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
     # Last warm-up run, so a stalled percentage can never again read as "прогревается".
     # Without this the job could synthesize 0 pages every night (every page throwing into
     # a swallowed except) and the report looked exactly like healthy slow progress.
     lines.append("")
     lines.append(_build_classics_pregen_last_run_line(_esc))
-    text = "\n".join(lines)
+    return "\n".join(lines)
+
+
+def _run_classics_audio_readiness_report_safe() -> None:
+    """Bot-side MORNING DM: which «Классика» books are fully warmed (audio ready) so
+    the admin knows which to test. Sync (BackgroundScheduler thread → stays sync).
+    Best-effort; mirrors _send_shortcut_runs_report's delivery."""
+    import requests as _requests
+    try:
+        from backend.database import get_admin_telegram_ids
+        text = build_classics_audio_readiness_text(partial_limit=6)
+    except Exception:
+        logging.exception("classics audio readiness gather failed")
+        return
+    if not text:
+        return
     token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
     admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
     if not token or not admin_ids:
@@ -35273,30 +35289,16 @@ async def admin_reader_public_status_command(update: Update, context: CallbackCo
         )
 
     if arg == "audio":
+        # Same builder as the 08:00 DM (full list instead of top-6), so the on-demand
+        # report can never drift from the scheduled one.
         try:
-            from backend.backend_server import PUBLIC_LIBRARY_TTS_VOICE
-            from backend.database import get_public_library_audio_readiness
-            rows = await asyncio.to_thread(get_public_library_audio_readiness, PUBLIC_LIBRARY_TTS_VOICE)
+            text = await asyncio.to_thread(build_classics_audio_readiness_text, partial_limit=None)
         except Exception as exc:
             await message.reply_text(f"❌ audio-status failed: {exc}")
             return
-        def _esc(s):  # titles can contain & / < / > → escape for parse_mode=HTML
-            return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        ready = [r for r in rows if r["ready"]]
-        partial = sorted([r for r in rows if not r["ready"]], key=lambda x: -x["pct"])
-        lines = ["🎧 <b>Готовность аудио классики</b> (Standard-голос)", ""]
-        if ready:
-            lines.append(f"✅ <b>Готовы полностью — можно тестировать ({len(ready)}):</b>")
-            for r in ready:
-                lines.append(f"• {_esc(r['title'])} — {r['total_pages']} стр.")
-            lines.append("")
-        if partial:
-            lines.append("🟡 <b>Догреваются:</b>")
-            for r in partial:
-                lines.append(f"• {_esc(r['title'])} — {r['pct']}% ({r['cached_pages']}/{r['total_pages']})")
-        if not rows:
-            lines.append("Пока нет данных (нет публичных книг?).")
-        await message.reply_text("\n".join(lines), parse_mode="HTML")
+        await message.reply_text(
+            text or "Пока нет данных (нет публичных книг?).", parse_mode="HTML"
+        )
 
 
 # ── Telegram Stars payments (Mini App digital purchases) ─────────────────────
