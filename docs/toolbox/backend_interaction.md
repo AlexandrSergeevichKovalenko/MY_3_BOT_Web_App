@@ -76,6 +76,72 @@ House rules that matter here (from how this repo is run):
 
 After pushing, watch the deploy/logs (next section) to confirm it came up.
 
+### 2.1 The `git add ... && git commit -m "$(cat <<'EOF' … EOF)"` pattern
+
+You'll see me commit with a command shaped like this (this is exactly what scrolled past in the
+terminal):
+
+```zsh
+git add backend/dictionary_pool_report.py backend/database.py backend/backend_server.py bot_3.py \
+  && git commit -q -m "$(cat <<'EOF'
+docs(04): shared reusable word cache deep-dive
+
+- 5-layer cache ladder, owner='shared' key trick
+- richer-wins pool UPSERT; thin-card poisoning guard
+EOF
+)"
+```
+
+It looks cryptic but it's three ordinary ideas stacked. Taken apart:
+
+**(a) `git add <file> <file> ...`** — stage **several specific files** by name (as opposed to
+`git add -p` which stages hunks interactively, or `git add .` which stages everything). Listing exact
+paths is the "I know precisely which files this commit touches" form.
+
+**(b) `&&` — run the second command only if the first SUCCEEDED.** This is different from `;`:
+- `A ; B` runs `B` **no matter what** happened to `A` (§4.1 of this file used `;`).
+- `A && B` runs `B` **only if `A` exited successfully** (exit code 0).
+
+So `git add ... && git commit ...` means "stage the files, and **only if that worked**, commit."
+If `git add` failed (e.g. a path was mistyped), the `&&` short-circuits and the commit never runs —
+you don't get a half-broken commit. `&&` is the shell's **logical AND**.
+
+**(c) `git commit -q -m "<message>"`** — `-m` supplies the commit **m**essage; `-q` = **q**uiet
+(suppress the summary output). The message here is the whole `"$(cat <<'EOF' … EOF)"` expression.
+
+**(d) `"$(cat <<'EOF' … EOF)"` — a here-document (heredoc), used to build a multi-line string.**
+Unwrap it from the inside out:
+- `$( ... )` — **command substitution** (same as in §4.2): run the command inside, capture its
+  printed output, and substitute that text right here. So the `-m` message becomes whatever the inner
+  command prints.
+- `cat` — a command that just prints its input to output. On its own it seems pointless here — its
+  only job is to emit the heredoc text so `$( )` can capture it.
+- `<<'EOF'` — the **heredoc operator**. It means: "feed everything on the following lines, up to a
+  line containing exactly `EOF`, as the standard input of `cat`." `EOF` is just a chosen marker word
+  ("End Of File") — it could be any token; the point is the closing line must match it exactly. So the
+  two lines between `<<'EOF'` and the closing `EOF` become the text.
+- The **quotes around the marker** — `<<'EOF'` (marker in single quotes) vs `<<EOF` (bare) — control
+  whether the shell expands things inside the block:
+  - `<<'EOF'` → **no expansion**: `$`, backticks, `$(...)` are all **literal text**. This is what you
+    want for a commit message, because messages often contain `$`, code snippets, or `$(...)` that you
+    do **not** want the shell to try to execute or replace.
+  - `<<EOF` (unquoted) → the shell **would** expand `$variables` and `$(commands)` inside the block —
+    dangerous for a message body.
+
+**Why bother with all this instead of plain `-m "..."`?** Because a good commit message is
+**multi-line** (a subject line, a blank line, then bullet points) and often contains characters
+(`"`, `$`, backticks, newlines) that are painful to cram into a single quoted string without
+escaping. The quoted heredoc passes the whole block through **verbatim** — no escaping, real
+newlines preserved. It's the same "avoid quoting hell" theme as the base64 trick in §4: when text is
+awkward to quote inline, wrap it in a construct that takes it literally.
+
+Simpler equivalents for a one-line message (all fine for small commits):
+```zsh
+git commit -q -m "docs: fix a typo"                 # single line, no heredoc needed
+git commit -m "subject line" -m "a second paragraph" # repeat -m for extra paragraphs
+```
+The heredoc form is just the robust way to write a **long, structured** message in one shot.
+
 **Watch Paths (selective redeploy per service).** By default a push redeploys *every* service. Each
 Railway service can set **Watch Paths** — a list of file-path glob patterns; that service only
 rebuilds when a push changes a matching file (`/backend/**` = any file under `backend/`, `**` =
@@ -300,3 +366,7 @@ jq / grep / wc ──────────────▶ saved *.jsonl log f
    still replace `$B64` with the real value? Why (think about which quote is outermost)?
 8. What's the difference between `railway run` and `railway ssh`, and why is `railway ssh ... exec()`
    the most dangerous command in this file?
+9. In `git add A B && git commit ...`, what does `&&` guarantee that `;` would not? What happens to
+   the commit if `git add` fails?
+10. Why use `-m "$(cat <<'EOF' … EOF)"` for a commit message, and what's the difference between
+    `<<'EOF'` and `<<EOF` (marker quoted vs not)?
