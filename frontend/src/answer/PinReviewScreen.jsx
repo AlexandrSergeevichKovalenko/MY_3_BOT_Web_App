@@ -19,10 +19,12 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
   const [word, setWord] = useState('');
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [typing, setTyping] = useState(false);       // textarea focused → collapse chrome
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
   const wrapRef = useRef(null);
   const fileRef = useRef(null);
+  const taRef = useRef(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -147,7 +149,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
   // ─────────────────────────── STEP 1: COMPOSE ───────────────────────────
   if (step === 'compose') {
     return (
-      <div className="pinw">
+      <div className={`pinw ${typing ? 'typing' : ''}`}>
         <div className="pinw-top">
           <div className="pinw-title">🖼 Студия «Найди предмет»</div>
           <div className="pinw-sub">Готово {status.approved}/{status.target} · шаг 1 из 2 — задай картинки</div>
@@ -155,14 +157,19 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
         <div className="pinw-body">
           <label className="pinw-label">Опиши сцены по-русски (каждую с новой строки):</label>
           <textarea
-            className="pinw-textarea" value={descs} onChange={(e) => setDescs(e.target.value)}
+            ref={taRef} className="pinw-textarea" value={descs} onChange={(e) => setDescs(e.target.value)}
+            onFocus={() => setTyping(true)} onBlur={() => setTyping(false)}
             placeholder={'рабочий стол с офисными мелочами\nдетская с игрушками на полу\nполка в гараже с инструментами'}
           />
           {note ? <div className="pinrev-note">{note}</div> : null}
           {error ? <div className="pinrev-err">{error}</div> : null}
         </div>
         <div className="pinw-bar">
-          <button className="ans-btn" disabled={!descs.trim() || busy} onClick={submitScenes}>🎨 Сгенерировать сцены</button>
+          {typing ? (
+            <button className="ans-btn pinw-done" onMouseDown={(e) => e.preventDefault()}
+              onClick={() => taRef.current?.blur()}>Готово ✓ — свернуть клавиатуру</button>
+          ) : null}
+          <button className="ans-btn pinw-gen" disabled={!descs.trim() || busy} onClick={submitScenes}>🎨 Сгенерировать сцены</button>
           <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={onFiles} />
           <button className="ans-btn-ghost pinw-upload" disabled={busy} onClick={() => fileRef.current?.click()}>📷 Или загрузить свои фото</button>
           <button className="ans-btn pinw-next" disabled={busy} onClick={goTarget}>

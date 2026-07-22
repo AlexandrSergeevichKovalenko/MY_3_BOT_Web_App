@@ -1333,6 +1333,17 @@ html[data-scheme="light"] .ask-pop-input textarea { background: #f4f6fa; color: 
 
 /* step 1: textarea grows to fill everything between header and the action bar */
 .pinw-body { flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+
+/* While typing, the on-screen keyboard shrinks the viewport — collapse everything but the
+   textarea and a single "done" button, so the field stays big instead of a 2-line strip. */
+.pinw.typing { padding-top: calc(env(safe-area-inset-top, 0px) + 10px); }
+.pinw.typing .pinw-top,
+.pinw.typing .pinw-label,
+.pinw.typing .pinw-gen,
+.pinw.typing .pinw-upload,
+.pinw.typing .pinw-next,
+.pinw.typing .pinw-close { display: none; }
+.pinw-done { background: #16A34A; box-shadow: none; }
 .pinw-label { font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); }
 .pinw-textarea {
   flex: 1 1 auto; width: 100%; box-sizing: border-box; resize: none; min-height: 0;
