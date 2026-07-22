@@ -10711,6 +10711,21 @@ def ensure_webapp_tables() -> None:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            # Scene-first «Finde im Bild»: admin describes a scene → we generate a busy image
+            # → admin draws & labels one or MORE targets on it. One image backs many tasks.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_pin_scene (
+                    scene_id         BIGSERIAL PRIMARY KEY,
+                    description      TEXT NOT NULL,
+                    image_object_key TEXT,
+                    status           TEXT NOT NULL DEFAULT 'requested',
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_pin_scene_status
+                ON bt_3_pin_scene (status, created_at);
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_aufgabe_dispatches (
                     id                  BIGSERIAL PRIMARY KEY,
@@ -47159,6 +47174,197 @@ def count_queued_pin_words() -> int:
         with conn.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM bt_3_pin_word_queue WHERE status='queued'")
             return int(cursor.fetchone()[0])
+
+
+# ── Scene-first pin: scene requests → generated images → admin-labeled targets ──
+
+def enqueue_pin_scene_requests(descriptions) -> int:
+    """Queue admin scene descriptions for background image generation. Returns count added."""
+    rows = [(str(d).strip(),) for d in (descriptions or []) if str(d).strip()]
+    if not rows:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO bt_3_pin_scene (description) VALUES (%s)", rows)
+        conn.commit()
+    return len(rows)
+
+
+def take_pin_scene_requests(limit: int = 3) -> list:
+    """Claim up to `limit` un-generated scene requests (status 'requested' → 'generating')
+    so a background tick can render them without another worker grabbing the same rows."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_pin_scene SET status='generating'
+                WHERE scene_id IN (
+                    SELECT scene_id FROM bt_3_pin_scene WHERE status='requested'
+                    ORDER BY created_at LIMIT %s FOR UPDATE SKIP LOCKED
+                )
+                RETURNING scene_id, description
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+        conn.commit()
+    return [{"scene_id": int(r[0]), "description": str(r[1])} for r in rows]
+
+
+def set_pin_scene_ready(scene_id: int, image_object_key: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_pin_scene SET status='ready', image_object_key=%s WHERE scene_id=%s",
+                (str(image_object_key), int(scene_id)),
+            )
+        conn.commit()
+
+
+def set_pin_scene_status(scene_id: int, status: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_pin_scene SET status=%s WHERE scene_id=%s",
+                (str(status), int(scene_id)),
+            )
+        conn.commit()
+
+
+def get_pin_scene(scene_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT scene_id, description, image_object_key, status "
+                "FROM bt_3_pin_scene WHERE scene_id=%s", (int(scene_id),))
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"scene_id": int(row[0]), "description": str(row[1]),
+            "image_object_key": str(row[2] or ""), "status": str(row[3])}
+
+
+def _pin_scene_counts() -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT status, count(*) FROM bt_3_pin_scene "
+                "WHERE status IN ('requested','generating','ready') GROUP BY status")
+            by = {str(s): int(c) for s, c in (cursor.fetchall() or [])}
+    return {"generating": by.get("requested", 0) + by.get("generating", 0),
+            "ready": by.get("ready", 0)}
+
+
+def list_ready_pin_scenes(limit: int = 20) -> list:
+    """Ready scene images awaiting targeting, each with the targets already added to it
+    (so the admin sees what they've labeled and can add more or move on)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT scene_id, description, image_object_key FROM bt_3_pin_scene "
+                "WHERE status='ready' AND coalesce(image_object_key,'')<>'' "
+                "ORDER BY created_at LIMIT %s", (int(limit),))
+            scenes = cursor.fetchall() or []
+            out = []
+            for scene_id, desc, key in scenes:
+                cursor.execute(
+                    "SELECT payload->>'target_label' FROM bt_3_aufgabe_bank "
+                    "WHERE format='pin' AND retired=FALSE "
+                    "AND payload->>'scene_id' = %s", (str(scene_id),))
+                targets = [str(r[0]) for r in (cursor.fetchall() or []) if r[0]]
+                url = ""
+                if key:
+                    try:
+                        from backend.r2_storage import r2_public_url
+                        url = r2_public_url(str(key))
+                    except Exception:
+                        url = ""
+                out.append({"scene_id": int(scene_id), "description": str(desc),
+                            "image_url": url, "targets": targets})
+    return out
+
+
+def pin_pool_status() -> dict:
+    """Everything the composer needs: how many approved tasks vs target, and how many scene
+    images are ready-to-target or still generating."""
+    approved = count_available_aufgaben(format="pin")
+    sc = _pin_scene_counts()
+    return {"approved": approved, "ready_scenes": sc["ready"], "generating": sc["generating"]}
+
+
+def create_pin_target_from_scene(*, scene_id: int, image_object_key: str, bbox: list,
+                                 target_label: str, article: str, level: str = "B2") -> str:
+    """Create ONE approved, human-verified pin task from a scene: the admin's drawn box +
+    typed word. Language extras (hint/erklaerung) are filled in later in the background."""
+    import uuid as _uuid
+    aufgabe_id = str(_uuid.uuid4())
+    noun = re.sub(r"^(der|die|das)\s+", "", str(target_label or ""), flags=re.IGNORECASE).strip()
+    payload = {
+        "target_label": str(target_label),
+        "article": str(article),
+        "question_de": f"Finde {noun} im Bild — tippe darauf und gib den Artikel ein." if noun else "",
+        "image_object_key": str(image_object_key),
+        "bbox": [float(v) for v in bbox],
+        "bbox_human_ok": True,
+        "scene_id": str(scene_id),
+        "erklaerung": "", "tip": "", "hint_ru": "",
+    }
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO bt_3_aufgabe_bank (aufgabe_id, format, level, payload, review_status) "
+                "VALUES (%s, 'pin', %s, %s::jsonb, 'approved')",
+                (aufgabe_id, str(level or "B2"), json.dumps(payload, ensure_ascii=False)),
+            )
+        conn.commit()
+    return aufgabe_id
+
+
+def update_aufgabe_word_meta(aufgabe_id: str, meta: dict) -> bool:
+    """Merge background-generated language fields (hint_ru/erklaerung/tip, optionally a
+    tidied target_label/article) into a pin task's payload."""
+    allowed = {k: str(meta.get(k) or "") for k in ("hint_ru", "erklaerung", "tip", "target_label", "article")
+               if meta.get(k)}
+    if not allowed:
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_aufgabe_bank SET payload = payload || %s::jsonb "
+                    "WHERE aufgabe_id=%s AND format='pin'",
+                    (json.dumps(allowed, ensure_ascii=False), str(aufgabe_id)),
+                )
+                changed = cursor.rowcount or 0
+            conn.commit()
+        return changed > 0
+    except Exception:
+        logging.warning("update_aufgabe_word_meta failed id=%s", aufgabe_id, exc_info=True)
+        return False
+
+
+def list_pin_tasks_needing_meta(limit: int = 10) -> list:
+    """Approved pin tasks whose language extras (erklaerung) haven't been filled yet — the
+    background enricher picks these up."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT aufgabe_id, payload->>'target_label' FROM bt_3_aufgabe_bank "
+                "WHERE format='pin' AND retired=FALSE AND review_status='approved' "
+                "AND coalesce(payload->>'erklaerung','')='' "
+                "ORDER BY created_at DESC LIMIT %s", (int(limit),))
+            return [{"aufgabe_id": str(r[0]), "target_label": str(r[1] or "")}
+                    for r in (cursor.fetchall() or [])]
+
+
+def pin_target_noun_exists(target_label: str) -> bool:
+    """True if this noun is already a live pin target (so the admin can be warned about a
+    repeat before adding it again)."""
+    n = _pin_word_norm(target_label)
+    if not n:
+        return False
+    return n in _existing_pin_nouns()
 
 
 def list_pending_pin_reviews() -> list:

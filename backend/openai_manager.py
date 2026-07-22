@@ -109,6 +109,8 @@ _DEFAULT_RESPONSES_TASKS = {
     "aufgabe_hoerluecke",
     "aufgabe_pin_blueprint",
     "aufgabe_pin_for_word",
+    "pin_scene_prompt",
+    "pin_word_meta",
     "aufgabe_satzbau",
     "aufgabe_adjektiv",
     "aufgabe_synonym",
@@ -4180,6 +4182,42 @@ Verb, Unsinn), gib {"error":"not_depictable"} zurück.
 Gib NUR STRICT JSON, ohne Markdown:
 {"image_prompt":"A cluttered workshop bench seen from above: scattered screws, a coffee mug, a notebook, wood offcuts, a tape measure, a phone and rags spread across the surface, and tucked to one side near the edge a single small pair of pliers half-hidden under a rag, photorealistic, natural light, no text","target_label":"die Zange","article":"die","question_de":"Finde Zange im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"плоскогубцы"}
 """,
+"pin_scene_prompt": """
+Du baust EIN englisches DALL-E-Bild-Prompt aus der (meist russischen) Szenen-Beschreibung
+eines Admins. Das Bild ist eine Suchszene: viele verschiedene Alltagsdinge, aus denen der
+Admin später EIN Objekt als Ziel auswählt.
+
+Eingabe-JSON: {"description": "<Beschreibung, meist Russisch>"}.
+
+Regeln für das Bild-Prompt (Englisch):
+- Setze die Szene des Admins um (Ort/Stimmung). Fülle sie mit VIELEN (12+) DEUTLICH
+  VERSCHIEDENEN, klar erkennbaren Alltagsobjekten, natürlich verteilt.
+- ⚠️ WICHTIGSTE REGEL: JEDES Objekt kommt GENAU EINMAL vor. KEINE Duplikate, KEINE Paare,
+  KEINE Sets/Stapel/Reihen/Sammlungen identischer Dinge (nicht zwei Tassen, nicht drei
+  Stifte, kein Regal voll gleicher Objekte). So ist später jedes Zielobjekt EINDEUTIG
+  antippbar. Schreibe das explizit ins Prompt: "each object appears exactly once, no
+  duplicates or repeated items".
+- Fotorealistisch, natürliches Licht.
+- KEIN Text, keine Buchstaben, keine Zahlen, keine Logos, keine Labels, keine Marken.
+
+Gib NUR STRICT JSON, ohne Markdown:
+{"image_prompt":"A realistic tidy-but-busy home office desk seen slightly from above: a closed laptop, a single ceramic mug, one notebook, a pair of glasses, a stapler, a small potted plant, a wristwatch, a roll of tape, a USB stick, a pen, a smartphone and a folded map, each object appears exactly once, no duplicates or repeated items, photorealistic, natural light, no text, no logos"}
+""",
+"pin_word_meta": """
+Der Admin hat ein Objekt im Bild markiert und dieses deutsche Wort dazu geschrieben. Liefere
+die sprachlichen Zusatzfelder für die Aufgabe.
+
+Eingabe-JSON: {"word": "<deutsches Substantiv, meist mit Artikel>"}.
+
+Gib NUR STRICT JSON:
+- "target_label": das Wort sauber MIT korrektem Artikel (z. B. "der Feuerlöscher").
+- "article": "der" | "die" | "das".
+- "hint_ru": kurze russische Übersetzung.
+- "erklaerung": 2–3 Sätze auf Russisch: Genus + WARUM dieser Artikel (Regel/Endung/Gruppe).
+- "tip": EIN kurzer russischer Genus-Merktipp, ohne Emoji.
+
+{"target_label":"der Feuerlöscher","article":"der","hint_ru":"огнетушитель","erklaerung":"…","tip":"…"}
+""",
 "image_quiz_sentence_fallback": """
 You help build a visual language-learning quiz.
 
@@ -6693,6 +6731,47 @@ _AUFGABE_INSTRUCTION_KEYS = {
     "synonym_sprint": "sprint_synonym",
     "antonym_sprint": "sprint_antonym",
 }
+
+
+async def run_generate_pin_scene_prompt(description: str) -> str | None:
+    """Turn an admin's (usually Russian) scene description into an English DALL-E prompt for
+    a busy search scene with MANY distinct objects, each appearing exactly once. Returns the
+    prompt string, or None on failure."""
+    d = str(description or "").strip()
+    if not d:
+        return None
+    content = await llm_execute(
+        task_name="pin_scene_prompt",
+        system_instruction_key="pin_scene_prompt",
+        user_message=json.dumps({"description": d}, ensure_ascii=False),
+        poll_interval_seconds=1.5,
+    )
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    prompt = str((data or {}).get("image_prompt") or "").strip() if isinstance(data, dict) else ""
+    return prompt or None
+
+
+async def run_generate_pin_word_meta(word: str) -> dict | None:
+    """Language fields (article/translation/explanation/tip) for an admin-labeled pin target.
+    The article is authoritative from the admin's typed word; this fills the nice-to-have
+    result-card fields. Returns dict or None."""
+    w = str(word or "").strip()
+    if not w:
+        return None
+    content = await llm_execute(
+        task_name="pin_word_meta",
+        system_instruction_key="pin_word_meta",
+        user_message=json.dumps({"word": w}, ensure_ascii=False),
+        poll_interval_seconds=1.5,
+    )
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 async def run_generate_pin_for_word(word: str) -> dict | None:

@@ -26904,35 +26904,69 @@ def _pin_review_admin_id():
     return int(user_id), None
 
 
-@app.route("/api/answer/pinreview/queue", methods=["POST"])
-def answer_pin_review_queue():
-    """Tasks awaiting acceptance, with the model's DRAFT box. The admin redraws it by
-    hand — the drawn box becomes the answer region, so a mediocre draft costs a drag
-    instead of a whole regeneration."""
+@app.route("/api/answer/pinreview/status", methods=["POST"])
+def answer_pin_review_status():
+    """Pool status for the composer: approved tasks vs target, ready-to-target scene images,
+    scenes still generating."""
     user_id, err = _pin_review_admin_id()
     if user_id is None:
         return err
-    from backend.database import list_pending_pin_reviews
-    return jsonify({"ok": True, "items": list_pending_pin_reviews()})
+    from backend.database import pin_pool_status
+    import os as _os
+    target = max(3, int((_os.getenv("AUFGABE_PER_FORMAT_TARGET") or "12").strip() or "12"))
+    st = pin_pool_status()
+    st["target"] = target
+    st["needed"] = max(0, target - st["approved"] - st["ready_scenes"] - st["generating"])
+    return jsonify({"ok": True, **st})
 
 
-@app.route("/api/answer/pinreview/save", methods=["POST"])
-def answer_pin_review_save():
-    """Store the hand-drawn region and release the task, or reject it outright (the
-    object isn't in the picture at all — no box can save it)."""
+@app.route("/api/answer/pinreview/scenes/create", methods=["POST"])
+def answer_pin_scenes_create():
+    """Admin submits one or more scene descriptions (one per line) → queued for background
+    image generation. The bot process renders them and they appear under /scenes."""
     user_id, err = _pin_review_admin_id()
     if user_id is None:
         return err
     payload = request.get_json(silent=True) or {}
-    aufgabe_id = str(payload.get("aufgabe_id") or "").strip()
-    if not aufgabe_id:
-        return jsonify({"error": "нет aufgabe_id"}), 400
-    from backend.database import (
-        mark_aufgabe_bbox_human_ok, set_aufgabe_review_status, update_aufgabe_bbox_by_id,
-    )
-    if str(payload.get("action") or "").strip().lower() == "reject":
-        set_aufgabe_review_status(aufgabe_id, "rejected")
-        return jsonify({"ok": True, "status": "rejected"})
+    raw = payload.get("descriptions")
+    if isinstance(raw, str):
+        raw = raw.splitlines()
+    descriptions = [str(d).strip() for d in (raw or []) if str(d).strip()]
+    if not descriptions:
+        return jsonify({"error": "нет описаний сцен"}), 400
+    from backend.database import enqueue_pin_scene_requests
+    added = enqueue_pin_scene_requests(descriptions[:20])
+    return jsonify({"ok": True, "queued": added})
+
+
+@app.route("/api/answer/pinreview/scenes", methods=["POST"])
+def answer_pin_scenes_ready():
+    """Generated scene images awaiting targeting, each with the targets already labeled."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    from backend.database import list_ready_pin_scenes
+    return jsonify({"ok": True, "scenes": list_ready_pin_scenes()})
+
+
+@app.route("/api/answer/pinreview/addtarget", methods=["POST"])
+def answer_pin_add_target():
+    """Create one task from a scene: the admin's drawn box + typed German word (with article).
+    Language extras are filled in the background. Returns the stored target label."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        scene_id = int(payload.get("scene_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "нет сцены"}), 400
+    word = str(payload.get("word") or "").strip()
+    m = re.match(r"^(der|die|das)\s+(.+)$", word, flags=re.IGNORECASE)
+    if not m:
+        return jsonify({"error": "Слово должно начинаться с артикля: der/die/das …"}), 400
+    article = m.group(1).lower()
+    target_label = f"{article} {m.group(2).strip()}"
     bbox = payload.get("bbox")
     if not (isinstance(bbox, list) and len(bbox) == 4):
         return jsonify({"error": "нет рамки"}), 400
@@ -26942,11 +26976,37 @@ def answer_pin_review_save():
         return jsonify({"error": "рамка не читается"}), 400
     if not (0 <= x <= 1 and 0 <= y <= 1 and w > 0.005 and h > 0.005 and x + w <= 1.001 and y + h <= 1.001):
         return jsonify({"error": "рамка вне картинки или слишком мелкая"}), 400
-    if not update_aufgabe_bbox_by_id(aufgabe_id, [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]):
-        return jsonify({"error": "задание не найдено"}), 404
-    mark_aufgabe_bbox_human_ok(aufgabe_id)
-    set_aufgabe_review_status(aufgabe_id, "approved")
-    return jsonify({"ok": True, "status": "approved"})
+    from backend.database import get_pin_scene, create_pin_target_from_scene, pin_target_noun_exists
+    scene = get_pin_scene(scene_id)
+    if not scene or not scene.get("image_object_key"):
+        return jsonify({"error": "сцена не найдена"}), 404
+    duplicate = pin_target_noun_exists(target_label)
+    aufgabe_id = create_pin_target_from_scene(
+        scene_id=scene_id, image_object_key=scene["image_object_key"],
+        bbox=[round(x, 4), round(y, 4), round(w, 4), round(h, 4)],
+        target_label=target_label, article=article,
+    )
+    # Background language enrichment (hint/erklaerung/tip) via the bot process is triggered
+    # lazily; here we just persist. The result card tolerates empty extras until then.
+    return jsonify({"ok": True, "aufgabe_id": aufgabe_id, "target_label": target_label,
+                    "duplicate": bool(duplicate)})
+
+
+@app.route("/api/answer/pinreview/scenedone", methods=["POST"])
+def answer_pin_scene_done():
+    """Finish with a scene image: 'done' (labeled all wanted targets) or 'skip' (bad image)."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        scene_id = int(payload.get("scene_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "нет сцены"}), 400
+    action = str(payload.get("action") or "done").strip().lower()
+    from backend.database import set_pin_scene_status
+    set_pin_scene_status(scene_id, "skipped" if action == "skip" else "done")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/answer/review/overview", methods=["POST"])

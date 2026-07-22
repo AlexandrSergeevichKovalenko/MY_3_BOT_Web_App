@@ -5708,41 +5708,6 @@ def _extract_support_target_from_reply_text(text: str) -> tuple[int | None, int 
     return user_id, support_message_id
 
 
-async def _try_handle_admin_pin_words_reply(update: Update, context: CallbackContext, text: str) -> bool:
-    """Admin replied to the '🖼 Слова для «Finde im Bild»' ForceReply with space-separated
-    target words → enqueue them (dedup handled in DB). Returns True if it was ours."""
-    message = update.message
-    if not message or not message.from_user or not _is_admin_user(message.from_user.id):
-        return False
-    if not (update.effective_chat and update.effective_chat.type == "private"):
-        return False
-    src = message.reply_to_message
-    if not src:
-        return False
-    src_text = (src.text or src.caption or "")
-    if _PIN_WORDS_PROMPT_MARKER not in src_text:
-        return False
-    words = [w for w in str(text or "").replace(",", " ").split() if w.strip()]
-    if not words:
-        await message.reply_text("Не увидел слов. Пришли их через пробел ещё раз.")
-        return True
-    from backend.database import enqueue_pin_words, count_queued_pin_words
-    res = await asyncio.to_thread(enqueue_pin_words, words)
-    queued = await asyncio.to_thread(count_queued_pin_words)
-    lines = [f"✅ Добавлено слов: <b>{res['added']}</b>."]
-    if res["skipped"]:
-        lines.append(f"Пропущено (повтор/уже было): {res['skipped']}.")
-    lines.append(f"Всего в очереди: {queued}.")
-    if res["added"]:
-        lines.append("\nЗапускаю генерацию — карточки на обводку придут по мере готовности.")
-    await message.reply_text("\n".join(lines), parse_mode="HTML")
-    if res["added"]:
-        # Fire generation in the background so the reply returns instantly.
-        asyncio.create_task(_aufgabe_topup_format("pin", _AUFGABE_LEVEL.get("pin", "B2"),
-                                                  min(res["added"], AUFGABE_PER_FORMAT_TARGET)))
-    return True
-
-
 async def _try_handle_admin_support_reply(update: Update, context: CallbackContext, text: str) -> bool:
     message = update.message
     if not message or not message.from_user:
@@ -12674,8 +12639,6 @@ async def handle_user_message(update: Update, context: CallbackContext):
     text = update.message.text.strip()
 
     if _is_admin_user(user_id):
-        if await _try_handle_admin_pin_words_reply(update, context, text):
-            return
         if await _try_handle_admin_support_reply(update, context, text):
             return
         if update.effective_chat and update.effective_chat.type == "private" and text == ADMIN_BROADCAST_BUTTON_TEXT:
@@ -32266,61 +32229,6 @@ async def _alert_admin_interactive(context: CallbackContext, text: str, *, throt
         logging.warning("interactive alert failed", exc_info=True)
 
 
-# Formats that may NOT reach a learner before an admin approves them. Only «Finde im
-# Bild»: its verdict rests on a vision-guessed box, and a wrong box fails honest answers
-# silently. Every other format is text the generator's own verifiers can check.
-_AUFGABE_REVIEW_FORMATS = {"pin"}
-
-
-async def _send_aufgabe_review_card(aufgabe_id: str, fmt: str, level: str, payload: dict) -> None:
-    """DM every admin the freshly generated task with its answer region drawn on the
-    picture + Approve/Reject buttons. Best-effort: a failure here leaves the item
-    'pending' (unservable), which is the safe side."""
-    try:
-        from backend.database import get_admin_telegram_ids
-        from backend.openai_manager import draw_pin_bbox_preview
-        from backend.r2_storage import r2_get_bytes
-        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
-        if not admin_ids or application is None:
-            return
-        key = str(payload.get("image_object_key") or "")
-        bbox = payload.get("bbox")
-        img = await asyncio.to_thread(r2_get_bytes, key) if key else None
-        # A frame is drawn only if one exists (legacy items). New items arrive bare —
-        # the region is drawn by hand on the acceptance screen.
-        preview = img
-        if img and isinstance(bbox, list) and len(bbox) == 4:
-            preview = await asyncio.to_thread(draw_pin_bbox_preview, img, bbox)
-        target = str(payload.get("target_label") or "")
-        caption = (
-            f"🔎 <b>Новое задание «Finde im Bild»</b> · {html.escape(level)}\n\n"
-            f"Загаданный предмет: <b>{html.escape(target)}</b>\n\n"
-            f"<i>{html.escape(str(payload.get('erklaerung') or ''))[:300]}</i>\n\n"
-            f"Открой приёмку и обведи предмет пальцем — твоя рамка станет зоной, "
-            f"засчитывающей тап ученика. Пока не обведёшь, людям задание не уходит."
-        )
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Открыть и обвести", url=get_webapp_deeplink("ans_pv_0"))],
-        ])
-        for admin_id in admin_ids:
-            try:
-                if preview:
-                    await application.bot.send_photo(
-                        chat_id=admin_id, photo=io.BytesIO(preview), caption=caption,
-                        parse_mode="HTML", reply_markup=kb,
-                    )
-                else:
-                    await application.bot.send_message(
-                        chat_id=admin_id,
-                        text=caption + "\n\n⚠️ Картинку показать не удалось — открой приёмку.",
-                        parse_mode="HTML", reply_markup=kb,
-                    )
-            except Exception:
-                logging.warning("aufgabe review card: DM failed admin_id=%s", admin_id, exc_info=True)
-    except Exception:
-        logging.warning("aufgabe review card failed id=%s", aufgabe_id, exc_info=True)
-
-
 async def aufgabe_review_callback(update: Update, context: CallbackContext) -> None:
     """Admin verdict on a pending task: approve → released to learners; reject → retired
     and a replacement is generated straight away (the pool counts only approved items, so
@@ -32350,30 +32258,11 @@ async def aufgabe_review_callback(update: Update, context: CallbackContext) -> N
             pass
         return
     await asyncio.to_thread(set_aufgabe_review_status, aufgabe_id, "rejected")
-    await query.answer("Забраковано, генерирую замену")
+    await query.answer("Забраковано")
     try:
-        await query.edit_message_caption(
-            caption="🔁 <b>Забраковано</b> — снято. Генерирую замену…", parse_mode="HTML")
+        await query.edit_message_caption(caption="🔁 <b>Забраковано</b> — снято.", parse_mode="HTML")
     except Exception:
         pass
-    try:
-        made = await _aufgabe_topup_format("pin", _AUFGABE_LEVEL.get("pin", "B2"), 1)
-        if not made:
-            await application.bot.send_message(
-                chat_id=int(user_id),
-                text="⚠️ Замену сгенерировать не удалось (LLM/DALL·E/vision). "
-                     "Попробуй /admin_aufgabe_pool.",
-            )
-    except Exception:
-        logging.warning("aufgabe review: regeneration failed", exc_info=True)
-
-
-_PIN_WORDS_PROMPT_MARKER = "🖼 Слова для «Finde im Bild»"
-# Size gate for generated pin images: the target must cover no more than this fraction of
-# the frame (else it's the giant, obvious object we're trying to avoid). We regenerate up
-# to N times per word before skipping it.
-_PIN_MAX_COVERAGE = float(os.getenv("PIN_MAX_COVERAGE") or "0.15")
-_PIN_IMAGE_ATTEMPTS = int(os.getenv("PIN_IMAGE_ATTEMPTS") or "3")
 
 
 async def _dm_admins(text: str) -> None:
@@ -32391,113 +32280,111 @@ async def _dm_admins(text: str) -> None:
         logging.warning("_dm_admins failed", exc_info=True)
 
 
-async def _ask_admin_for_pin_words(reason: str = "") -> None:
-    """DM every admin a ForceReply asking for the next batch of pin target words. Throttled
-    so an empty queue during nightly top-up doesn't spam. Best-effort."""
+def _pin_deeplink_kb(label: str = "🎨 Открыть студию сцен"):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=get_webapp_deeplink("ans_pv_0"))]])
+
+
+async def _remind_admin_pin_scenes(needed: int) -> None:
+    """DM admins that the «Finde im Bild» pool is low, with a button into the scene studio.
+    Throttled so the nightly check doesn't spam."""
     import time as _t
     now = _t.time()
-    if now - _INTERACTIVE_ALERT_LAST.get("pin_words_ask", 0.0) < 3600:
+    if now - _INTERACTIVE_ALERT_LAST.get("pin_scene_remind", 0.0) < 6 * 3600:
         return
-    _INTERACTIVE_ALERT_LAST["pin_words_ask"] = now
+    _INTERACTIVE_ALERT_LAST["pin_scene_remind"] = now
     try:
         from backend.database import get_admin_telegram_ids
         admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
         if not admin_ids or application is None:
             return
         text = (
-            f"{_PIN_WORDS_PROMPT_MARKER}\n\n"
-            f"{reason}Закончились слова для генерации «Найди предмет». "
-            f"Пришли ОТВЕТОМ на это сообщение новые слова через пробел "
-            f"(можно с артиклем и без): например\n\n"
-            f"<code>der Locher Wasserkocher die Sicherung Türgriff</code>\n\n"
-            f"Повторы и уже использованные слова я отброшу сам."
+            f"🖼 <b>«Найди предмет»: нужно ещё картинок</b>\n\n"
+            f"В базе не хватает ~{needed} сцен. Открой студию, опиши несколько сцен "
+            f"(по-русски, каждая с новой строки) — я нарисую их, а ты потом обведёшь "
+            f"предметы и подпишешь их по-немецки."
         )
         for admin_id in admin_ids:
             try:
                 await application.bot.send_message(
                     chat_id=admin_id, text=text, parse_mode="HTML",
-                    reply_markup=ForceReply(input_field_placeholder="Слова через пробел…"),
-                )
+                    reply_markup=_pin_deeplink_kb())
             except Exception:
-                logging.warning("pin words ask: DM failed admin_id=%s", admin_id, exc_info=True)
+                logging.warning("pin scene remind: DM failed admin_id=%s", admin_id, exc_info=True)
     except Exception:
-        logging.warning("pin words ask failed", exc_info=True)
+        logging.warning("pin scene remind failed", exc_info=True)
 
 
-async def _pin_topup_from_words(want: int, level: str) -> int:
-    """Make up to `want` pin items from the admin word queue. Each queued word → one DALL-E
-    image (object small & hidden per the prompt) → R2 → a 'pending' task that the admin
-    frames by hand. If the queue runs dry, DM the admin for more and stop."""
-    from backend.database import next_pin_word, count_queued_pin_words
-    from backend.openai_manager import run_generate_pin_for_word, run_vision_object_coverage
-    from backend.image_generation_provider import generate_image_bytes
-    from backend.r2_storage import r2_put_bytes
-    made = 0
-    too_big = []  # words DALL-E kept drawing too large — reported to the admin
-    for _ in range(want):
-        word = await asyncio.to_thread(next_pin_word)
-        if not word:
-            await _ask_admin_for_pin_words()
-            break
-        it = await run_generate_pin_for_word(word)
-        if not it:
-            logging.info("pin topup: word not depictable / gen failed (%s)", word)
-            continue
-        payload = _aufgabe_payload_from_item("pin", it, admin_chosen=True)
-        if not payload:
-            logging.info("pin topup: payload invalid for word (%s)", word)
-            continue
-        # Generate the image, then GATE ON SIZE: the object must be small & non-obvious
-        # (≤ _PIN_MAX_COVERAGE of the frame). DALL-E ignores "make it small" often, so we
-        # verify and regenerate up to _PIN_IMAGE_ATTEMPTS times before giving up on the word.
-        img = mime = None
-        for attempt in range(_PIN_IMAGE_ATTEMPTS):
+async def _pin_pool_maybe_remind(level: str) -> int:
+    """Pin is scene-driven (admin composes scenes in the studio), so nothing is auto-invented
+    here. If the servable pool is below target and nothing is already queued/generating/ready
+    to cover the gap, nudge the admin into the studio. Returns 0 (never auto-generates)."""
+    try:
+        from backend.database import pin_pool_status
+        st = await asyncio.to_thread(pin_pool_status)
+        needed = AUFGABE_PER_FORMAT_TARGET - st["approved"] - st["ready_scenes"] - st["generating"]
+        if needed > 0:
+            await _remind_admin_pin_scenes(needed)
+    except Exception:
+        logging.warning("pin pool remind check failed", exc_info=True)
+    return 0
+
+
+async def _pin_scene_studio_tick(context: CallbackContext = None) -> None:
+    """Background heartbeat for the scene studio (runs on a JobQueue timer):
+      1) render admin-requested scene descriptions into images (DALL-E → R2 → 'ready');
+      2) backfill language extras (hint/erklaerung/tip) for freshly labeled targets.
+    Bounded per tick so a burst of requests spreads over a few minutes, not one spike."""
+    from backend.database import (
+        take_pin_scene_requests, set_pin_scene_ready, set_pin_scene_status,
+        list_pin_tasks_needing_meta, update_aufgabe_word_meta,
+    )
+    # 1) scene requests → images
+    try:
+        reqs = await asyncio.to_thread(take_pin_scene_requests, 3)
+    except Exception:
+        reqs = []
+        logging.warning("pin studio: claiming scene requests failed", exc_info=True)
+    if reqs:
+        from backend.openai_manager import run_generate_pin_scene_prompt
+        from backend.image_generation_provider import generate_image_bytes
+        from backend.r2_storage import r2_put_bytes
+        for req in reqs:
+            sid = req["scene_id"]
             try:
-                res = await asyncio.to_thread(
-                    generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0,
-                    action_type="aufgabe_pin_image",
-                )
-                cand = bytes(res.get("data") or b"")
-                cmime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
-                if not cand:
+                prompt = await run_generate_pin_scene_prompt(req["description"])
+                if not prompt:
+                    await asyncio.to_thread(set_pin_scene_status, sid, "requested")  # retry later
                     continue
-                cov = await asyncio.to_thread(run_vision_object_coverage, cand, payload["target_label"], mime=cmime)
-                if cov.get("present") and cov.get("coverage", 1.0) <= _PIN_MAX_COVERAGE:
-                    img, mime = cand, cmime
-                    break
-                logging.info("pin topup: image rejected (present=%s coverage=%.2f) word=%s attempt=%s",
-                             cov.get("present"), cov.get("coverage", 1.0), word, attempt + 1)
+                res = await asyncio.to_thread(
+                    generate_image_bytes, prompt=prompt, template_id=0, user_id=0,
+                    action_type="aufgabe_pin_scene",
+                )
+                img = bytes(res.get("data") or b"")
+                mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
+                if not img:
+                    await asyncio.to_thread(set_pin_scene_status, sid, "requested")
+                    continue
+                ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
+                key = f"aufgabe/scenes/{sid}.{ext}"
+                await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
+                await asyncio.to_thread(set_pin_scene_ready, sid, key)
             except Exception:
-                logging.warning("pin topup: image generation failed for word=%s", word, exc_info=True)
-        if not img:
-            too_big.append(word)
-            continue
-        aufgabe_id = str(__import__("uuid").uuid4())
-        try:
-            ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
-            key = f"aufgabe/images/{aufgabe_id}.{ext}"
-            await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
-            payload["image_object_key"] = key
-            payload.pop("image_prompt", None)
-        except Exception:
-            logging.warning("pin topup: R2 upload failed for word=%s", word, exc_info=True)
-            continue
-        await asyncio.to_thread(
-            create_aufgabe, aufgabe_id=aufgabe_id, format="pin", level=level, payload=payload,
-            review_status="pending",
-        )
-        await _send_aufgabe_review_card(aufgabe_id, "pin", level, payload)
-        made += 1
-    if too_big:
-        await _dm_admins(
-            "⚠️ <b>Не получилось спрятать предмет</b> — DALL·E рисует его слишком крупно "
-            f"даже после {_PIN_IMAGE_ATTEMPTS} попыток: <b>{html.escape(', '.join(too_big))}</b>. "
-            f"Эти слова пропущены. Попробуй заменить их на предметы, которые естественно "
-            f"бывают маленькими в кадре."
-        )
-    if made == 0 and await asyncio.to_thread(count_queued_pin_words) == 0:
-        await _ask_admin_for_pin_words()
-    return made
+                logging.warning("pin studio: scene %s render failed", sid, exc_info=True)
+                await asyncio.to_thread(set_pin_scene_status, sid, "requested")
+    # 2) enrich labeled targets (translation/explanation/tip)
+    try:
+        pending = await asyncio.to_thread(list_pin_tasks_needing_meta, 6)
+    except Exception:
+        pending = []
+    if pending:
+        from backend.openai_manager import run_generate_pin_word_meta
+        for t in pending:
+            try:
+                meta = await run_generate_pin_word_meta(t["target_label"])
+                if meta:
+                    await asyncio.to_thread(update_aufgabe_word_meta, t["aufgabe_id"], meta)
+            except Exception:
+                logging.warning("pin studio: enrich failed id=%s", t["aufgabe_id"], exc_info=True)
 
 
 async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
@@ -32507,11 +32394,10 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
     the nightly pool job AND the admin on-demand send."""
     if want <= 0:
         return 0
-    # «Finde im Bild» is driven by an admin word list, not by the model inventing objects
-    # (which gave giant, obvious, repeating things). Its own path pops words → one image
-    # each → the acceptance queue.
+    # «Finde im Bild» is scene-driven: the admin composes scenes in the studio and labels
+    # targets by hand. Nothing is auto-invented here — just nudge if the pool is low.
     if fmt == "pin":
-        return await _pin_topup_from_words(want, level)
+        return await _pin_pool_maybe_remind(level)
     from backend.openai_manager import run_generate_aufgabe
     from backend.r2_storage import r2_put_bytes
     items = await run_generate_aufgabe(fmt, count=min(8, want + 2), level=level)
@@ -32566,17 +32452,11 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
             except Exception:
                 logging.warning("aufgabe_pool: 'error' verifier failed, skipping item", exc_info=True)
                 continue
-        # «Finde im Bild» ships only after a human looks at it: its verdict rests on a
-        # vision-guessed box that has been wrong on real items, and a wrong box fails an
-        # honest answer. Created as 'pending' (invisible to pick_next_aufgabe) and sent
-        # to the admin with the box drawn on the picture.
-        pending = fmt in _AUFGABE_REVIEW_FORMATS
+        # pin never reaches this generic loop (it has its own scene-driven path above);
+        # every other format is auto-approved.
         await asyncio.to_thread(
             create_aufgabe, aufgabe_id=aufgabe_id, format=fmt, level=level, payload=payload,
-            review_status=("pending" if pending else "approved"),
         )
-        if pending:
-            await _send_aufgabe_review_card(aufgabe_id, fmt, level, payload)
         made += 1
     return made
 
@@ -36464,11 +36344,11 @@ async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -
         await message.reply_text(f"❌ manual aufgabe pool refill failed: {exc}")
 
 
-async def admin_pin_words_command(update: Update, context: CallbackContext) -> None:
-    """Seed target words for «Finde im Bild». /admin_pin_words der Locher Wasserkocher …
-
-    No args → show the queue size and re-open the ForceReply prompt. With args → enqueue
-    them (dedup handled) and start generating."""
+async def admin_pin_studio_command(update: Update, context: CallbackContext) -> None:
+    """Open the «Finde im Bild» scene studio, or quick-queue scenes from chat.
+    /admin_pin_studio                              → status + button into the studio
+    /admin_pin_studio <описание сцены>             → queue one scene for generation
+    Several scenes: describe them in the studio (one per line)."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -36476,76 +36356,23 @@ async def admin_pin_words_command(update: Update, context: CallbackContext) -> N
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    from backend.database import enqueue_pin_words, count_queued_pin_words
-    words = [w for w in (context.args or []) if str(w).strip()]
-    if not words:
-        queued = await asyncio.to_thread(count_queued_pin_words)
+    desc = " ".join(str(a) for a in (context.args or [])).strip()
+    from backend.database import pin_pool_status, enqueue_pin_scene_requests
+    if desc:
+        n = await asyncio.to_thread(enqueue_pin_scene_requests, [desc])
         await message.reply_text(
-            f"{_PIN_WORDS_PROMPT_MARKER}\n\nВ очереди слов: <b>{queued}</b>.\n"
-            f"Пришли новые слова ОТВЕТОМ на это сообщение (через пробел, можно с артиклем).",
-            parse_mode="HTML",
-            reply_markup=ForceReply(input_field_placeholder="Слова через пробел…"),
-        )
+            f"🎨 Сцена в очереди на генерацию ({n}). Как нарисуется — обведёшь предметы в студии.",
+            reply_markup=_pin_deeplink_kb())
         return
-    res = await asyncio.to_thread(enqueue_pin_words, words)
-    queued = await asyncio.to_thread(count_queued_pin_words)
+    st = await asyncio.to_thread(pin_pool_status)
     await message.reply_text(
-        f"✅ Добавлено: {res['added']} · пропущено: {res['skipped']} · в очереди: {queued}.",
-    )
-    if res["added"]:
-        asyncio.create_task(_aufgabe_topup_format("pin", _AUFGABE_LEVEL.get("pin", "B2"),
-                                                  min(res["added"], AUFGABE_PER_FORMAT_TARGET)))
-
-
-async def admin_pin_review_command(update: Update, context: CallbackContext) -> None:
-    """Send the acceptance cards for «Finde im Bild». /admin_pin_review [all]
-
-    No arg — re-sends the cards for items still awaiting a verdict (e.g. the DM was
-    lost). `all` — puts EVERY live pin item back into review, including ones already in
-    rotation: they were generated before the gate existed and nobody has ever looked at
-    their answer region. Pending items are unservable, so this pauses the format until
-    you work through them."""
-    user = update.effective_user
-    message = update.effective_message
-    if not user or not message:
-        return
-    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
-        await message.reply_text("Allowed users only.")
-        return
-    from backend.database import (
-        get_db_connection_context, list_pin_items_for_audit, set_aufgabe_review_status,
-    )
-    want_all = any(str(a).strip().lower() == "all" for a in (context.args or []))
-    if want_all:
-        items = await asyncio.to_thread(list_pin_items_for_audit)
-        for it in items:
-            await asyncio.to_thread(set_aufgabe_review_status, it["aufgabe_id"], "pending")
-
-    def _pending_rows() -> list:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT aufgabe_id, level, payload FROM bt_3_aufgabe_bank "
-                    "WHERE format='pin' AND retired=FALSE AND review_status='pending' "
-                    "ORDER BY created_at"
-                )
-                return cursor.fetchall() or []
-
-    rows = await asyncio.to_thread(_pending_rows)
-    if not rows:
-        await message.reply_text("Заданий на проверке нет.")
-        return
-    # One message with a link into the review screen — NOT one photo per task. The screen
-    # walks the whole queue itself, and 20 photo cards in a DM is not a workflow.
-    await message.reply_text(
-        f"📬 На приёмке: <b>{len(rows)}</b>.\n\n"
-        f"Открой экран, обведи предмет пальцем — твоя рамка станет эталоном для тапа "
-        f"ученика. Пока задание не принято, людям оно не уходит.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✏️ Открыть приёмку", url=get_webapp_deeplink("ans_pv_0")),
-        ]]),
-    )
+        f"🖼 <b>«Найди предмет» — студия сцен</b>\n\n"
+        f"Готовых заданий: <b>{st['approved']}</b> / {AUFGABE_PER_FORMAT_TARGET}\n"
+        f"Картинок ждёт обводки: <b>{st['ready_scenes']}</b>\n"
+        f"Генерируется сейчас: <b>{st['generating']}</b>\n\n"
+        f"Открой студию: опиши сцены (по-русски, каждая с новой строки), потом обведи "
+        f"предметы и подпиши их по-немецки.",
+        parse_mode="HTML", reply_markup=_pin_deeplink_kb())
 
 
 async def admin_crossword_pool_command(update: Update, context: CallbackContext) -> None:
@@ -39002,8 +38829,7 @@ def main():
     application.add_handler(CommandHandler("translationpool", admin_translation_pool_report_command))
     application.add_handler(CommandHandler("admin_pool_remind", admin_pool_remind_command))
     application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
-    application.add_handler(CommandHandler("admin_pin_review", admin_pin_review_command))
-    application.add_handler(CommandHandler("admin_pin_words", admin_pin_words_command))
+    application.add_handler(CommandHandler("admin_pin_studio", admin_pin_studio_command))
     application.add_handler(CallbackQueryHandler(aufgabe_review_callback, pattern=r"^aurev:"))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
@@ -39063,6 +38889,9 @@ def main():
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
                 application.job_queue.run_repeating(_app_spend_ceiling_tick_job, interval=int(os.getenv("APP_SPEND_CEILING_TICK_SECONDS", "3600") or 3600), first=180),
+                # «Finde im Bild» scene studio: render admin-requested scene images + backfill
+                # target language extras. Bounded per tick; cheap when there's nothing to do.
+                application.job_queue.run_repeating(_pin_scene_studio_tick, interval=int(os.getenv("PIN_STUDIO_TICK_SECONDS", "90") or 90), first=45),
                 # NB: weekly R2 cleanup is NOT registered here as run_repeating(first=...) —
                 # a first=600 fires ~10 min after EVERY process start, so each Railway redeploy
                 # re-sent the "Недельная авто-чистка R2" report. It now runs on a FIXED weekly

@@ -1337,3 +1337,25 @@ html[data-scheme="light"] .ask-pop-input textarea { background: #f4f6fa; color: 
 .pinrev-empty { display: flex; flex-direction: column; gap: 8px; align-items: center; padding: 24px 0; }
 .pinrev-empty-title { font-size: 20px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
 .pinrev-empty-sub { font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
+
+/* Scene studio composer + chips (admin «Finde im Bild»). */
+.pinrev-status { font-size: 12px; color: var(--dmps-text-muted, #94A3B8); }
+.pinrev-composer { display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  border: 1px solid var(--dmps-border, #334155); border-radius: 16px; }
+.pinrev-comp-title { font-size: 14px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }
+.pinrev-textarea {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 70px;
+  border-radius: 12px; border: 1px solid var(--dmps-border, #334155);
+  background: var(--dmps-input-bg, #0f172a); color: var(--dmps-text-primary, #F8FAFC);
+  padding: 10px; font: inherit; font-size: max(16px, 1em);   /* 16px avoids iOS zoom */
+}
+.pinrev-note { font-size: 13px; color: #22C55E; }
+.pinrev-link {
+  background: none; border: none; color: #60A5FA; font: inherit; cursor: pointer; padding: 0;
+}
+.pinrev-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pinrev-chip {
+  font-size: 13px; padding: 3px 10px; border-radius: 999px;
+  background: rgba(34,197,94,0.15); color: #22C55E; border: 1px solid rgba(34,197,94,0.4);
+}
+.pinrev-target { display: flex; flex-direction: column; gap: 10px; }
