@@ -36344,6 +36344,47 @@ async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -
         await message.reply_text(f"❌ manual aufgabe pool refill failed: {exc}")
 
 
+async def admin_pin_check_command(update: Update, context: CallbackContext) -> None:
+    """DM the finished «Finde im Bild» tasks so the admin can eyeball each box on the image.
+    /admin_pin_check [N]  — default 12 most recent."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    n = 12
+    if context.args:
+        try:
+            n = max(1, min(40, int(str(context.args[0]).strip())))
+        except ValueError:
+            pass
+    from backend.database import list_approved_pin_tasks
+    from backend.openai_manager import draw_pin_bbox_preview
+    from backend.r2_storage import r2_get_bytes
+    tasks = await asyncio.to_thread(list_approved_pin_tasks, n)
+    if not tasks:
+        await message.reply_text("Готовых заданий «Finde im Bild» пока нет.")
+        return
+    await message.reply_text(f"📤 Готовых заданий: {len(tasks)}. Отправляю с обведёнными рамками…")
+    sent = 0
+    for t in tasks:
+        try:
+            img = await asyncio.to_thread(r2_get_bytes, t["image_object_key"]) if t["image_object_key"] else None
+            if not img:
+                continue
+            preview = await asyncio.to_thread(draw_pin_bbox_preview, img, t["bbox"]) if t["bbox"] else img
+            await message.reply_photo(
+                photo=io.BytesIO(preview),
+                caption=f"✅ <b>{html.escape(t['target_label'])}</b>", parse_mode="HTML")
+            sent += 1
+        except Exception:
+            logging.warning("pin check: send failed id=%s", t["aufgabe_id"], exc_info=True)
+    await message.reply_text(f"Готово: отправлено {sent}. Если рамка на не том предмете — "
+                             f"скажи, добавим удаление из этого же списка.")
+
+
 async def admin_pin_studio_command(update: Update, context: CallbackContext) -> None:
     """Open the «Finde im Bild» scene studio, or quick-queue scenes from chat.
     /admin_pin_studio                              → status + button into the studio
@@ -38830,6 +38871,7 @@ def main():
     application.add_handler(CommandHandler("admin_pool_remind", admin_pool_remind_command))
     application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
     application.add_handler(CommandHandler("admin_pin_studio", admin_pin_studio_command))
+    application.add_handler(CommandHandler("admin_pin_check", admin_pin_check_command))
     application.add_handler(CallbackQueryHandler(aufgabe_review_callback, pattern=r"^aurev:"))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))

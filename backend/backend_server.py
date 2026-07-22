@@ -27020,6 +27020,41 @@ def answer_pin_scenes_create():
     return jsonify({"ok": True, "queued": added})
 
 
+@app.route("/api/answer/pinreview/upload", methods=["POST"])
+def answer_pin_scene_upload():
+    """Second fill path: the admin uploads their OWN photo (base64) instead of generating
+    a scene. It's stored and becomes a ready scene immediately — same targeting flow."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    b64 = str(payload.get("image_base64") or "")
+    if "," in b64 and b64.strip().startswith("data:"):
+        b64 = b64.split(",", 1)[1]        # tolerate a data: URL prefix
+    if not b64:
+        return jsonify({"error": "нет картинки"}), 400
+    import base64 as _b64
+    try:
+        raw = _b64.b64decode(b64, validate=False)
+    except Exception:
+        return jsonify({"error": "картинка не читается"}), 400
+    if not raw or len(raw) > 12 * 1024 * 1024:
+        return jsonify({"error": "картинка пустая или больше 12 МБ"}), 400
+    mime = str(payload.get("mime") or "image/jpeg").strip().lower()
+    ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
+    import uuid as _uuid
+    key = f"aufgabe/scenes/upload_{_uuid.uuid4().hex}.{ext}"
+    from backend.r2_storage import r2_put_bytes
+    from backend.database import create_ready_pin_scene
+    try:
+        r2_put_bytes(key, raw, content_type=(mime if mime.startswith("image/") else "image/jpeg"))
+    except Exception:
+        logging.exception("pin upload: R2 put failed")
+        return jsonify({"error": "не удалось сохранить картинку"}), 500
+    scene_id = create_ready_pin_scene("(загружено вручную)", key)
+    return jsonify({"ok": True, "scene_id": scene_id})
+
+
 @app.route("/api/answer/pinreview/scenes", methods=["POST"])
 def answer_pin_scenes_ready():
     """Generated scene images awaiting targeting, each with the targets already labeled."""

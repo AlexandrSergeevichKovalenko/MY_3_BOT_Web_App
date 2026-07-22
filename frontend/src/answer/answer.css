@@ -1359,3 +1359,17 @@ html[data-scheme="light"] .ask-pop-input textarea { background: #f4f6fa; color: 
   background: rgba(34,197,94,0.15); color: #22C55E; border: 1px solid rgba(34,197,94,0.4);
 }
 .pinrev-target { display: flex; flex-direction: column; gap: 10px; }
+.pinrev-or { text-align: center; font-size: 12px; color: var(--dmps-text-muted, #94A3B8); }
+/* Word input — force readable contrast (the shared .ans-input rendered white-on-white here). */
+.pinrev-word {
+  width: 100%; box-sizing: border-box; border-radius: 12px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: #ffffff; color: #0f172a;
+  padding: 12px 14px; font: inherit; font-size: max(16px, 1em);   /* 16px = no iOS zoom */
+}
+.pinrev-word::placeholder { color: #94A3B8; }
+@media (prefers-color-scheme: dark) {
+  .pinrev-word { background: #0f172a; color: #F8FAFC; border-color: #334155; }
+}
+html[data-scheme="light"] .pinrev-word { background: #ffffff; color: #0f172a; }
+html[data-scheme="dark"] .pinrev-word { background: #0f172a; color: #F8FAFC; }

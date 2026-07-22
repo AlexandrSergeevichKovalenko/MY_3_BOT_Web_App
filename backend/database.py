@@ -47223,6 +47223,38 @@ def take_pin_scene_requests(limit: int = 3) -> list:
     return [{"scene_id": int(r[0]), "description": str(r[1])} for r in rows]
 
 
+def create_ready_pin_scene(description: str, image_object_key: str) -> int:
+    """Insert a scene that already has its image (e.g. an admin-uploaded photo), so it goes
+    straight to targeting without the generation step. Returns scene_id."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO bt_3_pin_scene (description, image_object_key, status) "
+                "VALUES (%s, %s, 'ready') RETURNING scene_id",
+                (str(description or "(загружено)"), str(image_object_key)),
+            )
+            sid = int(cursor.fetchone()[0])
+        conn.commit()
+    return sid
+
+
+def list_approved_pin_tasks(limit: int = 20) -> list:
+    """Approved pin tasks with image + box + word — for the admin to verify in DM."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT aufgabe_id, payload->>'target_label', payload->>'image_object_key', "
+                "payload->'bbox' FROM bt_3_aufgabe_bank "
+                "WHERE format='pin' AND retired=FALSE AND review_status='approved' "
+                "ORDER BY created_at DESC LIMIT %s", (int(limit),))
+            out = []
+            for aid, label, key, bbox in (cursor.fetchall() or []):
+                out.append({"aufgabe_id": str(aid), "target_label": str(label or ""),
+                            "image_object_key": str(key or ""),
+                            "bbox": [float(v) for v in bbox] if isinstance(bbox, list) and len(bbox) == 4 else None})
+    return out
+
+
 def set_pin_scene_ready(scene_id: int, image_object_key: str) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
