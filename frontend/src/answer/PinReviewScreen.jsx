@@ -38,6 +38,14 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // While scenes are still rendering, poll so ready images appear on their own — no
+  // manual button-hunting. Stops once nothing is generating.
+  useEffect(() => {
+    if (step !== 'compose' || !status || status.generating <= 0) return undefined;
+    const id = setInterval(() => { refresh(); }, 10000);
+    return () => clearInterval(id);
+  }, [step, status, refresh]);
+
   const scene = scenes && scenes[idx];
   useEffect(() => { setRect(null); setDrag(null); setDrawing(true); setWord(''); setPreview(null); setError(''); }, [scene]);
 
@@ -157,8 +165,9 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
           <button className="ans-btn" disabled={!descs.trim() || busy} onClick={submitScenes}>🎨 Сгенерировать сцены</button>
           <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={onFiles} />
           <button className="ans-btn-ghost pinw-upload" disabled={busy} onClick={() => fileRef.current?.click()}>📷 Или загрузить свои фото</button>
-          <button className="ans-btn pinw-next" disabled={busy || readyCount === 0} onClick={goTarget}>
-            {readyCount > 0 ? `К обводке: ${readyCount} картинок →` : (status.generating > 0 ? `⏳ Генерируется: ${status.generating}…` : 'Сначала задай картинки')}
+          <button className="ans-btn pinw-next" disabled={busy} onClick={goTarget}>
+            {readyCount > 0 ? `К обводке: ${readyCount} картинок →`
+              : (status.generating > 0 ? `🔄 Генерируется: ${status.generating} — проверить` : '🔄 Обновить')}
           </button>
           <button className="pinw-close" onClick={onClose}>Закрыть</button>
         </div>
