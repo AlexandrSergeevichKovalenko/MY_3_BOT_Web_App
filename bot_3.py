@@ -32243,21 +32243,21 @@ async def _send_aufgabe_review_card(aufgabe_id: str, fmt: str, level: str, paylo
         key = str(payload.get("image_object_key") or "")
         bbox = payload.get("bbox")
         img = await asyncio.to_thread(r2_get_bytes, key) if key else None
-        preview = None
+        # A frame is drawn only if one exists (legacy items). New items arrive bare —
+        # the region is drawn by hand on the acceptance screen.
+        preview = img
         if img and isinstance(bbox, list) and len(bbox) == 4:
             preview = await asyncio.to_thread(draw_pin_bbox_preview, img, bbox)
         target = str(payload.get("target_label") or "")
         caption = (
-            f"🔎 <b>Проверка задания «Finde im Bild»</b> · {html.escape(level)}\n\n"
-            f"Загаданный предмет: <b>{html.escape(target)}</b>\n"
-            f"Зелёная рамка = черновик модели: именно эта зона засчитает тап ученика.\n\n"
+            f"🔎 <b>Новое задание «Finde im Bild»</b> · {html.escape(level)}\n\n"
+            f"Загаданный предмет: <b>{html.escape(target)}</b>\n\n"
             f"<i>{html.escape(str(payload.get('erklaerung') or ''))[:300]}</i>\n\n"
-            f"Попала — жми «Рамка верна». Не попала — открой и обведи предмет пальцем, "
-            f"твоя рамка станет эталоном."
+            f"Открой приёмку и обведи предмет пальцем — твоя рамка станет зоной, "
+            f"засчитывающей тап ученика. Пока не обведёшь, людям задание не уходит."
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Открыть и обвести", url=get_webapp_deeplink("ans_pv_0"))],
-            [InlineKeyboardButton("✅ Рамка верна", callback_data=f"aurev:ok:{aufgabe_id}")],
         ])
         for admin_id in admin_ids:
             try:
@@ -32269,7 +32269,7 @@ async def _send_aufgabe_review_card(aufgabe_id: str, fmt: str, level: str, paylo
                 else:
                     await application.bot.send_message(
                         chat_id=admin_id,
-                        text=caption + "\n\n⚠️ Картинку или рамку показать не удалось.",
+                        text=caption + "\n\n⚠️ Картинку показать не удалось — открой приёмку.",
                         parse_mode="HTML", reply_markup=kb,
                     )
             except Exception:
@@ -32353,10 +32353,9 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
                 logging.warning("aufgabe_pool: hoerluecke TTS/R2 failed, skipping item", exc_info=True)
                 continue
         elif fmt == "pin":
-            # DALL-E image → R2, then vision verifies the target is present + bbox.
+            # DALL-E image → R2. The answer region is drawn by the admin, not guessed.
             try:
                 from backend.image_generation_provider import generate_image_bytes
-                from backend.openai_manager import run_vision_locate
                 res = await asyncio.to_thread(
                     generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0,
                     action_type="aufgabe_pin_image",
@@ -32365,34 +32364,19 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
                 mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
                 if not img:
                     continue
-                # TWO independent locate calls. One vision guess is not trustworthy for a
-                # small object in a scene that deliberately holds a bigger decoy of the same
-                # category: a wrong bbox makes the item unwinnable for everyone. If the two
-                # boxes don't agree (IoU), drop the item; if they do, store their UNION so a
-                # slightly-off box still accepts an honest tap.
-                loc = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
-                if not loc.get("present") or not loc.get("bbox"):
-                    logging.info("aufgabe_pool: pin target not located, skipping (%s)", payload["target_label"])
-                    continue
-                loc2 = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
-                if not loc2.get("present") or not loc2.get("bbox"):
-                    logging.info("aufgabe_pool: pin target not confirmed on re-check, skipping (%s)",
-                                 payload["target_label"])
-                    continue
-                from backend.answer_eval import PIN_BBOX_MIN_IOU, pin_bbox_iou, pin_bbox_union
-                iou = pin_bbox_iou(loc["bbox"], loc2["bbox"])
-                if iou < PIN_BBOX_MIN_IOU:
-                    logging.info("aufgabe_pool: pin bbox disagreement iou=%.2f, skipping (%s) %s vs %s",
-                                 iou, payload["target_label"], loc["bbox"], loc2["bbox"])
-                    continue
+                # NO vision locate here. The answer region is drawn BY HAND on the
+                # acceptance screen, and the model's box was worth so little that judging
+                # it cost more than replacing it. Vision stays only where it earns its
+                # keep: re-checking a disputed tap at grading time. An item whose object
+                # didn't make it into the picture is rejected by the human instead — the
+                # same person who would have had to redraw the box anyway.
                 ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
                 key = f"aufgabe/images/{aufgabe_id}.{ext}"
                 await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
                 payload["image_object_key"] = key
-                payload["bbox"] = pin_bbox_union(loc["bbox"], loc2["bbox"])
                 payload.pop("image_prompt", None)  # not needed at runtime
             except Exception:
-                logging.warning("aufgabe_pool: pin image/vision failed, skipping item", exc_info=True)
+                logging.warning("aufgabe_pool: pin image generation failed, skipping item", exc_info=True)
                 continue
         elif fmt == "error":
             # Bounded LLM verifier: confirm the item has EXACTLY ONE real error at

@@ -2216,6 +2216,11 @@ def _spawn_pin_bbox_repair(payload: dict) -> None:
     target = str(payload.get("target_label") or "")
     if not key or not target or key in _PIN_REPAIR_IN_FLIGHT:
         return
+    if payload.get("bbox_human_ok"):
+        # A person drew this region. A tap just outside it means they drew it tight —
+        # NOT that it's wrong. Replacing their box with a model guess would undo exactly
+        # the fix this whole path exists for.
+        return
     _PIN_REPAIR_IN_FLIGHT.add(key)
     import threading
     threading.Thread(target=_pin_bbox_repair, args=(key, target), daemon=True).start()
