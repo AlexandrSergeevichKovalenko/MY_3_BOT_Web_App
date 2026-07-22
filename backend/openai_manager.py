@@ -108,6 +108,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "aufgabe_error",
     "aufgabe_hoerluecke",
     "aufgabe_pin_blueprint",
+    "aufgabe_pin_for_word",
     "aufgabe_satzbau",
     "aufgabe_adjektiv",
     "aufgabe_synonym",
@@ -4139,6 +4140,41 @@ Gib NUR STRICT JSON:
 {"items":[{"image_prompt":"A cluttered kitchen counter: a large shiny toaster prominently in the center, a fruit bowl, a cutting board and jars, and a small electric kettle half-hidden off to the side near the wall, photorealistic, no text","target_label":"der Wasserkocher","article":"der","question_de":"Finde Wasserkocher im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"чайник (электрический)"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"aufgabe_pin_for_word": """
+Du baust EINE "Finde das Objekt"-Bildaufgabe für Deutschlernende. Das ZIELWORT ist
+vorgegeben — du wählst es NICHT selbst.
+
+Eingabe-JSON: {"word": "<deutsches Substantiv, evtl. mit Artikel>"}.
+
+Der/die Lernende soll dieses Objekt im Bild finden, antippen und seinen Artikel eingeben.
+Das Wort selbst wird NICHT angezeigt (nur als Aufgabe „Finde {Wort} …"), es geht also um
+aktiven Wortschatz.
+
+BILD — die wichtigste Regel (das war bisher das Problem):
+- Das Zielobjekt muss KLEIN und UNAUFFÄLLIG sein: höchstens ~8–10 % der Bildfläche,
+  NIEMALS zentral, niemals das größte/erste, was ins Auge fällt. Klein, seitlich,
+  teilweise verdeckt, zwischen anderen Dingen — man muss es WIRKLICH SUCHEN.
+- Die Szene ist eine reiche, natürliche Alltagsszene mit VIELEN gleichwertigen Objekten,
+  damit das Ziel nicht heraussticht. KEINE Szene, in der das Objekt riesig/allein/mittig
+  steht. KEIN „ein Objekt füllt das halbe Bild".
+- KEIN Text, keine Buchstaben, keine Pfeile, keine Labels im Bild.
+
+Ausgabe (STRICT JSON, genau diese Felder):
+- "image_prompt": detaillierter englischer DALL-E-Prompt, der GENAU obige Bild-Regel
+  umsetzt (reiche Szene, Zielobjekt klein & versteckt & nicht zentral), photorealistisch.
+- "target_label": das Zielobjekt MIT korrektem Artikel (z. B. "der Wasserkocher").
+- "article": nur "der" | "die" | "das".
+- "question_de": "Finde {Nomen OHNE Artikel} im Bild — tippe darauf und gib den Artikel ein."
+- "erklaerung": Erklärung auf Russisch (2–3 Sätze): Wort, Genus und WARUM dieser Artikel.
+- "tip": EIN kurzer russischer Genus-Merktipp. Ohne Emoji.
+- "hint_ru": kurze russische Übersetzung des Wortes.
+
+Falls das Eingabewort kein konkretes, im Bild darstellbares Substantiv ist (Abstraktum,
+Verb, Unsinn), gib {"error":"not_depictable"} zurück.
+
+Gib NUR STRICT JSON, ohne Markdown:
+{"image_prompt":"A busy workshop wall with many tools, cables and shelves; a small pair of pliers hangs half-hidden among other tools on the pegboard, off to one side, photorealistic, no text","target_label":"die Zange","article":"die","question_de":"Finde Zange im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"плоскогубцы"}
+""",
 "image_quiz_sentence_fallback": """
 You help build a visual language-learning quiz.
 
@@ -6654,6 +6690,28 @@ _AUFGABE_INSTRUCTION_KEYS = {
 }
 
 
+async def run_generate_pin_for_word(word: str) -> dict | None:
+    """Build ONE «Finde im Bild» item for an admin-chosen target word. The image places
+    the object small and hidden (the old blueprint let the model pick easy, giant objects).
+    Returns the item dict, or None if the word isn't depictable / parse fails."""
+    w = str(word or "").strip()
+    if not w:
+        return None
+    content = await llm_execute(
+        task_name="aufgabe_pin_for_word",
+        system_instruction_key="aufgabe_pin_for_word",
+        user_message=json.dumps({"word": w}, ensure_ascii=False),
+        poll_interval_seconds=2.0,
+    )
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("error") or not data.get("image_prompt"):
+        return None
+    return data
+
+
 async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2") -> list[dict]:
     """Generate a batch of B2+ text-task items of one format. Returns the items
     list (each a dict per the format's schema), or [] on parse failure."""
@@ -7136,29 +7194,6 @@ def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "ima
     return {"present": True, "bbox": [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]}
 
 
-def _mark_tap_on_image(image_bytes: bytes, x: float, y: float) -> bytes:
-    """Copy of the image with a bright ring + crosshair drawn at the normalized tap
-    point. We ASK ABOUT A DRAWN MARK, never about raw numbers: vision models ground
-    coordinates poorly but read a visual marker reliably. Returns PNG bytes."""
-    import io
-    from PIL import Image, ImageDraw
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    w, h = img.size
-    cx, cy = int(x * w), int(y * h)
-    r = max(10, int(min(w, h) * 0.035))
-    draw = ImageDraw.Draw(img)
-    # white halo under the red ring so the mark stays visible on any background
-    draw.ellipse([cx - r - 3, cy - r - 3, cx + r + 3, cy + r + 3], outline=(255, 255, 255), width=6)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 0, 0), width=5)
-    draw.line([cx - r * 2, cy, cx - r, cy], fill=(255, 0, 0), width=4)
-    draw.line([cx + r, cy, cx + r * 2, cy], fill=(255, 0, 0), width=4)
-    draw.line([cx, cy - r * 2, cx, cy - r], fill=(255, 0, 0), width=4)
-    draw.line([cx, cy + r, cx, cy + r * 2], fill=(255, 0, 0), width=4)
-    out = io.BytesIO()
-    img.save(out, format="PNG")
-    return out.getvalue()
-
-
 def draw_pin_bbox_preview(image_bytes: bytes, bbox) -> bytes:
     """The picture with the stored answer region framed — what the admin judges before a
     pin task is released. The frame is the ONLY thing that decides right/wrong, so it must
@@ -7176,58 +7211,6 @@ def draw_pin_bbox_preview(image_bytes: bytes, bbox) -> bytes:
     out = io.BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
-
-
-def run_vision_point_check(image_bytes: bytes, target_label: str, x: float, y: float,
-                           *, mime: str = "image/png") -> bool:
-    """Second-chance grading for a pin task: did the learner's tap land ON the target?
-
-    The stored bbox comes from ONE vision call at pool time and is routinely off for
-    small objects (the scene deliberately contains a BIGGER decoy of the same
-    category — see the pin blueprint prompt), so a genuinely correct tap could be
-    graded wrong with no recourse. Here the tap is drawn onto the image and the model
-    is asked whether the MARK sits on the target. Runs only on a bbox miss, so the
-    spend is bounded to actual disputes.
-
-    Returns True only on an explicit yes; any failure → False (bbox verdict stands)."""
-    import base64
-    from backend.synthetic_load import build_sync_openai_client
-    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
-    if not api_key or not image_bytes or not str(target_label or "").strip():
-        return False
-    try:
-        marked = _mark_tap_on_image(bytes(image_bytes), float(x), float(y))
-    except Exception:
-        logging.warning("run_vision_point_check: could not mark the tap", exc_info=True)
-        return False
-    b64 = base64.b64encode(marked).decode("ascii")
-    prompt = (
-        f"The image has a red ring with a crosshair drawn on it. Target object: \"{target_label}\". "
-        "Answer ONLY with strict JSON: {\"on_target\": true|false}. "
-        "on_target=true if the ring marks that object (or clearly touches it — a tap on the "
-        "edge of the right object still counts). "
-        "on_target=false if the ring marks a DIFFERENT object, even a similar-looking one, "
-        "or empty space. Be strict about which object, forgiving about precision."
-    )
-    try:
-        client = build_sync_openai_client(api_key=api_key, timeout=25)
-        resp = client.chat.completions.create(
-            model=_DEFAULT_GATEWAY_MODEL,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                ],
-            }],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        data = json.loads(str(resp.choices[0].message.content or "").strip())
-    except Exception:
-        logging.warning("run_vision_point_check failed for target=%s", target_label, exc_info=True)
-        return False
-    return bool(data.get("on_target"))
 
 
 def run_quick_ask(*, question: str, context_text: str = "", source_lang: str = "ru",

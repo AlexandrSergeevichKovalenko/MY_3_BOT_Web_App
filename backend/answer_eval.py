@@ -2155,102 +2155,11 @@ def _pin_bbox_hit(payload: dict, tap: tuple) -> bool:
     return (bx - m) <= x <= (bx + bw + m) and (by - m) <= y <= (by + bh + m)
 
 
-def pin_bbox_iou(a, b) -> float:
-    """Intersection-over-union of two [x, y, w, h] boxes in 0..1 coords."""
-    try:
-        ax, ay, aw, ah = (float(v) for v in a)
-        bx, by, bw, bh = (float(v) for v in b)
-    except (TypeError, ValueError):
-        return 0.0
-    ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
-    iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
-    inter = ix * iy
-    union = aw * ah + bw * bh - inter
-    return (inter / union) if union > 0 else 0.0
-
-
-def pin_bbox_union(a, b) -> list:
-    """Smallest box covering both, clamped to the image. Stored as the answer region so a
-    slightly-off locate still accepts an honest tap."""
-    ax, ay, aw, ah = (float(v) for v in a)
-    bx, by, bw, bh = (float(v) for v in b)
-    x, y = max(0.0, min(ax, bx)), max(0.0, min(ay, by))
-    x2, y2 = min(1.0, max(ax + aw, bx + bw)), min(1.0, max(ay + ah, by + bh))
-    return [round(x, 4), round(y, 4), round(max(0.0, x2 - x), 4), round(max(0.0, y2 - y), 4)]
-
-
-PIN_BBOX_MIN_IOU = 0.35  # two locates below this are looking at different objects
-
-_PIN_REPAIR_IN_FLIGHT = set()  # image keys currently being re-located (per process)
-
-
-def _pin_bbox_repair(image_key: str, target_label: str) -> None:
-    """Recompute a bbox the grader just PROVED wrong (the vision re-check credited a tap
-    the box rejected). Two fresh locates: store their union if they agree, retire the item
-    if they don't — a box nobody can reproduce keeps mis-grading everyone and makes the
-    result card point at the wrong object. Runs off the request thread."""
-    try:
-        from backend.r2_storage import r2_get_bytes
-        from backend.openai_manager import run_vision_locate
-        from backend.database import retire_aufgabe_by_image_key, update_aufgabe_bbox_by_image_key
-        img = r2_get_bytes(image_key)
-        if not img:
-            return
-        a = run_vision_locate(img, target_label)
-        b = run_vision_locate(img, target_label)
-        if not (a.get("bbox") and b.get("bbox")) or pin_bbox_iou(a["bbox"], b["bbox"]) < PIN_BBOX_MIN_IOU:
-            retire_aufgabe_by_image_key(image_key)
-            logging.info("pin bbox repair: locates disagree → retired (%s)", image_key)
-            return
-        fixed = pin_bbox_union(a["bbox"], b["bbox"])
-        update_aufgabe_bbox_by_image_key(image_key, fixed)
-        logging.info("pin bbox repair: %s → %s (%s)", image_key, fixed, target_label)
-    except Exception:
-        logging.warning("pin bbox repair failed (%s)", image_key, exc_info=True)
-    finally:
-        _PIN_REPAIR_IN_FLIGHT.discard(image_key)
-
-
-def _spawn_pin_bbox_repair(payload: dict) -> None:
-    key = str(payload.get("image_object_key") or "")
-    target = str(payload.get("target_label") or "")
-    if not key or not target or key in _PIN_REPAIR_IN_FLIGHT:
-        return
-    if payload.get("bbox_human_ok"):
-        # A person drew this region. A tap just outside it means they drew it tight —
-        # NOT that it's wrong. Replacing their box with a model guess would undo exactly
-        # the fix this whole path exists for.
-        return
-    _PIN_REPAIR_IN_FLIGHT.add(key)
-    import threading
-    threading.Thread(target=_pin_bbox_repair, args=(key, target), daemon=True).start()
-
-
-def _pin_vision_hit(payload: dict, tap: tuple) -> bool:
-    """Ask a vision model whether the tap actually landed on the target. Second chance
-    ONLY on a bbox miss: the stored bbox is a single vision guess made at pool time and
-    is often off for small objects, so trusting it alone can make an item unwinnable."""
-    key = str(payload.get("image_object_key") or "")
-    target = str(payload.get("target_label") or "")
-    if not tap or not key or not target:
-        return False
-    try:
-        from backend.r2_storage import r2_get_bytes
-        from backend.openai_manager import run_vision_point_check
-        img = r2_get_bytes(key)
-        if not img:
-            return False
-        return bool(run_vision_point_check(img, target, tap[0], tap[1]))
-    except Exception:
-        logging.warning("pin: vision point check failed (key=%s)", key, exc_info=True)
-        return False
-
-
 def _grade_pin(payload: dict, raw_input: str) -> tuple:
-    """Grade 'Finde im Bild': the tap must land on the target AND the typed article must
-    match. Verdict order: bbox hit-test → (on a miss, with the article right) one vision
-    re-check → honest per-part reason, so the learner is told WHICH half failed instead of
-    a bare ❌ against a possibly-wrong bbox."""
+    """Grade 'Finde im Bild': the tap must land in the answer region AND the typed article
+    must match. The region is drawn BY HAND on the acceptance screen, so it is the source
+    of truth — no vision second-guessing. A miss is a miss; the learner is told which half
+    (tap or article) failed."""
     tap, article = _parse_pin_answer(raw_input)
     if not tap:
         return False, ""
@@ -2258,15 +2167,6 @@ def _grade_pin(payload: dict, raw_input: str) -> tuple:
     ok_article = (not req_article) or check_quiz_freeform_deterministic(
         user_text=article, correct_text=req_article)
     ok_tap = _pin_bbox_hit(payload, tap)
-    # Only worth re-checking when it would flip the verdict: the article is right and
-    # the tap is the sole reason for a ❌. Bounded spend, off nobody's happy path.
-    if not ok_tap and ok_article:
-        ok_tap = _pin_vision_hit(payload, tap)
-        if ok_tap:
-            # The box rejected a tap vision credits → the box is on the wrong object.
-            # Re-locate it in the background so the next learner (and the result card's
-            # answer frame) stops being pointed at nothing.
-            _spawn_pin_bbox_repair(payload)
     if ok_tap and ok_article:
         return True, ""
     target = str(payload.get("target_label") or "").strip()

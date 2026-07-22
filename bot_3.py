@@ -18,7 +18,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 import contextvars
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ForceReply
 from telegram import InlineQueryResultPhoto
 from telegram.ext import CallbackQueryHandler, InlineQueryHandler
 from telegram.ext import PreCheckoutQueryHandler
@@ -5706,6 +5706,41 @@ def _extract_support_target_from_reply_text(text: str) -> tuple[int | None, int 
     user_id = int(user_match.group(1)) if user_match else None
     support_message_id = int(message_match.group(1)) if message_match else None
     return user_id, support_message_id
+
+
+async def _try_handle_admin_pin_words_reply(update: Update, context: CallbackContext, text: str) -> bool:
+    """Admin replied to the '🖼 Слова для «Finde im Bild»' ForceReply with space-separated
+    target words → enqueue them (dedup handled in DB). Returns True if it was ours."""
+    message = update.message
+    if not message or not message.from_user or not _is_admin_user(message.from_user.id):
+        return False
+    if not (update.effective_chat and update.effective_chat.type == "private"):
+        return False
+    src = message.reply_to_message
+    if not src:
+        return False
+    src_text = (src.text or src.caption or "")
+    if _PIN_WORDS_PROMPT_MARKER not in src_text:
+        return False
+    words = [w for w in str(text or "").replace(",", " ").split() if w.strip()]
+    if not words:
+        await message.reply_text("Не увидел слов. Пришли их через пробел ещё раз.")
+        return True
+    from backend.database import enqueue_pin_words, count_queued_pin_words
+    res = await asyncio.to_thread(enqueue_pin_words, words)
+    queued = await asyncio.to_thread(count_queued_pin_words)
+    lines = [f"✅ Добавлено слов: <b>{res['added']}</b>."]
+    if res["skipped"]:
+        lines.append(f"Пропущено (повтор/уже было): {res['skipped']}.")
+    lines.append(f"Всего в очереди: {queued}.")
+    if res["added"]:
+        lines.append("\nЗапускаю генерацию — карточки на обводку придут по мере готовности.")
+    await message.reply_text("\n".join(lines), parse_mode="HTML")
+    if res["added"]:
+        # Fire generation in the background so the reply returns instantly.
+        asyncio.create_task(_aufgabe_topup_format("pin", _AUFGABE_LEVEL.get("pin", "B2"),
+                                                  min(res["added"], AUFGABE_PER_FORMAT_TARGET)))
+    return True
 
 
 async def _try_handle_admin_support_reply(update: Update, context: CallbackContext, text: str) -> bool:
@@ -12639,6 +12674,8 @@ async def handle_user_message(update: Update, context: CallbackContext):
     text = update.message.text.strip()
 
     if _is_admin_user(user_id):
+        if await _try_handle_admin_pin_words_reply(update, context, text):
+            return
         if await _try_handle_admin_support_reply(update, context, text):
             return
         if update.effective_chat and update.effective_chat.type == "private" and text == ADMIN_BROADCAST_BUTTON_TEXT:
@@ -31913,9 +31950,12 @@ def _pin_target_noun(target_label: str) -> str:
     return (parts[-1].lower() if parts else "").strip(".,!?;:")
 
 
-def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
+def _aufgabe_payload_from_item(fmt: str, it: dict, *, admin_chosen: bool = False) -> dict | None:
     """Validate an LLM-generated item and build its stored payload. Returns None
-    when the item is unusable (we skip it — no silent placeholder/fallback)."""
+    when the item is unusable (we skip it — no silent placeholder/fallback).
+
+    admin_chosen: the pin target came from the admin word list — don't second-guess it
+    against the trivial-noun gate (that gate exists to stop the MODEL picking easy words)."""
     it = it or {}
     common = {
         "erklaerung": str(it.get("erklaerung") or "").strip(),
@@ -32171,9 +32211,12 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         image_prompt = str(it.get("image_prompt") or "").strip()
         if not question_de or not target_label or not image_prompt:
             return None
-        # Difficulty gate: reject trivial A1/A2 targets so the pool stays B2+.
+        # Difficulty gate: reject trivial A1/A2 targets so the pool stays B2+. Skipped for
+        # admin-chosen words — the admin decides what's worth asking.
         noun = _pin_target_noun(target_label)
-        if not noun or noun in _PIN_TRIVIAL_NOUNS:
+        if not noun:
+            return None
+        if not admin_chosen and noun in _PIN_TRIVIAL_NOUNS:
             logging.info("aufgabe_pool: pin target too easy/invalid, skipping (%s)", target_label)
             return None
         article = str(it.get("article") or "").strip().lower()
@@ -32297,7 +32340,7 @@ async def aufgabe_review_callback(update: Update, context: CallbackContext) -> N
     from backend.database import mark_aufgabe_bbox_human_ok, set_aufgabe_review_status
     if verdict == "ok":
         await asyncio.to_thread(set_aufgabe_review_status, aufgabe_id, "approved")
-        # Stamped so /admin_pin_audit never overrules a human verdict later.
+        # Stamped so any later automatic pass never overrules a human verdict.
         await asyncio.to_thread(mark_aufgabe_bbox_human_ok, aufgabe_id)
         await query.answer("Одобрено")
         try:
@@ -32325,6 +32368,93 @@ async def aufgabe_review_callback(update: Update, context: CallbackContext) -> N
         logging.warning("aufgabe review: regeneration failed", exc_info=True)
 
 
+_PIN_WORDS_PROMPT_MARKER = "🖼 Слова для «Finde im Bild»"
+
+
+async def _ask_admin_for_pin_words(reason: str = "") -> None:
+    """DM every admin a ForceReply asking for the next batch of pin target words. Throttled
+    so an empty queue during nightly top-up doesn't spam. Best-effort."""
+    import time as _t
+    now = _t.time()
+    if now - _INTERACTIVE_ALERT_LAST.get("pin_words_ask", 0.0) < 3600:
+        return
+    _INTERACTIVE_ALERT_LAST["pin_words_ask"] = now
+    try:
+        from backend.database import get_admin_telegram_ids
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+        if not admin_ids or application is None:
+            return
+        text = (
+            f"{_PIN_WORDS_PROMPT_MARKER}\n\n"
+            f"{reason}Закончились слова для генерации «Найди предмет». "
+            f"Пришли ОТВЕТОМ на это сообщение новые слова через пробел "
+            f"(можно с артиклем и без): например\n\n"
+            f"<code>der Locher Wasserkocher die Sicherung Türgriff</code>\n\n"
+            f"Повторы и уже использованные слова я отброшу сам."
+        )
+        for admin_id in admin_ids:
+            try:
+                await application.bot.send_message(
+                    chat_id=admin_id, text=text, parse_mode="HTML",
+                    reply_markup=ForceReply(input_field_placeholder="Слова через пробел…"),
+                )
+            except Exception:
+                logging.warning("pin words ask: DM failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("pin words ask failed", exc_info=True)
+
+
+async def _pin_topup_from_words(want: int, level: str) -> int:
+    """Make up to `want` pin items from the admin word queue. Each queued word → one DALL-E
+    image (object small & hidden per the prompt) → R2 → a 'pending' task that the admin
+    frames by hand. If the queue runs dry, DM the admin for more and stop."""
+    from backend.database import next_pin_word, count_queued_pin_words
+    from backend.openai_manager import run_generate_pin_for_word
+    from backend.image_generation_provider import generate_image_bytes
+    from backend.r2_storage import r2_put_bytes
+    made = 0
+    for _ in range(want):
+        word = await asyncio.to_thread(next_pin_word)
+        if not word:
+            await _ask_admin_for_pin_words()
+            break
+        it = await run_generate_pin_for_word(word)
+        if not it:
+            logging.info("pin topup: word not depictable / gen failed (%s)", word)
+            continue
+        payload = _aufgabe_payload_from_item("pin", it, admin_chosen=True)
+        if not payload:
+            logging.info("pin topup: payload invalid for word (%s)", word)
+            continue
+        aufgabe_id = str(__import__("uuid").uuid4())
+        try:
+            res = await asyncio.to_thread(
+                generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0,
+                action_type="aufgabe_pin_image",
+            )
+            img = bytes(res.get("data") or b"")
+            mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
+            if not img:
+                continue
+            ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
+            key = f"aufgabe/images/{aufgabe_id}.{ext}"
+            await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
+            payload["image_object_key"] = key
+            payload.pop("image_prompt", None)
+        except Exception:
+            logging.warning("pin topup: image generation failed for word=%s", word, exc_info=True)
+            continue
+        await asyncio.to_thread(
+            create_aufgabe, aufgabe_id=aufgabe_id, format="pin", level=level, payload=payload,
+            review_status="pending",
+        )
+        await _send_aufgabe_review_card(aufgabe_id, "pin", level, payload)
+        made += 1
+    if made == 0 and await asyncio.to_thread(count_queued_pin_words) == 0:
+        await _ask_admin_for_pin_words()
+    return made
+
+
 async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
     """Generate up to `want` ready items of ONE format into the pool. All heavy
     work (LLM + TTS/DALL-E/vision) is here, off the user's critical path; bad
@@ -32332,6 +32462,11 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
     the nightly pool job AND the admin on-demand send."""
     if want <= 0:
         return 0
+    # «Finde im Bild» is driven by an admin word list, not by the model inventing objects
+    # (which gave giant, obvious, repeating things). Its own path pops words → one image
+    # each → the acceptance queue.
+    if fmt == "pin":
+        return await _pin_topup_from_words(want, level)
     from backend.openai_manager import run_generate_aufgabe
     from backend.r2_storage import r2_put_bytes
     items = await run_generate_aufgabe(fmt, count=min(8, want + 2), level=level)
@@ -32351,32 +32486,6 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
                 payload["audio_object_key"] = key
             except Exception:
                 logging.warning("aufgabe_pool: hoerluecke TTS/R2 failed, skipping item", exc_info=True)
-                continue
-        elif fmt == "pin":
-            # DALL-E image → R2. The answer region is drawn by the admin, not guessed.
-            try:
-                from backend.image_generation_provider import generate_image_bytes
-                res = await asyncio.to_thread(
-                    generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0,
-                    action_type="aufgabe_pin_image",
-                )
-                img = bytes(res.get("data") or b"")
-                mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
-                if not img:
-                    continue
-                # NO vision locate here. The answer region is drawn BY HAND on the
-                # acceptance screen, and the model's box was worth so little that judging
-                # it cost more than replacing it. Vision stays only where it earns its
-                # keep: re-checking a disputed tap at grading time. An item whose object
-                # didn't make it into the picture is rejected by the human instead — the
-                # same person who would have had to redraw the box anyway.
-                ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
-                key = f"aufgabe/images/{aufgabe_id}.{ext}"
-                await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
-                payload["image_object_key"] = key
-                payload.pop("image_prompt", None)  # not needed at runtime
-            except Exception:
-                logging.warning("aufgabe_pool: pin image generation failed, skipping item", exc_info=True)
                 continue
         elif fmt == "error":
             # Bounded LLM verifier: confirm the item has EXACTLY ONE real error at
@@ -36310,6 +36419,39 @@ async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -
         await message.reply_text(f"❌ manual aufgabe pool refill failed: {exc}")
 
 
+async def admin_pin_words_command(update: Update, context: CallbackContext) -> None:
+    """Seed target words for «Finde im Bild». /admin_pin_words der Locher Wasserkocher …
+
+    No args → show the queue size and re-open the ForceReply prompt. With args → enqueue
+    them (dedup handled) and start generating."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.database import enqueue_pin_words, count_queued_pin_words
+    words = [w for w in (context.args or []) if str(w).strip()]
+    if not words:
+        queued = await asyncio.to_thread(count_queued_pin_words)
+        await message.reply_text(
+            f"{_PIN_WORDS_PROMPT_MARKER}\n\nВ очереди слов: <b>{queued}</b>.\n"
+            f"Пришли новые слова ОТВЕТОМ на это сообщение (через пробел, можно с артиклем).",
+            parse_mode="HTML",
+            reply_markup=ForceReply(input_field_placeholder="Слова через пробел…"),
+        )
+        return
+    res = await asyncio.to_thread(enqueue_pin_words, words)
+    queued = await asyncio.to_thread(count_queued_pin_words)
+    await message.reply_text(
+        f"✅ Добавлено: {res['added']} · пропущено: {res['skipped']} · в очереди: {queued}.",
+    )
+    if res["added"]:
+        asyncio.create_task(_aufgabe_topup_format("pin", _AUFGABE_LEVEL.get("pin", "B2"),
+                                                  min(res["added"], AUFGABE_PER_FORMAT_TARGET)))
+
+
 async def admin_pin_review_command(update: Update, context: CallbackContext) -> None:
     """Send the acceptance cards for «Finde im Bild». /admin_pin_review [all]
 
@@ -36359,110 +36501,6 @@ async def admin_pin_review_command(update: Update, context: CallbackContext) -> 
             InlineKeyboardButton("✏️ Открыть приёмку", url=get_webapp_deeplink("ans_pv_0")),
         ]]),
     )
-
-
-_PIN_AUDIT_INFLIGHT = {"active": False}
-
-
-async def admin_pin_bbox_audit_command(update: Update, context: CallbackContext) -> None:
-    """Re-audit the answer region of every live «Finde im Bild» item. /admin_pin_audit
-
-    The stored bbox came from ONE vision call at generation time and is often on the
-    wrong object (found live: a box framing the book stack instead of the marker below
-    it, and 6 of 12 items with a box running off the frame). Two fresh independent
-    locates per item: they agree → store the union, they disagree → retire the item.
-    Read-only until a verdict, so a passing item is never touched."""
-    user = update.effective_user
-    message = update.effective_message
-    if not user or not message:
-        return
-    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
-        await message.reply_text("Allowed users only.")
-        return
-    if _PIN_AUDIT_INFLIGHT["active"]:
-        await message.reply_text("Аудит уже идёт — дождись отчёта.")
-        return
-    _PIN_AUDIT_INFLIGHT["active"] = True
-    try:
-        from backend.database import (
-            list_pin_items_for_audit, retire_aufgabe_by_image_key,
-            update_aufgabe_bbox_by_image_key,
-        )
-        from backend.answer_eval import PIN_BBOX_MIN_IOU, pin_bbox_iou, pin_bbox_union
-        from backend.openai_manager import run_vision_locate
-        from backend.r2_storage import r2_get_bytes
-        items = await asyncio.to_thread(list_pin_items_for_audit)
-        if not items:
-            await message.reply_text("Живых pin-заданий нет.")
-            return
-        status = await message.reply_text(f"⏳ Аудит рамок: 0/{len(items)}…")
-        fixed, kept, retired, failed, lines = 0, 0, 0, 0, []
-        for i, it in enumerate(items, 1):
-            key = str(it.get("image_object_key") or "")
-            target = str(it.get("target_label") or "")
-            old = it.get("bbox") if isinstance(it.get("bbox"), list) else None
-            if it.get("bbox_human_ok"):
-                # A person has looked at this frame and said it's right. No automatic
-                # sweep — running the same model that produced the bad boxes — gets to
-                # overrule that.
-                kept += 1
-                continue
-            try:
-                img = await asyncio.to_thread(r2_get_bytes, key)
-                if not img:
-                    failed += 1
-                    lines.append(f"⚠️ {html.escape(target)} — картинки нет в R2")
-                    continue
-                a = await asyncio.to_thread(run_vision_locate, img, target)
-                b = await asyncio.to_thread(run_vision_locate, img, target)
-                if not (a.get("bbox") and b.get("bbox")):
-                    await asyncio.to_thread(retire_aufgabe_by_image_key, key)
-                    retired += 1
-                    lines.append(f"🗑 {html.escape(target)} — предмет не найден на картинке")
-                    continue
-                # THREE votes, not two: the stored box counts too. On a small object the
-                # model is unstable, so two fresh guesses can disagree while the stored box
-                # is right — demanding that the fresh pair agree with EACH OTHER threw away
-                # a hand-verified item. Retire only when nothing corroborates anything.
-                iou = pin_bbox_iou(a["bbox"], b["bbox"])
-                if iou >= PIN_BBOX_MIN_IOU:
-                    new = pin_bbox_union(a["bbox"], b["bbox"])
-                    drift = pin_bbox_iou(old, new) if old else 0.0
-                    await asyncio.to_thread(update_aufgabe_bbox_by_image_key, key, new)
-                    if drift < 0.5:
-                        fixed += 1
-                        lines.append(f"🔧 {html.escape(target)} — рамка была мимо (IoU со старой {drift:.2f})")
-                    else:
-                        kept += 1
-                    continue
-                # The fresh pair disagrees. Does either one back the stored box? If so the
-                # stored box is the corroborated one — keep it AS IS (it may be tighter or
-                # hand-measured; unioning it with a sloppy locate would only inflate it).
-                back = max(pin_bbox_iou(old, a["bbox"]), pin_bbox_iou(old, b["bbox"])) if old else 0.0
-                if back >= PIN_BBOX_MIN_IOU:
-                    kept += 1
-                    lines.append(f"✅ {html.escape(target)} — проходы разошлись, но старая рамка подтверждена (IoU {back:.2f})")
-                    continue
-                await asyncio.to_thread(retire_aufgabe_by_image_key, key)
-                retired += 1
-                lines.append(f"🗑 {html.escape(target)} — никто ни с кем не сошёлся (пара {iou:.2f}, со старой {back:.2f})")
-            except Exception as exc:
-                failed += 1
-                lines.append(f"⚠️ {html.escape(target)} — {html.escape(str(exc))[:80]}")
-            if i % 3 == 0 or i == len(items):
-                try:
-                    await status.edit_text(f"⏳ Аудит рамок: {i}/{len(items)}…")
-                except Exception:
-                    pass
-        head = (f"✅ <b>Аудит рамок «Finde im Bild»</b>\n"
-                f"Проверено: {len(items)} · исправлено: {fixed} · подтверждено: {kept} · "
-                f"снято: {retired} · ошибок: {failed}")
-        body = ("\n\n" + "\n".join(lines[:30])) if lines else ""
-        await status.edit_text(head + body, parse_mode="HTML")
-    except Exception as exc:
-        await message.reply_text(f"❌ pin bbox audit failed: {exc}")
-    finally:
-        _PIN_AUDIT_INFLIGHT["active"] = False
 
 
 async def admin_crossword_pool_command(update: Update, context: CallbackContext) -> None:
@@ -38919,8 +38957,8 @@ def main():
     application.add_handler(CommandHandler("translationpool", admin_translation_pool_report_command))
     application.add_handler(CommandHandler("admin_pool_remind", admin_pool_remind_command))
     application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
-    application.add_handler(CommandHandler("admin_pin_audit", admin_pin_bbox_audit_command))
     application.add_handler(CommandHandler("admin_pin_review", admin_pin_review_command))
+    application.add_handler(CommandHandler("admin_pin_words", admin_pin_words_command))
     application.add_handler(CallbackQueryHandler(aufgabe_review_callback, pattern=r"^aurev:"))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))

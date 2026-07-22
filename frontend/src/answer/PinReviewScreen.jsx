@@ -164,7 +164,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
           {busy ? 'Сохраняю…' : '✅ Сохранить рамку'}
         </button>
         <button className="ans-btn-ghost" disabled={busy} onClick={reject}>
-          🗑 Предмета нет на картинке
+          🗑 Удалить (предмет виден плохо / слишком очевиден / не на картинке)
         </button>
       </div>
     </div>

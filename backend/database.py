@@ -10700,6 +10700,17 @@ def ensure_webapp_tables() -> None:
                 "ALTER TABLE bt_3_aufgabe_bank ADD COLUMN IF NOT EXISTS "
                 "review_status TEXT NOT NULL DEFAULT 'approved';"
             )
+            # Admin-supplied target words for «Finde im Bild». Generation consumes this
+            # queue instead of letting the model invent (easy, repeating) objects.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_pin_word_queue (
+                    id         BIGSERIAL PRIMARY KEY,
+                    word_raw   TEXT NOT NULL,
+                    word_norm  TEXT NOT NULL UNIQUE,
+                    status     TEXT NOT NULL DEFAULT 'queued',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_aufgabe_dispatches (
                     id                  BIGSERIAL PRIMARY KEY,
@@ -47067,6 +47078,83 @@ def list_pin_items_for_audit() -> list:
              "bbox_human_ok": bool(r[4])} for r in rows]
 
 
+def _pin_word_norm(word: str) -> str:
+    """Dedup key for a pin target: article stripped, lowercase, letters only. So
+    'der Wasserkocher', 'Wasserkocher' and 'WASSERKOCHER' collapse to one."""
+    import re as _re
+    w = str(word or "").strip().lower()
+    w = _re.sub(r"^(der|die|das)\s+", "", w)
+    return _re.sub(r"[^a-zäöüß]", "", w)
+
+
+def _existing_pin_nouns() -> set:
+    """Normalized nouns of every pin target EVER (bank incl. retired + the queue), so a
+    word is never generated twice."""
+    nouns = set()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT payload->>'target_label' FROM bt_3_aufgabe_bank WHERE format='pin'")
+            for (label,) in cursor.fetchall() or []:
+                n = _pin_word_norm(label or "")
+                if n:
+                    nouns.add(n)
+            cursor.execute("SELECT word_norm FROM bt_3_pin_word_queue")
+            for (n,) in cursor.fetchall() or []:
+                if n:
+                    nouns.add(n)
+    return nouns
+
+
+def enqueue_pin_words(words) -> dict:
+    """Add admin-supplied target words, skipping any that already exist (queued, used, or
+    already a task). Returns {added, skipped, added_words}."""
+    seen = _existing_pin_nouns()
+    added_words, batch = [], []
+    for raw in (words or []):
+        raw = str(raw or "").strip()
+        n = _pin_word_norm(raw)
+        if not n or n in seen:
+            continue
+        seen.add(n)                       # dedup within this batch too
+        added_words.append(raw)
+        batch.append((raw, n))
+    if batch:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO bt_3_pin_word_queue (word_raw, word_norm) VALUES (%s, %s) "
+                    "ON CONFLICT (word_norm) DO NOTHING",
+                    batch,
+                )
+            conn.commit()
+    return {"added": len(added_words), "skipped": len(words or []) - len(added_words),
+            "added_words": added_words}
+
+
+def next_pin_word() -> str | None:
+    """Pop the oldest queued word and mark it used (so generation never repeats it even
+    if the image step later fails — a failed word is logged, not silently retried forever)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_pin_word_queue SET status='used' "
+                "WHERE id = (SELECT id FROM bt_3_pin_word_queue WHERE status='queued' "
+                "           ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                "RETURNING word_raw"
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return str(row[0]) if row else None
+
+
+def count_queued_pin_words() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM bt_3_pin_word_queue WHERE status='queued'")
+            return int(cursor.fetchone()[0])
+
+
 def list_pending_pin_reviews() -> list:
     """Pin tasks awaiting acceptance, oldest first, with everything the review screen
     needs: the picture, the draft box and what the learner will be asked."""
@@ -47186,12 +47274,11 @@ def retire_aufgabe_by_image_key(image_key: str) -> bool:
 
 
 def retire_impossible_aufgabe_items(*, fmt: str = "pin", min_answers: int = 6) -> list:
-    """Retire pool items NOBODY can get right: ≥min_answers answers and 0 correct.
-
-    That is not a hard task, it's a broken one — for `pin` it means the stored bbox
-    points at the wrong thing, so every honest tap is graded ❌. Crowd data is the only
-    signal that catches an item the generation-time checks let through. Returns the
-    retired aufgabe_ids."""
+    """Retire pool items NOBODY can get right: ≥min_answers answers and 0 correct — but
+    NEVER a pin whose region a human drew. With a model-guessed box, 0% correct meant a
+    broken box; with a HAND-drawn box it means the object is genuinely hard to find, which
+    is now the whole point — auto-deleting that would throw away exactly the good items.
+    Returns the retired aufgabe_ids."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -47199,7 +47286,9 @@ def retire_impossible_aufgabe_items(*, fmt: str = "pin", min_answers: int = 6) -
                     """
                     UPDATE bt_3_aufgabe_bank b
                     SET retired = TRUE
-                    WHERE b.retired = FALSE AND b.format = %s AND b.aufgabe_id IN (
+                    WHERE b.retired = FALSE AND b.format = %s
+                      AND coalesce((b.payload->>'bbox_human_ok')::boolean, false) = false
+                      AND b.aufgabe_id IN (
                         SELECT d.aufgabe_id
                         FROM bt_3_aufgabe_dispatches d
                         JOIN bt_3_aufgabe_answers a ON a.dispatch_id = d.id
