@@ -17,6 +17,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
   const [drag, setDrag] = useState(null);
   const [drawing, setDrawing] = useState(true);     // false once a box is locked → image scrolls
   const [word, setWord] = useState('');
+  const [preview, setPreview] = useState(null);      // {bbox, id} of an added target being reviewed
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
@@ -37,7 +38,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
   useEffect(() => { refresh(); }, [refresh]);
 
   const scene = scenes && scenes[idx];
-  useEffect(() => { setRect(null); setDrag(null); setDrawing(true); setWord(''); setError(''); }, [scene]);
+  useEffect(() => { setRect(null); setDrag(null); setDrawing(true); setWord(''); setPreview(null); setError(''); }, [scene]);
 
   // ── drawing (only while `drawing`; once a box is set the image scrolls instead) ──
   const pointOf = useCallback((e) => {
@@ -50,7 +51,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       y: Math.min(1, Math.max(0, (t.clientY - r.top) / r.height)),
     };
   }, []);
-  const start = (e) => { if (!drawing) return; const p = pointOf(e); if (p) setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y }); };
+  const start = (e) => { if (!drawing) return; setPreview(null); const p = pointOf(e); if (p) setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y }); };
   const move = (e) => { if (!drawing || !drag) return; e.preventDefault(); const p = pointOf(e); if (p) setDrag((d) => ({ ...d, x1: p.x, y1: p.y })); };
   const end = () => {
     if (!drag) return;
@@ -110,14 +111,27 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
     if (!/^(der|die|das)\s+\S/i.test(w)) { setError('Слово с артиклем: der/die/das …'); return; }
     setBusy(true); setError('');
     try {
+      const box = [live.x, live.y, live.w, live.h];
       const r = await api('/api/answer/pinreview/addtarget', {
-        scene_id: scene.scene_id, bbox: [live.x, live.y, live.w, live.h], word: w,
+        scene_id: scene.scene_id, bbox: box, word: w,
       });
-      setScenes((prev) => prev.map((s, i) => (i === idx ? { ...s, targets: [...(s.targets || []), r.target_label] } : s)));
-      setRect(null); setDrawing(true); setWord('');
+      const chip = { aufgabe_id: r.aufgabe_id, label: r.target_label, bbox: box };
+      setScenes((prev) => prev.map((s, i) => (i === idx ? { ...s, targets: [...(s.targets || []), chip] } : s)));
+      setRect(null); setDrawing(true); setWord(''); setPreview(null);
       setNote(r.duplicate ? `⚠️ «${r.target_label}» уже был — добавил всё равно.` : '');
       haptic?.('ok');
     } catch (e) { setError(String(e?.message || e)); haptic?.('bad'); } finally { setBusy(false); }
+  };
+
+  const delTarget = async (t) => {
+    if (busy || !t?.aufgabe_id) return;
+    setBusy(true); setError('');
+    try {
+      await api('/api/answer/pinreview/deltarget', { aufgabe_id: t.aufgabe_id });
+      setScenes((prev) => prev.map((s, i) => (i === idx ? { ...s, targets: (s.targets || []).filter((x) => x.aufgabe_id !== t.aufgabe_id) } : s)));
+      if (preview?.id === t.aufgabe_id) setPreview(null);
+      haptic?.('ok');
+    } catch (e) { setError(String(e?.message || e)); } finally { setBusy(false); }
   };
 
   const finishScene = async (action) => {
@@ -187,9 +201,14 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
               <span className={`pinrev-box ${drag ? 'live' : ''}`}
                 style={{ left: `${live.x * 100}%`, top: `${live.y * 100}%`, width: `${live.w * 100}%`, height: `${live.h * 100}%` }} />
             ) : null}
+            {preview?.bbox ? (
+              <span className="pinrev-box preview"
+                style={{ left: `${preview.bbox[0] * 100}%`, top: `${preview.bbox[1] * 100}%`, width: `${preview.bbox[2] * 100}%`, height: `${preview.bbox[3] * 100}%` }} />
+            ) : null}
           </div>
+          {preview ? <div className="pinrev-note">🟠 Показана рамка «{preview.label}». Тапни ещё раз по слову, чтобы убрать.</div> : null}
           {!drawing ? (
-            <button className="pinrev-link" onClick={() => { setRect(null); setDrawing(true); }}>✏️ перерисовать рамку</button>
+            <button className="pinrev-link" onClick={() => { setRect(null); setDrawing(true); setPreview(null); }}>✏️ перерисовать рамку</button>
           ) : null}
           <input
             className="pinrev-word" value={word} onChange={(e) => setWord(e.target.value)}
@@ -197,19 +216,33 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
             onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur(); addTarget(); } }}
           />
           {(scene.targets || []).length ? (
-            <div className="pinrev-chips">
-              {scene.targets.map((t, i) => <span className="pinrev-chip" key={i}>✅ {t}</span>)}
-            </div>
+            <>
+              <div className="pinrev-chips-hint">Добавленные предметы (тапни — покажу рамку, ✕ — удалить):</div>
+              <div className="pinrev-chips">
+                {scene.targets.map((t) => {
+                  const on = preview?.id === t.aufgabe_id;
+                  return (
+                    <span className={`pinrev-chip ${on ? 'active' : ''}`} key={t.aufgabe_id}>
+                      <button className="pinrev-chip-label"
+                        onClick={() => setPreview(on ? null : { id: t.aufgabe_id, bbox: t.bbox, label: t.label })}>
+                        {on ? '🟠' : '✅'} {t.label}
+                      </button>
+                      <button className="pinrev-chip-x" disabled={busy} onClick={() => delTarget(t)} aria-label="удалить">✕</button>
+                    </span>
+                  );
+                })}
+              </div>
+            </>
           ) : null}
           {error ? <div className="pinrev-err">{error}</div> : null}
           <div className="pinrev-actions">
             <button className="ans-btn" disabled={!live || !word.trim() || busy} onClick={addTarget}>
               ➕ Добавить этот предмет
             </button>
-            <button className="ans-btn-ghost" disabled={busy} onClick={() => finishScene('done')}>
+            <button className="ans-btn pinrev-next" disabled={busy} onClick={() => finishScene('done')}>
               Готово с картинкой →
             </button>
-            <button className="ans-btn-ghost" disabled={busy} onClick={() => finishScene('skip')}>
+            <button className="ans-btn-ghost pinrev-skip" disabled={busy} onClick={() => finishScene('skip')}>
               🗑 Плохая картинка — пропустить
             </button>
           </div>

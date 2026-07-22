@@ -8252,6 +8252,35 @@ def _flip_inverted_ru_de_dictionary_payload(
     return "de", "ru", german, "", "", german, "", ""
 
 
+# A "rephrase" arrow the reader/YouTube GPT-sheet can glue into a saved field:
+# "original -> alternative" (both German) or "original -> translation" (German → Russian).
+# Only the spaced ASCII form and the Unicode arrows count, so a normal word/phrase — which
+# never contains " -> " — is left untouched.
+_REPHRASE_ARROW_RE = re.compile(r"\s+->\s+|\s*[→⟶]\s*|\s+—>\s+")
+
+
+def _strip_rephrase_arrow_combo(value: str | None, *, prefer_script: str = "") -> str:
+    """Keep a single clean segment when a save glued 'original -> alternative' into one
+    field (the reader/YouTube rephrase artifact — 130 rows cleaned 2026-07-22). Fires only
+    when a rephrase arrow is present, so ordinary text is never changed. `prefer_script`
+    picks the right half per field: 'de' → the first Latin (German) segment, 'ru' → the
+    Cyrillic (Russian) segment; '' → the first segment (the original)."""
+    text = str(value or "")
+    if not _REPHRASE_ARROW_RE.search(text):
+        return text.strip()
+    segments = [s.strip() for s in _REPHRASE_ARROW_RE.split(text) if s.strip()]
+    if not segments:
+        return text.strip()
+    script = str(prefer_script or "").strip().lower()
+    if script == "ru":
+        cyrillic = [s for s in segments if _CYRILLIC_RE.search(s)]
+        return cyrillic[-1] if cyrillic else segments[0]
+    if script == "de":
+        latin = [s for s in segments if _LATIN_RE.search(s) and not _CYRILLIC_RE.search(s)]
+        return latin[0] if latin else segments[0]
+    return segments[0]
+
+
 def _correct_inverted_dictionary_scripts(
     *,
     source_lang: str,
@@ -27200,6 +27229,21 @@ def answer_pin_add_target():
                     "duplicate": bool(duplicate)})
 
 
+@app.route("/api/answer/pinreview/deltarget", methods=["POST"])
+def answer_pin_del_target():
+    """Remove a target the admin added by mistake (retire the task)."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    aufgabe_id = str(payload.get("aufgabe_id") or "").strip()
+    if not aufgabe_id:
+        return jsonify({"error": "нет aufgabe_id"}), 400
+    from backend.database import set_aufgabe_review_status
+    set_aufgabe_review_status(aufgabe_id, "rejected")   # rejected also retires
+    return jsonify({"ok": True})
+
+
 @app.route("/api/answer/pinreview/scenedone", methods=["POST"])
 def answer_pin_scene_done():
     """Finish with a scene image: 'done' (labeled all wanted targets) or 'skip' (bad image)."""
@@ -43263,6 +43307,15 @@ def save_webapp_dictionary_entry():
         translation_de=translation_de,
         translation_ru=translation_ru,
     )
+    # Reader / YouTube "rephrase" saves can glue "original -> alternative" into a single field.
+    # Keep only the correct segment per field so the arrow combo never reaches the dictionary or
+    # the shared pool again (see the 130-row cleanup of 2026-07-22). No-op for ordinary text.
+    source_text = _strip_rephrase_arrow_combo(source_text, prefer_script=source_lang)
+    target_text = _strip_rephrase_arrow_combo(target_text, prefer_script=target_lang)
+    word_de = _strip_rephrase_arrow_combo(word_de, prefer_script="de")
+    translation_de = _strip_rephrase_arrow_combo(translation_de, prefer_script="de")
+    word_ru = _strip_rephrase_arrow_combo(word_ru, prefer_script="ru")
+    translation_ru = _strip_rephrase_arrow_combo(translation_ru, prefer_script="ru")
     sanitized_target_text = _sanitize_bilingual_dictionary_target(source_text, target_text, target_lang)
     if sanitized_target_text:
         target_text = sanitized_target_text
@@ -43524,6 +43577,15 @@ def save_mobile_dictionary_entry():
         translation_de=translation_de,
         translation_ru=translation_ru,
     )
+    # Reader / YouTube "rephrase" saves can glue "original -> alternative" into a single field.
+    # Keep only the correct segment per field so the arrow combo never reaches the dictionary or
+    # the shared pool again (see the 130-row cleanup of 2026-07-22). No-op for ordinary text.
+    source_text = _strip_rephrase_arrow_combo(source_text, prefer_script=source_lang)
+    target_text = _strip_rephrase_arrow_combo(target_text, prefer_script=target_lang)
+    word_de = _strip_rephrase_arrow_combo(word_de, prefer_script="de")
+    translation_de = _strip_rephrase_arrow_combo(translation_de, prefer_script="de")
+    word_ru = _strip_rephrase_arrow_combo(word_ru, prefer_script="ru")
+    translation_ru = _strip_rephrase_arrow_combo(translation_ru, prefer_script="ru")
     sanitized_target_text = _sanitize_bilingual_dictionary_target(source_text, target_text, target_lang)
     if sanitized_target_text:
         target_text = sanitized_target_text

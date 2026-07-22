@@ -47348,10 +47348,14 @@ def list_ready_pin_scenes(limit: int = 20) -> list:
             out = []
             for scene_id, desc, key in scenes:
                 cursor.execute(
-                    "SELECT payload->>'target_label' FROM bt_3_aufgabe_bank "
-                    "WHERE format='pin' AND retired=FALSE "
-                    "AND payload->>'scene_id' = %s", (str(scene_id),))
-                targets = [str(r[0]) for r in (cursor.fetchall() or []) if r[0]]
+                    "SELECT aufgabe_id, payload->>'target_label', payload->'bbox' "
+                    "FROM bt_3_aufgabe_bank WHERE format='pin' AND retired=FALSE "
+                    "AND payload->>'scene_id' = %s ORDER BY created_at", (str(scene_id),))
+                targets = [
+                    {"aufgabe_id": str(r[0]), "label": str(r[1] or ""),
+                     "bbox": [float(v) for v in r[2]] if isinstance(r[2], list) and len(r[2]) == 4 else None}
+                    for r in (cursor.fetchall() or []) if r[1]
+                ]
                 url = ""
                 if key:
                     try:
