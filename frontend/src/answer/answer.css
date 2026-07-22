@@ -1344,11 +1344,14 @@ html[data-scheme="light"] .ask-pop-input textarea { background: #f4f6fa; color: 
   border: 1px solid var(--dmps-border, #334155); border-radius: 16px; }
 .pinrev-comp-title { font-size: 14px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }
 .pinrev-textarea {
-  width: 100%; box-sizing: border-box; resize: vertical; min-height: 70px;
+  width: 100%; box-sizing: border-box; resize: vertical;
+  min-height: 42vh;                 /* use the empty space — 3-5 scene prompts fit comfortably */
   border-radius: 12px; border: 1px solid var(--dmps-border, #334155);
   background: var(--dmps-input-bg, #0f172a); color: var(--dmps-text-primary, #F8FAFC);
-  padding: 10px; font: inherit; font-size: max(16px, 1em);   /* 16px avoids iOS zoom */
+  padding: 12px; font: inherit; font-size: max(16px, 1em); line-height: 1.5;   /* 16px avoids iOS zoom */
 }
+/* When there are images to target, the composer shouldn't hog the screen. */
+.pinrev-composer.compact .pinrev-textarea { min-height: 96px; }
 .pinrev-note { font-size: 13px; color: #22C55E; }
 .pinrev-link {
   background: none; border: none; color: #60A5FA; font: inherit; cursor: pointer; padding: 0;

@@ -142,7 +142,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       </div>
 
       {/* Fill paths */}
-      <div className="pinrev-composer">
+      <div className={`pinrev-composer ${scene ? 'compact' : ''}`}>
         <div className="pinrev-comp-title">🎨 Заказать сцены{status.needed > 0 ? ` (нужно ещё ~${status.needed})` : ''}</div>
         <textarea
           className="pinrev-textarea" rows={6} value={descs}
