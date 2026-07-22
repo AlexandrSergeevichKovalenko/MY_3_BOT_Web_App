@@ -47080,10 +47080,12 @@ def list_pin_items_for_audit() -> list:
 
 def _pin_word_norm(word: str) -> str:
     """Dedup key for a pin target: article stripped, lowercase, letters only. So
-    'der Wasserkocher', 'Wasserkocher' and 'WASSERKOCHER' collapse to one."""
+    'der Wasserkocher', 'Wasserkocher' and 'WASSERKOCHER' collapse to one. A BARE article
+    ('der'/'die'/'das' on its own — a split token, not a noun) normalizes to '' so it is
+    dropped, not enqueued as a junk word."""
     import re as _re
     w = str(word or "").strip().lower()
-    w = _re.sub(r"^(der|die|das)\s+", "", w)
+    w = _re.sub(r"^(der|die|das)(\s+|$)", "", w)   # strip leading article, incl. bare token
     return _re.sub(r"[^a-zäöüß]", "", w)
 
 
@@ -47108,13 +47110,18 @@ def _existing_pin_nouns() -> set:
 
 def enqueue_pin_words(words) -> dict:
     """Add admin-supplied target words, skipping any that already exist (queued, used, or
-    already a task). Returns {added, skipped, added_words}."""
+    already a task). Bare article tokens ('der'/'die') and non-letters are ignored, NOT
+    counted as skipped. Returns {added, skipped, added_words} where `skipped` counts only
+    real nouns that were duplicates."""
     seen = _existing_pin_nouns()
-    added_words, batch = [], []
+    added_words, batch, dup = [], [], 0
     for raw in (words or []):
         raw = str(raw or "").strip()
         n = _pin_word_norm(raw)
-        if not n or n in seen:
+        if not n:
+            continue                      # bare article / punctuation — silently ignored
+        if n in seen:
+            dup += 1
             continue
         seen.add(n)                       # dedup within this batch too
         added_words.append(raw)
@@ -47128,8 +47135,7 @@ def enqueue_pin_words(words) -> dict:
                     batch,
                 )
             conn.commit()
-    return {"added": len(added_words), "skipped": len(words or []) - len(added_words),
-            "added_words": added_words}
+    return {"added": len(added_words), "skipped": dup, "added_words": added_words}
 
 
 def next_pin_word() -> str | None:

@@ -32369,6 +32369,26 @@ async def aufgabe_review_callback(update: Update, context: CallbackContext) -> N
 
 
 _PIN_WORDS_PROMPT_MARKER = "🖼 Слова для «Finde im Bild»"
+# Size gate for generated pin images: the target must cover no more than this fraction of
+# the frame (else it's the giant, obvious object we're trying to avoid). We regenerate up
+# to N times per word before skipping it.
+_PIN_MAX_COVERAGE = float(os.getenv("PIN_MAX_COVERAGE") or "0.15")
+_PIN_IMAGE_ATTEMPTS = int(os.getenv("PIN_IMAGE_ATTEMPTS") or "3")
+
+
+async def _dm_admins(text: str) -> None:
+    """Best-effort HTML DM to every admin from a background task (no CallbackContext)."""
+    try:
+        from backend.database import get_admin_telegram_ids
+        if application is None:
+            return
+        for admin_id in (get_admin_telegram_ids() or []):
+            try:
+                await application.bot.send_message(chat_id=int(admin_id), text=text, parse_mode="HTML")
+            except Exception:
+                logging.warning("_dm_admins: send failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("_dm_admins failed", exc_info=True)
 
 
 async def _ask_admin_for_pin_words(reason: str = "") -> None:
@@ -32409,10 +32429,11 @@ async def _pin_topup_from_words(want: int, level: str) -> int:
     image (object small & hidden per the prompt) → R2 → a 'pending' task that the admin
     frames by hand. If the queue runs dry, DM the admin for more and stop."""
     from backend.database import next_pin_word, count_queued_pin_words
-    from backend.openai_manager import run_generate_pin_for_word
+    from backend.openai_manager import run_generate_pin_for_word, run_vision_object_coverage
     from backend.image_generation_provider import generate_image_bytes
     from backend.r2_storage import r2_put_bytes
     made = 0
+    too_big = []  # words DALL-E kept drawing too large — reported to the admin
     for _ in range(want):
         word = await asyncio.to_thread(next_pin_word)
         if not word:
@@ -32426,23 +32447,40 @@ async def _pin_topup_from_words(want: int, level: str) -> int:
         if not payload:
             logging.info("pin topup: payload invalid for word (%s)", word)
             continue
+        # Generate the image, then GATE ON SIZE: the object must be small & non-obvious
+        # (≤ _PIN_MAX_COVERAGE of the frame). DALL-E ignores "make it small" often, so we
+        # verify and regenerate up to _PIN_IMAGE_ATTEMPTS times before giving up on the word.
+        img = mime = None
+        for attempt in range(_PIN_IMAGE_ATTEMPTS):
+            try:
+                res = await asyncio.to_thread(
+                    generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0,
+                    action_type="aufgabe_pin_image",
+                )
+                cand = bytes(res.get("data") or b"")
+                cmime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
+                if not cand:
+                    continue
+                cov = await asyncio.to_thread(run_vision_object_coverage, cand, payload["target_label"], mime=cmime)
+                if cov.get("present") and cov.get("coverage", 1.0) <= _PIN_MAX_COVERAGE:
+                    img, mime = cand, cmime
+                    break
+                logging.info("pin topup: image rejected (present=%s coverage=%.2f) word=%s attempt=%s",
+                             cov.get("present"), cov.get("coverage", 1.0), word, attempt + 1)
+            except Exception:
+                logging.warning("pin topup: image generation failed for word=%s", word, exc_info=True)
+        if not img:
+            too_big.append(word)
+            continue
         aufgabe_id = str(__import__("uuid").uuid4())
         try:
-            res = await asyncio.to_thread(
-                generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0,
-                action_type="aufgabe_pin_image",
-            )
-            img = bytes(res.get("data") or b"")
-            mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
-            if not img:
-                continue
             ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
             key = f"aufgabe/images/{aufgabe_id}.{ext}"
             await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
             payload["image_object_key"] = key
             payload.pop("image_prompt", None)
         except Exception:
-            logging.warning("pin topup: image generation failed for word=%s", word, exc_info=True)
+            logging.warning("pin topup: R2 upload failed for word=%s", word, exc_info=True)
             continue
         await asyncio.to_thread(
             create_aufgabe, aufgabe_id=aufgabe_id, format="pin", level=level, payload=payload,
@@ -32450,6 +32488,13 @@ async def _pin_topup_from_words(want: int, level: str) -> int:
         )
         await _send_aufgabe_review_card(aufgabe_id, "pin", level, payload)
         made += 1
+    if too_big:
+        await _dm_admins(
+            "⚠️ <b>Не получилось спрятать предмет</b> — DALL·E рисует его слишком крупно "
+            f"даже после {_PIN_IMAGE_ATTEMPTS} попыток: <b>{html.escape(', '.join(too_big))}</b>. "
+            f"Эти слова пропущены. Попробуй заменить их на предметы, которые естественно "
+            f"бывают маленькими в кадре."
+        )
     if made == 0 and await asyncio.to_thread(count_queued_pin_words) == 0:
         await _ask_admin_for_pin_words()
     return made

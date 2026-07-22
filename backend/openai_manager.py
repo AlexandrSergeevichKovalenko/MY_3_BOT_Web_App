@@ -4150,18 +4150,23 @@ Der/die Lernende soll dieses Objekt im Bild finden, antippen und seinen Artikel 
 Das Wort selbst wird NICHT angezeigt (nur als Aufgabe „Finde {Wort} …"), es geht also um
 aktiven Wortschatz.
 
-BILD — die wichtigste Regel (das war bisher das Problem):
-- Das Zielobjekt muss KLEIN und UNAUFFÄLLIG sein: höchstens ~8–10 % der Bildfläche,
-  NIEMALS zentral, niemals das größte/erste, was ins Auge fällt. Klein, seitlich,
-  teilweise verdeckt, zwischen anderen Dingen — man muss es WIRKLICH SUCHEN.
-- Die Szene ist eine reiche, natürliche Alltagsszene mit VIELEN gleichwertigen Objekten,
-  damit das Ziel nicht heraussticht. KEINE Szene, in der das Objekt riesig/allein/mittig
-  steht. KEIN „ein Objekt füllt das halbe Bild".
+BILD — die wichtigste Regel (das war bisher das Problem: DALL-E hat das Objekt riesig und
+mittig gemalt):
+- Beschreibe eine SZENE, NICHT das Objekt. Das Bild-Prompt beginnt mit dem RAUM/Ort und
+  einer LANGEN Liste vieler gleichwertiger Alltagsdinge. Das Zielobjekt wird erst SPÄT,
+  beiläufig, als EINES unter vielen erwähnt — niemals als Hauptmotiv.
+- Das Zielobjekt ist WINZIG: höchstens ~8 % der Bildfläche, am Rand oder teilweise
+  verdeckt, NIE zentral, NIE das größte. Es darf NICHT mehrfach/als ganzer „Vorrat"
+  vorkommen (kein Regal/Bündel voll davon) — genau EIN kleines Exemplar.
+- Verboten: „a <Objekt> …" als Bildanfang; Nahaufnahme/Close-up; „a rack/collection/pile of
+  <Objekt>"; das Objekt groß, zentriert oder formatfüllend.
 - KEIN Text, keine Buchstaben, keine Pfeile, keine Labels im Bild.
 
 Ausgabe (STRICT JSON, genau diese Felder):
-- "image_prompt": detaillierter englischer DALL-E-Prompt, der GENAU obige Bild-Regel
-  umsetzt (reiche Szene, Zielobjekt klein & versteckt & nicht zentral), photorealistisch.
+- "image_prompt": englischer DALL-E-Prompt, der mit der SZENE beginnt (Ort + viele Dinge)
+  und das Zielobjekt nur als kleines, beiläufiges Detail am Rand nennt (ein Exemplar),
+  photorealistisch. Beispiel-Bau: „A <place> with <many things…>, and tucked to one side,
+  a single small <target> partly hidden behind <something>".
 - "target_label": das Zielobjekt MIT korrektem Artikel (z. B. "der Wasserkocher").
 - "article": nur "der" | "die" | "das".
 - "question_de": "Finde {Nomen OHNE Artikel} im Bild — tippe darauf und gib den Artikel ein."
@@ -4173,7 +4178,7 @@ Falls das Eingabewort kein konkretes, im Bild darstellbares Substantiv ist (Abst
 Verb, Unsinn), gib {"error":"not_depictable"} zurück.
 
 Gib NUR STRICT JSON, ohne Markdown:
-{"image_prompt":"A busy workshop wall with many tools, cables and shelves; a small pair of pliers hangs half-hidden among other tools on the pegboard, off to one side, photorealistic, no text","target_label":"die Zange","article":"die","question_de":"Finde Zange im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"плоскогубцы"}
+{"image_prompt":"A cluttered workshop bench seen from above: scattered screws, a coffee mug, a notebook, wood offcuts, a tape measure, a phone and rags spread across the surface, and tucked to one side near the edge a single small pair of pliers half-hidden under a rag, photorealistic, natural light, no text","target_label":"die Zange","article":"die","question_de":"Finde Zange im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"плоскогубцы"}
 """,
 "image_quiz_sentence_fallback": """
 You help build a visual language-learning quiz.
@@ -7138,28 +7143,30 @@ async def run_check_error_full(*, original: str, corrected: str) -> dict:
         return {"correct": False, "reason_ru": ""}
 
 
-def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "image/png") -> dict:
-    """Vision check + localization for a generated pin-on-image task (pool time,
-    off the critical path). Returns {"present": bool, "bbox": [x,y,w,h] in 0..1}.
-    present=False → the object isn't clearly visible → the item is rejected (no
-    silent fallback). Sync; runs in a thread from the pool job."""
+def run_vision_object_coverage(image_bytes: bytes, target_label: str, *, mime: str = "image/png") -> dict:
+    """Coarse size check for a generated pin image: is the target present, and roughly what
+    FRACTION of the frame does it cover? Returns {"present": bool, "coverage": 0..1}.
+
+    This is a size judgment, NOT the precise localization we abandoned — vision estimates
+    'small vs. dominant' reliably, and the worst case is benign (we just regenerate). Used
+    to reject the giant, obvious objects DALL-E keeps producing (a keychain rack filling
+    half the frame) before they ever reach the admin. present=False also catches DALL-E
+    drawing something other than the requested object."""
     import base64
     from backend.synthetic_load import build_sync_openai_client
     api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key or not image_bytes:
-        return {"present": False, "bbox": None}
+        return {"present": False, "coverage": 1.0}
     b64 = base64.b64encode(bytes(image_bytes)).decode("ascii")
     data_url = f"data:{mime};base64,{b64}"
     prompt = (
-        f"Look at the image. Target object: \"{target_label}\". "
-        "Answer ONLY with strict JSON: "
-        '{"present": true|false, "bbox": [x, y, w, h]}. '
-        "present=true only if exactly this object is clearly and unambiguously identifiable "
-        "as THIS specific object — it MAY be small, partially shown or off to the side, that is "
-        "fine, as long as you are certain it is this object and not a similar-looking one. "
-        "bbox = the tight bounding box of that object as fractions of the image "
-        "(x,y = top-left, w,h = width/height, all between 0 and 1). "
-        "If you are not certain it is exactly this object, return present=false and bbox null."
+        f"Target object: \"{target_label}\". Look at the image. Answer ONLY strict JSON: "
+        '{"present": true|false, "coverage_percent": <integer 0-100>}. '
+        "present=true only if this exact object clearly appears. "
+        "coverage_percent = your best estimate of how much of the TOTAL image area this "
+        "object (all its instances together) covers, 0-100. Be honest: a big object filling "
+        "much of the frame is 40-70; one small item among many is 2-8. If the object appears "
+        "many times (e.g. a whole rack of them), sum their area."
     )
     try:
         client = build_sync_openai_client(api_key=api_key, timeout=40)
@@ -7175,23 +7182,17 @@ def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "ima
             temperature=0,
             response_format={"type": "json_object"},
         )
-        content = str(resp.choices[0].message.content or "").strip()
-        data = json.loads(content)
+        data = json.loads(str(resp.choices[0].message.content or "").strip())
     except Exception:
-        logging.warning("run_vision_locate failed for target=%s", target_label, exc_info=True)
-        return {"present": False, "bbox": None}
-    present = bool(data.get("present"))
-    bbox = data.get("bbox")
-    if not present or not isinstance(bbox, list) or len(bbox) != 4:
-        return {"present": False, "bbox": None}
+        logging.warning("run_vision_object_coverage failed for target=%s", target_label, exc_info=True)
+        return {"present": False, "coverage": 1.0}
+    if not bool(data.get("present")):
+        return {"present": False, "coverage": 1.0}
     try:
-        x, y, w, h = (float(v) for v in bbox)
+        cov = max(0.0, min(1.0, float(data.get("coverage_percent") or 0) / 100.0))
     except (TypeError, ValueError):
-        return {"present": False, "bbox": None}
-    # sanity: within [0,1] and non-degenerate
-    if not (0 <= x <= 1 and 0 <= y <= 1 and 0 < w <= 1 and 0 < h <= 1):
-        return {"present": False, "bbox": None}
-    return {"present": True, "bbox": [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]}
+        cov = 1.0
+    return {"present": True, "coverage": cov}
 
 
 def draw_pin_bbox_preview(image_bytes: bytes, bbox) -> bytes:
