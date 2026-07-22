@@ -6206,6 +6206,10 @@ function AppInner() {
   const [youtubeDictOpen, setYoutubeDictOpen] = useState(false);
   // Phone watch-view: «Сменить видео» reveal (URL + optional transcript) opened from the slim control bar.
   const [youtubeChangeOpen, setYoutubeChangeOpen] = useState(false);
+  // Change-video search box (phone watchbar) keeps its OWN query, decoupled from `youtubeInput`.
+  // Binding it to youtubeInput meant clearing (×) or searching here rewrote youtubeInput, whose
+  // effect then wiped youtubeId — collapsing the new watch layout back to the old setup screen.
+  const [youtubeChangeQuery, setYoutubeChangeQuery] = useState('');
   const [youtubeDictQuery, setYoutubeDictQuery] = useState('');
   const [youtubeDictResult, setYoutubeDictResult] = useState(null);
   const [youtubeDictLoading, setYoutubeDictLoading] = useState(false);
@@ -7208,6 +7212,7 @@ function AppInner() {
   const youtubeTimeIntervalRef = useRef(null);
   const youtubeCurrentTimeRef = useRef(0);
   const youtubeInputDraftRef = useRef('');
+  const youtubeChangeQueryDraftRef = useRef('');
   const youtubeTranscriptVideoIdRef = useRef('');
   const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeNewsTranscriptRequestedRef = useRef(''); // news mode: auto-load subs once per video
@@ -8106,6 +8111,12 @@ function AppInner() {
     const normalized = String(nextValue ?? '');
     youtubeInputDraftRef.current = normalized;
     setYoutubeInput((previous) => (previous === normalized ? previous : normalized));
+    return normalized;
+  }, []);
+  const commitYoutubeChangeQueryDraft = useCallback((nextValue = youtubeChangeQueryDraftRef.current) => {
+    const normalized = String(nextValue ?? '');
+    youtubeChangeQueryDraftRef.current = normalized;
+    setYoutubeChangeQuery((previous) => (previous === normalized ? previous : normalized));
     return normalized;
   }, []);
   const normalizeSkillTrainingSnapshot = (value) => {
@@ -31160,6 +31171,68 @@ function AppInner() {
     }
   };
 
+  // Phone «Сменить видео» search — NEVER rewrites `youtubeInput`, so the currently-playing
+  // video (and the new watch layout) survives while the user searches. A pasted link/ID loads
+  // straight away; a text query lists results the user then picks from.
+  const searchYoutubeChangeVideos = async (overrideQuery = null) => {
+    const raw = overrideQuery == null ? youtubeChangeQueryDraftRef.current : overrideQuery;
+    const query = commitYoutubeChangeQueryDraft(raw).trim();
+    if (!query) return;
+
+    const directId = extractYoutubeId(query);
+    if (directId) {
+      // A pasted link/ID — load it as the new video and close the changer.
+      setYoutubeInput(query);
+      setYoutubeChangeQuery('');
+      youtubeChangeQueryDraftRef.current = '';
+      setYoutubeChangeOpen(false);
+      setYoutubeSearchResults([]);
+      setYoutubeSearchError('');
+      return;
+    }
+
+    if (!initData) {
+      setYoutubeSearchError(initDataMissingMsg);
+      return;
+    }
+
+    setYoutubeSearchLoading(true);
+    setYoutubeSearchError('');
+    try {
+      const response = await fetch('/api/webapp/youtube/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          query,
+          limit: 8,
+          language_pair: getWebappLanguagePairHint() || undefined,
+        }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      setYoutubeSearchResults(items);
+      if (!items.length) {
+        setYoutubeSearchError(tr('По вашему запросу ничего не найдено.', 'Keine Ergebnisse für diese Suche.'));
+      }
+    } catch (error) {
+      setYoutubeSearchResults([]);
+      setYoutubeSearchError(`${tr('Ошибка поиска YouTube', 'YouTube-Suchfehler')}: ${error.message}`);
+    } finally {
+      setYoutubeSearchLoading(false);
+    }
+  };
+
   const applyYoutubeTranscriptPayload = (data) => {
     const rawItems = data?.items || [];
     // Some caption sources deliver text with literal HTML entities (e.g. "&nbsp;"); decode at
@@ -31663,6 +31736,8 @@ function AppInner() {
       // Видео выбрано — сворачиваем и встроенный сменщик, иначе он остаётся
       // раскрытым поверх просмотра.
       setYoutubeChangeOpen(false);
+      setYoutubeChangeQuery('');
+      youtubeChangeQueryDraftRef.current = '';
     }
   }, [youtubeId]);
 
@@ -36004,7 +36079,17 @@ function AppInner() {
                             <button
                               type="button"
                               className={`youtube-watchbar-btn is-primary ${youtubeChangeOpen ? 'is-open' : ''}`}
-                              onClick={() => setYoutubeChangeOpen((v) => !v)}
+                              onClick={() => {
+                                const next = !youtubeChangeOpen;
+                                setYoutubeChangeOpen(next);
+                                if (!next) {
+                                  // Закрыли сменщик — очищаем свой поиск, текущее видео не трогаем.
+                                  setYoutubeChangeQuery('');
+                                  youtubeChangeQueryDraftRef.current = '';
+                                  setYoutubeSearchResults([]);
+                                  setYoutubeSearchError('');
+                                }
+                              }}
                               aria-expanded={youtubeChangeOpen}
                               aria-label={tr('Сменить видео', 'Video ändern')}
                               title={tr('Сменить видео', 'Video ändern')}
@@ -36067,18 +36152,18 @@ function AppInner() {
                         {youtubeChangeOpen && (
                           <div className="youtube-watchbar-changer">
                             <YoutubeQueryInputField
-                              value={youtubeInput}
+                              value={youtubeChangeQuery}
                               label={tr('Ссылка, ID или поисковый запрос', 'Link, Video-ID oder Suchanfrage')}
                               placeholder={tr('https://youtu.be/VIDEO_ID или Deutsch Grammatik B1', 'https://youtu.be/VIDEO_ID oder Deutsch Grammatik B1')}
                               clearLabel={tr('Очистить', 'Löschen')}
-                              onDraftChange={(nextValue) => { youtubeInputDraftRef.current = String(nextValue ?? ''); }}
-                              onCommit={commitYoutubeInputDraft}
-                              onSubmit={searchYoutubeVideos}
+                              onDraftChange={(nextValue) => { youtubeChangeQueryDraftRef.current = String(nextValue ?? ''); }}
+                              onCommit={commitYoutubeChangeQueryDraft}
+                              onSubmit={searchYoutubeChangeVideos}
                             />
                             <button
                               type="button"
                               className="youtube-watchbar-find"
-                              onClick={() => searchYoutubeVideos()}
+                              onClick={() => searchYoutubeChangeVideos()}
                               disabled={youtubeSearchLoading}
                             >
                               {youtubeSearchLoading
@@ -36094,7 +36179,12 @@ function AppInner() {
                                     key={item.video_id}
                                     className="youtube-search-item"
                                     onClick={() => {
+                                      // Выбор результата = смена видео: пишем в youtubeInput (эффект
+                                      // поднимет youtubeId), закрываем сменщик и чистим свой поиск.
                                       setYoutubeInput(item.video_url || `https://youtu.be/${item.video_id}`);
+                                      setYoutubeChangeQuery('');
+                                      youtubeChangeQueryDraftRef.current = '';
+                                      setYoutubeChangeOpen(false);
                                       setYoutubeSearchResults([]);
                                       setYoutubeSearchError('');
                                     }}
@@ -36688,25 +36778,23 @@ function AppInner() {
                             </button>
                           </div>
                           <div className="youtube-settings-sheet-list">
-                            {!youtubeNewsMode && (
+                            {/* «Сменить видео»/«Искать» в ⚙ — только для планшета/браузера: на
+                                телефоне смена видео живёт на watch-панели (кнопка-плёнка), а эти
+                                ряды писали запрос в youtubeInput и роняли раскладку на старый экран. */}
+                            {!youtubeNewsMode && isWideLayout && (
                               <button
                                 type="button"
                                 className="youtube-settings-row"
                                 onClick={() => {
                                   setYoutubeSettingsOpen(false);
-                                  // Открываем сменщик ВНУТРИ панели управления. Раньше здесь
-                                  // поднимался youtubeForceShowPanel, и человек проваливался
-                                  // в планшетный экран (шапка с чипсами + отдельный поиск) —
-                                  // ровно то, от чего мы уходили.
-                                  if (youtubePhoneWatchLayout) setYoutubeChangeOpen(true);
-                                  else setYoutubeForceShowPanel(true);
+                                  setYoutubeForceShowPanel(true);
                                 }}
                               >
                                 <span>{tr('Сменить видео', 'Change video')}</span>
                                 <span>{tr('Открыть поиск', 'Open search')}</span>
                               </button>
                             )}
-                            {!youtubeNewsMode && (
+                            {!youtubeNewsMode && isWideLayout && (
                               <button
                                 type="button"
                                 className="youtube-settings-row"
