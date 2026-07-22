@@ -4189,19 +4189,28 @@ Admin später EIN Objekt als Ziel auswählt.
 
 Eingabe-JSON: {"description": "<Beschreibung, meist Russisch>"}.
 
-Regeln für das Bild-Prompt (Englisch):
+⚠️⚠️ REGEL NUMMER 1 — UNBEDINGT, WICHTIGER ALS ALLES ANDERE — KEINE WIEDERHOLUNGEN:
+Jeder Gegenstand-TYP darf im ganzen Bild NUR EIN EINZIGES MAL vorkommen. Wenn ein Objekt
+das Ziel wird, muss es GENAU EINE Instanz davon geben, sonst ist "tippe DEN Gegenstand an"
+mehrdeutig.
+- NICHT zwei Tassen, NICHT zwei Westen/Jacken, NICHT zwei Stifte, NICHT zwei Schuhe,
+  NICHT zwei gleiche Werkzeuge — von KEINER Sache zwei oder mehr.
+- KEINE Paare (Schuhe, Handschuhe, Ohrringe → nimm nur EIN Exemplar), KEINE Sets, KEINE
+  Stapel, KEINE Reihen, KEINE Regale/Körbe voll gleicher Dinge, KEINE gespiegelten/
+  wiederholten Objekte, KEIN identisches Objekt im Hintergrund.
+- Baue die Vielfalt aus JE EINEM Exemplar VERSCHIEDENER Dinge, nicht aus Mengen.
+Schreibe diese Regel WÖRTLICH und mehrfach ins englische Prompt, u. a. am Ende:
+"CRITICAL: every object type appears EXACTLY ONCE — no duplicates, no pairs, no two of the
+same thing, no repeated or mirrored items anywhere in the image".
+
+Weitere Regeln:
 - Setze die Szene des Admins um (Ort/Stimmung). Fülle sie mit VIELEN (12+) DEUTLICH
-  VERSCHIEDENEN, klar erkennbaren Alltagsobjekten, natürlich verteilt.
-- ⚠️ WICHTIGSTE REGEL: JEDES Objekt kommt GENAU EINMAL vor. KEINE Duplikate, KEINE Paare,
-  KEINE Sets/Stapel/Reihen/Sammlungen identischer Dinge (nicht zwei Tassen, nicht drei
-  Stifte, kein Regal voll gleicher Objekte). So ist später jedes Zielobjekt EINDEUTIG
-  antippbar. Schreibe das explizit ins Prompt: "each object appears exactly once, no
-  duplicates or repeated items".
+  VERSCHIEDENEN, klar erkennbaren Alltagsobjekten, natürlich verteilt — jedes UNIKAT.
 - Fotorealistisch, natürliches Licht.
 - KEIN Text, keine Buchstaben, keine Zahlen, keine Logos, keine Labels, keine Marken.
 
 Gib NUR STRICT JSON, ohne Markdown:
-{"image_prompt":"A realistic tidy-but-busy home office desk seen slightly from above: a closed laptop, a single ceramic mug, one notebook, a pair of glasses, a stapler, a small potted plant, a wristwatch, a roll of tape, a USB stick, a pen, a smartphone and a folded map, each object appears exactly once, no duplicates or repeated items, photorealistic, natural light, no text, no logos"}
+{"image_prompt":"A realistic tidy-but-busy home office desk seen slightly from above, filled with many DIFFERENT single objects: a closed laptop, one ceramic mug, one notebook, one pair of glasses, one stapler, one small potted plant, one wristwatch, one roll of tape, one USB stick, one pen, one smartphone, one folded map. CRITICAL: every object type appears EXACTLY ONCE — no duplicates, no pairs, no two of the same thing, no repeated or mirrored items anywhere in the image. Photorealistic, natural light, no text, no logos"}
 """,
 "pin_word_meta": """
 Der Admin hat ein Objekt im Bild markiert und dieses deutsche Wort dazu geschrieben. Liefere
