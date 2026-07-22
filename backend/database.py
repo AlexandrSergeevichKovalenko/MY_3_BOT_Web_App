@@ -3294,6 +3294,42 @@ DICTIONARY_POOL_RICH_SQL_STORED = _dictionary_pool_rich_sql("bt_3_dictionary_ent
 DICTIONARY_POOL_RICH_SQL_EXCLUDED = _dictionary_pool_rich_sql("EXCLUDED.response_json")
 
 
+def _dictionary_pool_word_fully_rich_sql(alias: str) -> str:
+    """STRICTER richness test than _dictionary_pool_rich_sql — used ONLY by the nightly
+    enrichment selection, never by the pool serve/upsert gate.
+
+    The serve gate treats a card with mere usage_examples as "full" (so lookups stay free).
+    But such a card can still be the THIN-prompt output — forms + examples, no Rektion /
+    collocations / meanings / etymology. This predicate is True only when the RICH blocks the
+    live prompt produces are actually present, so the nightly job re-enriches those
+    thin-with-examples words automatically (no manual card-opening). Mirrors the Python
+    _dictionary_word_card_is_thin. Array checks are type-guarded so a stray non-array value
+    can never raise."""
+    def _nonempty_array(key: str) -> str:
+        # CASE (not AND) so jsonb_array_length only runs when the value IS an array — Postgres
+        # does not guarantee short-circuit, and it raises on a scalar. Returns strict TRUE/FALSE
+        # (never NULL), so `NOT (…)` on a thin card is TRUE, not NULL — the bug that silently
+        # excluded every thin word from the nightly selection.
+        return (
+            f"(CASE WHEN jsonb_typeof({alias}->'{key}') = 'array' "
+            f"THEN jsonb_array_length({alias}->'{key}') >= 1 ELSE FALSE END)"
+        )
+    def _nonempty_text(path: str) -> str:
+        return f"NULLIF(TRIM(COALESCE({path}, '')), '') IS NOT NULL"
+    parts = [
+        _nonempty_array("government_patterns"),
+        _nonempty_array("common_collocations"),
+        _nonempty_array("translations"),
+        _nonempty_text(f"{alias}->'meanings'->'primary'->>'value'"),
+        _nonempty_text(f"{alias}->>'memory_tip'"),
+        _nonempty_text(f"{alias}->>'etymology_note'"),
+    ]
+    return "(" + " OR ".join(parts) + ")"
+
+
+DICTIONARY_POOL_WORD_FULLY_RICH_SQL = _dictionary_pool_word_fully_rich_sql("bt_3_dictionary_entries.response_json")
+
+
 def _upsert_dictionary_canonical_entry_with_cursor(
     cursor,
     *,
@@ -19253,7 +19289,7 @@ def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru")
                 f"""
                 SELECT COUNT(*) FROM bt_3_dictionary_entries
                 WHERE source_lang = %s AND target_lang = %s
-                  AND (response_json IS NULL OR NOT {DICTIONARY_POOL_RICH_SQL_STORED})
+                  AND (response_json IS NULL OR NOT {DICTIONARY_POOL_WORD_FULLY_RICH_SQL})
                   {_DICTIONARY_POOL_SINGLE_WORD_SQL}
                 """,
                 (_normalize_lang_code(source_lang), _normalize_lang_code(target_lang)),
@@ -19290,7 +19326,7 @@ def get_thin_pool_entries_for_enrichment(
                 LEFT JOIN bt_3_dictionary_lookup_cache c
                        ON c.normalized_word IN (e.source_headword_norm, e.source_text_norm)
                 WHERE e.source_lang = %s AND e.target_lang = %s
-                  AND (e.response_json IS NULL OR NOT {DICTIONARY_POOL_RICH_SQL_STORED.replace(
+                  AND (e.response_json IS NULL OR NOT {DICTIONARY_POOL_WORD_FULLY_RICH_SQL.replace(
                       'bt_3_dictionary_entries.response_json', 'e.response_json')})
                   {_DICTIONARY_POOL_SINGLE_WORD_SQL.replace('source_text', 'e.source_text')}
                 GROUP BY e.id

@@ -9254,7 +9254,7 @@ def _drop_wrong_language_examples(enrich_data: dict | None, *, learning_lang: st
 
 
 _POOL_ENRICH_SINGLE_PAIR = False  # True = только заданная пара (для ручной отладки)
-POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "150").strip() or "150")
+POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "200").strip() or "200")
 _POOL_NIGHT_ENRICH_LOCK = threading.Lock()
 _POOL_NIGHT_ENRICH_RUNNING = False
 
