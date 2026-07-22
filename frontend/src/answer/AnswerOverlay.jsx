@@ -186,7 +186,7 @@ function SaveWrongWords({ items, originProcess = 'crossword_save',
       Promise.resolve(
         api('/api/webapp/dictionary/save', {
           source_text: w.de, target_text: w.ru || '',
-          source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
+          source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
           origin_process: originProcess,
         }),
       ).catch(() => { /* best-effort background save */ });
@@ -388,7 +388,7 @@ function AufgabeResult({ result }) {
     Promise.resolve(
       api('/api/webapp/dictionary/save', {
         source_text: de, target_text: ru || '',
-        source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
+        source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
         origin_process: 'synonym_save',
       }),
     ).catch(() => {
