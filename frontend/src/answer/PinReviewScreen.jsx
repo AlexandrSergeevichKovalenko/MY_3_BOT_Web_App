@@ -1,23 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
- * «Finde im Bild» scene studio (admin only). Two fill paths, one targeting screen:
- *   A) describe scenes in Russian → the bot renders busy images (no repeated objects);
- *   B) upload your OWN photos → they become scenes immediately.
- * Then on each image: draw ONE box, type the German word (with article), add it. One image
- * yields as many tasks as objects you label; the drawn box is the human-verified answer
- * region, the typed word gives the article.
+ * «Finde im Bild» studio (admin) — a two-step wizard, one screen per step, no page scroll.
+ *
+ *   Step 1 «Ввод»    — either write scene prompts OR upload your own photos → «Далее».
+ *   Step 2 «Обводка» — one image at a time: draw a box, type the German word, add it.
+ *                      Chips are tappable (highlight the box) and deletable. «← Назад».
  */
 export default function PinReviewScreen({ api, haptic, onClose }) {
+  const [step, setStep] = useState('compose');       // 'compose' | 'target'
   const [status, setStatus] = useState(null);
   const [scenes, setScenes] = useState(null);
   const [idx, setIdx] = useState(0);
   const [descs, setDescs] = useState('');
   const [rect, setRect] = useState(null);
   const [drag, setDrag] = useState(null);
-  const [drawing, setDrawing] = useState(true);     // false once a box is locked → image scrolls
+  const [drawing, setDrawing] = useState(true);
   const [word, setWord] = useState('');
-  const [preview, setPreview] = useState(null);      // {bbox, id} of an added target being reviewed
+  const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
@@ -32,7 +32,8 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       ]);
       setStatus(st);
       setScenes(sc.scenes || []);
-    } catch (e) { setError(String(e?.message || e)); setScenes([]); }
+      return sc.scenes || [];
+    } catch (e) { setError(String(e?.message || e)); setScenes([]); return []; }
   }, [api]);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -40,16 +41,13 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
   const scene = scenes && scenes[idx];
   useEffect(() => { setRect(null); setDrag(null); setDrawing(true); setWord(''); setPreview(null); setError(''); }, [scene]);
 
-  // ── drawing (only while `drawing`; once a box is set the image scrolls instead) ──
+  // ── drawing ──
   const pointOf = useCallback((e) => {
     const el = wrapRef.current;
     if (!el) return null;
     const r = el.getBoundingClientRect();
     const t = e.touches?.[0] || e.changedTouches?.[0] || e;
-    return {
-      x: Math.min(1, Math.max(0, (t.clientX - r.left) / r.width)),
-      y: Math.min(1, Math.max(0, (t.clientY - r.top) / r.height)),
-    };
+    return { x: Math.min(1, Math.max(0, (t.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (t.clientY - r.top) / r.height)) };
   }, []);
   const start = (e) => { if (!drawing) return; setPreview(null); const p = pointOf(e); if (p) setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y }); };
   const move = (e) => { if (!drawing || !drag) return; e.preventDefault(); const p = pointOf(e); if (p) setDrag((d) => ({ ...d, x1: p.x, y1: p.y })); };
@@ -59,15 +57,13 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
     const w = Math.abs(drag.x1 - drag.x0), h = Math.abs(drag.y1 - drag.y0);
     setDrag(null);
     if (w < 0.02 || h < 0.02) return;
-    setRect({ x, y, w, h });
-    setDrawing(false);             // lock — a stray touch won't redraw, and the image scrolls
-    haptic?.('ok');
+    setRect({ x, y, w, h }); setDrawing(false); haptic?.('ok');
   };
   const live = drag
     ? { x: Math.min(drag.x0, drag.x1), y: Math.min(drag.y0, drag.y1), w: Math.abs(drag.x1 - drag.x0), h: Math.abs(drag.y1 - drag.y0) }
     : rect;
 
-  // ── fill path A: scene descriptions ──
+  // ── step 1 actions ──
   const submitScenes = async () => {
     const list = descs.split('\n').map((s) => s.trim()).filter(Boolean);
     if (!list.length || busy) return;
@@ -75,36 +71,32 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
     try {
       const r = await api('/api/answer/pinreview/scenes/create', { descriptions: list });
       setDescs('');
-      setNote(`🎨 В очереди на генерацию: ${r.queued}. Появятся ниже через 1–2 минуты (жми «Обновить»).`);
+      setNote(`🎨 В очереди на генерацию: ${r.queued}. Готовы будут через 1–2 минуты — жми «К обводке».`);
       haptic?.('ok');
       await refresh();
     } catch (e) { setError(String(e?.message || e)); } finally { setBusy(false); }
   };
-
-  // ── fill path B: upload own photos ──
   const onFiles = async (e) => {
     const files = Array.from(e.target.files || []);
-    e.target.value = '';                      // allow re-picking the same file later
+    e.target.value = '';
     if (!files.length) return;
     setBusy(true); setError('');
     let ok = 0;
     for (const f of files) {
       try {
         const dataUrl = await new Promise((res, rej) => {
-          const fr = new FileReader();
-          fr.onload = () => res(String(fr.result || ''));
-          fr.onerror = rej;
-          fr.readAsDataURL(f);
+          const fr = new FileReader(); fr.onload = () => res(String(fr.result || '')); fr.onerror = rej; fr.readAsDataURL(f);
         });
         await api('/api/answer/pinreview/upload', { image_base64: dataUrl, mime: f.type || 'image/jpeg' });
         ok += 1;
       } catch (err) { setError(String(err?.message || err)); }
     }
     setBusy(false);
-    if (ok) { setNote(`📷 Загружено картинок: ${ok}. Обводи их ниже.`); haptic?.('ok'); await refresh(); }
+    if (ok) { haptic?.('ok'); const sc = await refresh(); setIdx(0); if (sc.length) setStep('target'); }
   };
+  const goTarget = async () => { const sc = await refresh(); setIdx(0); if (sc.length) setStep('target'); else setNote('Готовых картинок пока нет — сгенерируй или загрузи.'); };
 
-  // ── targeting ──
+  // ── step 2 actions ──
   const addTarget = async () => {
     if (!scene || !live || busy) return;
     const w = word.trim();
@@ -112,9 +104,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
     setBusy(true); setError('');
     try {
       const box = [live.x, live.y, live.w, live.h];
-      const r = await api('/api/answer/pinreview/addtarget', {
-        scene_id: scene.scene_id, bbox: box, word: w,
-      });
+      const r = await api('/api/answer/pinreview/addtarget', { scene_id: scene.scene_id, bbox: box, word: w });
       const chip = { aufgabe_id: r.aufgabe_id, label: r.target_label, bbox: box };
       setScenes((prev) => prev.map((s, i) => (i === idx ? { ...s, targets: [...(s.targets || []), chip] } : s)));
       setRect(null); setDrawing(true); setWord(''); setPreview(null);
@@ -122,7 +112,6 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       haptic?.('ok');
     } catch (e) { setError(String(e?.message || e)); haptic?.('bad'); } finally { setBusy(false); }
   };
-
   const delTarget = async (t) => {
     if (busy || !t?.aufgabe_id) return;
     setBusy(true); setError('');
@@ -133,131 +122,111 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       haptic?.('ok');
     } catch (e) { setError(String(e?.message || e)); } finally { setBusy(false); }
   };
-
   const finishScene = async (action) => {
     if (!scene || busy) return;
     setBusy(true); setError('');
     try {
       await api('/api/answer/pinreview/scenedone', { scene_id: scene.scene_id, action });
-      setScenes(scenes.filter((_, i) => i !== idx));
-      setIdx(0);
-      await refresh();
+      const rest = scenes.filter((_, i) => i !== idx);
+      setScenes(rest); setIdx(0);
+      if (!rest.length) { setStep('compose'); await refresh(); }
     } catch (e) { setError(String(e?.message || e)); } finally { setBusy(false); }
   };
 
-  if (scenes === null || status === null) return <div className="ans-loading">Загружаю студию…</div>;
+  if (scenes === null || status === null) return <div className="pinw"><div className="ans-loading">Загружаю студию…</div></div>;
+  const readyCount = scenes.length;
 
-  return (
-    <div className="pinrev">
-      <div className="pinrev-status">
-        Готово: <b>{status.approved}</b>/{status.target} · на обводке: <b>{status.ready_scenes}</b> ·
-        генерируется: <b>{status.generating}</b>
-        <button className="pinrev-link" disabled={busy} onClick={refresh} style={{ marginLeft: 8 }}>обновить</button>
-      </div>
-
-      {/* Fill paths */}
-      <div className={`pinrev-composer ${scene ? 'compact' : ''}`}>
-        <div className="pinrev-comp-title">🎨 Заказать сцены{status.needed > 0 ? ` (нужно ещё ~${status.needed})` : ''}</div>
-        <textarea
-          className="pinrev-textarea" rows={6} value={descs}
-          onChange={(e) => setDescs(e.target.value)}
-          placeholder={'Опиши сцены по-русски, каждую с новой строки:\nрабочий стол с офисными мелочами\nдетская с игрушками на полу\nполка в гараже с инструментами'}
-        />
-        <button className="ans-btn" disabled={!descs.trim() || busy} onClick={submitScenes}>
-          Сгенерировать сцены
-        </button>
-        <div className="pinrev-or">— или —</div>
-        <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={onFiles} />
-        <button className="ans-btn-ghost" disabled={busy} onClick={() => fileRef.current?.click()}>
-          📷 Загрузить свои картинки
-        </button>
-      </div>
-      {note ? <div className="pinrev-note">{note}</div> : null}
-
-      {/* Targeting */}
-      {scene ? (
-        <div className="pinrev-target">
-          <div className="pinrev-head">
-            <span className="pinrev-count">Картинка {idx + 1} / {scenes.length}</span>
-            {scenes.length > 1 ? (
-              <button className="pinrev-link" disabled={busy} onClick={() => setIdx((idx + 1) % scenes.length)}>
-                другая →
-              </button>
-            ) : null}
-          </div>
-          <p className="pinrev-hint">
-            {drawing
-              ? '① Обведи предмет пальцем.'
-              : '② Впиши слово с артиклем и нажми «Добавить». Картинку можно листать — рамка держится.'}
-          </p>
-          <div
-            className="pinrev-wrap" ref={wrapRef}
-            style={{ touchAction: drawing ? 'none' : 'pan-y', cursor: drawing ? 'crosshair' : 'default' }}
-            onTouchStart={start} onTouchMove={move} onTouchEnd={end}
-            onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
-          >
-            <img className="pin-img" src={scene.image_url} alt="" draggable="false" />
-            {live ? (
-              <span className={`pinrev-box ${drag ? 'live' : ''}`}
-                style={{ left: `${live.x * 100}%`, top: `${live.y * 100}%`, width: `${live.w * 100}%`, height: `${live.h * 100}%` }} />
-            ) : null}
-            {preview?.bbox ? (
-              <span className="pinrev-box preview"
-                style={{ left: `${preview.bbox[0] * 100}%`, top: `${preview.bbox[1] * 100}%`, width: `${preview.bbox[2] * 100}%`, height: `${preview.bbox[3] * 100}%` }} />
-            ) : null}
-          </div>
-          {preview ? <div className="pinrev-note">🟠 Показана рамка «{preview.label}». Тапни ещё раз по слову, чтобы убрать.</div> : null}
-          {!drawing ? (
-            <button className="pinrev-link" onClick={() => { setRect(null); setDrawing(true); setPreview(null); }}>✏️ перерисовать рамку</button>
-          ) : null}
-          <input
-            className="pinrev-word" value={word} onChange={(e) => setWord(e.target.value)}
-            placeholder="der Feuerlöscher" autoCapitalize="off" autoCorrect="off" enterKeyHint="done"
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur(); addTarget(); } }}
+  // ─────────────────────────── STEP 1: COMPOSE ───────────────────────────
+  if (step === 'compose') {
+    return (
+      <div className="pinw">
+        <div className="pinw-top">
+          <div className="pinw-title">🖼 Студия «Найди предмет»</div>
+          <div className="pinw-sub">Готово {status.approved}/{status.target} · шаг 1 из 2 — задай картинки</div>
+        </div>
+        <div className="pinw-body">
+          <label className="pinw-label">Опиши сцены по-русски (каждую с новой строки):</label>
+          <textarea
+            className="pinw-textarea" value={descs} onChange={(e) => setDescs(e.target.value)}
+            placeholder={'рабочий стол с офисными мелочами\nдетская с игрушками на полу\nполка в гараже с инструментами'}
           />
-          {(scene.targets || []).length ? (
-            <>
-              <div className="pinrev-chips-hint">Добавленные предметы (тапни — покажу рамку, ✕ — удалить):</div>
-              <div className="pinrev-chips">
+          {note ? <div className="pinrev-note">{note}</div> : null}
+          {error ? <div className="pinrev-err">{error}</div> : null}
+        </div>
+        <div className="pinw-bar">
+          <button className="ans-btn" disabled={!descs.trim() || busy} onClick={submitScenes}>🎨 Сгенерировать сцены</button>
+          <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={onFiles} />
+          <button className="ans-btn-ghost pinw-upload" disabled={busy} onClick={() => fileRef.current?.click()}>📷 Или загрузить свои фото</button>
+          <button className="ans-btn pinw-next" disabled={busy || readyCount === 0} onClick={goTarget}>
+            {readyCount > 0 ? `К обводке: ${readyCount} картинок →` : (status.generating > 0 ? `⏳ Генерируется: ${status.generating}…` : 'Сначала задай картинки')}
+          </button>
+          <button className="pinw-close" onClick={onClose}>Закрыть</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ─────────────────────────── STEP 2: TARGET ───────────────────────────
+  return (
+    <div className="pinw">
+      <div className="pinw-top pinw-top-row">
+        <button className="pinw-back" onClick={() => setStep('compose')}>← Назад</button>
+        <span className="pinw-count">{scene ? `Картинка ${idx + 1} / ${scenes.length}` : 'Картинок нет'}</span>
+        {scenes.length > 1 ? <button className="pinw-back" disabled={busy} onClick={() => setIdx((idx + 1) % scenes.length)}>другая →</button> : <span />}
+      </div>
+
+      {scene ? (
+        <>
+          <div className="pinw-imgarea">
+            <div
+              className="pinw-imgwrap" ref={wrapRef}
+              style={{ touchAction: drawing ? 'none' : 'pan-y', cursor: drawing ? 'crosshair' : 'default' }}
+              onTouchStart={start} onTouchMove={move} onTouchEnd={end}
+              onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
+            >
+              <img className="pinw-img" src={scene.image_url} alt="" draggable="false" />
+              {live ? <span className={`pinrev-box ${drag ? 'live' : ''}`} style={{ left: `${live.x * 100}%`, top: `${live.y * 100}%`, width: `${live.w * 100}%`, height: `${live.h * 100}%` }} /> : null}
+              {preview?.bbox ? <span className="pinrev-box preview" style={{ left: `${preview.bbox[0] * 100}%`, top: `${preview.bbox[1] * 100}%`, width: `${preview.bbox[2] * 100}%`, height: `${preview.bbox[3] * 100}%` }} /> : null}
+            </div>
+          </div>
+
+          <div className="pinw-controls">
+            <div className="pinw-hint">{drawing ? '① Обведи предмет пальцем' : '② Впиши слово и добавь. Рамка держится — картинку можно листать.'}</div>
+            <div className="pinw-inputrow">
+              <input className="pinrev-word" value={word} onChange={(e) => setWord(e.target.value)} placeholder="der Feuerlöscher"
+                autoCapitalize="off" autoCorrect="off" enterKeyHint="done"
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur(); addTarget(); } }} />
+              <button className="ans-btn pinw-add" disabled={!live || !word.trim() || busy} onClick={addTarget}>➕</button>
+            </div>
+            {!drawing ? <button className="pinrev-link" onClick={() => { setRect(null); setDrawing(true); setPreview(null); }}>✏️ перерисовать рамку</button> : null}
+            {(scene.targets || []).length ? (
+              <div className="pinw-chips">
                 {scene.targets.map((t) => {
                   const on = preview?.id === t.aufgabe_id;
                   return (
                     <span className={`pinrev-chip ${on ? 'active' : ''}`} key={t.aufgabe_id}>
-                      <button className="pinrev-chip-label"
-                        onClick={() => setPreview(on ? null : { id: t.aufgabe_id, bbox: t.bbox, label: t.label })}>
-                        {on ? '🟠' : '✅'} {t.label}
-                      </button>
+                      <button className="pinrev-chip-label" onClick={() => setPreview(on ? null : { id: t.aufgabe_id, bbox: t.bbox, label: t.label })}>{on ? '🟠' : '✅'} {t.label}</button>
                       <button className="pinrev-chip-x" disabled={busy} onClick={() => delTarget(t)} aria-label="удалить">✕</button>
                     </span>
                   );
                 })}
               </div>
-            </>
-          ) : null}
-          {error ? <div className="pinrev-err">{error}</div> : null}
-          <div className="pinrev-actions">
-            <button className="ans-btn" disabled={!live || !word.trim() || busy} onClick={addTarget}>
-              ➕ Добавить этот предмет
-            </button>
-            <button className="ans-btn pinrev-next" disabled={busy} onClick={() => finishScene('done')}>
-              Готово с картинкой →
-            </button>
-            <button className="ans-btn-ghost pinrev-skip" disabled={busy} onClick={() => finishScene('skip')}>
-              🗑 Плохая картинка — пропустить
-            </button>
+            ) : null}
+            {note ? <div className="pinrev-note">{note}</div> : null}
+            {error ? <div className="pinrev-err">{error}</div> : null}
           </div>
-        </div>
+
+          <div className="pinw-bar pinw-bar-row">
+            <button className="ans-btn-ghost pinrev-skip" disabled={busy} onClick={() => finishScene('skip')}>🗑 Плохая</button>
+            <button className="ans-btn pinw-next" disabled={busy} onClick={() => finishScene('done')}>Готово с картинкой →</button>
+          </div>
+        </>
       ) : (
-        <div className="pinrev-empty">
-          <div className="pinrev-empty-sub">
-            {status.generating > 0
-              ? `⏳ Генерируется картинок: ${status.generating}. Обнови через минуту.`
-              : 'Готовых картинок пока нет — закажи сцены или загрузи свои выше.'}
-          </div>
+        <div className="pinw-body">
+          <div className="pinrev-empty-sub">{status.generating > 0 ? `⏳ Генерируется: ${status.generating}. Вернись через минуту.` : 'Готовых картинок нет.'}</div>
+          <button className="ans-btn-ghost" onClick={() => setStep('compose')}>← К вводу</button>
         </div>
       )}
-      {error && !scene ? <div className="pinrev-err">{error}</div> : null}
-      <button className="ans-btn-ghost" onClick={onClose}>Закрыть</button>
     </div>
   );
 }

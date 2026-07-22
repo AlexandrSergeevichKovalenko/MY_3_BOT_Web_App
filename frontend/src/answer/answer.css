@@ -1310,93 +1310,83 @@ html[data-scheme="light"] .ask-pop-title { color: #0f172a; }
 html[data-scheme="light"] .ask-bubble.bot { color: #0f172a; background: #eef1f7; }
 html[data-scheme="light"] .ask-pop-input textarea { background: #f4f6fa; color: #0f172a; }
 
-/* ── Admin acceptance for «Finde im Bild»: draw the answer region by hand ─────── */
-.pinrev { display: flex; flex-direction: column; gap: 10px; }
-.pinrev-head { display: flex; align-items: baseline; gap: 10px; }
-.pinrev-count { font-size: 13px; font-weight: 700; color: var(--dmps-text-muted, #94A3B8); }
-.pinrev-word { font-size: 18px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
-.pinrev-hint { margin: 0; font-size: 13px; line-height: 1.4; color: var(--dmps-text-secondary, #CBD5E1); }
-.pinrev-wrap {
-  position: relative; width: 100%; overflow: hidden; cursor: crosshair;
-  border-radius: var(--dmps-radius-inner, 20px);
-  border: 1px solid var(--dmps-border, #334155);
-  touch-action: none;              /* the drag draws a box, it must not scroll the page */
+
+/* ══ «Finde im Bild» studio — two-step wizard, one screen per step ══════════════ */
+.pinw {
+  height: 100vh; height: 100dvh;    /* fill the viewport without position:fixed (iOS TG trap) */
+  display: flex; flex-direction: column;
+  padding: calc(env(safe-area-inset-top, 0px) + 60px) 16px calc(env(safe-area-inset-bottom, 0px) + 12px);
+  box-sizing: border-box; gap: 10px;
+  overflow: hidden;                 /* the whole point: no page scroll */
+}
+.pinw-top { flex: 0 0 auto; }
+.pinw-top-row { display: flex; align-items: center; justify-content: space-between; }
+.pinw-title { font-size: 20px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
+.pinw-sub { font-size: 12px; color: var(--dmps-text-muted, #94A3B8); margin-top: 2px; }
+.pinw-count { font-size: 14px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }
+.pinw-back {
+  background: none; border: 1px solid var(--dmps-border, #334155); border-radius: 12px;
+  color: var(--dmps-text-primary, #F8FAFC); font: inherit; font-size: 14px; font-weight: 600;
+  padding: 6px 12px; cursor: pointer;
+}
+.pinw-back:disabled { opacity: 0.4; }
+
+/* step 1: textarea grows to fill everything between header and the action bar */
+.pinw-body { flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.pinw-label { font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); }
+.pinw-textarea {
+  flex: 1 1 auto; width: 100%; box-sizing: border-box; resize: none; min-height: 0;
+  border-radius: 14px; border: 1px solid var(--dmps-border, #334155);
+  background: var(--dmps-input-bg, #0f172a); color: var(--dmps-text-primary, #F8FAFC);
+  padding: 14px; font: inherit; font-size: max(16px, 1em); line-height: 1.55;
+}
+
+/* bottom action bar — fixed, buttons obviously tappable */
+.pinw-bar { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; }
+.pinw-bar-row { flex-direction: row; }
+.pinw-bar-row .ans-btn, .pinw-bar-row .ans-btn-ghost { flex: 1 1 auto; width: auto; }
+.pinw-bar-row .pinrev-skip { flex: 0 0 40%; }
+.pinw-upload { color: var(--dmps-text-primary, #F8FAFC); font-weight: 700; }
+.pinw-next { background: #16A34A; box-shadow: 0 8px 20px rgba(22,163,74,0.3); }
+.pinw-close { background: none; border: none; color: var(--dmps-text-muted, #94A3B8); font: inherit; font-size: 14px; padding: 4px; cursor: pointer; }
+
+/* step 2: image fills the middle, controls + bar below, all on one screen */
+.pinw-imgarea { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
+.pinw-imgwrap {
+  position: relative; display: inline-block; max-width: 100%; max-height: 100%;
+  border-radius: 16px; overflow: hidden; border: 1px solid var(--dmps-border, #334155);
   -webkit-touch-callout: none; user-select: none;
 }
-.pinrev-box {
-  position: absolute; box-sizing: border-box;
-  border: 3px solid #22C55E; border-radius: 8px;
-  box-shadow: inset 0 0 0 2px rgba(255,255,255,0.5);
-  pointer-events: none;
-}
-.pinrev-box.live { border-style: dashed; border-color: #FBBF24; }
-.pinrev-meta { font-size: 14px; color: var(--dmps-text-primary, #F8FAFC); }
-.pinrev-dim { color: var(--dmps-text-muted, #94A3B8); }
-.pinrev-err { font-size: 13px; color: #F87171; }
-.pinrev-actions { display: flex; flex-direction: column; gap: 8px; }
-.pinrev-empty { display: flex; flex-direction: column; gap: 8px; align-items: center; padding: 24px 0; }
-.pinrev-empty-title { font-size: 20px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
-.pinrev-empty-sub { font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
+.pinw-img { display: block; max-width: 100%; max-height: 46vh; width: auto; height: auto; }
+.pinw-controls { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; }
+.pinw-hint { font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); }
+.pinw-inputrow { display: flex; gap: 8px; }
+.pinw-inputrow .pinrev-word { flex: 1 1 auto; }
+.pinw-add { flex: 0 0 64px; width: 64px; min-height: 0; font-size: 22px; }
+.pinw-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+.pinw-chips .pinrev-chip { flex: 0 0 auto; }
 
-/* Scene studio composer + chips (admin «Finde im Bild»). */
-.pinrev-status { font-size: 12px; color: var(--dmps-text-muted, #94A3B8); }
-.pinrev-composer { display: flex; flex-direction: column; gap: 8px; padding: 12px;
-  border: 1px solid var(--dmps-border, #334155); border-radius: 16px; }
-.pinrev-comp-title { font-size: 14px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }
-.pinrev-textarea {
-  width: 100%; box-sizing: border-box; resize: vertical;
-  min-height: 42vh;                 /* use the empty space — 3-5 scene prompts fit comfortably */
-  border-radius: 12px; border: 1px solid var(--dmps-border, #334155);
-  background: var(--dmps-input-bg, #0f172a); color: var(--dmps-text-primary, #F8FAFC);
-  padding: 12px; font: inherit; font-size: max(16px, 1em); line-height: 1.5;   /* 16px avoids iOS zoom */
-}
-/* When there are images to target, the composer shouldn't hog the screen. */
-.pinrev-composer.compact .pinrev-textarea { min-height: 96px; }
-.pinrev-note { font-size: 13px; color: #22C55E; }
-.pinrev-link {
-  background: none; border: none; color: #60A5FA; font: inherit; cursor: pointer; padding: 0;
-}
-.pinrev-chips-hint { font-size: 12px; color: var(--dmps-text-muted, #94A3B8); }
-.pinrev-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.pinrev-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  border-radius: 999px; border: 1px solid rgba(34,197,94,0.5);
-  background: rgba(34,197,94,0.14); overflow: hidden;
-}
-.pinrev-chip.active { border-color: #F59E0B; background: rgba(245,158,11,0.18); }
-.pinrev-chip-label {
-  background: none; border: none; font: inherit; font-size: 14px; cursor: pointer;
-  color: #16A34A; padding: 6px 4px 6px 12px;
-}
-.pinrev-chip.active .pinrev-chip-label { color: #B45309; }
-.pinrev-chip-x {
-  background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1;
-  color: #94A3B8; padding: 6px 12px 6px 4px;
-}
-.pinrev-chip-x:active { color: #EF4444; }
-@media (prefers-color-scheme: dark) {
-  .pinrev-chip-label { color: #4ADE80; }
-  .pinrev-chip.active .pinrev-chip-label { color: #FCD34D; }
-}
-/* Amber "review" box shown when you tap an added chip. */
+/* shared bits */
+.pinrev-box { position: absolute; box-sizing: border-box; border: 3px solid #22C55E; border-radius: 8px; box-shadow: inset 0 0 0 2px rgba(255,255,255,0.5); pointer-events: none; }
+.pinrev-box.live { border-style: dashed; border-color: #FBBF24; }
 .pinrev-box.preview { border-color: #F59E0B; box-shadow: inset 0 0 0 2px rgba(255,255,255,0.5), 0 0 12px rgba(245,158,11,0.6); }
-/* Studio action buttons must read as tappable — the plain ghost looked disabled. */
-.pinrev-next { background: #16A34A; box-shadow: 0 8px 20px rgba(22,163,74,0.3); }
-.pinrev-actions .ans-btn-ghost.pinrev-skip {
-  color: #EF4444; border-color: rgba(239,68,68,0.5); font-weight: 700;
-}
-.pinrev-target { display: flex; flex-direction: column; gap: 10px; }
-.pinrev-or { text-align: center; font-size: 12px; color: var(--dmps-text-muted, #94A3B8); }
-/* Word input — force readable contrast (the shared .ans-input rendered white-on-white here). */
 .pinrev-word {
-  width: 100%; box-sizing: border-box; border-radius: 12px;
-  border: 1px solid var(--dmps-border, #334155);
-  background: #ffffff; color: #0f172a;
-  padding: 12px 14px; font: inherit; font-size: max(16px, 1em);   /* 16px = no iOS zoom */
+  box-sizing: border-box; border-radius: 12px; border: 1px solid var(--dmps-border, #334155);
+  background: #ffffff; color: #0f172a; padding: 12px 14px; font: inherit; font-size: max(16px, 1em);
 }
 .pinrev-word::placeholder { color: #94A3B8; }
-@media (prefers-color-scheme: dark) {
-  .pinrev-word { background: #0f172a; color: #F8FAFC; border-color: #334155; }
-}
+@media (prefers-color-scheme: dark) { .pinrev-word { background: #0f172a; color: #F8FAFC; } }
 html[data-scheme="light"] .pinrev-word { background: #ffffff; color: #0f172a; }
 html[data-scheme="dark"] .pinrev-word { background: #0f172a; color: #F8FAFC; }
+.pinrev-chip { display: inline-flex; align-items: center; border-radius: 999px; border: 1px solid rgba(34,197,94,0.5); background: rgba(34,197,94,0.14); overflow: hidden; }
+.pinrev-chip.active { border-color: #F59E0B; background: rgba(245,158,11,0.18); }
+.pinrev-chip-label { background: none; border: none; font: inherit; font-size: 14px; cursor: pointer; color: #16A34A; padding: 7px 4px 7px 12px; white-space: nowrap; }
+.pinrev-chip.active .pinrev-chip-label { color: #B45309; }
+.pinrev-chip-x { background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1; color: #94A3B8; padding: 7px 12px 7px 4px; }
+.pinrev-chip-x:active { color: #EF4444; }
+@media (prefers-color-scheme: dark) { .pinrev-chip-label { color: #4ADE80; } .pinrev-chip.active .pinrev-chip-label { color: #FCD34D; } }
+.pinrev-skip { color: #EF4444 !important; border-color: rgba(239,68,68,0.5) !important; font-weight: 700; }
+.pinrev-note { font-size: 13px; color: #22C55E; }
+.pinrev-err { font-size: 13px; color: #F87171; }
+.pinrev-link { background: none; border: none; color: #60A5FA; font: inherit; font-size: 13px; cursor: pointer; padding: 0; align-self: flex-start; }
+.pinrev-empty-sub { font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
