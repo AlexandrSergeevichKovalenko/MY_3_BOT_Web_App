@@ -30947,8 +30947,11 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
         # Cryptic /group, /invite commands → two tappable buttons under the card.
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("👥 Играть командой с друзьями", callback_data="digest:group")],
+            # switch_inline_query → Telegram открывает выбор чата и отправляет другу
+            # брендовую карточку с рабочей кнопкой (см. _handle_share_inline_query),
+            # а не голую ссылку в собственную личку.
             [InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} дней Pro обоим)",
-                                  callback_data="digest:invite")],
+                                  switch_inline_query="")],
         ])
         cap_streak = await _streak_caption_block(int(uid))
         caption = (f"🏁 <b>Итоги дня</b> · {date_str}\n"
@@ -31020,8 +31023,9 @@ async def _admin_test_digest_command(update: Update, context: CallbackContext) -
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 Играть командой с друзьями", callback_data="digest:group")],
+        # switch_inline_query → выбор чата в Telegram + отправка карточки-приглашения другу.
         [InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} дней Pro обоим)",
-                              callback_data="digest:invite")],
+                              switch_inline_query="")],
     ])
     cap_streak = await _streak_caption_block(uid)
     prefix = "🧪 <i>Превью (пример данных)</i>\n" if sample else "🧪 <i>Превью (твои данные за 24 ч)</i>\n"
@@ -31597,17 +31601,18 @@ async def group_play_help_command(update: Update, context: CallbackContext) -> N
         bot_username = "bot"
     text = (
         "👥 <b>Играть вместе с друзьями</b>\n\n"
-        "Сейчас задания и отчёты приходят тебе <b>в личку</b> (индивидуально). "
-        "Можно играть <b>командой</b> — в общем чате, видно друг друга, итоги и рейтинг в группе. "
-        "Настроить просто:\n\n"
+        "Задания у каждого <b>свои</b> — они всегда приходят тебе <b>в личку</b>. "
+        "А если собраться <b>командой</b> в общей группе, я буду присылать туда "
+        "<b>итоги, статистику и рейтинг</b> — видно, кто как позанимался, и можно "
+        "соревноваться. Настроить просто:\n\n"
         "1️⃣ Создай группу в Telegram.\n"
         f"2️⃣ Добавь в неё бота @{bot_username} и сделай его <b>администратором</b> "
         "(нужно право «Закреплять сообщения»).\n"
         f"3️⃣ Позови друзей. Каждый должен открыть бота @{bot_username} и нажать <b>«Старт»</b> "
-        "(иначе бот не сможет ему писать).\n"
-        "4️⃣ В группе бот закрепит кнопку <b>«Получать задания здесь»</b> — каждый, кто хочет "
-        "играть в группе, жмёт её.\n\n"
-        "Готово! 🎉 Задания, вечерние итоги и рейтинг будут приходить в группу.\n"
+        "(иначе бот не сможет присылать ему задания в личку).\n\n"
+        "Готово! 🎉 Задания по-прежнему приходят каждому в личку, а <b>итоги дня и недели, "
+        "статистика и рейтинг</b> — в группу. Никаких кнопок жать не нужно: я учитываю всех, "
+        "кого вижу в группе.\n"
         "🏆 Общий рейтинг и Кубок чемпиона — для всех игроков бота в любом случае."
     )
     await message.reply_text(text, parse_mode="HTML")
