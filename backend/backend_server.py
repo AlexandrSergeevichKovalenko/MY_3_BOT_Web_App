@@ -8252,6 +8252,69 @@ def _flip_inverted_ru_de_dictionary_payload(
     return "de", "ru", german, "", "", german, "", ""
 
 
+def _correct_inverted_dictionary_scripts(
+    *,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    target_text: str,
+    word_ru: str,
+    word_de: str,
+    translation_de: str,
+    translation_ru: str,
+) -> tuple[str, str, str, str, str, str, str, str]:
+    """Symmetric companion to _flip_inverted_ru_de_dictionary_payload, covering the
+    direction that guard leaves open: a RUSSIAN string sitting in the GERMAN headword
+    slot on a de/ru save. Left alone, the deterministic grammar tables decorate it as
+    German — "der Понос / des Поносс", the adjective "морщинистыйer / am морщинистыйsten".
+    A real German word ALWAYS carries Latin letters (umlauts included), so
+    "Cyrillic present and no Latin at all" is a strong, safe signal the slot is misfilled.
+
+    Two shapes:
+      • Full inversion (de-slot Cyrillic-only AND ru-slot Latin-only) — the German is
+        simply sitting in the RU columns; swap them back.
+      • Only Russian present (de-slot Cyrillic-only, no Latin German anywhere) — re-file
+        as ru→de so the enrichment fetches the real German instead of echoing Russian.
+
+    Runs AFTER the column-fill/_align step, when word_de/word_ru are populated."""
+    sl = _normalize_short_lang_code(source_lang, fallback="")
+    tl = _normalize_short_lang_code(target_lang, fallback="")
+    unchanged = (source_lang, target_lang, source_text, target_text, word_ru, word_de, translation_de, translation_ru)
+    if {sl, tl} != {"de", "ru"}:
+        return unchanged
+
+    def _cyrillic_only(value) -> bool:
+        s = str(value or "")
+        return bool(_CYRILLIC_RE.search(s)) and not bool(_LATIN_RE.search(s))
+
+    def _latin_only(value) -> bool:
+        s = str(value or "")
+        return bool(_LATIN_RE.search(s)) and not bool(_CYRILLIC_RE.search(s))
+
+    german_slot = str(word_de or "").strip()
+    if not _cyrillic_only(german_slot):
+        return unchanged  # German slot holds real (Latin) text — nothing to fix.
+
+    # word_de is Russian. Rescue the real German from the RU columns if it is there.
+    russian = german_slot
+    if _latin_only(word_ru) or _latin_only(translation_ru):
+        german = str(word_ru if _latin_only(word_ru) else translation_ru).strip()
+        logging.warning(
+            "Dictionary save: swapped inverted de/ru columns (German was in the RU slot): german=%r russian=%r",
+            german, russian,
+        )
+        # Clean de→ru: German in the German columns, Russian in the Russian columns.
+        return "de", "ru", german, russian, russian, german, german, russian
+
+    # No German anywhere → treat it as a Russian word the user wants translated to German,
+    # so enrichment fills the real German rather than the grammar tables decorating Russian.
+    logging.warning(
+        "Dictionary save: Russian in German slot with no German found; re-filed as ru→de: ru=%r",
+        russian,
+    )
+    return "ru", "de", russian, "", russian, "", "", russian
+
+
 def _align_dictionary_legacy_ru_de_columns(
     *,
     source_lang: str,
@@ -8506,6 +8569,11 @@ def _normalize_saved_german_single_word(
 ) -> str:
     compact = re.sub(r"\s+", " ", str(value or "").strip())
     if not compact or not _is_single_word_dictionary_entry(compact, "de"):
+        return compact
+    # Never decorate a Cyrillic (Russian) string as a German headword — that is what turned a
+    # mis-slotted "Понос" into "der Понос". Leave it untouched so the caller's script guards /
+    # the trustworthy German column take over instead of this cementing the bug.
+    if _CYRILLIC_RE.search(compact):
         return compact
     _existing_article, bare = _strip_german_leading_article(compact)
     probe = bare or compact
@@ -18553,6 +18621,19 @@ def _build_multilang_dictionary_result(
         result["translation_de"] = target_value
         if not result["word_de"]:
             result["word_de"] = target_value
+    # Script guard at the ORIGIN of every stored card: when the model mis-orients a Cyrillic
+    # query as the German side, word_de/translation_de get the Russian word — and the
+    # deterministic grammar tables then decorate it ("der Понос", the adjective "морщинистыйer").
+    # German columns must be Latin-script, Russian columns Cyrillic. Blank a wrong-script
+    # value rather than store it, so the header/tables fall back to the real German carried in
+    # `forms` (plural "Durchfälle" etc.) or the trustworthy column instead of echoing Russian.
+    for _de_key in ("word_de", "translation_de"):
+        if _CYRILLIC_RE.search(str(result.get(_de_key) or "")):
+            result[_de_key] = ""
+    for _ru_key in ("word_ru", "translation_ru"):
+        _rv = str(result.get(_ru_key) or "")
+        if _rv and _LATIN_RE.search(_rv) and not _CYRILLIC_RE.search(_rv):
+            result[_ru_key] = ""
     passthrough_keys = (
         "translations",
         "meanings",
@@ -43042,6 +43123,19 @@ def save_webapp_dictionary_entry():
         translation_de=translation_de,
         translation_ru=translation_ru,
     )
+    (
+        source_lang, target_lang, source_text, target_text,
+        word_ru, word_de, translation_de, translation_ru,
+    ) = _correct_inverted_dictionary_scripts(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        target_text=target_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_de=translation_de,
+        translation_ru=translation_ru,
+    )
     sanitized_target_text = _sanitize_bilingual_dictionary_target(source_text, target_text, target_lang)
     if sanitized_target_text:
         target_text = sanitized_target_text
@@ -43281,6 +43375,19 @@ def save_mobile_dictionary_entry():
             translation_ru = target_text
 
     source_text, target_text, word_ru, word_de, translation_de, translation_ru = _align_dictionary_legacy_ru_de_columns(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        target_text=target_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_de=translation_de,
+        translation_ru=translation_ru,
+    )
+    (
+        source_lang, target_lang, source_text, target_text,
+        word_ru, word_de, translation_de, translation_ru,
+    ) = _correct_inverted_dictionary_scripts(
         source_lang=source_lang,
         target_lang=target_lang,
         source_text=source_text,
@@ -46572,6 +46679,19 @@ def save_bot_private_dictionary_entry():
             translation_de = source_text
 
     source_text, target_text, word_ru, word_de, translation_de, translation_ru = _align_dictionary_legacy_ru_de_columns(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        target_text=target_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_de=translation_de,
+        translation_ru=translation_ru,
+    )
+    (
+        source_lang, target_lang, source_text, target_text,
+        word_ru, word_de, translation_de, translation_ru,
+    ) = _correct_inverted_dictionary_scripts(
         source_lang=source_lang,
         target_lang=target_lang,
         source_text=source_text,

@@ -19,6 +19,9 @@ import secrets
 import random
 import re
 import threading
+
+# Cyrillic detector for dictionary script guards (a German headword must never be Cyrillic).
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
@@ -25454,6 +25457,14 @@ def list_user_vocabulary(
         response_json = _coerce_json_object(row[20])
         entry_source_lang = str(row[5] or "").strip().lower()
         entry_target_lang = str(row[6] or "").strip().lower()
+        # Serve guard: a mis-oriented lookup can leave a Russian value in response_json.word_de
+        # ("der Понос"), which the card renders as the German headword and inflects. The
+        # trustworthy German lives in the q.word_de column (row[3]). When response_json's German
+        # is Cyrillic, drop it so both the header and the grammar tables fall back to the column.
+        _rj_word_de = str(response_json.get("word_de") or "")
+        if _rj_word_de and _CYRILLIC_RE.search(_rj_word_de):
+            _col_de = str(row[3] or "").strip()
+            response_json["word_de"] = _col_de if (_col_de and not _CYRILLIC_RE.search(_col_de)) else ""
         response_source_text = str(response_json.get("source_text") or "").strip()
         response_target_text = str(response_json.get("target_text") or "").strip()
         german_display = str(
