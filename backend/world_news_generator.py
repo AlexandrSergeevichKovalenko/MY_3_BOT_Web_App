@@ -114,6 +114,13 @@ WORLD_NEWS_MAX_SECONDS = _env_int("WORLD_NEWS_MAX_SECONDS", 900)   # ≤ 15 min 
 # gesprochene Nachrichten» — the most reliable learner-news source with real German subtitles —
 # runs ~9–10 min, so a 6-min cap silently excluded it. Env-overridable if you want it shorter.
 WORLD_NEWS_MIN_SECONDS = _env_int("WORLD_NEWS_MIN_SECONDS", 40)
+# Preferred length window for listening practice: 5–7 min. The picker doesn't *restrict* to this
+# band (that could leave a morning with no news) — it *prioritises* it, trying videos inside the
+# window first, then longer ones (up to the hard cap — DW «Langsam gesprochene Nachrichten» runs
+# ~9–10 min and is our best source), then 2–5 min, and sub-2-min clips only as a last resort. So
+# a fresh 1-min clip no longer beats a 6-min one just for being newer.
+WORLD_NEWS_PREF_MIN_SECONDS = _env_int("WORLD_NEWS_PREF_MIN_SECONDS", 300)
+WORLD_NEWS_PREF_MAX_SECONDS = _env_int("WORLD_NEWS_PREF_MAX_SECONDS", 420)
 WORLD_NEWS_CANDIDATES = _env_int("WORLD_NEWS_CANDIDATES", 20)
 WORLD_NEWS_MIN_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MIN_TRANSCRIPT_CHARS", 300)
 WORLD_NEWS_MAX_TRANSCRIPT_CHARS = _env_int("WORLD_NEWS_MAX_TRANSCRIPT_CHARS", 8000)
@@ -366,6 +373,27 @@ def _gather_candidates() -> list[dict]:
     return candidates
 
 
+def _length_priority(dur: int) -> tuple[int, int]:
+    """Sort key (lower = tried first) that prefers the 5–7 min window for listening practice.
+
+    Tiers: 0 = inside [PREF_MIN, PREF_MAX] (ideal) · 1 = longer than the window (fuller news, still
+    good) · 2 = duration unknown (rare; try before the short clips) · 3 = 2–5 min · 4 = under 2 min
+    (last resort). Ties within a tier keep the caller's newest-first order (Python sort is stable),
+    so the freshest video wins among equally-good lengths. This only REORDERS the transcript walk —
+    it never adds transcript fetches, so the quota/budget behaviour is unchanged."""
+    pref_min = WORLD_NEWS_PREF_MIN_SECONDS
+    pref_max = WORLD_NEWS_PREF_MAX_SECONDS
+    if dur <= 0:
+        return (2, 0)
+    if pref_min <= dur <= pref_max:
+        return (0, 0)
+    if dur > pref_max:
+        return (1, dur - pref_max)   # longer — prefer closer to the window
+    if dur >= 120:
+        return (3, pref_min - dur)   # 2–5 min — prefer closer to the window
+    return (4, pref_min - dur)       # < 2 min — last resort
+
+
 def _pick_video_with_transcript(*, manual_url: str | None = None,
                                 exclude_video_ids: set[str] | None = None) -> tuple[dict | None, dict]:
     """Return ({video_id, video_url, title, channel_title, duration_seconds, lang, text, items}
@@ -414,6 +442,13 @@ def _pick_video_with_transcript(*, manual_url: str | None = None,
         logger.warning("world_news: no candidates from YouTube search (diag=%s)", diag)
         return None, diag
     details_map = _yt_api_video_details([c["video_id"] for c in candidates])
+    # Reorder the (newest-first) pool so 5–7 min videos are tried FIRST, then longer, then shorter —
+    # a stable sort keeps recency as the tiebreak. Duration comes from videos.list metadata we
+    # already fetched, so this costs no extra transcript fetches (those still stop at the first
+    # valid candidate below). See _length_priority for the tiering.
+    candidates.sort(key=lambda c: _length_priority(
+        (details_map.get(c["video_id"], {}).get("duration_seconds") or 0)
+    ))
     _budget_started = time.monotonic()
     for cand in candidates:
         if time.monotonic() - _budget_started > WORLD_NEWS_PICK_BUDGET_SEC:
