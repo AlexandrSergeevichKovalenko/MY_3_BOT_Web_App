@@ -36354,10 +36354,10 @@ async def admin_pin_check_command(update: Update, context: CallbackContext) -> N
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    n = 12
+    n = 40  # default covers the whole pool; the pool is small and this is a verify tool
     if context.args:
         try:
-            n = max(1, min(40, int(str(context.args[0]).strip())))
+            n = max(1, min(100, int(str(context.args[0]).strip())))
         except ValueError:
             pass
     from backend.database import list_approved_pin_tasks
