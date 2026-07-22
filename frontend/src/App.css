@@ -917,9 +917,18 @@ body:has(.webapp-page.is-theme-light),
   --telegram-tablet-inline-safe-offset: clamp(18px, 3vw, 34px);
 }
 
-.webapp-page.is-youtube-watch-focus .webapp-topbar,
-.webapp-page.is-youtube-phone-watch .webapp-topbar {
+.webapp-page.is-youtube-watch-focus .webapp-topbar {
   display: none;
+}
+
+/* Phone watch: the app top bar (🏠 Startseite) duplicates the home button already sitting on
+   the slim watch control bar (visible on pause) and just steals vertical space that the DE/RU
+   subtitles need while a video plays. Hide it for real — plain `display:none` here loses to
+   topbar-redesign.css `.webapp-topbar { display:flex !important }`, so we mirror the reader's
+   proven `!important` (see .is-reader-immersive above). Phone-only: is-youtube-phone-watch is
+   never set on tablet/browser (isWideLayout), so their layout is untouched. */
+.webapp-page.is-youtube-phone-watch .webapp-topbar {
+  display: none !important;
 }
 
 .webapp-page.is-youtube-watch-focus .webapp-main,
