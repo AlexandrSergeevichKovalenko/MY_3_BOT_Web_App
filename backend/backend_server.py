@@ -9314,25 +9314,17 @@ def run_pool_night_enrichment(
             if dry_run:
                 continue
             try:
-                # Промпт enrich_word_multilang пишет примеры на TARGET_LANGUAGE и заполняет
-                # немецкие формы, только когда target — немецкий. Поэтому изучаемый язык
-                # ВСЕГДА идёт целью, даже если сама запись лежит как de→ru: иначе для
-                # «der Zufall» приходят русские примеры («Это был просто случай»), которые
-                # изучающему немецкий бесполезны, — и уходят в общий пул для всех.
-                if row_source_lang == "de":
-                    call_source_text, call_target_text = target_text, source_text
-                    call_source_lang, call_target_lang = row_target_lang, row_source_lang
-                else:
-                    call_source_text, call_target_text = source_text, target_text
-                    call_source_lang, call_target_lang = row_source_lang, row_target_lang
-                if _is_legacy_ru_de_pair(call_source_lang, call_target_lang):
-                    enrich = asyncio.run(run_enrich_word(call_source_text, call_target_text))
-                else:
-                    enrich = asyncio.run(run_enrich_word_multilang(
-                        source_text=call_source_text, target_text=call_target_text,
-                        source_lang=call_source_lang, target_lang=call_target_lang,
-                    ))
-                enrich_data = _normalize_dictionary_enrich_payload(enrich)
+                # Тот же богатый промпт, что и живой поиск / ленивое открытие — иначе ночной
+                # добор оставлял бы карточки тонкими (только формы+примеры). Helper сам
+                # ставит немецкое слово запросом (source=de) с пояснениями на родном, так что
+                # изучаемый язык всегда цель — «der Zufall» получает немецкие примеры, не
+                # русские, — и полный разбор уходит в общий пул для всех.
+                enrich_data = _normalize_dictionary_enrich_payload(
+                    _rich_enrich_card_fields(
+                        source_text=source_text, target_text=target_text,
+                        source_lang=row_source_lang, target_lang=row_target_lang,
+                    )
+                )
                 enrich_data = _drop_wrong_language_examples(enrich_data, learning_lang="de")
                 if not enrich_data:
                     report["skipped"] += 1
