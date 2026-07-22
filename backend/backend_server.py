@@ -8746,6 +8746,68 @@ def _normalize_dictionary_enrich_payload(enrich: dict | None) -> dict:
     return enrich_data
 
 
+def _rich_enrich_card_fields(
+    *,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    """Produce a FULL, unified card for a German headword by running the SAME rich
+    `dictionary_assistant_multilang` prompt the LIVE dictionary lookup uses.
+
+    Previously the lazy on-open enrich and the nightly pool both used the THIN
+    `enrich_word_multilang` prompt, which returns only forms + examples — no Rektion,
+    collocations, meanings, etymology or memory tip. Cards filled that way could never
+    reach the fullness of a live-looked-up card (that split was the "kreieren куцый /
+    absprechen полный" mismatch). Routing every enrich path through this one prompt makes
+    card fullness depend on the WORD, not on which path happened to fill it.
+
+    The German word is always the query (source_lang=de) with explanations in the native
+    language, so the card is German-oriented regardless of how the entry was stored.
+    Returns the rich item dict, or {} on any failure (caller keeps the thin card)."""
+    sl = str(source_lang or "").strip().lower()
+    tl = str(target_lang or "").strip().lower()
+    if sl == "de":
+        german_word, native_lang = source_text, tl
+    elif tl == "de":
+        german_word, native_lang = target_text, sl
+    else:
+        german_word, native_lang = source_text, tl
+    german_word = str(german_word or "").strip()
+    native_lang = (native_lang or "ru").strip().lower() or "ru"
+    if not german_word:
+        return {}
+    try:
+        raw = asyncio.run(
+            run_dictionary_lookup_multilang(
+                word=german_word,
+                source_lang="de",
+                target_lang=native_lang,
+                explanation_lang=native_lang,
+            )
+        )
+    except Exception as exc:
+        logging.warning("rich enrich lookup failed word=%r: %s", german_word, exc)
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    try:
+        item, _direction, _detected, _sv, _tv = _build_dictionary_result_from_raw(
+            raw=raw,
+            query_word=german_word,
+            source_lang="de",
+            target_lang=native_lang,
+            query_source_lang="de",
+            query_target_lang=native_lang,
+            lookup_lang="",
+        )
+    except Exception as exc:
+        logging.warning("rich enrich build failed word=%r: %s", german_word, exc)
+        return {}
+    return item if isinstance(item, dict) else {}
+
+
 def _dictionary_payload_needs_enrichment(response_json: dict | None) -> bool:
     payload = response_json if isinstance(response_json, dict) else {}
     entry_kind = str(payload.get("entry_kind") or "").strip().lower()
@@ -8834,18 +8896,16 @@ def _run_saved_dictionary_entry_enrichment(
         if not _is_single_word_dictionary_entry(source_text, source_lang):
             return
 
-        if _is_legacy_ru_de_pair(source_lang, target_lang):
-            enrich = asyncio.run(run_enrich_word(source_text, target_text))
-        else:
-            enrich = asyncio.run(
-                run_enrich_word_multilang(
-                    source_text=source_text,
-                    target_text=target_text,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
+        # Unified rich enrichment (same prompt as the live lookup) — full card, not the
+        # thin forms+examples the old enrich_word prompt returned.
+        enrich_data = _normalize_dictionary_enrich_payload(
+            _rich_enrich_card_fields(
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
             )
-        enrich_data = _normalize_dictionary_enrich_payload(enrich)
+        )
         if not enrich_data:
             return
 
@@ -49406,24 +49466,22 @@ def enrich_flashcard_entry():
         target_text_hint=target_text_hint or word_de,
     )
 
+    # Unified rich enrichment (same prompt as the live lookup) so an opened card reaches the
+    # SAME fullness — Rektion / collocations / meanings / etymology / mnemonic — instead of
+    # the thin forms+examples the old enrich_word prompt produced.
     try:
-        if _is_legacy_ru_de_pair(source_lang, target_lang):
-            enrich = asyncio.run(run_enrich_word(source_text, target_text))
-        else:
-            enrich = asyncio.run(
-                run_enrich_word_multilang(
-                    source_text=source_text,
-                    target_text=target_text,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-            )
+        enrich = _rich_enrich_card_fields(
+            source_text=source_text,
+            target_text=target_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
     except Exception as exc:
         return jsonify({"error": f"Ошибка enrich: {exc}"}), 500
 
     if not response_json:
         response_json = {}
-    if isinstance(enrich, dict):
+    if isinstance(enrich, dict) and enrich:
         response_json.update(_normalize_dictionary_enrich_payload(enrich))
         response_json = _prepare_dictionary_response_json_for_save(
             response_json=response_json,
