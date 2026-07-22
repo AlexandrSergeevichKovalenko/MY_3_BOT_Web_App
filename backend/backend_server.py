@@ -8861,6 +8861,46 @@ def _dictionary_payload_needs_enrichment(response_json: dict | None) -> bool:
     return True
 
 
+def _dictionary_word_card_is_thin(payload: dict | None) -> bool:
+    """A single-WORD card built by the OLD thin prompt: it may carry forms + examples +
+    dictionary_senses (so _dictionary_payload_needs_enrichment calls it "full"), yet lacks
+    EVERY rich block the live prompt produces — meanings, translations, collocations,
+    Rektion, mnemonic, etymology. This is the "kreieren куцый" state.
+
+    Used ONLY by the user-paced on-open enrich to upgrade such a card to a full one; the
+    nightly job deliberately keeps the conservative gate so it never mass-re-enriches on the
+    thin→rich switch (that cost-heavy sweep is a separate, explicit step)."""
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("entry_kind") or "word").strip().lower() not in ("", "word"):
+        return False
+
+    def _nonempty_list(key: str) -> bool:
+        v = payload.get(key)
+        return isinstance(v, list) and len(v) > 0
+
+    # ANY rich marker → already full (the thin prompt never emits these).
+    if _nonempty_list("common_collocations") or _nonempty_list("government_patterns"):
+        return False
+    if _nonempty_list("translations"):
+        return False
+    meanings = payload.get("meanings")
+    if isinstance(meanings, dict):
+        primary = meanings.get("primary")
+        if isinstance(primary, dict) and str(primary.get("value") or "").strip():
+            return False
+        secondary = meanings.get("secondary")
+        if isinstance(secondary, list) and any(
+            isinstance(m, dict) and str(m.get("value") or "").strip() for m in secondary
+        ):
+            return False
+    if str(payload.get("memory_tip") or "").strip():
+        return False
+    if str(payload.get("etymology_note") or "").strip():
+        return False
+    return True
+
+
 def _run_saved_dictionary_entry_enrichment(
     *,
     entry_id: int,
@@ -49446,8 +49486,21 @@ def enrich_flashcard_entry():
             response_json = json.loads(response_json)
         except Exception:
             response_json = None
-    # Already a full card → no LLM call. Opening the same word twice must stay free.
-    if isinstance(response_json, dict) and not _dictionary_payload_needs_enrichment(response_json):
+    # Already a RICH card → no LLM call. Opening the same full word twice must stay free.
+    # A single-word card built by the old thin prompt (forms+examples but no meanings /
+    # Rektion / collocations) is upgraded on this user-paced open — that is the "kreieren
+    # куцый" fix — so a card the gate calls "full" but is actually thin still gets enriched
+    # once, then stays free forever after.
+    _german_headword = str(entry.get("word_de") or word_de or "").strip()
+    _is_thin_word = (
+        _dictionary_word_card_is_thin(response_json)
+        and _is_single_word_dictionary_entry(_german_headword, "de")
+    )
+    if (
+        isinstance(response_json, dict)
+        and not _dictionary_payload_needs_enrichment(response_json)
+        and not _is_thin_word
+    ):
         return jsonify(
             {
                 "ok": True,
