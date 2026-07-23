@@ -3904,18 +3904,29 @@ HARD RULES for every distractor:
 - SAME part of speech as `target`. If a noun, include the article (der/die/das).
   Verb → infinitive; adjective/adverb → Grundform. Storage format like the correct list.
 - NOT a {relation} of `target` in any register, sense, figurative use or common
-  collocation. Also must NOT duplicate `target`, the `correct` list, their close
-  synonyms, or another distractor.
+  collocation. Must NOT duplicate `target`, any word in `correct`, a close synonym of a
+  CORRECT answer, or another distractor. (A synonym of `target` itself is ALLOWED and
+  encouraged for an antonym task — that is the direction trap.)
 - Judged against the INTENDED sense only (`sense_de`). A word that relates to a
   DIFFERENT sense of `target` is a GOOD distractor (label it wrong_sense).
 
-Prefer these attractive-but-wrong TRAP TYPES; label which applies:
-- same_topic_wrong_relation : same semantic field, but neither {relation}.
-- opposite_relation_trap    : for an ANTONYM task, a real SYNONYM of target (and
-                              vice-versa) — tests DIRECTION, not mere relatedness.
-- wrong_sense               : valid {relation} of a DIFFERENT sense of target, not
-                              the intended one (polysemy trap).
-- near_form                 : similar root/spelling, different meaning.
+DIFFICULTY MANDATE: every distractor must be genuinely TEMPTING — a B2 learner could
+plausibly believe it IS the {relation}. Do NOT pad the list with bland, obviously
+unrelated words (random adjectives from unrelated fields, e.g. "modern","restless").
+Prefer FEWER, HARDER distractors over many easy ones.
+
+Prefer these attractive-but-wrong TRAP TYPES, HARDEST FIRST; label which applies:
+- opposite_relation_trap  : the candidate is itself a SYNONYM/near-synonym of target
+                            (for an ANTONYM task) or an ANTONYM of target (for a
+                            SYNONYM task). The learner who confuses DIRECTION picks it.
+                            These are the MOST valuable traps — include several.
+- answer_field_near_miss  : a word from the {relation}'s OWN semantic field that falls
+                            just short of being a true {relation} of target (close, but
+                            a competent speaker would not accept it as the answer).
+- wrong_sense             : valid {relation} of a DIFFERENT sense of target, not the
+                            intended one (polysemy trap).
+- same_topic_wrong_relation : same broad topic, but neither {relation}.
+- near_form               : similar root/spelling, different meaning.
 
 For EACH candidate output an object:
 {"word":"...","article":"der"|"die"|"das"|null,"pos":"...","ru_gloss":"<RU meaning>",
@@ -3933,32 +3944,44 @@ Return STRICT JSON ONLY:
 Order candidates by risk_self_score ascending. No markdown.
 """,
 "sprint_distractor_prosecutor": """
-ROLE: You are a ruthless German examiner whose ONLY goal is to BREAK a vocabulary
-trainer by proving that a word it marked "wrong" is actually an ACCEPTABLE answer.
+ROLE: You are a ruthless German examiner. A trainer will show `candidate` as a WRONG
+option in a "find the {relation} of `target`" question. There is exactly ONE dangerous
+case you must catch: a candidate that is itself a valid {relation} of `target` — that
+would make the trainer mark a correct pick as wrong. Everything else is a good distractor.
 
 INPUT JSON: {"target":"...","sense_de":"...","relation":"synonym"|"antonym",
 "candidate":"...","target_example_de":"..."}
 
-Build the STRONGEST possible case that `candidate` IS a valid {relation} of `target`
-(in the intended sense `sense_de`). You MUST consider, explicitly:
-- every sense of the candidate, including figurative and colloquial usage;
-- common collocations and fixed expressions;
-- regional / register variation;
-- the SUBSTITUTION TEST: put `candidate` in place of `target` in `target_example_de`.
-  Does the sentence stay natural AND does candidate then read as a {relation} of
-  target? If substitution works smoothly, that is strong evidence candidate is unsafe.
+Build the STRONGEST possible case that `candidate` IS ITSELF a valid {relation} of
+`target` in the intended sense `sense_de`. Consider explicitly: every sense of the
+candidate (incl. figurative/colloquial), common collocations, and register/regional use.
 
-Then decide:
-- "REJECT" if you found ANY credible case a competent native speaker or B2 teacher
-  would accept candidate as a {relation} of target → unsafe as a distractor.
-- "PASS"   only if there is NO credible case; candidate is clearly not a {relation}.
-Rule: if you are uncertain, output REJECT (fail toward dropping the distractor).
+SUBSTITUTION TEST — put `candidate` in place of `target` in `target_example_de`:
+- relation = "synonym": if the sentence stays natural AND keeps ROUGHLY THE SAME meaning,
+  candidate behaves as a synonym → DANGEROUS.
+- relation = "antonym": if the sentence stays natural AND its meaning flips to the natural
+  OPPOSITE, candidate behaves as an antonym → DANGEROUS. But if the meaning stays THE SAME
+  (candidate is a synonym of target), candidate is NOT the antonym → SAFE.
+
+CRITICAL — do NOT reject a candidate merely because it OVERLAPS with, resembles, or is
+even a SYNONYM of `target` (when relation = antonym) or an ANTONYM of `target` (when
+relation = synonym), or is topically related. Those are exactly the GOOD, tempting
+distractors we WANT. Reject ONLY if the candidate could itself be accepted as the
+{relation} we are testing.
+
+Decide:
+- "REJECT" if there is a credible case candidate is ITSELF a valid {relation} of target.
+- "PASS"   otherwise — including when candidate is a synonym of target / a related word
+           that simply is not the {relation} we test.
+Only when you are genuinely unsure whether it could be the {relation} ITSELF, output REJECT.
 
 Return STRICT JSON ONLY:
 {"verdict":"REJECT"|"PASS",
  "substitution_ok":true|false,
- "best_case_for_acceptance":"<the strongest argument you could build, or ''>",
+ "best_case_for_acceptance":"<strongest case it IS the {relation}, or ''>",
  "confidence":<0..1>}
+Here "substitution_ok" = true means candidate ACTS AS the {relation} in the substitution
+test (i.e. dangerous).
 """,
 "sprint_distractor_judge": """
 ROLE: You are an INDEPENDENT German lexicography referee. You have NOT seen any prior
@@ -3967,11 +3990,14 @@ reasoning. Judge strictly and conservatively; when unsure, do not pass a distrac
 INPUT JSON: {"target":"...","sense_de":"...","relation":"synonym"|"antonym",
 "distractors":["...","..."]}
 
-For EACH distractor, in input order, classify how it relates to `target` in the
-intended sense `sense_de`:
-- "DEFINITELY_NOT" : clearly NOT a {relation} of target. (only these may survive)
-- "ARGUABLE"       : someone could defend it as a {relation}. (must be dropped)
+For EACH distractor, in input order, classify ONLY whether it is itself a valid
+{relation} of `target` in the intended sense `sense_de`:
+- "DEFINITELY_NOT" : clearly NOT the {relation} of target. (only these may survive)
+- "ARGUABLE"       : someone could defend it AS the {relation}. (must be dropped)
 - "IS_ANSWER"      : actually a valid {relation} of target. (must be dropped — a bug)
+A word that is a SYNONYM of target (when relation = antonym) or an ANTONYM of target
+(when relation = synonym), or merely related/overlapping, is "DEFINITELY_NOT" — it is a
+GOOD distractor, not a problem. Judge the RELATION we test, nothing else.
 Also set "issues": list any of ["not_a_word","misspelled","wrong_pos","missing_article",
 "above_b2","duplicates_target"] that apply (empty list if none).
 
