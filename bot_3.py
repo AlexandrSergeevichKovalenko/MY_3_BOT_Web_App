@@ -840,9 +840,13 @@ def _build_rotation_catalog() -> list:
     add("rebus", REBUS_SLOT_TIMES, always_on=True)
     add("crossword", CROSSWORD_SLOT_TIMES, always_on=True)
     add("anagram", ANAGRAM_SLOT_TIMES, always_on=True)
-    add("sprint", SPRINT_SLOT_TIMES.keys(), always_on=True)
-    # Synonym/Antonym recognition trainer — the rail's entry point. Always-on so it can
-    # fire; tiering still decides per-user (non-mandatory → rotation rank inside budget).
+    # Rail-sprint is a BONUS: when the rail is on it is delivered to prepped users OUTSIDE
+    # the counted budget (so nobody loses a slot), so it must NOT occupy a tier position.
+    # When the rail is off, it stays a normal counted rotation kind (current behaviour).
+    if not _trainer_enabled():
+        add("sprint", SPRINT_SLOT_TIMES.keys(), always_on=True)
+    # Synonym/Antonym recognition trainer — the rail's entry point (the COUNTED prep that
+    # reaches users via their budget). Always-on so it can fire; tiering decides per-user.
     add("trainer", TRAINER_SLOT_TIMES.keys(), always_on=True)
     add("adjektiv_sprint", ADJEKTIV_SPRINT_SLOTS, always_on=True)
     add("wofrage_sprint", WOFRAGE_SPRINT_SLOTS, always_on=True)
@@ -962,6 +966,12 @@ FREE_INACTIVE_SUPPRESS_DAYS = max(1, int((os.getenv("FREE_INACTIVE_SUPPRESS_DAYS
 # sends → no filtering. ContextVar = correctly isolated per asyncio task.
 _current_scheduled_send: contextvars.ContextVar = contextvars.ContextVar(
     "current_scheduled_send", default=None)
+
+# Set alongside _current_scheduled_send for a BONUS send (rail-sprint): the collector
+# still applies the silent/window gates but SKIPS the per-user budget count, so the send
+# reaches prepped users ON TOP of their daily N without consuming a slot.
+_scheduled_send_bonus: contextvars.ContextVar = contextvars.ContextVar(
+    "scheduled_send_bonus", default=False)
 
 _rotation_rank_cache: tuple[int, dict] | None = None
 
@@ -25874,6 +25884,11 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
                 is_pro_user = pro_map.get(uid, False)
                 budget = _user_send_budget(uid, is_pro=is_pro_user,
                                            active_recent=active_recent, preset=p.get("preset"))
+                # Silence / inactive suppression (budget 0) is ALWAYS respected — even a
+                # bonus send never reaches someone who opted out of all pushes.
+                if budget <= 0:
+                    tier_skipped += 1
+                    continue
                 # Mandatory core-skill kinds get the TOP positions inside the budget, so
                 # they're delivered first and the rest of the budget is rotation. This
                 # keeps the daily count == budget (mandatory are INSIDE the limit, not on
@@ -25882,7 +25897,9 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
                     position = _tiered_slot_position(s_kind, s_hh, s_mm, free=not is_pro_user)
                 else:
                     position = slot_rank
-                if position >= budget:
+                # A BONUS send (rail-sprint) skips the budget COUNT — it's delivered on top
+                # of the daily N — but every other gate (silent above, window below) holds.
+                if not _scheduled_send_bonus.get() and position >= budget:
                     tier_skipped += 1
                     continue  # outside this user's allocation
                 in_window = _now_in_window(p.get("schedule"), p.get("tz_name")) if p else True
@@ -39893,6 +39910,24 @@ def main():
             submit_async(_wrapped, CallbackContext(application=application), *extra)
         return _job
 
+    def make_bonus_gated(kind, hour, minute, async_func, *extra):
+        """Fire UNCONDITIONALLY (no global-rotation gate) as a BONUS send: sets
+        _current_scheduled_send (so the collector still applies the silent + window gates)
+        AND _scheduled_send_bonus (so it SKIPS the per-user budget count). Used for the
+        rail-sprint — it reaches every prepped, non-silent user ON TOP of their daily N,
+        never consuming one of those N. Quiet-hours/enabled checks run inside the sender."""
+        def _job():
+            async def _wrapped(ctx, *a):
+                token = _current_scheduled_send.set((kind, int(hour), int(minute)))
+                btoken = _scheduled_send_bonus.set(True)
+                try:
+                    await async_func(ctx, *a)
+                finally:
+                    _scheduled_send_bonus.reset(btoken)
+                    _current_scheduled_send.reset(token)
+            submit_async(_wrapped, CallbackContext(application=application), *extra)
+        return _job
+
     # def run_async_job(async_func, context=None, *args, **kwargs):
     #     if context is None:
     #         context = CallbackContext(application=application)   # Создаем `context`, если его нет
@@ -40481,10 +40516,16 @@ def main():
             QUIZ_SCHEDULE_TZ_NAME,
             _aufgabe_enabled(),
         )
-        # -- Synonym/Antonym Sprint: 1×/day each --
+        # -- Synonym/Antonym Sprint: 1×/day each. With the rail ON, the sprint is a BONUS
+        #    for prepped users (make_bonus_gated → outside the counted budget, no tiering);
+        #    with the rail OFF it's a normal counted rotation kind (make_rotation_gated). --
+        _sprint_bonus_mode = _trainer_enabled()
         for (_sp_hour, _sp_minute), _sp_rel in sorted(SPRINT_SLOT_TIMES.items()):
+            _sp_job = (make_bonus_gated("sprint", _sp_hour, _sp_minute, _send_scheduled_sprint, _sp_rel)
+                       if _sprint_bonus_mode
+                       else make_rotation_gated("sprint", _sp_hour, _sp_minute, _send_scheduled_sprint, _sp_rel))
             scheduler.add_job(
-                make_rotation_gated("sprint", _sp_hour, _sp_minute, _send_scheduled_sprint, _sp_rel),
+                _sp_job,
                 "cron",
                 hour=_sp_hour,
                 minute=_sp_minute,
