@@ -97,6 +97,34 @@ export function clean(value) {
   return String(value || '').trim();
 }
 
+// ── Article helpers ──────────────────────────────────────────────────────────
+// The German article reaches us two ways that can DISAGREE: a separate `article`
+// field (filled by a secondary path — it drifts, and sometimes holds prose like
+// "der (Hinterwäldler)" or "die (Plural: …)") and the leading token of `word_de`
+// (the model's primary statement, e.g. "das Kabel"). We trust the token embedded
+// in word_de first, then a strictly-whitelisted `article`, and NEVER anything that
+// isn't exactly der/die/das. Deriving BOTH the displayed article and the
+// declension gender from ONE resolved value is what keeps the headword correct
+// ("das Kabel", never "der das Kabel") and the table in sync with it.
+const _DEF_ARTS = new Set(['der', 'die', 'das']);
+export function cleanArticle(a) {
+  const t = String(a || '').trim().toLowerCase();
+  return _DEF_ARTS.has(t) ? t : '';
+}
+export function articleInWord(text) {
+  return cleanArticle(String(text || '').trim().split(/\s+/)[0]);
+}
+export function stripLeadingArticle(text) {
+  return String(text || '').replace(/^(der|die|das)\s+/i, '');
+}
+// `quick` optional: quick-dict's article comes from the deterministic Wiktionary
+// table, so prefer it when present. Order: Wiktionary → word_de token → field.
+export function resolveArticle(item, quick) {
+  return cleanArticle(quick && quick.article)
+    || articleInWord(item && item.word_de)
+    || cleanArticle(item && item.article);
+}
+
 // Russian labels for the part-of-speech badge.
 const POS_LABELS = {
   noun: 'существительное',
@@ -467,7 +495,9 @@ function buildGrammarTablesJS(item) {
   const f = (item.forms && typeof item.forms === 'object') ? item.forms : {};
   const wordDe = clean(item.word_de);
   if (pos === 'noun') {
-    const t = buildNounDeclension(wordDe, item.article, f.plural, f.genitive);
+    // Gender from the RESOLVED article (word_de token first), never the raw
+    // `article` field — a wrong "der" there built a masculine "der Kabel" table.
+    const t = buildNounDeclension(wordDe, resolveArticle(item), f.plural, f.genitive);
     return t ? { declension: t } : null;
   }
   if (pos === 'verb') {
@@ -643,7 +673,12 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   // Prefer server-built tables; fall back to the client engine (saved entries
   // without grammar_tables still get a full declension/conjugation table).
   const serverGt = item.grammar_tables;
-  const gt = (serverGt && (serverGt.declension || serverGt.conjugation || serverGt.comparison))
+  // Reject a server declension whose article contradicts the resolved gender
+  // (a stale "der Kabel" table for a neuter noun) and rebuild it client-side.
+  const _resolvedArt = resolveArticle(item);
+  const _serverDeclBad = !!(serverGt && serverGt.declension && _resolvedArt
+    && !clean(serverGt.declension.rows?.[0]?.singular).toLowerCase().startsWith(_resolvedArt + ' '));
+  const gt = (serverGt && !_serverDeclBad && (serverGt.declension || serverGt.conjugation || serverGt.comparison))
     ? serverGt : buildGrammarTablesJS(item);
   const hasTables = !!(gt && (gt.declension || gt.conjugation || gt.comparison));
   const government = governmentList(item);

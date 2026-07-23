@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import '../answer/answer.css';
 import './dict.css';
-import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic, getInitData, getDictToken } from './WordBreakdown';
+import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
 import { humanizeDictError } from './errors.js';
@@ -218,17 +218,24 @@ export default function DictionaryOverlay({ onClose } = {}) {
   // and a proper translation, so prefer those for the headword. word_de already
   // includes the article; we render the article in a colored span separately, so
   // strip it here to avoid "die die Dunstabzugshaube".
-  const corrDe = String(item?.word_de || '').trim().replace(/^(der|die|das)\s+/i, '');
+  const corrDe = stripLeadingArticle(String(item?.word_de || '').trim());
   const bestRu = String(
     item?.translation_ru
     || item?.word_ru
     || item?.meanings?.primary?.value
     || '',
   ).trim();
+  // Strip the article from EVERY German fallback (not just word_de). The colored
+  // article renders in its own span, so an un-stripped "das Kabel" here plus the
+  // span produced "der das Kabel".
   const headTranslation = quick?.targetLang === 'de'
-    ? (corrDe || quick?.translation || '—')
+    ? (corrDe || stripLeadingArticle(quick?.translation) || '—')
     : (bestRu || quick?.translation || '—');
-  const headSource = (quick?.sourceLang === 'de' && corrDe) ? corrDe : (quick?.source || '');
+  const headSource = (quick?.sourceLang === 'de')
+    ? (corrDe || stripLeadingArticle(quick?.source) || '')
+    : (quick?.source || '');
+  // One clean der/die/das for both the source and translation spans.
+  const dqArticle = resolveArticle(item, quick);
   const correctedNote = (corrDe && quick?.sourceLang === 'de'
     && corrDe.toLowerCase() !== String(quick?.source || '').trim().toLowerCase())
     ? corrDe : '';
@@ -873,13 +880,13 @@ export default function DictionaryOverlay({ onClose } = {}) {
         {quick && phase !== 'loading' && (
           <div className="dq-result">
             <div className="dq-source">
-              {((item?.article || quick.article) && quick.sourceLang === 'de')
-                ? <><span className={`dq-art ${genderClass(item?.article || quick.article)}`}>{item?.article || quick.article}</span> </> : ''}{headSource}
+              {(dqArticle && quick.sourceLang === 'de')
+                ? <><span className={`dq-art ${genderClass(dqArticle)}`}>{dqArticle}</span> </> : ''}{headSource}
               {correctedNote && <span className="dq-corrected">исправлено с «{quick.source}»</span>}
             </div>
             <div className="dq-translation">
-              {((item?.article || quick.article) && quick.targetLang === 'de')
-                ? <><span className={`dq-art ${genderClass(item?.article || quick.article)}`}>{item?.article || quick.article}</span> </> : ''}
+              {(dqArticle && quick.targetLang === 'de')
+                ? <><span className={`dq-art ${genderClass(dqArticle)}`}>{dqArticle}</span> </> : ''}
               {headTranslation}
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>

@@ -1177,6 +1177,14 @@ DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK = str(os.getenv("DICTIONARY_ENABLE_REVERS
 # it, so the cached/saved result stays GPT-quality while ONE core GPT call is saved. Default
 # OFF: it feeds the shared ~10-year cache, so QA a sample of words before arming. DE/RU only.
 DICTIONARY_BASE_BEFORE_GPT_ENABLED = str(os.getenv("DICTIONARY_BASE_BEFORE_GPT_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
+# ADDITIVE, fail-open backstop for der/die/das on single-word nouns: when saving a
+# word card we ask de.wiktionary for the DOCUMENTED genus (cached forever in
+# bt_3_wiktionary_genus_cache) and, ONLY when exactly one gender is documented,
+# override the model's article. Two-gender / unknown words and any lookup error
+# leave the model's article untouched — so this never regresses the existing
+# enrichment, only corrects the one soft spot the gpt-4.1-mini switch exposed.
+# Default ON; flip to 0 to disable instantly.
+DICTIONARY_AUTHORITATIVE_ARTICLE_ENABLED = str(os.getenv("DICTIONARY_AUTHORITATIVE_ARTICLE_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC = max(
     1.0,
     min(12.0, float((os.getenv("QUICK_TRANSLATE_PROVIDER_TIMEOUT_SEC") or "3.5").strip() or "3.5")),
@@ -8591,6 +8599,30 @@ def _strip_spurious_leading_article(text: str) -> str | None:
     return None
 
 
+def _authoritative_german_article(lemma: str) -> str:
+    """de.wiktionary's DOCUMENTED genus for a single German noun, as der/die/das —
+    returned ONLY when exactly one gender is documented (unambiguous). '' for
+    unknown or two-gender words. Cached forever in bt_3_wiktionary_genus_cache
+    (network only on the first miss), so it warms a fast path for repeat lemmas.
+
+    Fail-open by contract: any error, timeout, ambiguity or miss → '' so the caller
+    keeps the model's article. This can only CORRECT the article, never blank a
+    working one — the existing enrichment scheme stays intact underneath."""
+    lemma = str(lemma or "").strip()
+    if not lemma or _CYRILLIC_RE.search(lemma):
+        return ""
+    try:
+        from backend.article_wiktionary_ref import reference_articles
+        verdict = reference_articles([lemma]).get(lemma) or {}
+        arts = verdict.get("articles") or set()
+        if len(arts) == 1:
+            a = next(iter(arts))
+            return a if a in {"der", "die", "das"} else ""
+    except Exception:
+        logging.debug("authoritative article lookup failed for %r", lemma, exc_info=True)
+    return ""
+
+
 def _normalize_saved_german_single_word(
     value: str | None,
     *,
@@ -8659,6 +8691,15 @@ def _apply_german_headword_normalization(
     current_german = str(normalized.get(german_side_key) or normalized.get("word_de") or "").strip()
     if not _is_single_word_dictionary_entry(current_german, "de"):
         return normalized
+    # Authoritative der/die/das backstop: for a single-word noun, prefer the genus
+    # de.wiktionary documents over the model's article (the mini soft spot). Only
+    # overrides on an unambiguous single gender; otherwise keeps `article` as-is.
+    if DICTIONARY_AUTHORITATIVE_ARTICLE_ENABLED and part_of_speech == "noun":
+        _bare = _strip_german_leading_article(current_german)[1] or current_german
+        _auth = _authoritative_german_article(_bare)
+        if _auth and _auth != _normalize_german_article(article):
+            article = _auth
+            normalized["article"] = _auth
     normalized_german = _normalize_saved_german_single_word(
         current_german,
         part_of_speech=part_of_speech,

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import '../answer/answer.css';
 import './dict.css';
 import './deep.css';
-import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic } from './WordBreakdown';
+import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, api, haptic } from './WordBreakdown';
 import { guessPair, extractRichTranslation, buildDictionarySavePayload } from './saveUtils';
 import { humanizeDictError } from './errors.js';
 import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
@@ -426,7 +426,9 @@ export default function DeepAnalysis({ startParam }) {
     );
   }
 
-  const article = clean(item?.article);
+  // Resolve to a clean der/die/das (word_de token first) so the colored article
+  // span always agrees with the stripped headword — no "der das Kabel" doubling.
+  const article = resolveArticle(item);
   const headword = germanText || clean(item?.word_de) || clean(item?.source_text);
   const pron = item?.pronunciation && typeof item.pronunciation === 'object' ? item.pronunciation : {};
   const ipa = clean(pron.ipa);
