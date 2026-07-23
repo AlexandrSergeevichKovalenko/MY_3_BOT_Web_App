@@ -149,28 +149,40 @@ def fetch_openai_costs(*, start_day: date, yesterday: date) -> dict[str, Any]:
     if not key:
         return {"configured": False}
     start_ts = int(datetime(start_day.year, start_day.month, start_day.day, tzinfo=timezone.utc).timestamp())
-    try:
+
+    def _fetch(group_by_line: bool) -> dict[str, Any]:
+        """One full paginated sweep. Retries transient 5xx (OpenAI's Costs API
+        intermittently answers HTTP 500 "server had an error"); returns totals or
+        an {'error': ...} dict. ``group_by_line`` off = lighter query for fallback."""
         mtd = 0.0
         yday = 0.0
         by_line: dict[str, float] = {}
-        params = {
+        base_params: dict[str, Any] = {
             "start_time": start_ts,
             "bucket_width": "1d",
             "limit": 62,
-            "group_by": "line_item",
         }
+        if group_by_line:
+            base_params["group_by"] = "line_item"
         page = None
         for _ in range(10):  # pagination guard
+            params = dict(base_params)
             if page:
                 params["page"] = page
-            resp = requests.get(
-                "https://api.openai.com/v1/organization/costs",
-                headers={"Authorization": f"Bearer {key}"},
-                params=params,
-                timeout=_HTTP_TIMEOUT,
-            )
+            resp = None
+            for attempt in range(3):  # retry transient server errors with backoff
+                resp = requests.get(
+                    "https://api.openai.com/v1/organization/costs",
+                    headers={"Authorization": f"Bearer {key}"},
+                    params=params,
+                    timeout=_HTTP_TIMEOUT,
+                )
+                if resp.status_code >= 500 and attempt < 2:
+                    time.sleep(3 * (attempt + 1))
+                    continue
+                break
             if resp.status_code >= 400:
-                return {"configured": True, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+                return {"error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
             body = resp.json() if resp.content else {}
             for bucket in body.get("data") or []:
                 b_start = bucket.get("start_time")
@@ -190,11 +202,28 @@ def fetch_openai_costs(*, start_day: date, yesterday: date) -> dict[str, Any]:
                 page = body.get("next_page")
                 continue
             break
+        return {"mtd_usd": mtd, "yday_usd": yday, "by_line_item": by_line}
+
+    try:
+        result = _fetch(group_by_line=True)
+        # If the grouped query keeps failing (500s persist), retry WITHOUT group_by —
+        # a lighter request that still yields the real totals, dropping only the
+        # per-line-item breakdown. Better a totals-only truth column than nothing.
+        if result.get("error"):
+            fallback = _fetch(group_by_line=False)
+            if not fallback.get("error"):
+                fallback["by_line_item"] = {}  # ungrouped: no meaningful per-item split
+                fallback["note"] = "разбивка по статьям недоступна (OpenAI 500), суммы точные"
+                result = fallback
+        if result.get("error"):
+            return {"configured": True, "error": result["error"]}
+        by_line = result.get("by_line_item") or {}
         return {
             "configured": True,
-            "mtd_usd": mtd,
-            "yday_usd": yday,
+            "mtd_usd": result.get("mtd_usd", 0.0),
+            "yday_usd": result.get("yday_usd", 0.0),
             "by_line_item": dict(sorted(by_line.items(), key=lambda kv: kv[1], reverse=True)),
+            **({"note": result["note"]} if result.get("note") else {}),
         }
     except Exception as exc:  # noqa: BLE001
         logging.warning("OpenAI costs fetch failed: %s", exc, exc_info=True)
@@ -493,6 +522,8 @@ def build_provider_cost_truth_text(*, target_day: date | None = None, tz_name: s
         top = list((openai.get("by_line_item") or {}).items())[:5]
         if top:
             lines.append("  по статьям реального счёта: " + ", ".join(f"{k} {_fmt_usd(v)}" for k, v in top))
+        if openai.get("note"):
+            lines.append(f"  ⚠️ {openai['note']}")
     lines.append("")
 
     # ---- Google ----
