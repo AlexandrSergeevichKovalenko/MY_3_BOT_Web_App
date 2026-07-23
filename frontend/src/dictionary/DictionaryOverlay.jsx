@@ -4,6 +4,7 @@ import './dict.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
+import { humanizeDictError } from './errors.js';
 
 /**
  * Lightweight "quick dictionary" overlay — a compact bottom-sheet translator
@@ -45,16 +46,10 @@ function dirToPair(dir) {
   return dir === 'de-ru' ? { source: 'de', target: 'ru' } : { source: 'ru', target: 'de' };
 }
 
-// A cryptic Telegram-auth error (missing/expired initData) → a plain, actionable hint.
-// The standalone browser dictionary authenticates with initData carried in the launch
-// URL; it can be absent (opened directly, not from Telegram) or expired (>30 days).
-function friendlyError(e) {
-  const s = String((e && e.message) || e || '');
-  if ((e && e.status === 401) || /initData|не прошёл проверку/i.test(s)) {
-    return 'Доступ устарел. Открой словарь заново из Telegram (кнопкой в онбординге) — и, если вынес иконку на экран, добавь её ещё раз.';
-  }
-  return s;
-}
+// All dictionary errors go through the shared humanizer so a raw machine code
+// (e.g. "cost_cap_exceeded") is never shown to the user — see ./errors.js. Kept as a
+// thin local alias so the ~9 call sites below stay unchanged.
+const friendlyError = humanizeDictError;
 
 // The German side of a quick result when it's a lone noun (single capitalized token)
 // still lacking an article — mirrors the backend's noun-candidate check. When this is

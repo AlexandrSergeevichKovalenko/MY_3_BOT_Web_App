@@ -11771,7 +11771,9 @@ function AppInner() {
       setSkillTrainingError(friendly);
       setSkillTrainingData(null);
       setSkillTrainingVideoLoading(false);
-      setSelectedSections(new Set());
+      // Keep the skill_training section open (opened above) so the friendly error shows
+      // in place — clearing selectedSections here collapsed the panel and looked like
+      // being "kicked back to the home screen" (e.g. on a cost_cap 429).
     } finally {
       setSkillTrainingLoading(false);
       setSkillPracticeLoading((prev) => {
@@ -29034,8 +29036,9 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        let message = await response.text();
-        try { message = JSON.parse(message).error || message; } catch (_e) { /* ignore */ }
+        // Route through readApiError so a limit code (cost_cap_exceeded / feature_limit_exceeded)
+        // becomes the clean human line instead of leaking raw into the ExplainErrorsModal.
+        const message = await readApiError(response, 'Не удалось получить разбор.', 'Analyse konnte nicht geladen werden.');
         throw new Error(message);
       }
       const data = await response.json();

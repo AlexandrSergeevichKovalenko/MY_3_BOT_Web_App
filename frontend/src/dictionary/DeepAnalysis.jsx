@@ -4,6 +4,7 @@ import './dict.css';
 import './deep.css';
 import { WordBreakdown, useTts, SpeakButton, genderClass, api, haptic } from './WordBreakdown';
 import { guessPair, extractRichTranslation, buildDictionarySavePayload } from './saveUtils';
+import { humanizeDictError } from './errors.js';
 import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 /**
@@ -175,7 +176,7 @@ export default function DeepAnalysis({ startParam }) {
         haptic('ok');
       } catch (e) {
         if (!alive) return;
-        setError(e?.status === 429 ? (e?.payload?.message || 'Дневной лимит исчерпан') : String(e?.message || e));
+        setError(humanizeDictError(e));
         setPhase('error');
         haptic('bad');
       }
@@ -231,7 +232,7 @@ export default function DeepAnalysis({ startParam }) {
         await api('/api/webapp/dictionary/save', { ...base, folder_id: folderId ?? undefined });
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(t); return n; });
-        setError(String(e?.message || e)); haptic('bad');
+        setError(humanizeDictError(e)); haptic('bad');
       }
     })();
   }, [folderId, isGuest]);
@@ -263,7 +264,7 @@ export default function DeepAnalysis({ startParam }) {
         await api('/api/webapp/dictionary/save', { ...base, folder_id: folderId ?? undefined });
       } catch (e) {
         setSavedChips((prev) => { const n = new Set(prev); n.delete(src); return n; });
-        setError(String(e?.message || e)); haptic('bad');
+        setError(humanizeDictError(e)); haptic('bad');
       }
     })();
   }, [folderId, isGuest]);
@@ -285,7 +286,7 @@ export default function DeepAnalysis({ startParam }) {
       else window.open(shareUrl, '_blank');
       haptic('ok');
     } catch (e) {
-      setError(String(e?.message || e)); haptic('bad');
+      setError(humanizeDictError(e)); haptic('bad');
     } finally {
       setSharing(false);
     }
@@ -337,7 +338,7 @@ export default function DeepAnalysis({ startParam }) {
       try {
         await Promise.all(idxs.map((i) => api('/api/webapp/dictionary/save', optionPayload(options[i]))));
       } catch (e) {
-        setOptsSaved(false); setError(String(e?.message || e)); haptic('bad');
+        setOptsSaved(false); setError(humanizeDictError(e)); haptic('bad');
       }
     })();
   }, [selectedOpts, optsSaved, optionPayload, options]);
@@ -355,7 +356,7 @@ export default function DeepAnalysis({ startParam }) {
       const data = await api('/api/webapp/dictionary/folders/create', { name, color: '#5ddcff', icon: 'book' });
       const created = data?.item;
       if (created?.id) { setFolders((prev) => [created, ...prev]); pickFolder(created); }
-    } catch (e) { setError(String(e?.message || e)); }
+    } catch (e) { setError(humanizeDictError(e)); }
   }, [pickFolder]);
 
   const runFeel = useCallback(async () => {
@@ -376,7 +377,7 @@ export default function DeepAnalysis({ startParam }) {
       if (e?.status === 429 && (kind === 'feature_limit_exceeded' || kind === 'cost_cap_exceeded')) {
         setFeelLimit(e.payload || {});
       } else {
-        setError(String(e?.message || e));
+        setError(humanizeDictError(e));
       }
     }
   }, [feel.state, dir, item, germanText, translation]);
@@ -389,7 +390,7 @@ export default function DeepAnalysis({ startParam }) {
         word: germanText, direction: dir || undefined, translation,
       });
       setCollos({ state: 'done', items: Array.isArray(data?.items) ? data.items : [] });
-    } catch (e) { setCollos({ state: 'idle', items: [] }); setError(String(e?.message || e)); haptic('bad'); }
+    } catch (e) { setCollos({ state: 'idle', items: [] }); setError(humanizeDictError(e)); haptic('bad'); }
   }, [collos.state, germanText, dir, translation]);
 
   const runAsk = useCallback(async () => {

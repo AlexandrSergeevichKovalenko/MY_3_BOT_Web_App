@@ -35578,6 +35578,20 @@ def is_stripe_event_processed(event_id: str) -> bool:
     return bool(row)
 
 
+# Shared-pool / amortizable OpenAI work: enriching the GLOBAL dictionary pool
+# (bt_3_dictionary_entries) benefits ALL users, so its cost must NOT count against the
+# personal daily cost cap of whoever happened to trigger it — it's shared infrastructure,
+# not personal consumption. A single heavy day of pool-building (hundreds of enrichments)
+# otherwise blows the individual's cap on normal use. The cost stays FULLY recorded in
+# bt_3_billing_events (the economics report reads that raw table directly), we only leave it
+# out of the per-user cap total computed here. Extend this list if new shared work appears.
+DAILY_COST_CAP_EXCLUDED_ACTION_TYPES = (
+    "enrich_word_multilang",
+    "enrich_word",
+    "dictionary_enrichment_multilang",
+)
+
+
 def get_today_cost_eur(user_id: int, tz: str = TRIAL_POLICY_TZ) -> float:
     user_id_value = int(user_id)
     tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
@@ -35586,6 +35600,8 @@ def get_today_cost_eur(user_id: int, tz: str = TRIAL_POLICY_TZ) -> float:
 
     # Always recompute from source-of-truth billing events before writing rollup.
     # This avoids stale totals when new events arrive after an earlier rollup read.
+    # Shared-pool building (DAILY_COST_CAP_EXCLUDED_ACTION_TYPES) is excluded — it is not
+    # personal consumption and must not push a user into their daily cap.
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -35594,9 +35610,10 @@ def get_today_cost_eur(user_id: int, tz: str = TRIAL_POLICY_TZ) -> float:
                 FROM bt_3_billing_events
                 WHERE user_id = %s
                   AND (event_time AT TIME ZONE %s)::date = %s
+                  AND action_type <> ALL(%s)
                 GROUP BY currency;
                 """,
-                (user_id_value, tz_name, day_local),
+                (user_id_value, tz_name, day_local, list(DAILY_COST_CAP_EXCLUDED_ACTION_TYPES)),
             )
             rows = cursor.fetchall() or []
             total_eur = 0.0
