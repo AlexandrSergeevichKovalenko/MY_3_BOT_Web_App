@@ -2897,21 +2897,21 @@ _LEGACY_API_EXACT_PATHS = {"/token", "/message"}
 _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/token": {"cap": True, "paid_feature": "voice_assistant", "paid_feature_title": "Голосовой ассистент"},
     "/api/webapp/dictionary": {"cap": True},
-    "/api/webapp/dictionary/collocations": {"cap": True},
+    "/api/webapp/dictionary/collocations": {"cap": True, "paid_feature": "collocations", "paid_feature_title": "Коллокации"},
     # Quick-dict «Почувствовать слово» shares the SAME daily free limit as the flashcards
     # surface (feature_code=feel_word_daily) — one budget per user across both surfaces.
     "/api/webapp/dictionary/feel": {"cap": True, "feature_code": "feel_word_daily"},
     "/api/webapp/flashcards/feel": {"cap": True, "feature_code": "feel_word_daily"},
     "/api/webapp/flashcards/feel/dispatch": {"cap": True},
     "/api/webapp/flashcards/enrich": {"cap": True},
-    "/api/webapp/explain": {"cap": True},
-    "/api/webapp/explain/question": {"cap": True},
-    "/api/webapp/ask": {"cap": True},
+    "/api/webapp/explain": {"cap": True, "paid_feature": "error_analysis", "paid_feature_title": "Разбор ошибок"},
+    "/api/webapp/explain/question": {"cap": True, "paid_feature": "error_analysis", "paid_feature_title": "Вопросы по разбору"},
+    "/api/webapp/ask": {"cap": True, "paid_feature": "ai_assistant", "paid_feature_title": "AI-ассистент"},
     "/api/webapp/tts/generate": {"cap": True, "feature_code": "tts_chars_daily"},
-    "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily"},
-    "/api/webapp/youtube/translate": {"cap": True},
+    "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily", "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube-субтитры"},
+    "/api/webapp/youtube/translate": {"cap": True, "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube-перевод субтитров"},
     "/api/webapp/submit-group": {"cap": True},
-    "/api/webapp/story/submit": {"cap": True},
+    "/api/webapp/story/submit": {"cap": True, "paid_feature": "mystery_story", "paid_feature_title": "Загадочная история"},
     "/api/today/theory/prepare": {"cap": True, "feature_code": "skill_training_daily"},
     "/api/today/theory/check": {"cap": True},
 }

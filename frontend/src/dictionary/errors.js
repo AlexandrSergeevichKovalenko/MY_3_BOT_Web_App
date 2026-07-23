@@ -32,6 +32,15 @@ export function humanizeDictError(e) {
     return serverMsg || LIMIT_MESSAGE_RU;
   }
 
+  // Paid-only feature hit by a free (non-trial) user → point them to the paid tier
+  // instead of leaking the raw "paid_feature_required" code.
+  if (code === 'paid_feature_required') {
+    const title = e && e.payload && String(e.payload.feature_title || e.payload.feature || '').trim();
+    return title
+      ? `«${title}» доступно в тарифе «Расширенный».`
+      : 'Эта функция доступна в тарифе «Расширенный».';
+  }
+
   // Expired / missing Telegram auth → actionable re-open hint.
   if (status === 401 || /initData|не прошёл проверку/i.test(code)) return AUTH_MESSAGE_RU;
 
