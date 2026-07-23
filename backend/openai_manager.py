@@ -61,6 +61,15 @@ _DEFAULT_TASK_MODELS = {
     "dictionary_assistant_multilang_core_fast": "gpt-4.1-mini",
     "dictionary_assistant_multilang_core_fast_batch": "gpt-4.1-mini",
     "dictionary_assistant_multilang_stream": "gpt-4.1-mini",
+    # Shared-pool word enrichment (forms + usage examples + prefixes — no Rektion, see the
+    # `enrich_word_multilang` prompt). This is the biggest OpenAI cost line: a high-volume
+    # background batch that was defaulting to full gpt-4.1. The output is deterministic
+    # lexical data (declension/conjugation forms, 2-3 examples) that mini holds well — same
+    # class of content already trusted to mini above. der/die/das is the only soft spot; the
+    # dedicated article audit (vs Wiktionary) backstops it. Override via
+    # LLM_TASK_MODEL_ENRICH_WORD_MULTILANG / _ENRICH_WORD if a regression shows.
+    "enrich_word_multilang": "gpt-4.1-mini",
+    "enrich_word": "gpt-4.1-mini",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
