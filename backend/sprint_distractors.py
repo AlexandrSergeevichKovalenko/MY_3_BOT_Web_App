@@ -35,6 +35,11 @@ _ARTICLES = {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen",
 # rail keeps a buffer of warmed words ahead so this never leaves a gap).
 MIN_CLEAN_DISTRACTORS = 2
 
+# How many CORRECT answers we prepare a «right pick» substitution example for. The
+# trainer runs at most this many rounds per word (one correct per round), so there is
+# no point generating examples for more.
+CORRECT_EXAMPLE_CAP = 10
+
 
 def _norm(s: str) -> str:
     """Loose comparison key: lowercase, drop a leading article, collapse spacing.
@@ -50,6 +55,17 @@ def _norm(s: str) -> str:
 
 def _pair_de(p) -> str:
     return str((p.get("de") if isinstance(p, dict) else p) or "").strip()
+
+
+def trainer_json_from_result(result: dict) -> dict:
+    """The blob stored in bt_3_sprint_bank.trainer_json — everything the trainer UI
+    needs beyond the sprint's existing `accepted` (correct answers) list."""
+    return {
+        "distractors": result.get("kept") or [],
+        "target_example": result.get("target_example") or {},
+        "correct_examples": result.get("correct_examples") or [],
+        "counts": result.get("counts") or {},
+    }
 
 
 def _storage_form(word: str, article: str | None) -> str:
@@ -81,6 +97,7 @@ async def build_trainer_distractors(
     """
     from backend.openai_manager import (
         run_generate_sprint_distractors, run_prosecute_distractor, run_judge_distractor_set,
+        run_substitute_correct_examples,
     )
 
     relation = str(relation or "synonym")
@@ -183,10 +200,21 @@ async def build_trainer_distractors(
                 reason += f" issues={','.join(issues)}"
             rejected.append({"word": word, "stage": "judge", "reason": reason})
 
+    # «Right pick» card material: rewrite the target's base sentence with each correct
+    # answer swapped in (grammar adjusted). One batched call; only worth it if the word
+    # will actually enter rotation (>= MIN_CLEAN_DISTRACTORS clean distractors).
+    correct_examples: list[dict] = []
+    if len(kept) >= MIN_CLEAN_DISTRACTORS and target_example.get("de") and correct_de:
+        correct_examples = await run_substitute_correct_examples(
+            target_word=target_word, relation=relation,
+            base_de=target_example["de"], answers=correct_de[:CORRECT_EXAMPLE_CAP],
+        )
+
     result = {
         "kept": kept,
         "rejected": rejected,
         "target_example": target_example,
+        "correct_examples": correct_examples,
         "trainer_ready": len(kept) >= MIN_CLEAN_DISTRACTORS,
         "counts": {"generated": generated, "after_prosecutor": after_prosecutor, "kept": len(kept)},
         "diag": {"judge_rows": len(verdicts),

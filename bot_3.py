@@ -425,6 +425,7 @@ from backend.database import (
     pick_next_sprint,
     get_sprint_item_by_word,
     list_sprint_bank_words,
+    list_sprint_words_needing_trainer,
     update_sprint_trainer_data,
     mark_sprint_sent,
     create_sprint_dispatch,
@@ -31204,6 +31205,14 @@ def _fmt_distractor_preview(word_item: dict, result: dict) -> str:
             if d.get("example_de"):
                 lines.append(f"   „{_html_escape(d['example_de'])}“")
 
+    correct_ex = result.get("correct_examples") or []
+    if correct_ex:
+        lines.append(f"\n🟩 <b>Примеры правильных ({len(correct_ex)})</b> — подстановка в предложение:")
+        for e in correct_ex[:6]:
+            lines.append(f"• <b>{_html_escape(e.get('word') or '')}</b>: „{_html_escape(e.get('sentence_de') or '')}“")
+            if e.get("sentence_ru"):
+                lines.append(f"   <i>{_html_escape(e['sentence_ru'])}</i>")
+
     if rejected:
         lines.append(f"\n🗑 <b>Отклонено ({len(rejected)})</b>")
         for r in rejected[:20]:
@@ -31214,9 +31223,35 @@ def _fmt_distractor_preview(word_item: dict, result: dict) -> str:
     return "\n".join(lines)
 
 
+async def _admin_build_trainers_command(update: Update, context: CallbackContext) -> None:
+    """/admin_build_trainers [N] — run the nightly trainer-build now for up to N words
+    (default cap) that don't have trainer data yet. Persists results to the bank."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    try:
+        limit = int(context.args[0]) if getattr(context, "args", None) else None
+    except (TypeError, ValueError):
+        limit = None
+    await asyncio.to_thread(ensure_sprint_schema)
+    pending = await asyncio.to_thread(list_sprint_words_needing_trainer, limit=limit or 6)
+    if not pending:
+        await message.reply_text("✅ Все слова банка уже с тренажёром — строить нечего."); return
+    await message.reply_text(
+        f"⏳ Строю тренажёр для {len(pending)} слов(а): "
+        f"{', '.join(_html_escape(p['wort']) for p in pending)}…\nПо ~1-2 мин на слово.",
+        parse_mode="HTML")
+    statuses = await build_sprint_trainer_job(context, limit=limit)
+    body = "\n".join(f"• {_html_escape(s)}" for s in statuses) or "—"
+    await message.reply_text(f"🏁 Готово:\n{body}", parse_mode="HTML")
+
+
 async def _admin_sprint_distractors_command(update: Update, context: CallbackContext) -> None:
-    """/admin_sprint_distractors <слово> [synonym|antonym] — run the nightly trainer
-    distractor pipeline on ONE bank word and DM the result (quality probe, no save)."""
+    """/admin_sprint_distractors <слово> [synonym|antonym] [save] — run the nightly
+    trainer distractor pipeline on ONE bank word and DM the result. Add `save` to also
+    persist the verified distractors + examples into the bank (trainer_json)."""
     user = update.effective_user; message = update.effective_message
     if not user or not message:
         return
@@ -31225,15 +31260,20 @@ async def _admin_sprint_distractors_command(update: Update, context: CallbackCon
     args = context.args or []
     if not args:
         await message.reply_text(
-            "Использование: <code>/admin_sprint_distractors &lt;слово&gt; [synonym|antonym]</code>\n"
-            "Пример: <code>/admin_sprint_distractors oberflächlich antonym</code>",
+            "Использование: <code>/admin_sprint_distractors &lt;слово&gt; [synonym|antonym] [save]</code>\n"
+            "Пример: <code>/admin_sprint_distractors oberflächlich antonym save</code>",
             parse_mode="HTML"); return
+    # Trailing flags in any order: `save` (persist) and/or the relation.
+    tokens = [str(a).strip() for a in args]
+    save = False
+    if tokens and tokens[-1].lower() == "save":
+        save = True; tokens = tokens[:-1]
     relation = None
-    if len(args) >= 2 and str(args[-1]).strip().lower() in ("synonym", "antonym"):
-        relation = str(args[-1]).strip().lower()
-        word = " ".join(args[:-1]).strip()
-    else:
-        word = " ".join(args).strip()
+    if tokens and tokens[-1].lower() in ("synonym", "antonym"):
+        relation = tokens[-1].lower(); tokens = tokens[:-1]
+    if tokens and tokens[-1].lower() == "save":  # allow `<word> save synonym` too
+        save = True; tokens = tokens[:-1]
+    word = " ".join(tokens).strip()
 
     # Instant ack: confirms the (new-build) handler fired and gives immediate feedback.
     # Everything after is wrapped so no failure can leave the DM silent. We send fresh
@@ -31265,7 +31305,7 @@ async def _admin_sprint_distractors_command(update: Update, context: CallbackCon
             f"{len(accepted)} правильных)…\nЭто минута-две — три модели по кругу.",
             parse_mode="HTML")
 
-        from backend.sprint_distractors import build_trainer_distractors
+        from backend.sprint_distractors import build_trainer_distractors, trainer_json_from_result
         result = await build_trainer_distractors(
             target_word=str(item.get("wort")), relation=str(item.get("relation") or "synonym"),
             correct_pairs=accepted, hint_ru=str(item.get("hint_ru") or ""),
@@ -31273,6 +31313,20 @@ async def _admin_sprint_distractors_command(update: Update, context: CallbackCon
         text = _fmt_distractor_preview(item, result)
         for chunk in _split_html_message(text):
             await message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
+
+        if save:
+            if result.get("trainer_ready"):
+                tj = trainer_json_from_result(result)
+                await asyncio.to_thread(update_sprint_trainer_data, str(item.get("sprint_id")),
+                                        trainer_json=tj, trainer_ready=True)
+                await message.reply_text(
+                    f"💾 Сохранено в банк: <b>{_html_escape(str(item.get('wort')))}</b> — "
+                    f"{len(tj['distractors'])} дистракторов, {len(tj['correct_examples'])} примеров. "
+                    f"Слово теперь доступно тренажёру.", parse_mode="HTML")
+            else:
+                await message.reply_text(
+                    "⚠️ Не сохранил: слово не прошло гейт «≥2 чистых дистрактора». "
+                    "Прогони ещё раз или возьми другое слово.")
     except Exception as exc:
         logging.warning("admin sprint distractors failed", exc_info=True)
         try:
@@ -35197,6 +35251,53 @@ async def prepare_sprint_pool_job(context: CallbackContext) -> None:
         logging.warning("sprint_pool_job failed", exc_info=True)
 
 
+# How many words to build trainer data for per nightly run. The pipeline is ~12 full-
+# model calls per word (setter + prosecutors + judge + examples), so we cap and drain the
+# backlog over several nights rather than spiking cost/time in one run.
+SPRINT_TRAINER_BUILD_PER_RUN = max(1, int((os.getenv("SPRINT_TRAINER_BUILD_PER_RUN") or "6").strip() or "6"))
+
+
+async def _build_one_trainer_word(item: dict) -> str:
+    """Build + store trainer data for one bank word. Returns a short status string.
+    Stores even when the word misses the ≥2 gate (trainer_ready=False) so it is not
+    rebuilt every night; only a TOTAL generation failure (transient) is left for retry."""
+    from backend.sprint_distractors import build_trainer_distractors, trainer_json_from_result
+    wort = str(item.get("wort") or "")
+    result = await build_trainer_distractors(
+        target_word=wort, relation=str(item.get("relation") or "synonym"),
+        correct_pairs=item.get("accepted") or [], hint_ru=str(item.get("hint_ru") or ""),
+    )
+    if int((result.get("counts") or {}).get("generated") or 0) == 0:
+        return f"{wort}: генерация пуста — оставил на ретрай"
+    tj = trainer_json_from_result(result)
+    await asyncio.to_thread(update_sprint_trainer_data, str(item.get("sprint_id")),
+                            trainer_json=tj, trainer_ready=bool(result.get("trainer_ready")))
+    flag = "✅" if result.get("trainer_ready") else "⚠️<2"
+    return f"{wort}: {flag} {len(tj['distractors'])}д/{len(tj['correct_examples'])}пр"
+
+
+async def build_sprint_trainer_job(context: CallbackContext, *, limit: int | None = None) -> list[str]:
+    """Nightly (03:40): build trainer distractors + examples for bank words that don't
+    have them yet, capped per run. Heavy LLM work — pool-build time only, off the hot
+    path. Returns per-word status lines (for the manual admin trigger)."""
+    statuses: list[str] = []
+    try:
+        await asyncio.to_thread(ensure_sprint_schema)
+        cap = int(limit) if limit else SPRINT_TRAINER_BUILD_PER_RUN
+        words = await asyncio.to_thread(list_sprint_words_needing_trainer, limit=cap)
+        for item in words:
+            try:
+                statuses.append(await _build_one_trainer_word(item))
+            except Exception:
+                logging.warning("build_sprint_trainer_job: word failed wort=%s",
+                                item.get("wort"), exc_info=True)
+                statuses.append(f"{item.get('wort')}: ❌ ошибка")
+        logging.info("build_sprint_trainer_job done built=%d", len(statuses))
+    except Exception:
+        logging.warning("build_sprint_trainer_job failed", exc_info=True)
+    return statuses
+
+
 async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation: str,
                               slot_date, slot_hour: int, chat_id: int, target_user_id: int) -> bool:
     try:
@@ -38898,6 +38999,7 @@ def main():
     application.add_handler(CommandHandler("shortcut_reset", _admin_shortcut_reset_command))
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("admin_sprint_distractors", _admin_sprint_distractors_command))
+    application.add_handler(CommandHandler("admin_build_trainers", _admin_build_trainers_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
     application.add_handler(CommandHandler("admin_reset_subs", admin_reset_subs_command))
@@ -39949,6 +40051,14 @@ def main():
             "cron",
             hour=3,
             minute=20,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Sprint TRAINER build (03:40): distractors + examples for new bank words --
+        scheduler.add_job(
+            lambda: submit_async(build_sprint_trainer_job, CallbackContext(application=application)),
+            "cron",
+            hour=3,
+            minute=40,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Artikel Sprint: one daily reminder (default 19:00) --

@@ -47049,6 +47049,28 @@ def list_sprint_bank_words(*, relation: str | None = None, limit: int = 20) -> l
              "trainer_ready": bool(r[3])} for r in rows]
 
 
+def list_sprint_words_needing_trainer(*, limit: int = 6) -> list[dict]:
+    """Bank words whose trainer data was never built (empty trainer_json). Used by the
+    nightly build job; ordered oldest-first so the backlog drains in order. Once a word
+    is built (ready or not) its trainer_json is non-empty and it won't be re-picked."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT sprint_id, relation, wort, accepted, hint_ru "
+                "FROM bt_3_sprint_bank "
+                "WHERE retired = FALSE AND (trainer_json IS NULL OR trainer_json = '{}'::jsonb) "
+                "ORDER BY created_at ASC LIMIT %s",
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+    out = []
+    for r in rows:
+        acc = r[3] if isinstance(r[3], list) else []
+        out.append({"sprint_id": r[0], "relation": r[1], "wort": r[2],
+                    "accepted": acc, "hint_ru": r[4]})
+    return out
+
+
 def update_sprint_trainer_data(sprint_id: str, *, trainer_json: dict, trainer_ready: bool) -> None:
     """Persist the nightly pipeline's verified distractors + examples for one word."""
     import json as _json

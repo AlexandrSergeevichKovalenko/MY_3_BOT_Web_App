@@ -131,6 +131,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "sprint_distractor_setter",
     "sprint_distractor_prosecutor",
     "sprint_distractor_judge",
+    "sprint_correct_examples",
     "check_satzbau",
     "check_cloze",
     "check_error",
@@ -4019,6 +4020,21 @@ Return STRICT JSON ONLY:
 {"per_distractor":[{"word":"...","class":"DEFINITELY_NOT"|"ARGUABLE"|"IS_ANSWER","issues":[]}, ...]}
 Same length and order as the input `distractors`. No markdown.
 """,
+"sprint_correct_examples": """
+ROLE: You are a German lexicographer. You get a base sentence that uses `target` and a
+list of CORRECT answers (each a valid {relation} of `target`). For EACH answer, rewrite
+the base sentence, replacing `target` with that answer and adjusting grammar so it stays
+NATURAL and correct (inflection, article, agreement, word order as needed — change ONLY
+what the swap requires). For a SYNONYM the meaning stays roughly the same; for an ANTONYM
+the meaning flips to the natural OPPOSITE — that contrast is the point. Then translate
+each rewritten sentence into Russian.
+
+INPUT JSON: {"target":"...","relation":"synonym"|"antonym","base_de":"...","answers":["...","..."]}
+
+Return STRICT JSON ONLY:
+{"items":[{"word":"<the answer, exactly as given>","sentence_de":"<rewritten sentence>","sentence_ru":"<RU translation>"}, ...]}
+Same length and order as `answers`. No markdown.
+""",
 "check_synonym_batch": """
 You judge German vocabulary. Input JSON: {"target":"...","relation":"synonym"|"antonym","candidates":["...","..."]}.
 For EACH candidate decide whether it is a VALID German {synonym OR antonym, per relation} of `target`
@@ -7213,6 +7229,46 @@ async def run_judge_distractor_set(
             logging.warning("run_judge_distractor_set failed target=%s attempt=%d",
                             target_word, attempt, exc_info=True)
     return {"rows": [], "raw": last_raw, "error": last_err or "empty", "attempts": int(attempts)}
+
+
+async def run_substitute_correct_examples(
+    *, target_word: str, relation: str, base_de: str, answers: list[str],
+) -> list[dict]:
+    """For the trainer's «you picked the RIGHT one» card: rewrite the target's base
+    sentence with each CORRECT answer swapped in (grammar adjusted). One batched call.
+    Returns [{"word","sentence_de","sentence_ru"}] aligned to `answers`; [] on failure."""
+    ans = [str(a).strip() for a in (answers or []) if str(a).strip()]
+    if not ans or not str(base_de or "").strip():
+        return []
+    try:
+        content = await llm_execute(
+            task_name="sprint_correct_examples",
+            system_instruction_key="sprint_correct_examples",
+            user_message=json.dumps({
+                "target": str(target_word), "relation": str(relation or "synonym"),
+                "base_de": str(base_de), "answers": ans,
+            }, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+            responses_timeout_seconds=40.0,
+        )
+        raw = str(content or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw[:4].lower() == "json":
+                raw = raw[4:]
+            raw = raw.strip()
+        data = json.loads(raw)
+        items = data.get("items") if isinstance(data, dict) else (data if isinstance(data, list) else None)
+        if not isinstance(items, list):
+            return []
+        return [{
+            "word": str(i.get("word") or "").strip(),
+            "sentence_de": str(i.get("sentence_de") or "").strip(),
+            "sentence_ru": str(i.get("sentence_ru") or "").strip(),
+        } for i in items if isinstance(i, dict) and i.get("sentence_de")]
+    except Exception:
+        logging.warning("run_substitute_correct_examples failed target=%s", target_word, exc_info=True)
+        return []
 
 
 async def run_article_noun_gen(*, theme: str, subtopic: str, count: int, avoid: list[str] | None = None) -> list[dict]:
