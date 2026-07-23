@@ -37042,6 +37042,7 @@ def _build_base_dict_result_from_entry(db_entry: dict, *, query_lang: str = "de"
     translations_ru = list(db_entry.get("translations_ru") or [])
     senses_json = db_entry.get("senses_json") or []
     forms_json = db_entry.get("forms_json") or {}
+    ipa = str(db_entry.get("ipa") or "").strip()
     lemma = str(db_entry.get("lemma") or "").strip()
     article = str(db_entry.get("article") or "").strip()
     pos = str(db_entry.get("pos") or "").strip()
@@ -37070,6 +37071,7 @@ def _build_base_dict_result_from_entry(db_entry: dict, *, query_lang: str = "de"
         "part_of_speech": pos,
         "article": article,
         "forms": forms_json,
+        "pronunciation": {"ipa": ipa} if ipa else {},
         "usage_examples": [
             {"source": s.get("example_de") or "", "target": s.get("example_ru") or ""}
             for s in senses_json

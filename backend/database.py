@@ -10194,6 +10194,11 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_wiktionary_lemma_key
                 ON bt_wiktionary_dictionary (lemma_key, source_lang);
             """)
+            # forms_json (plural/genitive/…) and ipa carry the de.wiktionary import's
+            # lexical data, so the base-before-GPT seed can serve declension + IPA
+            # without a GPT call. Additive; older rows simply have them NULL.
+            cursor.execute("ALTER TABLE bt_wiktionary_dictionary ADD COLUMN IF NOT EXISTS forms_json JSONB;")
+            cursor.execute("ALTER TABLE bt_wiktionary_dictionary ADD COLUMN IF NOT EXISTS ipa TEXT;")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_wiktionary_seed_state (
                     source_lang TEXT PRIMARY KEY,
@@ -41312,7 +41317,7 @@ def lookup_wiktionary_entry(word: str, source_lang: str = "de") -> dict | None:
             cursor.execute(
                 """
                 SELECT id, lemma, lemma_key, source_lang, pos, article,
-                       translations_ru, glosses_en, senses_json
+                       translations_ru, glosses_en, senses_json, forms_json, ipa
                 FROM bt_wiktionary_dictionary
                 WHERE lemma_key = %s AND source_lang = %s
                 LIMIT 1;
@@ -41323,7 +41328,7 @@ def lookup_wiktionary_entry(word: str, source_lang: str = "de") -> dict | None:
     if not row:
         return None
     cols = ["id", "lemma", "lemma_key", "source_lang", "pos", "article",
-            "translations_ru", "glosses_en", "senses_json"]
+            "translations_ru", "glosses_en", "senses_json", "forms_json", "ipa"]
     return dict(zip(cols, row))
 
 
@@ -41336,7 +41341,7 @@ def lookup_wiktionary_entry_by_translation(word: str, entry_source_lang: str = "
             cursor.execute(
                 """
                 SELECT id, lemma, lemma_key, source_lang, pos, article,
-                       translations_ru, glosses_en, senses_json
+                       translations_ru, glosses_en, senses_json, forms_json, ipa
                 FROM bt_wiktionary_dictionary
                 WHERE source_lang = %s
                   AND EXISTS (
@@ -41352,7 +41357,7 @@ def lookup_wiktionary_entry_by_translation(word: str, entry_source_lang: str = "
     if not row:
         return None
     cols = ["id", "lemma", "lemma_key", "source_lang", "pos", "article",
-            "translations_ru", "glosses_en", "senses_json"]
+            "translations_ru", "glosses_en", "senses_json", "forms_json", "ipa"]
     return dict(zip(cols, row))
 
 
