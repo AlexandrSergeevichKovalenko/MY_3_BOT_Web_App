@@ -19392,6 +19392,139 @@ def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
     ]
 
 
+# --------------------------------------------------------------------------- #
+# Quarantine review sessions — interactive «отметь галочками, удали мусор» state.
+# A session snapshots the candidate list (so labels don't shift under the admin) and
+# tracks which entries the admin UNCHECKED (kept). Default = delete everything.
+# --------------------------------------------------------------------------- #
+def _ensure_pool_quarantine_review_table(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bt_3_pool_quarantine_review (
+            session_id  TEXT PRIMARY KEY,
+            admin_id    BIGINT NOT NULL,
+            candidates  JSONB NOT NULL,          -- [{id, w, t, r, d}, …] snapshot
+            kept_ids    JSONB NOT NULL DEFAULT '[]'::jsonb,  -- entries to KEEP (unchecked)
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+
+
+def create_quarantine_review_session(admin_id: int, candidates: list[dict]) -> str:
+    """Snapshot the quarantine list into a review session; return its short id. Old
+    sessions (>7 days) are swept opportunistically so the table never grows unbounded."""
+    import secrets
+    sid = secrets.token_hex(5)
+    payload = [
+        {"id": int(c.get("id")), "w": str(c.get("source_text") or c.get("w") or ""),
+         "t": str(c.get("target_text") or c.get("t") or ""),
+         "r": str(c.get("reason") or c.get("r") or ""), "d": int(c.get("demand") or c.get("d") or 0)}
+        for c in candidates if c.get("id") is not None
+    ]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_pool_quarantine_review_table(cursor)
+            cursor.execute(
+                "DELETE FROM bt_3_pool_quarantine_review WHERE created_at < NOW() - INTERVAL '7 days'"
+            )
+            cursor.execute(
+                """
+                INSERT INTO bt_3_pool_quarantine_review (session_id, admin_id, candidates, kept_ids)
+                VALUES (%s, %s, %s, '[]'::jsonb)
+                """,
+                (sid, int(admin_id), json.dumps(payload, ensure_ascii=False)),
+            )
+        conn.commit()
+    return sid
+
+
+def get_quarantine_review_session(session_id: str) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_pool_quarantine_review_table(cursor)
+            cursor.execute(
+                "SELECT admin_id, candidates, kept_ids FROM bt_3_pool_quarantine_review WHERE session_id = %s",
+                (str(session_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+
+    def _as_list(value) -> list:
+        # psycopg2 usually auto-parses JSONB → Python list; fall back to json.loads for a str.
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, list) else []
+            except Exception:
+                return []
+        return []
+
+    return {
+        "admin_id": int(row[0]),
+        "candidates": _as_list(row[1]),
+        "kept_ids": [int(x) for x in _as_list(row[2])],
+    }
+
+
+def toggle_quarantine_review_keep(session_id: str, entry_id: int) -> dict | None:
+    """Flip whether entry_id is KEPT (unchecked). Returns the updated session or None."""
+    sess = get_quarantine_review_session(session_id)
+    if not sess:
+        return None
+    kept = set(sess["kept_ids"])
+    entry_id = int(entry_id)
+    if entry_id in kept:
+        kept.discard(entry_id)
+    else:
+        kept.add(entry_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_pool_quarantine_review SET kept_ids = %s WHERE session_id = %s",
+                (json.dumps(sorted(kept)), str(session_id)),
+            )
+        conn.commit()
+    sess["kept_ids"] = sorted(kept)
+    return sess
+
+
+def delete_quarantine_review_session(session_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM bt_3_pool_quarantine_review WHERE session_id = %s", (str(session_id),)
+            )
+        conn.commit()
+
+
+def delete_pool_entries_by_ids(ids: list[int]) -> int:
+    """Hard-delete pool rows by id — ONLY those still quarantined (enrich_attempts >= max),
+    a safety guard so a word that got un-quarantined meanwhile is never dropped. The pool
+    is a standalone cache (no FKs); a future lookup just re-creates the card via GPT."""
+    clean_ids = [int(x) for x in (ids or []) if str(x).lstrip("-").isdigit()]
+    if not clean_ids:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                DELETE FROM bt_3_dictionary_entries
+                WHERE id = ANY(%s)
+                  AND COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
+                                     THEN (response_json->>'enrich_attempts')::int
+                                     ELSE 0 END), 0) >= {int(POOL_ENRICH_MAX_ATTEMPTS)}
+                """,
+                (clean_ids,),
+            )
+            deleted = cursor.rowcount
+        conn.commit()
+    return int(deleted or 0)
+
+
 def get_thin_pool_entries_for_enrichment(
     *,
     limit: int = 100,
@@ -35691,6 +35824,13 @@ DAILY_COST_CAP_EXCLUDED_ACTION_TYPES = (
     "enrich_word_multilang",
     "enrich_word",
     "dictionary_enrichment_multilang",
+    # Sprint-game distractor bank generation (admin/nightly pool-building for the
+    # synonym/antonym trainer, /admin_sprint_distractors). Shared content, not personal
+    # consumption — must not land on the triggering user's daily cap.
+    "sprint_distractor_setter",
+    "sprint_distractor_prosecutor",
+    "sprint_distractor_judge",
+    "sprint_correct_examples",
 )
 
 
@@ -37086,6 +37226,15 @@ def enforce_daily_cost_cap(
     now_ts_utc: datetime | None = None,
     tz: str = TRIAL_POLICY_TZ,
 ) -> dict | None:
+    # Admins are exempt: they test heavily AND trigger pool-generation jobs (enrichment,
+    # sprint distractors, …) whose cost is attributed to their own id but is shared
+    # infrastructure, not personal consumption. Matches the admin exemption on run limits;
+    # keeps the owner from being blocked inside their own app.
+    try:
+        if int(user_id) in get_admin_telegram_ids():
+            return None
+    except Exception:
+        pass
     entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_ts_utc, tz=tz)
     cap_eur = entitlement.get("cap_eur")
     if cap_eur is None:
