@@ -9823,44 +9823,6 @@ function AppInner() {
       }
       audio.play().catch(() => finish());
     });
-    const playWebSpeech = () => new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
-      const watchdog = window.setTimeout(finish, 4000);
-      if (!('speechSynthesis' in window) || isStalePlayback()) {
-        window.clearTimeout(watchdog);
-        finish();
-        return;
-      }
-      try {
-        const utterance = new SpeechSynthesisUtterance(normalizedText);
-        utterance.lang = language;
-        utterance.rate = 0.95;
-        utterance.onend = () => {
-          window.clearTimeout(watchdog);
-          finish();
-        };
-        utterance.onerror = () => {
-          window.clearTimeout(watchdog);
-          finish();
-        };
-        if (isStalePlayback()) {
-          window.clearTimeout(watchdog);
-          finish();
-          return;
-        }
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
-      } catch (error) {
-        window.clearTimeout(watchdog);
-        finish();
-      }
-    });
-
     const cachedAudioUrl = getTtsCacheValue(key);
     if (cachedAudioUrl) {
       const audioUrl = cachedAudioUrl;
@@ -9889,7 +9851,10 @@ function AppInner() {
       const requestPromise = (async () => {
         const startedAt = Date.now();
         let generationStarted = Boolean(ttsPendingCacheRef.current.get(key)?.generateStarted);
-        while (Date.now() - startedAt < 2500) {
+        // Wait up to ~6s (was 2.5s) for the REAL Google voice so a first tap on a freshly
+        // generated sentence plays WaveNet/Standard, not the browser robot. The pending
+        // spinner is shown meanwhile; the browser-speechSynthesis fallback is gone.
+        while (Date.now() - startedAt < 6000) {
           let statusPayload;
           try {
             statusPayload = await fetchTtsUrlStatus(normalizedText, normalizedLang, normalizedVoice);
@@ -9952,11 +9917,15 @@ function AppInner() {
       if (readyUrl) {
         return playAudioUrl(readyUrl);
       }
-      console.info('TTS fallback: timeout_or_failed', { key });
-      return playWebSpeech();
+      // No browser-robot fallback: the phone's speechSynthesis sounds cheap/robotic on a
+      // premium surface. The server always returns a REAL Google voice — WaveNet, or the
+      // Standard voice when the WaveNet monthly budget is exhausted. If it's genuinely not
+      // ready in time, stay silent (a later tap plays the now-cached real voice) — never robot.
+      console.info('TTS: real voice not ready in time; skipping robot fallback', { key });
+      return;
     } catch (error) {
       console.warn('TTS error', error);
-      return playWebSpeech();
+      return;
     }
   }, [initData, fetchTtsUrlStatus, getTtsCacheValue, requestTtsGenerate, setTtsCacheValue, stopTtsPlayback]);
 
@@ -35034,7 +35003,12 @@ function AppInner() {
                   )}
                 </div>
 
-                {skillTrainingError && <div className="webapp-error">{skillTrainingError}</div>}
+                {skillTrainingError && (
+                  <div className="paid-feature-card">
+                    <div className="paid-feature-card-icon" aria-hidden="true">⏱️</div>
+                    <div className="paid-feature-card-copy"><span>{skillTrainingError}</span></div>
+                  </div>
+                )}
 
                 {!skillTrainingLoading && !skillTrainingError && skillTrainingData?.package && (
                   <div className="theory-card">
