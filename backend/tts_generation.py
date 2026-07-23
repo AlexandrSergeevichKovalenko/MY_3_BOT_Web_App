@@ -172,6 +172,14 @@ def _normalize_tts_voice_name(voice: str | None, short_lang: str) -> str:
     return str(_TTS_VOICES.get(short_lang, _TTS_VOICES["de"])).strip()
 
 
+def _tts_bucket_for_voice(voice_name: str) -> str:
+    """Budget/billing bucket for a Google voice by tier. Standard-tier voices draw on the
+    roomy `google_tts_standard` free bucket (~4M/mo); WaveNet/Polyglot/Neural2 on the
+    premium `google_tts` bucket (~1M/mo). Lets single-word playback ride the cheap bucket
+    without starving the premium one used for sentences."""
+    return "google_tts_standard" if "standard" in str(voice_name or "").lower() else "google_tts"
+
+
 def _estimate_reader_page_tts_budget_chars(page_text: str) -> int:
     """
     Count billable chars for reader page synthesis using the exact normalized
@@ -1066,11 +1074,13 @@ def _run_tts_generation_core(
 
         failure_stage = "google_synthesize"
         provider_started_perf = time.perf_counter()
+        tts_bucket = _tts_bucket_for_voice(voice)
         response_audio = _synthesize_mp3(
             normalized_text,
             language=language,
             voice=voice,
             speed=speaking_rate,
+            budget_provider=tts_bucket,
         )
         provider_duration_ms = _elapsed_ms_since(provider_started_perf)
         failure_stage = "r2_upload"
@@ -1123,7 +1133,7 @@ def _run_tts_generation_core(
             billing_fn(
                 user_id=user_id_int,
                 action_type="webapp_tts_chars",
-                provider="google_tts",
+                provider=tts_bucket,
                 units_type="chars",
                 units_value=float(len(normalized_text)),
                 source_lang=user_source_lang,

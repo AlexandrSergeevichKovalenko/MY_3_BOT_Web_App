@@ -21086,6 +21086,33 @@ def _tts_object_cache_key(short_lang: str, voice: str, speed: float, text: str) 
 # _tts_object_key lives in backend.tts_generation (imported above)
 
 
+# Single German word → cheaper Standard voice (bills the roomy google_tts_standard bucket
+# via _tts_bucket_for_voice); phrases/sentences keep the natural WaveNet/Polyglot default.
+# The quality gap is inaudible on one word but audible on a sentence, so only words move.
+INTERACTIVE_TTS_WORD_VOICE_DE = os.getenv("INTERACTIVE_TTS_WORD_VOICE_DE", "de-DE-Standard-C").strip() or "de-DE-Standard-C"
+_DE_ARTICLES_FOR_VOICE = {
+    "der", "die", "das", "ein", "eine", "den", "dem", "des",
+    "einen", "einem", "eines", "einer",
+}
+
+
+def _tts_text_is_single_de_word(text: str) -> bool:
+    tokens = str(text or "").strip().split()
+    if tokens and tokens[0].lower() in _DE_ARTICLES_FOR_VOICE:
+        tokens = tokens[1:]  # article-tolerant: "der Hund" is still one headword
+    return len(tokens) == 1
+
+
+def _pick_interactive_tts_voice(text: str, short_lang: str, explicit_voice) -> str:
+    """Voice for the shared interactive TTS endpoint: honor an explicit voice; else a lone
+    German word → Standard, everything else → the language default (WaveNet/Polyglot)."""
+    if explicit_voice:
+        return _normalize_tts_voice_name(explicit_voice, short_lang)
+    if short_lang == "de" and _tts_text_is_single_de_word(text):
+        return INTERACTIVE_TTS_WORD_VOICE_DE
+    return _normalize_tts_voice_name(None, short_lang)
+
+
 def _read_webapp_tts_request_payload(*, payload: dict | None = None) -> tuple[dict | None, tuple[dict, int] | None]:
     body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
     # initData OR durable browser-dictionary token (standalone Safari / home-screen app),
@@ -21102,7 +21129,7 @@ def _read_webapp_tts_request_payload(*, payload: dict | None = None) -> tuple[di
 
     language_input = str(body.get("language") or request.args.get("language") or "de-DE").strip()
     short_lang, language_code = _normalize_tts_language_code(language_input)
-    voice_name = _normalize_tts_voice_name(body.get("voice") or request.args.get("voice"), short_lang)
+    voice_name = _pick_interactive_tts_voice(normalized_text, short_lang, body.get("voice") or request.args.get("voice"))
 
     speed_raw = body.get("speed")
     if speed_raw is None:
@@ -21138,7 +21165,7 @@ def _warm_tts_text(text: str, *, lang_short: str = "de") -> None:
         normalized_text = _normalize_utterance_text(str(text or ""))
         if not normalized_text:
             return
-        voice = _normalize_tts_voice_name(None, lang_short)
+        voice = _pick_interactive_tts_voice(normalized_text, lang_short, None)
         language_code = _TTS_LANG_CODES.get(lang_short, _TTS_LANG_CODES["de"])
         speed = TTS_WEBAPP_DEFAULT_SPEED
         cache_key = _tts_object_cache_key(lang_short, voice, speed, normalized_text)
