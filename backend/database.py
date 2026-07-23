@@ -47378,15 +47378,20 @@ def list_sprint_bank_words(*, relation: str | None = None, limit: int = 20) -> l
 
 
 def list_sprint_words_needing_trainer(*, limit: int = 6) -> list[dict]:
-    """Bank words whose trainer data was never built (empty trainer_json). Used by the
-    nightly build job; ordered oldest-first so the backlog drains in order. Once a word
-    is built (ready or not) its trainer_json is non-empty and it won't be re-picked."""
+    """Bank words the nightly build should (re)process, oldest-first:
+      - never built (empty trainer_json), OR
+      - trainer_ready but with 0 substitution examples (a transient failure left the
+        «right pick» cards degraded — rebuild self-heals it once the retry lands).
+    A fully-built word (non-empty trainer_json WITH examples) is not re-picked."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 "SELECT sprint_id, relation, wort, accepted, hint_ru "
                 "FROM bt_3_sprint_bank "
-                "WHERE retired = FALSE AND (trainer_json IS NULL OR trainer_json = '{}'::jsonb) "
+                "WHERE retired = FALSE AND ("
+                "  trainer_json IS NULL OR trainer_json = '{}'::jsonb "
+                "  OR (trainer_ready = TRUE AND jsonb_array_length("
+                "        COALESCE(trainer_json->'correct_examples', '[]'::jsonb)) = 0)) "
                 "ORDER BY created_at ASC LIMIT %s",
                 (int(limit),),
             )

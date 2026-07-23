@@ -7251,36 +7251,42 @@ async def run_substitute_correct_examples(
     ans = [str(a).strip() for a in (answers or []) if str(a).strip()]
     if not ans or not str(base_de or "").strip():
         return []
-    try:
-        content = await llm_execute(
-            task_name="sprint_correct_examples",
-            system_instruction_key="sprint_correct_examples",
-            user_message=json.dumps({
-                "target": str(target_word), "relation": str(relation or "synonym"),
-                "base_de": str(base_de), "answers": ans,
-            }, ensure_ascii=False),
-            poll_interval_seconds=1.5,
-            responses_timeout_seconds=40.0,
-        )
-        raw = str(content or "").strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw[:4].lower() == "json":
-                raw = raw[4:]
-            raw = raw.strip()
-        data = json.loads(raw)
-        items = data.get("items") if isinstance(data, dict) else (data if isinstance(data, list) else None)
-        if not isinstance(items, list):
-            return []
-        return [{
-            "word": str(i.get("word") or "").strip(),
-            "sentence_de": str(i.get("sentence_de") or "").strip(),
-            "sentence_ru": str(i.get("sentence_ru") or "").strip(),
-            "nuance": str(i.get("nuance") or "").strip(),
-        } for i in items if isinstance(i, dict) and i.get("sentence_de")]
-    except Exception:
-        logging.warning("run_substitute_correct_examples failed target=%s", target_word, exc_info=True)
-        return []
+    # Retry a transient empty/parse failure — without this one flaky call left a whole
+    # word with 0 examples (degraded «right pick» cards) permanently in the bank.
+    for attempt in range(1, 3):
+        try:
+            content = await llm_execute(
+                task_name="sprint_correct_examples",
+                system_instruction_key="sprint_correct_examples",
+                user_message=json.dumps({
+                    "target": str(target_word), "relation": str(relation or "synonym"),
+                    "base_de": str(base_de), "answers": ans,
+                }, ensure_ascii=False),
+                poll_interval_seconds=1.5,
+                responses_timeout_seconds=40.0,
+            )
+            raw = str(content or "").strip()
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                if raw[:4].lower() == "json":
+                    raw = raw[4:]
+                raw = raw.strip()
+            data = json.loads(raw)
+            items = data.get("items") if isinstance(data, dict) else (data if isinstance(data, list) else None)
+            out = [{
+                "word": str(i.get("word") or "").strip(),
+                "sentence_de": str(i.get("sentence_de") or "").strip(),
+                "sentence_ru": str(i.get("sentence_ru") or "").strip(),
+                "nuance": str(i.get("nuance") or "").strip(),
+            } for i in items if isinstance(i, dict) and i.get("sentence_de")] if isinstance(items, list) else []
+            if out:
+                return out
+            logging.warning("run_substitute_correct_examples: empty target=%s attempt=%d raw=%.200s",
+                            target_word, attempt, raw)
+        except Exception:
+            logging.warning("run_substitute_correct_examples failed target=%s attempt=%d",
+                            target_word, attempt, exc_info=True)
+    return []
 
 
 async def run_article_noun_gen(*, theme: str, subtopic: str, count: int, avoid: list[str] | None = None) -> list[dict]:
