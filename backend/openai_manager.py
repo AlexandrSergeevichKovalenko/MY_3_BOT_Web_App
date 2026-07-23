@@ -77,6 +77,9 @@ _DEFAULT_TASK_MODELS = {
     # LLM_TASK_MODEL_ENRICH_WORD_MULTILANG / _ENRICH_WORD if a regression shows.
     "enrich_word_multilang": "gpt-4.1-mini",
     "enrich_word": "gpt-4.1-mini",
+    # Free-tier translation grading → mini (score + correct answer only; the detailed
+    # /explain breakdown is paid and stays on the full model). Same prompt, cheaper judge.
+    "check_translation_multilang_free": "gpt-4.1-mini",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
@@ -99,6 +102,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "quiz_result_commentary",
     "check_translation",
     "check_translation_multilang",
+    "check_translation_multilang_free",
     "check_translation_story",
     "check_translation_story_arena",
     "check_translation_with_claude",
@@ -6005,8 +6009,10 @@ async def run_check_translation_multilang(
     target_lang: str,
     allowed_categories: list[str] | None = None,
     allowed_subcategories: dict[str, list[str]] | None = None,
+    cheap: bool = False,
 ) -> str:
-    task_name = "check_translation_multilang"
+    # Free tier grades on the cheaper mini judge (same prompt); paid/trial keep the full model.
+    task_name = "check_translation_multilang_free" if cheap else "check_translation_multilang"
     system_instruction_key = "check_translation_multilang"
 
     source_name = _language_name(source_lang)

@@ -31144,6 +31144,12 @@ def process_webapp_message():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    # Free (non-trial) users grade on the cheap mini judge — score + correct answer only;
+    # the detailed /explain breakdown is paid. Trial/paid keep the full-model grading.
+    try:
+        _grade_cheap = str(resolve_entitlement(int(user_id)).get("effective_mode") or "free").strip().lower() == "free"
+    except Exception:
+        _grade_cheap = False
 
     try:
         if _is_legacy_ru_de_pair(source_lang, target_lang):
@@ -31155,6 +31161,7 @@ def process_webapp_message():
                     user_translation=user_translation,
                     source_lang=source_lang,
                     target_lang=target_lang,
+                    cheap=_grade_cheap,
                 )
             )
     except Exception as exc:
