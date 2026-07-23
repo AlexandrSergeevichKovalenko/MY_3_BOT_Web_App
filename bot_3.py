@@ -802,11 +802,22 @@ FREE_MANDATORY_KINDS = {
 
 def _mandatory_delivery_enabled() -> bool:
     return str(os.getenv("MANDATORY_DELIVERY_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
-# Rotation weight for the rotating pool (higher → appears more often). Article-quiz
-# is text-only and the least engaging → weighted down. The hourly multiple-choice
-# quiz ("mc", 17 slots/day) is the floodiest + least engaging → weighted very low so
-# rotation keeps only ~1/day (was ~12/day, bypassing the budget entirely).
-_ROTATION_WEIGHTS = {"article_quiz": 0.8, "aufgabe": 1.0, "mc": 0.15}
+# Rotation weight is PER SLOT. Kinds have very different slot counts (mc=17, aufgabe=11,
+# article_quiz=5, most games=2, single-shot=1), so equal per-slot weights would let the
+# many-slot kinds drown out the 2-slot games. We LEVEL by kind: weight ≈ (target mass) /
+# (slot count), so each kind gets ~equal airtime — a 2-slot game (sprint/trainer) reaches
+# the user about as often as any other. Boring kinds are then kept deliberately BELOW
+# equal (owner: show them as little as possible, esp. for Free with only 6 slots/day):
+#   • article_quiz  → mass ~0.5  (5 slots → 0.10)
+#   • mc            → mass ~0.25 (17 slots → 0.015; floodiest + least engaging)
+# 1-slot kinds (rebus, listening, artikel_sprint, artikel_learn) default to 1.0 (mass 1).
+_ROTATION_WEIGHTS = {
+    "crossword": 0.5, "anagram": 0.5, "sprint": 0.5, "trainer": 0.5,
+    "adjektiv_sprint": 0.5, "wofrage_sprint": 0.5, "numdict": 0.5,
+    "aufgabe": 0.09,        # 11 slots → mass ~1.0 (equal footing)
+    "article_quiz": 0.10,   # 5 slots  → mass 0.5  (damped: boring)
+    "mc": 0.015,            # 17 slots → mass ~0.25 (damped hard: boring flood)
+}
 
 _rotation_catalog_cache: list | None = None
 _rotation_active_cache: tuple[int, frozenset] | None = None
