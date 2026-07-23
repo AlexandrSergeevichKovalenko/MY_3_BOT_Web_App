@@ -39449,33 +39449,34 @@ def main():
             misfire_grace_time=3600,
         )
         # -- Nightly warm-up of the «Классика» audio (03:30 Europe/Vienna) --
-        # Driven from the BOT scheduler, not the backend one: the backend copy fires on
-        # SCHEDULER_SERVICE, which has no GOOGLE_CREDS_JSON/R2_* at all, so every page
-        # threw into a swallowed except and the warm-up silently produced 0 pages for
-        # five straight nights. The bot process has the credentials (the manual
-        # /reader_public_status pregen has always worked) and this scheduler is the
-        # proven-reliable one — same reason the readiness DM below lives here.
-        scheduler.add_job(
-            _run_public_library_audio_pregen_safe,
-            "cron",
-            hour=int((os.getenv("PUBLIC_LIBRARY_PREGEN_BOT_HOUR") or "3").strip() or "3"),
-            minute=int((os.getenv("PUBLIC_LIBRARY_PREGEN_BOT_MINUTE") or "30").strip() or "30"),
-            timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
-            coalesce=True,
-            max_instances=1,
-            misfire_grace_time=3600,
-        )
-        # -- Morning DM: which «Классика» books are fully warmed (audio ready to test) --
-        scheduler.add_job(
-            _run_classics_audio_readiness_report_safe,
-            "cron",
-            hour=int((os.getenv("CLASSICS_AUDIO_REPORT_HOUR") or "8").strip() or "8"),
-            minute=int((os.getenv("CLASSICS_AUDIO_REPORT_MINUTE") or "0").strip() or "0"),
-            timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
-            coalesce=True,
-            max_instances=1,
-            misfire_grace_time=3600,
-        )
+        # OFF by default: pre-warming the WHOLE shelf synthesised (and stored forever)
+        # audio for books nobody had opened — 1.7 GB of never-played mp3. We now rely on
+        # on-demand synthesis (the reader plays from the wheels + prefetches one page
+        # ahead) and let idle audio evict on the normal TTL. Set PUBLIC_LIBRARY_PREGEN_ENABLED=1
+        # to bring the bulk warm-up (and its readiness DM) back for a specific push; the
+        # manual /reader_public_status pregen command works regardless.
+        if (os.getenv("PUBLIC_LIBRARY_PREGEN_ENABLED") or "0").strip() == "1":
+            scheduler.add_job(
+                _run_public_library_audio_pregen_safe,
+                "cron",
+                hour=int((os.getenv("PUBLIC_LIBRARY_PREGEN_BOT_HOUR") or "3").strip() or "3"),
+                minute=int((os.getenv("PUBLIC_LIBRARY_PREGEN_BOT_MINUTE") or "30").strip() or "30"),
+                timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=3600,
+            )
+            # -- Morning DM: which «Классика» books are fully warmed (audio ready to test) --
+            scheduler.add_job(
+                _run_classics_audio_readiness_report_safe,
+                "cron",
+                hour=int((os.getenv("CLASSICS_AUDIO_REPORT_HOUR") or "8").strip() or "8"),
+                minute=int((os.getenv("CLASSICS_AUDIO_REPORT_MINUTE") or "0").strip() or "0"),
+                timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=3600,
+            )
         # -- Morning DM: TTS prewarm quota control panel (08:00 Europe/Vienna) --
         # Pushes the same panel as /ttsprewarmquota automatically each morning so the
         # admin sees the current warm-up quota + last-run fit and can react with the

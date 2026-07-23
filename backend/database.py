@@ -37166,16 +37166,18 @@ def delete_stale_reader_audio_pages(older_than_days: int = 90, limit: int = 5000
     audio_url list so the caller can remove the R2 objects. Call repeatedly until it
     returns []. Active reading keeps a page 'hot' (last_played_at updates on play).
 
-    NEVER evict "Классика" (public shared library) audio: it's a small, fixed corpus
-    (~1 GB for the whole shelf → ~cents/year in R2) that is expensive to re-warm from
-    the free Standard bucket, and it's meant to play instantly for everyone. Keeping it
-    forever is far cheaper than the regeneration churn.
+    "Классика" (public shared library) audio IS evicted on the same idle TTL now: we no
+    longer pre-warm the whole shelf, so a public page only exists because someone actually
+    read it — and if nobody has replayed it in `older_than_days`, storing it (and having
+    burned the TTS to make it) is pure waste. It re-synthesises from the free Standard
+    bucket the moment someone opens the page again (on-demand, from the wheels), so the
+    cost of evicting is ~nothing. Active reading still keeps a page hot via last_played_at.
 
-    NEVER evict PAID personal audio either (a book someone unlocked with Stars): the
-    per-page regen cost (Neural2 ≈ €16/1M chars) is ~thousands of times a month of R2
-    storage — break-even is centuries, so evicting a paid book just to re-synthesise it
-    later burns OUR money. Only truly free/legacy rows with NO unlock still cycle at the
-    idle TTL. (Reclaiming a churned user's audio is a separate, activity-based job.)"""
+    NEVER evict PAID personal audio (a book someone unlocked with Stars): the per-page
+    regen cost (Neural2 ≈ €16/1M chars) is ~thousands of times a month of R2 storage —
+    break-even is centuries, so evicting a paid book just to re-synthesise it later burns
+    OUR money. Rows whose book has ANY unlock are kept regardless of the idle TTL.
+    (Reclaiming a churned user's audio is a separate, activity-based job.)"""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -37186,7 +37188,6 @@ def delete_stale_reader_audio_pages(older_than_days: int = 90, limit: int = 5000
                         SELECT ap.id FROM bt_3_reader_audio_pages ap
                         JOIN bt_3_reader_library rl ON rl.id = ap.document_id
                         WHERE COALESCE(ap.last_played_at, ap.created_at) < NOW() - (%s * INTERVAL '1 day')
-                          AND rl.is_public = FALSE
                           AND NOT EXISTS (
                               SELECT 1 FROM bt_3_book_audio_unlocks u
                               WHERE u.document_id = ap.document_id
