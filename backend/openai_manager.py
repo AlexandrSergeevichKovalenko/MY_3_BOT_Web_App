@@ -3903,10 +3903,10 @@ trainer for Russian-speaking B2+ learners.
 INPUT JSON: {"target":"...","pos":"...","sense_ru":"...","sense_de":"...",
 "relation":"synonym"|"antonym","correct":["...","..."],"count":N}
 
-TASK: produce N DISTRACTOR candidates — words that look plausible next to `target`
-but are NOT a valid {relation} of `target` in ANY common sense. A distractor that a
-competent native speaker could accept as a {relation} is a BUG; when in doubt, DO NOT
-include it.
+TASK: produce up to N DISTRACTOR candidates — TEMPTING words a B2 learner could
+mistake for the answer — built per the COMPOSITION buckets below. Each must NOT be a
+valid {relation} of `target` in ANY common sense (that would be a BUG; when in doubt,
+omit it). Returning fewer excellent candidates beats padding with easy ones.
 
 HARD RULES for every distractor:
 - A real, reasonably common German word at ~B2 level (no archaic/obscure coinage).
@@ -3919,23 +3919,26 @@ HARD RULES for every distractor:
 - Judged against the INTENDED sense only (`sense_de`). A word that relates to a
   DIFFERENT sense of `target` is a GOOD distractor (label it wrong_sense).
 
-DIFFICULTY MANDATE: every distractor must be genuinely TEMPTING — a B2 learner could
-plausibly believe it IS the {relation}. Do NOT pad the list with bland, obviously
-unrelated words (random adjectives from unrelated fields, e.g. "modern","restless").
-Prefer FEWER, HARDER distractors over many easy ones.
+COMPOSITION — you MUST fill these buckets with these MINIMUMS (this is what forces
+tempting, not bland, distractors). Set each candidate's "trap_type" to its bucket:
 
-Prefer these attractive-but-wrong TRAP TYPES, HARDEST FIRST; label which applies:
-- opposite_relation_trap  : the candidate is itself a SYNONYM/near-synonym of target
-                            (for an ANTONYM task) or an ANTONYM of target (for a
-                            SYNONYM task). The learner who confuses DIRECTION picks it.
-                            These are the MOST valuable traps — include several.
-- answer_field_near_miss  : a word from the {relation}'s OWN semantic field that falls
-                            just short of being a true {relation} of target (close, but
-                            a competent speaker would not accept it as the answer).
-- wrong_sense             : valid {relation} of a DIFFERENT sense of target, not the
-                            intended one (polysemy trap).
-- same_topic_wrong_relation : same broad topic, but neither {relation}.
-- near_form               : similar root/spelling, different meaning.
+- direction_trap  (produce the MOST — at LEAST half of all candidates): a word that
+  has the relation OPPOSITE to the one we test. For an ANTONYM task these are SYNONYMS
+  / near-synonyms of `target` ITSELF; for a SYNONYM task they are ANTONYMS of `target`.
+  The learner who confuses DIRECTION reaches for these — the hardest, most useful trap.
+  (E.g. target "oberflächlich", antonym task → "flüchtig","seicht","vage","ungenau",
+  "vordergründig","halbherzig".) List as MANY good ones as genuinely exist.
+- answer_field_near_miss  (at least 2 if any exist): a word from the SAME semantic
+  field as the true {relation} answers, close but NOT accepted as the answer by a
+  competent speaker.
+- wrong_sense  (0-3): a valid {relation} of a DIFFERENT sense of `target`, not the
+  intended one (polysemy trap).
+
+FORBIDDEN: do NOT pad with bland, obviously-unrelated words (random adjectives from
+unrelated fields — e.g. "modern","practical","routine","short","clear"). A distractor
+no learner would ever mistake for the answer is worthless: OMIT it rather than pad. It
+is FINE to return fewer than `count` if only fewer genuinely tempting ones exist —
+QUALITY over quantity. Never include a bland filler just to reach `count`.
 
 For EACH candidate output an object:
 {"word":"...","article":"der"|"die"|"das"|null,"pos":"...","ru_gloss":"<RU meaning>",

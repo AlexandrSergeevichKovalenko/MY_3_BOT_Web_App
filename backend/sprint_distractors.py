@@ -54,7 +54,7 @@ def _pair_de(p) -> str:
 
 async def build_trainer_distractors(
     *, target_word: str, relation: str, correct_pairs: list, hint_ru: str = "",
-    pos: str = "", want: int = 16,
+    pos: str = "", want: int = 12,
 ) -> dict:
     """Run the full pipeline for ONE word. Returns:
       {
