@@ -2378,14 +2378,27 @@ def load_trainer_task(*, dispatch_id: int, user_id: int) -> dict | None:
     if not item or not item.get("trainer_ready"):
         return None
     tj = item.get("trainer_json") or {}
+    wort = str(item.get("wort") or "")
+    # The GPT-built `accepted` list sometimes contains the TARGET WORD itself — which would
+    # show the anchor as its own "synonym" (and a self-substitution example). Strip it here
+    # so every ALREADY-BUILT word is fixed at serve time, no rebuild needed.
+    tw = _sprint_core(wort)
+
+    def _not_self(w) -> bool:
+        return _sprint_core(str(w or "")) != tw
+
+    correct = [p for p in accepted_pairs(item.get("accepted"))
+               if _not_self(p.get("de") if isinstance(p, dict) else p)]
+    distractors = [d for d in (tj.get("distractors") or []) if _not_self((d or {}).get("word"))]
+    correct_examples = [e for e in (tj.get("correct_examples") or []) if _not_self((e or {}).get("word"))]
     return {
         "kind": "trainer",
         "relation": str(item.get("relation") or "synonym"),
-        "wort": str(item.get("wort") or ""),
+        "wort": wort,
         "hint_ru": str(item.get("hint_ru") or ""),
-        "correct": accepted_pairs(item.get("accepted")),          # [{de, ru}]
-        "distractors": tj.get("distractors") or [],               # [{word, ru_gloss, why_not, example_de, example_ru, ...}]
-        "correct_examples": tj.get("correct_examples") or [],     # [{word, sentence_de, sentence_ru}]
+        "correct": correct,                                       # [{de, ru}]
+        "distractors": distractors,                              # [{word, ru_gloss, why_not, example_de, example_ru, ...}]
+        "correct_examples": correct_examples,                    # [{word, sentence_de, sentence_ru}]
         "target_example": tj.get("target_example") or {},         # {de, ru}
     }
 

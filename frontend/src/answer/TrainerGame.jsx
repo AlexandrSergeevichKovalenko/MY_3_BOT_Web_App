@@ -34,13 +34,15 @@ const deOf = (a) => String((a && typeof a === 'object' ? (a.de || a.word) : a) |
 // distractor draw (rotating through the pool so options vary round to round).
 // Only correct answers that HAVE an example+nuance (in exampleKeys) become rounds, so
 // every «right pick» card is complete — falls back to all if too few are example-backed.
-function buildRounds(correct, distractors, exampleKeys) {
-  let corr = (correct || []).filter((c) => deOf(c));
+function buildRounds(correct, distractors, exampleKeys, anchor) {
+  const aKey = normCore(anchor);
+  // Never show the anchor itself as its own "synonym" (guard vs a dirty accepted list).
+  let corr = (correct || []).filter((c) => deOf(c) && normCore(deOf(c)) !== aKey);
   if (exampleKeys && exampleKeys.size) {
     const withEx = corr.filter((c) => exampleKeys.has(normCore(deOf(c))));
     if (withEx.length >= 2) corr = withEx;
   }
-  const dist = (distractors || []).filter((d) => deOf(d));
+  const dist = (distractors || []).filter((d) => deOf(d) && normCore(deOf(d)) !== aKey);
   const rounds = shuffle(corr).slice(0, Math.min(MAX_ROUNDS, corr.length));
   const nDist = Math.max(0, Math.min(OPTIONS_PER_ROUND - 1, dist.length));
   let cursor = 0;
@@ -87,7 +89,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         const data = await api('/api/trainer/task', { kind: 'tr', id });
         if (cancelled) return;
         const exKeys = new Set((data.correct_examples || []).map((e) => normCore(e?.word)).filter(Boolean));
-        const rs = buildRounds(data.correct, data.distractors, exKeys);
+        const rs = buildRounds(data.correct, data.distractors, exKeys, data.wort);
         if (!rs.length) { setError('Для этого слова пока нет вариантов.'); setPhase('error'); return; }
         setMeta(data); setRounds(rs); setPhase('intro');
       } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }

@@ -101,7 +101,10 @@ async def build_trainer_distractors(
     )
 
     relation = str(relation or "synonym")
-    correct_de = [_pair_de(p) for p in (correct_pairs or []) if _pair_de(p)]
+    # Drop the TARGET itself if the GPT `accepted` list wrongly included it — otherwise it
+    # becomes a "correct" option identical to the anchor (with a self-substitution example).
+    _tw = _norm(target_word)
+    correct_de = [d for d in (_pair_de(p) for p in (correct_pairs or [])) if d and _norm(d) != _tw]
     sense_ru = str(hint_ru or "").strip()
 
     # ── Stage 1: SETTER ──────────────────────────────────────────────────────
