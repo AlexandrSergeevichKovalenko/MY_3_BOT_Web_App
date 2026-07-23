@@ -207,7 +207,7 @@ const STEPS = [
   { id: 'shortcut',   title: t('Захват слов со скриншотов (iPhone) 📲', 'Wörter aus Screenshots (iPhone) 📲'), kind: 'opt' },
   { id: 'howto_morning', title: t('Утром твои слова уже ждут 🌅', 'Morgens warten deine Wörter 🌅'), kind: 'info' },
   { id: 'howto_learn',   title: t('А теперь — как их учить 🎓', 'Und jetzt — wie du sie lernst 🎓'), kind: 'info' },
-  { id: 'plans',      title: t('Тарифы: Free и Pro 💎', 'Tarife: Free und Pro 💎'), kind: 'info' },
+  { id: 'plans',      title: t('Тарифы: Free и Полный доступ 💎', 'Tarife: Free und Voller Zugang 💎'), kind: 'info' },
   { id: 'finale',     title: t('Готово! ✅', 'Fertig! ✅'),                kind: 'finale' },
 ];
 
@@ -252,9 +252,9 @@ function tocValue(id, s) {
       if (s.dictTier === 'base') return t('✅ подключён', '✅ verbunden');
       return t('не подключён', 'nicht verbunden');
     case 'intensity':
-      return s.isPro ? label(PRESETS, s.preset) : t('🔒 Pro', '🔒 Pro');
+      return s.isPro ? label(PRESETS, s.preset) : t('🔒 Полный доступ', '🔒 Voller Zugang');
     case 'windows':
-      return s.isPro ? label(WINDOWS, s.window) : t('🔒 Pro', '🔒 Pro');
+      return s.isPro ? label(WINDOWS, s.window) : t('🔒 Полный доступ', '🔒 Voller Zugang');
     case 'battles':
       return s.battleReady ? t('⚔️ да', '⚔️ ja') : t('нет', 'nein');
     default:
@@ -408,12 +408,12 @@ const PRO_TEASER = (
   <div className="ob-teaser">
     <p className="ob-lead">
       {t('На бесплатном — подборка заданий в день. В ',
-         'Kostenlos — eine Auswahl an Aufgaben pro Tag. In ')}
-      <b>Pro</b>
+         'Kostenlos — eine Auswahl an Aufgaben pro Tag. Mit ')}
+      <b>{t('«Полном доступе»', '«Vollem Zugang»')}</b>
       {t(' можно настроить количество и время доставки.',
          ' kannst du Menge und Uhrzeit einstellen.')}
     </p>
-    <span className="ob-lock">{t('🔒 Только в Pro', '🔒 Nur mit Pro')}</span>
+    <span className="ob-lock">{t('🔒 Только в «Полном доступе»', '🔒 Nur mit vollem Zugang')}</span>
   </div>
 );
 
@@ -906,9 +906,9 @@ function StepBody(props) {
           { f: t('🎧 Аудио-разбор ошибок утром', '🎧 Morgendliche Fehler-Audio'), free: NO, pro: YES, ex: true },
         ] },
         { title: t('📖 Словарь', '📖 Wörterbuch'), rows: [
-          { f: t('Переводы-запросы', 'Wörterbuch-Abfragen'), free: D(10), pro: INF },
+          { f: t('Быстрый перевод + разборы из библиотеки', 'Schnellübersetzung + Analysen aus der Bibliothek'), free: INF, pro: INF },
+          { f: t('Разбор новых слов (GPT)', 'Analyse neuer Wörter (GPT)'), free: D(3), pro: INF },
           { f: t('Сохранение слов', 'Wörter speichern'), free: D(20), pro: INF },
-          { f: t('Полный разбор (GPT)', 'Tiefenanalyse (GPT)'), free: [t('лимит', 'Limit'), 'Limit'], pro: INF },
         ] },
         { title: t('🃏 Карточки', '🃏 Karteikarten'), rows: [
           { f: t('Новые слова', 'Neue Wörter'), free: ['10/режим', '10/Modus'], pro: INF },
@@ -953,15 +953,15 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            {t('Ты увидел, что умеет бот. Вот что входит в каждый тариф — Free и Pro. Озвучка книг оплачивается отдельно.',
-               'Du hast gesehen, was der Bot kann. Das steckt in jedem Tarif — Free und Pro. Buch-Vertonung wird separat bezahlt.')}
+            {t('Ты увидел, что умеет бот. Вот что входит в каждый тариф. «Полный доступ» открывает все функции — без ограничений по количеству. Озвучка книг оплачивается отдельно.',
+               'Du hast gesehen, was der Bot kann. Das steckt in jedem Tarif. «Voller Zugang» schaltet alle Funktionen frei — ohne Mengenbegrenzung. Buch-Vertonung wird separat bezahlt.')}
           </p>
 
           <div className="ob-cmp">
             <div className="ob-cmp-head">
               <div className="h-feat">{t('Возможность', 'Funktion')}</div>
               <div className="h-free"><span className="n">Free</span><span className="tag">{t('бесплатно', 'gratis')}</span></div>
-              <div className="h-pro"><span className="n">Pro</span><span className="tag">💎</span></div>
+              <div className="h-pro"><span className="n">{t('Полный доступ', 'Voller Zugang')}</span><span className="tag">💎</span></div>
             </div>
             <div className="ob-cmp-grid">
               {SECTIONS.map((s, si) => (
