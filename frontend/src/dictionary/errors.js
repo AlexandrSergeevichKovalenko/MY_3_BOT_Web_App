@@ -37,8 +37,8 @@ export function humanizeDictError(e) {
   if (code === 'paid_feature_required') {
     const title = e && e.payload && String(e.payload.feature_title || e.payload.feature || '').trim();
     return title
-      ? `«${title}» доступно в тарифе «Расширенный».`
-      : 'Эта функция доступна в тарифе «Расширенный».';
+      ? `«${title}» доступно в тарифе «Полный доступ».`
+      : 'Эта функция доступна в тарифе «Полный доступ».';
   }
 
   // Expired / missing Telegram auth → actionable re-open hint.

@@ -2912,8 +2912,8 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/youtube/translate": {"cap": True, "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube-перевод субтитров"},
     "/api/webapp/submit-group": {"cap": True},
     "/api/webapp/story/submit": {"cap": True, "paid_feature": "mystery_story", "paid_feature_title": "Загадочная история"},
-    "/api/today/theory/prepare": {"cap": True, "feature_code": "skill_training_daily"},
-    "/api/today/theory/check": {"cap": True},
+    "/api/today/theory/prepare": {"cap": True, "feature_code": "skill_training_daily", "paid_feature": "skill_training", "paid_feature_title": "Тренировка навыка"},
+    "/api/today/theory/check": {"cap": True, "paid_feature": "skill_training", "paid_feature_title": "Тренировка навыка"},
 }
 _BILLING_GUARD_SKIP_PATHS = {
     "/api/billing/webhook",
