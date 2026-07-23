@@ -52,6 +52,19 @@ def _pair_de(p) -> str:
     return str((p.get("de") if isinstance(p, dict) else p) or "").strip()
 
 
+def _storage_form(word: str, article: str | None) -> str:
+    """Canonical storage form (matches the sprint `accepted` format): a noun carries its
+    article exactly once, e.g. "der Zweifel". The setter sometimes puts the article in
+    both `word` and `article`; keep it single. Verbs/adjectives are returned unchanged."""
+    w = str(word or "").strip()
+    if not w:
+        return w
+    lead = w.split(" ", 1)[0].lower()
+    if article in ("der", "die", "das") and lead not in _ARTICLES:
+        return f"{article} {w}"
+    return w
+
+
 async def build_trainer_distractors(
     *, target_word: str, relation: str, correct_pairs: list, hint_ru: str = "",
     pos: str = "", want: int = 12,
@@ -154,9 +167,10 @@ async def build_trainer_distractors(
         cls = (v or {}).get("class")
         issues = (v or {}).get("issues") or []
         if cls == "DEFINITELY_NOT" and not issues:
+            article = c.get("article") if c.get("article") in ("der", "die", "das") else None
             kept.append({
-                "word": word,
-                "article": (c.get("article") if c.get("article") in ("der", "die", "das") else None),
+                "word": _storage_form(word, article),
+                "article": article,
                 "ru_gloss": str(c.get("ru_gloss") or "").strip(),
                 "trap_type": str(c.get("trap_type") or "").strip(),
                 "why_not": str(c.get("why_not") or "").strip(),

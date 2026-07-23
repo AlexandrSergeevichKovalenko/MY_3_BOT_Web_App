@@ -3940,7 +3940,9 @@ no learner would ever mistake for the answer is worthless: OMIT it rather than p
 is FINE to return fewer than `count` if only fewer genuinely tempting ones exist —
 QUALITY over quantity. Never include a bland filler just to reach `count`.
 
-For EACH candidate output an object:
+For EACH candidate output an object ("word" is the storage form: a NOUN carries its
+article ONCE inside "word" e.g. "der Zweifel"; "article" just repeats that gender for
+colour-coding. Verbs → infinitive, adjectives/adverbs → Grundform, "article": null):
 {"word":"...","article":"der"|"die"|"das"|null,"pos":"...","ru_gloss":"<RU meaning>",
  "trap_type":"<one of the above>",
  "why_not":"<one precise sentence: what it really means and why it is NOT a {relation} of target>",

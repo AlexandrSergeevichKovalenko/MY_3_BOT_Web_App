@@ -31183,10 +31183,10 @@ def _fmt_distractor_preview(word_item: dict, result: dict) -> str:
     if kept:
         lines.append(f"\n✅ <b>Чистые дистракторы ({len(kept)})</b>")
         for d in kept:
-            art = f"{d['article']} " if d.get("article") else ""
+            # d['word'] is already the storage form (article included for nouns).
             g = f" — {_html_escape(d['ru_gloss'])}" if d.get("ru_gloss") else ""
             trap = f" · <i>{_html_escape(d['trap_type'])}</i>" if d.get("trap_type") else ""
-            lines.append(f"• <b>{_html_escape(art + d['word'])}</b>{g}{trap}")
+            lines.append(f"• <b>{_html_escape(d['word'])}</b>{g}{trap}")
             if d.get("why_not"):
                 lines.append(f"   ↳ {_html_escape(d['why_not'])}")
             if d.get("example_de"):
