@@ -9294,6 +9294,7 @@ def run_pool_night_enrichment(
     dry_run: bool = False,
     source_lang: str = "de",
     target_lang: str = "ru",
+    progress_cb=None,
 ) -> dict:
     """Ночной добор ТОНКИХ записей общего пула.
 
@@ -9337,7 +9338,14 @@ def run_pool_night_enrichment(
                 limit=cap - len(rows), source_lang=target_lang, target_lang=source_lang,
             )
         report["picked"] = len(rows)
-        for row in rows:
+        for _idx, row in enumerate(rows):
+            # Optional progress ping (manual runs only) — lets the caller show movement so
+            # a slow run is distinguishable from a stuck one. Never let it break enrichment.
+            if progress_cb is not None:
+                try:
+                    progress_cb(_idx, len(rows), report)
+                except Exception:
+                    logging.debug("pool enrich progress_cb failed", exc_info=True)
             row_source_lang = str(row.get("source_lang") or source_lang).strip().lower()
             row_target_lang = str(row.get("target_lang") or target_lang).strip().lower()
             source_text = str(row.get("source_text") or "").strip()

@@ -10729,11 +10729,23 @@ async def admin_pool_enrich_command(update: Update, context: CallbackContext):
         f"итог пришлю сюда, как закончу."
     )
 
+    def _progress(idx: int, total: int, rep: dict) -> None:
+        # Ping on the very first word (proves it started moving) and then every 5th, so a
+        # slow-but-alive run is visibly distinct from a stuck one — and we see WHERE it stalls.
+        if idx == 0 or (idx % 5 == 0):
+            done = int(rep.get("enriched", 0)) + int(rep.get("skipped", 0)) + int(rep.get("errors", 0))
+            _send_raw(
+                f"⚙️ Добор {src}→{tgt}: беру слово {idx + 1}/{total} "
+                f"(готово {done}: +{int(rep.get('enriched', 0))} обогащено, "
+                f"{int(rep.get('skipped', 0))} пропущено)"
+            )
+
     def _worker() -> None:
         try:
             from backend.backend_server import run_pool_night_enrichment
             report = run_pool_night_enrichment(
                 limit=limit, dry_run=False, source_lang=src, target_lang=tgt,
+                progress_cb=_progress,
             )
             _send_raw(_format_report(report))
         except Exception as exc:
