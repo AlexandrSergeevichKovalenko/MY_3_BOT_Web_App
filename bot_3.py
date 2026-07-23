@@ -35780,11 +35780,12 @@ async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> Non
     targets = await _collect_quiz_delivery_user_targets(context)
     if not targets:
         return
-    # RAIL GATE (free only): a FREE user gets this sprint word only if they RECEIVED its
-    # trainer (≈3 days ago) — no prep, no sprint. Pro users and group chats are exempt.
-    # ONLY active when the trainer itself is enabled — otherwise there is no rail and the
-    # sprint keeps its current (ungated) free delivery, so enabling the flag is what turns
-    # the whole rail on together.
+    # LEARNING-FLOW GATE (ALL DM users, Free AND Pro — it's pedagogy, not a paywall):
+    # the sprint is RECALL, so it only goes to someone who got its trainer (RECOGNITION)
+    # ~3 days earlier. A gated user simply doesn't receive THIS sprint slot (no dynamic
+    # refill) — but the rail preference makes the sprint word == the just-trained word, so
+    # active users almost always have the prep and rarely hit the gate. Groups are exempt
+    # (no per-user trainer tracking). Active only while the trainer runs (TRAINER_ENABLED).
     apply_rail_gate = _trainer_enabled()
     trainer_recipients = (await asyncio.to_thread(
         get_trainer_recipient_ids, str(entry["sprint_id"]), since_days=5)) if apply_rail_gate else set()
@@ -35794,14 +35795,9 @@ async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> Non
         cid = int(t.get("chat_id") or 0)
         if cid == 0:
             continue
-        if apply_rail_gate and cid > 0:  # DM: apply the rail gate to free users
-            try:
-                is_pro = await asyncio.to_thread(_is_user_pro_cached, cid)
-            except Exception:
-                is_pro = False
-            if not is_pro and cid not in trainer_recipients:
-                gated += 1
-                continue
+        if apply_rail_gate and cid > 0 and cid not in trainer_recipients:  # DM: prep required
+            gated += 1
+            continue
         if await send_sprint_to_chat(context, entry=entry, relation=relation, slot_date=slot_date,
                                      slot_hour=slot_hour, chat_id=cid, target_user_id=cid):
             sent += 1
