@@ -47522,6 +47522,20 @@ def update_trainer_dispatch_message_id(dispatch_id: int, *, telegram_message_id:
         conn.commit()
 
 
+def get_trainer_recipient_ids(sprint_id: str, *, since_days: int = 5) -> set[int]:
+    """User ids who RECEIVED the trainer for `sprint_id` in the last `since_days`. Used
+    by the rail gate: a FREE user gets the sprint for a word only if they got its trainer."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT target_user_id FROM bt_3_trainer_dispatches "
+                "WHERE sprint_id = %s AND sent_at >= NOW() - (%s || ' days')::INTERVAL",
+                (str(sprint_id), int(since_days)),
+            )
+            rows = cursor.fetchall() or []
+    return {int(r[0]) for r in rows}
+
+
 def get_trainer_dispatch_by_id(dispatch_id: int) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

@@ -433,6 +433,7 @@ from backend.database import (
     pick_next_trainer,
     mark_trainer_sent,
     pick_rail_sprint,
+    get_trainer_recipient_ids,
     mark_sprint_sent,
     create_sprint_dispatch,
     update_sprint_dispatch_message_id,
@@ -792,7 +793,10 @@ MANDATORY_DELIVERY_KINDS = {
     "listening", "numdict", "artikel_sprint", "artikel_learn", "adjektiv_sprint", "wofrage_sprint",
 }
 FREE_MANDATORY_KINDS = {
-    "listening", "numdict", "artikel_sprint", "adjektiv_sprint", "wofrage_sprint",
+    # Owner's pick: 3 fixed core skills for Free; everything else (numdict, adjektiv_
+    # sprint, sprint, trainer, aufgabe/error, article_quiz, rebus/…) rotates. Fewer
+    # mandatory (5→3) frees 2 more rotation slots/day → the rail surfaces far more often.
+    "listening", "artikel_sprint", "wofrage_sprint",
 }
 
 
@@ -826,6 +830,9 @@ def _build_rotation_catalog() -> list:
     add("crossword", CROSSWORD_SLOT_TIMES, always_on=True)
     add("anagram", ANAGRAM_SLOT_TIMES, always_on=True)
     add("sprint", SPRINT_SLOT_TIMES.keys(), always_on=True)
+    # Synonym/Antonym recognition trainer — the rail's entry point. Always-on so it can
+    # fire; tiering still decides per-user (non-mandatory → rotation rank inside budget).
+    add("trainer", TRAINER_SLOT_TIMES.keys(), always_on=True)
     add("adjektiv_sprint", ADJEKTIV_SPRINT_SLOTS, always_on=True)
     add("wofrage_sprint", WOFRAGE_SPRINT_SLOTS, always_on=True)
     add("artikel_sprint", [ARTIKEL_SPRINT_SLOT], always_on=True)
@@ -35762,17 +35769,34 @@ async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> Non
     targets = await _collect_quiz_delivery_user_targets(context)
     if not targets:
         return
+    # RAIL GATE (free only): a FREE user gets this sprint word only if they RECEIVED its
+    # trainer (≈3 days ago) — no prep, no sprint. Pro users and group chats are exempt.
+    # ONLY active when the trainer itself is enabled — otherwise there is no rail and the
+    # sprint keeps its current (ungated) free delivery, so enabling the flag is what turns
+    # the whole rail on together.
+    apply_rail_gate = _trainer_enabled()
+    trainer_recipients = (await asyncio.to_thread(
+        get_trainer_recipient_ids, str(entry["sprint_id"]), since_days=5)) if apply_rail_gate else set()
     sent = 0
+    gated = 0
     for t in targets:
         cid = int(t.get("chat_id") or 0)
         if cid == 0:
             continue
+        if apply_rail_gate and cid > 0:  # DM: apply the rail gate to free users
+            try:
+                is_pro = await asyncio.to_thread(_is_user_pro_cached, cid)
+            except Exception:
+                is_pro = False
+            if not is_pro and cid not in trainer_recipients:
+                gated += 1
+                continue
         if await send_sprint_to_chat(context, entry=entry, relation=relation, slot_date=slot_date,
                                      slot_hour=slot_hour, chat_id=cid, target_user_id=cid):
             sent += 1
     if sent > 0:
         await asyncio.to_thread(mark_sprint_sent, str(entry["sprint_id"]))
-    logging.info("sprint_sent relation=%s sent=%s word=%s", relation, sent, entry.get("wort"))
+    logging.info("sprint_sent relation=%s sent=%s gated_free=%s word=%s", relation, sent, gated, entry.get("wort"))
 
 
 async def admin_clearsprint_command(update: Update, context: CallbackContext) -> None:
