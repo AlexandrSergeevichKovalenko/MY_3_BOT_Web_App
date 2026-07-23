@@ -31135,9 +31135,10 @@ async def _admin_sprint_distractors_command(update: Update, context: CallbackCon
         word = " ".join(args).strip()
 
     # Instant ack: confirms the (new-build) handler fired and gives immediate feedback.
-    # Everything after is wrapped so no failure can leave the DM silent.
-    status = await message.reply_text(f"🔧 Принял: <b>{_html_escape(word)}</b>. Ищу в банке…",
-                                      parse_mode="HTML")
+    # Everything after is wrapped so no failure can leave the DM silent. We send fresh
+    # messages rather than edit — editing proved fragile ("message can't be edited").
+    await message.reply_text(f"🔧 Принял: <b>{_html_escape(word)}</b>. Ищу в банке…",
+                             parse_mode="HTML")
     try:
         await asyncio.to_thread(ensure_sprint_schema)
         item = await asyncio.to_thread(get_sprint_item_by_word, word, relation=relation)
@@ -31150,14 +31151,14 @@ async def _admin_sprint_distractors_command(update: Update, context: CallbackCon
                 hint = f"\n\nЕсть в банке:\n{words}"
             else:
                 hint = "\n\nБанк спринта пуст — сначала пул должен наполниться (ночной job/стартап)."
-            await status.edit_text(
+            await message.reply_text(
                 f"В банке спринта нет слова «{_html_escape(word)}»"
                 + (f" ({relation})" if relation else "")
                 + "." + hint,
                 parse_mode="HTML", disable_web_page_preview=True); return
 
         accepted = item.get("accepted") or []
-        await status.edit_text(
+        await message.reply_text(
             f"⏳ Гоняю пайплайн для <b>{_html_escape(str(item.get('wort')))}</b> "
             f"({'антонимы' if item.get('relation') == 'antonym' else 'синонимы'}, "
             f"{len(accepted)} правильных)…\nЭто минута-две — три модели по кругу.",
