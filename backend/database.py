@@ -19338,6 +19338,60 @@ def mark_pool_entry_enrich_failed(entry_id, reason: str = "") -> None:
         logging.debug("mark_pool_entry_enrich_failed failed entry_id=%s", entry_id, exc_info=True)
 
 
+def count_quarantined_pool_entries() -> int:
+    """Сколько одиночных слов в карантине (enrich_attempts >= POOL_ENRICH_MAX_ATTEMPTS) —
+    неисправимый мусор, выпавший из ночной очереди. Обе стороны пула."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) FROM bt_3_dictionary_entries
+                WHERE COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
+                                     THEN (response_json->>'enrich_attempts')::int
+                                     ELSE 0 END), 0) >= {int(POOL_ENRICH_MAX_ATTEMPTS)}
+                  {_DICTIONARY_POOL_SINGLE_WORD_SQL}
+                """
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def get_quarantined_pool_entries(limit: int = 1000) -> list[dict]:
+    """Полный список карантина для админ-обзора: слово, перевод, направление, причина
+    (empty/thin), число попыток и востребованность. Порядок — по спросу, затем попыткам."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT e.id, e.source_lang, e.target_lang, e.source_text, e.target_text,
+                       COALESCE((CASE WHEN e.response_json->>'enrich_attempts' ~ '^[0-9]+$'
+                                      THEN (e.response_json->>'enrich_attempts')::int
+                                      ELSE 0 END), 0) AS attempts,
+                       e.response_json->>'enrich_last_reason' AS reason,
+                       COALESCE(MAX(c.hit_count), 0) AS demand
+                FROM bt_3_dictionary_entries e
+                LEFT JOIN bt_3_dictionary_lookup_cache c
+                       ON c.normalized_word IN (e.source_headword_norm, e.source_text_norm)
+                WHERE COALESCE((CASE WHEN e.response_json->>'enrich_attempts' ~ '^[0-9]+$'
+                                     THEN (e.response_json->>'enrich_attempts')::int
+                                     ELSE 0 END), 0) >= {int(POOL_ENRICH_MAX_ATTEMPTS)}
+                  {_DICTIONARY_POOL_SINGLE_WORD_SQL.replace('source_text', 'e.source_text')}
+                GROUP BY e.id
+                ORDER BY demand DESC, attempts DESC, e.source_text
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "id": r[0], "source_lang": r[1], "target_lang": r[2],
+            "source_text": r[3], "target_text": r[4],
+            "attempts": int(r[5] or 0), "reason": str(r[6] or ""), "demand": int(r[7] or 0),
+        }
+        for r in rows
+    ]
+
+
 def get_thin_pool_entries_for_enrichment(
     *,
     limit: int = 100,

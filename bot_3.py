@@ -8506,6 +8506,19 @@ def _send_pool_enrich_morning_report() -> None:
                     skip_lines += f"   примеры: <i>{shown}{more}</i>\n"
             else:
                 skip_lines = "Пропущено: 0\n"
+            # Карантин: неисправимый мусор, выпавший из очереди после 3 провалов. Показываем
+            # число + подсказку на команду с полным списком, чтобы админ мог разобрать.
+            quarantine_line = ""
+            try:
+                from backend.database import count_quarantined_pool_entries
+                q = int(count_quarantined_pool_entries() or 0)
+                if q:
+                    quarantine_line = (
+                        f"🗑 В карантине: <b>{q}</b> (GPT не собрать — мусор/опечатки; "
+                        f"весь список и разбор: /admin_pool_quarantine)\n"
+                    )
+            except Exception:
+                logging.debug("quarantine count for morning report failed", exc_info=True)
             text = (
                 f"🌙 <b>Ночной добор словаря</b> — {stamp}\n\n"
                 f"Наполнено за ночь: <b>{enriched}</b> из {int(meta.get('picked') or 0)} взятых\n"
@@ -8514,6 +8527,7 @@ def _send_pool_enrich_morning_report() -> None:
                 f"Осталось наполнить: <b>{remaining}</b>\n"
                 + (f"Это ещё ~{nights_left} ноч{'ь' if nights_left == 1 else 'и' if nights_left < 5 else 'ей'} "
                    f"по {cap} слов." if remaining else "✅ Пул наполнен полностью.")
+                + (f"\n{quarantine_line}" if quarantine_line else "")
             )
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
@@ -10754,6 +10768,51 @@ async def admin_pool_enrich_command(update: Update, context: CallbackContext):
             _send_raw(f"❌ Добор пула упал: {_esc(str(exc))}")
 
     threading.Thread(target=_worker, name="pool-enrich-manual", daemon=True).start()
+
+
+async def admin_pool_quarantine_command(update: Update, context: CallbackContext):
+    """Полный список «мусора» пула: одиночные слова, которые GPT не смог собрать в полную
+    карточку POOL_ENRICH_MAX_ATTEMPTS раз подряд и которые выпали из ночной очереди.
+    Обычно выдуманные композиты, опечатки, обрывки — все со спросом 0. /admin_pool_quarantine"""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    try:
+        from backend.database import (
+            count_quarantined_pool_entries, get_quarantined_pool_entries, POOL_ENRICH_MAX_ATTEMPTS,
+        )
+        total = await asyncio.to_thread(count_quarantined_pool_entries)
+        rows = await asyncio.to_thread(get_quarantined_pool_entries, 2000)
+    except Exception as exc:
+        logging.exception("pool quarantine list failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось собрать карантин: {exc}")
+        return
+    if not rows:
+        await message.reply_text("🗑 Карантин пуст — неисправимых слов пока нет.")
+        return
+    from html import escape as _esc
+    reason_ru = {"empty": "пусто", "thin": "неполн"}
+    lines = [
+        f"🗑 <b>Карантин пула</b>: {int(total)} слов",
+        f"<i>GPT не собрал в карточку ≥{int(POOL_ENRICH_MAX_ATTEMPTS)}× — мусор/опечатки/выдуманное. "
+        f"Все выпали из ночной очереди; спрос почти всегда 0.</i>",
+        "",
+    ]
+    for r in rows:
+        arrow = f"{r.get('source_lang')}→{r.get('target_lang')}"
+        why = reason_ru.get(str(r.get("reason") or ""), str(r.get("reason") or "?"))
+        lines.append(
+            f"• {_esc(str(r.get('source_text')))} — {_esc(str(r.get('target_text')))} "
+            f"<i>[{arrow}, {why}×{int(r.get('attempts') or 0)}, спрос {int(r.get('demand') or 0)}]</i>"
+        )
+    if int(total) > len(rows):
+        lines.append(f"\n…и ещё {int(total) - len(rows)} (показаны первые {len(rows)}).")
+    for part in _split_telegram_text("\n".join(lines)):
+        await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def admin_dict_pool_report_command(update: Update, context: CallbackContext):
@@ -39017,6 +39076,7 @@ def main():
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dict_pool_report", admin_dict_pool_report_command))
     application.add_handler(CommandHandler("admin_pool_enrich", admin_pool_enrich_command))
+    application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
     application.add_handler(CommandHandler("fix_translation_sessions", admin_fix_translation_sessions_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
