@@ -9309,6 +9309,12 @@ def run_pool_night_enrichment(
     report = {
         "dry_run": bool(dry_run), "cap": cap, "picked": 0,
         "enriched": 0, "skipped": 0, "errors": 0, "remaining": 0, "samples": [],
+        # Split "skipped" by ROOT CAUSE so the morning report can say WHY, not just how
+        # many: "empty" = the GPT lookup failed/returned nothing usable; "thin" = GPT DID
+        # answer but the card still lacked every real field (examples/tables/meanings/…),
+        # usually a garbage token, proper noun, or a word whose examples the language
+        # filter stripped. skipped_samples keeps a few offenders to eyeball.
+        "skipped_empty": 0, "skipped_thin": 0, "skipped_samples": [],
     }
     if cap <= 0:
         return report
@@ -9357,6 +9363,9 @@ def run_pool_night_enrichment(
                 enrich_data = _drop_wrong_language_examples(enrich_data, learning_lang="de")
                 if not enrich_data:
                     report["skipped"] += 1
+                    report["skipped_empty"] += 1
+                    if len(report["skipped_samples"]) < 15:
+                        report["skipped_samples"].append({"word": source_text, "reason": "empty"})
                     continue
                 merged = dict(row.get("response_json") or {})
                 merged.update(enrich_data)
@@ -9371,6 +9380,9 @@ def run_pool_night_enrichment(
                 # останется кандидатом, а не притворяется полной.
                 if _dictionary_payload_needs_enrichment(merged):
                     report["skipped"] += 1
+                    report["skipped_thin"] += 1
+                    if len(report["skipped_samples"]) < 15:
+                        report["skipped_samples"].append({"word": source_text, "reason": "thin"})
                     continue
                 _publish_enriched_card_to_shared_stores(
                     payload=merged, source_lang=row_source_lang, target_lang=row_target_lang,

@@ -8478,10 +8478,37 @@ def _send_pool_enrich_morning_report() -> None:
             remaining = int(meta.get("remaining") or 0)
             cap = int(meta.get("cap") or 0)
             nights_left = (remaining + cap - 1) // cap if cap else 0
+            skipped = int(meta.get("skipped") or 0)
+            skipped_empty = int(meta.get("skipped_empty") or 0)
+            skipped_thin = int(meta.get("skipped_thin") or 0)
+            # Split the "skipped" total by root cause + show a few example words, so it's
+            # clear WHY GPT «не дал карточку»: пусто (запрос упал/молчит) vs неполная
+            # (обычно мусорный токен/имя собственное — часто чинится чисткой пула, не промптом).
+            skip_lines = ""
+            if skipped:
+                skip_lines = f"Пропущено: {skipped}\n"
+                if skipped_empty or skipped_thin:
+                    skip_lines += (
+                        f"   • пусто от GPT (запрос упал/молчит): {skipped_empty}\n"
+                        f"   • вернул, но карточка неполная (часто мусор/имя): {skipped_thin}\n"
+                    )
+                samples = meta.get("skipped_samples") or []
+                sample_words = []
+                for it in samples:
+                    w = str((it or {}).get("word") or "").strip() if isinstance(it, dict) else str(it or "").strip()
+                    if w:
+                        sample_words.append(w)
+                if sample_words:
+                    from html import escape as _esc
+                    shown = ", ".join(_esc(w) for w in sample_words[:10])
+                    more = f" …(+{len(sample_words) - 10})" if len(sample_words) > 10 else ""
+                    skip_lines += f"   примеры: <i>{shown}{more}</i>\n"
+            else:
+                skip_lines = "Пропущено: 0\n"
             text = (
                 f"🌙 <b>Ночной добор словаря</b> — {stamp}\n\n"
                 f"Наполнено за ночь: <b>{enriched}</b> из {int(meta.get('picked') or 0)} взятых\n"
-                f"Пропущено (GPT не дал карточку): {int(meta.get('skipped') or 0)}\n"
+                f"{skip_lines}"
                 f"Ошибок: {int(meta.get('errors') or 0)}\n\n"
                 f"Осталось наполнить: <b>{remaining}</b>\n"
                 + (f"Это ещё ~{nights_left} ноч{'ь' if nights_left == 1 else 'и' if nights_left < 5 else 'ей'} "
@@ -10652,7 +10679,11 @@ async def admin_pool_enrich_command(update: Update, context: CallbackContext):
         f"🌙 <b>Добор общего пула</b> ({'apply' if apply else 'dry-run'}, {src}→{tgt})\n\n"
         f"Взято в работу: <b>{report.get('picked', 0)}</b> (потолок {report.get('cap', 0)})\n"
         f"Обогащено: <b>{report.get('enriched', 0)}</b>\n"
-        f"Пропущено (GPT не дал карточку): {report.get('skipped', 0)}\n"
+        f"Пропущено: {report.get('skipped', 0)}"
+        + (f" (пусто от GPT {int(report.get('skipped_empty') or 0)} · "
+           f"неполная карточка {int(report.get('skipped_thin') or 0)})"
+           if (report.get('skipped_empty') or report.get('skipped_thin')) else "")
+        + "\n"
         f"Ошибок: {report.get('errors', 0)}\n"
         f"Осталось тонких: <b>{report.get('remaining', 0)}</b>"
     )
