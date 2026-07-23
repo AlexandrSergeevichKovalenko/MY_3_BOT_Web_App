@@ -4006,19 +4006,24 @@ INPUT JSON: {"target":"...","sense_de":"...","relation":"synonym"|"antonym",
 "distractors":["...","..."]}
 
 For EACH distractor, in input order, classify ONLY whether it is itself a valid
-{relation} of `target` in the intended sense `sense_de`:
-- "DEFINITELY_NOT" : clearly NOT the {relation} of target. (only these may survive)
-- "ARGUABLE"       : someone could defend it AS the {relation}. (must be dropped)
-- "IS_ANSWER"      : actually a valid {relation} of target. (must be dropped — a bug)
+{relation} of `target` in the intended sense `sense_de`, using ONE letter:
+- "N" (DEFINITELY_NOT) : clearly NOT the {relation} of target. (only these survive)
+- "A" (ARGUABLE)       : someone could defend it AS the {relation}. (dropped)
+- "Y" (IS_ANSWER)      : actually a valid {relation} of target. (dropped — a bug)
 A word that is a SYNONYM of target (when relation = antonym) or an ANTONYM of target
-(when relation = synonym), or merely related/overlapping, is "DEFINITELY_NOT" — it is a
-GOOD distractor, not a problem. Judge the RELATION we test, nothing else.
-Also set "issues": list any of ["not_a_word","misspelled","wrong_pos","missing_article",
-"above_b2","duplicates_target"] that apply (empty list if none).
+(when relation = synonym), or merely related/overlapping, is "N" — it is a GOOD
+distractor, not a problem. Judge the RELATION we test, nothing else.
 
-Return STRICT JSON ONLY:
-{"per_distractor":[{"word":"...","class":"DEFINITELY_NOT"|"ARGUABLE"|"IS_ANSWER","issues":[]}, ...]}
-Same length and order as the input `distractors`. No markdown.
+Separately flag defects: for any distractor with a problem, add its 0-based index to
+"issues" mapped to a list of any of ["not_a_word","misspelled","wrong_pos",
+"missing_article","above_b2","duplicates_target"]. Omit indices with no defect.
+
+Output must be COMPACT — one letter per distractor, no per-word objects.
+Return STRICT JSON ONLY (set "ok" to true only after judging ALL distractors):
+{"ok":true,"verdicts":"<one of N/A/Y per distractor, SAME order, no separators>","issues":{"<index>":["wrong_pos"]}}
+Example for 3 distractors, 2nd is arguable, 3rd has wrong part of speech:
+{"ok":true,"verdicts":"NAN","issues":{"2":["wrong_pos"]}}
+No markdown.
 """,
 "sprint_correct_examples": """
 ROLE: You are a German lexicographer. You get a base sentence that uses `target` and a
@@ -7196,8 +7201,9 @@ async def run_judge_distractor_set(
                 poll_interval_seconds=1.0,
                 responses_timeout_seconds=30.0,
             )
-            # Be liberal about shape: {"per_distractor":[...]}, a bare array [...], or a
-            # ```json fence. Any of these must classify.
+            # Compact contract: {"ok":true,"verdicts":"NNAN...","issues":{"idx":[...]}}.
+            # A per-letter string can't overflow the way a per-word object list did
+            # (that truncated mid-JSON at ~520 chars and failed the whole word).
             raw = str(content or "").strip()
             last_raw = raw
             if raw.startswith("```"):
@@ -7206,23 +7212,25 @@ async def run_judge_distractor_set(
                     raw = raw[4:]
                 raw = raw.strip()
             data = json.loads(raw)
-            rows = None
-            if isinstance(data, list):
-                rows = data
-            elif isinstance(data, dict):
-                rows = data.get("per_distractor")
-                if not isinstance(rows, list):  # fall back to the first list-valued field
-                    rows = next((v for v in data.values() if isinstance(v, list)), None)
-            if not isinstance(rows, list) or not rows:
-                last_err = "no_list_in_output"
-                logging.warning("run_judge_distractor_set: no list target=%s attempt=%d raw=%.300s",
+            if not isinstance(data, dict) or not data.get("ok"):
+                last_err = "not_ok"
+                logging.warning("run_judge_distractor_set: ok missing target=%s attempt=%d raw=%.200s",
                                 target_word, attempt, raw)
                 continue
+            verdicts = str(data.get("verdicts") or "").strip().upper()
+            # Fail closed if the model didn't classify every distractor exactly once.
+            if len(verdicts) != len(cands):
+                last_err = f"verdicts_len={len(verdicts)}!=cands={len(cands)}"
+                logging.warning("run_judge_distractor_set: %s target=%s attempt=%d raw=%.200s",
+                                last_err, target_word, attempt, raw)
+                continue
+            letter = {"N": "DEFINITELY_NOT", "A": "ARGUABLE", "Y": "IS_ANSWER"}
+            issues_map = data.get("issues") if isinstance(data.get("issues"), dict) else {}
             out = [{
-                "word": str(r.get("word") or "").strip(),
-                "class": str(r.get("class") or "").strip().upper(),
-                "issues": [str(i) for i in (r.get("issues") or [])],
-            } for r in rows if isinstance(r, dict)]
+                "word": cands[i],
+                "class": letter.get(verdicts[i], ""),
+                "issues": [str(x) for x in (issues_map.get(str(i)) or [])],
+            } for i in range(len(cands))]
             return {"rows": out, "raw": last_raw, "error": "", "attempts": attempt}
         except Exception as exc:
             last_err = f"{type(exc).__name__}: {exc}"
