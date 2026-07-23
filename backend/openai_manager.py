@@ -7155,58 +7155,62 @@ async def run_prosecute_distractor(
 
 
 async def run_judge_distractor_set(
-    *, target_word: str, relation: str, sense_de: str, distractors: list[str],
-) -> list[dict]:
+    *, target_word: str, relation: str, sense_de: str, distractors: list[str], attempts: int = 2,
+) -> dict:
     """JUDGE stage. Independent strict classification of each distractor vs `target`.
-    Returns a list aligned to input order: [{"word","class","issues":[]}]. Only
-    class == "DEFINITELY_NOT" may survive. [] on failure/timeout (caller drops all —
-    fail closed)."""
+    Returns {"rows":[{"word","class","issues":[]}], "raw": <last output>, "error": <str>,
+    "attempts": <int>}. Only class == "DEFINITELY_NOT" may survive. Retries a transient
+    empty/parse failure (a single flaky judge call otherwise wastes the whole word);
+    rows == [] means the caller drops all (fail closed)."""
     cands = [str(d).strip() for d in (distractors or []) if str(d).strip()]
     if not cands:
-        return []
-    try:
-        content = await llm_execute(
-            task_name="sprint_distractor_judge",
-            system_instruction_key="sprint_distractor_judge",
-            user_message=json.dumps({
-                "target": str(target_word), "sense_de": str(sense_de or ""),
-                "relation": str(relation or "synonym"), "distractors": cands,
-            }, ensure_ascii=False),
-            poll_interval_seconds=1.0,
-            responses_timeout_seconds=30.0,
-        )
-        # Be liberal about shape: the model may return {"per_distractor":[...]}, a bare
-        # array [...], or wrap it in a ```json fence. Any of these must classify.
-        raw = str(content or "").strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw[:4].lower() == "json":
-                raw = raw[4:]
-            raw = raw.strip()
-        data = json.loads(raw)
-        rows = None
-        if isinstance(data, list):
-            rows = data
-        elif isinstance(data, dict):
-            rows = data.get("per_distractor")
-            if not isinstance(rows, list):  # fall back to the first list-valued field
-                rows = next((v for v in data.values() if isinstance(v, list)), None)
-        if not isinstance(rows, list):
-            logging.warning("run_judge_distractor_set: no list in output target=%s raw=%.300s",
-                            target_word, raw)
-            return []
-        out: list[dict] = []
-        for r in rows:
-            if isinstance(r, dict):
-                out.append({
-                    "word": str(r.get("word") or "").strip(),
-                    "class": str(r.get("class") or "").strip().upper(),
-                    "issues": [str(i) for i in (r.get("issues") or [])],
-                })
-        return out
-    except Exception:
-        logging.warning("run_judge_distractor_set failed target=%s", target_word, exc_info=True)
-        return []
+        return {"rows": [], "raw": "", "error": "no_candidates", "attempts": 0}
+    last_raw, last_err = "", ""
+    for attempt in range(1, max(1, int(attempts)) + 1):
+        try:
+            content = await llm_execute(
+                task_name="sprint_distractor_judge",
+                system_instruction_key="sprint_distractor_judge",
+                user_message=json.dumps({
+                    "target": str(target_word), "sense_de": str(sense_de or ""),
+                    "relation": str(relation or "synonym"), "distractors": cands,
+                }, ensure_ascii=False),
+                poll_interval_seconds=1.0,
+                responses_timeout_seconds=30.0,
+            )
+            # Be liberal about shape: {"per_distractor":[...]}, a bare array [...], or a
+            # ```json fence. Any of these must classify.
+            raw = str(content or "").strip()
+            last_raw = raw
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                if raw[:4].lower() == "json":
+                    raw = raw[4:]
+                raw = raw.strip()
+            data = json.loads(raw)
+            rows = None
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict):
+                rows = data.get("per_distractor")
+                if not isinstance(rows, list):  # fall back to the first list-valued field
+                    rows = next((v for v in data.values() if isinstance(v, list)), None)
+            if not isinstance(rows, list) or not rows:
+                last_err = "no_list_in_output"
+                logging.warning("run_judge_distractor_set: no list target=%s attempt=%d raw=%.300s",
+                                target_word, attempt, raw)
+                continue
+            out = [{
+                "word": str(r.get("word") or "").strip(),
+                "class": str(r.get("class") or "").strip().upper(),
+                "issues": [str(i) for i in (r.get("issues") or [])],
+            } for r in rows if isinstance(r, dict)]
+            return {"rows": out, "raw": last_raw, "error": "", "attempts": attempt}
+        except Exception as exc:
+            last_err = f"{type(exc).__name__}: {exc}"
+            logging.warning("run_judge_distractor_set failed target=%s attempt=%d",
+                            target_word, attempt, exc_info=True)
+    return {"rows": [], "raw": last_raw, "error": last_err or "empty", "attempts": int(attempts)}
 
 
 async def run_article_noun_gen(*, theme: str, subtopic: str, count: int, avoid: list[str] | None = None) -> list[dict]:

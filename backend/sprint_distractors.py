@@ -138,10 +138,11 @@ async def build_trainer_distractors(
                 "counts": {"generated": generated, "after_prosecutor": 0, "kept": 0}}
 
     # ── Stage 3: JUDGE (independent, strict classification over survivors) ────
-    verdicts = await run_judge_distractor_set(
+    judge = await run_judge_distractor_set(
         target_word=target_word, relation=relation, sense_de="",
         distractors=[str(c.get("word") or "") for c in survivors],
     )
+    verdicts = judge.get("rows") or []
     # Fail closed: if the judge returns nothing (or a misaligned list), drop all —
     # an unverified distractor never reaches a learner.
     by_word = {_norm(v.get("word")): v for v in verdicts if v.get("word")}
@@ -175,7 +176,10 @@ async def build_trainer_distractors(
         "trainer_ready": len(kept) >= MIN_CLEAN_DISTRACTORS,
         "counts": {"generated": generated, "after_prosecutor": after_prosecutor, "kept": len(kept)},
         "diag": {"judge_rows": len(verdicts),
-                 "judge_classes": sorted({(v.get("class") or "?") for v in verdicts}) if verdicts else []},
+                 "judge_classes": sorted({(v.get("class") or "?") for v in verdicts}) if verdicts else [],
+                 "judge_attempts": judge.get("attempts"),
+                 "judge_error": judge.get("error") or "",
+                 "judge_raw": (judge.get("raw") or "")[:300] if not verdicts else ""},
     }
     logger.info(
         "trainer distractors word=%s relation=%s generated=%d prosecutor=%d kept=%d ready=%s",
