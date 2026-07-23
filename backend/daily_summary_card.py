@@ -171,7 +171,7 @@ def render_daily_summary(*, date_str: str, answered: int, correct: int, accuracy
         _rtext(d, score_r, mid - 22, f"{_fmtn(c)} / {a}", f_score, MUTED)
         _rtext(d, pct_r, mid - 26, f"{acc}%", f_pct, _acc_color(acc))
 
-    _ctext(d, W // 2, H - 66, "Поделись с другом · +7 дней Pro обоим", _font(30, False), MUTED)
+    _ctext(d, W // 2, H - 66, "Поделись с другом · +3 дня полного доступа обоим", _font(30, False), MUTED)
 
     out = BytesIO()
     img.save(out, format="PNG")

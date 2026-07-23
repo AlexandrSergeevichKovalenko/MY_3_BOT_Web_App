@@ -1093,7 +1093,7 @@ def _append_free_pro_teaser(caption: str | None, chat_id: int) -> str:
     gain = max(0, DEFAULT_PRO_SEND_BUDGET - FREE_SEND_BUDGET)
     if gain <= 0:
         return text
-    teaser = f"\n\n🔒 В Pro сегодня — ещё {gain} заданий."
+    teaser = f"\n\n🔒 В «Полном доступе» сегодня — ещё {gain} заданий."
     if len(text) + len(teaser) > 1024:  # Telegram photo-caption ceiling
         return text
     return text + teaser
@@ -2731,7 +2731,7 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
                 await update.message.reply_text(
                     "✅ <b>На сегодня всё!</b>\n\n"
                     "Ты разобрал все задания на сегодня. Хочешь больше прямо сейчас — "
-                    "это открывается в Pro 🔒. Иначе новые придут завтра 👍",
+                    "это открывается в «Полном доступе» 🔒. Иначе новые придут завтра 👍",
                     parse_mode="HTML",
                 )
             else:
@@ -2755,7 +2755,7 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
 async def _next_task_chooser_callback(update: Update, context: CallbackContext) -> None:
     """«🎯 Выбрать тип» on the next-task card. nxt:menu → list the kinds the user has
     open today; nxt:k:<kind> → that kind's 3 oldest; nxt:all → back to the mix; for
-    Free users a «🔒 Другие типы — в Pro» hint nudges conversion at the point of interest."""
+    Free users a «🔒 Другие типы — в «Полном доступе»» hint nudges conversion at the point of interest."""
     query = update.callback_query
     if not query or not query.from_user:
         return
@@ -2766,7 +2766,7 @@ async def _next_task_chooser_callback(update: Update, context: CallbackContext) 
     since_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     if data == "nxt:locked":
-        await query.answer("Эти типы заданий открываются в Pro 🔒", show_alert=True)
+        await query.answer("Эти типы заданий открываются в «Полном доступе» 🔒", show_alert=True)
         return
 
     if data == "nxt:menu":
@@ -2785,7 +2785,7 @@ async def _next_task_chooser_callback(update: Update, context: CallbackContext) 
         except Exception:
             is_pro = True
         if not is_pro:
-            rows.append([InlineKeyboardButton("🔒 Другие типы — в Pro", callback_data="nxt:locked")])
+            rows.append([InlineKeyboardButton("🔒 Другие типы — в «Полном доступе»", callback_data="nxt:locked")])
         rows.append([InlineKeyboardButton("⬅️ Все вперемешку", callback_data="nxt:all")])
         await context.bot.send_message(
             chat_id=chat_id, text="🎯 <b>Какой тип задания показать?</b>", parse_mode="HTML",
@@ -2883,9 +2883,9 @@ async def _send_schedule_picker(update: Update, context: CallbackContext) -> Non
     user_id = int(update.effective_user.id)
     if not await asyncio.to_thread(is_user_pro, user_id):
         await update.message.reply_text(
-            "🗓 <b>Расписание</b> — настройка для Pro.\n\n"
+            "🗓 <b>Расписание</b> — настройка для «Полного доступа».\n\n"
             "На бесплатном тарифе — подборка из 4 заданий в день. "
-            "Pro открывает гибкое расписание и до 20 заданий в день 🔓",
+            "«Полный доступ» открывает гибкое расписание и до 20 заданий в день 🔓",
             parse_mode="HTML")
         return
     prefs = await asyncio.to_thread(get_user_prefs, user_id)
@@ -2913,7 +2913,7 @@ async def _schedule_preset_callback(update: Update, context: CallbackContext) ->
         await query.answer()
         return
     if not await asyncio.to_thread(is_user_pro, user_id):
-        await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
+        await query.answer("Расписание доступно в «Полном доступе» 🔒", show_alert=True)
         return
     ok = await asyncio.to_thread(set_user_preset, user_id, code)
     await query.answer("Сохранено ✅" if ok else "Не удалось сохранить")
@@ -2932,7 +2932,7 @@ async def _schedule_window_callback(update: Update, context: CallbackContext) ->
         await query.answer()
         return
     if not await asyncio.to_thread(is_user_pro, user_id):
-        await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
+        await query.answer("Расписание доступно в «Полном доступе» 🔒", show_alert=True)
         return
     ok = await asyncio.to_thread(set_user_schedule, user_id, _window_schedule_for(key))
     await query.answer("Сохранено ✅ — жми «Подтвердить»" if ok else "Не удалось сохранить")
@@ -2950,7 +2950,7 @@ async def _schedule_nav_callback(update: Update, context: CallbackContext) -> No
     user_id = int(query.from_user.id)
     action = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
     if not await asyncio.to_thread(is_user_pro, user_id):
-        await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
+        await query.answer("Расписание доступно в «Полном доступе» 🔒", show_alert=True)
         return
     await query.answer()
     render_fn = {
@@ -2982,9 +2982,9 @@ def _schedule_announce_text(is_pro: bool) -> str:
                 "Настройка занимает минуту 👇")
     return ("✨ <b>НОВОЕ: Расписание заданий</b>\n\n"
             "Хочешь задания под свой день — сколько и в какие часы? "
-            "В Pro можно настроить гибкое расписание и до 20 заданий в день. "
+            "В «Полном доступе» можно настроить гибкое расписание и до 20 заданий в день. "
             "На бесплатном — подборка 4 в день.\n\n"
-            "🔓 Это перк Pro 👇")
+            "🔓 Это перк «Полного доступа» 👇")
 
 
 def _schedule_nudge_text(is_pro: bool) -> str:
@@ -2992,7 +2992,7 @@ def _schedule_nudge_text(is_pro: bool) -> str:
     if is_pro:
         return ("🗓 Кстати: можно настроить, сколько заданий в день и в какие часы — "
                 "кнопка «🗓 Расписание» в меню снизу.")
-    return ("🗓 Кстати: в Pro можно настроить расписание — сколько заданий в день и "
+    return ("🗓 Кстати: в «Полном доступе» можно настроить расписание — сколько заданий в день и "
             "в какие часы (на бесплатном — 4 в день).")
 
 
@@ -3094,10 +3094,10 @@ async def _streak_status_block(uid: int) -> str:
         return f"{L}: <b>{cur}</b> {_streak_days_word(cur)} подряд — так держать!"
     rem = _streak_next_reward_in(cur)
     if rem == 1:
-        return f"{L}: <b>{cur}</b> — ещё 1 день, и получишь <b>день Pro</b>! 🔥"
+        return f"{L}: <b>{cur}</b> — ещё 1 день, и получишь <b>день полного доступа</b>! 🔥"
     if rem == 2:
-        return f"{L}: <b>{cur}</b> · ты уже на полпути до <b>дня Pro</b> 🔥"
-    return f"{L}: <b>{cur}</b> {_streak_days_word(cur)} подряд · до дня Pro ещё {rem} {_streak_days_word(rem)}"
+        return f"{L}: <b>{cur}</b> · ты уже на полпути до <b>дня полного доступа</b> 🔥"
+    return f"{L}: <b>{cur}</b> {_streak_days_word(cur)} подряд · до дня полного доступа ещё {rem} {_streak_days_word(rem)}"
 
 
 async def _streak_caption_block(uid: int) -> str:
@@ -3117,7 +3117,7 @@ async def _streak_caption_block(uid: int) -> str:
     if cur <= 0:
         lines.append(
             "Серия — это сколько дней подряд ты занимаешься без пропусков. "
-            f"Каждые <b>{STREAK_REWARD_EVERY} дней подряд</b> = <b>+1 день Pro бесплатно</b> "
+            f"Каждые <b>{STREAK_REWARD_EVERY} дней подряд</b> = <b>+1 день полного доступа бесплатно</b> "
             "(полный доступ ко всему приложению на сутки). Начни сегодня 🚀")
     elif is_pro:
         lines.append(f"Ты занимаешься уже <b>{cur} дн.</b> подряд без пропусков — так держать! 🔥")
@@ -3125,9 +3125,9 @@ async def _streak_caption_block(uid: int) -> str:
         rem = _streak_next_reward_in(cur)
         lines.append(
             f"Ты занимаешься уже <b>{cur} дн.</b> подряд без пропусков. "
-            f"Каждые <b>{STREAK_REWARD_EVERY} дней подряд</b> = <b>+1 день Pro бесплатно</b> "
+            f"Каждые <b>{STREAK_REWARD_EVERY} дней подряд</b> = <b>+1 день полного доступа бесплатно</b> "
             f"(полный доступ ко всему приложению на сутки). "
-            f"До следующего дня Pro осталось <b>{rem} дн.</b>")
+            f"До следующего дня полного доступа осталось <b>{rem} дн.</b>")
     lines.append("<i>Активный день засчитывается, если в этот день ты ответил хотя бы на "
                  "одно задание или перевёл фразу.</i>")
     return "\n".join(lines)
@@ -3154,7 +3154,7 @@ async def _streak_command(update: Update, context: CallbackContext) -> None:
         lines.append(f"❄️ Заморозки: {freezes} (спасают стрик при одном пропуске)")
     if grant_until:
         try:
-            lines.append(f"⭐ Заработанный Pro активен до {grant_until.strftime('%d.%m %H:%M')}")
+            lines.append(f"⭐ Заработанный доступ активен до {grant_until.strftime('%d.%m %H:%M')}")
         except Exception:
             pass
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
@@ -3192,7 +3192,7 @@ async def _maybe_capture_referral(context: CallbackContext, update: Update, invi
             chat_id=referrer_uid, parse_mode="HTML",
             text=(f"🎉 <b>{html.escape(inv_name)}</b> перешёл по твоей ссылке!\n"
                   f"Как только он позанимается {REFERRAL_STREAK_TRIGGER} дня подряд — "
-                  f"вы <b>оба</b> получите <b>+{REFERRAL_REWARD_DAYS} дней Pro</b> 🔥"))
+                  f"вы <b>оба</b> получите <b>+{REFERRAL_REWARD_DAYS} дней полного доступа</b> 🔥"))
     except Exception:
         pass
 
@@ -3208,9 +3208,9 @@ async def _invite_command(update: Update, context: CallbackContext) -> None:
     link = f"https://t.me/{bot_username}?start=ref_{uid}"
     n = await asyncio.to_thread(count_referrals, uid, True)
     await update.effective_message.reply_text(
-        f"👥 <b>Позови друга — оба получите +{REFERRAL_REWARD_DAYS} дней Pro</b>\n\n"
+        f"👥 <b>Позови друга — оба получите +{REFERRAL_REWARD_DAYS} дней полного доступа</b>\n\n"
         f"Кинь другу ссылку. Как только он позанимается {REFERRAL_STREAK_TRIGGER} дня подряд — "
-        f"вы <b>оба</b> получаете <b>+{REFERRAL_REWARD_DAYS} дней Pro</b> 🔥\n\n"
+        f"вы <b>оба</b> получаете <b>+{REFERRAL_REWARD_DAYS} дней полного доступа</b> 🔥\n\n"
         f"🔗 {link}\n\n"
         f"✅ Успешных приглашений: <b>{n}</b>",
         parse_mode="HTML", disable_web_page_preview=True)
@@ -3253,7 +3253,7 @@ async def _handle_share_inline_query(update: Update, context: CallbackContext) -
             caption=(
                 "Смотри, что умеет этот бот для немецкого — пройди короткий тур 👇\n\n"
                 f"Как позанимаешься {REFERRAL_STREAK_TRIGGER} дня подряд — "
-                f"оба получим +{REFERRAL_REWARD_DAYS} дней Pro 🔥"
+                f"оба получим +{REFERRAL_REWARD_DAYS} дней полного доступа 🔥"
             ),
             reply_markup=kb,
         )
@@ -3573,7 +3573,7 @@ async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> 
     await message.reply_text(
         f"{'✅' if ok else '❌'} Грант {days}д юзеру {uid}\n"
         f"is_user_pro: было <b>{before}</b> → стало <b>{after}</b>\n"
-        f"Заработанный Pro активен до: {until}", parse_mode="HTML")
+        f"Заработанный доступ активен до: {until}", parse_mode="HTML")
 
 
 async def _admin_reader_audio_setlimit_command(update: Update, context: CallbackContext) -> None:
@@ -3721,12 +3721,12 @@ async def _update_streaks_job(context: CallbackContext) -> None:
                             # Already Pro → the earned day BANKS onto the end of the paid
                             # period (grant_pro_days), so it extends the subscription.
                             _rtxt = (f"🔥 <b>{new_streak} {_streak_days_word(new_streak)} подряд!</b>\n"
-                                     f"Заработан ещё <b>день Pro</b> — он добавится в конец твоей подписки 🎁\n"
+                                     f"Заработан ещё <b>день полного доступа</b> — он добавится в конец твоей подписки 🎁\n"
                                      f"Не прерывай серию 🔥")
                         else:
                             _rtxt = (f"🔥 <b>{new_streak} {_streak_days_word(new_streak)} подряд!</b>\n"
-                                     f"Лови подарок — <b>+1 день Pro</b> 🎁\n"
-                                     f"Каждые {STREAK_REWARD_EVERY} дней подряд = ещё день Pro. Не прерывай 🔥")
+                                     f"Лови подарок — <b>+1 день полного доступа</b> 🎁\n"
+                                     f"Каждые {STREAK_REWARD_EVERY} дней подряд = ещё день полного доступа. Не прерывай 🔥")
                         try:
                             await context.bot.send_message(chat_id=int(uid), parse_mode="HTML", text=_rtxt)
                         except Exception:
@@ -3742,14 +3742,14 @@ async def _update_streaks_job(context: CallbackContext) -> None:
                         await context.bot.send_message(
                             chat_id=int(uid), parse_mode="HTML",
                             text=(f"🎁 За {new_streak}-дневную серию по приглашению — "
-                                  f"<b>+{REFERRAL_REWARD_DAYS} дней Pro</b> тебе и тому, кто тебя позвал! 🔥"))
+                                  f"<b>+{REFERRAL_REWARD_DAYS} дней полного доступа</b> тебе и тому, кто тебя позвал! 🔥"))
                     except Exception:
                         pass
                     try:
                         await context.bot.send_message(
                             chat_id=int(ref_id), parse_mode="HTML",
                             text=(f"🎉 Твой друг втянулся ({new_streak} {_streak_days_word(new_streak)} подряд)! "
-                                  f"Лови <b>+{REFERRAL_REWARD_DAYS} дней Pro</b> за приглашение 🔥"))
+                                  f"Лови <b>+{REFERRAL_REWARD_DAYS} дней полного доступа</b> за приглашение 🔥"))
                     except Exception:
                         pass
         except Exception:
@@ -11936,7 +11936,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "⚙️ Открыть настройки", url=get_webapp_deeplink("settings"))]])
         caption = ("⚙️ <b>Настройки</b> — всё в одном месте:\n"
-                   "🌙 Автосейв   ·   🛡 Готовность к батлам   ·   🗓 Расписание (Pro)")
+                   "🌙 Автосейв   ·   🛡 Готовность к батлам   ·   🗓 Расписание (Полный доступ)")
         poster = None
         try:
             from backend.interactive_card import render_settings_card
@@ -20173,7 +20173,7 @@ async def _bot_cost_cap_block(message, user_id: int) -> bool:
         await message.reply_text(
             "🚫 На сегодня достигнут дневной лимит по затратам "
             f"(€{spent:.2f} из €{cap:.2f}). Он обновится после полуночи.\n"
-            "Если нужно больше — оформите Pro в приложении."
+            "Если нужно больше — оформите «Полный доступ» в приложении."
         )
     except Exception:
         pass
@@ -28737,7 +28737,7 @@ async def _start_battle_wizard(update: Update, context: CallbackContext, kind: s
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
         await message.reply_text(
             "⚔️ <b>Батлы создаёт Premium</b>\n\n"
-            "Бросить вызов другим может только Pro-пользователь. "
+            "Бросить вызов другим может только пользователь с «Полным доступом». "
             "Но <b>участвовать</b> можешь и ты — просто дождись приглашения "
             "от друга с Premium и играй наравне со всеми. 🛡",
             parse_mode="HTML")
@@ -28961,7 +28961,7 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
         await message.reply_text(
             "⚔️ <b>Батлы создаёт Premium</b>\n\n"
-            "Бросить вызов другим может только Pro-пользователь. "
+            "Бросить вызов другим может только пользователь с «Полным доступом». "
             "Но <b>участвовать</b> можешь и ты — просто дождись приглашения "
             "от друга с Premium и играй наравне со всеми. 🛡",
             parse_mode="HTML")
@@ -31303,7 +31303,7 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
             # switch_inline_query → Telegram открывает выбор чата и отправляет другу
             # брендовую карточку с рабочей кнопкой (см. _handle_share_inline_query),
             # а не голую ссылку в собственную личку.
-            [InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} дней Pro обоим)",
+            [InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} дней полного доступа обоим)",
                                   switch_inline_query="")],
         ])
         cap_streak = await _streak_caption_block(int(uid))
@@ -31377,7 +31377,7 @@ async def _admin_test_digest_command(update: Update, context: CallbackContext) -
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 Играть командой с друзьями", callback_data="digest:group")],
         # switch_inline_query → выбор чата в Telegram + отправка карточки-приглашения другу.
-        [InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} дней Pro обоим)",
+        [InlineKeyboardButton(f"🎁 Позвать друга (+{REFERRAL_REWARD_DAYS} дней полного доступа обоим)",
                               switch_inline_query="")],
     ])
     cap_streak = await _streak_caption_block(uid)
@@ -34210,7 +34210,7 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
         await message.reply_text(
             "⚔️ <b>Батлы создаёт Premium</b>\n\n"
-            "Бросить вызов другим может только Pro-пользователь. "
+            "Бросить вызов другим может только пользователь с «Полным доступом». "
             "Но <b>участвовать</b> можешь и ты — просто дождись приглашения "
             "от друга с Premium и играй наравне со всеми. 🛡",
             parse_mode="HTML")
@@ -34624,7 +34624,7 @@ async def wofrage_battle_command(update: Update, context: CallbackContext) -> No
     if not await asyncio.to_thread(is_user_pro, int(user.id)):
         await message.reply_text(
             "⚔️ <b>Батлы создаёт Premium</b>\n\n"
-            "Бросить вызов другим может только Pro-пользователь. "
+            "Бросить вызов другим может только пользователь с «Полным доступом». "
             "Но <b>участвовать</b> можешь и ты — просто дождись приглашения "
             "от друга с Premium и играй наравне со всеми. 🛡",
             parse_mode="HTML")
@@ -36594,7 +36594,7 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
                 current_period_end=exp,
             )
             await msg.reply_text(
-                "✅ Pro подключён — спасибо! Продлевается автоматически раз в месяц; отменить можно в любой момент в настройках Telegram."
+                "✅ «Полный доступ» подключён — спасибо! Продлевается автоматически раз в месяц; отменить можно в любой момент в настройках Telegram."
             )
         except Exception:
             logging.exception("stars pro grant failed charge=%s", charge_id)
@@ -36627,7 +36627,7 @@ async def on_stars_successful_payment(update: Update, context: CallbackContext) 
                        else "Спасибо за кофе и чизкейк ☕️🍰")
             if _pro_granted:
                 await msg.reply_text(
-                    f"{_thanks} В подарок — {_days} дней Pro (уже начислены), плюс ты в стене благодарностей. "
+                    f"{_thanks} В подарок — {_days} дней полного доступа (уже начислены), плюс ты в стене благодарностей. "
                     f"Это правда помогает оплачивать серверы. 🙏"
                 )
             else:

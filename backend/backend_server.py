@@ -43275,7 +43275,7 @@ def _build_dictionary_card_pdf(
         body_text = (
             "Детальные разборы каждого слова, тренировки и интерактивные задания каждый день. "
             f"Перейди по ссылке и позанимайся {REFERRAL_STREAK_TRIGGER} дня — "
-            f"тебе и другу по +{REFERRAL_REWARD_DAYS} дней Pro."
+            f"тебе и другу по +{REFERRAL_REWARD_DAYS} дней полного доступа."
         )
         for line in _wrap_text(body_text, text_width_chars)[:3]:
             pdf.drawString(footer_x, footer_y, line)
@@ -53535,7 +53535,7 @@ def billing_stars_invoice():
         stars = support_price_stars(plan_code)
         _title = "Кофе разработчику ☕️" if plan_code == "support_coffee" else "Кофе ☕️ и чизкейк 🍰"
         _pro_days = 7 if plan_code == "support_coffee" else 14
-        _desc = (f"Разовое спасибо — в подарок {_pro_days} дней Pro (полный доступ), бейдж спонсора "
+        _desc = (f"Разовое спасибо — в подарок {_pro_days} дней полного доступа, бейдж спонсора "
                  "и место на стене благодарностей. И это помогает оплачивать серверы.")
         link, detail = create_stars_invoice_link(
             title=_title,
