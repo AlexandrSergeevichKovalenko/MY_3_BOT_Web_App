@@ -7173,11 +7173,27 @@ async def run_judge_distractor_set(
                 "relation": str(relation or "synonym"), "distractors": cands,
             }, ensure_ascii=False),
             poll_interval_seconds=1.0,
-            responses_timeout_seconds=20.0,
+            responses_timeout_seconds=30.0,
         )
-        data = json.loads(content)
-        rows = data.get("per_distractor") if isinstance(data, dict) else None
+        # Be liberal about shape: the model may return {"per_distractor":[...]}, a bare
+        # array [...], or wrap it in a ```json fence. Any of these must classify.
+        raw = str(content or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw[:4].lower() == "json":
+                raw = raw[4:]
+            raw = raw.strip()
+        data = json.loads(raw)
+        rows = None
+        if isinstance(data, list):
+            rows = data
+        elif isinstance(data, dict):
+            rows = data.get("per_distractor")
+            if not isinstance(rows, list):  # fall back to the first list-valued field
+                rows = next((v for v in data.values() if isinstance(v, list)), None)
         if not isinstance(rows, list):
+            logging.warning("run_judge_distractor_set: no list in output target=%s raw=%.300s",
+                            target_word, raw)
             return []
         out: list[dict] = []
         for r in rows:

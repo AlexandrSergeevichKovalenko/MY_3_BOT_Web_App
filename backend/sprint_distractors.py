@@ -174,6 +174,8 @@ async def build_trainer_distractors(
         "target_example": target_example,
         "trainer_ready": len(kept) >= MIN_CLEAN_DISTRACTORS,
         "counts": {"generated": generated, "after_prosecutor": after_prosecutor, "kept": len(kept)},
+        "diag": {"judge_rows": len(verdicts),
+                 "judge_classes": sorted({(v.get("class") or "?") for v in verdicts}) if verdicts else []},
     }
     logger.info(
         "trainer distractors word=%s relation=%s generated=%d prosecutor=%d kept=%d ready=%s",

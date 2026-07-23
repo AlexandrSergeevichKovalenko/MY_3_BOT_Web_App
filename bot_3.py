@@ -31121,6 +31121,10 @@ def _fmt_distractor_preview(word_item: dict, result: dict) -> str:
     )
     ready = "✅ готово к ротации" if result.get("trainer_ready") else "⚠️ мало чистых — не в ротацию"
     lines.append(ready)
+    diag = result.get("diag") or {}
+    if diag:
+        lines.append(f"<i>judge вернул строк: {diag.get('judge_rows', 0)} · классы: "
+                     f"{', '.join(diag.get('judge_classes') or []) or '—'}</i>")
 
     if kept:
         lines.append(f"\n✅ <b>Чистые дистракторы ({len(kept)})</b>")
