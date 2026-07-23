@@ -8484,8 +8484,8 @@ function AppInner() {
     },
     pro: {
       eyebrow: tr('Текущий флагман', 'Aktuelles Flaggschiff'),
-      title: tr('Pro', 'Pro'),
-      blurb: tr('Полный доступ без дневного лимита.', 'Voller Zugang ohne Tageslimit.'),
+      title: tr('Полный доступ', 'Voller Zugang'),
+      blurb: tr('Открыты все функции — переводы, разборы, словарь и тренажёры.', 'Alle Funktionen frei — Übersetzungen, Analysen, Wörterbuch und Übungen.'),
       priceLabel: '',
       priceLabelDe: '',
     },
@@ -8564,8 +8564,8 @@ function AppInner() {
   }, [billingPlans, billingPlanMeta, uiLang, tr]);
   const billingPlanLimitDetails = useMemo(() => {
     const paidCommon = [
-      tr('Переводы, словарь, карточки, тренажёры: без дневных лимитов.', 'Übersetzungen, Wörterbuch, Karten, Übungen: ohne Tageslimits.'),
-      tr('Читалка: свои книги без ограничений (+ классика и статьи).', 'Reader: eigene Bücher ohne Limit (+ Klassiker und Artikel).'),
+      tr('Переводы, разборы, словарь, карточки, тренажёры — полностью открыты.', 'Übersetzungen, Analysen, Wörterbuch, Karten, Übungen — voll freigeschaltet.'),
+      tr('Читалка: свои книги (+ классика и статьи).', 'Reader: eigene Bücher (+ Klassiker und Artikel).'),
       tr('YouTube: синхронные русские субтитры.', 'YouTube: synchrone russische Untertitel.'),
       tr('🎭 Загадочная история + 🎧 утренний аудио-разбор ошибок.', '🎭 Rätselgeschichte + 🎧 morgendliche Fehler-Audio.'),
       tr('📊 Аналитика, 🗓 Задачи на день, 📅 План недели, 🗺 Карта слабых навыков с тренировкой.', '📊 Analyse, 🗓 Tagesaufgaben, 📅 Wochenplan, 🗺 Schwache-Skills-Karte mit Training.'),
@@ -13743,7 +13743,7 @@ function AppInner() {
         'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfügbaren Pläne. Pro wird mit Telegram Stars bezahlt — direkt in der App, ohne Karte auf fremden Seiten.'
       ),
       bullets: [
-        tr('Каждый новый пользователь получает 7 дней полного Pro бесплатно, чтобы попробовать всё. Потом — Free с дневными лимитами.', 'Jeder neue Nutzer bekommt 7 Tage volles Pro gratis zum Ausprobieren. Danach Free mit Tageslimits.'),
+        tr('Каждый новый пользователь получает 7 дней полного доступа бесплатно, чтобы попробовать всё. Потом — базовый бесплатный режим.', 'Jeder neue Nutzer bekommt 7 Tage vollen Zugang gratis zum Ausprobieren. Danach der kostenlose Basis-Modus.'),
         tr('Озвучка книг оплачивается отдельно, за каждую книгу — в Pro она не входит. Классика озвучена бесплатно для всех.', 'Die Buch-Vertonung wird separat je Buch bezahlt — nicht in Pro enthalten. Klassiker sind für alle gratis vertont.'),
         tr('Pro-подпиской (продление и отмена) управляешь прямо в Telegram; отменить можно в любой момент.', 'Dein Pro-Abo (Verlängerung und Kündigung) verwaltest du direkt in Telegram; jederzeit kündbar.'),
       ],
@@ -14027,7 +14027,7 @@ function AppInner() {
               title: 'Welche Tarife es gibt',
               items: [
                 'Free: kostenloser Basis-Modus mit Tageslimits.',
-                'Pro: voller Modus ohne Tageslimit (Übersetzungen, Wörterbuch, Karten, Analyse, Skill-Karte, eigene Bücher u. v. m.).',
+                'Voller Zugang: alle Funktionen freigeschaltet (Übersetzungen, Analysen, Wörterbuch, Karten, Skill-Karte, eigene Bücher u. v. m.).',
                 'Buch-Vertonung ist separat und nicht in Pro enthalten — sie wird pro Buch mit Sternen bezahlt; Klassiker sind für alle gratis vertont.',
               ],
             },
@@ -14457,7 +14457,7 @@ function AppInner() {
             title: 'Какие варианты тарифов есть',
             items: [
               'Free: бесплатный базовый режим с дневными лимитами.',
-              'Pro: полный режим без дневного лимита (переводы, словарь, карточки, аналитика, карта навыков, свои книги и многое другое).',
+              'Полный доступ: все функции открыты (переводы, разборы, словарь, карточки, аналитика, карта навыков, свои книги и многое другое).',
               'Озвучка книг — отдельно, не входит в Pro: оплачивается за каждую книгу звёздами; классика озвучена бесплатно для всех.',
             ],
           },
@@ -26398,7 +26398,7 @@ function AppInner() {
         ));
       } else if (code === 'LIMIT_FREE_PLAN_1_ARTICLE') {
         const articleLimitMsg = tr(
-          'На бесплатном плане можно открыть 1 статью из интернета в день. Лимит обновится завтра в 00:00 по Вене. Оформи Pro — и читай статьи без ограничений.',
+          'На бесплатном плане можно открыть 1 статью из интернета в день. Лимит обновится завтра в 00:00 по Вене. Оформи «Полный доступ» — и открывай статьи без дневного лимита.',
           'Im Free-Plan kannst du 1 Web-Artikel pro Tag öffnen. Das Limit wird morgen um 00:00 Uhr (Wien) zurückgesetzt. Hol dir Pro und lies Artikel ohne Limit.'
         );
         setReaderError(articleLimitMsg);
@@ -41547,7 +41547,7 @@ function AppInner() {
                         <p className="billing-plan__tag">{tr('Всё важное для учёбы, с дневными лимитами.', 'Alles Wichtige zum Lernen, mit Tageslimits.')}</p>
                         <ul className="billing-feats">
                           <li>{tr('Переводы с разбором: 1 набор/день (7 предложений).', 'Übersetzungen mit Analyse: 1 Set/Tag (7 Sätze).')}</li>
-                          <li>{tr('Словарь: 10 запросов + 20 сохранений/день.', 'Wörterbuch: 10 Abfragen + 20 Speicherungen/Tag.')}</li>
+                          <li>{tr('Словарь: библиотека без лимита + 3 новых разбора/день + 20 сохранений.', 'Wörterbuch: Bibliothek unbegrenzt + 3 neue Analysen/Tag + 20 Speicherungen.')}</li>
                           <li>{tr('«Объяснить ошибки» и «Спроси GPT»: по 1/день.', '„Fehler erklären“ und „GPT fragen“: je 1/Tag.')}</li>
                           <li>{tr('Карточки: 10 новых слов/режим + 20 повторений/день.', 'Karten: 10 neue Wörter/Modus + 20 Wiederholungen/Tag.')}</li>
                           <li>{tr('«Почувствуй слово»: 1/день.', '„Wort fühlen“: 1/Tag.')}</li>
@@ -41560,13 +41560,13 @@ function AppInner() {
                       <section className="billing-plan billing-plan--pro">
                         <span className="billing-plan__badge">{tr('7 ДНЕЙ БЕСПЛАТНО', '7 TAGE GRATIS')}</span>
                         <div className="billing-plan__top">
-                          <h4 className="billing-plan__name"><span className="billing-plan__dia" aria-hidden="true">◆</span> Pro</h4>
-                          <span className="billing-plan__price">292 ⭐ / {tr('мес', 'Monat')}</span>
+                          <h4 className="billing-plan__name"><span className="billing-plan__dia" aria-hidden="true">◆</span> {tr('Полный доступ', 'Voller Zugang')}</h4>
+                          <span className="billing-plan__price">325 ⭐ / {tr('мес', 'Monat')}</span>
                         </div>
-                        <p className="billing-plan__tag">{tr('Всё без дневных лимитов — плюс экстра.', 'Alles ohne Tageslimits — plus die Extras.')}</p>
+                        <p className="billing-plan__tag">{tr('Открыты все функции — плюс экстра.', 'Alle Funktionen frei — plus die Extras.')}</p>
                         <ul className="billing-feats">
-                          <li>{tr('Переводы, словарь, карточки, тренажёры: без дневных лимитов.', 'Übersetzungen, Wörterbuch, Karten, Übungen: ohne Tageslimits.')}</li>
-                          <li>{tr('Читалка: свои книги без ограничений (+ классика и статьи).', 'Reader: eigene Bücher ohne Limit (+ Klassiker und Artikel).')}</li>
+                          <li>{tr('Переводы, разборы, словарь, карточки, тренажёры — полностью открыты.', 'Übersetzungen, Analysen, Wörterbuch, Karten, Übungen — voll freigeschaltet.')}</li>
+                          <li>{tr('Читалка: свои книги (+ классика и статьи).', 'Reader: eigene Bücher (+ Klassiker und Artikel).')}</li>
                           <li>{tr('YouTube: синхронные русские субтитры.', 'YouTube: synchrone russische Untertitel.')}</li>
                           <li>{tr('Загадочная история + утренний аудио-разбор ошибок.', 'Rätselgeschichte + morgendliche Fehler-Audio.')}</li>
                           <li>{tr('Аналитика, задачи на день, план недели, карта слабых навыков с тренировкой.', 'Analyse, Tagesaufgaben, Wochenplan, Schwache-Skills-Karte mit Training.')}</li>

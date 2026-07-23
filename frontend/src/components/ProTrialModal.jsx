@@ -37,29 +37,29 @@ export default function ProTrialModal({
   }
 
   const perks = [
-    tr('Переводы и разборы без дневного лимита', 'Übersetzungen & Analysen ohne Tageslimit'),
+    tr('Переводы, детальные разборы и словарь — всё открыто', 'Übersetzungen, ausführliche Analysen & Wörterbuch — alles frei'),
     tr('Русские субтитры к видео + загадочная история', 'Russische Video-Untertitel + Rätselgeschichte'),
-    tr('Карточки и тренажёры без ограничений', 'Karten & Übungen ohne Limit'),
+    tr('Карточки, тренажёры и skill-тренировка — полностью', 'Karten, Übungen & Skill-Training — komplett'),
     tr('Аналитика, план дня и карта слабых навыков', 'Analyse, Tagesplan & Schwache-Skills-Karte'),
   ];
 
   const badge = isActive
-    ? `🎁 ${tr('Pro — бесплатно', 'Pro — kostenlos')}`
+    ? `🎁 ${tr('Полный доступ — бесплатно', 'Voller Zugang — gratis')}`
     : `⌛ ${tr('Пробный период истёк', 'Testphase beendet')}`;
   const emoji = isActive ? '🎁' : '⌛';
   const title = isActive
     ? (justGranted
-        ? tr('Тебе открыт Pro!', 'Pro freigeschaltet!')
-        : tr('У тебя активен Pro', 'Dein Pro ist aktiv'))
-    : tr('Бесплатный Pro закончился', 'Kostenloses Pro ist zu Ende');
+        ? tr('Тебе открыт полный доступ!', 'Voller Zugang freigeschaltet!')
+        : tr('У тебя активен полный доступ', 'Dein voller Zugang ist aktiv'))
+    : tr('Бесплатный доступ закончился', 'Der kostenlose Zugang ist zu Ende');
   const intro = isActive
     ? tr(
-        'Целых 7 дней ты пользуешься всеми возможностями Pro — бесплатно. Успей попробовать всё!',
-        '7 Tage lang nutzt du alle Pro-Funktionen — kostenlos. Probier alles aus!',
+        'Целых 7 дней тебе открыты все функции — бесплатно. Успей попробовать всё!',
+        '7 Tage lang sind alle Funktionen frei — kostenlos. Probier alles aus!',
       )
     : tr(
-        'Твои 7 бесплатных дней Pro израсходованы. Понравилось? Оформи Pro и продолжай без ограничений.',
-        'Deine 7 kostenlosen Pro-Tage sind aufgebraucht. Gefallen? Hol dir Pro und mach ohne Limits weiter.',
+        'Твои 7 бесплатных дней полного доступа израсходованы. Понравилось? Оформи «Полный доступ» и продолжай.',
+        'Deine 7 Gratis-Tage mit vollem Zugang sind vorbei. Gefallen? Hol dir den vollen Zugang und mach weiter.',
       );
 
   const dLeft = Math.max(0, Number(daysLeft || 0));

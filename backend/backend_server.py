@@ -2904,12 +2904,16 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/flashcards/feel": {"cap": True, "feature_code": "feel_word_daily"},
     "/api/webapp/flashcards/feel/dispatch": {"cap": True},
     "/api/webapp/flashcards/enrich": {"cap": True},
-    "/api/webapp/explain": {"cap": True, "paid_feature": "error_analysis", "paid_feature_title": "Разбор ошибок"},
-    "/api/webapp/explain/question": {"cap": True, "paid_feature": "error_analysis", "paid_feature_title": "Вопросы по разбору"},
-    "/api/webapp/ask": {"cap": True, "paid_feature": "ai_assistant", "paid_feature_title": "AI-ассистент"},
+    # Free taster: 1/day each via in-endpoint reservations (dictionary_openai_explanation_daily
+    # for explain, ask_gpt_daily for ask) — NOT fully paid. Seeing the value once/day is the hook.
+    "/api/webapp/explain": {"cap": True},
+    "/api/webapp/explain/question": {"cap": True},
+    "/api/webapp/ask": {"cap": True},
     "/api/webapp/tts/generate": {"cap": True, "feature_code": "tts_chars_daily"},
-    "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily", "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube-субтитры"},
-    "/api/webapp/youtube/translate": {"cap": True, "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube-перевод субтитров"},
+    # Free: German subtitles (transcript) with the youtube_fetch_daily taster limit.
+    "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily"},
+    # Paid: Russian translated subtitles (the Pro «синхронные русские субтитры» feature).
+    "/api/webapp/youtube/translate": {"cap": True, "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube: русские субтитры"},
     "/api/webapp/submit-group": {"cap": True},
     "/api/webapp/story/submit": {"cap": True, "paid_feature": "mystery_story", "paid_feature_title": "Загадочная история"},
     "/api/today/theory/prepare": {"cap": True, "feature_code": "skill_training_daily", "paid_feature": "skill_training", "paid_feature_title": "Тренировка навыка"},
