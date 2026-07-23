@@ -35963,8 +35963,13 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
         "reset_policy": "daily_europe_vienna",
     },
     "dictionary_lookup_daily": {
-        "title": "Словарные запросы",
-        "free_limit": 10,
+        "title": "Разбор новых слов",
+        # Free "taster": N NEW-word deep breakdowns per day. Library/shared-pool hits are
+        # FREE and UNLIMITED for everyone — this cap fires ONLY when a genuinely new word
+        # needs fresh GPT generation (all cache/pool/reverse/active-job hits return before
+        # the reservation). Pro/trial bypass entirely. Kept in line with the Free daily
+        # cost backstop (~€0.05 ≈ a few generations). Env-tunable without a deploy.
+        "free_limit": max(1, int((os.getenv("DICTIONARY_NEW_WORD_FREE_LIMIT") or "3").strip() or "3")),
         "reset_policy": "daily_europe_vienna",
     },
     "shortcut_forwarded_message_daily": {
