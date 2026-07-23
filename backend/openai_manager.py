@@ -58,8 +58,15 @@ _DEFAULT_TASK_MODELS = {
     # quality regression shows up on a specific block.
     "dictionary_enrichment_multilang_word_compact": "gpt-4.1-mini",
     "dictionary_enrichment_multilang_phrase_compact": "gpt-4.1-mini",
-    "dictionary_assistant_multilang_core_fast": "gpt-4.1-mini",
-    "dictionary_assistant_multilang_core_fast_batch": "gpt-4.1-mini",
+    # CORE meaning of a single word (which translation to pick, what it means) is the
+    # one place quality can't be compromised in a language app: mini confused genuinely
+    # ambiguous words (RU "Провод" → mixed Draht+Kabel). It runs ONCE per new word and
+    # is cached forever in the shared pool, so full gpt-4.1 here is bounded in cost while
+    # the high-volume/cheap parts (enrichment forms+examples, the breakdown stream, the
+    # phrase/sentence paths) stay on mini. Override via
+    # LLM_TASK_MODEL_DICTIONARY_ASSISTANT_MULTILANG_CORE_FAST[_BATCH].
+    "dictionary_assistant_multilang_core_fast": "gpt-4.1-2025-04-14",
+    "dictionary_assistant_multilang_core_fast_batch": "gpt-4.1-2025-04-14",
     "dictionary_assistant_multilang_stream": "gpt-4.1-mini",
     # Shared-pool word enrichment (forms + usage examples + prefixes — no Rektion, see the
     # `enrich_word_multilang` prompt). This is the biggest OpenAI cost line: a high-volume
