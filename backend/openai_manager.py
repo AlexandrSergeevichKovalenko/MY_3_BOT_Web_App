@@ -119,6 +119,9 @@ _DEFAULT_RESPONSES_TASKS = {
     "sprint_antonym",
     "check_synonym",
     "check_synonym_batch",
+    "sprint_distractor_setter",
+    "sprint_distractor_prosecutor",
+    "sprint_distractor_judge",
     "check_satzbau",
     "check_cloze",
     "check_error",
@@ -3884,6 +3887,98 @@ Gib NUR STRICT JSON:
 {"items":[{"wort":"großzügig","accepted":[{"de":"geizig","ru":"скупой"},{"de":"kleinlich","ru":"мелочный"},{"de":"knauserig","ru":"прижимистый"},{"de":"sparsam","ru":"бережливый"},{"de":"schäbig","ru":"убогий, жалкий"}],"erklaerung":"…","tip":"…","hint_ru":"щедрый"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"sprint_distractor_setter": """
+ROLE: You are an expert German lexicographer building a multiple-choice vocabulary
+trainer for Russian-speaking B2+ learners.
+
+INPUT JSON: {"target":"...","pos":"...","sense_ru":"...","sense_de":"...",
+"relation":"synonym"|"antonym","correct":["...","..."],"count":N}
+
+TASK: produce N DISTRACTOR candidates — words that look plausible next to `target`
+but are NOT a valid {relation} of `target` in ANY common sense. A distractor that a
+competent native speaker could accept as a {relation} is a BUG; when in doubt, DO NOT
+include it.
+
+HARD RULES for every distractor:
+- A real, reasonably common German word at ~B2 level (no archaic/obscure coinage).
+- SAME part of speech as `target`. If a noun, include the article (der/die/das).
+  Verb → infinitive; adjective/adverb → Grundform. Storage format like the correct list.
+- NOT a {relation} of `target` in any register, sense, figurative use or common
+  collocation. Also must NOT duplicate `target`, the `correct` list, their close
+  synonyms, or another distractor.
+- Judged against the INTENDED sense only (`sense_de`). A word that relates to a
+  DIFFERENT sense of `target` is a GOOD distractor (label it wrong_sense).
+
+Prefer these attractive-but-wrong TRAP TYPES; label which applies:
+- same_topic_wrong_relation : same semantic field, but neither {relation}.
+- opposite_relation_trap    : for an ANTONYM task, a real SYNONYM of target (and
+                              vice-versa) — tests DIRECTION, not mere relatedness.
+- wrong_sense               : valid {relation} of a DIFFERENT sense of target, not
+                              the intended one (polysemy trap).
+- near_form                 : similar root/spelling, different meaning.
+
+For EACH candidate output an object:
+{"word":"...","article":"der"|"die"|"das"|null,"pos":"...","ru_gloss":"<RU meaning>",
+ "trap_type":"<one of the above>",
+ "why_not":"<one precise sentence: what it really means and why it is NOT a {relation} of target>",
+ "risk_self_score":<0..1 how easily a critic could argue it IS a valid answer>,
+ "example_de":"<one natural B2 German sentence using THIS distractor in its real meaning (7-14 words)>",
+ "example_ru":"<Russian translation of example_de>"}
+
+Also return one neutral example for the target itself:
+"target_example_de","target_example_ru" (a natural sentence using `target` in `sense_de`).
+
+Return STRICT JSON ONLY:
+{"target_example_de":"...","target_example_ru":"...","candidates":[ ... ]}
+Order candidates by risk_self_score ascending. No markdown.
+""",
+"sprint_distractor_prosecutor": """
+ROLE: You are a ruthless German examiner whose ONLY goal is to BREAK a vocabulary
+trainer by proving that a word it marked "wrong" is actually an ACCEPTABLE answer.
+
+INPUT JSON: {"target":"...","sense_de":"...","relation":"synonym"|"antonym",
+"candidate":"...","target_example_de":"..."}
+
+Build the STRONGEST possible case that `candidate` IS a valid {relation} of `target`
+(in the intended sense `sense_de`). You MUST consider, explicitly:
+- every sense of the candidate, including figurative and colloquial usage;
+- common collocations and fixed expressions;
+- regional / register variation;
+- the SUBSTITUTION TEST: put `candidate` in place of `target` in `target_example_de`.
+  Does the sentence stay natural AND does candidate then read as a {relation} of
+  target? If substitution works smoothly, that is strong evidence candidate is unsafe.
+
+Then decide:
+- "REJECT" if you found ANY credible case a competent native speaker or B2 teacher
+  would accept candidate as a {relation} of target → unsafe as a distractor.
+- "PASS"   only if there is NO credible case; candidate is clearly not a {relation}.
+Rule: if you are uncertain, output REJECT (fail toward dropping the distractor).
+
+Return STRICT JSON ONLY:
+{"verdict":"REJECT"|"PASS",
+ "substitution_ok":true|false,
+ "best_case_for_acceptance":"<the strongest argument you could build, or ''>",
+ "confidence":<0..1>}
+""",
+"sprint_distractor_judge": """
+ROLE: You are an INDEPENDENT German lexicography referee. You have NOT seen any prior
+reasoning. Judge strictly and conservatively; when unsure, do not pass a distractor.
+
+INPUT JSON: {"target":"...","sense_de":"...","relation":"synonym"|"antonym",
+"distractors":["...","..."]}
+
+For EACH distractor, in input order, classify how it relates to `target` in the
+intended sense `sense_de`:
+- "DEFINITELY_NOT" : clearly NOT a {relation} of target. (only these may survive)
+- "ARGUABLE"       : someone could defend it as a {relation}. (must be dropped)
+- "IS_ANSWER"      : actually a valid {relation} of target. (must be dropped — a bug)
+Also set "issues": list any of ["not_a_word","misspelled","wrong_pos","missing_article",
+"above_b2","duplicates_target"] that apply (empty list if none).
+
+Return STRICT JSON ONLY:
+{"per_distractor":[{"word":"...","class":"DEFINITELY_NOT"|"ARGUABLE"|"IS_ANSWER","issues":[]}, ...]}
+Same length and order as the input `distractors`. No markdown.
+""",
 "check_synonym_batch": """
 You judge German vocabulary. Input JSON: {"target":"...","relation":"synonym"|"antonym","candidates":["...","..."]}.
 For EACH candidate decide whether it is a VALID German {synonym OR antonym, per relation} of `target`
@@ -6945,6 +7040,119 @@ async def run_check_synonym_batch(*, target_word: str, candidates: list[str], re
     except Exception:
         logging.warning("run_check_synonym_batch failed target=%s", target_word, exc_info=True)
         return set()
+
+
+# ── Synonym/Antonym TRAINER distractors (nightly, off the hot path) ──────────────
+# Three-stage adversarial pipeline that turns one bank word into multiple-choice
+# rounds. A distractor must survive ALL of: SETTER (generate + self-justify) →
+# PROSECUTOR (try to prove it IS a valid answer) → JUDGE (independent strict class).
+# The full model is used (these tasks are NOT in _DEFAULT_TASK_MODELS → gpt-4.1),
+# because a wrong "distractor" that is really a synonym silently miscorrects the
+# learner. Orchestration + consensus lives in backend/sprint_distractors.py.
+
+async def run_generate_sprint_distractors(
+    *, target_word: str, relation: str, sense_ru: str, sense_de: str,
+    correct: list[str], pos: str = "", count: int = 16,
+) -> dict:
+    """SETTER stage. Returns {"target_example_de","target_example_ru","candidates":[{...}]}
+    or {} on failure. Each candidate carries trap_type/why_not/risk_self_score + an
+    example sentence (DE/RU) used both for display and the prosecutor's substitution test."""
+    try:
+        content = await llm_execute(
+            task_name="sprint_distractor_setter",
+            system_instruction_key="sprint_distractor_setter",
+            user_message=json.dumps({
+                "target": str(target_word), "pos": str(pos or ""),
+                "sense_ru": str(sense_ru or ""), "sense_de": str(sense_de or ""),
+                "relation": str(relation or "synonym"),
+                "correct": [str(c) for c in (correct or []) if str(c).strip()][:40],
+                "count": int(count),
+            }, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+            responses_timeout_seconds=45.0,
+        )
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            return {}
+        cands = data.get("candidates")
+        data["candidates"] = [c for c in cands if isinstance(c, dict)] if isinstance(cands, list) else []
+        return data
+    except Exception:
+        logging.warning("run_generate_sprint_distractors failed target=%s", target_word, exc_info=True)
+        return {}
+
+
+async def run_prosecute_distractor(
+    *, target_word: str, relation: str, sense_de: str, candidate: str, target_example_de: str = "",
+) -> dict:
+    """PROSECUTOR stage. Adversarially tries to prove `candidate` IS a valid {relation}
+    of `target`. Returns {"verdict":"REJECT"|"PASS","substitution_ok":bool,
+    "best_case_for_acceptance":str,"confidence":float}. Fail-CLOSED (REJECT) on
+    error/timeout — an unverified distractor never ships."""
+    try:
+        content = await llm_execute(
+            task_name="sprint_distractor_prosecutor",
+            system_instruction_key="sprint_distractor_prosecutor",
+            user_message=json.dumps({
+                "target": str(target_word), "sense_de": str(sense_de or ""),
+                "relation": str(relation or "synonym"), "candidate": str(candidate),
+                "target_example_de": str(target_example_de or ""),
+            }, ensure_ascii=False),
+            poll_interval_seconds=1.0,
+            responses_timeout_seconds=15.0,
+        )
+        data = json.loads(content)
+        if not isinstance(data, dict) or "verdict" not in data:
+            return {"verdict": "REJECT", "best_case_for_acceptance": "unparseable_output", "confidence": 0.0}
+        verdict = "PASS" if str(data.get("verdict")).strip().upper() == "PASS" else "REJECT"
+        return {
+            "verdict": verdict,
+            "substitution_ok": bool(data.get("substitution_ok")),
+            "best_case_for_acceptance": str(data.get("best_case_for_acceptance") or "").strip(),
+            "confidence": float(data.get("confidence") or 0.0),
+        }
+    except Exception:
+        logging.warning("run_prosecute_distractor failed target=%s cand=%s", target_word, candidate, exc_info=True)
+        return {"verdict": "REJECT", "best_case_for_acceptance": "prosecutor_error", "confidence": 0.0}
+
+
+async def run_judge_distractor_set(
+    *, target_word: str, relation: str, sense_de: str, distractors: list[str],
+) -> list[dict]:
+    """JUDGE stage. Independent strict classification of each distractor vs `target`.
+    Returns a list aligned to input order: [{"word","class","issues":[]}]. Only
+    class == "DEFINITELY_NOT" may survive. [] on failure/timeout (caller drops all —
+    fail closed)."""
+    cands = [str(d).strip() for d in (distractors or []) if str(d).strip()]
+    if not cands:
+        return []
+    try:
+        content = await llm_execute(
+            task_name="sprint_distractor_judge",
+            system_instruction_key="sprint_distractor_judge",
+            user_message=json.dumps({
+                "target": str(target_word), "sense_de": str(sense_de or ""),
+                "relation": str(relation or "synonym"), "distractors": cands,
+            }, ensure_ascii=False),
+            poll_interval_seconds=1.0,
+            responses_timeout_seconds=20.0,
+        )
+        data = json.loads(content)
+        rows = data.get("per_distractor") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            return []
+        out: list[dict] = []
+        for r in rows:
+            if isinstance(r, dict):
+                out.append({
+                    "word": str(r.get("word") or "").strip(),
+                    "class": str(r.get("class") or "").strip().upper(),
+                    "issues": [str(i) for i in (r.get("issues") or [])],
+                })
+        return out
+    except Exception:
+        logging.warning("run_judge_distractor_set failed target=%s", target_word, exc_info=True)
+        return []
 
 
 async def run_article_noun_gen(*, theme: str, subtopic: str, count: int, avoid: list[str] | None = None) -> list[dict]:

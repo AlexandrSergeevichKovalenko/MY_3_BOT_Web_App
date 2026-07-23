@@ -46806,6 +46806,18 @@ def ensure_sprint_schema() -> None:
                 );
                 """
             )
+            # Trainer add-on (recognition game that feeds the sprint 3 days later):
+            # one JSONB blob holds the verified distractors + example sentences built
+            # by the nightly adversarial pipeline; trainer_ready gates rotation. The
+            # bank is tiny (dozens of rows) so ADD COLUMN is cheap and idempotent.
+            cursor.execute(
+                "ALTER TABLE bt_3_sprint_bank "
+                "ADD COLUMN IF NOT EXISTS trainer_json JSONB NOT NULL DEFAULT '{}'::jsonb;"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_sprint_bank "
+                "ADD COLUMN IF NOT EXISTS trainer_ready BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
         conn.commit()
 
 
@@ -46891,6 +46903,69 @@ def get_sprint_item(sprint_id: str) -> dict | None:
     acc = row[3] if isinstance(row[3], list) else []
     return {"sprint_id": row[0], "relation": row[1], "wort": row[2], "accepted": acc,
             "erklaerung": row[4], "tip": row[5], "hint_ru": row[6]}
+
+
+def get_sprint_item_by_word(word: str, *, relation: str | None = None) -> dict | None:
+    """Look up a bank word by its `wort` (case-insensitive, article-agnostic) so an
+    admin can trigger the trainer pipeline by typing just the word. Returns the first
+    match (optionally filtered by relation), or None."""
+    w = str(word or "").strip()
+    if not w:
+        return None
+    like = f"%{w}%"
+    params: list = [w, like]
+    sql = (
+        "SELECT sprint_id, relation, wort, accepted, erklaerung, tip, hint_ru, trainer_json, trainer_ready "
+        "FROM bt_3_sprint_bank WHERE (lower(wort) = lower(%s) OR lower(wort) LIKE lower(%s))"
+    )
+    if relation:
+        sql += " AND relation = %s"
+        params.append(str(relation))
+    sql += " ORDER BY (lower(wort) = lower(%s)) DESC LIMIT 1"
+    params.append(w)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, tuple(params))
+            row = cursor.fetchone()
+    if not row:
+        return None
+    acc = row[3] if isinstance(row[3], list) else []
+    tj = row[7] if isinstance(row[7], dict) else {}
+    return {"sprint_id": row[0], "relation": row[1], "wort": row[2], "accepted": acc,
+            "erklaerung": row[4], "tip": row[5], "hint_ru": row[6],
+            "trainer_json": tj, "trainer_ready": bool(row[8])}
+
+
+def list_sprint_bank_words(*, relation: str | None = None, limit: int = 20) -> list[dict]:
+    """List words currently in the sprint bank (for admin discovery). Returns
+    [{wort, relation, accepted_n, trainer_ready}]."""
+    sql = ("SELECT wort, relation, jsonb_array_length(accepted), trainer_ready "
+           "FROM bt_3_sprint_bank WHERE retired = FALSE")
+    params: list = []
+    if relation:
+        sql += " AND relation = %s"
+        params.append(str(relation))
+    sql += " ORDER BY relation, wort LIMIT %s"
+    params.append(int(limit))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall() or []
+    return [{"wort": r[0], "relation": r[1], "accepted_n": int(r[2] or 0),
+             "trainer_ready": bool(r[3])} for r in rows]
+
+
+def update_sprint_trainer_data(sprint_id: str, *, trainer_json: dict, trainer_ready: bool) -> None:
+    """Persist the nightly pipeline's verified distractors + examples for one word."""
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_sprint_bank SET trainer_json = %s::jsonb, trainer_ready = %s "
+                "WHERE sprint_id = %s",
+                (_json.dumps(dict(trainer_json or {}), ensure_ascii=False), bool(trainer_ready), str(sprint_id)),
+            )
+        conn.commit()
 
 
 def mark_sprint_sent(sprint_id: str) -> None:

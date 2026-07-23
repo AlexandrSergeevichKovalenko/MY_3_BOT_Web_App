@@ -423,6 +423,9 @@ from backend.database import (
     delete_sprint_bank,
     count_available_sprint_items,
     pick_next_sprint,
+    get_sprint_item_by_word,
+    list_sprint_bank_words,
+    update_sprint_trainer_data,
     mark_sprint_sent,
     create_sprint_dispatch,
     update_sprint_dispatch_message_id,
@@ -31041,6 +31044,133 @@ async def _admin_test_digest_command(update: Update, context: CallbackContext) -
                                  parse_mode="HTML", reply_markup=kb)
 
 
+def _html_escape(s) -> str:
+    return html.escape(str(s or ""), quote=False)
+
+
+def _split_html_message(text: str, limit: int = 3800) -> list[str]:
+    """Split a long HTML message on line boundaries so each chunk stays under
+    Telegram's 4096-char cap without cutting a tag."""
+    if len(text) <= limit:
+        return [text]
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) + 1 > limit and cur:
+            chunks.append(cur)
+            cur = ""
+        cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _fmt_distractor_preview(word_item: dict, result: dict) -> str:
+    """Human-readable preview of the trainer-distractor pipeline output for one word,
+    so we can eyeball quality before wiring up the UI."""
+    relation = str(word_item.get("relation") or "synonym")
+    rel_ru = "антонимы" if relation == "antonym" else "синонимы"
+    emoji = "🔴" if relation == "antonym" else "🟢"
+    wort = str(word_item.get("wort") or "")
+    hint = str(word_item.get("hint_ru") or "")
+    counts = result.get("counts") or {}
+    kept = result.get("kept") or []
+    rejected = result.get("rejected") or []
+    tex = result.get("target_example") or {}
+
+    lines = [
+        f"{emoji} <b>Дистракторы · {rel_ru}</b>",
+        f"Слово: <b>{_html_escape(wort)}</b>" + (f" · <i>{_html_escape(hint)}</i>" if hint else ""),
+    ]
+    if tex.get("de"):
+        lines.append(f"Пример: {_html_escape(tex['de'])}" + (f"\n<i>{_html_escape(tex.get('ru') or '')}</i>" if tex.get("ru") else ""))
+    lines.append(
+        f"\n📊 Сгенерировано <b>{counts.get('generated', 0)}</b> · "
+        f"прошло прокурора <b>{counts.get('after_prosecutor', 0)}</b> · "
+        f"осталось <b>{counts.get('kept', 0)}</b>"
+    )
+    ready = "✅ готово к ротации" if result.get("trainer_ready") else "⚠️ мало чистых — не в ротацию"
+    lines.append(ready)
+
+    if kept:
+        lines.append(f"\n✅ <b>Чистые дистракторы ({len(kept)})</b>")
+        for d in kept:
+            art = f"{d['article']} " if d.get("article") else ""
+            g = f" — {_html_escape(d['ru_gloss'])}" if d.get("ru_gloss") else ""
+            trap = f" · <i>{_html_escape(d['trap_type'])}</i>" if d.get("trap_type") else ""
+            lines.append(f"• <b>{_html_escape(art + d['word'])}</b>{g}{trap}")
+            if d.get("why_not"):
+                lines.append(f"   ↳ {_html_escape(d['why_not'])}")
+            if d.get("example_de"):
+                lines.append(f"   „{_html_escape(d['example_de'])}“")
+
+    if rejected:
+        lines.append(f"\n🗑 <b>Отклонено ({len(rejected)})</b>")
+        for r in rejected[:20]:
+            stage = _html_escape(str(r.get("stage") or ""))
+            lines.append(f"• <s>{_html_escape(str(r.get('word') or ''))}</s> [{stage}]: {_html_escape(str(r.get('reason') or ''))}")
+        if len(rejected) > 20:
+            lines.append(f"…и ещё {len(rejected) - 20}")
+    return "\n".join(lines)
+
+
+async def _admin_sprint_distractors_command(update: Update, context: CallbackContext) -> None:
+    """/admin_sprint_distractors <слово> [synonym|antonym] — run the nightly trainer
+    distractor pipeline on ONE bank word and DM the result (quality probe, no save)."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    if not args:
+        await message.reply_text(
+            "Использование: <code>/admin_sprint_distractors &lt;слово&gt; [synonym|antonym]</code>\n"
+            "Пример: <code>/admin_sprint_distractors oberflächlich antonym</code>",
+            parse_mode="HTML"); return
+    relation = None
+    if len(args) >= 2 and str(args[-1]).strip().lower() in ("synonym", "antonym"):
+        relation = str(args[-1]).strip().lower()
+        word = " ".join(args[:-1]).strip()
+    else:
+        word = " ".join(args).strip()
+
+    await asyncio.to_thread(ensure_sprint_schema)
+    item = await asyncio.to_thread(get_sprint_item_by_word, word, relation=relation)
+    if not item:
+        avail = await asyncio.to_thread(list_sprint_bank_words, relation=relation, limit=30)
+        hint = ""
+        if avail:
+            words = " · ".join(f"{'🔴' if a['relation'] == 'antonym' else '🟢'} {_html_escape(a['wort'])}"
+                               for a in avail[:30])
+            hint = f"\n\nЕсть в банке:\n{words}"
+        await message.reply_text(
+            f"В банке спринта нет слова «{_html_escape(word)}»"
+            + (f" ({relation})" if relation else "")
+            + "." + hint,
+            parse_mode="HTML", disable_web_page_preview=True); return
+
+    accepted = item.get("accepted") or []
+    status = await message.reply_text(
+        f"⏳ Гоняю пайплайн для <b>{_html_escape(str(item.get('wort')))}</b> "
+        f"({'антонимы' if item.get('relation') == 'antonym' else 'синонимы'}, "
+        f"{len(accepted)} правильных)…\nЭто минута-две — три модели по кругу.",
+        parse_mode="HTML")
+
+    from backend.sprint_distractors import build_trainer_distractors
+    try:
+        result = await build_trainer_distractors(
+            target_word=str(item.get("wort")), relation=str(item.get("relation") or "synonym"),
+            correct_pairs=accepted, hint_ru=str(item.get("hint_ru") or ""),
+        )
+    except Exception as exc:
+        logging.warning("admin sprint distractors failed", exc_info=True)
+        await message.reply_text(f"❌ Ошибка пайплайна: {exc}"); return
+
+    text = _fmt_distractor_preview(item, result)
+    for chunk in _split_html_message(text):
+        await message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
+
+
 from backend.quiz_leaderboard import (
     compute_quiz_leaderboard as _compute_quiz_leaderboard,
     get_leaderboard_rows_since as _get_leaderboard_rows_since,
@@ -38647,6 +38777,7 @@ def main():
     application.add_handler(CommandHandler("shortcut_runs", _admin_shortcut_runs_command))
     application.add_handler(CommandHandler("shortcut_reset", _admin_shortcut_reset_command))
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
+    application.add_handler(CommandHandler("admin_sprint_distractors", _admin_sprint_distractors_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
     application.add_handler(CommandHandler("admin_reset_subs", admin_reset_subs_command))
