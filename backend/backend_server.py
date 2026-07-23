@@ -334,6 +334,7 @@ from backend.database import (
     get_dictionary_entries_for_metainfo_scan,
     count_dictionary_entries_missing_card,
     get_thin_pool_entries_for_enrichment,
+    mark_pool_entry_enrich_failed,
     count_thin_pool_entries,
     get_dictionary_backfill_diagnostics,
     update_dictionary_entry_full_columns,
@@ -9374,6 +9375,7 @@ def run_pool_night_enrichment(
                     report["skipped_empty"] += 1
                     if len(report["skipped_samples"]) < 15:
                         report["skipped_samples"].append({"word": source_text, "reason": "empty"})
+                    mark_pool_entry_enrich_failed(row.get("id"), "empty")
                     continue
                 merged = dict(row.get("response_json") or {})
                 merged.update(enrich_data)
@@ -9391,6 +9393,7 @@ def run_pool_night_enrichment(
                     report["skipped_thin"] += 1
                     if len(report["skipped_samples"]) < 15:
                         report["skipped_samples"].append({"word": source_text, "reason": "thin"})
+                    mark_pool_entry_enrich_failed(row.get("id"), "thin")
                     continue
                 _publish_enriched_card_to_shared_stores(
                     payload=merged, source_lang=row_source_lang, target_lang=row_target_lang,

@@ -19282,7 +19282,9 @@ def backfill_dictionary_pool_entry_kind(limit: int = 50000) -> int:
 
 
 def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru") -> int:
-    """Сколько записей пула ещё нельзя отдать без GPT (тонкие). Для отчёта «осталось»."""
+    """Сколько ЖИВЫХ тонких записей пула ещё нельзя отдать без GPT. Для отчёта «осталось».
+    Карантин (enrich_attempts >= POOL_ENRICH_MAX_ATTEMPTS) исключён — иначе счётчик вечно
+    висел бы на дне из неисправимого мусора и «наполнен полностью» никогда бы не наступил."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -19291,10 +19293,49 @@ def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru")
                 WHERE source_lang = %s AND target_lang = %s
                   AND (response_json IS NULL OR NOT {DICTIONARY_POOL_WORD_FULLY_RICH_SQL})
                   {_DICTIONARY_POOL_SINGLE_WORD_SQL}
+                  AND COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
+                                     THEN (response_json->>'enrich_attempts')::int
+                                     ELSE 0 END), 0) < {int(POOL_ENRICH_MAX_ATTEMPTS)}
                 """,
                 (_normalize_lang_code(source_lang), _normalize_lang_code(target_lang)),
             )
             return int((cursor.fetchone() or [0])[0] or 0)
+
+
+# After this many consecutive failed enrichment attempts a thin entry is quarantined —
+# dropped from the nightly enrichment queue. Almost always a garbage token GPT can never
+# turn into a real card (invented compound, typo, fragment), all with demand 0.
+POOL_ENRICH_MAX_ATTEMPTS = 3
+
+
+def mark_pool_entry_enrich_failed(entry_id, reason: str = "") -> None:
+    """Записать неудачную попытку обогащения тонкой записи в её response_json (JSONB) —
+    инкремент `enrich_attempts` + причина. После POOL_ENRICH_MAX_ATTEMPTS такие строки
+    выпадают из ночной очереди (get_thin_pool_entries_for_enrichment). Схему не трогает.
+    Никогда не роняет добор: любые ошибки глотаются."""
+    if entry_id is None:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_dictionary_entries
+                    SET response_json = COALESCE(response_json, '{}'::jsonb)
+                        || jsonb_build_object(
+                            'enrich_attempts',
+                            COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
+                                           THEN (response_json->>'enrich_attempts')::int
+                                           ELSE 0 END), 0) + 1,
+                            'enrich_last_reason', %s
+                        )
+                    WHERE id = %s
+                    """,
+                    (str(reason or "")[:40], entry_id),
+                )
+            conn.commit()
+    except Exception:
+        logging.debug("mark_pool_entry_enrich_failed failed entry_id=%s", entry_id, exc_info=True)
 
 
 def get_thin_pool_entries_for_enrichment(
@@ -19329,6 +19370,13 @@ def get_thin_pool_entries_for_enrichment(
                   AND (e.response_json IS NULL OR NOT {DICTIONARY_POOL_WORD_FULLY_RICH_SQL.replace(
                       'bt_3_dictionary_entries.response_json', 'e.response_json')})
                   {_DICTIONARY_POOL_SINGLE_WORD_SQL.replace('source_text', 'e.source_text')}
+                  -- Карантин: слова, которые GPT не смог собрать в полную карточку
+                  -- POOL_ENRICH_MAX_ATTEMPTS раз подряд (мусор/выдуманные композиты/
+                  -- опечатки — все с demand 0), выпадают из ночной очереди, чтобы не
+                  -- жечь токены на неисправимое и чтобы «осталось» дошло до реального нуля.
+                  AND COALESCE((CASE WHEN e.response_json->>'enrich_attempts' ~ '^[0-9]+$'
+                                     THEN (e.response_json->>'enrich_attempts')::int
+                                     ELSE 0 END), 0) < {int(POOL_ENRICH_MAX_ATTEMPTS)}
                 GROUP BY e.id
                 ORDER BY demand DESC, e.updated_at DESC
                 LIMIT %s;
