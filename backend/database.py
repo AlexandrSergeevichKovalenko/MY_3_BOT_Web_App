@@ -47929,7 +47929,46 @@ def pool_demand_last_24h() -> dict:
                 answered = {str(r[0]): int(r[1]) for r in (cursor.fetchall() or [])}
             except Exception:
                 answered = {}
-    return {"sent": sent, "answered": answered}
+
+            # Per-format breakdown of the Aufgabe engine (Lückentext … Pin-Bild), so the
+            # report can show delivery/answers for each format instead of one aggregate.
+            # Uses the dedicated aufgabe tables joined to the bank's `format` column —
+            # independent of the challenge-ledger key scheme.
+            sent_au_fmt: dict[str, int] = {}
+            answered_au_fmt: dict[str, int] = {}
+            try:
+                cursor.execute(
+                    """
+                    SELECT b.format, COUNT(DISTINCT (d.slot_date, d.slot_hour))
+                    FROM bt_3_aufgabe_dispatches d
+                    JOIN bt_3_aufgabe_bank b ON b.aufgabe_id = d.aufgabe_id
+                    WHERE d.sent_at >= NOW() - INTERVAL '24 hours'
+                    GROUP BY b.format
+                    """
+                )
+                sent_au_fmt = {str(r[0]): int(r[1]) for r in (cursor.fetchall() or [])}
+            except Exception:
+                sent_au_fmt = {}
+            try:
+                cursor.execute(
+                    """
+                    SELECT b.format, COUNT(*)
+                    FROM bt_3_aufgabe_answers a
+                    JOIN bt_3_aufgabe_dispatches d ON d.id = a.dispatch_id
+                    JOIN bt_3_aufgabe_bank b ON b.aufgabe_id = d.aufgabe_id
+                    WHERE a.answered_at >= NOW() - INTERVAL '24 hours'
+                    GROUP BY b.format
+                    """
+                )
+                answered_au_fmt = {str(r[0]): int(r[1]) for r in (cursor.fetchall() or [])}
+            except Exception:
+                answered_au_fmt = {}
+    return {
+        "sent": sent,
+        "answered": answered,
+        "sent_aufgabe_by_format": sent_au_fmt,
+        "answered_aufgabe_by_format": answered_au_fmt,
+    }
 
 
 def pick_next_listening(*, cooldown_days: int = 7) -> dict | None:

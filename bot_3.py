@@ -35607,6 +35607,16 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
         lines.append("")
         lines.append("📈 <b>За 24ч (факт)</b> — отправлено · отвечено")
         lines.append(f"🆕 Aufgabe: {int(s.get('aufgabe', 0))} · {int(a.get('au', 0))}")
+        # Per-format breakdown under the Aufgabe aggregate (so Pin-Bild «найди объект на
+        # картинке» и другие форматы видны по отдельности). Show only formats with any
+        # activity in the last 24h.
+        s_auf = demand.get("sent_aufgabe_by_format", {}) or {}
+        a_auf = demand.get("answered_aufgabe_by_format", {}) or {}
+        for label, key in au_fmts:
+            sc = int(s_auf.get(key, 0))
+            ac = int(a_auf.get(key, 0))
+            if sc or ac:
+                lines.append(f"   • {label}: {sc} · {ac}")
         lines.append(f"🧩 Rebus: {int(s.get('rebus', 0))} · {int(a.get('rb', 0))}")
         lines.append(f"🔤 Kreuzwort: {int(s.get('crossword', 0))} · {int(a.get('cw', 0))}")
         lines.append(f"🇩🇪 Artikel: {int(s.get('article', 0))} · —")
