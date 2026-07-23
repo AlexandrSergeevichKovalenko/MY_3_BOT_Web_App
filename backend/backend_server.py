@@ -8693,13 +8693,22 @@ def _apply_german_headword_normalization(
         return normalized
     # Authoritative der/die/das backstop: for a single-word noun, prefer the genus
     # de.wiktionary documents over the model's article (the mini soft spot). Only
-    # overrides on an unambiguous single gender; otherwise keeps `article` as-is.
+    # on an unambiguous single gender, and NEVER singularise a plural: skip a plural
+    # surface (word_de == its own plural), and only OVERRIDE a clean article when the
+    # entry is a confirmed singular (plural exists and differs) — else just fill a
+    # missing one. This mirrors the offline backfill's safety.
     if DICTIONARY_AUTHORITATIVE_ARTICLE_ENABLED and part_of_speech == "noun":
         _bare = _strip_german_leading_article(current_german)[1] or current_german
-        _auth = _authoritative_german_article(_bare)
-        if _auth and _auth != _normalize_german_article(article):
-            article = _auth
-            normalized["article"] = _auth
+        _forms = normalized.get("forms") if isinstance(normalized.get("forms"), dict) else {}
+        _plural_bare = _strip_german_leading_article(str(_forms.get("plural") or ""))[1]
+        _is_plural_surface = bool(_plural_bare) and _plural_bare.casefold() == _bare.casefold()
+        _singular_confirmed = bool(_plural_bare) and _plural_bare.casefold() != _bare.casefold()
+        _clean_existing = _normalize_german_article(article)
+        if not _is_plural_surface:
+            _auth = _authoritative_german_article(_bare)
+            if _auth and _auth != _clean_existing and (not _clean_existing or _singular_confirmed):
+                article = _auth
+                normalized["article"] = _auth
     normalized_german = _normalize_saved_german_single_word(
         current_german,
         part_of_speech=part_of_speech,
@@ -8729,7 +8738,12 @@ def _prepare_dictionary_response_json_for_save(
     translation_ru: str | None,
 ) -> dict:
     payload = dict(response_json) if isinstance(response_json, dict) else {}
-    payload["source_text"] = source_text or str(word_ru or word_de or "").strip()
+    # Sanitise the article at the door: keep only a clean der/die/das, drop any prose
+    # the model sometimes emits here ("der (Hinterwäldler)", "die (Plural)",
+    # "der/die/das (зависит…)"). A blank is safe — the headword-normalisation gard and
+    # the word_de token supply the right article; garbage never reaches storage again.
+    if "article" in payload:
+        payload["article"] = _normalize_german_article(payload.get("article"))
     payload["target_text"] = target_text or str(translation_de or translation_ru or word_de or "").strip()
     payload["source_lang"] = source_lang
     payload["target_lang"] = target_lang
