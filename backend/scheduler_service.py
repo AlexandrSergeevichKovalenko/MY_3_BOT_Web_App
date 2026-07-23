@@ -89,6 +89,7 @@ from backend.background_jobs import (  # noqa: E402
     run_visual_riddle_r2_cleanup_actor,
     run_database_table_sizes_report_actor,
     run_admin_economics_report_actor,
+    run_cap_health_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
     run_tts_prewarm_quota_control_actor,
@@ -384,6 +385,10 @@ def _dispatch_translation_focus_pool_admin_report() -> None:
 
 def _dispatch_admin_economics_report() -> None:
     run_admin_economics_report_actor.send()
+
+
+def _dispatch_cap_health_report() -> None:
+    run_cap_health_report_actor.send()
 
 
 def _dispatch_weekly_global_ranking_report() -> None:
@@ -689,6 +694,19 @@ def _build_scheduler():
             hour=_int_env("ADMIN_ECONOMICS_REPORT_HOUR", 23),
             minute=_int_env("ADMIN_ECONOMICS_REPORT_MINUTE", 0),
             timezone=_tz(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
+    # -- Cap health (limits & averages) daily report — per-tier avg cost vs cap + who hit it --
+    if _enabled("CAP_HEALTH_REPORT_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_cap_health_report,
+            "cron",
+            hour=_int_env("CAP_HEALTH_REPORT_HOUR", 9),
+            minute=_int_env("CAP_HEALTH_REPORT_MINUTE", 15),
+            timezone=_tz(os.getenv("CAP_HEALTH_REPORT_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,

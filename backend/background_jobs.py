@@ -2032,6 +2032,12 @@ def run_admin_economics_report_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_cap_health_report_actor() -> None:
+    from backend.cap_health_report import send_cap_health_report
+    send_cap_health_report()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_tts_prewarm_scheduler_actor() -> None:
     from backend.tts_scheduler import run_tts_prewarm_scheduler_job
     run_tts_prewarm_scheduler_job()
