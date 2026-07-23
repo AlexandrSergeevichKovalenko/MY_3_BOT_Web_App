@@ -430,6 +430,9 @@ from backend.database import (
     ensure_trainer_schema,
     create_trainer_dispatch,
     update_trainer_dispatch_message_id,
+    pick_next_trainer,
+    mark_trainer_sent,
+    pick_rail_sprint,
     mark_sprint_sent,
     create_sprint_dispatch,
     update_sprint_dispatch_message_id,
@@ -35617,6 +35620,122 @@ async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation
     return True
 
 
+# ── Synonym/Antonym recognition TRAINER delivery (the rail: trainer today → sprint +3d)
+TRAINER_SLOT_TIMES = {(11, 0): "synonym", (16, 0): "antonym"}  # 1×/day each
+TRAINER_COOLDOWN_DAYS = max(7, int((os.getenv("TRAINER_COOLDOWN_DAYS") or "21").strip() or "21"))
+
+
+def _trainer_enabled() -> bool:
+    # OFF by default: nothing goes to users until the owner sets TRAINER_ENABLED=1.
+    return (os.getenv("TRAINER_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def send_trainer_to_chat(context: CallbackContext, *, entry: dict, relation: str,
+                               slot_date, slot_hour: int, chat_id: int, target_user_id: int) -> bool:
+    try:
+        dispatch_id = await asyncio.to_thread(
+            create_trainer_dispatch, sprint_id=str(entry["sprint_id"]),
+            slot_date=slot_date, slot_hour=int(slot_hour),
+            target_user_id=int(target_user_id), chat_id=int(chat_id),
+        )
+    except Exception:
+        logging.warning("trainer_send: dispatch insert failed chat=%s", chat_id, exc_info=True)
+        return False
+    if dispatch_id is None:
+        return False  # duplicate slot suppressed
+    rel_ru = "синонимов" if relation == "synonym" else "антонимов"
+    emoji = "🟢" if relation == "synonym" else "🔴"
+    hint = f" _{entry.get('hint_ru')}_" if entry.get("hint_ru") else ""
+    caption = (
+        f"{emoji} *Тренировка {rel_ru}*\n\n"
+        f"Слово: *{entry.get('wort')}*{hint}\n\n"
+        f"Выбирай верный вариант из карточек — а через 3 дня это слово вернётся в спринте 🔥"
+    )
+    caption = _append_free_pro_teaser(caption, chat_id)
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🎯 Открыть тренажёр", url=get_webapp_deeplink(f"ans_tr_{dispatch_id}"))]])
+    poster = None
+    try:
+        from backend.interactive_card import render_trainer_relation_card
+        poster = await asyncio.to_thread(render_trainer_relation_card, relation)
+    except Exception:
+        logging.warning("trainer_send: card render failed chat=%s", chat_id, exc_info=True)
+    try:
+        if poster:
+            msg = await context.bot.send_photo(
+                chat_id=int(chat_id), photo=io.BytesIO(poster),
+                caption=caption, parse_mode="Markdown", reply_markup=keyboard)
+        else:
+            msg = await context.bot.send_message(
+                chat_id=int(chat_id), text=caption, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception as exc:
+        logging.warning("trainer_send failed chat=%s: %s", chat_id, exc)
+        return False
+    try:
+        await asyncio.to_thread(update_trainer_dispatch_message_id, dispatch_id, telegram_message_id=int(msg.message_id))
+    except Exception:
+        pass
+    return True
+
+
+async def _send_scheduled_trainer(context: CallbackContext, relation: str) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip trainer")
+        return
+    if not _trainer_enabled():
+        return
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
+    entry = await asyncio.to_thread(pick_next_trainer, relation=relation, cooldown_days=TRAINER_COOLDOWN_DAYS)
+    if not entry:
+        logging.info("trainer_sched: no trainer-ready word relation=%s", relation)
+        return
+    targets = await _collect_quiz_delivery_user_targets(context)
+    if not targets:
+        return
+    sent = 0
+    for t in targets:
+        cid = int(t.get("chat_id") or 0)
+        if cid == 0:
+            continue
+        if await send_trainer_to_chat(context, entry=entry, relation=relation, slot_date=slot_date,
+                                      slot_hour=slot_hour, chat_id=cid, target_user_id=cid):
+            sent += 1
+    if sent > 0:
+        # Stamp the rail: the sprint picks this word `trainer_sent_date` + 3 days later.
+        await asyncio.to_thread(mark_trainer_sent, str(entry["sprint_id"]), sent_date=slot_date)
+    logging.info("trainer_sent relation=%s sent=%s word=%s", relation, sent, entry.get("wort"))
+
+
+async def _admin_send_trainer_command(update: Update, context: CallbackContext) -> None:
+    """/admin_send_trainer [synonym|antonym] — preview the DAILY trainer message: auto-
+    picks the next trainer-ready word and sends the card ONLY to you (no broadcast, no
+    rail stamp). For the real broadcast, set TRAINER_ENABLED=1 (nightly cron)."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    relation = (args[0].strip().lower() if args else "synonym")
+    if relation not in ("synonym", "antonym"):
+        await message.reply_text("Использование: /admin_send_trainer [synonym|antonym]"); return
+    await asyncio.to_thread(ensure_sprint_schema)
+    await asyncio.to_thread(ensure_trainer_schema)
+    entry = await asyncio.to_thread(pick_next_trainer, relation=relation, cooldown_days=0)
+    if not entry:
+        await message.reply_text(
+            f"Нет готовых слов тренажёра ({relation}). Собери: /admin_build_trainers."); return
+    now = _get_quiz_schedule_now()
+    slot_hour = int(now.hour) * 10000 + int(now.minute) * 100 + int(now.second)  # unique-ish preview
+    ok = await send_trainer_to_chat(context, entry=entry, relation=relation, slot_date=now.date(),
+                                    slot_hour=slot_hour, chat_id=int(message.chat_id), target_user_id=int(user.id))
+    await message.reply_text(
+        f"{'✅ Отправил превью' if ok else '❌ Не отправил'}: <b>{_html_escape(str(entry.get('wort')))}</b> "
+        f"(без рассылки и без отметки рельса).", parse_mode="HTML")
+
+
 async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> None:
     if _is_quiet_hours_now():
         logging.info("quiet_hours: skip sprint")
@@ -35626,7 +35745,14 @@ async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> Non
     slot_now = _get_quiz_schedule_now()
     slot_date = slot_now.date()
     slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
-    entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=SPRINT_COOLDOWN_DAYS)
+    # THE RAIL: prefer the word trained 3 days ago (so the trainer prepares the learner
+    # for exactly this sprint). Falls back to the normal cooldown rotation — until the
+    # trainer starts sending (TRAINER_ENABLED), the rail is empty and this is a no-op.
+    entry = await asyncio.to_thread(pick_rail_sprint, relation=relation, target_date=slot_date, lag_days=3)
+    if entry:
+        logging.info("sprint_rail hit relation=%s word=%s", relation, entry.get("wort"))
+    if not entry:
+        entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=SPRINT_COOLDOWN_DAYS)
     if not entry:
         await _sprint_topup(relation, SPRINT_POOL_TARGET)
         entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=SPRINT_COOLDOWN_DAYS)
@@ -39270,6 +39396,7 @@ def main():
     application.add_handler(CommandHandler("admin_sprint_distractors", _admin_sprint_distractors_command))
     application.add_handler(CommandHandler("admin_build_trainers", _admin_build_trainers_command))
     application.add_handler(CommandHandler("admin_trainer_preview", _admin_trainer_preview_command))
+    application.add_handler(CommandHandler("admin_send_trainer", _admin_send_trainer_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
     application.add_handler(CommandHandler("admin_reset_subs", admin_reset_subs_command))
@@ -40330,6 +40457,16 @@ def main():
                 "cron",
                 hour=_sp_hour,
                 minute=_sp_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- Synonym/Antonym TRAINER: 1×/day each (gated by TRAINER_ENABLED; the rail
+        #    feeds the sprint 3 days later). OFF by default — no user sees it until set. --
+        for (_tr_hour, _tr_minute), _tr_rel in sorted(TRAINER_SLOT_TIMES.items()):
+            scheduler.add_job(
+                make_rotation_gated("trainer", _tr_hour, _tr_minute, _send_scheduled_trainer, _tr_rel),
+                "cron",
+                hour=_tr_hour,
+                minute=_tr_minute,
                 timezone=QUIZ_SCHEDULE_TZ_NAME,
             )
         # -- Sprint pool nightly top-up (03:20) --

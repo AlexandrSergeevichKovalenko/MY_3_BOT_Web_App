@@ -47163,6 +47163,17 @@ def ensure_sprint_schema() -> None:
                 "ALTER TABLE bt_3_sprint_bank "
                 "ADD COLUMN IF NOT EXISTS trainer_ready BOOLEAN NOT NULL DEFAULT FALSE;"
             )
+            # Trainer rotation + the rail: when a word went out as a TRAINER (so the
+            # sprint can pick the SAME word `trainer_sent_date` + 3 days later).
+            cursor.execute(
+                "ALTER TABLE bt_3_sprint_bank ADD COLUMN IF NOT EXISTS trainer_last_sent_at TIMESTAMPTZ;"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_sprint_bank ADD COLUMN IF NOT EXISTS trainer_sent_date DATE;"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_sprint_bank ADD COLUMN IF NOT EXISTS trainer_send_count INTEGER NOT NULL DEFAULT 0;"
+            )
         conn.commit()
 
 
@@ -47225,6 +47236,72 @@ def pick_next_sprint(*, relation: str, cooldown_days: int = 14) -> dict | None:
                 LIMIT 1
                 """,
                 (str(relation), int(cooldown_days)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    acc = row[3] if isinstance(row[3], list) else []
+    return {"sprint_id": row[0], "relation": row[1], "wort": row[2], "accepted": acc,
+            "erklaerung": row[4], "tip": row[5], "hint_ru": row[6]}
+
+
+def _trainer_row_to_dict(row) -> dict:
+    acc = row[3] if isinstance(row[3], list) else []
+    return {"sprint_id": row[0], "relation": row[1], "wort": row[2], "accepted": acc, "hint_ru": row[4]}
+
+
+def pick_next_trainer(*, relation: str, cooldown_days: int = 21) -> dict | None:
+    """Next TRAINER word for the rail: a trainer-ready word, least-recently trained
+    first (respecting a cooldown). Returns None if none are ready/available."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT sprint_id, relation, wort, accepted, hint_ru
+                FROM bt_3_sprint_bank
+                WHERE relation = %s AND retired = FALSE AND trainer_ready = TRUE
+                  AND (trainer_last_sent_at IS NULL
+                       OR trainer_last_sent_at < NOW() - (%s || ' days')::INTERVAL)
+                ORDER BY trainer_last_sent_at NULLS FIRST, trainer_send_count ASC
+                LIMIT 1
+                """,
+                (str(relation), int(cooldown_days)),
+            )
+            row = cursor.fetchone()
+    return _trainer_row_to_dict(row) if row else None
+
+
+def mark_trainer_sent(sprint_id: str, *, sent_date) -> None:
+    """Record a trainer send (rotation + rail): stamps trainer_last_sent_at/date and
+    bumps the counter so pick_next_trainer rotates and the sprint can pick it +3 days."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_sprint_bank SET trainer_last_sent_at = NOW(), "
+                "trainer_sent_date = %s, trainer_send_count = trainer_send_count + 1 "
+                "WHERE sprint_id = %s",
+                (sent_date, str(sprint_id)),
+            )
+        conn.commit()
+
+
+def pick_rail_sprint(*, relation: str, target_date, lag_days: int = 3) -> dict | None:
+    """The rail (used by the sprint sender): the word that went out as a TRAINER exactly
+    `lag_days` before `target_date` and hasn't been sprinted since. Returns None → the
+    caller falls back to the normal cooldown rotation."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT sprint_id, relation, wort, accepted, erklaerung, tip, hint_ru
+                FROM bt_3_sprint_bank
+                WHERE relation = %s AND retired = FALSE
+                  AND trainer_sent_date = (%s::date - %s)
+                  AND (last_sent_at IS NULL OR last_sent_at < trainer_sent_date)
+                ORDER BY last_sent_at NULLS FIRST, send_count ASC
+                LIMIT 1
+                """,
+                (str(relation), target_date, int(lag_days)),
             )
             row = cursor.fetchone()
     if not row:
