@@ -32,8 +32,14 @@ const deOf = (a) => String((a && typeof a === 'object' ? (a.de || a.word) : a) |
 
 // Build the round list once: each correct answer becomes one round with its own
 // distractor draw (rotating through the pool so options vary round to round).
-function buildRounds(correct, distractors) {
-  const corr = (correct || []).filter((c) => deOf(c));
+// Only correct answers that HAVE an example+nuance (in exampleKeys) become rounds, so
+// every «right pick» card is complete — falls back to all if too few are example-backed.
+function buildRounds(correct, distractors, exampleKeys) {
+  let corr = (correct || []).filter((c) => deOf(c));
+  if (exampleKeys && exampleKeys.size) {
+    const withEx = corr.filter((c) => exampleKeys.has(normCore(deOf(c))));
+    if (withEx.length >= 2) corr = withEx;
+  }
   const dist = (distractors || []).filter((d) => deOf(d));
   const rounds = shuffle(corr).slice(0, Math.min(MAX_ROUNDS, corr.length));
   const nDist = Math.max(0, Math.min(OPTIONS_PER_ROUND - 1, dist.length));
@@ -80,7 +86,8 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
       try {
         const data = await api('/api/trainer/task', { kind: 'tr', id });
         if (cancelled) return;
-        const rs = buildRounds(data.correct, data.distractors);
+        const exKeys = new Set((data.correct_examples || []).map((e) => normCore(e?.word)).filter(Boolean));
+        const rs = buildRounds(data.correct, data.distractors, exKeys);
         if (!rs.length) { setError('Для этого слова пока нет вариантов.'); setPhase('error'); return; }
         setMeta(data); setRounds(rs); setPhase('intro');
       } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
@@ -192,6 +199,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
             {picked.__correct ? (
               <>
                 <div className="tr-fb-head">✅ Верно — <b>{correctDe}</b>{round.correct?.ru ? ` · ${round.correct.ru}` : ''}</div>
+                {ex?.nuance ? <div className="tr-fb-nuance">💡 {ex.nuance}</div> : null}
                 {ex?.sentence_de ? (
                   <div className="tr-fb-ex">
                     <div className="tr-fb-base">„{meta?.target_example?.de}“</div>

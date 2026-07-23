@@ -4027,17 +4027,20 @@ No markdown.
 """,
 "sprint_correct_examples": """
 ROLE: You are a German lexicographer. You get a base sentence that uses `target` and a
-list of CORRECT answers (each a valid {relation} of `target`). For EACH answer, rewrite
-the base sentence, replacing `target` with that answer and adjusting grammar so it stays
-NATURAL and correct (inflection, article, agreement, word order as needed — change ONLY
-what the swap requires). For a SYNONYM the meaning stays roughly the same; for an ANTONYM
-the meaning flips to the natural OPPOSITE — that contrast is the point. Then translate
-each rewritten sentence into Russian.
+list of CORRECT answers (each a valid {relation} of `target`). For EACH answer:
+1. Rewrite the base sentence, replacing `target` with that answer and adjusting grammar
+   so it stays NATURAL and correct (inflection, article, agreement, word order as needed
+   — change ONLY what the swap requires). For a SYNONYM the meaning stays roughly the
+   same; for an ANTONYM the meaning flips to the natural OPPOSITE. Translate it to Russian.
+2. Give the NUANCE ("оттенок") in RUSSIAN — ONE short sentence (max ~15 words) on what
+   distinguishes THIS word from `target`: its shade, register, or typical use. Concrete,
+   not generic ("книжное/формальное", "сильнее по степени", "чаще о людях", …). This is
+   the memory hook, so make it specific to the word.
 
 INPUT JSON: {"target":"...","relation":"synonym"|"antonym","base_de":"...","answers":["...","..."]}
 
 Return STRICT JSON ONLY:
-{"items":[{"word":"<the answer, exactly as given>","sentence_de":"<rewritten sentence>","sentence_ru":"<RU translation>"}, ...]}
+{"items":[{"word":"<the answer, exactly as given>","sentence_de":"<rewritten sentence>","sentence_ru":"<RU translation>","nuance":"<RU shade, one short sentence>"}, ...]}
 Same length and order as `answers`. No markdown.
 """,
 "check_synonym_batch": """
@@ -7273,6 +7276,7 @@ async def run_substitute_correct_examples(
             "word": str(i.get("word") or "").strip(),
             "sentence_de": str(i.get("sentence_de") or "").strip(),
             "sentence_ru": str(i.get("sentence_ru") or "").strip(),
+            "nuance": str(i.get("nuance") or "").strip(),
         } for i in items if isinstance(i, dict) and i.get("sentence_de")]
     except Exception:
         logging.warning("run_substitute_correct_examples failed target=%s", target_word, exc_info=True)

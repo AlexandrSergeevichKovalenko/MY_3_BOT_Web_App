@@ -1460,6 +1460,8 @@ html[data-scheme="dark"] .pinrev-word { background: #0f172a; color: #F8FAFC; }
 .tr-feedback.bad { border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.07); }
 .tr-fb-head { font-size: 15.5px; font-weight: 700; color: var(--dmps-text-title, #E2E8F0); }
 .tr-fb-why { font-size: 14px; line-height: 1.45; color: var(--dmps-text-secondary, #CBD5E1); }
+.tr-fb-nuance { font-size: 14px; line-height: 1.45; font-weight: 600; color: #fbbf24; }
+html[data-scheme="light"] .tr-fb-nuance { color: #b45309; }
 .tr-fb-ex { display: flex; flex-direction: column; gap: 3px; }
 .tr-fb-base { font-size: 14px; font-style: italic; color: var(--dmps-text-muted, #94A3B8); }
 .tr-fb-swap { font-size: 15px; font-weight: 600; color: #86efac; }

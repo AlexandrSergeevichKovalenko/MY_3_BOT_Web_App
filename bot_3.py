@@ -31495,14 +31495,26 @@ async def _admin_trainer_preview_command(update: Update, context: CallbackContex
         slot_hour=slot_hour, target_user_id=int(user.id), chat_id=int(message.chat_id))
     if dispatch_id is None:
         await message.reply_text("Не удалось создать превью (дубль слота). Попробуй ещё раз."); return
-    rel_ru = "антонимов" if item.get("relation") == "antonym" else "синонимов"
-    emoji = "🔴" if item.get("relation") == "antonym" else "🟢"
+    relation = str(item.get("relation") or "synonym")
+    rel_ru = "антонимов" if relation == "antonym" else "синонимов"
+    emoji = "🔴" if relation == "antonym" else "🟢"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "🎯 Открыть тренажёр", url=get_webapp_deeplink(f"ans_tr_{dispatch_id}"))]])
-    await message.reply_text(
+    caption = (
         f"{emoji} <b>Тренировка {rel_ru}</b>\nСлово: <b>{_html_escape(str(item.get('wort')))}</b> — "
-        f"выбирай верный вариант из карточек.",
-        parse_mode="HTML", reply_markup=kb)
+        f"выбирай верный вариант из карточек."
+    )
+    poster = None
+    try:
+        from backend.interactive_card import render_trainer_relation_card
+        poster = await asyncio.to_thread(render_trainer_relation_card, relation)
+    except Exception:
+        logging.warning("trainer preview: card render failed", exc_info=True)
+    if poster:
+        await message.reply_photo(photo=io.BytesIO(poster), caption=caption,
+                                  parse_mode="HTML", reply_markup=kb)
+    else:
+        await message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
 
 
 async def _admin_sprint_distractors_command(update: Update, context: CallbackContext) -> None:

@@ -749,3 +749,17 @@ def render_sprint_relation_card(relation: str) -> bytes | None:
         motif=(lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "=" if is_syn else "↔")),
         cta="Wer findet die meisten?",
     )
+
+
+def render_trainer_relation_card(relation: str) -> bytes | None:
+    """Card for the synonym/antonym recognition TRAINER (pick the right word). Fuchs
+    amber to set it apart from the green/pink sprint. relation = 'synonym' | 'antonym'."""
+    is_syn = relation == "synonym"
+    return _card(
+        badge="LERN-SPIEL",
+        title="Synonym-Training" if is_syn else "Antonym-Training",
+        subtitle="Erkennen  ·  die richtige Wahl",
+        accent=(245, 158, 11) if is_syn else (217, 119, 6),
+        motif=(lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "=" if is_syn else "↔")),
+        cta="Finde das passende Wort",
+    )
