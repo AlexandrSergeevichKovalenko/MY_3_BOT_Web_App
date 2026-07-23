@@ -36907,6 +36907,78 @@ def resolve_entitlement(
     return result
 
 
+def get_trailing_days_cost_eur(user_id: int, days: int = 7, tz: str = TRIAL_POLICY_TZ) -> float:
+    """Personal cost (EUR) over the trailing `days` local days INCLUDING today. Same
+    shared-pool exclusion as get_today_cost_eur; read-only (does NOT write the rollup).
+    Feeds the rolling-average arm of the daily cost cap."""
+    user_id_value = int(user_id)
+    tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
+    tzinfo = _resolve_timezone(tz_name)
+    today_local = datetime.now(timezone.utc).astimezone(tzinfo).date()
+    window = max(1, int(days or 1))
+    start_local = today_local - timedelta(days=window - 1)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT currency, COALESCE(SUM(cost_amount), 0) AS total_cost
+                FROM bt_3_billing_events
+                WHERE user_id = %s
+                  AND (event_time AT TIME ZONE %s)::date BETWEEN %s AND %s
+                  AND action_type <> ALL(%s)
+                GROUP BY currency;
+                """,
+                (user_id_value, tz_name, start_local, today_local,
+                 list(DAILY_COST_CAP_EXCLUDED_ACTION_TYPES)),
+            )
+            rows = cursor.fetchall() or []
+    total_eur = 0.0
+    for row in rows:
+        currency = str(row[0] or "EUR").upper()
+        amount = float(row[1] or 0.0)
+        try:
+            total_eur += convert_cost_to_eur(amount, currency)
+        except ValueError:
+            continue
+    return float(total_eur)
+
+
+# The daily cost cap has TWO arms (see enforce_daily_cost_cap): a HARD single-day ceiling
+# (cap_eur) AND a SOFTER rolling N-day average. An occasional heavy day is fine as long as
+# the trailing average stays low; sustained overuse is still blocked; and no single day can
+# spike past the hard ceiling. Env-tunable; Pro's average is on by default, Free's is off
+# (Free already has a tight single-day cap).
+DAILY_COST_CAP_AVG_WINDOW_DAYS = 7
+
+
+def _resolve_weekly_avg_cap_eur(entitlement: dict) -> float | None:
+    mode = str(entitlement.get("effective_mode") or "").strip().lower()
+    if mode == "pro":
+        value = _env_decimal("PRO_WEEKLY_AVG_COST_CAP_EUR", "0.30")
+    else:
+        value = _env_decimal("FREE_WEEKLY_AVG_COST_CAP_EUR", None)
+    return float(value) if value is not None else None
+
+
+def _cost_cap_error(entitlement: dict, *, gate: str, limit_eur: float, value_eur: float) -> dict:
+    # Keep the error CODE "cost_cap_exceeded" (frontend contract → friendly plaque); `gate`
+    # ("daily" | "weekly_avg") is extra telemetry the UI ignores.
+    return {
+        "error": "cost_cap_exceeded",
+        "gate": gate,
+        "cap_eur": float(round(limit_eur, 6)),
+        "spent_eur": float(round(value_eur, 6)),
+        "currency": "EUR",
+        "reset_at": entitlement.get("reset_at"),
+        "upgrade": {
+            "available": True,
+            "plan_code": "pro",
+            "action": "checkout",
+            "endpoint": "/api/billing/create-checkout-session",
+        },
+    }
+
+
 def enforce_daily_cost_cap(
     user_id: int,
     now_ts_utc: datetime | None = None,
@@ -36916,21 +36988,25 @@ def enforce_daily_cost_cap(
     cap_eur = entitlement.get("cap_eur")
     if cap_eur is None:
         return None
-    spent_eur = float(get_today_cost_eur(int(user_id), tz=tz))
-    if spent_eur >= float(cap_eur):
-        return {
-            "error": "cost_cap_exceeded",
-            "cap_eur": float(cap_eur),
-            "spent_eur": float(round(spent_eur, 6)),
-            "currency": "EUR",
-            "reset_at": entitlement.get("reset_at"),
-            "upgrade": {
-                "available": True,
-                "plan_code": "pro",
-                "action": "checkout",
-                "endpoint": "/api/billing/create-checkout-session",
-            },
-        }
+    cap_eur = float(cap_eur)
+
+    # Arm 1 — HARD single-day ceiling: no single day may blow past this (acute spike / abuse),
+    # even when the trailing average is still low.
+    today_eur = float(get_today_cost_eur(int(user_id), tz=tz))
+    if today_eur >= cap_eur:
+        return _cost_cap_error(entitlement, gate="daily", limit_eur=cap_eur, value_eur=today_eur)
+
+    # Arm 2 — SOFT rolling N-day average (spike-tolerant): an occasional heavy day is fine as
+    # long as the trailing average stays under the softer cap; this catches SUSTAINED overuse.
+    # Average = trailing personal total / window (fixed divisor incl. zero-spend days, so a
+    # single heavy day smooths out for an otherwise-light user instead of instantly blocking).
+    avg_cap_eur = _resolve_weekly_avg_cap_eur(entitlement)
+    if avg_cap_eur is not None and avg_cap_eur > 0:
+        window = max(1, int(DAILY_COST_CAP_AVG_WINDOW_DAYS))
+        week_eur = float(get_trailing_days_cost_eur(int(user_id), days=window, tz=tz))
+        avg_eur = week_eur / float(window)
+        if avg_eur >= avg_cap_eur:
+            return _cost_cap_error(entitlement, gate="weekly_avg", limit_eur=avg_cap_eur, value_eur=avg_eur)
     return None
 
 
