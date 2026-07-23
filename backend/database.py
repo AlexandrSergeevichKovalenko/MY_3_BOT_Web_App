@@ -47242,6 +47242,94 @@ def get_sprint_dispatch_by_id(dispatch_id: int) -> dict | None:
             "target_user_id": int(row[3]), "chat_id": int(row[4])}
 
 
+# ── Synonym/Antonym TRAINER (recognition game; feeds the sprint 3 days later) ────
+def ensure_trainer_schema() -> None:
+    """Dispatch rows for the trainer overlay (one per user per send), so a numeric
+    deep-link id (ans_tr_<id>) resolves to a bank word. The game data itself lives in
+    bt_3_sprint_bank.trainer_json — the trainer reuses the sprint's word pool."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_trainer_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    sprint_id           TEXT NOT NULL,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour)
+                );
+                """
+            )
+        conn.commit()
+
+
+def create_trainer_dispatch(*, sprint_id: str, slot_date, slot_hour: int,
+                            target_user_id: int, chat_id: int) -> int | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_trainer_dispatches
+                    (sprint_id, slot_date, slot_hour, target_user_id, chat_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (str(sprint_id), slot_date, int(slot_hour), int(target_user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+def update_trainer_dispatch_message_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_trainer_dispatches SET telegram_message_id = %s WHERE id = %s",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+def get_trainer_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, sprint_id, target_user_id, chat_id "
+                "FROM bt_3_trainer_dispatches WHERE id = %s",
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"id": int(row[0]), "sprint_id": row[1],
+            "target_user_id": int(row[2]), "chat_id": int(row[3])}
+
+
+def get_sprint_trainer_item(sprint_id: str) -> dict | None:
+    """Full bank row incl. trainer_json (the trainer overlay needs distractors +
+    examples on top of the sprint fields)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT sprint_id, relation, wort, accepted, hint_ru, trainer_json, trainer_ready "
+                "FROM bt_3_sprint_bank WHERE sprint_id = %s",
+                (str(sprint_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    acc = row[3] if isinstance(row[3], list) else []
+    tj = row[5] if isinstance(row[5], dict) else {}
+    return {"sprint_id": row[0], "relation": row[1], "wort": row[2], "accepted": acc,
+            "hint_ru": row[4], "trainer_json": tj, "trainer_ready": bool(row[6])}
+
+
 def record_sprint_result(*, sprint_key: str, user_id: int, user_name: str,
                          correct_count: int, time_ms: int) -> bool:
     """First finished round per (sprint, user) counts (anti-replay). Returns True if recorded."""

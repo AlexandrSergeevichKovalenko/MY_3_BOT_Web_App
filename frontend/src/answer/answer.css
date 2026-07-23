@@ -1401,3 +1401,97 @@ html[data-scheme="dark"] .pinrev-word { background: #0f172a; color: #F8FAFC; }
 .pinrev-err { font-size: 13px; color: #F87171; }
 .pinrev-link { background: none; border: none; color: #60A5FA; font: inherit; font-size: 13px; cursor: pointer; padding: 0; align-self: flex-start; }
 .pinrev-empty-sub { font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
+
+/* ── Synonym/Antonym recognition TRAINER (Fuchs amber) ────────────────────── */
+.tr-hero { text-align: center; padding: 6px 0 2px; }
+.tr-hero-word {
+  font-size: 30px; font-weight: 800; line-height: 1.15;
+  background: linear-gradient(180deg, #fbbf24, #d97706);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.tr-hero-hint { margin-top: 4px; font-size: 15px; color: var(--dmps-text-muted, #94A3B8); }
+.tr-intro { display: flex; flex-direction: column; gap: 6px; }
+.tr-intro p { margin: 0; font-size: 15px; line-height: 1.5; color: var(--dmps-text-secondary, #CBD5E1); }
+.tr-intro-dim { color: var(--dmps-text-muted, #94A3B8) !important; font-size: 13.5px !important; }
+.tr-go { background: linear-gradient(135deg, #f59e0b, #d97706); box-shadow: 0 10px 26px rgba(217, 119, 6, .38); }
+
+.tr-top { display: flex; align-items: center; justify-content: space-between; }
+.tr-top-rel { font-size: 13px; font-weight: 700; color: var(--dmps-text-secondary, #CBD5E1); text-transform: capitalize; }
+.tr-top-prog { font-size: 14px; font-weight: 800; color: #d97706; font-variant-numeric: tabular-nums; }
+.tr-bar { height: 5px; border-radius: 999px; background: rgba(148,163,184,.18); overflow: hidden; }
+.tr-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #fbbf24, #d97706); transition: width .3s cubic-bezier(.22,1,.36,1); }
+
+.tr-anchor { text-align: center; padding: 6px 0 2px; }
+.tr-anchor-word {
+  font-size: 26px; font-weight: 800; line-height: 1.15;
+  background: linear-gradient(180deg, #fbbf24, #d97706);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.tr-anchor-hint { margin-top: 2px; font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
+.tr-anchor-ask { margin-top: 8px; font-size: 13px; font-weight: 600; color: var(--dmps-text-subtle, #64748B); }
+
+.tr-options { display: flex; flex-direction: column; gap: 9px; }
+.tr-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; min-height: 52px; box-sizing: border-box; padding: 12px 16px;
+  font-family: inherit; font-size: 17px; font-weight: 700; text-align: left;
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: var(--dmps-card-alt, #0B1220);
+  border: 1.5px solid var(--dmps-border, #334155);
+  border-radius: var(--dmps-radius-button, 16px);
+  cursor: pointer;
+  transition: transform .1s ease, border-color .15s ease, background .15s ease;
+}
+.tr-opt:active { transform: scale(0.985); border-color: #d97706; }
+.tr-opt:disabled { cursor: default; }
+.tr-opt.correct { border-color: #22c55e; background: rgba(34,197,94,.14); color: #86efac; }
+.tr-opt.wrong { border-color: #ef4444; background: rgba(239,68,68,.14); color: #fca5a5; }
+.tr-opt.dim { opacity: .5; }
+.tr-opt-mark { font-size: 17px; font-weight: 800; }
+
+.tr-feedback {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px 16px; border-radius: 16px;
+  border: 1px solid var(--dmps-border, #334155);
+  background: rgba(148,163,184,.08);
+  animation: ans-rise .22s ease-out;
+}
+.tr-feedback.ok { border-color: rgba(34,197,94,.4); background: rgba(34,197,94,.08); }
+.tr-feedback.bad { border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.07); }
+.tr-fb-head { font-size: 15.5px; font-weight: 700; color: var(--dmps-text-title, #E2E8F0); }
+.tr-fb-why { font-size: 14px; line-height: 1.45; color: var(--dmps-text-secondary, #CBD5E1); }
+.tr-fb-ex { display: flex; flex-direction: column; gap: 3px; }
+.tr-fb-base { font-size: 14px; font-style: italic; color: var(--dmps-text-muted, #94A3B8); }
+.tr-fb-swap { font-size: 15px; font-weight: 600; color: #86efac; }
+.tr-fb-ru { font-size: 13.5px; color: var(--dmps-text-muted, #94A3B8); }
+.tr-fb-right { font-size: 14px; color: var(--dmps-text-secondary, #CBD5E1); }
+.tr-fb-right b { color: #86efac; }
+.tr-next { margin-top: 4px; background: linear-gradient(135deg, #f59e0b, #d97706); box-shadow: 0 8px 20px rgba(217,119,6,.32); }
+
+.tr-score { text-align: center; padding: 8px 0 2px; }
+.tr-score-num { font-size: 44px; font-weight: 800; color: #d97706; line-height: 1; }
+.tr-score-of { font-size: 22px; color: var(--dmps-text-muted, #94A3B8); font-weight: 700; }
+.tr-score-sub { margin-top: 4px; font-size: 13.5px; color: var(--dmps-text-muted, #94A3B8); }
+.tr-done-note { font-size: 15px; line-height: 1.5; text-align: center; color: var(--dmps-text-secondary, #CBD5E1); }
+.tr-all { display: flex; flex-direction: column; gap: 8px; }
+.tr-all-head { font-size: 13px; font-weight: 600; color: var(--dmps-text-secondary, #CBD5E1); }
+.tr-all-dim { color: var(--dmps-text-subtle, #64748B); font-weight: 500; }
+.tr-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.tr-chip {
+  font-family: inherit; font-size: 14px; font-weight: 600; line-height: 1.2;
+  padding: 6px 12px; border-radius: 14px; border: none; cursor: pointer;
+  background: rgba(245,158,11,.16); color: #fbbf24;
+  transition: transform .1s ease;
+}
+.tr-chip:active { transform: scale(0.94); }
+.tr-chip.saved { background: rgba(37,99,235,.22); color: #60a5fa; }
+
+html[data-scheme="light"] .tr-hero-word, html[data-scheme="light"] .tr-anchor-word {
+  background: linear-gradient(180deg, #d97706, #b45309); -webkit-background-clip: text; background-clip: text;
+}
+html[data-scheme="light"] .tr-top-prog, html[data-scheme="light"] .tr-score-num { color: #b45309; }
+html[data-scheme="light"] .tr-opt.correct { color: #15803d; }
+html[data-scheme="light"] .tr-opt.wrong { color: #b91c1c; }
+html[data-scheme="light"] .tr-fb-swap, html[data-scheme="light"] .tr-fb-right b { color: #15803d; }
+html[data-scheme="light"] .tr-chip { background: rgba(217,119,6,.14); color: #b45309; }
+html[data-scheme="light"] .tr-chip.saved { background: rgba(37,99,235,.14); color: #1d4ed8; }

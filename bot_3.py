@@ -427,6 +427,9 @@ from backend.database import (
     list_sprint_bank_words,
     list_sprint_words_needing_trainer,
     update_sprint_trainer_data,
+    ensure_trainer_schema,
+    create_trainer_dispatch,
+    update_trainer_dispatch_message_id,
     mark_sprint_sent,
     create_sprint_dispatch,
     update_sprint_dispatch_message_id,
@@ -31307,6 +31310,45 @@ async def _admin_build_trainers_command(update: Update, context: CallbackContext
     await message.reply_text(f"🏁 Готово:\n{body}", parse_mode="HTML")
 
 
+async def _admin_trainer_preview_command(update: Update, context: CallbackContext) -> None:
+    """/admin_trainer_preview <слово> — open the recognition TRAINER overlay on a saved
+    bank word (must be trainer_ready). Creates a dispatch and sends a deep-link button."""
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    if not args:
+        await message.reply_text("Использование: <code>/admin_trainer_preview &lt;слово&gt;</code>", parse_mode="HTML"); return
+    word = " ".join(str(a) for a in args).strip()
+    await asyncio.to_thread(ensure_sprint_schema)
+    await asyncio.to_thread(ensure_trainer_schema)
+    item = await asyncio.to_thread(get_sprint_item_by_word, word)
+    if not item:
+        await message.reply_text(f"Нет слова «{_html_escape(word)}» в банке."); return
+    if not item.get("trainer_ready"):
+        await message.reply_text(
+            f"«{_html_escape(str(item.get('wort')))}» ещё без тренажёра. Сначала: "
+            f"<code>/admin_sprint_distractors {_html_escape(word)} save</code> или /admin_build_trainers.",
+            parse_mode="HTML"); return
+    now = _get_quiz_schedule_now()
+    slot_hour = int(now.hour) * 10000 + int(now.minute) * 100 + int(now.second)  # unique-ish for preview
+    dispatch_id = await asyncio.to_thread(
+        create_trainer_dispatch, sprint_id=str(item.get("sprint_id")), slot_date=now.date(),
+        slot_hour=slot_hour, target_user_id=int(user.id), chat_id=int(message.chat_id))
+    if dispatch_id is None:
+        await message.reply_text("Не удалось создать превью (дубль слота). Попробуй ещё раз."); return
+    rel_ru = "антонимов" if item.get("relation") == "antonym" else "синонимов"
+    emoji = "🔴" if item.get("relation") == "antonym" else "🟢"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🎯 Открыть тренажёр", url=get_webapp_deeplink(f"ans_tr_{dispatch_id}"))]])
+    await message.reply_text(
+        f"{emoji} <b>Тренировка {rel_ru}</b>\nСлово: <b>{_html_escape(str(item.get('wort')))}</b> — "
+        f"выбирай верный вариант из карточек.",
+        parse_mode="HTML", reply_markup=kb)
+
+
 async def _admin_sprint_distractors_command(update: Update, context: CallbackContext) -> None:
     """/admin_sprint_distractors <слово> [synonym|antonym] [save] — run the nightly
     trainer distractor pipeline on ONE bank word and DM the result. Add `save` to also
@@ -39059,6 +39101,7 @@ def main():
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("admin_sprint_distractors", _admin_sprint_distractors_command))
     application.add_handler(CommandHandler("admin_build_trainers", _admin_build_trainers_command))
+    application.add_handler(CommandHandler("admin_trainer_preview", _admin_trainer_preview_command))
     application.add_handler(CommandHandler("dau", _dau_command))
     application.add_handler(CommandHandler("admin_grant_pro", _admin_grant_pro_command))
     application.add_handler(CommandHandler("admin_reset_subs", admin_reset_subs_command))

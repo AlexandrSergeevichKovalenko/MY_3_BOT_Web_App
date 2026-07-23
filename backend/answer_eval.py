@@ -2365,6 +2365,31 @@ def load_sprint_task(*, dispatch_id: int, user_id: int) -> dict | None:
     return meta
 
 
+def load_trainer_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Payload for the recognition TRAINER overlay. Everything the client needs to run
+    every round LOCALLY (no per-tap round-trips): the anchor word, the correct answers
+    (from the sprint's `accepted`), the verified distractors and the substitution
+    examples (from trainer_json). Returns None if the word isn't trainer-ready."""
+    from backend.database import get_trainer_dispatch_by_id, get_sprint_trainer_item
+    dispatch = get_trainer_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    item = get_sprint_trainer_item(str(dispatch.get("sprint_id") or ""))
+    if not item or not item.get("trainer_ready"):
+        return None
+    tj = item.get("trainer_json") or {}
+    return {
+        "kind": "trainer",
+        "relation": str(item.get("relation") or "synonym"),
+        "wort": str(item.get("wort") or ""),
+        "hint_ru": str(item.get("hint_ru") or ""),
+        "correct": accepted_pairs(item.get("accepted")),          # [{de, ru}]
+        "distractors": tj.get("distractors") or [],               # [{word, ru_gloss, why_not, example_de, example_ru, ...}]
+        "correct_examples": tj.get("correct_examples") or [],     # [{word, sentence_de, sentence_ru}]
+        "target_example": tj.get("target_example") or {},         # {de, ru}
+    }
+
+
 def check_sprint_word(*, dispatch_id: int, word: str) -> dict:
     """Fast live check: is `word` in the prepared accepted list? (no LLM)."""
     from backend.database import get_sprint_dispatch_by_id, get_sprint_item

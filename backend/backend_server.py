@@ -27527,6 +27527,30 @@ def sprint_task():
     return jsonify({"ok": True, **meta})
 
 
+@app.route("/api/trainer/task", methods=["GET", "POST"])
+def trainer_task():
+    """Recognition trainer overlay payload (ans_tr_<dispatch_id>). Returns the anchor
+    word + correct answers + verified distractors + substitution examples so the client
+    runs every round locally."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    raw_id = request.args.get("id") or payload.get("id")
+    try:
+        dispatch_id = int(raw_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    from backend.database import ensure_sprint_schema, ensure_trainer_schema
+    from backend.answer_eval import load_trainer_task
+    ensure_sprint_schema()
+    ensure_trainer_schema()
+    meta = load_trainer_task(dispatch_id=dispatch_id, user_id=user_id)
+    if meta is None:
+        return jsonify({"error": "Тренажёр для этого слова ещё не готов"}), 404
+    return jsonify({"ok": True, **meta})
+
+
 @app.route("/api/sprint/check", methods=["POST"])
 def sprint_check():
     """Live per-word check during the sprint (fast list membership, no LLM)."""
