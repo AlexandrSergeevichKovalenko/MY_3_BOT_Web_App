@@ -31134,41 +31134,49 @@ async def _admin_sprint_distractors_command(update: Update, context: CallbackCon
     else:
         word = " ".join(args).strip()
 
-    await asyncio.to_thread(ensure_sprint_schema)
-    item = await asyncio.to_thread(get_sprint_item_by_word, word, relation=relation)
-    if not item:
-        avail = await asyncio.to_thread(list_sprint_bank_words, relation=relation, limit=30)
-        hint = ""
-        if avail:
-            words = " · ".join(f"{'🔴' if a['relation'] == 'antonym' else '🟢'} {_html_escape(a['wort'])}"
-                               for a in avail[:30])
-            hint = f"\n\nЕсть в банке:\n{words}"
-        await message.reply_text(
-            f"В банке спринта нет слова «{_html_escape(word)}»"
-            + (f" ({relation})" if relation else "")
-            + "." + hint,
-            parse_mode="HTML", disable_web_page_preview=True); return
-
-    accepted = item.get("accepted") or []
-    status = await message.reply_text(
-        f"⏳ Гоняю пайплайн для <b>{_html_escape(str(item.get('wort')))}</b> "
-        f"({'антонимы' if item.get('relation') == 'antonym' else 'синонимы'}, "
-        f"{len(accepted)} правильных)…\nЭто минута-две — три модели по кругу.",
-        parse_mode="HTML")
-
-    from backend.sprint_distractors import build_trainer_distractors
+    # Instant ack: confirms the (new-build) handler fired and gives immediate feedback.
+    # Everything after is wrapped so no failure can leave the DM silent.
+    status = await message.reply_text(f"🔧 Принял: <b>{_html_escape(word)}</b>. Ищу в банке…",
+                                      parse_mode="HTML")
     try:
+        await asyncio.to_thread(ensure_sprint_schema)
+        item = await asyncio.to_thread(get_sprint_item_by_word, word, relation=relation)
+        if not item:
+            avail = await asyncio.to_thread(list_sprint_bank_words, relation=relation, limit=30)
+            hint = ""
+            if avail:
+                words = " · ".join(f"{'🔴' if a['relation'] == 'antonym' else '🟢'} {_html_escape(a['wort'])}"
+                                   for a in avail[:30])
+                hint = f"\n\nЕсть в банке:\n{words}"
+            else:
+                hint = "\n\nБанк спринта пуст — сначала пул должен наполниться (ночной job/стартап)."
+            await status.edit_text(
+                f"В банке спринта нет слова «{_html_escape(word)}»"
+                + (f" ({relation})" if relation else "")
+                + "." + hint,
+                parse_mode="HTML", disable_web_page_preview=True); return
+
+        accepted = item.get("accepted") or []
+        await status.edit_text(
+            f"⏳ Гоняю пайплайн для <b>{_html_escape(str(item.get('wort')))}</b> "
+            f"({'антонимы' if item.get('relation') == 'antonym' else 'синонимы'}, "
+            f"{len(accepted)} правильных)…\nЭто минута-две — три модели по кругу.",
+            parse_mode="HTML")
+
+        from backend.sprint_distractors import build_trainer_distractors
         result = await build_trainer_distractors(
             target_word=str(item.get("wort")), relation=str(item.get("relation") or "synonym"),
             correct_pairs=accepted, hint_ru=str(item.get("hint_ru") or ""),
         )
+        text = _fmt_distractor_preview(item, result)
+        for chunk in _split_html_message(text):
+            await message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
     except Exception as exc:
         logging.warning("admin sprint distractors failed", exc_info=True)
-        await message.reply_text(f"❌ Ошибка пайплайна: {exc}"); return
-
-    text = _fmt_distractor_preview(item, result)
-    for chunk in _split_html_message(text):
-        await message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
+        try:
+            await message.reply_text(f"❌ Ошибка: <code>{_html_escape(str(exc))}</code>", parse_mode="HTML")
+        except Exception:
+            pass
 
 
 from backend.quiz_leaderboard import (
