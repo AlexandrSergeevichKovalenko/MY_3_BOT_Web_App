@@ -10653,44 +10653,94 @@ async def admin_pool_enrich_command(update: Update, context: CallbackContext):
     apply = "apply" in args
     limit = next((int(a) for a in args if a.isdigit() and 1 <= int(a) <= 2000), None)
     src, tgt = ("ru", "de") if "ru" in args else ("de", "ru")
-    await message.reply_text(
-        f"🌙 Добор пула {src}→{tgt}: {'ПРИМЕНЯЮ' if apply else 'пробный прогон'}"
-        f"{f', до {limit} слов' if limit else ''}. Один запрос к GPT на слово — это минуты."
-    )
-    try:
-        from backend.backend_server import run_pool_night_enrichment
-        report = await asyncio.to_thread(
-            run_pool_night_enrichment,
-            limit=limit, dry_run=not apply, source_lang=src, target_lang=tgt,
+    chat_id = message.chat_id
+
+    from html import escape as _esc
+
+    def _format_report(report: dict) -> str:
+        if report.get("already_running"):
+            return "⏳ Добор уже идёт — второй запуск удвоил бы траты."
+        samples = report.get("samples") or []
+        lines = "\n".join(
+            f"  • {_esc(str(s.get('word')))} — {_esc(str(s.get('translation')))} "
+            f"(спрашивали: {_esc(str(s.get('demand')))})"
+            for s in samples[:12]
         )
-    except Exception as exc:
-        logging.exception("pool enrich command failed user_id=%s", int(sender.id))
-        await message.reply_text(f"❌ Добор пула упал: {exc}")
+        text = (
+            f"🌙 <b>Добор общего пула</b> ({'apply' if apply else 'dry-run'}, {src}→{tgt})\n\n"
+            f"Взято в работу: <b>{report.get('picked', 0)}</b> (потолок {report.get('cap', 0)})\n"
+            f"Обогащено: <b>{report.get('enriched', 0)}</b>\n"
+            f"Пропущено: {report.get('skipped', 0)}"
+            + (f" (пусто от GPT {int(report.get('skipped_empty') or 0)} · "
+               f"неполная карточка {int(report.get('skipped_thin') or 0)})"
+               if (report.get('skipped_empty') or report.get('skipped_thin')) else "")
+            + "\n"
+            f"Ошибок: {report.get('errors', 0)}\n"
+            f"Осталось тонких: <b>{report.get('remaining', 0)}</b>"
+        )
+        if lines:
+            text += f"\n\n<b>Очередь (по востребованности):</b>\n{lines}"
+        return text
+
+    def _send_raw(text: str) -> None:
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        if not token:
+            return
+        for part in _split_telegram_text(text):
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": part, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=20,
+                )
+            except Exception:
+                logging.warning("pool enrich raw send failed", exc_info=True)
+
+    # dry-run never calls GPT (it previews the queue and returns), so it's safe to run
+    # inline on the event loop. apply DOES call GPT per word — 20 words = many minutes of
+    # sequential lookups, and doing that via asyncio.to_thread FROM the live bot loop left
+    # the command hanging with no result (the enrichment runs asyncio.run() against the
+    # module-level async OpenAI client the live loop is also using). So we run apply in a
+    # detached daemon thread — the SAME plain-thread context the nightly 03:10 job uses and
+    # which reliably completes — and DM the result via raw HTTP, no event loop involved.
+    if not apply:
+        await message.reply_text(
+            f"🌙 Добор пула {src}→{tgt}: пробный прогон"
+            f"{f', до {limit} слов' if limit else ''}. Показываю очередь…"
+        )
+        try:
+            from backend.backend_server import run_pool_night_enrichment
+            report = await asyncio.to_thread(
+                run_pool_night_enrichment,
+                limit=limit, dry_run=True, source_lang=src, target_lang=tgt,
+            )
+        except Exception as exc:
+            logging.exception("pool enrich dry-run failed user_id=%s", int(sender.id))
+            await message.reply_text(f"❌ Добор пула упал: {exc}")
+            return
+        for part in _split_telegram_text(_format_report(report)):
+            await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
         return
-    if report.get("already_running"):
-        await message.reply_text("⏳ Добор уже идёт — второй запуск удвоил бы траты.")
-        return
-    samples = report.get("samples") or []
-    lines = "\n".join(
-        f"  • {s.get('word')} — {s.get('translation')} (спрашивали: {s.get('demand')})"
-        for s in samples[:12]
+
+    await message.reply_text(
+        f"🌙 Добор пула {src}→{tgt}: ПРИМЕНЯЮ"
+        f"{f', до {limit} слов' if limit else ''}. Один запрос к GPT на слово — это минуты; "
+        f"итог пришлю сюда, как закончу."
     )
-    text = (
-        f"🌙 <b>Добор общего пула</b> ({'apply' if apply else 'dry-run'}, {src}→{tgt})\n\n"
-        f"Взято в работу: <b>{report.get('picked', 0)}</b> (потолок {report.get('cap', 0)})\n"
-        f"Обогащено: <b>{report.get('enriched', 0)}</b>\n"
-        f"Пропущено: {report.get('skipped', 0)}"
-        + (f" (пусто от GPT {int(report.get('skipped_empty') or 0)} · "
-           f"неполная карточка {int(report.get('skipped_thin') or 0)})"
-           if (report.get('skipped_empty') or report.get('skipped_thin')) else "")
-        + "\n"
-        f"Ошибок: {report.get('errors', 0)}\n"
-        f"Осталось тонких: <b>{report.get('remaining', 0)}</b>"
-    )
-    if lines:
-        text += f"\n\n<b>Очередь (по востребованности):</b>\n{lines}"
-    for part in _split_telegram_text(text):
-        await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+
+    def _worker() -> None:
+        try:
+            from backend.backend_server import run_pool_night_enrichment
+            report = run_pool_night_enrichment(
+                limit=limit, dry_run=False, source_lang=src, target_lang=tgt,
+            )
+            _send_raw(_format_report(report))
+        except Exception as exc:
+            logging.exception("pool enrich apply (thread) failed user_id=%s", int(sender.id))
+            _send_raw(f"❌ Добор пула упал: {_esc(str(exc))}")
+
+    threading.Thread(target=_worker, name="pool-enrich-manual", daemon=True).start()
 
 
 async def admin_dict_pool_report_command(update: Update, context: CallbackContext):
@@ -31123,8 +31173,12 @@ def _fmt_distractor_preview(word_item: dict, result: dict) -> str:
     lines.append(ready)
     diag = result.get("diag") or {}
     if diag:
-        lines.append(f"<i>judge вернул строк: {diag.get('judge_rows', 0)} · классы: "
-                     f"{', '.join(diag.get('judge_classes') or []) or '—'}</i>")
+        lines.append(f"<i>judge: строк {diag.get('judge_rows', 0)} · попыток {diag.get('judge_attempts', '?')} · "
+                     f"классы {', '.join(diag.get('judge_classes') or []) or '—'}</i>")
+        if diag.get("judge_error"):
+            lines.append(f"<i>judge error: {_html_escape(diag['judge_error'])}</i>")
+        if diag.get("judge_raw"):
+            lines.append(f"<i>judge raw: {_html_escape(diag['judge_raw'])}</i>")
 
     if kept:
         lines.append(f"\n✅ <b>Чистые дистракторы ({len(kept)})</b>")
