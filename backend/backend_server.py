@@ -31160,19 +31160,28 @@ def process_webapp_message():
     except Exception:
         _grade_cheap = False
 
+    # Grading MY translation is personal consumption → attribute the OpenAI cost to this
+    # user (gateway auto-logger reads the contextvar). Web-tier has no bot-style handler,
+    # so without this it books user_id=NULL. Reset in finally so it never leaks to the
+    # next LLM call on this reused web thread.
+    from backend.openai_manager import set_llm_billing_user
     try:
-        if _is_legacy_ru_de_pair(source_lang, target_lang):
-            result = asyncio.run(run_check_translation(original_text, user_translation))
-        else:
-            result = asyncio.run(
-                run_check_translation_multilang(
-                    original_text=original_text,
-                    user_translation=user_translation,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    cheap=_grade_cheap,
+        set_llm_billing_user(int(user_id))
+        try:
+            if _is_legacy_ru_de_pair(source_lang, target_lang):
+                result = asyncio.run(run_check_translation(original_text, user_translation))
+            else:
+                result = asyncio.run(
+                    run_check_translation_multilang(
+                        original_text=original_text,
+                        user_translation=user_translation,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        cheap=_grade_cheap,
+                    )
                 )
-            )
+        finally:
+            set_llm_billing_user(None)
     except Exception as exc:
         return jsonify({"error": f"Ошибка обработки запроса: {exc}"}), 500
 
@@ -36534,42 +36543,52 @@ def stream_webapp_dictionary():
         }
 
     def _generate():
+        # The breakdown (разбор) this user opened is personal consumption → attribute its
+        # OpenAI cost (auto-logged as dictionary_assistant_multilang by the gateway) to THEM.
+        # Set inside the generator, not the handler: the generator body runs when the SSE
+        # response is iterated, in its own context — a contextvar set in the handler would
+        # already be gone. Reset in finally so the reused web thread never leaks it.
+        from backend.openai_manager import set_llm_billing_user
+        set_llm_billing_user(int(user_id))
         merged_raw: dict[str, Any] = {}
         sections_seen = 0
         try:
-            for section in stream_dictionary_breakdown_sections(
-                word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
-                explanation_lang=source_lang,
-            ):
-                if not isinstance(section, dict):
-                    continue
-                slice_data = {k: v for k, v in section.items() if k != "section"}
-                for k, v in slice_data.items():
-                    merged_raw[k] = v
-                sections_seen += 1
-                yield _sse_pack("section", {
-                    "name": str(section.get("section") or ""),
-                    "fields": slice_data,
-                })
-        except Exception:
-            logging.warning("dictionary stream generation failed, falling back", exc_info=True)
+            try:
+                for section in stream_dictionary_breakdown_sections(
+                    word=word_ru, source_lang=query_source_lang, target_lang=query_target_lang,
+                    explanation_lang=source_lang,
+                ):
+                    if not isinstance(section, dict):
+                        continue
+                    slice_data = {k: v for k, v in section.items() if k != "section"}
+                    for k, v in slice_data.items():
+                        merged_raw[k] = v
+                    sections_seen += 1
+                    yield _sse_pack("section", {
+                        "name": str(section.get("section") or ""),
+                        "fields": slice_data,
+                    })
+            except Exception:
+                logging.warning("dictionary stream generation failed, falling back", exc_info=True)
 
-        # Reconcile. If streaming produced nothing usable, fall back to the atomic core
-        # lookup so the user always gets a real breakdown (never worse than before).
-        try:
-            if sections_seen == 0 or not merged_raw:
-                core = _run_dictionary_core_lookup_sync(
-                    word=word_ru, source_lang=source_lang, target_lang=target_lang,
-                    query_source_lang=query_source_lang, query_target_lang=query_target_lang,
-                    lookup_lang=lookup_lang,
-                )
-                done = _finalize_and_store(core.get("raw") if isinstance(core.get("raw"), dict) else {}, core.get("usage"))
-            else:
-                done = _finalize_and_store(merged_raw, get_last_llm_usage(reset=True))
-            yield _sse_pack("done", done)
-        except Exception as exc:
-            logging.warning("dictionary stream finalize failed", exc_info=True)
-            yield _sse_pack("error", {"error": f"Ошибка запроса словаря: {exc}"})
+            # Reconcile. If streaming produced nothing usable, fall back to the atomic core
+            # lookup so the user always gets a real breakdown (never worse than before).
+            try:
+                if sections_seen == 0 or not merged_raw:
+                    core = _run_dictionary_core_lookup_sync(
+                        word=word_ru, source_lang=source_lang, target_lang=target_lang,
+                        query_source_lang=query_source_lang, query_target_lang=query_target_lang,
+                        lookup_lang=lookup_lang,
+                    )
+                    done = _finalize_and_store(core.get("raw") if isinstance(core.get("raw"), dict) else {}, core.get("usage"))
+                else:
+                    done = _finalize_and_store(merged_raw, get_last_llm_usage(reset=True))
+                yield _sse_pack("done", done)
+            except Exception as exc:
+                logging.warning("dictionary stream finalize failed", exc_info=True)
+                yield _sse_pack("error", {"error": f"Ошибка запроса словаря: {exc}"})
+        finally:
+            set_llm_billing_user(None)
 
     return Response(
         stream_with_context(_generate()),
@@ -41046,8 +41065,16 @@ def prepare_today_theory():
         theory_result, practice_result = await asyncio.gather(theory_task, practice_task)
         return theory_result or {}, practice_result or {}
 
+    # Theory + practice generated on THIS user's request (they opened skill training) →
+    # personal consumption, attribute the OpenAI cost to them. Context propagates into the
+    # inner create_task's. Reset in finally so the web thread doesn't leak the attribution.
+    from backend.openai_manager import set_llm_billing_user
     try:
-        theory, practice_raw = asyncio.run(_generate_theory_and_practice())
+        set_llm_billing_user(int(user_id))
+        try:
+            theory, practice_raw = asyncio.run(_generate_theory_and_practice())
+        finally:
+            set_llm_billing_user(None)
     except Exception as exc:
         return jsonify({"error": f"Ошибка подготовки тренировки навыка: {exc}"}), 500
     usage_theory = None

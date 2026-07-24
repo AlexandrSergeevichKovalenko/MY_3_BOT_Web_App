@@ -35821,10 +35821,14 @@ def is_stripe_event_processed(event_id: str) -> bool:
 # Shared-pool / amortizable OpenAI work: enriching the GLOBAL dictionary pool
 # (bt_3_dictionary_entries) benefits ALL users, so its cost must NOT count against the
 # personal daily cost cap of whoever happened to trigger it — it's shared infrastructure,
-# not personal consumption. A single heavy day of pool-building (hundreds of enrichments)
-# otherwise blows the individual's cap on normal use. The cost stays FULLY recorded in
-# bt_3_billing_events (the economics report reads that raw table directly), we only leave it
-# out of the per-user cap total computed here. Extend this list if new shared work appears.
+# not personal consumption.
+#
+# DEFENSE-IN-DEPTH ONLY (since the source-attribution fix): these action_types are now
+# forced to user_id=NULL at the billing chokepoint (openai_manager._SYSTEM_ATTRIBUTION_TASKS),
+# so they never carry a user_id and are already invisible to the per-user cap's
+# `WHERE user_id = %s` sum. This list is a belt-and-suspenders fallback, NOT the primary
+# mechanism — you do NOT need to extend it when adding new shared work; add the task to
+# _SYSTEM_ATTRIBUTION_TASKS instead (attribute at the source, don't subtract downstream).
 DAILY_COST_CAP_EXCLUDED_ACTION_TYPES = (
     "enrich_word_multilang",
     "enrich_word",

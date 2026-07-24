@@ -5309,6 +5309,52 @@ def set_llm_billing_user(user_id) -> None:
         _LLM_BILLING_USER_ID.set(None)
 
 
+# --- Attribution policy: which OpenAI tasks are SYSTEM (shared infrastructure) ---
+# These tasks build a durable, reusable artifact (dictionary pool entry, distractor
+# bank, trainer/quiz/image/news content) — the user never *requests* them; the system
+# does them opportunistically or on a schedule. Their cost is "za schet zavedeniya" and
+# must NEVER land on whoever happened to trigger them (a user's lookup, or an admin
+# running a pool-build command inline). So the billing chokepoint forces user_id=NULL
+# for these REGARDLESS of the billing contextvar — this is the SINGLE structural point
+# that replaces the old whack-a-mole of exclusion lists + admin exemptions.
+#
+# NOTE: only tasks that are *never a direct user request* belong here. Dual tasks that
+# a user CAN request on-demand (generate_sentences, theory_*, mystery_story, dictionary
+# breakdown/разбор, story_*) are deliberately EXCLUDED — for them attribution follows
+# the contextvar (on-demand in a user session → that user; nightly prewarm → NULL).
+_SYSTEM_ATTRIBUTION_TASKS: frozenset[str] = frozenset({
+    # Shared dictionary pool enrichment (opportunistic fattening of the global entry)
+    "enrich_word", "enrich_word_multilang",
+    "dictionary_enrichment_multilang",
+    "dictionary_enrichment_multilang_word_compact",
+    "dictionary_enrichment_multilang_phrase_compact",
+    # Synonym/antonym sprint distractor bank (admin/nightly build)
+    "sprint_distractor_setter", "sprint_distractor_prosecutor",
+    "sprint_distractor_judge", "sprint_correct_examples",
+    # Artikel-Trainer content pool
+    "article_noun_gen", "article_verify", "article_mnemonic", "article_image_meta",
+    # Aufgabe / pin / rebus puzzle content pool
+    "aufgabe_pin_image", "aufgabe_pin_scene", "aufgabe_pin_blueprint",
+    "aufgabe_pin_for_word", "pin_word_meta", "pin_scene_prompt",
+    "rebus_component", "aufgabe_wortbildung",
+    # DALL·E images (battles, heroes, plaques, news) — pre-built, reused
+    "battle_image", "hero_image", "overtaken_image",
+    "worldnews_image", "review_reminder_image", "lazy_day_image",
+    # World-news / subtitles / batch pools (shared across all viewers)
+    "pool_world_news", "translate_subtitles_ru", "translate_subtitles_multilang",
+    "auto_categorize_batch", "autosave_cards",
+})
+
+
+def _resolve_billing_user_for_task(task_name: str | None, billing_uid: int | None) -> int | None:
+    """SYSTEM tasks are always shared infrastructure → force NULL regardless of the
+    contextvar. Everything else keeps the contextvar's user (on-demand personal work)."""
+    tn = str(task_name or "").strip()
+    if tn in _SYSTEM_ATTRIBUTION_TASKS:
+        return None
+    return billing_uid
+
+
 def _extract_usage_dict(run_status, *, task_name: str | None = None) -> dict | None:
     if run_status is None:
         return None
@@ -5413,6 +5459,10 @@ def _store_last_usage(run_status, *, task_name: str | None = None) -> dict | Non
         billing_uid = _LLM_BILLING_USER_ID.get()
     except Exception:
         billing_uid = None
+    # Force SYSTEM tasks (shared pool/content building) to user_id=NULL no matter who
+    # triggered them — see _SYSTEM_ATTRIBUTION_TASKS. This is the single source-of-truth
+    # guard that keeps shared infrastructure cost off any individual (user or admin).
+    billing_uid = _resolve_billing_user_for_task(task_name, billing_uid)
     _log_openai_usage_event(task_name, usage, billing_uid)
     return usage
 
