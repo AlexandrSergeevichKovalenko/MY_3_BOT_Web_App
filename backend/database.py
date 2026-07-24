@@ -282,6 +282,7 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "reader",
     "assistant",
     "import",
+    "subscription",  # lazily materialized from the admin's dictionary via live subscription
 }
 
 UNCLASSIFIED_ERROR_CATEGORY_ALIASES = {"other mistake", "other mistakes"}
@@ -6771,6 +6772,10 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_starter_dictionary_state
                 ADD COLUMN IF NOT EXISTS import_started_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_starter_dictionary_state
+                ADD COLUMN IF NOT EXISTS live_subscription BOOLEAN NOT NULL DEFAULT FALSE;
             """)
             cursor.execute("""
                 ALTER TABLE bt_3_starter_dictionary_state
@@ -16373,6 +16378,7 @@ def _map_starter_dictionary_state_row(row, *, user_id: int) -> dict:
             "import_started_at": None,
             "import_finished_at": None,
             "updated_at": None,
+            "live_subscription": False,
         }
     return {
         "user_id": int(user_id),
@@ -16390,6 +16396,7 @@ def _map_starter_dictionary_state_row(row, *, user_id: int) -> dict:
         "import_started_at": row[11].isoformat() if row[11] else None,
         "import_finished_at": row[12].isoformat() if row[12] else None,
         "updated_at": row[13].isoformat() if row[13] else None,
+        "live_subscription": bool(row[14]) if len(row) > 14 else False,
     }
 
 
@@ -16411,7 +16418,8 @@ def get_starter_dictionary_state(user_id: int, cursor=None) -> dict:
                 last_error,
                 import_started_at,
                 import_finished_at,
-                updated_at
+                updated_at,
+                live_subscription
             FROM bt_3_starter_dictionary_state
             WHERE user_id = %s
             LIMIT 1;
@@ -16426,6 +16434,98 @@ def get_starter_dictionary_state(user_id: int, cursor=None) -> dict:
     with get_db_connection_context() as conn:
         with conn.cursor() as own_cursor:
             return _get(own_cursor)
+
+
+def set_starter_dictionary_subscription(user_id: int, enabled: bool) -> None:
+    """Toggle the live subscription to the admin's dictionary. Kept separate from
+    upsert_starter_dictionary_state so its many import-state callers stay untouched (and the
+    big upsert's ON CONFLICT never lists live_subscription, so it can't clobber this flag)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_starter_dictionary_state (user_id, live_subscription, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET live_subscription = EXCLUDED.live_subscription, updated_at = NOW();
+                """,
+                (int(user_id), bool(enabled)),
+            )
+
+
+def _subscription_lang_filter_sql(alias: str) -> tuple[str, list]:
+    """Both directions of the DE↔RU pair on the admin rows (params filled by caller)."""
+    return (
+        f"((LOWER({alias}.source_lang)=%s AND LOWER({alias}.target_lang)=%s) "
+        f"OR (LOWER({alias}.source_lang)=%s AND LOWER({alias}.target_lang)=%s))",
+        [],
+    )
+
+
+def count_admin_subscription_available_words(
+    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None
+) -> int:
+    """How many of the admin's dictionary words this user does NOT yet have (matched by shared
+    canonical entry). This is the live pool a subscriber's «new cards» still draw from — it
+    grows automatically as the admin adds words, with no copying. (Stage 2 wiring uses this.)"""
+    s = _normalize_lang_code(source_lang) or "de"
+    t = _normalize_lang_code(target_lang) or "ru"
+    lang_sql, _ = _subscription_lang_filter_sql("a")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM bt_3_webapp_dictionary_queries a
+                WHERE a.user_id = %s
+                  AND a.canonical_entry_id IS NOT NULL
+                  AND {lang_sql}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bt_3_webapp_dictionary_queries u
+                      WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
+                  );
+                """,
+                (int(source_user_id), t, s, s, t, int(user_id)),
+            )
+            row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def list_admin_subscription_new_candidates(
+    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None, limit: int = 20
+) -> list[dict]:
+    """The next admin words a subscriber hasn't materialized yet, most-frequent first (so the
+    subscription drips in useful words before rare ones). Returns light rows for the new-card
+    queue; the per-user copy + SRS state is created lazily on first study (Stage 3)."""
+    s = _normalize_lang_code(source_lang) or "de"
+    t = _normalize_lang_code(target_lang) or "ru"
+    lang_sql, _ = _subscription_lang_filter_sql("a")
+    capped = max(1, min(int(limit or 20), 200))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT a.id, a.canonical_entry_id, a.word_de, e.frequency_rank
+                FROM bt_3_webapp_dictionary_queries a
+                JOIN bt_3_dictionary_entries e ON e.id = a.canonical_entry_id
+                WHERE a.user_id = %s
+                  AND a.canonical_entry_id IS NOT NULL
+                  AND {lang_sql}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bt_3_webapp_dictionary_queries u
+                      WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
+                  )
+                ORDER BY e.frequency_rank ASC NULLS LAST, a.created_at ASC
+                LIMIT %s;
+                """,
+                (int(source_user_id), t, s, s, t, int(user_id), capped),
+            )
+            rows = cur.fetchall() or []
+    return [
+        {"admin_card_id": int(r[0]), "canonical_entry_id": int(r[1]),
+         "word_de": r[2], "frequency_rank": int(r[3]) if r[3] is not None else None}
+        for r in rows
+    ]
 
 
 def upsert_starter_dictionary_state(
