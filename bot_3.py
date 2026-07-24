@@ -32342,7 +32342,7 @@ def _build_aufgabe_caption(entry: dict) -> str:
             "🔧 <b>Wortbildung</b> — B2+\n\n"
             f"<i>{esc(payload.get('satz'))}</i>\n"
             f"🔧 Stamm: <b>{esc(payload.get('stamm'))}</b>\n\n"
-            "Bilde die richtige Wortform in der Mini-App 👇"
+            "Bilde das Nomen und ergänze Artikel/Präposition in der Mini-App 👇"
         )
     if fmt == "wortgruppe":
         lemmas = [esc(l) for l in (payload.get("lemmas") or []) if str(l).strip()]
@@ -32555,15 +32555,18 @@ def _aufgabe_payload_from_item(fmt: str, it: dict, *, admin_chosen: bool = False
             stamm = str(it.get("stamm") or "").strip()
             if not stamm:
                 return None
-            # Quality gate: this is "derive a noun from a verb/adjective stem +
-            # set the following article's case". Reject degenerate items where
-            #  (a) the answer isn't "Nomen + Artikel" (≥2 words, last = article), or
+            # Quality gate: this is "derive a noun from a verb/adjective stem + supply
+            # the function word that links it on (case-marked article and/or the
+            # preposition the noun governs)". Reject degenerate items where
+            #  (a) the answer isn't "Nomen + Funktionswort(e)" — the shared
+            #      wortbildung_gap_is_grammatical() rule, also used by the serve-time
+            #      and nightly degenerate purge, so both ends agree, or
             #  (b) the shown stem equals/leaks the answer noun (the Stamm hint is
             #      displayed, so stem == answer gives the answer away — the "Krise"
             #      bug, where no word-formation happened at all).
-            _ARTICLES = {"der", "die", "das", "des", "dem", "den"}
+            from backend.database import wortbildung_gap_is_grammatical
             tokens = correct.split()
-            if len(tokens) < 2 or tokens[-1].casefold() not in _ARTICLES:
+            if not wortbildung_gap_is_grammatical(correct):
                 return None
             noun = tokens[0]
             stamm_cf = stamm.casefold()
@@ -36974,6 +36977,69 @@ async def admin_clean_bad_reviews_command(update: Update, context: CallbackConte
         f"• из очереди ошибок: {m}\n• из пула заданий: {b}")
 
 
+# One /admin_verify_wortbildung at a time: each run spends tokens on every pool item,
+# so a second press while one is in flight would just double the bill.
+_VERIFY_WORTBILDUNG_INFLIGHT = {"active": False}
+
+
+async def admin_verify_wortbildung_command(update: Update, context: CallbackContext) -> None:
+    """LLM-verify EXISTING «Wortbildung» items (pool + review queue) and retire the broken
+    ones: carrier that doesn't agree with the derived noun ("eine große Interesse"), an
+    invented noun ("Schützung"), a wrong governed preposition, or an ambiguous solution —
+    the class no deterministic rule can catch. Costs tokens. Fail-safe: an item is removed
+    ONLY on an explicit verdict, never on a verifier error. /admin_verify_wortbildung"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    if _VERIFY_WORTBILDUNG_INFLIGHT["active"]:
+        await message.reply_text(
+            "⏳ Проверка уже идёт — дождись результата. Не жми повторно: каждый запуск тратит токены."
+        )
+        return
+    _VERIFY_WORTBILDUNG_INFLIGHT["active"] = True
+    status = await message.reply_text("🔎 Проверяю «Wortbildung» верификатором…")
+    try:
+        from backend.database import fetch_aufgabe_items_by_format, remove_aufgabe_items
+        from backend.openai_manager import run_check_wortbildung_batch
+        lines: list[str] = []
+        total_removed = 0
+        for table, label in (("bt_3_aufgabe_bank", "пул"), ("bt_3_aufgabe_mistakes", "повторы")):
+            rows = await asyncio.to_thread(fetch_aufgabe_items_by_format, table, "wortbildung")
+            if not rows:
+                lines.append(f"• {label}: проверено 0, убрано 0")
+                continue
+            bad_ids = []
+            # Verify in small batches: one call per ~10 items keeps each response short
+            # enough to stay valid JSON, and a failed batch only costs those 10 items.
+            for start in range(0, len(rows), 10):
+                chunk = rows[start:start + 10]
+                verdicts = await run_check_wortbildung_batch(items=[pl for _rid, pl in chunk])
+                if not verdicts or len(verdicts) != len(chunk):
+                    continue  # verifier hiccup → keep this batch (never remove on error)
+                bad_ids += [rid for (rid, _pl), v in zip(chunk, verdicts) if not v.get("ok")]
+            removed = await asyncio.to_thread(remove_aufgabe_items, table, bad_ids) if bad_ids else 0
+            total_removed += removed
+            lines.append(f"• {label}: проверено {len(rows)}, убрано {removed}")
+        await status.edit_text(
+            "✅ <b>Проверка «Wortbildung» завершена</b>\n" + "\n".join(lines) +
+            f"\n\nВсего убрано битых: <b>{total_removed}</b>.\n"
+            "Пул доберётся при следующем пополнении (/admin_aufgabe_pool).",
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logging.exception("admin verify wortbildung failed user_id=%s", getattr(user, "id", None))
+        try:
+            await status.edit_text(f"❌ Не удалось выполнить проверку: {exc}")
+        except Exception:
+            pass
+    finally:
+        _VERIFY_WORTBILDUNG_INFLIGHT["active"] = False
+
+
 async def _error_key_selfcheck(payload) -> dict:
     """Focused second gate for a 'Finde den Fehler' item: does the item's OWN answer key
     actually produce a PERFECT sentence? Apply every correct_word to the tokens and check the
@@ -39663,6 +39729,7 @@ def main():
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("admin_clean_bad_reviews", admin_clean_bad_reviews_command))
     application.add_handler(CommandHandler("admin_verify_errors", admin_verify_errors_command))
+    application.add_handler(CommandHandler("admin_verify_wortbildung", admin_verify_wortbildung_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_cw_resend", admin_crossword_resend_command))

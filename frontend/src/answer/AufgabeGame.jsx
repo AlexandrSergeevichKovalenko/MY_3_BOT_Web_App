@@ -47,6 +47,10 @@ function AufgabeText({ task, onSubmit, submitting }) {
       </>
     );
   } else if (fmt === 'wortbildung') {
+    // The gap is NOT one word: the noun plus the article/preposition that links it
+    // on ("Lieferung der", "Interesse an der") — say so, or people type only the
+    // noun and get marked wrong for a rule they were never told.
+    placeholder = 'Nomen + Artikel/Präposition …';
     // Only the Stamm hint is Russian (the stem's RU meaning); everything else
     // stays German.
     body = (

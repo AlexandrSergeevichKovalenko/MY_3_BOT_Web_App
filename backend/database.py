@@ -1414,9 +1414,33 @@ def _norm_degenerate_token(s) -> str:
     return str(s or "").strip().strip(".,!?;:()[]{}\"'«»").strip().lower()
 
 
-# The articles a wortbildung answer may end with — the Kasus decision that IS the
-# exercise. Kept in sync with the build-time gate in bot_3._aufgabe_payload_from_item.
+# The "glue" a wortbildung gap must contain besides the derived noun: the case-marked
+# article and/or the preposition the noun governs. Supplying it IS the grammar part of
+# the exercise ("Lieferung der", "Interesse an der", "Furcht vor", "Teilnahme am").
 _WORTBILDUNG_ARTICLES = {"der", "die", "das", "des", "dem", "den"}
+_WORTBILDUNG_PREPOSITIONS = {
+    "an", "auf", "aus", "bei", "durch", "für", "gegen", "gegenüber", "in", "mit",
+    "nach", "ohne", "seit", "trotz", "über", "um", "unter", "von", "vor", "wegen",
+    "zu", "zwischen",
+}
+# Preposition+article merges — one token, but the case is baked in.
+_WORTBILDUNG_MERGED = {
+    "am", "ans", "aufs", "beim", "fürs", "im", "ins", "ums", "vom", "zum", "zur",
+}
+_WORTBILDUNG_GLUE = _WORTBILDUNG_ARTICLES | _WORTBILDUNG_PREPOSITIONS | _WORTBILDUNG_MERGED
+
+
+def wortbildung_gap_is_grammatical(correct) -> bool:
+    """True when a wortbildung answer is «Nomen + Funktionswort(e)» — i.e. the gap
+    makes the learner decide a case/rection, not just retype a noun. Shape:
+    the first token is the derived noun, every following token (1–2 of them) is an
+    article, a governed preposition or a merged form. Shared by the build-time gate
+    in bot_3._aufgabe_payload_from_item and by is_degenerate_aufgabe, so an item that
+    passes generation is never killed later (and vice versa)."""
+    toks = str(correct or "").split()
+    if not (2 <= len(toks) <= 3):
+        return False
+    return all(_norm_degenerate_token(t) in _WORTBILDUNG_GLUE for t in toks[1:])
 
 
 def _word_after_gap(satz) -> str:
@@ -1477,9 +1501,10 @@ def normalize_error_payload(payload) -> list:
 def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
     """True for a meaningless item that should never be served/reviewed:
     - wortbildung: the derived noun == the stem (no real word-formation, e.g.
-      stamm "krise" → "Krise"), OR the gap is just the noun without the
-      following article (a 1-word answer teaches nothing — the whole point of
-      the format is Nomen + Kasus-Artikel, e.g. "Lieferung der").
+      stamm "krise" → "Krise"), OR the gap is just the noun without the linking
+      function word (a 1-word answer teaches nothing — the point of the format is
+      Nomen + Kasus-Artikel/regierte Präposition, e.g. "Lieferung der",
+      "Interesse an der").
     - error ("Finde den Fehler"): the tapped token already equals the correction
       (no real error, e.g. "zumachen?" → "zumachen") — also covers word-order
       "errors" the format can't express.
@@ -1497,21 +1522,19 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
         if stamm and _norm_degenerate_token(toks[0]) == _norm_degenerate_token(stamm):
             return True
         # (b) no grammar in the gap: the answer is only the noun, without the
-        #     following article. Then the exercise is "type the noun you were
-        #     just shown the stem of" — no Kasus decision, no learning value.
-        #     Mirrors the build-time gate in bot_3._aufgabe_payload_from_item, so
-        #     an item that passes generation is never killed here, and pre-gate
+        #     article/preposition that links it on. Then the exercise is "type the
+        #     noun you were just shown the stem of" — no case decision, no rection,
+        #     no learning value. Same rule as the build-time gate, so pre-gate
         #     leftovers are retired at serve time / by the nightly purge.
-        if len(toks) < 2 or _norm_degenerate_token(toks[-1]) not in _WORTBILDUNG_ARTICLES:
+        if not wortbildung_gap_is_grammatical(c):
             return True
-        # (c) the answer's trailing article is ALREADY printed in the sentence right
-        #     after the gap → the learner can't/shouldn't type it (would double it);
-        #     a broken item (the article belongs IN the gap, not the sentence).
-        if len(toks) >= 2:
-            article = _norm_degenerate_token(toks[-1])
-            after = _norm_degenerate_token(_word_after_gap(payload.get("satz")))
-            if article and after and article == after:
-                return True
+        # (c) the answer's trailing function word is ALREADY printed in the sentence
+        #     right after the gap → the learner can't/shouldn't type it (would double
+        #     it); a broken item (it belongs IN the gap, not in the sentence).
+        glue = _norm_degenerate_token(toks[-1])
+        after = _norm_degenerate_token(_word_after_gap(payload.get("satz")))
+        if glue and after and glue == after:
+            return True
         return False
     if fmt == "error":
         # Degenerate iff there are no parseable errors, OR any error points outside the
@@ -1624,6 +1647,56 @@ def fetch_aufgabe_error_items(table: str, *, limit: int = 300) -> list[tuple]:
     except Exception:
         logging.warning("fetch_aufgabe_error_items failed table=%s", table, exc_info=True)
     return out
+
+
+def fetch_aufgabe_items_by_format(table: str, fmt: str, *, limit: int = 300) -> list[tuple]:
+    """Return [(id, payload_dict), …] for rows of ONE format in an aufgabe table
+    (bank or mistakes), for an LLM re-check sweep over items already in the pool.
+    The bank is filtered to servable rows — retired/unapproved ones aren't worth tokens."""
+    id_col = _AUFGABE_TABLE_ID.get(table)
+    if not id_col:
+        return []
+    where = "format = %s"
+    if table == "bt_3_aufgabe_bank":
+        where += " AND retired = FALSE"
+    out: list[tuple] = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {id_col}, payload FROM {table} WHERE {where} LIMIT %s;",
+                    (str(fmt), int(limit)),
+                )
+                for r in cur.fetchall() or []:
+                    payload = _coerce_json_object(r[1]) if not isinstance(r[1], dict) else r[1]
+                    out.append((r[0], payload if isinstance(payload, dict) else {}))
+    except Exception:
+        logging.warning("fetch_aufgabe_items_by_format failed table=%s fmt=%s", table, fmt, exc_info=True)
+    return out
+
+
+def remove_aufgabe_items(table: str, ids: list) -> int:
+    """Take rows out of rotation. The bank is soft-retired (bt_3_aufgabe_dispatches
+    holds a NO ACTION FK — DELETE-ing a dispatched item raises and rolls back the whole
+    batch); every other table is hard-deleted. Returns the number of rows affected."""
+    if table == "bt_3_aufgabe_bank":
+        if not ids:
+            return 0
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE bt_3_aufgabe_bank SET retired = TRUE "
+                        "WHERE aufgabe_id = ANY(%s) AND retired = FALSE;",
+                        (list(ids),),
+                    )
+                    affected = cur.rowcount or 0
+                conn.commit()
+            return int(affected)
+        except Exception:
+            logging.warning("remove_aufgabe_items retire failed", exc_info=True)
+            return 0
+    return delete_aufgabe_items(table, ids)
 
 
 def delete_aufgabe_items(table: str, ids: list) -> int:

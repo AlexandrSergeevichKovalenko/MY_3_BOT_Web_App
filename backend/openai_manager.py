@@ -149,6 +149,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "check_error_sentence",
     "verify_aufgabe_error",
     "check_wortgruppe_batch",
+    "check_wortbildung_batch",
     "word_order_distractors",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
@@ -3537,20 +3538,40 @@ Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
 
 Jede Aufgabe: EIN deutscher Satz mit GENAU EINER Lücke "_____", plus ein STAMMWORT.
 Der/die Lernende bildet aus dem Stammwort das abgeleitete NOMEN (Nominalisierung)
-UND muss zusätzlich den ARTIKEL der direkt folgenden Genitiv-/Präpositional-Ergänzung
-in den richtigen Kasus setzen. Es wird NICHT nur ein Wort eingesetzt — die Lücke
-umfasst das Nomen + den nachfolgenden Artikel, damit das KASUS-Verständnis geprüft wird.
+UND setzt zusätzlich das FUNKTIONSWORT, das dieses Nomen mit dem folgenden Satzteil
+verbindet — also den Artikel im richtigen Kasus und/oder die vom Nomen fest regierte
+PRÄPOSITION. Es wird NIEMALS nur EIN Wort eingesetzt: ohne dieses Funktionswort prüft
+die Aufgabe keine Grammatik (kein Kasus, keine Rektion) und ist wertlos.
 
-So baust du den Satz (WICHTIG):
-- Das abgeleitete Nomen wird von einer Genitiv-Ergänzung begleitet: "… <Nomen> <Artikel> <Nomen2> …".
-- Der Artikel von Nomen2 gehört MIT in die Lücke. Beispiel:
-  Satz: "Die _____ Ware erfolgte sehr schnell."  Stamm: "liefern"  →  correct: "Lieferung der"
-  (gemeint ist „die Lieferung DER Ware" — Genitiv).
-- Weitere Beispiele: "wegen der _____ Mitarbeiter" Stamm "entscheiden" → "Entscheidung der";
-  "trotz der _____ des Marktes" Stamm "schwanken" → "Schwankung des".
+Die Lücke hat GENAU EINE dieser drei Formen (2–3 Wörter):
+ (A) Nomen + Genitiv-Artikel:
+     "Die _____ Ware erfolgte sehr schnell."   Stamm "liefern"   → "Lieferung der"
+     "Wegen der _____ Mitarbeiter …"           Stamm "entscheiden" → "Entscheidung der"
+ (B) Nomen + fest regierte Präposition + Artikel:
+     "Er zeigte großes _____ deutschen Literatur."  Stamm "interessieren" → "Interesse an der"
+     "Ihr _____ zweite Portion überraschte alle."   Stamm "verzichten"    → "Verzicht auf die"
+ (C) Nomen + fest regierte Präposition (wenn danach KEIN Artikel steht — z. B. bloßer
+     Plural oder Eigenname):
+     "Viele Menschen haben _____ Spinnen."     Stamm "fürchten" → "Furcht vor"
+ Verschmelzungen (am, im, zum, zur, beim, vom) sind erlaubt und zählen als
+ Präposition+Artikel: "Die _____ Wettbewerb war freiwillig." Stamm "teilnehmen"
+ → "Teilnahme am" (aliases: ["Teilnahme an dem"]).
+
+KONGRUENZ-SELBSTPRÜFUNG (PFLICHT, häufigster Fehler):
+- Setze "correct" in die Lücke und lies den GANZEN Satz. Artikel/Adjektiv VOR der Lücke
+  müssen zu Genus/Numerus/Kasus des abgeleiteten Nomens passen. "Interesse" ist NEUTRUM
+  → "ein großes Interesse", NIEMALS "eine große Interesse". Passt es nicht, ändere den
+  Satz, nicht die Lösung.
+- Das Nomen muss ein WIRKLICH existierendes deutsches Wort sein (Duden-tauglich):
+  schützen → "Schutz" (NICHT "Schützung"), verlieren → "Verlust" (NICHT "Verlierung").
+  Im Zweifel nimm ein anderes Stammwort.
+- Die Präposition muss die FESTE Rektion des Nomens sein (Interesse AN, Angst VOR,
+  Verzicht AUF, Teilnahme AN, Anspruch AUF) — nicht irgendeine, die auch geht.
 
 Regeln:
-- Genau EINE eindeutig richtige Lösung; die Lücke = Nomen + folgender Artikel (2 Wörter).
+- Genau EINE eindeutig richtige Lösung; die Lücke = Nomen + Funktionswort(e), 2–3 Wörter.
+- Das erste Wort der Lücke ist das Nomen; danach folgen NUR Artikel/Präposition/
+  Verschmelzung — nie ein weiteres Inhaltswort.
 - "stamm" = das deutsche Ausgangswort, AUS DEM das Nomen erst GEBILDET wird. Es MUSS
   ein VERB oder ADJEKTIV sein (z. B. "liefern", "entscheiden", "schwanken", "frei") —
   NIEMALS das gesuchte Nomen selbst und NIEMALS ein Nomen ohne verbalen/adjektivischen
@@ -3558,11 +3579,13 @@ Regeln:
   Wortform UNTERSCHEIDEN (echte Wortbildung, keine Identität). Wenn dir zu einem Wort
   keine echte Nominalisierung einfällt, nimm ein anderes Stammwort.
 - "stamm_ru" = russische Übersetzung des Stammworts (z. B. "доставлять"), als Lernhilfe.
-- "correct" = exakt die zwei Wörter für die Lücke, z. B. "Lieferung der". Das erste Wort
-  ist das abgeleitete Nomen (≠ stamm), das zweite ist der Artikel.
-- "aliases" = nur echte gleichwertige Schreibvarianten, sonst [].
+- "correct" = exakt die 2–3 Wörter für die Lücke, z. B. "Lieferung der" oder
+  "Interesse an der". Das erste Wort ist das abgeleitete Nomen (≠ stamm), danach folgt
+  das Funktionswort bzw. Präposition + Artikel.
+- "aliases" = echte gleichwertige Schreibvarianten (v. a. die aufgelöste Verschmelzung,
+  z. B. "Teilnahme an dem" zu "Teilnahme am"), sonst [].
 - "erklaerung" = „lehrbuchartige" Erklärung auf Russisch (2–3 Sätze): welche Ableitung
-  und WARUM dieser Kasus/Artikel (z. B. Genitiv-Ergänzung). Verständlich.
+  und WARUM diese Präposition/dieser Kasus (Nomen-Rektion, Genitiv-Ergänzung). Verständlich.
 - "tip" = EIN kurzer russischer Merk-Tipp (Eselsbrücke/Faustregel). Ohne Emoji.
 - "hint_ru" = sehr kurzer russischer Hinweis = die BEDEUTUNG der gesuchten Phrase
   auf Russisch (z. B. "доставка товаров").
@@ -4078,6 +4101,50 @@ For EACH item, in input order, judge TWO things:
 Return STRICT JSON ONLY, one result per item, SAME order:
 {"results":[{"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"]}, ...]}
 ok = true ONLY if ALL of (a), (b) and (c) hold; otherwise ok=false and accepted=[].
+""",
+"check_wortbildung_batch": """
+You verify German "Wortbildung" exercises. Input JSON:
+{"items":[{"satz":"<sentence with one _____ gap>","stamm":"<verb/adjective shown to the learner>","correct":"<the 2-3 words that fill the gap>","aliases":["..."]}, ...]}.
+The learner sees "satz" + "stamm" and must (1) derive the noun from "stamm" and
+(2) supply the function word(s) that link it to the rest — the case-marked article
+and/or the preposition the noun governs ("Interesse an der", "Lieferung der", "Furcht vor").
+For EACH item, in input order: FIRST build "satz_voll" = "satz" with "_____" replaced
+literally by "correct", and WRITE IT OUT in your answer. Judge ONLY "satz_voll" — never
+the sentence with the hole in it. The hidden noun is usually the SUBJECT, so a sentence
+that looks wrong with the hole is normally right once filled. Then judge ALL of:
+(a) FULL SENTENCE: read "satz_voll" as a whole. It must be
+    grammatical and idiomatic German. Check especially the AGREEMENT of any article or
+    adjective standing BEFORE the gap with the derived noun's gender/number/case —
+    "eine große Interesse" is WRONG (Interesse is NEUTER: "ein großes Interesse") → fail.
+    Also check the words AFTER the gap take the case the article/preposition demands.
+    CAREFUL — the derived noun is the HEAD of its phrase: the finite verb and any
+    preceding article/adjective agree with THAT noun, NEVER with the genitive attribute
+    that follows it. "Die Lieferung der Waren erfolgte schnell" is CORRECT (singular
+    "erfolgte" belongs to "die Lieferung", not to plural "der Waren"). Do not report a
+    number error there.
+(b) REAL WORD + REAL DERIVATION: the first word of "correct" must be an existing German
+    noun (Duden), genuinely derived from "stamm" and DIFFERENT from it. Invented forms
+    like "Schützung" (correct: "Schutz") or "Verlierung" (correct: "Verlust") → fail.
+(c) GRAMMAR IN THE GAP: after the noun there must be at least one function word —
+    an article (der/die/das/des/dem/den), a governed preposition, or a merged form
+    (am/im/zum/zur/beim/vom/ins/ans). If "correct" is the bare noun, the exercise tests
+    no case/rection at all → fail. Any CONTENT word after the noun → fail.
+(d) RECTION: a preposition in "correct" must be the noun's FIXED rection (Interesse AN,
+    Angst/Furcht VOR, Verzicht AUF, Teilnahme AN, Anspruch AUF), not merely a possible one.
+(e) ANSWERABILITY — prefer LISTING an alternative over failing. If another filling is
+    ALSO correct and keeps the same meaning (plural instead of singular, a resolved merge
+    "an dem" for "am", a second common nominalisation of the same stem), do NOT fail: put
+    it in "accepted" so the learner is graded fairly. Fail ONLY if a filling with a
+    DIFFERENT meaning fits just as naturally and nothing in the sentence lets the learner
+    choose, or if no correct filling exists at all.
+Do NOT fail an item for style, for being simple, for a wording you would phrase
+differently, or because the CONTENT seems odd — a grammatical sentence about an unusual
+situation passes. Fail only on a real language error under (a)–(e). Be strict about
+(a)–(d), generous in (e). State the broken rule in "reason" — if you cannot name one
+concretely, the item is fine.
+Return STRICT JSON ONLY, one result per item, SAME order:
+{"results":[{"satz_voll":"<satz with the gap filled>", "ok": true|false, "accepted":["<every correct spelling of the gap, incl. correct itself>"], "reason":"<empty when ok; else <=90 chars naming the rule broken, e.g. 'agreement: Interesse is neuter'>"}, ...]}
+ok = true ONLY if ALL of (a)–(e) hold; otherwise ok=false and accepted=[].
 """,
 "check_synonym": """
 You judge German vocabulary. Input JSON: {"target": "...", "candidate": "...", "relation": "synonym"|"antonym"}.
@@ -5333,6 +5400,8 @@ _SYSTEM_ATTRIBUTION_TASKS: frozenset[str] = frozenset({
     "aufgabe_pin_image", "aufgabe_pin_scene", "aufgabe_pin_blueprint",
     "aufgabe_pin_for_word", "pin_word_meta", "pin_scene_prompt",
     "rebus_component", "aufgabe_wortbildung",
+    # Pool-build verifiers for those items (shared content, never a user's request)
+    "check_wortbildung_batch", "check_wortgruppe_batch",
     # DALL·E images (battles, heroes, plaques, news) — pre-built, reused
     "battle_image", "hero_image", "overtaken_image",
     "worldnews_image", "review_reminder_image", "lazy_day_image",
@@ -7064,6 +7133,30 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
                     continue
                 kept.append(it)
             items = kept
+        # wortbildung: an LLM verifier reads the sentence WITH the answer inserted and
+        # checks what no deterministic rule can — that the carrier agrees with the
+        # derived noun ("eine große Interesse" → neuter "ein großes Interesse"), that
+        # the noun really exists ("Schützung" → "Schutz"), that the preposition is the
+        # noun's fixed rection, and that the solution is unique. Extra correct spellings
+        # (a resolved merge like "Teilnahme an dem" for "Teilnahme am") come back as
+        # aliases so grading accepts them. Infra failure → fail-open (the deterministic
+        # noun+function-word gate in _aufgabe_payload_from_item still applies).
+        if fmt == "wortbildung" and items:
+            verdicts = await run_check_wortbildung_batch(items=items)
+            if verdicts and len(verdicts) == len(items):
+                verified = []
+                for it, v in zip(items, verdicts):
+                    if not v.get("ok"):
+                        logging.info("aufgabe wortbildung: verifier dropped item satz=%s correct=%s reason=%s",
+                                     it.get("satz"), it.get("correct"), v.get("reason"))
+                        continue
+                    correct_cf = str(it.get("correct") or "").strip().casefold()
+                    extra = [a for a in (v.get("accepted") or [])
+                             if str(a).strip().casefold() != correct_cf]
+                    if extra:
+                        it["aliases"] = list(dict.fromkeys([*(it.get("aliases") or []), *extra]))
+                    verified.append(it)
+                items = verified
         # wortgruppe: an LLM verifier confirms each item's full sentence is grammatical
         # AND its solution is UNIQUE given only the shown lemmas — catches mehrdeutig
         # constructions (e.g. "abwägen" accusative vs. "zwischen"+dative) and broken
@@ -7089,6 +7182,49 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
         # and the nightly degenerate self-heal), so no batch verifier is needed here.
         return items
     return items
+
+
+async def run_check_wortbildung_batch(*, items: list[dict]) -> list[dict]:
+    """Verify a batch of wortbildung items in ONE LLM call (pool-prep, off the hot
+    path). For each: the sentence WITH the answer inserted must be grammatical and
+    agree with the derived noun, the noun must be a real derivation of the stem, the
+    gap must carry a function word (article / governed preposition / merge), and the
+    solution must be unique. Returns a list aligned to input order,
+    [{"ok": bool, "accepted": [...]}]; [] on failure/timeout (caller fails open)."""
+    payload_items = [{
+        "satz": str(it.get("satz") or ""),
+        "stamm": str(it.get("stamm") or ""),
+        "correct": str(it.get("correct") or ""),
+        "aliases": [str(a) for a in (it.get("aliases") or [])],
+    } for it in (items or [])]
+    if not payload_items:
+        return []
+    try:
+        content = await llm_execute(
+            task_name="check_wortbildung_batch",
+            system_instruction_key="check_wortbildung_batch",
+            user_message=json.dumps({"items": payload_items}, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+            responses_timeout_seconds=30.0,
+        )
+        data = json.loads(content)
+        results = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(results, list):
+            return []
+        out: list[dict] = []
+        for r in results:
+            if isinstance(r, dict):
+                out.append({
+                    "ok": bool(r.get("ok")),
+                    "accepted": [str(a) for a in (r.get("accepted") or []) if str(a).strip()],
+                    "reason": str(r.get("reason") or ""),
+                })
+            else:
+                out.append({"ok": False, "accepted": [], "reason": "unparseable"})
+        return out
+    except Exception:
+        logging.warning("run_check_wortbildung_batch failed", exc_info=True)
+        return []
 
 
 async def run_check_wortgruppe_batch(*, items: list[dict]) -> list[dict]:

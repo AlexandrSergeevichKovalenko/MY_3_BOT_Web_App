@@ -83,7 +83,7 @@ const AU_LABELS = {
 };
 
 const AU_SUBS = {
-  wortbildung: 'Bilde die richtige Wortform ✍️',
+  wortbildung: 'Nomen bilden + Artikel/Präposition ergänzen ✍️',
   wortgruppe: 'Setze die ganze Wortgruppe ein ✍️',
   transform: 'Forme den Satz mit dem Schlüsselwort um ✍️',
   error: 'Finde und korrigiere den Fehler 🔍',
