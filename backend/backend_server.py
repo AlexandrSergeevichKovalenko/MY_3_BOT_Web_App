@@ -38822,21 +38822,12 @@ def _run_post_finish_snapshot_bookkeeping(
                 "Post-finish today projection enqueue failed: user_id=%s session_id=%s",
                 int(user_id), finished_session_id, exc_info=True,
             )
-        try:
-            _enqueue_phase1_projection_job(
-                projection_kind=_SKILLS_CARD_KIND,
-                user_id=int(user_id),
-                job_source="live",
-                source_session_id=finished_session_id,
-                lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
-                request_id=request_id,
-                correlation_id=correlation_id,
-            )
-        except Exception:
-            logging.warning(
-                "Post-finish skills projection enqueue failed: user_id=%s session_id=%s",
-                int(user_id), finished_session_id, exc_info=True,
-            )
+        # Deliberately NOT enqueuing a skills-card projection on finish: the skills dashboard
+        # is heavy and rarely opened, so rebuilding it after every session wastes worker + DB
+        # cycles for a screen most users never visit. The read endpoint get_skill_progress()
+        # falls back to building the card from the live source snapshot on open (lazy), so
+        # correctness is preserved with zero background cost. (today-card above IS home-visible
+        # → kept warm.) See lazy-refresh rationale in track_skill_practice_event / bootstrap.
 
 
 def _dispatch_post_finish_snapshot_bookkeeping(
@@ -39637,11 +39628,10 @@ def _prime_webapp_home_snapshots_async(*, user_id: int, username: str | None) ->
             username=username,
             plan_date=plan_date,
         )
-        _maybe_prime_skill_progress_snapshot_refresh(
-            user_id=int(user_id),
-            username=username,
-            lookback_days=7,
-        )
+        # NOT priming skill-progress here: it is a heavy, rarely-opened dashboard, so warming
+        # it on every app-open (bootstrap) wastes DB work for a screen most sessions never
+        # visit. It refreshes lazily on actual view (_get_skill_progress_response_cached /
+        # POST /api/progress/skills/sync). today + weekly ARE on the home screen → keep warm.
         _maybe_prime_weekly_plan_snapshot_refresh(
             user_id=int(user_id),
             anchor_date=plan_date,
@@ -42251,7 +42241,10 @@ def track_skill_practice_event(skill_id: str):
     _mark_weekly_plan_snapshot_stale(user_id=int(user_id), anchor_date=plan_date)
     _mark_plan_analytics_snapshot_stale(user_id=int(user_id))
     _schedule_today_plan_snapshot_refresh(user_id=int(user_id), username=username, plan_date=plan_date)
-    _schedule_skill_progress_snapshot_refresh(user_id=int(user_id), username=username, lookback_days=7)
+    # Skill-progress is a rarely-opened, HEAVY dashboard (aggregates the user's whole mistake
+    # history). Do NOT eagerly rebuild it on every practice event — that put it in the top of
+    # DB load for a feature almost nobody views. mark_stale above is enough: it is rebuilt
+    # lazily (stale-while-revalidate) only when the user actually opens the skills screen.
     _schedule_weekly_plan_snapshot_refresh(user_id=int(user_id), anchor_date=plan_date)
     _schedule_plan_analytics_snapshot_refresh(user_id=int(user_id), period="week", as_of_date=plan_date)
     return jsonify({"ok": True, "status": status_payload, "skill_id": normalized_skill_id})
