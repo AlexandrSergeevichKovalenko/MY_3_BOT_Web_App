@@ -538,8 +538,8 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            {t('Подключим слова, с которых начнём тренировки и повторения. Выбери, сколько:',
-               'Verbinden wir Wörter, mit denen Training und Wiederholungen starten. Wähle, wie viele:')}
+            {t('Чтобы не начинать с пустого приложения, подключим готовый набор слов для тренировок и повторений. Дальше ты добавляешь свои слова — а этот стартовый набор можно отключить когда угодно. Выбери размер:',
+               'Damit du nicht mit einer leeren App startest, verbinden wir ein fertiges Wörter-Set für Training und Wiederholung. Später fügst du deine eigenen Wörter hinzu — dieses Starter-Set kannst du jederzeit abschalten. Wähle die Größe:')}
           </p>
           {done && !HAS_ACCOUNT ? (
             // Guest tour: nothing was connected yet — the pick is parked until the bot is installed.
@@ -616,7 +616,7 @@ function StepBody(props) {
               </button>
             </div>
           )}
-          <p className="ob-muted-note">{t('Быстрый старт — меньше слов, проще начать. Весь словарь — сразу весь набор. Здесь — подключаешь, а отключить эти базовые словари (если захочешь только свои слова) можно потом в ⚙️ Настройках.', 'Schnellstart — weniger Wörter, leichter Einstieg. Ganzes Wörterbuch — der volle Satz. Hier verbindest du sie; später kannst du diese Basis-Wörterbücher in ⚙️ Einstellungen wieder abschalten (wenn du nur deine eigenen Wörter willst).')}</p>
+          <p className="ob-muted-note">{t('📚 Быстрый старт — компактный набор базовых слов, чтобы не потеряться в начале. 🔓 Весь словарь — сразу весь набор. Оба — это только СТАРТ. Главное в приложении — слова, которые ты сам добавишь из видео, текстов и переводов: именно их бот будет давать тебе в повторениях. Стартовый набор можно в любой момент отключить в ⚙️ Настройках и учить только свои слова.', '📚 Schnellstart — ein kompaktes Set an Grundwörtern, um am Anfang nicht den Überblick zu verlieren. 🔓 Ganzes Wörterbuch — gleich der volle Satz. Beides ist nur der START. Das Wichtigste sind die Wörter, die du selbst aus Videos, Texten und Übersetzungen hinzufügst — die gibt dir der Bot in den Wiederholungen. Das Starter-Set kannst du jederzeit in ⚙️ Einstellungen abschalten und nur deine eigenen Wörter lernen.')}</p>
           {!HAS_ACCOUNT ? (
             <p className="ob-muted-note">
               {IS_GUEST_TOUR
