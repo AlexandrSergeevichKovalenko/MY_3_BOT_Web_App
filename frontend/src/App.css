@@ -18848,9 +18848,15 @@ body.worldnews-active .webapp-topbar {
 }
 
 .yt-dict-error {
-  padding: 12px 14px;
-  color: #f87171;
-  font-size: 12px;
+  margin: 8px 12px;
+  padding: 10px 12px;
+  color: #9a3528;
+  font-size: 13px;
+  line-height: 1.4;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fff5f3 0%, #fdecea 100%);
+  border: 1px solid #f2cec7;
+  border-left: 3px solid #e0745e;
 }
 
 .yt-dict-word-row {
