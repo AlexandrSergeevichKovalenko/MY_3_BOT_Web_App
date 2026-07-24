@@ -5447,59 +5447,67 @@ def _capture_pool_state(pool: ThreadedConnectionPool | None) -> tuple[int | None
     return used_connections, available_connections
 
 
-# --- DB pool saturation alert (scale-readiness early warning) ---------------------------
-# The bot tier runs on DB_POOL_MAXCONN=8; the scaling audit says this pool saturates first
-# (~1k users). Rather than pre-build horizontal scaling now (premature at current load), warn
-# the admin the moment the pool actually runs hot, so we scale REACTIVELY when the signal is
-# real. Fires on hard saturation (exhausted / acquire timeout) or when used connections reach
-# a high-water ratio of the max. Throttled per alert-key so a busy minute sends ONE DM.
-DB_POOL_SATURATION_ALERT_RATIO = min(1.0, max(0.5, float(os.getenv("DB_POOL_SATURATION_ALERT_RATIO", "0.85"))))
+# --- DB pool STARVATION alert (scale-readiness early warning) ----------------------------
+# Fires ONLY on genuine starvation: a request that could NOT get a connection from the pool
+# within the acquire timeout and had to use the direct fallback, OR failed outright. It does
+# NOT fire on the common, benign case where getconn() briefly saw a full pool, retried, and
+# succeeded in milliseconds — that self-heals and is normal even with one user (a single page
+# can run several concurrent queries against a small 6-8 pool). Nor on "used ≥ N/M" high-water,
+# which for a small pool is just normal busy-ness, not a problem.
+#
+# To avoid paging on a one-off blip, we require MIN_EVENTS genuine-starvation events within a
+# rolling window before sending, then throttle by COOLDOWN. So the DM means "requests are
+# REPEATEDLY unable to get DB connections" — the real "raise the pool / offload heavy work"
+# signal, not "the pool was briefly busy".
 DB_POOL_SATURATION_ALERT_COOLDOWN_MIN = max(1, int(os.getenv("DB_POOL_SATURATION_ALERT_COOLDOWN_MIN", "30")))
+DB_POOL_SATURATION_ALERT_MIN_EVENTS = max(1, int(os.getenv("DB_POOL_SATURATION_ALERT_MIN_EVENTS", "5")))
 _DB_POOL_ALERT_LOCK = threading.Lock()
-_DB_POOL_ALERT_LAST_SENT: dict[str, float] = {}
-
-
-def _should_send_db_pool_alert(alert_key: str) -> bool:
-    now_ts = time.time()
-    cooldown_seconds = int(DB_POOL_SATURATION_ALERT_COOLDOWN_MIN) * 60
-    with _DB_POOL_ALERT_LOCK:
-        last_sent_ts = float(_DB_POOL_ALERT_LAST_SENT.get(str(alert_key), 0.0) or 0.0)
-        if last_sent_ts and now_ts - last_sent_ts < cooldown_seconds:
-            return False
-        _DB_POOL_ALERT_LAST_SENT[str(alert_key)] = now_ts
-    return True
+_DB_POOL_ALERT_LAST_SENT_TS: float = 0.0
+_DB_POOL_STARVATION_EVENTS: list[float] = []
 
 
 def _maybe_alert_db_pool_saturation(
-    *, context_label: str, pool_used_count: int | None, pool_exhausted: bool, timed_out: bool
+    *,
+    context_label: str,
+    connection_source: str,
+    success: bool,
+    pool_used_count: int | None,
 ) -> None:
-    """Cheap per-acquire check: return immediately unless the pool is actually hot. Only on a
-    real saturation signal (and past the cooldown) does it DM the admin off-thread."""
+    """Cheap per-acquire check. Returns instantly for the normal path (got a connection from
+    the pool). Only a GENUINE starvation event — fallback_direct (pool full for the whole
+    timeout) or an outright failure — is counted; once MIN_EVENTS pile up inside the cooldown
+    window it DMs the admin off-thread, then throttles."""
+    genuine_starvation = (not success) or (str(connection_source or "").strip() == "fallback_direct")
+    if not genuine_starvation:
+        return
     if not DB_POOL_ENABLED:
         return
-    max_conn = int(DB_POOL_MAXCONN)
-    if max_conn <= 0:
-        return
-    threshold = max(1, int(round(max_conn * DB_POOL_SATURATION_ALERT_RATIO)))
-    high_water = pool_used_count is not None and int(pool_used_count) >= threshold
-    if not (pool_exhausted or timed_out or high_water):
-        return
-    alert_key = "exhausted" if (pool_exhausted or timed_out) else "high_water"
-    if not _should_send_db_pool_alert(alert_key):
-        return
+    now_ts = time.time()
+    window_seconds = int(DB_POOL_SATURATION_ALERT_COOLDOWN_MIN) * 60
+    with _DB_POOL_ALERT_LOCK:
+        global _DB_POOL_ALERT_LAST_SENT_TS
+        cutoff = now_ts - window_seconds
+        _DB_POOL_STARVATION_EVENTS[:] = [t for t in _DB_POOL_STARVATION_EVENTS if t >= cutoff]
+        _DB_POOL_STARVATION_EVENTS.append(now_ts)
+        event_count = len(_DB_POOL_STARVATION_EVENTS)
+        if event_count < DB_POOL_SATURATION_ALERT_MIN_EVENTS:
+            return
+        if _DB_POOL_ALERT_LAST_SENT_TS and now_ts - _DB_POOL_ALERT_LAST_SENT_TS < window_seconds:
+            return
+        _DB_POOL_ALERT_LAST_SENT_TS = now_ts
+        _DB_POOL_STARVATION_EVENTS.clear()
 
-    used_txt = pool_used_count if pool_used_count is not None else "?"
-    if pool_exhausted or timed_out:
-        headline = "🔴 DB-пул исчерпан" + (" (timeout на acquire)" if timed_out else "")
-    else:
-        headline = f"🟠 DB-пул под нагрузкой ({used_txt}/{max_conn}, порог {threshold})"
+    max_conn = int(DB_POOL_MAXCONN)
+    window_min = int(DB_POOL_SATURATION_ALERT_COOLDOWN_MIN)
     message_text = (
-        f"{headline}\n\n"
-        f"Занято соединений: {used_txt}/{max_conn}\n"
-        f"Триггер: {context_label}\n\n"
-        f"Сигнал приближения к потолку пула (scaling_strategy: ломается ~1k). "
-        f"Если повторяется — время поднимать пул / выносить тяжёлое в очередь, "
-        f"а не гадать. Порог/кулдаун: DB_POOL_SATURATION_ALERT_RATIO/_COOLDOWN_MIN."
+        f"⚠️ DB-пул под устойчивой нагрузкой\n\n"
+        f"{event_count}+ раз за последние ~{window_min} мин запрос не смог сразу взять "
+        f"соединение из пула (пул был полностью занят весь таймаут → сработал резервный путь).\n"
+        f"Размер пула: {max_conn}. Последний триггер: {context_label}\n\n"
+        f"Это НЕ падение — резервный путь отработал. Но если повторяется регулярно, значит "
+        f"пул мал под текущую нагрузку: подними DB_POOL_MAXCONN или вынеси тяжёлые операции в "
+        f"фон. Единичные всплески — норма, алерт приходит только при устойчивом голоде "
+        f"(≥{DB_POOL_SATURATION_ALERT_MIN_EVENTS} событий/{window_min} мин)."
     )
 
     def _send() -> None:
@@ -5531,8 +5539,8 @@ def _record_db_acquire_event(
     pool_used_count, pool_available_count = _capture_pool_state(pool)
     try:
         _maybe_alert_db_pool_saturation(
-            context_label=context_label, pool_used_count=pool_used_count,
-            pool_exhausted=pool_exhausted, timed_out=timed_out,
+            context_label=context_label, connection_source=connection_source,
+            success=success, pool_used_count=pool_used_count,
         )
     except Exception:
         logging.debug("db pool saturation alert check failed", exc_info=True)
