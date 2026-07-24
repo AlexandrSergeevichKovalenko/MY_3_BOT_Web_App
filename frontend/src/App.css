@@ -1204,6 +1204,8 @@ body:has(.webapp-page.is-theme-light),
 .webapp-main {
   display: grid;
   gap: 14px;
+  min-width: 0; /* grid item defaults to min-width:auto — without this an
+                   un-shrinkable child can widen the shell past the viewport. */
 }
 
 .webapp-topbar {

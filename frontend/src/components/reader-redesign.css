@@ -138,10 +138,13 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0; /* contain any over-wide child locally instead of widening the
+                     grid track and shifting the whole page right. */
   }
   .webapp-page.is-reader-library .webapp-main > .webapp-reader {
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
   }
@@ -966,6 +969,95 @@
   font-size: 12.5px;
 }
 
+/* «Полный доступ» upsell plaque — replaces the old red webapp-error paywall.
+   Neat modular card in the reader's warm palette: crown badge, icon, serif
+   title, green CTA. Shown for LIMIT_FREE_PLAN_1_BOOK / _1_ARTICLE. */
+.webapp-reader .reader-upsell {
+  position: relative;
+  margin: 4px 0 0;
+  padding: 16px 15px 13px;
+  border-radius: var(--rd-r-lg);
+  border: 1px solid var(--rd-border);
+  background: var(--rd-surface-hi);
+  box-shadow: var(--rd-shadow-card);
+  overflow: hidden;
+}
+.webapp-reader .reader-upsell::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--rd-accent), var(--rd-accent-2));
+}
+.webapp-reader .reader-upsell-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 10px;
+}
+.webapp-reader .reader-upsell-ico {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  background: var(--rd-accent-soft);
+  border: 1px solid var(--rd-accent-glow);
+}
+.webapp-reader .reader-upsell-titles {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.webapp-reader .reader-upsell-badge {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #8a5a00;
+  background: #fbe6bf;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.webapp-reader .reader-upsell-title {
+  font-family: var(--rd-font-serif);
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--rd-text);
+}
+.webapp-reader .reader-upsell-body {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--rd-text-muted);
+}
+.webapp-reader .reader-upsell-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  border-radius: var(--rd-r-md);
+  font-size: 14.5px;
+  font-weight: 800;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--rd-accent), var(--rd-accent-2));
+  box-shadow: var(--rd-shadow-glow);
+}
+.webapp-reader .reader-upsell-cta:active { transform: scale(0.99); }
+.webapp-reader .reader-upsell-cta:disabled { opacity: 0.6; cursor: default; }
+
 
 /* ╭───────────────────────────────────────────────────────────────────────╮
    │  LIBRARY SECTION: search + archive + grid                              │
@@ -985,6 +1077,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap; /* defensive: on very narrow devices the Архив toggle drops to
+                      a second line instead of clipping off the right edge. */
 }
 
 .webapp-reader .reader-lib-search-wrap {
@@ -1006,6 +1100,9 @@
 .webapp-reader .reader-lib-search {
   flex: 1;
   width: 100%;
+  min-width: 0; /* native <input> has min-width:auto (~200px intrinsic) — without
+                   this the search row can't shrink on narrow phones, overflows
+                   right, and shoves the whole reader page sideways. */
   height: 42px;
   padding: 0 18px 0 46px !important;
   border-radius: 99px;

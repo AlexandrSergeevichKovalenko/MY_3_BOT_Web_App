@@ -26393,8 +26393,8 @@ function AppInner() {
       setReaderErrorCode(code);
       if (code === 'LIMIT_FREE_PLAN_1_BOOK') {
         setReaderError(tr(
-          'Загрузка своих книг — функция «Полного доступа». На бесплатном плане можно читать «Классику» и статьи из интернета. Оформи «Полный доступ», чтобы добавлять свои книги.',
-          'Eigene Bücher hochladen ist eine Funktion mit vollem Zugang. Im Free-Plan liest du «Klassiker» und Web-Artikel. Hol dir vollen Zugang, um eigene Bücher hinzuzufügen.'
+          'На бесплатном плане открыта «Классика» и статьи из интернета. Оформи полный доступ, чтобы загружать свои книги и PDF.',
+          'Im Free-Plan sind «Klassiker» und Web-Artikel offen. Hol dir vollen Zugang, um eigene Bücher und PDFs hochzuladen.'
         ));
       } else if (code === 'LIMIT_FREE_PLAN_1_ARTICLE') {
         const articleLimitMsg = tr(

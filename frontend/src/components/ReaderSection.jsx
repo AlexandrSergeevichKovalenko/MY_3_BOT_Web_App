@@ -1161,21 +1161,36 @@ export default function ReaderSection(props) {
                     </div>
                   </form>
                   {readerError && (
-                    <div className="webapp-error">
-                      <span>{readerError}</span>
-                      {(readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' || readerErrorCode === 'LIMIT_FREE_PLAN_1_ARTICLE') && (
-                        <div>
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={handleBillingUpgrade}
-                            disabled={billingActionLoading}
-                          >
-                            {billingActionLoading ? tr('Открываем...', 'Öffnen...') : tr('Upgrade', 'Upgrade')}
-                          </button>
+                    (readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' || readerErrorCode === 'LIMIT_FREE_PLAN_1_ARTICLE') ? (
+                      <div className="reader-upsell">
+                        <div className="reader-upsell-head">
+                          <div className="reader-upsell-ico" aria-hidden="true">
+                            {readerErrorCode === 'LIMIT_FREE_PLAN_1_ARTICLE' ? '📰' : '📚'}
+                          </div>
+                          <div className="reader-upsell-titles">
+                            <span className="reader-upsell-badge">👑 {tr('Полный доступ', 'Voller Zugang')}</span>
+                            <div className="reader-upsell-title">
+                              {readerErrorCode === 'LIMIT_FREE_PLAN_1_ARTICLE'
+                                ? tr('Статьи без лимита', 'Artikel ohne Limit')
+                                : tr('Свои книги — в Полном доступе', 'Eigene Bücher — mit vollem Zugang')}
+                            </div>
+                          </div>
                         </div>
-                      )}
-                    </div>
+                        <p className="reader-upsell-body">{readerError}</p>
+                        <button
+                          type="button"
+                          className="reader-upsell-cta"
+                          onClick={() => handleBillingUpgrade('pro')}
+                          disabled={billingActionLoading}
+                        >
+                          {billingActionLoading
+                            ? tr('Открываем…', 'Öffnen…')
+                            : <>✨ {tr('Оформить полный доступ', 'Vollen Zugang holen')}</>}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="webapp-error"><span>{readerError}</span></div>
+                    )
                   )}
                 </div>
               )}
