@@ -532,7 +532,10 @@ function StepBody(props) {
       const have = Number(dictOffer?.starter_pair_total || 0);
       const n = Number(dictOffer?.suggested_count || dictOffer?.import_limit || 0);
       const total = Number(dictOffer?.template_total || 0);
-      const hasFull = total > 0 && have >= total;
+      // «Весь словарь» is now a LIVE subscription (no bulk copy), so `have` stays 0 — detect it
+      // from the subscription flag, not from the imported-word count.
+      const subscribed = !!(dictOffer?.state?.live_subscription);
+      const hasFull = subscribed || (total > 0 && have >= total);
       const partial = have > 0 && !hasFull;          // small starter connected, full still available
       const done = (confirmed && !partial) || hasFull;
       return (
