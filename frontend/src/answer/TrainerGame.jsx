@@ -92,7 +92,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         const rs = buildRounds(data.correct, data.distractors, exKeys, data.wort);
         if (!rs.length) { setError('Для этого слова пока нет вариантов.'); setPhase('error'); return; }
         setMeta(data); setRounds(rs); setPhase('intro');
-      } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
+      } catch (e) { try { console.warn('[trainer] load failed', e); } catch (_err) { /* noop */ } if (!cancelled) { setError('Не удалось загрузить. Попробуйте позже.'); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
   }, [id]);

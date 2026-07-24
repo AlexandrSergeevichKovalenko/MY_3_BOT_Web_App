@@ -34,7 +34,7 @@ export default function PlanTable() {
     try {
       const d = await api('/api/plan');
       setData(d); setError('');
-    } catch (e) { setError(String(e.message || e)); }
+    } catch (e) { try { console.warn('[plan] load failed', e); } catch (_e) { /* noop */ } setError('Не удалось загрузить план. Попробуйте позже.'); }
     finally { setLoading(false); }
   }, []);
 

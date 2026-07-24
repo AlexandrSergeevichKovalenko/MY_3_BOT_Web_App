@@ -52,7 +52,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
         wordsRef.current = data.words || [];
         if (data.already_played && data.result) { setResult({ ...data.result, items: [] }); setPhase('done'); }
         else { setLeft(data.duration_s || 120); setPhase('intro'); }
-      } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
+      } catch (e) { try { console.warn('[artikel-sprint] load failed', e); } catch (_err) { /* noop */ } if (!cancelled) { setError('Не удалось загрузить. Попробуйте позже.'); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
   }, [api, practice, battleId, battleList]);
@@ -67,7 +67,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       if (data.already_played && data.result) { setResult({ ...data.result, items: [] }); setPhase('done'); return; }
       setLeft(data.duration_s || 120);
       setPhase('intro');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { try { console.warn('[artikel-sprint] action failed', e); } catch (_err) { /* noop */ } setError('Не удалось загрузить. Попробуйте позже.'); setPhase('error'); }
   }, [api]);
 
   const pickTheme = useCallback(async (themeKey) => {
@@ -79,7 +79,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       wordsRef.current = data.words || [];
       setLeft(data.duration_s || 120);
       setPhase('intro');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { try { console.warn('[artikel-sprint] action failed', e); } catch (_err) { /* noop */ } setError('Не удалось загрузить. Попробуйте позже.'); setPhase('error'); }
   }, [api]);
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);

@@ -60,7 +60,8 @@ export default function Leaderboard({ startParam }) {
         const d = await api('/api/leaderboard', { days });
         if (!cancelled) setData(d);
       } catch (e) {
-        if (!cancelled) setError(String(e.message || e));
+        try { console.warn('[leaderboard] load failed', e); } catch (_e) { /* noop */ }
+        if (!cancelled) setError('Не удалось загрузить рейтинг. Попробуйте позже.');
       }
     })();
     return () => { cancelled = true; };

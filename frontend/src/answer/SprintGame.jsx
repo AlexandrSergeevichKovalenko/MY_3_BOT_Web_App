@@ -67,7 +67,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
         setMeta(data);
         if (data.already_played && data.result) { setResult(data.result); setPhase('done'); }
         else { setLeft(data.duration_s || 60); setPhase('intro'); }
-      } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
+      } catch (e) { try { console.warn('[sprint] load failed', e); } catch (_err) { /* noop */ } if (!cancelled) { setError('Не удалось загрузить. Попробуйте позже.'); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
   }, [id]);
@@ -84,7 +84,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
       const data = await api('/api/sprint/finish', { id, words: wordsRef.current.map((w) => w.text), time_ms });
       setResult(data); setPhase('done');
       try { haptic?.(data.count > 0 ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { try { console.warn('[sprint] finish failed', e); } catch (_err) { /* noop */ } setError('Не удалось сохранить результат. Попробуйте ещё раз.'); setPhase('error'); }
   }, [id]);
 
   const start = useCallback(() => {

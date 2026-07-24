@@ -135,7 +135,7 @@ export default function ShortcutGuide() {
       try {
         const d = await api('/api/webapp/shortcut/info');
         if (!off) setInfo(d);
-      } catch (e) { if (!off) setError(String(e.message || e)); }
+      } catch (e) { try { console.warn('[shortcut] info load failed', e); } catch (_e) { /* noop */ } if (!off) setError('Не удалось загрузить. Попробуйте позже.'); }
     })();
     return () => { off = true; };
   }, []);
@@ -168,7 +168,8 @@ export default function ShortcutGuide() {
       setPairing(d);
       try { tg?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* noop */ }
     } catch (e) {
-      setPairingErr(String(e.message || e));
+      try { console.warn('[shortcut] pairing failed', e); } catch (_e) { /* noop */ }
+      setPairingErr('Не удалось создать код. Попробуйте ещё раз.');
       try { tg?.HapticFeedback?.notificationOccurred?.('error'); } catch (_e) { /* noop */ }
     } finally { setPairingBusy(false); }
   }, [pairingBusy]);

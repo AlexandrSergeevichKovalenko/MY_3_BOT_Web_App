@@ -284,7 +284,8 @@ export default function StoryResultModal({
       setQOpen(false);
       setQDraft('');
     } catch (error) {
-      setQError(String(error.message || error));
+      try { console.warn('[story] question failed', error); } catch (_e) { /* noop */ }
+      setQError(tr('Не удалось отправить вопрос. Попробуйте ещё раз.', 'Frage konnte nicht gesendet werden. Bitte erneut versuchen.'));
     } finally {
       setQLoading(false);
     }

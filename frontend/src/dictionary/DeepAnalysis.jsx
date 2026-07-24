@@ -406,7 +406,7 @@ export default function DeepAnalysis({ startParam }) {
         history: [...s.history, { q, a: answer }].slice(-4),
       }));
     } catch (e) {
-      const msg = e?.status === 429 ? (e?.payload?.message || 'Дневной лимит вопросов исчерпан') : String(e?.message || e);
+      const msg = e?.status === 429 ? (e?.payload?.message || 'Дневной лимит вопросов исчерпан') : humanizeDictError(e);
       setAsk((s) => ({ ...s, state: 'idle' })); setError(msg); haptic('bad');
     }
   }, [ask.q, ask.state, ask.history, germanText, translation]);

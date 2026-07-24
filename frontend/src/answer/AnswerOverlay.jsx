@@ -673,7 +673,8 @@ export default function AnswerOverlay({ startParam }) {
         if (data.already_answered && data.result) setResult(data.result);
         if (parsed.kind === 'cw') setCwInputs((data.words || []).map(() => ''));
       } catch (e) {
-        if (!cancelled) setFatal(String(e.message || e));
+        try { console.warn('[answer] load failed', e); } catch (_err) { /* noop */ }
+        if (!cancelled) setFatal('Не удалось загрузить. Попробуйте позже.');
       } finally {
         if (!cancelled) setMetaLoading(false);
       }
@@ -702,7 +703,8 @@ export default function AnswerOverlay({ startParam }) {
       const won = data.is_correct || (data.total && data.correct_count === data.total);
       haptic(won ? 'ok' : 'bad');
     } catch (e) {
-      setError(String(e.message || e));
+      try { console.warn('[answer] action failed', e); } catch (_err) { /* noop */ }
+      setError('Не удалось отправить ответ. Попробуйте ещё раз.');
       haptic('bad');
     } finally {
       setSubmitting(false);
@@ -726,7 +728,8 @@ export default function AnswerOverlay({ startParam }) {
       setResult(data);
       haptic(data.is_correct ? 'ok' : 'bad');
     } catch (e) {
-      setError(String(e.message || e));
+      try { console.warn('[answer] action failed', e); } catch (_err) { /* noop */ }
+      setError('Не удалось отправить ответ. Попробуйте ещё раз.');
       haptic('bad');
     } finally {
       setSubmitting(false);
@@ -777,7 +780,8 @@ export default function AnswerOverlay({ startParam }) {
         haptic('bad');
       }
     } catch (e) {
-      setError(String(e.message || e));
+      try { console.warn('[answer] action failed', e); } catch (_err) { /* noop */ }
+      setError('Не удалось отправить ответ. Попробуйте ещё раз.');
       haptic('bad');
     } finally {
       setSubmitting(false);
