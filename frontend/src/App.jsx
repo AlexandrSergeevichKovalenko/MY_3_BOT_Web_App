@@ -279,7 +279,6 @@ const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
 const PAID_FEATURE_ERROR_PREFIX = '__paid_feature_required__:';
 const TRANSLATION_LIMIT_NOTICE_PREFIX = '__translation_limit_notice__:';
-const EXPLAIN_LIMIT_NOTICE_PREFIX = '__explain_limit_notice__:';
 const YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX = '__youtube_transcript_library_notice__:';
 
 // De-roll YouTube auto-caption cues. Rolling ASR captions repeat the previous line (or its
@@ -4606,13 +4605,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 const explainData = explainStructured?.[`${explanationKey}:${explainLang}`];
                 const explainGrammarData = explainGrammar?.[`${explanationKey}:${explainLang}`];
                 const explainGrammarBusy = Boolean(explainGrammarLoading?.[`${explanationKey}:${explainLang}`]);
-                const explainErrRaw = explainErrorMap?.[explanationKey] || '';
-                // A limit / paid-feature hit renders as a pretty house-style card inside the
-                // modal; everything else stays a plain message. When a card shows, suppress the
-                // red errorbox so the two don't stack.
-                const explainNotice = renderPaidFeatureNotice(explainErrRaw, tr('Разбор ошибок', 'Fehleranalyse'))
-                  || renderExplainLimitNotice(explainErrRaw);
-                const explainErr = explainNotice ? '' : explainErrRaw;
+                const explainErr = explainErrorMap?.[explanationKey] || '';
                 const explainOpen = explainModalKey === explanationKey;
                 return (
                   <div
@@ -4753,7 +4746,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           data={explainData}
                           loading={Boolean(explanationLoading[explanationKey]) && !explainData}
                           errorMsg={explainErr}
-                          limitNotice={explainNotice}
                           grammar={explainGrammarData}
                           grammarLoading={explainGrammarBusy}
                         >
@@ -4969,31 +4961,6 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
       </div>
     );
   }, [parsePaidFeatureError, tr]);
-  // Daily-limit / cost-cap hit inside the error-breakdown modal → the same pretty ⏱️
-  // house-style card the rest of the app uses (NOT a raw red errorbox). The server's
-  // already-humanized message is carried in the marker payload.
-  const renderExplainLimitNotice = useCallback((value) => {
-    const raw = String(value || '').trim();
-    if (!raw.startsWith(EXPLAIN_LIMIT_NOTICE_PREFIX)) return null;
-    let message = '';
-    try {
-      message = String(JSON.parse(raw.slice(EXPLAIN_LIMIT_NOTICE_PREFIX.length))?.message || '').trim();
-    } catch (_error) { /* keep fallback below */ }
-    return (
-      <div className="paid-feature-card">
-        <div className="paid-feature-card-icon" aria-hidden="true">⏱️</div>
-        <div className="paid-feature-card-copy">
-          <strong>{tr('Лимит на сегодня достигнут', 'Tageslimit erreicht')}</strong>
-          <span>
-            {message || tr(
-              'На сегодня лимит запросов исчерпан. Возвращайся, пожалуйста, завтра 🙌',
-              'Das Tageslimit für Anfragen ist erreicht. Bitte komm morgen wieder 🙌'
-            )}
-          </span>
-        </div>
-      </div>
-    );
-  }, [tr]);
   const {
     weeklyPlanRef = null,
     todayRef = null,
@@ -29049,28 +29016,25 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        // A daily-limit / cost-cap hit is not a red-error situation — it's an expected,
-        // friendly "come back tomorrow / unlock" moment. Detect the billing code from the
-        // body (clone, since readApiError consumes it) and tag the stored value so the modal
-        // swaps its ugly red errorbox for the pretty ⏱️/🔒 limit card.
-        let isBillingLimit = false;
+        // A daily-limit / cost-cap / paid-feature hit is not a red-error situation — it's an
+        // expected "come back tomorrow / unlock" moment. Detect the billing code from the body
+        // (clone, since readApiError consumes it) and swap to our pretty ProFeatureModal
+        // (short copy + CTA), instead of leaking a long server line into a red box.
+        let billingCode = '';
         try {
           const parsed = await response.clone().json();
-          const code = String(parsed?.error || '').trim();
-          isBillingLimit = code === 'cost_cap_exceeded'
-            || code === 'feature_limit_exceeded'
-            || code === 'free_limit_exceeded';
+          billingCode = String(parsed?.error || '').trim();
         } catch (_jsonError) { /* not JSON — treat as a normal error below */ }
-        // Route through readApiError so a limit code becomes the clean human line
-        // (payload.message or a friendly fallback) instead of leaking raw.
-        const message = await readApiError(response, 'Не удалось получить разбор.', 'Analyse konnte nicht geladen werden.');
-        if (isBillingLimit) {
-          setExplainErrorMap((prev) => ({
-            ...prev,
-            [key]: `${EXPLAIN_LIMIT_NOTICE_PREFIX}${JSON.stringify({ message })}`,
-          }));
+        const isDailyLimit = billingCode === 'cost_cap_exceeded'
+          || billingCode === 'feature_limit_exceeded'
+          || billingCode === 'free_limit_exceeded';
+        const isPaidFeature = billingCode === 'paid_feature_required';
+        if (isDailyLimit || isPaidFeature) {
+          openExplainUpgradeModal(isPaidFeature ? 'paid' : 'limit');
           return;
         }
+        // Route through readApiError so anything else becomes a clean human line.
+        const message = await readApiError(response, 'Не удалось получить разбор.', 'Analyse konnte nicht geladen werden.');
         throw new Error(message);
       }
       const data = await response.json();
@@ -29135,6 +29099,30 @@ function AppInner() {
   };
 
   const closeExplainModal = () => setExplainModalKey(null);
+
+  // Лимит/пейволл в разборе → закрываем разбор и показываем НАШУ established красивую
+  // модалку (ProFeatureModal): короткий текст + кнопка «Оформить полный доступ» (CTA ведёт
+  // на оплату). Никаких длинных серверных формулировок и красных боксов — это приложение
+  // для обычных людей, не для программистов. [[feedback_consumer_app_not_for_programmers]]
+  const openExplainUpgradeModal = (kind) => {
+    closeExplainModal();
+    const paid = kind === 'paid';
+    setProFeatureModal({
+      emoji: paid ? '🔒' : '⏱️',
+      title: paid
+        ? tr('Разбор ошибок — в «Полном доступе»', 'Fehleranalyse — im vollen Zugang')
+        : tr('На сегодня разборы закончились', 'Analysen für heute aufgebraucht'),
+      intro: paid
+        ? tr(
+          'Подробный разбор твоих ошибок открывается в «Полном доступе».',
+          'Die ausführliche Analyse deiner Fehler gibt es im vollen Zugang.'
+        )
+        : tr(
+          'Бесплатный разбор на сегодня использован. С «Полным доступом» — без ограничений.',
+          'Die kostenlose Analyse für heute ist aufgebraucht. Mit vollem Zugang — ohne Limit.'
+        ),
+    });
+  };
 
   const handleSetExplainLang = (item, checkedDe) => {
     const key = getExplanationItemKey(item);

@@ -29095,9 +29095,6 @@ html[data-scheme="light"] .explain-grammar-structure,
 .explain-modal--fuchs .explain-grammar-part { color: #33425c; background: #e9e5fb; }
 .explain-modal--fuchs .explain-grammar-structure { color: #5b4fd6; }
 .explain-modal--fuchs .explain-modal-followup { border-top: 1px dashed #e6d8c2; }
-/* Красивая карточка лимита (⏱️/🔒) вместо красного errorbox внутри разбора. */
-.explain-modal--fuchs .explain-modal-limit { margin-top: 14px; }
-.explain-modal-limit .paid-feature-card { margin: 0; }
 /* Пере-объявление светлых <b> из dead-override выше (там селектор .theme-light
    не матчится) — на светлой модалке жирный текст должен быть тёмным. */
 .webapp-page.is-theme-light .webapp-result-card .explain-modal--fuchs .explain-syn-word { color: #1c2536; }

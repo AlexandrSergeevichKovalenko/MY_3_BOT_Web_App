@@ -32,7 +32,6 @@ export default function ExplainErrorsModal({
   data,
   loading,
   errorMsg,
-  limitNotice,
   grammar: grammarProp,
   grammarLoading,
   children,
@@ -46,7 +45,7 @@ export default function ExplainErrorsModal({
   // as its own prop (not part of `data`) and shows a skeleton until it lands.
   const grammar = Array.isArray(grammarProp) ? grammarProp : [];
   const summary = String(data?.summary || '').trim();
-  const hasData = !!data && !loading && !errorMsg && !limitNotice;
+  const hasData = !!data && !loading && !errorMsg;
 
   return (
     <div className="explain-modal-overlay" role="dialog" aria-modal="true">
@@ -63,12 +62,10 @@ export default function ExplainErrorsModal({
           <button type="button" className="explain-modal-close" aria-label={tr('Закрыть', 'Schließen')} onClick={onClose}>×</button>
         </div>
 
-        {!limitNotice && (
-          <label className="explain-modal-langtoggle">
-            <input type="checkbox" checked={!!langDe} onChange={(e) => onToggleLang?.(e.target.checked)} />
-            <span>🇩🇪 {tr('Объяснение на немецком', 'Erklärung auf Deutsch')}</span>
-          </label>
-        )}
+        <label className="explain-modal-langtoggle">
+          <input type="checkbox" checked={!!langDe} onChange={(e) => onToggleLang?.(e.target.checked)} />
+          <span>🇩🇪 {tr('Объяснение на немецком', 'Erklärung auf Deutsch')}</span>
+        </label>
 
         <div className="explain-modal-body">
           {loading && (
@@ -78,11 +75,7 @@ export default function ExplainErrorsModal({
             </div>
           )}
 
-          {!loading && limitNotice && (
-            <div className="explain-modal-limit">{limitNotice}</div>
-          )}
-
-          {!loading && !limitNotice && errorMsg && (
+          {!loading && errorMsg && (
             <div className="explain-modal-errorbox">⚠️ {errorMsg}</div>
           )}
 
