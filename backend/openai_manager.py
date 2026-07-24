@@ -2664,7 +2664,7 @@ Rules:
 - Provide exactly one primary meaning and up to two secondary meanings.
 - Rank meanings strictly by frequency.
 - Each meaning must include one short real example pair.
-- Provide 2–3 short natural usage_examples different from meaning examples.
+- Provide up to 2 short natural usage_examples different from meaning examples.
 - Keep explanations compact but clear.
 - For noisy grammar-construction input, the base save_worthy_options item must use the normalized clean construction, not the raw fragment.
 - If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
@@ -2703,7 +2703,6 @@ Rules:
   - Whenever the main German word is a standalone verb, normalize it to the infinitive.
 - If adjective: include comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
-- real_life_usage must explain where native speakers actually use it.
 - save_worthy_options must contain exactly 3 practical items whenever possible:
   1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input. If the input is a full sentence, keep it a full sentence and preserve the core meaning completely.
   2) REAL-LIFE SPEECH CARD: a short, high-frequency collocation or complete everyday sentence built around the same core meaning. It must sound like something a native speaker would actually say tomorrow.
@@ -2712,11 +2711,8 @@ Rules:
 - The second save_worthy_options item must preserve the key semantic idea from the original input. Do not replace a specific idea with a weaker generic paraphrase.
 - Avoid dry generic paraphrases. Example: for "Франц ушел на пенсию", prefer "Franz ist jetzt in Rente" or "Franz genießt jetzt seine Rente", not "Franz geht nicht mehr zur Arbeit".
 - Prefer concise living phrases over textbook abstractions.
-- Etymology, usage_note and memory_tip must help learner FEEL structure and origin.
-- For a SINGLE-WORD content lemma (noun, verb, adjective or adverb) you MUST provide a
-  non-null etymology_note (origin / how the word is built) AND a non-null memory_tip
-  (a vivid association or hook to remember it). Only use null for these on function words,
-  numbers, proper names, or multi-word phrases where such notes would be artificial.
+- Do NOT produce etymology_note, memory_tip, usage_note, real_life_usage or when_to_use —
+  set all of them to null. These are no longer shown to the learner, so spend no output on them.
 - If information is unknown, use null.
 """,
 "dictionary_assistant_multilang_core_fast": """

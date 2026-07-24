@@ -8988,10 +8988,8 @@ def _dictionary_word_card_is_thin(payload: dict | None) -> bool:
             isinstance(m, dict) and str(m.get("value") or "").strip() for m in secondary
         ):
             return False
-    if str(payload.get("memory_tip") or "").strip():
-        return False
-    if str(payload.get("etymology_note") or "").strip():
-        return False
+    # memory_tip / etymology_note are no longer generated (card trimmed 2026-07-24) — dropped
+    # from the richness markers so lean cards are treated as complete, not re-enriched.
     return True
 
 

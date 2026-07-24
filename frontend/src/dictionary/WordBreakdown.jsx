@@ -178,7 +178,7 @@ function collectExamples(item) {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(p);
-    if (out.length >= 4) break;
+    if (out.length >= 2) break;
   }
   return out;
 }
@@ -276,7 +276,8 @@ function translationVariants(item) {
     .map((t) => (t && typeof t === 'object'
       ? { value: clean(t.value), context: clean(t.context) }
       : { value: clean(t), context: '' }))
-    .filter((t) => t.value);
+    .filter((t) => t.value)
+    .slice(0, 3);
 }
 
 function meaningList(item) {
@@ -292,7 +293,7 @@ function meaningList(item) {
   };
   take(m.primary);
   if (Array.isArray(m.secondary)) m.secondary.forEach(take);
-  return out;
+  return out.slice(0, 3);
 }
 
 function grammarRows(item) {
@@ -684,8 +685,6 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   const government = governmentList(item);
   const collocations = collocationList(item);
   const examples = collectExamples(item);
-  const etymology = clean(item.etymology_note);
-  const memoryTip = clean(item.memory_tip);
   const level = clean(item.level).toUpperCase();
   const freqLabel = FREQ_LABELS[clean(item.frequency).toLowerCase()] || '';
   const formation = wordFormationParts(item);
@@ -693,13 +692,6 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   const antonyms = stringList(item.antonyms);
   const related = relatedList(item);
   const register = registerLabel(item);
-  const usage = [
-    clean(item.when_to_use),
-    clean(item.real_life_usage),
-    clean(item.register_note),
-    clean(item.expression_note),
-    clean(item.usage_note),
-  ].filter(Boolean);
 
   return (
     <>
@@ -809,13 +801,6 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
 
       <ExamplesBlock examples={examples} tts={tts} onSaveExample={onSaveExample} savedChips={savedChips} />
 
-      {usage.length > 0 && (
-        <div className="dq-block">
-          <strong>Где и как употреблять</strong>
-          {usage.map((u, i) => <span key={`${u}-${i}`}>{u}</span>)}
-        </div>
-      )}
-
       {related.length > 0 && (
         <div className="dq-block">
           <strong>Родственные слова</strong>
@@ -851,19 +836,6 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
         </div>
       )}
 
-      {etymology && (
-        <div className="dq-block">
-          <strong>Происхождение</strong>
-          <span>{etymology}</span>
-        </div>
-      )}
-
-      {memoryTip && (
-        <div className="dq-block dq-note">
-          <strong>💡 Как запомнить</strong>
-          <span>{memoryTip}</span>
-        </div>
-      )}
     </>
   );
 }

@@ -3321,8 +3321,9 @@ def _dictionary_pool_word_fully_rich_sql(alias: str) -> str:
         _nonempty_array("common_collocations"),
         _nonempty_array("translations"),
         _nonempty_text(f"{alias}->'meanings'->'primary'->>'value'"),
-        _nonempty_text(f"{alias}->>'memory_tip'"),
-        _nonempty_text(f"{alias}->>'etymology_note'"),
+        # memory_tip / etymology_note are no longer generated (card trimmed 2026-07-24) —
+        # dropped from the richness test so lean cards count as complete and the nightly
+        # enricher does not loop re-enriching them. [[project_dict_card_trim]]
     ]
     return "(" + " OR ".join(parts) + ")"
 
