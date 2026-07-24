@@ -1414,6 +1414,11 @@ def _norm_degenerate_token(s) -> str:
     return str(s or "").strip().strip(".,!?;:()[]{}\"'«»").strip().lower()
 
 
+# The articles a wortbildung answer may end with — the Kasus decision that IS the
+# exercise. Kept in sync with the build-time gate in bot_3._aufgabe_payload_from_item.
+_WORTBILDUNG_ARTICLES = {"der", "die", "das", "des", "dem", "den"}
+
+
 def _word_after_gap(satz) -> str:
     """The first word right AFTER the "_____" gap in a sentence ('' if none)."""
     m = re.search(r"_{2,}", str(satz or ""))
@@ -1472,7 +1477,9 @@ def normalize_error_payload(payload) -> list:
 def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
     """True for a meaningless item that should never be served/reviewed:
     - wortbildung: the derived noun == the stem (no real word-formation, e.g.
-      stamm "krise" → "Krise"). 1-word answers alone are NOT degenerate.
+      stamm "krise" → "Krise"), OR the gap is just the noun without the
+      following article (a 1-word answer teaches nothing — the whole point of
+      the format is Nomen + Kasus-Artikel, e.g. "Lieferung der").
     - error ("Finde den Fehler"): the tapped token already equals the correction
       (no real error, e.g. "zumachen?" → "zumachen") — also covers word-order
       "errors" the format can't express.
@@ -1489,7 +1496,15 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
         # (a) no real word-formation: the derived noun == the stem (krise→Krise).
         if stamm and _norm_degenerate_token(toks[0]) == _norm_degenerate_token(stamm):
             return True
-        # (b) the answer's trailing article is ALREADY printed in the sentence right
+        # (b) no grammar in the gap: the answer is only the noun, without the
+        #     following article. Then the exercise is "type the noun you were
+        #     just shown the stem of" — no Kasus decision, no learning value.
+        #     Mirrors the build-time gate in bot_3._aufgabe_payload_from_item, so
+        #     an item that passes generation is never killed here, and pre-gate
+        #     leftovers are retired at serve time / by the nightly purge.
+        if len(toks) < 2 or _norm_degenerate_token(toks[-1]) not in _WORTBILDUNG_ARTICLES:
+            return True
+        # (c) the answer's trailing article is ALREADY printed in the sentence right
         #     after the gap → the learner can't/shouldn't type it (would double it);
         #     a broken item (the article belongs IN the gap, not the sentence).
         if len(toks) >= 2:
