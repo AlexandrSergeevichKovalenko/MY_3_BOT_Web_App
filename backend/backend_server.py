@@ -8742,6 +8742,11 @@ def _prepare_dictionary_response_json_for_save(
     translation_ru: str | None,
 ) -> dict:
     payload = dict(response_json) if isinstance(response_json, dict) else {}
+    # Bare saves from the games/news decks arrive with response_json={} (no source_text
+    # inside), so this MUST be set here or _detect_dictionary_entry_kind below reads a
+    # missing key and the whole save 500s ("Wort konnte nicht gespeichert werden").
+    # Regression from eded6991, which dropped this line while adding the article sanitiser.
+    payload["source_text"] = source_text or str(word_ru or word_de or "").strip()
     # Sanitise the article at the door: keep only a clean der/die/das, drop any prose
     # the model sometimes emits here ("der (Hinterwäldler)", "die (Plural)",
     # "der/die/das (зависит…)"). A blank is safe — the headword-normalisation gard and
