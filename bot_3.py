@@ -12,7 +12,7 @@ import time as pytime
 from datetime import datetime, time, date, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, Poll
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop, ExtBot, ChatMemberHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, TypeHandler, Defaults, PollAnswerHandler, ContextTypes, ApplicationHandlerStop, ExtBot, ChatMemberHandler, AIORateLimiter
 from telegram.request import HTTPXRequest
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -39403,7 +39403,15 @@ def main():
         write_timeout=max(10.0, float((os.getenv("TELEGRAM_HTTP_WRITE_TIMEOUT") or "60").strip())),
         connect_timeout=max(5.0, float((os.getenv("TELEGRAM_HTTP_CONNECT_TIMEOUT") or "20").strip())),
     )
-    tracking_bot = TrackingExtBot(token=TELEGRAM_Deutsch_BOT_TOKEN, request=telegram_request)
+    # AIORateLimiter paces outgoing sends under Telegram's limits (30/s global, 1/s per
+    # chat, 20/min per group) and auto-retries transient 429 RetryAfter — so a broadcast to
+    # the whole allow-list never fails on a burst. Set on the bot itself, not the builder:
+    # ApplicationBuilder.rate_limiter() is incompatible with a pre-built .bot(). Requires the
+    # python-telegram-bot[rate-limiter] extra (aiolimiter) — declared in requirements.txt.
+    tracking_bot = TrackingExtBot(
+        token=TELEGRAM_Deutsch_BOT_TOKEN, request=telegram_request,
+        rate_limiter=AIORateLimiter(max_retries=3),
+    )
     application = _run_bot_startup_phase(
         "build_telegram_application",
         lambda: Application.builder().bot(tracking_bot).build(),
@@ -40963,7 +40971,10 @@ def main():
     print("🚀 Бот запущен! Ожидаем сообщения...")
     bot_startup_completed_successfully = True
     _emit_bot_startup_total(success=bot_startup_completed_successfully)
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # drop_pending_updates: after a deploy/restart, discard the backlog Telegram queued
+    # while the bot was down instead of replaying it as a burst (stale answers, duplicate
+    # deliveries, event-loop storm). Fresh start every boot.
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 
