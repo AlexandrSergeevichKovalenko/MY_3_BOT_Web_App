@@ -4,7 +4,7 @@
 
 # Definitely needed: direct bot runtime imports.
 openai
-python-telegram-bot==21.10
+python-telegram-bot[rate-limiter]==21.10
 google-api-python-client==2.160.0
 aiohttp==3.10.5
 pandas==2.2.2
