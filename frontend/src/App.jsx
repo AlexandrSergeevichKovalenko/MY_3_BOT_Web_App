@@ -36660,7 +36660,7 @@ function AppInner() {
                         весь экран откатывался на планшетную вёрстку. Теперь показываем
                         состояние прямо в панели: раскладка остаётся новой, а CSS-условие
                         :has(.youtube-subtitles-panel) продолжает выполняться. */}
-                    {youtubePhoneWatchLayout && !youtubeSubtitlesReady && (
+                    {youtubePhoneWatchLayout && !youtubeSubtitlesReady && !youtubeChangeOpen && (
                       <div className="youtube-subtitles-card youtube-subtitles-panel youtube-subtitles-panel-empty">
                         {youtubeTranscriptLoading ? (
                           <>
@@ -36695,7 +36695,7 @@ function AppInner() {
                         )}
                       </div>
                     )}
-                    {(!youtubeNewsMode || worldNewsStage === 'video') && !youtubeOverlayEnabled && !(isWideLayout && !youtubeNewsMode) && youtubeSubtitlesReady && (
+                    {(!youtubeNewsMode || worldNewsStage === 'video') && !youtubeOverlayEnabled && !(isWideLayout && !youtubeNewsMode) && youtubeSubtitlesReady && !youtubeChangeOpen && (
                       <div className={`youtube-subtitles-card youtube-subtitles-panel ${(youtubeNewsMode ? !worldNewsShowOriginal : !youtubeOriginalEnabled) ? (youtubeNewsMode ? 'wn-hide-de' : 'wn-hide-de yt-hide-de') : ''}`}>
                         {!youtubeNewsMode && (
                           <div className="youtube-subtitles-panel-head">
