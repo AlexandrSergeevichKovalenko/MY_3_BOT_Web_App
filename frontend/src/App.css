@@ -16695,11 +16695,21 @@ body.worldnews-active .webapp-topbar {
   background: #c1873f;
   color: #ffffff;
 }
-/* Free-user plaque shown for ~5s where the Pro RU subtitles would sit. */
+/* Free-user plaque shown for ~5s. Floats as an OVERLAY over the subtitle area — it must not
+   take layout space or shrink the German block (which it did as an in-flow grid item). */
+.youtube-subtitles-panel-content { position: relative; }
 .worldnews-ru-locked {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 10px;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   animation: worldnews-ru-locked-in 0.22s ease;
 }
 .worldnews-ru-locked-card {

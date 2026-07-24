@@ -36609,7 +36609,7 @@ function AppInner() {
                       </div>
                     )}
                     {(!youtubeNewsMode || worldNewsStage === 'video') && !youtubeOverlayEnabled && !(isWideLayout && !youtubeNewsMode) && youtubeSubtitlesReady && (
-                      <div className={`youtube-subtitles-card youtube-subtitles-panel ${(youtubeNewsMode ? !worldNewsShowOriginal : !youtubeOriginalEnabled) ? 'wn-hide-de yt-hide-de' : ''}`}>
+                      <div className={`youtube-subtitles-card youtube-subtitles-panel ${(youtubeNewsMode ? !worldNewsShowOriginal : !youtubeOriginalEnabled) ? (youtubeNewsMode ? 'wn-hide-de' : 'wn-hide-de yt-hide-de') : ''}`}>
                         {!youtubeNewsMode && (
                           <div className="youtube-subtitles-panel-head">
                             <div className="youtube-subtitles-panel-copy">
@@ -36618,7 +36618,10 @@ function AppInner() {
                             </div>
                           </div>
                         )}
-                        <div className={`youtube-subtitles-panel-content ${((youtubeNewsMode ? worldNewsShowOriginal : youtubeOriginalEnabled) && (youtubeTranslationEnabled || worldNewsRuLockedNotice)) ? 'is-dual' : 'is-single'}`}>
+                        {/* is-dual (two columns) only when RU subtitles are actually ON. The Free
+                            «Полный доступ» plaque must NOT trigger dual mode — it floats as an
+                            overlay (see .worldnews-ru-locked) and must not shrink the DE block. */}
+                        <div className={`youtube-subtitles-panel-content ${((youtubeNewsMode ? worldNewsShowOriginal : youtubeOriginalEnabled) && youtubeTranslationEnabled) ? 'is-dual' : 'is-single'}`}>
                           <div className="youtube-subtitles-block youtube-subtitles-block-de">
                             <div className="youtube-subtitles-card-head youtube-subtitles-card-head-with-nav">
                               <div className="youtube-subtitles-card-badge">
