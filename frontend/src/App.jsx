@@ -10,6 +10,7 @@ import WeeklySummaryModal from './components/WeeklySummaryModal';
 import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
+import NoticeModal from './components/NoticeModal';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
 import ProTrialModal from './components/ProTrialModal';
@@ -6880,6 +6881,12 @@ function AppInner() {
   const [storyExplain, setStoryExplain] = useState(null);
   // «Функция Pro» plaque (shown in place instead of redirecting to the subscription page).
   const [proFeatureModal, setProFeatureModal] = useState(null);
+  // Prominent house-style notice modal for short soft messages (validation hints, etc.) —
+  // replaces the easy-to-miss pale inline toast. See [[feedback_consumer_app_not_for_programmers]].
+  const [noticeModal, setNoticeModal] = useState(null);
+  const showNoticeModal = useCallback((config) => {
+    setNoticeModal(config && typeof config === 'object' ? config : { message: String(config || '') });
+  }, []);
   const [storyExplainLoading, setStoryExplainLoading] = useState(false);
   const [storyExplainErr, setStoryExplainErr] = useState('');
   const [storyExplainDe, setStoryExplainDe] = useState(false);
@@ -11778,15 +11785,23 @@ function AppInner() {
     const sentences = Array.isArray(skillTrainingData?.package?.practice_sentences)
       ? skillTrainingData.package.practice_sentences
       : [];
-    // Мягкие, исправимые пользователем валидации: показываем плавающий тост ПОВЕРХ
-    // задания (а не inline-ошибку, которая гейтится !skillTrainingError и спрятала бы
-    // всю карточку с предложениями, которые пользователь ещё дозаполняет).
+    // Мягкие, исправимые пользователем валидации: показываем ЗАМЕТНОЕ модальное окно в нашем
+    // стиле (бледный inline-тост легко пропустить). НЕ inline-ошибку, которая гейтится
+    // !skillTrainingError и спрятала бы всю карточку с предложениями, которые ещё дозаполняют.
     if (!sentences.length) {
-      showInlineToast(tr('Нет предложений для проверки.', 'Keine Sätze zur Prüfung.'));
+      showNoticeModal({
+        emoji: '📝',
+        title: tr('Пока нечего проверять', 'Noch nichts zu prüfen'),
+        message: tr('Нет предложений для проверки.', 'Keine Sätze zur Prüfung.'),
+      });
       return;
     }
     if (skillTrainingAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
-      showInlineToast(tr('Переведите все предложения, чтобы проверить.', 'Bitte alle Sätze übersetzen.'));
+      showNoticeModal({
+        emoji: '✍️',
+        title: tr('Переведите все предложения', 'Übersetze alle Sätze'),
+        message: tr('Чтобы проверить, заполни перевод для каждого предложения.', 'Fülle für jeden Satz eine Übersetzung aus, um zu prüfen.'),
+      });
       return;
     }
     try {
@@ -35653,6 +35668,16 @@ function AppInner() {
               title={proFeatureModal?.title}
               intro={proFeatureModal?.intro}
               bullets={proFeatureModal?.bullets || []}
+            />
+
+            <NoticeModal
+              isOpen={!!noticeModal}
+              onClose={() => setNoticeModal(null)}
+              tr={tr}
+              emoji={noticeModal?.emoji}
+              title={noticeModal?.title}
+              message={noticeModal?.message}
+              okLabel={noticeModal?.okLabel}
             />
 
             <ReaderAudioLimitModal
