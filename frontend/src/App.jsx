@@ -24195,13 +24195,21 @@ function AppInner() {
                 </span>
               );
             }
+            // Collapse long runs of blank lines to a single blank line for DISPLAY
+            // only (source offsets in data-start are untouched, so audio/word mapping
+            // and pagination geometry are unaffected). Front-matter of Gutenberg/EPUB
+            // books carries big \n runs that, under white-space:pre-wrap + column-fill,
+            // can fill a whole column → a fully blank page.
+            const tokenText = typeof token.value === 'string'
+              ? token.value.replace(/\n{3,}/g, '\n\n')
+              : token.value;
             return (
               <span
                 key={`${sentence.sid}-${token.kind}-${token.start}-${token.end}-${tokenIndex}`}
                 className="reader-token"
                 aria-hidden="true"
               >
-                {token.value}
+                {tokenText}
               </span>
             );
           })}

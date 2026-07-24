@@ -266,12 +266,6 @@ export default function ReaderSection(props) {
   const readerShowsLazyOriginalPage = !readerUsesCustomLayout
     && Array.isArray(readerPages)
     && readerPages[readerCurrentPage - 1] === null;
-  const readerAudioPremiumLocked = readerAudioPremiumKnown && !readerAudioPremiumEnabled;
-  const readerAudioPremiumHint = tr(
-    'Аудио в книге доступно только по премиум подписке.',
-    'Audio im Reader ist nur mit Premium verfügbar.'
-  );
-
   // Engine runs only for server-paged content (PDF / EPUB text mode), never for
   // client-reflow text sources or the original-EPUB renderer.
   const readerColUsesEngine = readerPageCount > 0 && !readerUsesOriginalEpubLayout && !readerUsesCustomLayout;
@@ -1821,11 +1815,14 @@ export default function ReaderSection(props) {
                   <button
                     type="button"
                     className={`reader-dock-play-flat${readerAudioAwaitingWordTap ? ' is-awaiting' : ''}`}
-                    onClick={readerAudioPremiumLocked ? onReaderAudioUpgrade : onReaderAudioPlayBtn}
+                    // No blanket Pro pre-gate: «Классика» (public books) is voiced free
+                    // for everyone by design — the play handler streams it via
+                    // /reader/audio/page, and a personal book resolves to its per-book
+                    // Stars unlock plaque via the backend 402 (audio_unlock_required).
+                    // Gating here blocked classics too, contradicting the free-classic promise.
+                    onClick={onReaderAudioPlayBtn}
                     disabled={!readerHasContent || readerAudioPlayLoading || billingActionLoading}
-                    title={readerAudioPremiumLocked
-                      ? readerAudioPremiumHint
-                      : (readerAudioAwaitingWordTap ? tr('Нажми слово…', 'Wort antippen…') : tr('Слушать', 'Hören'))}
+                    title={readerAudioAwaitingWordTap ? tr('Нажми слово…', 'Wort antippen…') : tr('Слушать', 'Hören')}
                     aria-label={tr('Слушать книгу', 'Buch hören')}
                   >
                     {readerAudioPlayLoading ? (
