@@ -12624,15 +12624,23 @@ function AppInner() {
   const checkTodayTheory = async () => {
     if (!initData || !theoryPackage) return;
     const sentences = Array.isArray(theoryPackage?.practice_sentences) ? theoryPackage.practice_sentences : [];
-    // Soft, user-correctable validations: show a floating 3s toast OVER the task
-    // (not the inline red error, which is gated by !theoryError and would hide the
-    // whole theory card — i.e. the sentences the user still needs to fill in).
+    // Soft, user-correctable validations: show a prominent house-style modal OVER the task
+    // (not the inline red error, which is gated by !theoryError and would hide the whole
+    // theory card — i.e. the sentences the user still needs to fill in).
     if (!sentences.length) {
-      showInlineToast(tr('Нет предложений для проверки.', 'Keine Sätze zur Prüfung.'));
+      showNoticeModal({
+        emoji: '📝',
+        title: tr('Пока нечего проверять', 'Noch nichts zu prüfen'),
+        message: tr('Нет предложений для проверки.', 'Keine Sätze zur Prüfung.'),
+      });
       return;
     }
     if (theoryPracticeAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
-      showInlineToast(tr('Переведите все предложения, чтобы проверить.', 'Bitte alle Sätze übersetzen.'));
+      showNoticeModal({
+        emoji: '✍️',
+        title: tr('Переведите все предложения', 'Übersetze alle Sätze'),
+        message: tr('Чтобы проверить, заполни перевод для каждого предложения.', 'Fülle für jeden Satz eine Übersetzung aus, um zu prüfen.'),
+      });
       return;
     }
     try {

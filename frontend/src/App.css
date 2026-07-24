@@ -5345,20 +5345,28 @@ body:has(.webapp-page.is-theme-light),
   color: rgba(248, 250, 252, 0.55);
 }
 
+/* Мягкая фирменная плашка-внимание вместо жёсткого «технического» красного бокса.
+   Тёплый rose-тон, скруглённая, лёгкий левый акцент и тень — читается как аккуратное
+   сообщение для человека, а не error-код для программиста. [[feedback_consumer_app_not_for_programmers]] */
 .webapp-error {
-  color: #fecaca;
-  background: rgba(239, 68, 68, 0.12);
-  padding: 12px 16px;
-  border-radius: 12px;
+  color: #f7b8ab;
+  background: linear-gradient(180deg, #2a1a1a 0%, #241717 100%);
+  padding: 13px 15px;
+  border-radius: 14px;
+  border: 1px solid rgba(224, 138, 125, 0.28);
+  border-left: 3px solid #e0745e;
   font-size: 14px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
 .webapp-page.is-theme-light .webapp-error {
-  color: #7f1d1d;
-  background: rgba(239, 68, 68, 0.16);
-  border: 1px solid rgba(185, 28, 28, 0.24);
+  color: #9a3528;
+  background: linear-gradient(180deg, #fff5f3 0%, #fdecea 100%);
+  border: 1px solid #f2cec7;
+  border-left: 3px solid #e0745e;
+  box-shadow: 0 8px 20px rgba(150, 60, 40, 0.10);
 }
 
 .webapp-error-inline {
