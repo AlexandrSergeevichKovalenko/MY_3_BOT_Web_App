@@ -40971,6 +40971,14 @@ def main():
     print("🚀 Бот запущен! Ожидаем сообщения...")
     bot_startup_completed_successfully = True
     _emit_bot_startup_total(success=bot_startup_completed_successfully)
+    # External dead-man's-switch: ping an uptime monitor now that startup FULLY succeeded, so a
+    # crash during startup (or later) stops the pings and the monitor alerts you — the one
+    # failure the bot itself cannot report. Inert until HEALTHCHECK_PING_URL is set.
+    try:
+        from backend.healthcheck_pinger import start_healthcheck_pinger
+        start_healthcheck_pinger("bot")
+    except Exception:
+        logging.warning("healthcheck pinger failed to start", exc_info=True)
     # drop_pending_updates: after a deploy/restart, discard the backlog Telegram queued
     # while the bot was down instead of replaying it as a burst (stale answers, duplicate
     # deliveries, event-loop storm). Fresh start every boot.
