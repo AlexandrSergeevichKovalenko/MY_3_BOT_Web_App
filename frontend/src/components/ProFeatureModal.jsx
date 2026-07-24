@@ -28,7 +28,7 @@ export default function ProFeatureModal({
       <button type="button" className="profeat-backdrop" aria-label={tr('Закрыть', 'Schließen')} onClick={onClose} />
       <div className="profeat-card" onClick={(e) => e.stopPropagation()}>
         <button type="button" className="profeat-close" aria-label={tr('Закрыть', 'Schließen')} onClick={onClose}>×</button>
-        <div className="profeat-badge">👑 {tr('Функция Pro', 'Pro-Funktion')}</div>
+        <div className="profeat-badge">👑 {tr('Функция «Полного доступа»', 'Funktion mit vollem Zugang')}</div>
         <div className="profeat-emoji">{emoji}</div>
         <h3 className="profeat-title">{title}</h3>
         {intro ? <p className="profeat-intro">{intro}</p> : null}
@@ -37,7 +37,7 @@ export default function ProFeatureModal({
             {bullets.map((b, i) => <li key={i}>{b}</li>)}
           </ul>
         ) : null}
-        <button type="button" className="profeat-cta" onClick={onUpgrade}>✨ {tr('Оформить Pro', 'Pro holen')}</button>
+        <button type="button" className="profeat-cta" onClick={onUpgrade}>✨ {tr('Оформить полный доступ', 'Vollen Zugang holen')}</button>
         <button type="button" className="profeat-later" onClick={onClose}>{tr('Не сейчас', 'Nicht jetzt')}</button>
       </div>
     </div>

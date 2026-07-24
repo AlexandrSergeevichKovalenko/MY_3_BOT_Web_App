@@ -1407,7 +1407,7 @@ function buildOnboardingSlides(uiLang = 'ru') {
         bullets: [
           'Übersetzungen, Wörterbuch & Suche, Videos, Filme, Lesen — Lernen und echtes Deutsch.',
           'Karten (Space Repetition) — Wiederholung deiner gespeicherten Wörter.',
-          'Analytik, Abo, Kosten — Fortschritt und Tarif; Sprechen — Sprachpraxis (Pro).',
+          'Analytik, Abo, Kosten — Fortschritt und Tarif; Sprechen — Sprachpraxis (voller Zugang).',
         ],
       },
       {
@@ -1451,7 +1451,7 @@ function buildOnboardingSlides(uiLang = 'ru') {
       bullets: [
         'Переводы, Словарь и поиск, Видео, Фильмы, Чтение — обучение и живой язык.',
         'Карты (Space Repetition) — повторение сохранённых слов.',
-        'Аналитика, Подписка, Расходы — прогресс и тариф; Разговор — голосовая практика (Pro).',
+        'Аналитика, Подписка, Расходы — прогресс и тариф; Разговор — голосовая практика (Полный доступ).',
       ],
     },
     {
@@ -1515,7 +1515,7 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'subscription',
         title: 'Abo',
-        summary: 'Hier siehst du Tarif, Limits und zahlst Pro mit Telegram Stars.',
+        summary: 'Hier siehst du Tarif, Limits und zahlst den vollen Zugang mit Telegram Stars.',
         sections: [
           {
             title: 'Was dieser Bereich zeigt',
@@ -1536,7 +1536,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Was du dort tippen kannst',
             items: [
-              'Tarif wählen, Limits lesen und Pro mit Telegram Stars holen.',
+              'Tarif wählen, Limits lesen und vollen Zugang mit Telegram Stars holen.',
               'Dein Stars-Abo (Verlängerung, Kündigung) verwaltest du direkt in Telegram.',
               'Nach dem Kauf kurz aktualisieren, damit der Status sichtbar nachzieht.',
             ],
@@ -1649,10 +1649,10 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'rhythm',
         title: 'Dein Rhythmus: Zeitplan und Streak',
-        summary: 'Stell ein, wie viele Aufgaben pro Tag und zu welchen Zeiten sie kommen. Und eine Serie von Tagen in Folge bringt kostenlose Pro-Tage.',
+        summary: 'Stell ein, wie viele Aufgaben pro Tag und zu welchen Zeiten sie kommen. Und eine Serie von Tagen in Folge bringt kostenlose Tage mit vollem Zugang.',
         sections: [
           {
-            title: 'Aufgaben-Zeitplan (Pro)',
+            title: 'Aufgaben-Zeitplan (voller Zugang)',
             items: [
               'Wähle das Tempo: intensiv (~20/Tag), normal (~12), selten (~8) oder Stille (nichts automatisch).',
               'Und das Zeitfenster: ganzer Tag, morgens, abends oder morgens+abends — die Aufgaben kommen gleichmäßig innerhalb des Fensters.',
@@ -1663,7 +1663,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'Streak — Serie von Tagen in Folge',
             items: [
               'Jeder Tag, an dem du lernst, verlängert deine Serie 🔥. Sie ist in der Morgennachricht und in den Tagesergebnissen sichtbar.',
-              'Mehrere Tage in Folge — und der Bot schenkt dir einen kostenlosen Pro-Tag. Unterbrich die Serie nicht.',
+              'Mehrere Tage in Folge — und der Bot schenkt dir einen kostenlosen Tag mit vollem Zugang. Unterbrich die Serie nicht.',
               'Es gibt ein «Einfrieren»: ein verpasster Tag setzt die Serie nicht zurück, wenn du ein Einfrieren hast.',
             ],
           },
@@ -1671,7 +1671,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'Lade einen Freund ein',
             items: [
               'Der Befehl /invite im Privat-Chat mit dem Bot gibt dir deinen persönlichen Einladungslink.',
-              'Sobald der Freund dranbleibt (mehrere Tage in Folge) — bekommt ihr beide kostenlose Pro-Tage.',
+              'Sobald der Freund dranbleibt (mehrere Tage in Folge) — bekommt ihr beide kostenlose Tage mit vollem Zugang.',
             ],
           },
         ],
@@ -2329,10 +2329,10 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'rhythm',
       title: 'Твой ритм: расписание и стрик',
-      summary: 'Настрой, сколько заданий в день и в какие часы их присылать. А серия дней подряд приносит бесплатные дни Pro.',
+      summary: 'Настрой, сколько заданий в день и в какие часы их присылать. А серия дней подряд приносит бесплатные дни полного доступа.',
       sections: [
         {
-          title: 'Расписание заданий (Pro)',
+          title: 'Расписание заданий (Полный доступ)',
           items: [
             'Выбери темп: интенсивно (~20 в день), обычно (~12), редко (~8) или тишина (не присылать автоматически).',
             'И окно времени: весь день, утро, вечер или утро+вечер — задания придут равномерно внутри окна.',
@@ -2343,7 +2343,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Стрик — серия дней подряд',
           items: [
             'Каждый день, когда ты занимаешься, продлевает твою серию 🔥. Она видна в утреннем сообщении и в итогах дня.',
-            'Несколько дней подряд — и бот дарит бесплатный день Pro. Не прерывай серию.',
+            'Несколько дней подряд — и бот дарит бесплатный день полного доступа. Не прерывай серию.',
             'Есть «заморозка»: один пропущенный день не обнулит серию, если заморозка у тебя есть.',
           ],
         },
@@ -2351,7 +2351,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Позови друга',
           items: [
             'Команда /invite в личке с ботом даёт твою личную ссылку-приглашение.',
-            'Как только друг втянётся (несколько дней подряд) — вы оба получаете бесплатные дни Pro.',
+            'Как только друг втянётся (несколько дней подряд) — вы оба получаете бесплатные дни полного доступа.',
           ],
         },
       ],
@@ -8493,8 +8493,8 @@ function AppInner() {
       eyebrow: tr('Спасибо ☕️', 'Danke ☕️'),
       title: tr('Купить разработчику кофе ☕️', 'Dem Entwickler einen Kaffee ☕️ spendieren'),
       blurb: tr(
-        'В благодарность — 7 дней Pro (полный доступ), бейдж спонсора ☕️ и место на стене благодарностей. И это помогает оплачивать серверы. Оплата в Telegram Stars.',
-        'Als Dank — 7 Tage Pro (voller Zugang), ein Sponsor-Abzeichen ☕️ und ein Platz an der Dankeswand. Und es hilft, die Server zu bezahlen. Zahlung mit Telegram Stars.'
+        'В благодарность — 7 дней полного доступа, бейдж спонсора ☕️ и место на стене благодарностей. И это помогает оплачивать серверы. Оплата в Telegram Stars.',
+        'Als Dank — 7 Tage vollen Zugang, ein Sponsor-Abzeichen ☕️ und ein Platz an der Dankeswand. Und es hilft, die Server zu bezahlen. Zahlung mit Telegram Stars.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -8503,8 +8503,8 @@ function AppInner() {
       eyebrow: tr('Спасибо ☕️🍰', 'Danke ☕️🍰'),
       title: tr('Кофе ☕️ и чизкейк 🍰', 'Kaffee ☕️ und Cheesecake 🍰'),
       blurb: tr(
-        'В благодарность — 14 дней Pro (полный доступ), более заметный бейдж спонсора 🍰 и место повыше на стене благодарностей. Сильнее помогает проекту. Оплата в Telegram Stars.',
-        'Als Dank — 14 Tage Pro (voller Zugang), ein auffälligeres Sponsor-Abzeichen 🍰 und ein höherer Platz an der Dankeswand. Hilft dem Projekt stärker. Zahlung mit Telegram Stars.'
+        'В благодарность — 14 дней полного доступа, более заметный бейдж спонсора 🍰 и место повыше на стене благодарностей. Сильнее помогает проекту. Оплата в Telegram Stars.',
+        'Als Dank — 14 Tage vollen Zugang, ein auffälligeres Sponsor-Abzeichen 🍰 und ein höherer Platz an der Dankeswand. Hilft dem Projekt stärker. Zahlung mit Telegram Stars.'
       ),
       priceLabel: '',
       priceLabelDe: '',
@@ -8581,34 +8581,34 @@ function AppInner() {
           tr('«Объяснить ошибки» и «Спроси GPT»: по 1 в день.', '„Fehler erklären“ und „GPT fragen“: je 1 pro Tag.'),
           tr('Карточки: 10 новых слов на каждый вид тренировки + 20 повторений в день.', 'Karten: 10 neue Wörter je Trainingsmodus + 20 Wiederholungen pro Tag.'),
           tr('«Почувствуй слово»: 1 раз в день.', '„Wort fühlen“: 1-mal pro Tag.'),
-          tr('Читалка: «Классика» и статьи из интернета; свои книги — только в Pro.', 'Reader: „Klassiker“ und Web-Artikel; eigene Bücher — nur in Pro.'),
-          tr('YouTube: немецкие субтитры (синхронные русские — в Pro).', 'YouTube: deutsche Untertitel (synchrone russische — in Pro).'),
+          tr('Читалка: «Классика» и статьи из интернета; свои книги — только в «Полном доступе».', 'Reader: „Klassiker“ und Web-Artikel; eigene Bücher — nur mit vollem Zugang.'),
+          tr('YouTube: немецкие субтитры (синхронные русские — в «Полном доступе»).', 'YouTube: deutsche Untertitel (synchrone russische — mit vollem Zugang).'),
           tr('Задания по расписанию: 6 в день (без своей настройки).', 'Aufgaben nach Plan: 6 pro Tag (ohne eigene Einstellung).'),
-          tr('Прокачка навыков, «Числа на слух» (тренажёр), аналитика, задачи, план недели, карта навыков — в Pro.', 'Skill-Training, Zahlen-Diktat (Training), Analyse, Aufgaben, Wochenplan, Skill-Karte — in Pro.'),
+          tr('Прокачка навыков, «Числа на слух» (тренажёр), аналитика, задачи, план недели, карта навыков — в «Полном доступе».', 'Skill-Training, Zahlen-Diktat (Training), Analyse, Aufgaben, Wochenplan, Skill-Karte — mit vollem Zugang.'),
         ],
       },
       pro: {
-        title: tr('Лимиты тарифа Pro', 'Limits des Pro-Tarifs'),
+        title: tr('Лимиты тарифа «Полный доступ»', 'Limits des vollen Zugangs'),
         items: paidCommon,
       },
       support_coffee: {
         title: tr('Кофе ☕️ — поддержка', 'Kaffee ☕️ — Unterstützung'),
         items: [
-          tr('7 дней Pro в подарок — полный доступ ко всем функциям.', '7 Tage Pro geschenkt — voller Zugang zu allen Funktionen.'),
+          tr('7 дней полного доступа в подарок — все функции открыты.', '7 Tage vollen Zugang geschenkt — voller Zugang zu allen Funktionen.'),
           tr('Бейдж спонсора ☕️ рядом с твоим именем.', 'Sponsor-Abzeichen ☕️ neben deinem Namen.'),
           tr('Место на стене благодарностей.', 'Ein Platz an der Dankeswand.'),
           tr('Помогает оплачивать серверы и развитие.', 'Hilft, Server und Weiterentwicklung zu bezahlen.'),
-          tr('Разовый платёж в Telegram Stars. Pro-дни добавятся к твоему доступу (у Pro — продлят подписку).', 'Einmalige Zahlung in Telegram Stars. Die Pro-Tage werden deinem Zugang hinzugefügt (bei Pro verlängern sie das Abo).'),
+          tr('Разовый платёж в Telegram Stars. Дни полного доступа добавятся к твоему доступу (при активном «Полном доступе» — продлят подписку).', 'Einmalige Zahlung in Telegram Stars. Die Tage vollen Zugangs werden deinem Zugang hinzugefügt (bei aktivem vollem Zugang verlängern sie das Abo).'),
         ],
       },
       support_cheesecake: {
         title: tr('Кофе ☕️ и чизкейк 🍰 — поддержка', 'Kaffee ☕️ und Cheesecake 🍰 — Unterstützung'),
         items: [
-          tr('14 дней Pro в подарок — полный доступ ко всем функциям.', '14 Tage Pro geschenkt — voller Zugang zu allen Funktionen.'),
+          tr('14 дней полного доступа в подарок — все функции открыты.', '14 Tage vollen Zugang geschenkt — voller Zugang zu allen Funktionen.'),
           tr('Более заметный бейдж спонсора 🍰 рядом с твоим именем.', 'Auffälligeres Sponsor-Abzeichen 🍰 neben deinem Namen.'),
           tr('Выше место на стене благодарностей.', 'Höherer Platz an der Dankeswand.'),
           tr('Сильнее помогает оплачивать серверы и развитие.', 'Hilft stärker, Server und Weiterentwicklung zu bezahlen.'),
-          tr('Разовый платёж в Telegram Stars. Pro-дни добавятся к твоему доступу (у Pro — продлят подписку).', 'Einmalige Zahlung in Telegram Stars. Die Pro-Tage werden deinem Zugang hinzugefügt (bei Pro verlängern sie das Abo).'),
+          tr('Разовый платёж в Telegram Stars. Дни полного доступа добавятся к твоему доступу (при активном «Полном доступе» — продлят подписку).', 'Einmalige Zahlung in Telegram Stars. Die Tage vollen Zugangs werden deinem Zugang hinzugefügt (bei aktivem vollem Zugang verlängern sie das Abo).'),
         ],
       },
     };
@@ -13739,13 +13739,13 @@ function AppInner() {
       eyebrow: tr('Шаг 5 из 6', 'Schritt 5 von 6'),
       title: tr('Подписка и управление тарифом', 'Abo und Tarifverwaltung'),
       body: tr(
-        'В разделе «Подписка» видны текущий тариф, лимиты и все доступные планы. Pro оплачивается в Telegram Stars — прямо в приложении, без карт на сторонних сайтах.',
-        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfügbaren Pläne. Pro wird mit Telegram Stars bezahlt — direkt in der App, ohne Karte auf fremden Seiten.'
+        'В разделе «Подписка» видны текущий тариф, лимиты и все доступные планы. «Полный доступ» оплачивается в Telegram Stars — прямо в приложении, без карт на сторонних сайтах.',
+        'Im Bereich „Abo“ siehst du deinen aktuellen Tarif, Limits und alle verfügbaren Pläne. Der volle Zugang wird mit Telegram Stars bezahlt — direkt in der App, ohne Karte auf fremden Seiten.'
       ),
       bullets: [
         tr('Каждый новый пользователь получает 7 дней полного доступа бесплатно, чтобы попробовать всё. Потом — базовый бесплатный режим.', 'Jeder neue Nutzer bekommt 7 Tage vollen Zugang gratis zum Ausprobieren. Danach der kostenlose Basis-Modus.'),
-        tr('Озвучка книг оплачивается отдельно, за каждую книгу — в Pro она не входит. Классика озвучена бесплатно для всех.', 'Die Buch-Vertonung wird separat je Buch bezahlt — nicht in Pro enthalten. Klassiker sind für alle gratis vertont.'),
-        tr('Pro-подпиской (продление и отмена) управляешь прямо в Telegram; отменить можно в любой момент.', 'Dein Pro-Abo (Verlängerung und Kündigung) verwaltest du direkt in Telegram; jederzeit kündbar.'),
+        tr('Озвучка книг оплачивается отдельно, за каждую книгу — в «Полный доступ» она не входит. Классика озвучена бесплатно для всех.', 'Die Buch-Vertonung wird separat je Buch bezahlt — nicht im vollen Zugang enthalten. Klassiker sind für alle gratis vertont.'),
+        tr('Подпиской «Полный доступ» (продление и отмена) управляешь прямо в Telegram; отменить можно в любой момент.', 'Dein Voller-Zugang-Abo (Verlängerung und Kündigung) verwaltest du direkt in Telegram; jederzeit kündbar.'),
       ],
     },
     {
@@ -14013,14 +14013,14 @@ function AppInner() {
           key: 'subscription',
           number: '6',
           title: 'Abo und Telegram Stars',
-          summary: 'Verstehe Free/Pro, den 7-Tage-Test, die Buch-Vertonung und die Zahlung mit Telegram Stars.',
+          summary: 'Verstehe Free und vollen Zugang, den 7-Tage-Test, die Buch-Vertonung und die Zahlung mit Telegram Stars.',
           sections: [
             {
               title: 'Was der Bereich „Abo“ zeigt',
               items: [
                 'Hier siehst du deinen aktuellen Plan, den Status, den heutigen Verbrauch und dein Tageslimit.',
-                'Außerdem sind alle Funktionen von Free und Pro als Vergleich sichtbar.',
-                'Jeder neue Nutzer bekommt 7 Tage volles Pro gratis zum Ausprobieren; danach Free.',
+                'Außerdem sind alle Funktionen von Free und vollem Zugang als Vergleich sichtbar.',
+                'Jeder neue Nutzer bekommt 7 Tage vollen Zugang gratis zum Ausprobieren; danach Free.',
               ],
             },
             {
@@ -14028,22 +14028,22 @@ function AppInner() {
               items: [
                 'Free: kostenloser Basis-Modus mit Tageslimits.',
                 'Voller Zugang: alle Funktionen freigeschaltet (Übersetzungen, Analysen, Wörterbuch, Karten, Skill-Karte, eigene Bücher u. v. m.).',
-                'Buch-Vertonung ist separat und nicht in Pro enthalten — sie wird pro Buch mit Sternen bezahlt; Klassiker sind für alle gratis vertont.',
+                'Buch-Vertonung ist separat und nicht im vollen Zugang enthalten — sie wird pro Buch mit Sternen bezahlt; Klassiker sind für alle gratis vertont.',
               ],
             },
             {
-              title: 'Wie du Pro holst',
+              title: 'Wie du vollen Zugang holst',
               items: [
-                'Pro wird mit Telegram Stars bezahlt — der offiziellen Telegram-Währung, direkt in der App, ohne Karte auf fremden Seiten.',
-                'Tippe auf „Pro holen“ — Telegram bietet an, die nötigen Sterne zu kaufen, und schaltet Pro sofort frei.',
+                'Der volle Zugang wird mit Telegram Stars bezahlt — der offiziellen Telegram-Währung, direkt in der App, ohne Karte auf fremden Seiten.',
+                'Tippe auf „Vollen Zugang holen“ — Telegram bietet an, die nötigen Sterne zu kaufen, und schaltet den vollen Zugang sofort frei.',
                 'Das Abo verlängert sich monatlich; kündbar jederzeit direkt in Telegram.',
               ],
             },
             {
               title: 'Abo verwalten und kündigen',
               items: [
-                'Dein Pro-Abo verwaltest du direkt in Telegram (Verlängerung, Kündigung) — kein externes Portal, keine fremde Seite.',
-                'Nach einer Kündigung bleibt Pro bis zum Ende des bereits bezahlten Zeitraums aktiv.',
+                'Dein Voller-Zugang-Abo verwaltest du direkt in Telegram (Verlängerung, Kündigung) — kein externes Portal, keine fremde Seite.',
+                'Nach einer Kündigung bleibt der volle Zugang bis zum Ende des bereits bezahlten Zeitraums aktiv.',
                 'Zurück in der App den Abo-Bereich kurz aktualisieren, damit der Status nachzieht.',
               ],
             },
@@ -14052,7 +14052,7 @@ function AppInner() {
               items: [
                 'Nach dem Kauf kurz 1–3 Sekunden warten und den Abo-Bereich aktualisieren.',
                 'Wenn der Status nicht sofort reagiert, kurz warten, aktualisieren und es noch einmal versuchen.',
-                'Auch mit aktivem Pro bleibt der Free/Pro-Vergleich sichtbar.',
+                'Auch mit aktivem vollem Zugang bleibt der Vergleich Free / voller Zugang sichtbar.',
               ],
             },
           ],
@@ -14443,14 +14443,14 @@ function AppInner() {
         key: 'subscription',
         number: '6',
         title: 'Подписка и Telegram Stars',
-        summary: 'Free/Pro, 7 дней Pro для всех, озвучка книг и оплата в Telegram Stars.',
+        summary: 'Free и «Полный доступ», 7 дней полного доступа для всех, озвучка книг и оплата в Telegram Stars.',
         sections: [
           {
             title: 'Что показывает блок «Подписка»',
             items: [
               'Текущий план, статус и дневной расход.',
-              'Сравнение всех возможностей Free и Pro прямо в Mini App.',
-              'Каждый новый пользователь получает 7 дней полного Pro бесплатно, чтобы попробовать всё; потом — Free.',
+              'Сравнение всех возможностей Free и «Полного доступа» прямо в Mini App.',
+              'Каждый новый пользователь получает 7 дней полного доступа бесплатно, чтобы попробовать всё; потом — Free.',
             ],
           },
           {
@@ -14458,22 +14458,22 @@ function AppInner() {
             items: [
               'Free: бесплатный базовый режим с дневными лимитами.',
               'Полный доступ: все функции открыты (переводы, разборы, словарь, карточки, аналитика, карта навыков, свои книги и многое другое).',
-              'Озвучка книг — отдельно, не входит в Pro: оплачивается за каждую книгу звёздами; классика озвучена бесплатно для всех.',
+              'Озвучка книг — отдельно, не входит в «Полный доступ»: оплачивается за каждую книгу звёздами; классика озвучена бесплатно для всех.',
             ],
           },
           {
-            title: 'Как оформить Pro',
+            title: 'Как оформить «Полный доступ»',
             items: [
-              'Pro оплачивается в Telegram Stars — официальной валюте Telegram, прямо в приложении, без карт на сторонних сайтах.',
-              'Нажимаешь «Оформить Pro» — Telegram сам предложит купить нужное количество звёзд и тут же откроет Pro.',
+              '«Полный доступ» оплачивается в Telegram Stars — официальной валюте Telegram, прямо в приложении, без карт на сторонних сайтах.',
+              'Нажимаешь «Оформить полный доступ» — Telegram сам предложит купить нужное количество звёзд и тут же откроет полный доступ.',
               'Подписка продлевается раз в месяц; отменить можно в любой момент прямо в Telegram.',
             ],
           },
           {
             title: 'Как управлять подпиской и отменить',
             items: [
-              'Pro-подпиской (продление и отмена) управляешь прямо в Telegram — без внешнего портала и чужих сайтов.',
-              'После отмены Pro остаётся активным до конца уже оплаченного периода.',
+              'Подпиской «Полный доступ» (продление и отмена) управляешь прямо в Telegram — без внешнего портала и чужих сайтов.',
+              'После отмены «Полный доступ» остаётся активным до конца уже оплаченного периода.',
               'Вернувшись в приложение, обнови блок подписки, чтобы статус подтянулся.',
             ],
           },
@@ -14482,7 +14482,7 @@ function AppInner() {
             items: [
               'После оплаты дайте системе 1–3 секунды и обновите блок подписки.',
               'Если статус не отреагировал сразу, подождите немного, обновите раздел и попробуйте ещё раз.',
-              'Даже с активным Pro сравнение Free/Pro остаётся видно в Mini App.',
+              'Даже с активным «Полным доступом» сравнение Free / Полный доступ остаётся видно в Mini App.',
             ],
           },
         ],
@@ -15914,8 +15914,8 @@ function AppInner() {
       emoji: '🎧',
       title: tr('Озвучка книги — отдельная опция', 'Buch-Vertonung — separate Option'),
       intro: tr(
-        'Озвучка НЕ входит в Pro — это отдельная опция по желанию. «Классика» уже озвучена бесплатно для всех, а любую свою книгу можно озвучить: платишь один раз за книгу и слушаешь сколько угодно.',
-        'Vertonung gehört NICHT zu Pro — es ist eine optionale Zusatzfunktion. «Klassik» ist für alle gratis vertont, jedes eigene Buch kannst du vertonen: einmal pro Buch zahlen und beliebig oft hören.'
+        'Озвучка НЕ входит в «Полный доступ» — это отдельная опция по желанию. «Классика» уже озвучена бесплатно для всех, а любую свою книгу можно озвучить: платишь один раз за книгу и слушаешь сколько угодно.',
+        'Vertonung gehört NICHT zum vollen Zugang — es ist eine optionale Zusatzfunktion. «Klassik» ist für alle gratis vertont, jedes eigene Buch kannst du vertonen: einmal pro Buch zahlen und beliebig oft hören.'
       ),
       bullets: [
         tr('«Классика» — бесплатная озвучка для всех', '«Klassik» — kostenlose Vertonung für alle'),
@@ -22130,8 +22130,8 @@ function AppInner() {
   const handleCatalogRuToggle = () => {
     if (isKnownFreePaidSurfaceMode) {
       showAppToast(tr(
-        '🔒 Русские субтитры — в Pro. Немецкие остаются с тобой.',
-        '🔒 Russische Untertitel — in Pro. Deutsche bleiben dir erhalten.',
+        '🔒 Русские субтитры — в «Полном доступе». Немецкие остаются с тобой.',
+        '🔒 Russische Untertitel — mit vollem Zugang. Deutsche bleiben dir erhalten.',
       ));
       return;
     }
@@ -26393,13 +26393,13 @@ function AppInner() {
       setReaderErrorCode(code);
       if (code === 'LIMIT_FREE_PLAN_1_BOOK') {
         setReaderError(tr(
-          'Загрузка своих книг — функция Pro. На бесплатном плане можно читать «Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги.',
-          'Eigene Bücher hochladen ist eine Pro-Funktion. Im Free-Plan liest du «Klassiker» und Web-Artikel. Hol dir Pro, um eigene Bücher hinzuzufügen.'
+          'Загрузка своих книг — функция «Полного доступа». На бесплатном плане можно читать «Классику» и статьи из интернета. Оформи «Полный доступ», чтобы добавлять свои книги.',
+          'Eigene Bücher hochladen ist eine Funktion mit vollem Zugang. Im Free-Plan liest du «Klassiker» und Web-Artikel. Hol dir vollen Zugang, um eigene Bücher hinzuzufügen.'
         ));
       } else if (code === 'LIMIT_FREE_PLAN_1_ARTICLE') {
         const articleLimitMsg = tr(
           'На бесплатном плане можно открыть 1 статью из интернета в день. Лимит обновится завтра в 00:00 по Вене. Оформи «Полный доступ» — и открывай статьи без дневного лимита.',
-          'Im Free-Plan kannst du 1 Web-Artikel pro Tag öffnen. Das Limit wird morgen um 00:00 Uhr (Wien) zurückgesetzt. Hol dir Pro und lies Artikel ohne Limit.'
+          'Im Free-Plan kannst du 1 Web-Artikel pro Tag öffnen. Das Limit wird morgen um 00:00 Uhr (Wien) zurückgesetzt. Hol dir vollen Zugang und lies Artikel ohne Limit.'
         );
         setReaderError(articleLimitMsg);
         // Feed opens close the add panel, so the inline error above isn't visible —
@@ -33095,9 +33095,9 @@ function AppInner() {
               title: isSupport ? tr('Спасибо!', 'Danke!') : tr('Готово', 'Fertig'),
               message: isSupport
                 ? (code === 'support_cheesecake'
-                    ? tr('Спасибо! Начислили 14 дней Pro, и ты в стене благодарностей 🙏', 'Danke! 14 Tage Pro gutgeschrieben, und du bist an der Dankeswand 🙏')
-                    : tr('Спасибо! Начислили 7 дней Pro, и ты в стене благодарностей 🙏', 'Danke! 7 Tage Pro gutgeschrieben, und du bist an der Dankeswand 🙏'))
-                : tr('Pro подключён! Обновляем доступ…', 'Pro aktiv! Zugang wird aktualisiert…'),
+                    ? tr('Спасибо! Начислили 14 дней полного доступа, и ты в стене благодарностей 🙏', 'Danke! 14 Tage vollen Zugang gutgeschrieben, und du bist an der Dankeswand 🙏')
+                    : tr('Спасибо! Начислили 7 дней полного доступа, и ты в стене благодарностей 🙏', 'Danke! 7 Tage vollen Zugang gutgeschrieben, und du bist an der Dankeswand 🙏'))
+                : tr('Полный доступ подключён! Обновляем доступ…', 'Voller Zugang aktiv! Zugang wird aktualisiert…'),
               buttons: [{ type: 'ok' }],
             });
           } catch (_e) { /* popup optional */ }
@@ -36720,7 +36720,7 @@ function AppInner() {
                               <div className="worldnews-ru-locked-card">
                                 <span className="worldnews-ru-locked-icon" aria-hidden="true">🔒</span>
                                 <strong className="worldnews-ru-locked-title">
-                                  {tr('Синхронные русские субтитры — в Pro', 'Synchrone russische Untertitel — nur mit Pro')}
+                                  {tr('Синхронные русские субтитры — в «Полном доступе»', 'Synchrone russische Untertitel — nur mit vollem Zugang')}
                                 </strong>
                                 <span className="worldnews-ru-locked-text">
                                   {tr(
@@ -41441,7 +41441,7 @@ function AppInner() {
               <section className="webapp-section webapp-billing" ref={billingRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Подписка', 'Abo')}</h2>
-                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и управление подпиской. Оплата Pro — в Telegram Stars.', 'Aktueller Tarif, Limits und Abo-Verwaltung. Pro wird mit Telegram Stars bezahlt.')}</p>
+                  <p className="webapp-muted">{tr('Текущий тариф, лимиты и управление подпиской. Оплата «Полного доступа» — в Telegram Stars.', 'Aktueller Tarif, Limits und Abo-Verwaltung. Der volle Zugang wird mit Telegram Stars bezahlt.')}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 
@@ -41472,11 +41472,11 @@ function AppInner() {
                         <strong>{(() => {
                           const s = String(billingStatus?.status || 'inactive');
                           const map = {
-                            active: tr('Pro активна', 'Pro aktiv'),
-                            trialing: tr('Pro · пробный период', 'Pro · Testphase'),
-                            past_due: tr('Pro · оплата просрочена', 'Pro · Zahlung überfällig'),
-                            canceled: tr('Pro отменена', 'Pro gekündigt'),
-                            inactive: tr('Нет подписки Pro', 'Kein Pro-Abo'),
+                            active: tr('Полный доступ активен', 'Voller Zugang aktiv'),
+                            trialing: tr('Полный доступ · пробный период', 'Voller Zugang · Testphase'),
+                            past_due: tr('Полный доступ · оплата просрочена', 'Voller Zugang · Zahlung überfällig'),
+                            canceled: tr('Полный доступ отменён', 'Voller Zugang gekündigt'),
+                            inactive: tr('Нет подписки «Полный доступ»', 'Kein Voller-Zugang-Abo'),
                           };
                           return map[s] || s;
                         })()}</strong>
@@ -41492,22 +41492,22 @@ function AppInner() {
                           <div className="bonus-pro-banner__body">
                             <span className="bonus-pro-banner__count">
                               {bp.banked ? (
-                                <>{tr('В запасе', 'In Reserve')}: <b>{d}</b> {tr('дн. Pro', 'Tage Pro')}</>
+                                <>{tr('В запасе', 'In Reserve')}: <b>{d}</b> {tr('дн. полного доступа', 'Tage vollen Zugang')}</>
                               ) : (
-                                <><b>{d}</b> {tr('дн. Pro в подарок', 'Tage Pro geschenkt')}</>
+                                <><b>{d}</b> {tr('дн. полного доступа в подарок', 'Tage vollen Zugang geschenkt')}</>
                               )}
                             </span>
                             <span className="bonus-pro-banner__sub">
                               {bp.banked
                                 ? tr('Включатся, когда закончится подписка — не сгорят.', 'Sie starten nach Abo-Ende — nichts verfällt.')
-                                : tr('Полный Pro бесплатно. Нажми ⓘ — как копить дальше.', 'Volles Pro gratis. Tippe ⓘ — so sammelst du mehr.')}
+                                : tr('Полный доступ бесплатно. Нажми ⓘ — как копить дальше.', 'Voller Zugang gratis. Tippe ⓘ — so sammelst du mehr.')}
                             </span>
                           </div>
                           <button
                             type="button"
                             className="bonus-pro-banner__info"
                             onClick={() => setBonusDaysInfoOpen(true)}
-                            aria-label={tr('Подробнее о бонусных днях Pro', 'Mehr zu Pro-Bonustagen')}
+                            aria-label={tr('Подробнее о бонусных днях полного доступа', 'Mehr zu Bonustagen für vollen Zugang')}
                           >
                             ⓘ
                           </button>
@@ -41518,8 +41518,8 @@ function AppInner() {
                     {billingStatus?.is_welcome_trial && billingStatus?.trial_ends_at ? (
                       <div className="webapp-success">
                         🎁 {tr(
-                          'Бесплатный Pro-триал активен до',
-                          'Kostenlose Pro-Testphase aktiv bis',
+                          'Бесплатный пробный полный доступ активен до',
+                          'Kostenlose Testphase mit vollem Zugang aktiv bis',
                         )}: {new Date(billingStatus.trial_ends_at).toLocaleString()}
                         {'. '}
                         {tr('Озвучка книг — отдельно, за каждую книгу.', 'Buch-Vertonung — separat, je Buch.')}
@@ -41533,8 +41533,8 @@ function AppInner() {
                     <div className="billing-ribbon">
                       <span className="billing-ribbon__gift">🎁</span>
                       <span className="billing-ribbon__text">
-                        <b>{tr('7 дней полного Pro — бесплатно.', '7 Tage volles Pro — gratis.')}</b>{' '}
-                        {tr('Потом автоматически ', 'Danach automatisch ')}<span className="accent">Free</span>{tr('. Оплата Pro и озвучки — в Telegram Stars.', '. Pro und Vertonung — mit Telegram Stars.')}
+                        <b>{tr('7 дней полного доступа — бесплатно.', '7 Tage vollen Zugang — gratis.')}</b>{' '}
+                        {tr('Потом автоматически ', 'Danach automatisch ')}<span className="accent">Free</span>{tr('. Оплата полного доступа и озвучки — в Telegram Stars.', '. Voller Zugang und Vertonung — mit Telegram Stars.')}
                       </span>
                     </div>
 
@@ -41584,7 +41584,7 @@ function AppInner() {
                           <span className="billing-note__chev" aria-hidden="true">›</span>
                         </summary>
                         <div className="billing-note__body">
-                          <p>{tr('Не входит ни в Free, ни в Pro: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Free noch in Pro: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}</p>
+                          <p>{tr('Не входит ни в Free, ни в «Полный доступ»: оплачивается за каждую книгу звёздами (3 голоса, 25/50/100 %). «Классика» озвучена бесплатно для всех.', 'Weder in Free noch im vollen Zugang: pro Buch mit Sternen bezahlt (3 Stimmen, 25/50/100 %). „Klassiker“ sind für alle gratis vertont.')}</p>
                         </div>
                       </details>
                       <details className="billing-note">
@@ -41603,11 +41603,11 @@ function AppInner() {
                       <details className="billing-note">
                         <summary>
                           <span className="billing-note__ico">🔁</span>
-                          {tr('Как отменить Pro', 'Pro kündigen')}
+                          {tr('Как отменить «Полный доступ»', 'Vollen Zugang kündigen')}
                           <span className="billing-note__chev" aria-hidden="true">›</span>
                         </summary>
                         <div className="billing-note__body">
-                          <p>{tr('Pro продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.', 'Pro verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
+                          <p>{tr('«Полный доступ» продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.', 'Der volle Zugang verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
                         </div>
                       </details>
                       <details className="billing-note">
@@ -41638,7 +41638,7 @@ function AppInner() {
                         <div className="billing-zone__head">
                           <h3 className="billing-zone__title">{tr('Поддержать проект ❤️', 'Projekt unterstützen ❤️')}</h3>
                           <p className="billing-zone__hint">
-                            {tr('Поддержать может любой — и на Free, и на Pro. За кофе даём 7 дней Pro в подарок, за кофе с чизкейком — 14 дней. Плюс бейдж спонсора и место на стене благодарностей. Разовый платёж в Telegram Stars.', 'Unterstützen kann jeder — ob Free oder Pro. Für einen Kaffee gibt es 7 Tage Pro geschenkt, für Kaffee mit Cheesecake 14 Tage. Dazu ein Sponsor-Abzeichen und ein Platz an der Dankeswand. Einmalige Zahlung in Telegram Stars.')}
+                            {tr('Поддержать может любой — и на Free, и на «Полном доступе». За кофе даём 7 дней полного доступа в подарок, за кофе с чизкейком — 14 дней. Плюс бейдж спонсора и место на стене благодарностей. Разовый платёж в Telegram Stars.', 'Unterstützen kann jeder — ob Free oder voller Zugang. Für einen Kaffee gibt es 7 Tage vollen Zugang geschenkt, für Kaffee mit Cheesecake 14 Tage. Dazu ein Sponsor-Abzeichen und ein Platz an der Dankeswand. Einmalige Zahlung in Telegram Stars.')}
                           </p>
                         </div>
                         {billingStatus?.is_sponsor && (
@@ -41706,7 +41706,7 @@ function AppInner() {
                           <p className="billing-pay-tg-modal__text">
                             {billingPayInTelegram.isSupport
                               ? tr('Звёздами можно платить только внутри Telegram. Нажми кнопку — откроем бота прямо на этой поддержке, и оплата пройдёт в пару тапов.', 'Sterne funktionieren nur in Telegram. Tippe den Button — wir öffnen den Bot direkt bei dieser Unterstützung, in wenigen Taps erledigt.')
-                              : tr('Звёздами можно платить только внутри Telegram. Нажми кнопку — откроем бота прямо на оплате Pro, и оплата пройдёт в пару тапов.', 'Sterne funktionieren nur in Telegram. Tippe den Button — wir öffnen den Bot direkt bei der Pro-Zahlung, in wenigen Taps erledigt.')}
+                              : tr('Звёздами можно платить только внутри Telegram. Нажми кнопку — откроем бота прямо на оплате полного доступа, и оплата пройдёт в пару тапов.', 'Sterne funktionieren nur in Telegram. Tippe den Button — wir öffnen den Bot direkt bei der Zahlung für vollen Zugang, in wenigen Taps erledigt.')}
                           </p>
                           <button
                             type="button"
@@ -41761,8 +41761,8 @@ function AppInner() {
                               {optionPrice && <span className="billing-pay-tg-modal__option-price">{optionPrice}</span>}
                             </div>
                             <p className="billing-pay-tg-modal__text">
-                              {tr(`В подарок — ${proDays} дней Pro, бейдж спонсора и место на стене благодарностей. Нажми «Оплатить» — откроется оплата звёздами.`,
-                                  `Als Dank — ${proDays} Tage Pro, ein Sponsor-Abzeichen und ein Platz an der Dankeswand. Tippe „Bezahlen“ — die Sterne-Zahlung öffnet sich.`)}
+                              {tr(`В подарок — ${proDays} дней полного доступа, бейдж спонсора и место на стене благодарностей. Нажми «Оплатить» — откроется оплата звёздами.`,
+                                  `Als Dank — ${proDays} Tage vollen Zugang, ein Sponsor-Abzeichen und ein Platz an der Dankeswand. Tippe „Bezahlen“ — die Sterne-Zahlung öffnet sich.`)}
                             </p>
                             <button
                               type="button"

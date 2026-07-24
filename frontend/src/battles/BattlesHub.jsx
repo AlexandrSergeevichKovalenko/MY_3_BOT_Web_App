@@ -119,7 +119,7 @@ export default function BattlesHub() {
 
         <div className="bt-create">
           <div className="bt-block-title">🚀 Начать батл</div>
-          {!isPro ? <p className="bt-lock">🔓 Создавать батлы может Pro. Участвовать по приглашению — можно всем.</p> : null}
+          {!isPro ? <p className="bt-lock">🔓 Создавать батлы можно в «Полном доступе». Участвовать по приглашению — можно всем.</p> : null}
 
           <div className="bt-sub bt-sub-blue">
             <div className="bt-sub-title">🎯 Тема батла</div>

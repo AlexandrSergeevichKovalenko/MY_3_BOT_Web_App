@@ -1052,7 +1052,7 @@ def load_numdict_practice_next(*, user_id: int) -> dict:
             "used": 0,
             "limit": 0,
             "title": "Числа на слух",
-            "message": "Бесконечная тренировка чисел — в Pro. На бесплатном плане числа приходят в общей ленте заданий.",
+            "message": "Бесконечная тренировка чисел — в «Полном доступе». На бесплатном плане числа приходят в общей ленте заданий.",
         }
 
     # Paid tiers: cap the on-demand drill per day so TTS cost stays bounded.

@@ -590,7 +590,7 @@ def render_shortcut_limit_card(*, limit: int) -> bytes | None:
     shortcut auto-translate run limit."""
     return _card(badge="ПРОБА ЗАКОНЧИЛАСЬ", title="Лимит исчерпан",
                  subtitle=f"Бесплатно — {int(limit)} авто-переводов на пробу",
-                 accent=(245, 158, 11), motif=_motif_lock, cta="Оформить Pro")
+                 accent=(245, 158, 11), motif=_motif_lock, cta="Оформить полный доступ")
 
 
 def _motif_clock(base, d, cx, cy, accent):
@@ -611,7 +611,7 @@ def _motif_clock(base, d, cx, cy, accent):
 def render_shortcut_pro_limit_card(*, limit: int) -> bytes | None:
     """«Лимит на сегодня» plaque for the DM sent when a Pro user hits the daily run cap."""
     return _card(badge="ЛИМИТ НА СЕГОДНЯ", title="Лимит на сегодня",
-                 subtitle=f"Pro — {int(limit)} авто-перевода в день",
+                 subtitle=f"Полный доступ — {int(limit)} авто-перевода в день",
                  accent=(59, 130, 246), motif=_motif_clock, cta="Завтра утром снова")
 
 

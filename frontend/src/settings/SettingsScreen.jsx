@@ -190,7 +190,7 @@ export default function SettingsScreen() {
           <div className="st-sub-label">Часы</div>
           <Segmented options={WINDOWS} value={state.window} disabled={!isPro}
             onPick={(k) => persist('window', '/api/webapp/settings/window', k, 'window')} />
-          {!isPro ? <p className="st-lock-note">🔓 Настройка расписания — в Pro. На бесплатном приходит подборка заданий в день.</p> : null}
+          {!isPro ? <p className="st-lock-note">🔓 Настройка расписания — в «Полном доступе». На бесплатном приходит подборка заданий в день.</p> : null}
         </section>
 
         {/* Base dictionaries — disable to keep only your own words */}

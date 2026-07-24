@@ -994,16 +994,16 @@ function StepBody(props) {
                 <b>{t('каждое слово и предложение кликабельно', 'jedes Wort und jeder Satz antippbar')}</b>{' '}
                 {t('— нажми, чтобы увидеть перевод, и сразу сохрани нужные слова в свой словарь для изучения. ',
                    '— tippe drauf für die Übersetzung und speichere passende Wörter direkt in dein Wörterbuch zum Lernen. ')}
-                <b>{t('На Free — 1 статья в день, на Pro — без ограничений.', 'Free — 1 Artikel pro Tag, Pro — unbegrenzt.')}</b></p>
+                <b>{t('На Free — 1 статья в день, в «Полном доступе» — без ограничений.', 'Free — 1 Artikel pro Tag, voller Zugang — unbegrenzt.')}</b></p>
             </div>
           </div>
 
           <div className="ob-info is-trial">
             <div className="ic">🎁</div>
             <div>
-              <h4>{t('7 дней Pro — бесплатно каждому', '7 Tage Pro — für jeden gratis')}</h4>
-              <p>{t('Каждый новый пользователь сразу получает полный Pro на 7 дней, чтобы попробовать всё. Без карты, автоматически.',
-                    'Jeder neue Nutzer erhält sofort 7 Tage volles Pro, um alles auszuprobieren. Ohne Karte, automatisch.')}</p>
+              <h4>{t('7 дней полного доступа — бесплатно каждому', '7 Tage voller Zugang — für jeden gratis')}</h4>
+              <p>{t('Каждый новый пользователь сразу получает полный доступ на 7 дней, чтобы попробовать всё. Без карты, автоматически.',
+                    'Jeder neue Nutzer erhält sofort 7 Tage vollen Zugang, um alles auszuprobieren. Ohne Karte, automatisch.')}</p>
             </div>
           </div>
 
@@ -1011,8 +1011,8 @@ function StepBody(props) {
             <div className="ic">🔊</div>
             <div>
               <h4>{t('Озвучка книг — отдельно', 'Buch-Vertonung — separat')}</h4>
-              <p>{t('Не входит ни в Free, ни в Pro. Оплачивается за каждую книгу отдельно звёздами: 3 голоса и 25 / 50 / 100 % книги. ',
-                    'Weder in Free noch in Pro enthalten. Wird pro Buch separat mit Sternen bezahlt: 3 Stimmen und 25 / 50 / 100 % des Buches. ')}
+              <p>{t('Не входит ни в Free, ни в «Полный доступ». Оплачивается за каждую книгу отдельно звёздами: 3 голоса и 25 / 50 / 100 % книги. ',
+                    'Weder in Free noch im vollen Zugang enthalten. Wird pro Buch separat mit Sternen bezahlt: 3 Stimmen und 25 / 50 / 100 % des Buches. ')}
                 <b>{t('Классика озвучена бесплатно для всех.', 'Klassiker sind für alle gratis vertont.')}</b>{' '}
                 {t('Озвучить книгу можно прямо в Читалке: открываешь книгу → кнопка ▶.',
                    'Ein Buch vertonst du direkt im Reader: Buch öffnen → ▶-Knopf.')}</p>
@@ -1023,17 +1023,17 @@ function StepBody(props) {
             <div className="ic">⭐</div>
             <div>
               <h4>{t('Что такое звёзды Telegram', 'Was sind Telegram-Sterne')}</h4>
-              <p>{t('Звёзды — официальная валюта Telegram. Покупаются в пару тапов прямо в приложении, безопасно, без карт на сторонних сайтах. Ими оплачивается Pro и озвучка книг.',
-                    'Sterne sind die offizielle Telegram-Währung. In wenigen Taps direkt in der App gekauft — sicher, ohne Karte auf fremden Seiten. Damit zahlst du Pro und Buch-Vertonung.')}</p>
+              <p>{t('Звёзды — официальная валюта Telegram. Покупаются в пару тапов прямо в приложении, безопасно, без карт на сторонних сайтах. Ими оплачивается «Полный доступ» и озвучка книг.',
+                    'Sterne sind die offizielle Telegram-Währung. In wenigen Taps direkt in der App gekauft — sicher, ohne Karte auf fremden Seiten. Damit zahlst du vollen Zugang und Buch-Vertonung.')}</p>
             </div>
           </div>
 
           <div className="ob-info is-cancel">
             <div className="ic">🔁</div>
             <div>
-              <h4>{t('Как отменить Pro', 'Pro kündigen')}</h4>
-              <p>{t('Pro продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.',
-                    'Pro verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
+              <h4>{t('Как отменить «Полный доступ»', 'Vollen Zugang kündigen')}</h4>
+              <p>{t('«Полный доступ» продлевается автоматически раз в месяц. Отменить можно в любой момент прямо в Telegram: Настройки → Telegram Stars и подписки → выбери бота → «Отменить». Доступ сохранится до конца оплаченного периода.',
+                    'Der volle Zugang verlängert sich automatisch monatlich. Jederzeit kündbar direkt in Telegram: Einstellungen → Telegram Stars und Abos → Bot wählen → „Kündigen“. Der Zugang bleibt bis zum Ende des bezahlten Zeitraums.')}</p>
             </div>
           </div>
 
@@ -1047,10 +1047,10 @@ function StepBody(props) {
           </div>
 
           <div className="ob-plan ob-plan-pro">
-            <p className="ob-plan-title">💎 <b>Pro</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">292 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
+            <p className="ob-plan-title">💎 <b>{t('Полный доступ', 'Voller Zugang')}</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">292 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
             {IS_GUEST_TOUR ? GUEST_NOTE : (
               <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
-                {t('✨ Оформить Pro', '✨ Pro holen')}
+                {t('✨ Оформить полный доступ', '✨ Vollen Zugang holen')}
               </button>
             )}
             <span className="ob-muted-note">{t('Кнопка откроет экран «Подписка» — там актуальная цена и оплата в Telegram Stars. Открыть можно в любой момент из меню бота.', 'Der Knopf öffnet den «Abo»-Bildschirm — dort der aktuelle Preis und Zahlung mit Telegram Stars. Jederzeit über das Bot-Menü erreichbar.')}</span>
@@ -1107,7 +1107,7 @@ function StepBody(props) {
             {t('Так ты работаешь не «вообще», а именно над тем, что проседает — и слабые темы постепенно переходят в сильные.',
                'So arbeitest du nicht «allgemein», sondern genau an dem, was hakt — und schwache Themen werden nach und nach zu starken.')}
           </p>
-          <span className="ob-lock">{t('🔒 Карта навыков и точечная тренировка — в Pro', '🔒 Skill-Karte und gezieltes Training — mit Pro')}</span>
+          <span className="ob-lock">{t('🔒 Карта навыков и точечная тренировка — в «Полном доступе»', '🔒 Skill-Karte und gezieltes Training — mit vollem Zugang')}</span>
         </div>
       );
     case 'howto_tools':
@@ -1181,8 +1181,8 @@ function StepBody(props) {
             </li>
             <li>
               <b>{t('⚙️ «Настройки»', '⚙️ «Einstellungen»')}</b>
-              {t(' — одна кнопка открывает страницу настроек: автосейв, готовность к батлам и расписание (Pro). Всё в одном месте, меняется в любой момент.',
-                 ' — eine Taste öffnet die Einstellungsseite: Auto-Speichern, Duell-Bereitschaft und Zeitplan (Pro). Alles an einem Ort, jederzeit änderbar.')}
+              {t(' — одна кнопка открывает страницу настроек: автосейв, готовность к батлам и расписание (Полный доступ). Всё в одном месте, меняется в любой момент.',
+                 ' — eine Taste öffnet die Einstellungsseite: Auto-Speichern, Duell-Bereitschaft und Zeitplan (voller Zugang). Alles an einem Ort, jederzeit änderbar.')}
             </li>
             <li>
               <b>{t('📖 Словарь и 🤖 учитель', '📖 Wörterbuch und 🤖 Lehrer')}</b>
@@ -1205,7 +1205,7 @@ function StepBody(props) {
               {t(' — зовут ли тебя другие ученики на дуэли по грамматике.', ' — ob dich andere Lernende zu Grammatik-Duellen einladen.')}
             </li>
             <li>
-              <b>{t('🗓 Расписание (Pro)', '🗓 Zeitplan (Pro)')}</b>
+              <b>{t('🗓 Расписание (Полный доступ)', '🗓 Zeitplan (voller Zugang)')}</b>
               {t(' — сколько заданий в день (темп) и в какие часы их присылать.', ' — wie viele Aufgaben pro Tag (Tempo) und zu welchen Zeiten sie kommen.')}
             </li>
           </ul>
@@ -1227,14 +1227,14 @@ function StepBody(props) {
       );
     case 'pro':
       return isPro ? (
-        <p className="ob-lead">Здесь будет выбор (Pro). Пока — заглушка каркаса.</p>
+        <p className="ob-lead">Здесь будет выбор (Полный доступ). Пока — заглушка каркаса.</p>
       ) : (
         <div className="ob-teaser">
           <p className="ob-lead">
-            На бесплатном — подборка заданий в день. В <b>Pro</b> можно настроить количество
+            На бесплатном — подборка заданий в день. В <b>Полном доступе</b> можно настроить количество
             и время. Пока — заглушка каркаса.
           </p>
-          <span className="ob-lock">🔒 Только в Pro</span>
+          <span className="ob-lock">🔒 Только в «Полном доступе»</span>
         </div>
       );
     case 'opt':
@@ -1278,8 +1278,8 @@ function StepBody(props) {
                 <span className="ob-lock ob-ok">{shareHint}</span>
               ) : (
                 <span className="ob-muted-note">
-                  {t('Друг пройдёт короткий тур, а когда начнёт заниматься — вы оба получите бонусные дни Pro.',
-                     'Dein Freund macht den kurzen Rundgang, und sobald er startet, bekommt ihr beide Bonus-Pro-Tage.')}
+                  {t('Друг пройдёт короткий тур, а когда начнёт заниматься — вы оба получите бонусные дни полного доступа.',
+                     'Dein Freund macht den kurzen Rundgang, und sobald er startet, bekommt ihr beide Bonustage für vollen Zugang.')}
                 </span>
               )}
             </div>

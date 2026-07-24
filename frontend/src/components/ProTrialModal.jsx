@@ -87,7 +87,7 @@ export default function ProTrialModal({
             <span className="prot-countdown-num">{dLeft}</span>
             <span className="prot-countdown-word">
               {tr(`${daysWord(dLeft)} осталось`, dLeft === 1 ? 'Tag übrig' : 'Tage übrig')}
-              {endsAtLabel ? <span className="prot-countdown-date">{tr('Pro до', 'Pro bis')} {endsAtLabel}</span> : null}
+              {endsAtLabel ? <span className="prot-countdown-date">{tr('Полный доступ до', 'Voller Zugang bis')} {endsAtLabel}</span> : null}
             </span>
           </div>
         ) : null}
@@ -102,8 +102,8 @@ export default function ProTrialModal({
 
         <div className="prot-note">
           🔊 {tr(
-            'Озвучка книг в читалке оплачивается отдельно, за каждую книгу — в Pro она не входит.',
-            'Buch-Vertonung im Reader wird separat je Buch bezahlt — nicht in Pro enthalten.',
+            'Озвучка книг в читалке оплачивается отдельно, за каждую книгу — в «Полный доступ» она не входит.',
+            'Buch-Vertonung im Reader wird separat je Buch bezahlt — nicht im vollen Zugang enthalten.',
           )}
         </div>
 
@@ -120,7 +120,7 @@ export default function ProTrialModal({
           </button>
         ) : (
           <button type="button" className="prot-cta is-ended" disabled={buying} onClick={onBuyPro}>
-            {buying ? tr('Открываю оплату…', 'Zahlung wird geöffnet…') : `✨ ${tr('Оформить Pro', 'Pro holen')}`}
+            {buying ? tr('Открываю оплату…', 'Zahlung wird geöffnet…') : `✨ ${tr('Оформить полный доступ', 'Vollen Zugang holen')}`}
           </button>
         )}
         <button type="button" className="profeat-later" onClick={onClose}>

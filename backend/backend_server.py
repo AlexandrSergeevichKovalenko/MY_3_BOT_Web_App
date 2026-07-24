@@ -34186,7 +34186,7 @@ def create_billing_checkout_session():
     # so nobody can obtain Pro through Stripe (even by hitting the API directly).
     if not STRIPE_BILLING_ENABLED:
         return jsonify({
-            "error": "Pro доступен только через Telegram Stars. Оформи его в приложении внутри Telegram.",
+            "error": "Полный доступ можно оформить только через Telegram Stars. Оформи его в приложении внутри Telegram.",
             "error_code": "stripe_disabled",
         }), 403
     started_perf = time.perf_counter()
@@ -34431,7 +34431,7 @@ def create_billing_portal_session():
     # Stripe retired → no billing portal. Stars subscriptions are managed in Telegram.
     if not STRIPE_BILLING_ENABLED:
         return jsonify({
-            "error": "Подписка Pro управляется прямо в Telegram (Настройки → Telegram Stars и подписки).",
+            "error": "Подписка «Полный доступ» управляется прямо в Telegram (Настройки → Telegram Stars и подписки).",
             "error_code": "stripe_disabled",
         }), 403
     started_perf = time.perf_counter()
@@ -46318,7 +46318,7 @@ def webapp_battles_create():
         is_pro = False
     if not is_pro:
         return jsonify({"ok": False, "reason": "pro_only",
-                        "message": "Создавать батлы может Pro. Участвовать по приглашению — можно всем."}), 200
+                        "message": "Создавать батлы можно в «Полном доступе». Участвовать по приглашению — можно всем."}), 200
     body = request.get_json(silent=True) or {}
     kind = str(body.get("kind") or "artikel").strip().lower()
     if kind not in _BATTLE_KINDS:
@@ -46702,10 +46702,10 @@ def _shortcut_run_gate(user_id: int) -> tuple[bool, str, dict]:
                 # Hard daily cap — no grace. The user is warned right after the 2nd send
                 # («all sends used today»), so a 3rd is on them. DROP (don't process/save).
                 return False, "pro_daily", {**base, "used": used_today, "limit": _SHORTCUT_RUN_PRO_DAILY,
-                    "message": f"Лимит Pro — {_SHORTCUT_RUN_PRO_DAILY} отправки в день — уже исчерпан. Больше сегодня не отправляй. Завтра утром снова доступно."}
+                    "message": f"Лимит «Полного доступа» — {_SHORTCUT_RUN_PRO_DAILY} отправки в день — уже исчерпан. Больше сегодня не отправляй. Завтра утром снова доступно."}
         elif total_runs >= _SHORTCUT_RUN_FREE_TOTAL:
             return False, "free_total", {**base, "used": total_runs, "limit": _SHORTCUT_RUN_FREE_TOTAL,
-                "message": f"Бесплатные пробные запуски ({_SHORTCUT_RUN_FREE_TOTAL}) закончились. Оформите Pro, чтобы пользоваться дальше."}
+                "message": f"Бесплатные пробные запуски ({_SHORTCUT_RUN_FREE_TOTAL}) закончились. Оформите полный доступ, чтобы пользоваться дальше."}
     # 2) time window — skipped during first-day grace and for admins
     grace_active = _shortcut_setup_grace_active(int(user_id), total_runs)
     if (not grace_active) and (not is_admin) and (not in_window):
@@ -46721,7 +46721,7 @@ def _shortcut_send_dm(user_id: int, caption: str, poster, *, pro_button: bool) -
     reply_markup = None
     if pro_button:
         reply_markup = json.dumps({"inline_keyboard": [[
-            {"text": "✨ Оформить Pro", "url": _build_webapp_deeplink("subscription")}]]})
+            {"text": "✨ Оформить полный доступ", "url": _build_webapp_deeplink("subscription")}]]})
     token = TELEGRAM_Deutsch_BOT_TOKEN
     try:
         if poster:
@@ -46760,7 +46760,7 @@ def _notify_shortcut_run_status(user_id: int, reason: str, extra: dict) -> None:
                 "Ты запустил авто-перевод скриншотов из папки, но на бесплатном доступно только "
                 f"<b>{limit}</b> запусков — чтобы попробовать, как это работает.\n\n"
                 "Поэтому последняя операция <b>не прошла</b> — фото не переведены.\n\n"
-                "Хочешь пользоваться дальше — оформи <b>Pro</b> 👇")
+                "Хочешь пользоваться дальше — оформи <b>Полный доступ</b> 👇")
             _shortcut_send_dm(user_id, caption, poster, pro_button=True)
         elif reason in ("pro_used_up", "pro_daily"):
             # one DM per day covers both the proactive «you're out» and any later drop
@@ -46774,12 +46774,12 @@ def _notify_shortcut_run_status(user_id: int, reason: str, extra: dict) -> None:
                 poster = None
             if reason == "pro_used_up":
                 caption = (f"✅ <b>На сегодня всё — обе отправки пришли</b>\n\n"
-                    f"На Pro доступно <b>{limit}</b> отправки в день (в каждой — до 25 фото), в утренние часы.\n\n"
+                    f"В «Полном доступе» доступно <b>{limit}</b> отправки в день (в каждой — до 25 фото), в утренние часы.\n\n"
                     "❗️<b>Больше сегодня не запускай</b> «Ночной Переводчик»: следующие фото просто удалятся из папки, "
                     "а перевод не придёт. Завтра утром снова доступно.")
             else:
                 caption = (f"🚫 <b>Лимит на сегодня исчерпан</b>\n\n"
-                    f"На Pro — <b>{limit}</b> отправки в день. Этот запуск <b>не обработан</b>, фото из папки удалены.\n\n"
+                    f"В «Полном доступе» — <b>{limit}</b> отправки в день. Этот запуск <b>не обработан</b>, фото из папки удалены.\n\n"
                     "Не запускай больше сегодня — завтра утром снова доступно.")
             _shortcut_send_dm(user_id, caption, poster, pro_button=False)
         elif reason == "setup_used_up":
@@ -51234,7 +51234,7 @@ def translate_youtube_subtitles():
             response_payload = {
                 "error": "youtube_translation_pro_required",
                 "error_code": "youtube_translation_pro_required",
-                "message": "Перевод субтитров доступен в Pro.",
+                "message": "Перевод субтитров доступен в «Полном доступе».",
                 "video_id": video_id,
             }
             _log_flow_observation(
@@ -51562,8 +51562,8 @@ def ingest_reader_content():
             return jsonify(
                 {
                     "error": (
-                        "Загрузка своих книг — функция Pro. На бесплатном плане можно читать "
-                        "«Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги."
+                        "Загрузка своих книг — функция «Полного доступа». На бесплатном плане можно читать "
+                        "«Классику» и статьи из интернета. Оформи «Полный доступ», чтобы добавлять свои книги."
                     ),
                     "error_code": "LIMIT_FREE_PLAN_1_BOOK",
                 }
@@ -51592,7 +51592,7 @@ def ingest_reader_content():
                     {
                         "error": (
                             "На бесплатном плане можно открыть 1 статью из интернета в день. "
-                            "Лимит обновится завтра в 00:00 по Вене. Оформи Pro — и читай статьи без ограничений."
+                            "Лимит обновится завтра в 00:00 по Вене. Оформи «Полный доступ» — и читай статьи без ограничений."
                         ),
                         "error_code": "LIMIT_FREE_PLAN_1_ARTICLE",
                         "reset_at": reset_at,
@@ -51714,8 +51714,8 @@ def ingest_reader_content():
                 return jsonify(
                     {
                         "error": (
-                            "Загрузка своих книг — функция Pro. На бесплатном плане можно читать "
-                            "«Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги."
+                            "Загрузка своих книг — функция «Полного доступа». На бесплатном плане можно читать "
+                            "«Классику» и статьи из интернета. Оформи «Полный доступ», чтобы добавлять свои книги."
                         ),
                         "error_code": "LIMIT_FREE_PLAN_1_BOOK",
                     }
@@ -51812,8 +51812,8 @@ def reader_upload_init():
             return jsonify(
                 {
                     "error": (
-                        "Загрузка своих книг — функция Pro. На бесплатном плане можно читать "
-                        "«Классику» и статьи из интернета. Оформи Pro, чтобы добавлять свои книги."
+                        "Загрузка своих книг — функция «Полного доступа». На бесплатном плане можно читать "
+                        "«Классику» и статьи из интернета. Оформи «Полный доступ», чтобы добавлять свои книги."
                     ),
                     "error_code": "LIMIT_FREE_PLAN_1_BOOK",
                 }
@@ -53557,7 +53557,7 @@ def billing_stars_invoice():
         # Keep the Stars invoice `payload` tiny — Telegram caps it at 128 bytes and the bot
         # only needs the purpose + who paid (the tier for donations lives in `purpose`).
         link, detail = create_stars_invoice_link(
-            title="Pro — подписка",
+            title="Полный доступ — подписка",
             description="Полный доступ: больше заданий, YouTube-субтитры, переводы и разборы. Продление раз в месяц, отмена в любой момент.",
             payload_obj={"purpose": "pro", "user_id": user_id_int},
             stars=stars,
@@ -59606,7 +59606,7 @@ def _run_stars_refund_weekly_report_job() -> None:
         lines.append(f"• Возвратов: <b>{total}</b> (пользователей: {users})")
         lines.append(f"• Авто-выявлено сверкой (мимо /refund_star): <b>{len(reconcile)}</b>")
         lines.append(f"• Ручных (через /refund_star): {len(manual)}")
-        lines.append("Перки по возвратам отозваны (Pro-дни / спонсор / подписка / озвучка).")
+        lines.append("Перки по возвратам отозваны (дни полного доступа / спонсор / подписка / озвучка).")
         lines.append("")
         _emoji = {"support_coffee": "☕️", "support_cheesecake": "☕️🍰", "pro": "💎", "book_audio": "🔊"}
         for r in refunds[:15]:
