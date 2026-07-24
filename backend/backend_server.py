@@ -10099,6 +10099,43 @@ def _list_srs_queue_cards(
                 new_selected_ids.update(int(row[0]) for row in fallback_new_rows)
                 new_fallback_added = len(fallback_new_rows)
 
+        # Live subscription top-up: once the user's OWN new words can't fill the daily new-card
+        # slots, lazily materialize the admin's next words (by frequency) into the buffer. Same
+        # fail-safe/non-manual guards as the single-card path. Materialized rows have no SRS row
+        # yet, so they're served as normal new cards ("srs": None).
+        if (new_limit > 0 and len(new_rows) < new_limit
+                and not normalized_allowed_ids and not allowed_card_ids):
+            try:
+                _sub_state = get_starter_dictionary_state(user_id, cursor=cur)
+                if _sub_state.get("live_subscription"):
+                    while len(new_rows) < new_limit:
+                        _mid = materialize_subscription_card(
+                            user_id=user_id,
+                            source_user_id=STARTER_DICTIONARY_SOURCE_USER_ID,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            cursor=cur,
+                        )
+                        if not _mid:
+                            break
+                        cur.execute(
+                            """
+                            SELECT q.id, q.word_ru, q.translation_de, q.word_de,
+                                   q.translation_ru, q.response_json, q.source_lang, q.target_lang
+                            FROM bt_3_webapp_dictionary_queries q
+                            WHERE q.id = %s AND q.user_id = %s
+                            LIMIT 1;
+                            """,
+                            (int(_mid), int(user_id)),
+                        )
+                        _r = cur.fetchone()
+                        if not _r or int(_r[0]) in new_selected_ids:
+                            break
+                        new_rows.append(_r)
+                        new_selected_ids.add(int(_r[0]))
+            except Exception as _sub_e:
+                logging.warning("subscription materialize (prefetch) skipped: %s", _sub_e)
+
         items: list[dict] = []
         for row in due_rows:
             items.append(

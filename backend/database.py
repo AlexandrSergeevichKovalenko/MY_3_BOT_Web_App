@@ -16526,19 +16526,17 @@ def has_admin_subscription_available(
 
 
 def list_admin_subscription_new_candidates(
-    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None, limit: int = 20
+    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None, limit: int = 20, cursor=None
 ) -> list[dict]:
     """The next admin words a subscriber hasn't materialized yet, most-frequent first (so the
     subscription drips in useful words before rare ones). Returns light rows for the new-card
-    queue; the per-user copy + SRS state is created lazily on first study (Stage 3)."""
+    queue; the per-user copy + SRS state is created lazily on first study (Stage 3). Pass `cursor`
+    so a materialize LOOP sees its own just-created rows (else it keeps returning the same word)."""
     s = _normalize_lang_code(source_lang) or "de"
     t = _normalize_lang_code(target_lang) or "ru"
     lang_sql = _subscription_lang_filter_sql("a")
     capped = max(1, min(int(limit or 20), 200))
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
+    sql = f"""
                 SELECT a.id, a.canonical_entry_id, a.word_de, e.frequency_rank
                 FROM bt_3_webapp_dictionary_queries a
                 JOIN bt_3_dictionary_entries e ON e.id = a.canonical_entry_id
@@ -16551,10 +16549,19 @@ def list_admin_subscription_new_candidates(
                   )
                 ORDER BY e.frequency_rank ASC NULLS LAST, a.created_at ASC
                 LIMIT %s;
-                """,
-                (int(source_user_id), s, t, int(user_id), capped),
-            )
-            rows = cur.fetchall() or []
+    """
+    params = (int(source_user_id), s, t, int(user_id), capped)
+
+    def _run(cur) -> list:
+        cur.execute(sql, params)
+        return cur.fetchall() or []
+
+    if cursor is not None:
+        rows = _run(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                rows = _run(cur)
     return [
         {"admin_card_id": int(r[0]), "canonical_entry_id": int(r[1]),
          "word_de": r[2], "frequency_rank": int(r[3]) if r[3] is not None else None}
@@ -16571,15 +16578,14 @@ def materialize_subscription_card(
     the ON CONFLICT (user_id, canonical_entry_id) guard makes it idempotent. Returns None when the
     subscription pool is exhausted. Pass `cursor` to run inside the caller's transaction (so the
     new row is visible to the very next candidate SELECT); otherwise opens its own connection."""
-    cands = list_admin_subscription_new_candidates(
-        user_id=user_id, source_user_id=source_user_id,
-        source_lang=source_lang, target_lang=target_lang, limit=1,
-    )
-    if not cands:
-        return None
-    canonical_id = int(cands[0]["canonical_entry_id"])
-
     def _do(cur) -> int | None:
+        cands = list_admin_subscription_new_candidates(
+            user_id=user_id, source_user_id=source_user_id,
+            source_lang=source_lang, target_lang=target_lang, limit=1, cursor=cur,
+        )
+        if not cands:
+            return None
+        canonical_id = int(cands[0]["canonical_entry_id"])
         cur.execute(
             """
             SELECT word_ru, translation_de, word_de, translation_ru,
