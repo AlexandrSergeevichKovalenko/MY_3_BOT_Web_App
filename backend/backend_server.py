@@ -3954,6 +3954,9 @@ def webapp_starter_dictionary_apply():
 
     if action == "disconnected":
         try:
+            # Disconnecting the starter dictionary also cancels the live subscription — no more
+            # of the admin's new words drip in. Words the user already studied stay their own.
+            set_starter_dictionary_subscription(int(user_id), False)
             disconnect_result = delete_starter_dictionary_snapshot(
                 user_id=int(user_id),
                 source_lang=source_lang,
@@ -4069,20 +4072,40 @@ def webapp_starter_dictionary_apply():
             target_lang=target_lang,
             profile=profile,
         )
-        # «Весь словарь» (full=true) → import up to the whole template (capped 5000);
-        # otherwise the curated ~1000 starter.
         _want_full = bool(payload.get("full"))
-        _import_limit = min(int(template_total), 50000) if _want_full else int(STARTER_DICTIONARY_IMPORT_LIMIT)
-        _start_starter_dictionary_import_runner(
-            job_id=job_id,
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            decided_at=decided_at,
-            previous_imported_count=previous_imported_count,
-            previous_imported_at=previous_imported_at,
-            import_limit=_import_limit,
-        )
+        if _want_full:
+            # «Весь словарь» = LIVE subscription to the admin's dictionary — NOT a bulk copy of
+            # ~14k rows. Words drip into training lazily (materialized on first study) and keep
+            # growing as the admin adds new ones. Nothing to import now, so mark the job done.
+            set_starter_dictionary_subscription(int(user_id), True)
+            state = upsert_starter_dictionary_state(
+                user_id=int(user_id),
+                decision_status="accepted",
+                source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+                template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                last_imported_count=previous_imported_count,
+                decided_at=decided_at,
+                last_imported_at=previous_imported_at,
+                import_status="done",
+                active_job_id=None,
+                last_error=None,
+                import_started_at=decided_at,
+                import_finished_at=datetime.now(timezone.utc),
+            )
+        else:
+            # «Быстрый старт» → curated ~1000-word snapshot copy (unchanged).
+            _start_starter_dictionary_import_runner(
+                job_id=job_id,
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                decided_at=decided_at,
+                previous_imported_count=previous_imported_count,
+                previous_imported_at=previous_imported_at,
+                import_limit=int(STARTER_DICTIONARY_IMPORT_LIMIT),
+            )
     except Exception as exc:
         return jsonify({"error": f"Ошибка импорта базового словаря: {exc}"}), 500
 
