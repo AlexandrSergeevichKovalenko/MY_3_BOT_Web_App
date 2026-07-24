@@ -1047,7 +1047,7 @@ function StepBody(props) {
           </div>
 
           <div className="ob-plan ob-plan-pro">
-            <p className="ob-plan-title">💎 <b>{t('Полный доступ', 'Voller Zugang')}</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">292 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
+            <p className="ob-plan-title">💎 <b>{t('Полный доступ', 'Voller Zugang')}</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">325 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
             {IS_GUEST_TOUR ? GUEST_NOTE : (
               <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
                 {t('✨ Оформить полный доступ', '✨ Vollen Zugang holen')}
@@ -1483,7 +1483,17 @@ export default function OnboardingWizard() {
     const t2 = setTimeout(checkScrollBottom, 900);
     // Safety net: never leave «Далее» permanently blocked if the check ever misfires.
     const tSafe = setTimeout(() => setContentReady(true), 4000);
-    return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); clearTimeout(tSafe); };
+    // Async media (YouTube embed, images) grow the page AFTER the timed checks — the early
+    // "fits" check fired while the page was still short, wrongly unlocking «Далее». Re-run the
+    // check whenever the content box resizes so a now-overflowing step re-locks until the user
+    // actually scrolls to the new bottom. (checkScrollBottom is stable — useCallback([]).)
+    let ro = null;
+    const content = el && el.firstElementChild ? el.firstElementChild : el;
+    if (content && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => checkScrollBottom());
+      ro.observe(content);
+    }
+    return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); clearTimeout(tSafe); if (ro) ro.disconnect(); };
   }, [idx, checkScrollBottom]);
 
   const goNext = useCallback(async () => {
@@ -1722,14 +1732,15 @@ export default function OnboardingWizard() {
         const r = await fetch('/api/billing/plans');
         const d = await r.json().catch(() => ({}));
         const pro = (Array.isArray(d.plans) ? d.plans : []).find((p) => p.plan_code === 'pro');
-        const amount = pro && pro.amount_value != null ? Number(pro.amount_value) : null;
-        if (!off && amount != null && !Number.isNaN(amount)) {
+        // Use the backend's authoritative amount_stars — the SAME figure the Telegram Stars
+        // invoice charges (pro_price_stars(), env PRO_PRICE_EUR_MINOR). Recomputing from
+        // amount_value pulled a retired Stripe €4.40 snapshot → showed 286⭐ while checkout
+        // actually charges 325⭐. Show verbatim so «what you see» == «what you pay».
+        const stars = pro && pro.amount_stars != null ? Number(pro.amount_stars) : null;
+        if (!off && stars != null && !Number.isNaN(stars) && stars > 0) {
           const per = pro.recurring_interval === 'year' ? t('год', 'Jahr')
             : pro.recurring_interval === 'week' ? t('неделя', 'Woche')
             : t('месяц', 'Monat');
-          // Pro is paid in Telegram Stars now → show the ⭐ price.
-          // (Rate mirrors backend STARS_PER_EUR=50 / STARS_MARKUP=1.30.)
-          const stars = Math.max(1, Math.ceil(amount * 1.30 * 50));
           setProPrice(`${stars} ⭐ / ${per}`);
         }
       } catch (_e) { /* price hidden; CTA still opens the live paywall */ }
