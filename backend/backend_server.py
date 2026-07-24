@@ -568,6 +568,10 @@ from backend.database import (
     update_translation_audio_grammar_opt_in,
     get_starter_dictionary_state,
     upsert_starter_dictionary_state,
+    set_starter_dictionary_subscription,
+    count_admin_subscription_available_words,
+    has_admin_subscription_available,
+    materialize_subscription_card,
     count_dictionary_entries_for_language_pair,
     count_starter_dictionary_entries_for_language_pair,
     import_starter_dictionary_snapshot,
@@ -9733,6 +9737,21 @@ def _compute_srs_queue_info(
     new_remaining_today = max(effective_new_cap - introduced_today, 0)
     if not is_manual and due_count_total > SRS_DUE_PER_DAY * 2:
         new_remaining_today = 0
+    if not has_new_candidates and not is_manual:
+        # A live subscriber can still draw new cards from the admin's dictionary once their own
+        # new words run out — count that so the daily new budget isn't zeroed. Fail-safe/cheap.
+        try:
+            _sub_state = get_starter_dictionary_state(user_id, cursor=cursor)
+            if _sub_state.get("live_subscription") and has_admin_subscription_available(
+                user_id=user_id,
+                source_user_id=STARTER_DICTIONARY_SOURCE_USER_ID,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                cursor=cursor,
+            ):
+                has_new_candidates = True
+        except Exception as _sub_e:
+            logging.warning("subscription availability check skipped: %s", _sub_e)
     new_remaining_today = new_remaining_today if has_new_candidates else 0
     return {
         "queue_source": _normalize_flashcards_queue_source(queue_source),
@@ -10227,6 +10246,31 @@ def _build_next_srs_payload(
                 cursor=cursor,
                 prefer_oldest=prefer_oldest,
             )
+            if not candidate and not allowed_card_ids:
+                # Live subscription: the user has no own new words left → lazily pull the next
+                # word from the admin's dictionary and re-select it as a normal new candidate
+                # (it now exists in the user's dict with no SRS row yet). Fail-safe.
+                try:
+                    _sub_state = get_starter_dictionary_state(user_id, cursor=cursor)
+                    if _sub_state.get("live_subscription"):
+                        _mat_id = materialize_subscription_card(
+                            user_id=user_id,
+                            source_user_id=STARTER_DICTIONARY_SOURCE_USER_ID,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            cursor=cursor,
+                        )
+                        if _mat_id:
+                            candidate = get_next_new_srs_candidate(
+                                user_id=user_id,
+                                source_lang=source_lang,
+                                target_lang=target_lang,
+                                allowed_card_ids=allowed_card_ids,
+                                cursor=cursor,
+                                prefer_oldest=prefer_oldest,
+                            )
+                except Exception as _sub_e:
+                    logging.warning("subscription materialize (next-card) skipped: %s", _sub_e)
             if candidate:
                 state = ensure_new_srs_state(
                     user_id=user_id,

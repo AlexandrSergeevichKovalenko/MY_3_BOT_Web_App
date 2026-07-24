@@ -16453,13 +16453,11 @@ def set_starter_dictionary_subscription(user_id: int, enabled: bool) -> None:
             )
 
 
-def _subscription_lang_filter_sql(alias: str) -> tuple[str, list]:
-    """Both directions of the DE↔RU pair on the admin rows (params filled by caller)."""
-    return (
-        f"((LOWER({alias}.source_lang)=%s AND LOWER({alias}.target_lang)=%s) "
-        f"OR (LOWER({alias}.source_lang)=%s AND LOWER({alias}.target_lang)=%s))",
-        [],
-    )
+def _subscription_lang_filter_sql(alias: str) -> str:
+    """ONE direction (source_lang=%s AND target_lang=%s) — must match the training queue's
+    direction, so a materialized card is picked up by get_next_new_srs_candidate. Caller passes
+    (source_lang, target_lang) in that order."""
+    return f"(LOWER({alias}.source_lang)=%s AND LOWER({alias}.target_lang)=%s)"
 
 
 def count_admin_subscription_available_words(
@@ -16470,7 +16468,7 @@ def count_admin_subscription_available_words(
     grows automatically as the admin adds words, with no copying. (Stage 2 wiring uses this.)"""
     s = _normalize_lang_code(source_lang) or "de"
     t = _normalize_lang_code(target_lang) or "ru"
-    lang_sql, _ = _subscription_lang_filter_sql("a")
+    lang_sql = _subscription_lang_filter_sql("a")
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -16485,10 +16483,46 @@ def count_admin_subscription_available_words(
                       WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
                   );
                 """,
-                (int(source_user_id), t, s, s, t, int(user_id)),
+                (int(source_user_id), s, t, int(user_id)),
             )
             row = cur.fetchone()
     return int(row[0]) if row and row[0] is not None else 0
+
+
+def has_admin_subscription_available(
+    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None, cursor=None
+) -> bool:
+    """Cheap EXISTS check (no ordering): does the subscriber still have ANY un-materialized admin
+    word? Used on the hot queue path to keep the daily new-card budget non-zero for subscribers."""
+    s = _normalize_lang_code(source_lang) or "de"
+    t = _normalize_lang_code(target_lang) or "ru"
+    lang_sql = _subscription_lang_filter_sql("a")
+    sql = f"""
+        SELECT EXISTS (
+            SELECT 1
+            FROM bt_3_webapp_dictionary_queries a
+            WHERE a.user_id = %s
+              AND a.canonical_entry_id IS NOT NULL
+              AND {lang_sql}
+              AND NOT EXISTS (
+                  SELECT 1 FROM bt_3_webapp_dictionary_queries u
+                  WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
+              )
+            LIMIT 1
+        );
+    """
+    params = (int(source_user_id), s, t, int(user_id))
+
+    def _run(cur) -> bool:
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        return bool(row[0]) if row else False
+
+    if cursor is not None:
+        return _run(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            return _run(cur)
 
 
 def list_admin_subscription_new_candidates(
@@ -16499,7 +16533,7 @@ def list_admin_subscription_new_candidates(
     queue; the per-user copy + SRS state is created lazily on first study (Stage 3)."""
     s = _normalize_lang_code(source_lang) or "de"
     t = _normalize_lang_code(target_lang) or "ru"
-    lang_sql, _ = _subscription_lang_filter_sql("a")
+    lang_sql = _subscription_lang_filter_sql("a")
     capped = max(1, min(int(limit or 20), 200))
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
@@ -16518,7 +16552,7 @@ def list_admin_subscription_new_candidates(
                 ORDER BY e.frequency_rank ASC NULLS LAST, a.created_at ASC
                 LIMIT %s;
                 """,
-                (int(source_user_id), t, s, s, t, int(user_id), capped),
+                (int(source_user_id), s, t, int(user_id), capped),
             )
             rows = cur.fetchall() or []
     return [
@@ -16526,6 +16560,67 @@ def list_admin_subscription_new_candidates(
          "word_de": r[2], "frequency_rank": int(r[3]) if r[3] is not None else None}
         for r in rows
     ]
+
+
+def materialize_subscription_card(
+    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None, cursor=None
+) -> int | None:
+    """Lazily copy the NEXT admin subscription word (most-frequent first) into this user's own
+    dictionary and return the new card_id — called only when the user actually needs a fresh new
+    card and has budget. This is the «materialize on first study» step: no upfront bulk copy, and
+    the ON CONFLICT (user_id, canonical_entry_id) guard makes it idempotent. Returns None when the
+    subscription pool is exhausted. Pass `cursor` to run inside the caller's transaction (so the
+    new row is visible to the very next candidate SELECT); otherwise opens its own connection."""
+    cands = list_admin_subscription_new_candidates(
+        user_id=user_id, source_user_id=source_user_id,
+        source_lang=source_lang, target_lang=target_lang, limit=1,
+    )
+    if not cands:
+        return None
+    canonical_id = int(cands[0]["canonical_entry_id"])
+
+    def _do(cur) -> int | None:
+        cur.execute(
+            """
+            SELECT word_ru, translation_de, word_de, translation_ru,
+                   response_json, source_lang, target_lang, semantic_tag
+            FROM bt_3_webapp_dictionary_queries
+            WHERE user_id = %s AND canonical_entry_id = %s
+            LIMIT 1;
+            """,
+            (int(source_user_id), canonical_id),
+        )
+        src = cur.fetchone()
+        if not src:
+            return None
+        entry_id, _inserted = _create_or_attach_user_dictionary_entry_with_cursor(
+            cur,
+            user_id=int(user_id),
+            word_ru=src[0],
+            translation_de=src[1],
+            word_de=src[2],
+            translation_ru=src[3],
+            response_json=src[4] if isinstance(src[4], dict) else _coerce_json_object(src[4]),
+            folder_id=None,
+            source_lang=src[5],
+            target_lang=src[6],
+            canonical_entry_id=canonical_id,
+            origin_process="subscription",
+            origin_meta={
+                "subscription_source_user_id": int(source_user_id),
+                "source_canonical_entry_id": canonical_id,
+            },
+            semantic_tag=src[7],
+        )
+        return int(entry_id) if entry_id else None
+
+    if cursor is not None:
+        return _do(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            result = _do(own_cursor)
+        conn.commit()
+    return result
 
 
 def upsert_starter_dictionary_state(
