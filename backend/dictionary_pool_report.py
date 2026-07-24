@@ -186,6 +186,22 @@ def send_dictionary_pool_report(*, force: bool = False) -> dict[str, Any]:
     ):
         return {"ok": True, "skipped": True, "reason": "already_claimed"}
     try:
+        # Stage 0 (living shared dictionary): keep the corpus frequency_rank current on the
+        # pool. Self-seeds the corpus on a fresh DB, then ranks only newly-pooled words. Fully
+        # fail-safe — a frequency hiccup must never block the daily pool report.
+        try:
+            from backend import dictionary_frequency as _freq
+            from backend.database import get_db_connection_context as _dbctx
+            with _dbctx() as _fc:
+                _freq.ensure_frequency_schema(_fc)
+                with _fc.cursor() as _cc:
+                    _cc.execute("SELECT 1 FROM bt_3_word_frequency LIMIT 1;")
+                    _freq_empty = _cc.fetchone() is None
+                if _freq_empty:
+                    _freq.import_frequency_list(_fc)
+                _freq.backfill_pool_frequency_ranks(_fc, only_unranked=True)
+        except Exception as _fe:
+            logging.warning("dictionary_frequency nightly top-up skipped: %s", _fe)
         token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
         admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
         stats = collect_dictionary_pool_report()
