@@ -32,6 +32,7 @@ export default function ExplainErrorsModal({
   data,
   loading,
   errorMsg,
+  limitNotice,
   grammar: grammarProp,
   grammarLoading,
   children,
@@ -45,12 +46,12 @@ export default function ExplainErrorsModal({
   // as its own prop (not part of `data`) and shows a skeleton until it lands.
   const grammar = Array.isArray(grammarProp) ? grammarProp : [];
   const summary = String(data?.summary || '').trim();
-  const hasData = !!data && !loading && !errorMsg;
+  const hasData = !!data && !loading && !errorMsg && !limitNotice;
 
   return (
     <div className="explain-modal-overlay" role="dialog" aria-modal="true">
       <button type="button" className="explain-modal-backdrop" aria-label={tr('Закрыть', 'Schließen')} onClick={onClose} />
-      <div className="explain-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="explain-modal explain-modal--fuchs" onClick={(e) => e.stopPropagation()}>
         <div className="explain-modal-head">
           <div className="explain-modal-head-copy">
             <div className="explain-modal-eyebrow">🧩 {tr('Разбор ошибок', 'Fehleranalyse')}</div>
@@ -62,10 +63,12 @@ export default function ExplainErrorsModal({
           <button type="button" className="explain-modal-close" aria-label={tr('Закрыть', 'Schließen')} onClick={onClose}>×</button>
         </div>
 
-        <label className="explain-modal-langtoggle">
-          <input type="checkbox" checked={!!langDe} onChange={(e) => onToggleLang?.(e.target.checked)} />
-          <span>🇩🇪 {tr('Объяснение на немецком', 'Erklärung auf Deutsch')}</span>
-        </label>
+        {!limitNotice && (
+          <label className="explain-modal-langtoggle">
+            <input type="checkbox" checked={!!langDe} onChange={(e) => onToggleLang?.(e.target.checked)} />
+            <span>🇩🇪 {tr('Объяснение на немецком', 'Erklärung auf Deutsch')}</span>
+          </label>
+        )}
 
         <div className="explain-modal-body">
           {loading && (
@@ -75,7 +78,11 @@ export default function ExplainErrorsModal({
             </div>
           )}
 
-          {!loading && errorMsg && (
+          {!loading && limitNotice && (
+            <div className="explain-modal-limit">{limitNotice}</div>
+          )}
+
+          {!loading && !limitNotice && errorMsg && (
             <div className="explain-modal-errorbox">⚠️ {errorMsg}</div>
           )}
 

@@ -279,6 +279,7 @@ const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
 const PAID_FEATURE_ERROR_PREFIX = '__paid_feature_required__:';
 const TRANSLATION_LIMIT_NOTICE_PREFIX = '__translation_limit_notice__:';
+const EXPLAIN_LIMIT_NOTICE_PREFIX = '__explain_limit_notice__:';
 const YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX = '__youtube_transcript_library_notice__:';
 
 // De-roll YouTube auto-caption cues. Rolling ASR captions repeat the previous line (or its
@@ -4605,7 +4606,13 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 const explainData = explainStructured?.[`${explanationKey}:${explainLang}`];
                 const explainGrammarData = explainGrammar?.[`${explanationKey}:${explainLang}`];
                 const explainGrammarBusy = Boolean(explainGrammarLoading?.[`${explanationKey}:${explainLang}`]);
-                const explainErr = explainErrorMap?.[explanationKey] || '';
+                const explainErrRaw = explainErrorMap?.[explanationKey] || '';
+                // A limit / paid-feature hit renders as a pretty house-style card inside the
+                // modal; everything else stays a plain message. When a card shows, suppress the
+                // red errorbox so the two don't stack.
+                const explainNotice = renderPaidFeatureNotice(explainErrRaw, tr('Разбор ошибок', 'Fehleranalyse'))
+                  || renderExplainLimitNotice(explainErrRaw);
+                const explainErr = explainNotice ? '' : explainErrRaw;
                 const explainOpen = explainModalKey === explanationKey;
                 return (
                   <div
@@ -4746,6 +4753,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           data={explainData}
                           loading={Boolean(explanationLoading[explanationKey]) && !explainData}
                           errorMsg={explainErr}
+                          limitNotice={explainNotice}
                           grammar={explainGrammarData}
                           grammarLoading={explainGrammarBusy}
                         >
@@ -4961,6 +4969,31 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
       </div>
     );
   }, [parsePaidFeatureError, tr]);
+  // Daily-limit / cost-cap hit inside the error-breakdown modal → the same pretty ⏱️
+  // house-style card the rest of the app uses (NOT a raw red errorbox). The server's
+  // already-humanized message is carried in the marker payload.
+  const renderExplainLimitNotice = useCallback((value) => {
+    const raw = String(value || '').trim();
+    if (!raw.startsWith(EXPLAIN_LIMIT_NOTICE_PREFIX)) return null;
+    let message = '';
+    try {
+      message = String(JSON.parse(raw.slice(EXPLAIN_LIMIT_NOTICE_PREFIX.length))?.message || '').trim();
+    } catch (_error) { /* keep fallback below */ }
+    return (
+      <div className="paid-feature-card">
+        <div className="paid-feature-card-icon" aria-hidden="true">⏱️</div>
+        <div className="paid-feature-card-copy">
+          <strong>{tr('Лимит на сегодня достигнут', 'Tageslimit erreicht')}</strong>
+          <span>
+            {message || tr(
+              'На сегодня лимит запросов исчерпан. Возвращайся, пожалуйста, завтра 🙌',
+              'Das Tageslimit für Anfragen ist erreicht. Bitte komm morgen wieder 🙌'
+            )}
+          </span>
+        </div>
+      </div>
+    );
+  }, [tr]);
   const {
     weeklyPlanRef = null,
     todayRef = null,
@@ -11778,12 +11811,15 @@ function AppInner() {
     const sentences = Array.isArray(skillTrainingData?.package?.practice_sentences)
       ? skillTrainingData.package.practice_sentences
       : [];
+    // Мягкие, исправимые пользователем валидации: показываем плавающий тост ПОВЕРХ
+    // задания (а не inline-ошибку, которая гейтится !skillTrainingError и спрятала бы
+    // всю карточку с предложениями, которые пользователь ещё дозаполняет).
     if (!sentences.length) {
-      setSkillTrainingError(tr('Нет предложений для проверки.', 'Keine Sätze zur Prüfung.'));
+      showInlineToast(tr('Нет предложений для проверки.', 'Keine Sätze zur Prüfung.'));
       return;
     }
     if (skillTrainingAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
-      setSkillTrainingError(tr('Заполните переводы для всех предложений.', 'Bitte alle Übersetzungen ausfüllen.'));
+      showInlineToast(tr('Переведите все предложения, чтобы проверить.', 'Bitte alle Sätze übersetzen.'));
       return;
     }
     try {
@@ -29013,9 +29049,28 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        // Route through readApiError so a limit code (cost_cap_exceeded / feature_limit_exceeded)
-        // becomes the clean human line instead of leaking raw into the ExplainErrorsModal.
+        // A daily-limit / cost-cap hit is not a red-error situation — it's an expected,
+        // friendly "come back tomorrow / unlock" moment. Detect the billing code from the
+        // body (clone, since readApiError consumes it) and tag the stored value so the modal
+        // swaps its ugly red errorbox for the pretty ⏱️/🔒 limit card.
+        let isBillingLimit = false;
+        try {
+          const parsed = await response.clone().json();
+          const code = String(parsed?.error || '').trim();
+          isBillingLimit = code === 'cost_cap_exceeded'
+            || code === 'feature_limit_exceeded'
+            || code === 'free_limit_exceeded';
+        } catch (_jsonError) { /* not JSON — treat as a normal error below */ }
+        // Route through readApiError so a limit code becomes the clean human line
+        // (payload.message or a friendly fallback) instead of leaking raw.
         const message = await readApiError(response, 'Не удалось получить разбор.', 'Analyse konnte nicht geladen werden.');
+        if (isBillingLimit) {
+          setExplainErrorMap((prev) => ({
+            ...prev,
+            [key]: `${EXPLAIN_LIMIT_NOTICE_PREFIX}${JSON.stringify({ message })}`,
+          }));
+          return;
+        }
         throw new Error(message);
       }
       const data = await response.json();
@@ -36213,7 +36268,10 @@ function AppInner() {
                         )}
                       </div>
                     )}
-                    <div className="youtube-player-card">
+                    <div
+                      className="youtube-player-card"
+                      style={youtubeChangeOpen ? { display: 'none' } : undefined}
+                    >
                       <div
                         ref={youtubePlayerShellRef}
                         className={`webapp-video-player-shell ${youtubeAppFullscreen ? 'is-app-fullscreen' : ''}`}
@@ -37008,7 +37066,10 @@ function AppInner() {
                                 {(() => {
                                   const w = String(youtubeDictResult.word_de || youtubeDictResult.word_ru || youtubeDictQuery || '');
                                   const bare = w.replace(/^(der|die|das)\s+/i, '');
-                                  const art = String(youtubeDictResult.article || youtubeDictQuickArticle || '').trim();
+                                  // Артикль часто пуст в отдельном поле (напр. Plurale tantum «die Eltern»),
+                                  // но живёт внутри word_de — берём его как последний фолбэк, как в resolveArticle.
+                                  const inWordArt = (w.match(/^(der|die|das)\s+/i)?.[1] || '').toLowerCase();
+                                  const art = String(youtubeDictResult.article || youtubeDictQuickArticle || inWordArt || '').trim();
                                   // German head only (article is der/die/das); RU heads stay bare.
                                   const isGermanHead = !!String(youtubeDictResult.word_de || '').trim()
                                     || String(youtubeDictResult.direction || '').toLowerCase().startsWith('de');

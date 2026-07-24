@@ -28997,6 +28997,112 @@ html[data-scheme="light"] .explain-grammar-structure,
 .webapp-page.is-theme-light .webapp-result-card .explain-modal .explain-syn-word { color: #f8fafc; }
 .webapp-page.is-theme-light .webapp-result-card .explain-modal .explain-line b { color: #f1f5f9; }
 
+/* ================================================================
+   Светлая «лисья» тема для модалки «Разбор ошибок» (Fuchs UI).
+   Тёмный вариант выше жёстко захардкожен и не в фирменном стиле —
+   на модалке-разборе он выключается модификатором .explain-modal--fuchs
+   (Story-модалка делит те же классы, но модификатора не имеет — её не трогаем).
+   Значения перекрывают тёмные за счёт составного селектора (2 класса).
+   ================================================================ */
+.explain-modal.explain-modal--fuchs {
+  color-scheme: light;
+  color: #2a3650;
+  /* Заметная тёплая рамка + кольцо + глубокая тень, чтобы карточка чётко
+     «парила» над фоном приложения и не сливалась с ним. */
+  border: 1.5px solid #e4d2b0;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(230, 178, 74, 0.22) 0%, transparent 60%),
+    linear-gradient(180deg, #ffffff 0%, #fbf7ef 100%);
+  box-shadow:
+    0 0 0 1px rgba(150, 110, 40, 0.10),
+    0 32px 72px rgba(60, 40, 10, 0.34);
+  /* Пере-пиним --tr-* в светлые тона: докнутая панель «Ответ на твой вопрос»
+     читает эту палитру — иначе была бы тёмная панель на светлой модалке. */
+  --tr-bg-app: #fbf7ef;
+  --tr-bg-card: #ffffff;
+  --tr-bg-card-alt: #fbf7ef;
+  --tr-bg-hover: #f3ece0;
+  --tr-border: rgba(150, 120, 60, 0.24);
+  --tr-border-subtle: rgba(150, 120, 60, 0.14);
+  --tr-text-primary: #2a3650;
+  --tr-text-title: #1c2536;
+  --tr-text-secondary: #5d6b82;
+  --tr-text-muted: #8a7c66;
+  --tr-text-subtle: #a99a80;
+  --tr-primary: #c07f2e;
+}
+.explain-modal--fuchs .explain-modal-head {
+  border-bottom: 1px solid #f0e6d4;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.92) 84%, rgba(255, 255, 255, 0) 100%);
+}
+.explain-modal--fuchs .explain-modal-eyebrow { color: #a9741f; }
+.explain-modal--fuchs .explain-modal-title { color: #1c2536; }
+.explain-modal--fuchs .explain-modal-score { color: #c07f2e; }
+.explain-modal--fuchs .explain-modal-close {
+  border: 1px solid #e6d8c2;
+  background: #f4ece0;
+  color: #8a6a3a;
+}
+.explain-modal--fuchs .explain-modal-langtoggle {
+  background: #fff2cc;
+  border: 1px solid rgba(214, 161, 74, 0.42);
+  color: #8a5a00;
+}
+.explain-modal--fuchs .explain-modal-langtoggle input { accent-color: #e0a83c; }
+.explain-modal--fuchs .explain-modal-muted { color: #8a7c66; }
+.explain-modal--fuchs .explain-modal-errorbox {
+  background: #fff1f1; border: 1px solid #f6c1c1; color: #b4232a;
+}
+.explain-modal--fuchs .explain-skel {
+  background: linear-gradient(90deg, rgba(180, 160, 120, 0.12), rgba(180, 160, 120, 0.26), rgba(180, 160, 120, 0.12));
+  background-size: 200% 100%;
+}
+.explain-modal--fuchs .explain-section-title { color: #9a7b3f; }
+.explain-modal--fuchs .explain-summary p { color: #33425c; }
+.explain-modal--fuchs .explain-noerrors {
+  background: #eafaf0; border: 1px solid #b7e9c8; color: #1c7a44;
+}
+.explain-modal--fuchs .explain-error-card {
+  background: #fbf7ef; border: 1px solid #ece0cc; border-left: 4px solid #c07f2e;
+}
+.explain-modal--fuchs .explain-error-card.is-grammar { border-left-color: #e5484d; }
+.explain-modal--fuchs .explain-error-card.is-vocab { border-left-color: #d99400; }
+.explain-modal--fuchs .explain-error-card.is-syntax { border-left-color: #3b82f6; }
+.explain-modal--fuchs .explain-error-card.is-style { border-left-color: #a855f7; }
+.explain-modal--fuchs .explain-error-card.is-ortho { border-left-color: #14b8a6; }
+.explain-modal--fuchs .explain-error-num { background: #fdeecf; color: #a9741f; }
+.explain-modal--fuchs .explain-error-type { color: #6b5c40; }
+.explain-modal--fuchs .explain-frag-bad {
+  color: #c0343a; background: #fdeaea; text-decoration-color: rgba(192, 52, 58, 0.8);
+}
+.explain-modal--fuchs .explain-frag-arrow { color: #b0a086; }
+.explain-modal--fuchs .explain-frag-good { color: #1c7a44; background: #e6f7ec; }
+.explain-modal--fuchs .explain-line { color: #33425c; }
+.explain-modal--fuchs .explain-line b { color: #1c2536; }
+.explain-modal--fuchs .explain-example { color: #6b5c40; }
+.explain-modal--fuchs .explain-alt {
+  background: #eef4ff; border: 1px solid #cfe0fb;
+}
+.explain-modal--fuchs .explain-alt-variant { color: #33425c; }
+.explain-modal--fuchs .explain-alt-note { color: #7a8aa5; }
+.explain-modal--fuchs .explain-syn-word { color: #1c2536; }
+.explain-modal--fuchs .explain-syn-arrow { color: #b0a086; }
+.explain-modal--fuchs .explain-syn-opts { color: #33425c; }
+.explain-modal--fuchs .explain-grammar-card {
+  background: #f3f1fb; border: 1px solid #ddd8f3; border-left: 4px solid #7c6ff0;
+}
+.explain-modal--fuchs .explain-grammar-num { background: #e6e2fb; color: #5b4fd6; }
+.explain-modal--fuchs .explain-grammar-part { color: #33425c; background: #e9e5fb; }
+.explain-modal--fuchs .explain-grammar-structure { color: #5b4fd6; }
+.explain-modal--fuchs .explain-modal-followup { border-top: 1px dashed #e6d8c2; }
+/* Красивая карточка лимита (⏱️/🔒) вместо красного errorbox внутри разбора. */
+.explain-modal--fuchs .explain-modal-limit { margin-top: 14px; }
+.explain-modal-limit .paid-feature-card { margin: 0; }
+/* Пере-объявление светлых <b> из dead-override выше (там селектор .theme-light
+   не матчится) — на светлой модалке жирный текст должен быть тёмным. */
+.webapp-page.is-theme-light .webapp-result-card .explain-modal--fuchs .explain-syn-word { color: #1c2536; }
+.webapp-page.is-theme-light .webapp-result-card .explain-modal--fuchs .explain-line b { color: #1c2536; }
+
 
 /* ================================================================
    «Загадочная история» — result modal (extends .explain-modal)
