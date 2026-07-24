@@ -7574,6 +7574,11 @@ def ensure_webapp_tables() -> None:
                         ON bt_3_daily_sentences (user_id, session_id, source_lang, target_lang);
                         CREATE INDEX IF NOT EXISTS idx_bt_3_daily_sentences_focus_level_date
                         ON bt_3_daily_sentences (source_lang, target_lang, focus_key, level, date DESC);
+                        -- Reverse-join key for the skill-progress report: it joins mistakes → sentences
+                        -- via ds.id_for_mistake_table = dm.sentence_id (+ user_id). Without this the join
+                        -- had to scan all of the user's sentences per run.
+                        CREATE INDEX IF NOT EXISTS idx_bt_3_daily_sentences_mistake_lookup
+                        ON bt_3_daily_sentences (id_for_mistake_table, user_id);
                     END IF;
                 END $$;
                 """
@@ -10222,6 +10227,14 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_detailed_mistakes_user_sentence
                 ON bt_3_detailed_mistakes (user_id, sentence_id);
+            """)
+            # Sargable time-window driver for the skill-progress report. added_data is never
+            # NULL, so COALESCE(last_seen, added_data) is immutable and indexable; this lets the
+            # report read only the last (2*window) days of a user's mistakes instead of their
+            # whole history. Must match the query's predicate expression exactly to be used.
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_detailed_mistakes_user_lastactivity
+                ON bt_3_detailed_mistakes (user_id, (COALESCE(last_seen, added_data)));
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_base_dictionary (
@@ -40424,10 +40437,22 @@ def get_skill_progress_report(
             report_query_started_perf = time.perf_counter()
             cursor.execute(
                 """
-                WITH err_7d AS (
+                -- Single-pass version: the current window (errors_7d) and the previous window
+                -- (errors_prev_7d) are computed with conditional FILTER aggregates over ONE scan
+                -- of the user's recent mistakes, instead of two near-identical CTEs scanning twice.
+                -- The time bound is SARGABLE: added_data is never NULL, so COALESCE(last_seen,
+                -- added_data) is immutable and served by idx_bt_3_detailed_mistakes_user_lastactivity,
+                -- so we read only the last (2*window) days of mistakes — NOT the whole history. The
+                -- ds join uses idx_bt_3_daily_sentences_mistake_lookup (id_for_mistake_table, user_id).
+                WITH err AS (
                     SELECT
                         m.skill_id,
-                        SUM(COALESCE(dm.mistake_count, 1))::BIGINT AS errors_7d
+                        (SUM(COALESCE(dm.mistake_count, 1)) FILTER (
+                            WHERE COALESCE(dm.last_seen, dm.added_data) >= (NOW() - (%s::text || ' days')::interval)::timestamp
+                        ))::BIGINT AS errors_7d,
+                        (SUM(COALESCE(dm.mistake_count, 1)) FILTER (
+                            WHERE COALESCE(dm.last_seen, dm.added_data) <  (NOW() - (%s::text || ' days')::interval)::timestamp
+                        ))::BIGINT AS errors_prev_7d
                     FROM bt_3_detailed_mistakes dm
                     JOIN bt_3_daily_sentences ds
                       ON ds.id_for_mistake_table = dm.sentence_id
@@ -40440,29 +40465,8 @@ def get_skill_progress_report(
                       AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
                       AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
                       AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
-                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - (%s::text || ' days')::interval
-                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data, NOW())::date >= %s::date)
-                    GROUP BY m.skill_id
-                ),
-                err_prev_7d AS (
-                    SELECT
-                        m.skill_id,
-                        SUM(COALESCE(dm.mistake_count, 1))::BIGINT AS errors_prev_7d
-                    FROM bt_3_detailed_mistakes dm
-                    JOIN bt_3_daily_sentences ds
-                      ON ds.id_for_mistake_table = dm.sentence_id
-                     AND ds.user_id = dm.user_id
-                    JOIN bt_3_error_skill_map m
-                      ON m.error_category = COALESCE(NULLIF(dm.main_category, ''), 'Other mistake')
-                     AND m.error_subcategory = COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')
-                    WHERE dm.user_id = %s
-                      AND m.language_code = %s
-                      AND COALESCE(ds.source_lang, 'ru') = COALESCE(%s, 'ru')
-                      AND COALESCE(ds.target_lang, 'de') = COALESCE(%s, 'de')
-                      AND LOWER(COALESCE(NULLIF(dm.sub_category, ''), 'Unclassified mistake')) NOT IN ('unclassified mistake', 'unclassified mistakes')
-                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) < NOW() - (%s::text || ' days')::interval
-                      AND COALESCE(dm.last_seen, dm.added_data, NOW()) >= NOW() - ((%s * 2)::text || ' days')::interval
-                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data, NOW())::date >= %s::date)
+                      AND COALESCE(dm.last_seen, dm.added_data) >= (NOW() - ((%s * 2)::text || ' days')::interval)::timestamp
+                      AND (%s::date IS NULL OR COALESCE(dm.last_seen, dm.added_data)::date >= %s::date)
                     GROUP BY m.skill_id
                 )
                 SELECT
@@ -40470,10 +40474,9 @@ def get_skill_progress_report(
                     k.title,
                     k.category,
                     COALESCE(e.errors_7d, 0) AS errors_7d,
-                    COALESCE(p.errors_prev_7d, 0) AS errors_prev_7d
+                    COALESCE(e.errors_prev_7d, 0) AS errors_prev_7d
                 FROM bt_3_skills k
-                LEFT JOIN err_7d e ON e.skill_id = k.skill_id
-                LEFT JOIN err_prev_7d p ON p.skill_id = k.skill_id
+                LEFT JOIN err e ON e.skill_id = k.skill_id
                 WHERE k.is_active = TRUE
                   AND k.language_code = %s
                   AND LOWER(COALESCE(k.skill_id, '')) NOT IN ('other_unclassified', 'en_other_unclassified', 'es_other_unclassified', 'it_other_unclassified')
@@ -40482,19 +40485,13 @@ def get_skill_progress_report(
                 ORDER BY k.category ASC, k.title ASC, k.skill_id ASC;
                 """,
                 (
+                    window_days,            # errors_7d FILTER:      >= NOW() - window
+                    window_days,            # errors_prev_7d FILTER: <  NOW() - window
                     int(user_id),
                     normalized_target_lang,
                     normalized_source_lang,
                     normalized_target_lang,
-                    window_days,
-                    reset_date,
-                    reset_date,
-                    int(user_id),
-                    normalized_target_lang,
-                    normalized_source_lang,
-                    normalized_target_lang,
-                    window_days,
-                    window_days,
+                    window_days,            # outer bound: >= NOW() - (2 * window)
                     reset_date,
                     reset_date,
                     normalized_target_lang,
