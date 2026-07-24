@@ -42246,7 +42246,10 @@ def track_skill_practice_event(skill_id: str):
     # DB load for a feature almost nobody views. mark_stale above is enough: it is rebuilt
     # lazily (stale-while-revalidate) only when the user actually opens the skills screen.
     _schedule_weekly_plan_snapshot_refresh(user_id=int(user_id), anchor_date=plan_date)
-    _schedule_plan_analytics_snapshot_refresh(user_id=int(user_id), period="week", as_of_date=plan_date)
+    # plan-analytics, like skill-progress, is NOT on the home screen (not warmed by
+    # _prime_webapp_home_snapshots_async) and is rarely opened → don't rebuild it eagerly on
+    # every practice event. mark_stale above is enough; _get_plan_analytics_response_cached
+    # rebuilds it lazily (stale-while-revalidate) when the analytics screen is actually opened.
     return jsonify({"ok": True, "status": status_payload, "skill_id": normalized_skill_id})
 
 
@@ -51528,8 +51531,13 @@ def ingest_reader_content():
         file_name=file_name,
         file_mime=file_mime,
     )
-    # A web article (URL → html) is read-once and must NOT consume the Free book slot.
-    incoming_is_article = bool(input_url) and guessed_source_type == "html"
+    # A web article is read-once and must NOT consume the Free book slot. NB:
+    # _guess_reader_source_type() returns "url" for a web page (only the *fetcher*
+    # later resolves it to "html"), so gate on "url" here — otherwise every pasted
+    # article URL falls through into the own-book gate and free users get wrongly
+    # blocked with LIMIT_FREE_PLAN_1_BOOK before the 1/day article counter runs.
+    # A .pdf/.epub URL stays a personal "book" (Pro-only), matching the upload rule.
+    incoming_is_article = bool(input_url) and guessed_source_type in ("html", "url")
     placeholder_title = client_title or _infer_reader_title(
         input_text=input_text,
         input_url=input_url or file_name,
