@@ -7120,6 +7120,16 @@ def _merge_dictionary_raw_payloads(
 ) -> dict[str, Any]:
     merged = copy.deepcopy(core_raw if isinstance(core_raw, dict) else {})
     enrich = enrichment_raw if isinstance(enrichment_raw, dict) else {}
+    # A payload the model produced but we could not parse (openai_manager.parse_llm_json
+    # gave up) carries SHAPE only — part_of_speech "other", empty meanings, raw_text.
+    # Merging it wipes a core card that was already right («die Eltern» → no article, empty
+    # screen, 24.07). Treat it as "no enrichment happened".
+    if enrich.get("parse_failed"):
+        logging.warning(
+            "dictionary enrichment unparsable — keeping the core card as is (word=%r)",
+            str(enrich.get("word_source") or enrich.get("word_de") or "").strip(),
+        )
+        return merged
     list_keys = {
         "translations",
         "usage_examples",
@@ -7156,6 +7166,14 @@ def _merge_dictionary_raw_payloads(
                 merged[key] = next_value
             continue
         if value in (None, "", [], {}):
+            continue
+        # "other" is the model's shrug: it must never demote a concrete part of speech the
+        # core lookup already knew (base dict says noun → the article backstop below needs it).
+        if (
+            key == "part_of_speech"
+            and str(value).strip().lower() in ("other", "unknown")
+            and str(merged.get(key) or "").strip()
+        ):
             continue
         merged[key] = copy.deepcopy(value)
     return merged
@@ -8630,6 +8648,36 @@ def _strip_spurious_leading_article(text: str) -> str | None:
     return None
 
 
+# Plurale tantum: nouns that exist ONLY in the plural, so de.wiktionary documents no
+# genus for them and every genus-based backstop returns nothing (that is why «Eltern»
+# reached the user's dictionary bare). Their definite article is always «die».
+_GERMAN_PLURALE_TANTUM = {
+    "eltern", "großeltern", "urgroßeltern", "schwiegereltern", "stiefeltern",
+    "pflegeeltern", "adoptiveltern", "geschwister", "leute", "ferien",
+    "kosten", "unkosten", "einkünfte", "einnahmen", "gebühren", "spesen",
+    "finanzen", "personalien", "geschwisterkinder", "hausaufgaben",
+}
+
+
+def _german_plural_only_article(lemma: str, forms: dict | None = None) -> str:
+    """«die» for a noun that only exists in the plural, else ''.
+
+    Two signals: a curated Plurale-tantum list, and a surface that IS its own plural
+    (forms.plural == the word) — in both cases the definite article is «die», and no
+    genus lookup can supply it."""
+    bare = _strip_german_leading_article(str(lemma or "").strip())[1] or str(lemma or "").strip()
+    if not bare:
+        return ""
+    if bare.casefold() in _GERMAN_PLURALE_TANTUM:
+        return "die"
+    plural = ""
+    if isinstance(forms, dict):
+        plural = _strip_german_leading_article(str(forms.get("plural") or ""))[1]
+    if plural and plural.casefold() == bare.casefold():
+        return "die"
+    return ""
+
+
 def _authoritative_german_article(lemma: str) -> str:
     """de.wiktionary's DOCUMENTED genus for a single German noun, as der/die/das —
     returned ONLY when exactly one gender is documented (unambiguous). '' for
@@ -8728,18 +8776,34 @@ def _apply_german_headword_normalization(
     # surface (word_de == its own plural), and only OVERRIDE a clean article when the
     # entry is a confirmed singular (plural exists and differs) — else just fill a
     # missing one. This mirrors the offline backfill's safety.
-    if DICTIONARY_AUTHORITATIVE_ARTICLE_ENABLED and part_of_speech == "noun":
+    # The part-of-speech gate also accepts an UNKNOWN pos on a capitalized single word: a
+    # model shrug ("other") or a parse failure must not disable the article machinery — that
+    # is exactly how «Eltern» was saved bare. If the genus lookup then confirms a noun, the
+    # label is corrected too, so the headword renders as «die Eltern».
+    _pos_unknown = part_of_speech in ("", "other", "unknown")
+    _noun_surface = bool(current_german) and current_german[:1].isupper() and not _CYRILLIC_RE.search(current_german)
+    if DICTIONARY_AUTHORITATIVE_ARTICLE_ENABLED and (part_of_speech == "noun" or (_pos_unknown and _noun_surface)):
         _bare = _strip_german_leading_article(current_german)[1] or current_german
         _forms = normalized.get("forms") if isinstance(normalized.get("forms"), dict) else {}
         _plural_bare = _strip_german_leading_article(str(_forms.get("plural") or ""))[1]
         _is_plural_surface = bool(_plural_bare) and _plural_bare.casefold() == _bare.casefold()
         _singular_confirmed = bool(_plural_bare) and _plural_bare.casefold() != _bare.casefold()
         _clean_existing = _normalize_german_article(article)
+        _resolved = ""
         if not _is_plural_surface:
             _auth = _authoritative_german_article(_bare)
             if _auth and _auth != _clean_existing and (not _clean_existing or _singular_confirmed):
-                article = _auth
-                normalized["article"] = _auth
+                _resolved = _auth
+        if not _resolved and not _clean_existing:
+            # Plural-only nouns (die Eltern, die Ferien, die Kosten) have no documented
+            # genus, so the lookup above can never fill them. Only fills, never overrides.
+            _resolved = _german_plural_only_article(_bare, _forms)
+        if _resolved:
+            article = _resolved
+            normalized["article"] = _resolved
+            if _pos_unknown:
+                part_of_speech = "noun"
+                normalized["part_of_speech"] = "noun"
     normalized_german = _normalize_saved_german_single_word(
         current_german,
         part_of_speech=part_of_speech,

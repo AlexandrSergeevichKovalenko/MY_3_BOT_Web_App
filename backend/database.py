@@ -279,6 +279,11 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "sentence_gpt_seed",
     "translations_block",
     "youtube",
+    "youtube_dict_widget",          # словарик поверх плеера — своя поверхность, не «youtube»
+    "worldnews_phrase_save",
+    "ask_overlay",
+    "synonym_save",
+    "webapp_deep_analysis_option",
     "reader",
     "assistant",
     "import",
@@ -20229,6 +20234,24 @@ _DICTIONARY_SINGLE_WORD_SQL = (
     "    '^(der|die|das|ein|eine|einen|einem|einer|eines)\\s+', '') !~ '\\s' "
 )
 
+# «Карточка пустая» — по СОДЕРЖИМОМУ, а не по наличию ключей. Раньше тут стояло
+# `response_json->'meanings' IS NULL` и т.п., поэтому запись с ключами-пустышками
+# (`meanings: {"primary": {}}`, `usage_examples: []` — так выглядит сохранение после
+# сбоя разбора ответа модели) не попадала в ночной ремонт НИКОГДА: ровно так «Eltern»
+# осталась без артикля и с пустым экраном (24.07). Точную проверку делает
+# `_dictionary_payload_needs_enrichment`, здесь — дешёвый предфильтр (надмножество).
+_DICTIONARY_EMPTY_CARD_SQL = (
+    "AND COALESCE(response_json->>'entry_kind','') IN ('','word') "
+    "AND COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(response_json->'usage_examples') = 'array' "
+    "    THEN response_json->'usage_examples' END), 0) = 0 "
+    "AND COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(response_json->'translations') = 'array' "
+    "    THEN response_json->'translations' END), 0) = 0 "
+    "AND COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(response_json->'dictionary_senses') = 'array' "
+    "    THEN response_json->'dictionary_senses' END), 0) < 2 "
+    "AND COALESCE(response_json#>>'{meanings,primary,value}', '') = '' "
+    "AND COALESCE(response_json->'grammar_tables', 'null'::jsonb) IN ('null'::jsonb, '{}'::jsonb, '[]'::jsonb) "
+)
+
 
 def count_dictionary_entries_missing_card(
     user_id: int | None = None,
@@ -20238,11 +20261,7 @@ def count_dictionary_entries_missing_card(
     молчать полчаса. Фильтр тот же, что в выборке кандидатов."""
     where = (
         "WHERE COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL "
-        "AND COALESCE(response_json->>'entry_kind','') IN ('','word') "
-        "AND (response_json->'dictionary_senses') IS NULL "
-        "AND (response_json->'usage_examples') IS NULL "
-        "AND (response_json->'meanings') IS NULL "
-        "AND (response_json->'translations') IS NULL "
+        + _DICTIONARY_EMPTY_CARD_SQL
         + _DICTIONARY_SINGLE_WORD_SQL
     )
     params: list = []
@@ -20268,16 +20287,17 @@ def get_dictionary_entries_for_metainfo_scan(
     Пустоту отсекаем ПРЯМО В SQL: раньше тянули тысячи строк вместе с response_json и
     фильтровали в Python — выборка одна занимала минуты и тащила десятки мегабайт.
     Точную проверку всё равно делает `_dictionary_payload_needs_enrichment`, этот фильтр
-    лишь отбрасывает заведомо полные карточки."""
+    лишь отбрасывает заведомо полные карточки.
+
+    Раньше здесь стояло `IS NULL` по четырём ключам — и любая карточка, где ключи ЕСТЬ,
+    но ПУСТЫЕ (`meanings: {"primary": {}}`, `usage_examples: []`), была для ночного ремонта
+    невидима навсегда. Ровно так «Eltern» осталась пустой и без артикля (24.07). Теперь
+    смотрим на содержимое, а не на наличие ключа."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             where = (
                 "WHERE COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL "
-                "AND COALESCE(response_json->>'entry_kind','') IN ('','word') "
-                "AND (response_json->'dictionary_senses') IS NULL "
-                "AND (response_json->'usage_examples') IS NULL "
-                "AND (response_json->'meanings') IS NULL "
-                "AND (response_json->'translations') IS NULL "
+                + _DICTIONARY_EMPTY_CARD_SQL
                 + _DICTIONARY_SINGLE_WORD_SQL
             )
             params: list = []
