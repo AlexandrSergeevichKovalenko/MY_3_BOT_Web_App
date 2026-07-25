@@ -36754,8 +36754,13 @@ function AppInner() {
                                 {youtubeNewsMode ? (
                                   <button
                                     type="button"
-                                    className={`worldnews-sub-btn ${worldNewsShowOriginal ? 'is-on' : ''}`}
-                                    onClick={() => setWorldNewsShowOriginal((v) => !v)}
+                                    /* Немецкие субтитры (Оригинал) — ВСЕГДА включены. Кнопку
+                                       нельзя отжать: без немецкого текста бегущая строка
+                                       (караоке-подсветка позиции) теряет смысл, поэтому
+                                       оставляем её постоянно нажатой (is-on) и no-op по тапу. */
+                                    className="worldnews-sub-btn is-on"
+                                    aria-pressed={true}
+                                    onClick={() => setWorldNewsShowOriginal(true)}
                                   >
                                     {tr('Оригинал', 'Original')}
                                   </button>
