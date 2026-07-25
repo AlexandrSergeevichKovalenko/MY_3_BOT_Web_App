@@ -40,7 +40,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
       setOverview(ov);
       if (ov.total <= 0) { setPhase('done'); return; }
       setPhase('overview');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
   }, [api]);
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
@@ -57,7 +57,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
       setTask(data.task);
       setRemaining(data.remaining || 0);
       setPhase('task');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
   }, [api, loadOverview]);
 
   const startSection = useCallback((fam) => {
@@ -91,7 +91,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
       try { haptic?.(data.result.is_correct ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
       setPhase('result');
     } catch (e) {
-      setError(String(e.message || e));
+      setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.'));
       setPhase('error');
     } finally {
       setSubmitting(false);

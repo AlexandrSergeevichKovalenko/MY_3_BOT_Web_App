@@ -35,7 +35,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       setStatus(st);
       setScenes(sc.scenes || []);
       return sc.scenes || [];
-    } catch (e) { setError(String(e?.message || e)); setScenes([]); return []; }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setScenes([]); return []; }
   }, [api]);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -84,7 +84,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       setNote(`🎨 В очереди на генерацию: ${r.queued}. Готовы будут через 1–2 минуты — жми «К обводке».`);
       haptic?.('ok');
       await refresh();
-    } catch (e) { setError(String(e?.message || e)); } finally { setBusy(false); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); } finally { setBusy(false); }
   };
   const onFiles = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -99,7 +99,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
         });
         await api('/api/answer/pinreview/upload', { image_base64: dataUrl, mime: f.type || 'image/jpeg' });
         ok += 1;
-      } catch (err) { setError(String(err?.message || err)); }
+      } catch (err) { setError((console.warn('[game] error', err), 'Не удалось загрузить. Попробуйте позже.')); }
     }
     setBusy(false);
     if (ok) { haptic?.('ok'); const sc = await refresh(); setIdx(0); if (sc.length) setStep('target'); }
@@ -120,7 +120,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       setRect(null); setDrawing(true); setWord(''); setPreview(null);
       setNote(r.duplicate ? `⚠️ «${r.target_label}» уже был — добавил всё равно.` : '');
       haptic?.('ok');
-    } catch (e) { setError(String(e?.message || e)); haptic?.('bad'); } finally { setBusy(false); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); haptic?.('bad'); } finally { setBusy(false); }
   };
   const delTarget = async (t) => {
     if (busy || !t?.aufgabe_id) return;
@@ -130,7 +130,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       setScenes((prev) => prev.map((s, i) => (i === idx ? { ...s, targets: (s.targets || []).filter((x) => x.aufgabe_id !== t.aufgabe_id) } : s)));
       if (preview?.id === t.aufgabe_id) setPreview(null);
       haptic?.('ok');
-    } catch (e) { setError(String(e?.message || e)); } finally { setBusy(false); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); } finally { setBusy(false); }
   };
   const finishScene = async (action) => {
     if (!scene || busy) return;
@@ -140,7 +140,7 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
       const rest = scenes.filter((_, i) => i !== idx);
       setScenes(rest); setIdx(0);
       if (!rest.length) { setStep('compose'); await refresh(); }
-    } catch (e) { setError(String(e?.message || e)); } finally { setBusy(false); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); } finally { setBusy(false); }
   };
 
   if (scenes === null || status === null) return <div className="pinw"><div className="ans-loading">Загружаю студию…</div></div>;

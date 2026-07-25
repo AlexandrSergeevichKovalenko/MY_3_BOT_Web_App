@@ -52,7 +52,7 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
       setRemaining(data.remaining || 0);
       setIdx(0); setChosen(null); setStats({ correct: 0, answered: 0 });
       setPhase(cardsRef.current.length ? 'learning' : 'done');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
   }, [api]);
 
   useEffect(() => { loadBatch(); }, [loadBatch]);

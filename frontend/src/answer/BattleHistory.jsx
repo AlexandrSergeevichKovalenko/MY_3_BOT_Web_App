@@ -36,7 +36,7 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
       writeSnapshot(d.sections || []);
       setPhase('ready');
     } catch (e) {
-      if (!readSnapshot()) { setError(String(e.message || e)); setPhase('error'); }
+      if (!readSnapshot()) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
     } finally {
       setRefreshing(false);
     }

@@ -30,7 +30,7 @@ export default function DeepDiveActions({ api, haptic, cardId, germanText, playT
     try {
       const d = await api('/api/answer/deepdive/feel', { id: cardId });
       setFeel({ phase: 'ready', text: String(d.feel || ''), err: '' }); haptic?.('ok');
-    } catch (e) { setFeel({ phase: 'error', text: '', err: String(e.message || e) }); haptic?.('bad'); }
+    } catch (e) { setFeel({ phase: 'error', text: '', err: (console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.') }); haptic?.('bad'); }
   }, [feel.phase, cardId, api, haptic]);
 
   const doPhrase = useCallback(async () => {
@@ -39,7 +39,7 @@ export default function DeepDiveActions({ api, haptic, cardId, germanText, playT
     try {
       const d = await api('/api/answer/deepdive/phrase', { id: cardId });
       setPhrase({ phase: 'ready', pair: d, err: '', save: 'idle' }); haptic?.('ok');
-    } catch (e) { setPhrase((s) => ({ ...s, phase: 'error', err: String(e.message || e) })); haptic?.('bad'); }
+    } catch (e) { setPhrase((s) => ({ ...s, phase: 'error', err: (console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.') })); haptic?.('bad'); }
   }, [phrase.phase, cardId, api, haptic]);
 
   const savePhrase = useCallback(() => {

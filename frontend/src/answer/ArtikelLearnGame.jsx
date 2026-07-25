@@ -59,7 +59,7 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       setMeta(data);
       setIdx(0); setChosen(null); setStats({ correct: 0, answered: 0 });
       setPhase(cardsRef.current.length ? 'learning' : 'empty');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
   }, [api]);
 
   useEffect(() => {
@@ -79,7 +79,7 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
           } else {
             setPhase('focuspick');
           }
-        } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
+        } catch (e) { if (!cancelled) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); } }
         return;
       }
       // Learn-now: let the user pick which theme to study (incl. today's theme).
@@ -94,7 +94,7 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
         setThemes(data.themes || []);
         setDaily({ key: data.daily_theme || null, label: data.daily_label || '' });
         setPhase('learnpick');
-      } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
+      } catch (e) { if (!cancelled) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
   }, [api, focus, loadDeck]);
@@ -106,7 +106,7 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
       setFocusLabel(data.theme_label || label || themeKey);
       setPhase('focusdone');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
   }, [api]);
 
   const answer = useCallback((article) => {

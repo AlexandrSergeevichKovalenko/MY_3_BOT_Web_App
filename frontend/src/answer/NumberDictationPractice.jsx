@@ -43,7 +43,7 @@ export default function NumberDictationPractice({ api, haptic, onClose }) {
       });
       startedAt.current = Date.now();
       setPhase('task');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
   }, [api]);
 
   useEffect(() => { loadNext(); }, [loadNext]);
@@ -63,7 +63,7 @@ export default function NumberDictationPractice({ api, haptic, onClose }) {
       try { haptic?.(data.is_correct ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
       setPhase('result');
     } catch (e) {
-      setError(String(e.message || e)); setPhase('error');
+      setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error');
     } finally { setSubmitting(false); }
   }, [api, task, numdictId, answer, submitting, haptic]);
 

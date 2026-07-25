@@ -51,7 +51,7 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
         itemsRef.current = data.items || [];
         if (data.already_played && data.result) { setResult({ ...data.result, items: [] }); setPhase('done'); }
         else { setPhase('intro'); }
-      } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
+      } catch (e) { if (!cancelled) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
   }, [api, battleId, battleList]);
@@ -65,7 +65,7 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
       itemsRef.current = data.items || [];
       if (data.already_played && data.result) { setResult({ ...data.result, items: [] }); setPhase('done'); return; }
       setPhase('intro');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
   }, [api]);
 
   const clearTick = () => { if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; } };

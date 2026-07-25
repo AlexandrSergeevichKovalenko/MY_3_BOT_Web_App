@@ -104,7 +104,7 @@ function useTts() {
       setState('playing');
       await audio.play();
     } catch (e) {
-      if (mySeq === seqRef.current) { setErr(String(e.message || e)); setState('error'); haptic('bad'); }
+      if (mySeq === seqRef.current) { setErr((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setState('error'); haptic('bad'); }
     }
   }, []);
 
@@ -125,7 +125,7 @@ function PhraseCard({ card }) {
       const data = await api('/api/answer/deepdive/phrase', { id: card.id });
       setPair(data); setPhase('ready'); haptic('ok');
     } catch (e) {
-      setErr(String(e.message || e)); setPhase('error'); haptic('bad');
+      setErr((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); haptic('bad');
     }
   }, [card.id, phase]);
 
@@ -182,7 +182,7 @@ function FeelCard({ card }) {
       const data = await api('/api/answer/deepdive/feel', { id: card.id });
       setText(String(data.feel || '')); setPhase('ready'); haptic('ok');
     } catch (e) {
-      setErr(String(e.message || e)); setPhase('error'); haptic('bad');
+      setErr((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); haptic('bad');
     }
   }, [card.id, phase]);
 
@@ -233,7 +233,7 @@ export default function DeepDiveOverlay({ startParam }) {
         const data = await api('/api/answer/deepdive', { id: cardId });
         if (!cancelled) setCard(data);
       } catch (e) {
-        if (!cancelled) setFatal(String(e.message || e));
+        if (!cancelled) setFatal((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.'));
       } finally {
         if (!cancelled) setLoading(false);
       }

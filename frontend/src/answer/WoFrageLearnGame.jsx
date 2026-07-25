@@ -30,7 +30,7 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
       if (!d.ok) { setError(d.error || 'Недоступно'); setPhase('error'); return; }
       setDeck((prev) => [...prev, ...(d.items || [])]);
       setPhase('card');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) { setError((console.warn('[game] error', e), 'Не удалось загрузить. Попробуйте позже.')); setPhase('error'); }
   }, [api]);
 
   useEffect(() => { loadMore(); }, [loadMore]);
