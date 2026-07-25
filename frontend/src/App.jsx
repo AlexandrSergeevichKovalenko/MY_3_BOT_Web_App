@@ -6295,6 +6295,11 @@ function AppInner() {
   const [readerTimerPaused, setReaderTimerPaused] = useState(false);
   const [readerSwipeSensitivity, setReaderSwipeSensitivity] = useState('medium');
   const [readerImmersive, setReaderImmersive] = useState(false);
+  // Bumped on EVERY document open (incl. reopening the same doc). The column engine keys
+  // its re-measure on this, so reopening the same article always rebuilds the column
+  // layout (column-width/height are set imperatively by the measure) instead of showing a
+  // stale/collapsed single column → blank pages.
+  const [readerOpenNonce, setReaderOpenNonce] = useState(0);
   const [readerArchiveOpen, setReaderArchiveOpen] = useState(false);
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const [readerTopbarCollapsed, setReaderTopbarCollapsed] = useState(false);
@@ -24892,6 +24897,7 @@ function AppInner() {
       setReaderLiveSeconds(0);
       setReaderTimerPaused(false);
       setReaderImmersive(true);
+      setReaderOpenNonce((n) => n + 1);
       setReaderTopbarCollapsed(false);
       setReaderArchiveOpen(false);
       setReaderSettingsOpen(false);
@@ -26404,6 +26410,7 @@ function AppInner() {
       setReaderLiveSeconds(0);
       setReaderTimerPaused(false);
       setReaderImmersive(true);
+      setReaderOpenNonce((n) => n + 1);
       setReaderTopbarCollapsed(false);
       setReaderArchiveOpen(false);
       setReaderSettingsOpen(false);
@@ -38792,6 +38799,7 @@ function AppInner() {
                   readerFontWeight={readerFontWeight}                 setReaderFontWeight={setReaderFontWeight}
                   readerSwipeSensitivity={readerSwipeSensitivity}     setReaderSwipeSensitivity={setReaderSwipeSensitivity}
                   readerImmersive={readerImmersive}                   setReaderImmersive={setReaderImmersive}
+                  readerOpenNonce={readerOpenNonce}
                   readerTopbarCollapsed={readerTopbarCollapsed}       setReaderTopbarCollapsed={setReaderTopbarCollapsed}
                   readerSettingsOpen={readerSettingsOpen}             setReaderSettingsOpen={setReaderSettingsOpen}
                   readerArchiveOpen={readerArchiveOpen}               setReaderArchiveOpen={setReaderArchiveOpen}
