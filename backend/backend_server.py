@@ -16309,6 +16309,31 @@ def _extract_article_from_html(html_content: str, base_url: str = "") -> tuple[s
     cover = _meta("og:image") or _meta("twitter:image")
     if cover:
         cover = urljoin(base_url or "", cover)
+    # Fallback cover: publishers that don't emit og:image (or that served us a variant
+    # without it) still have a lead photo in the article body — grab the first sizeable,
+    # non-logo <img> so the card shows a real cover instead of the "A7" placeholder.
+    if not cover:
+        scope = soup.find("article") or soup.find("main") or soup
+        for img in scope.find_all("img"):
+            src = str(img.get("src") or img.get("data-src") or img.get("data-srcset") or "").strip()
+            if not src or src.startswith("data:"):
+                continue
+            src = src.split(",")[0].split(" ")[0].strip()  # first candidate of a srcset
+            haystack = " ".join([
+                src, str(img.get("alt") or ""), " ".join(img.get("class") or []),
+            ]).lower()
+            if any(bad in haystack for bad in (
+                "logo", "icon", "sprite", "avatar", "placeholder", "1x1", "blank", "pixel",
+            )):
+                continue
+            try:
+                width_attr = int(re.sub(r"[^0-9]", "", str(img.get("width") or "")) or 0)
+            except Exception:
+                width_attr = 0
+            if width_attr and width_attr < 200:
+                continue
+            cover = urljoin(base_url or "", src)
+            break
     title = _meta("og:title") or _meta("twitter:title")
     if not title:
         h1 = soup.find("h1")
@@ -18864,21 +18889,71 @@ def _infer_reader_title(
     input_url: str,
     source_type: str,
 ) -> str:
+    """Title fallback when the article's own og:title / <h1> couldn't be extracted.
+
+    For WEB ARTICLES the real headline is almost always the first text line and is
+    properly cased ("Trump plant Zölle …") — far better than a URL slug. Only if that
+    fails do we fall back to the URL path, and there we SKIP an id-like trailing segment
+    (e.g. DW's ".../<headline-slug>/a-78108936") so we don't title a card "a 78108936"."""
+
+    def _slugify_segment(seg: str) -> str:
+        s = re.sub(r"\.[A-Za-z0-9]{1,6}$", "", str(seg or ""))
+        s = re.sub(r"[-_]+", " ", s).strip()
+        return s
+
+    def _is_id_like(seg: str) -> bool:
+        # "a-78108936", "78108936", "id_998877", "p12345" — a bare identifier, not a headline.
+        return bool(re.fullmatch(r"[a-z]{0,3}[-_]?\d{3,}", str(seg or "").strip().lower()))
+
+    def _headline_from_text() -> str:
+        _NAV_PREFIXES = (
+            "zum inhalt springen", "zur hauptnavigation", "zu weiteren angeboten",
+            "skip to", "menü", "menu", "cookie", "anzeige", "advertisement",
+        )
+        for raw_line in str(input_text or "").splitlines()[:8]:
+            line = re.sub(r"\s+", " ", raw_line).strip()
+            low = line.lower()
+            if len(line) < 12 or len(line) > 200:
+                continue
+            if any(low.startswith(p) for p in _NAV_PREFIXES):
+                continue
+            # Nav menus are lists of Capitalised proper nouns ("Regionen Deutschland Europa
+            # Nahost Afrika Asien …"). A real German headline always has lowercase function
+            # words (plant / gegen / wegen / der …). If EVERY word is capitalised, it's a menu.
+            words = [w for w in re.findall(r"[^\s]+", line) if any(c.isalpha() for c in w)]
+            if len(words) >= 2 and all(w.lstrip("«\"'(")[:1].isupper() for w in words):
+                continue
+            return line[:120]
+        return ""
+
+    # 1) Web article → prefer the article's own first-line headline.
+    if source_type == "html":
+        headline = _headline_from_text()
+        if headline:
+            return headline
+
+    # 2) URL path → most headline-like segment, skipping bare id segments.
     if input_url:
         try:
             parsed = urlparse(input_url)
-            path = str(parsed.path or "").strip("/")
-            if path:
-                leaf = path.split("/")[-1]
-                leaf = re.sub(r"\.[A-Za-z0-9]{1,6}$", "", leaf)
-                leaf = re.sub(r"[-_]+", " ", leaf).strip()
-                if leaf:
-                    return leaf[:120]
+            segments = [s for s in str(parsed.path or "").strip("/").split("/") if s]
+            for seg in reversed(segments):
+                if _is_id_like(seg):
+                    continue
+                title = _slugify_segment(seg)
+                if title:
+                    return title[:120]
+            if segments:
+                title = _slugify_segment(segments[-1])
+                if title:
+                    return title[:120]
             host = str(parsed.netloc or "").strip()
             if host:
                 return host[:120]
         except Exception:
             pass
+
+    # 3) Non-web fallback: first text line, then a generic label.
     first_line = str(input_text or "").strip().splitlines()[0] if str(input_text or "").strip() else ""
     first_line = re.sub(r"\s+", " ", first_line).strip()
     if first_line:
@@ -52639,6 +52714,38 @@ def reader_library_open():
                 "reader open stale recovery failed user_id=%s document_id=%s",
                 user_id,
                 document_id,
+            )
+        # Lazy title repair: older web articles were titled from the URL slug and ended up
+        # as a bare id ("a 78108936") because the headline couldn't be extracted at ingest.
+        # Now that the content is loaded, re-derive a real headline from the text and persist
+        # it, so the card self-heals the next time the article is opened.
+        try:
+            if (
+                not doc_is_public
+                and str(doc.get("source_type") or "").strip().lower() == "html"
+                and re.fullmatch(r"[a-zа-яё]{0,4}\s*\d{4,}", str(doc.get("title") or "").strip().lower())
+            ):
+                better_title = _infer_reader_title(
+                    input_text=str(doc.get("content_text") or ""),
+                    input_url=str(doc.get("source_url") or ""),
+                    source_type="html",
+                )
+                if better_title and not re.fullmatch(
+                    r"[a-zа-яё]{0,4}\s*\d{4,}", better_title.strip().lower()
+                ):
+                    updated = rename_reader_library_document(
+                        user_id=int(user_id),
+                        document_id=int(document_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        title=better_title,
+                    )
+                    if updated:
+                        doc["title"] = better_title
+        except Exception:
+            logging.exception(
+                "reader lazy title repair failed user_id=%s document_id=%s",
+                user_id, document_id,
             )
         # Public books are shared (owner=0) so their row carries no per-user progress —
         # overlay THIS user's saved position so a classic resumes where they left off.
