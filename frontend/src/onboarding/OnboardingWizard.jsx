@@ -956,8 +956,8 @@ function StepBody(props) {
       return (
         <div className="ob-stub">
           <p className="ob-lead">
-            {t('Ты увидел, что умеет бот. Вот что входит в каждый тариф. «Полный доступ» открывает все функции — без ограничений по количеству. Озвучка книг оплачивается отдельно.',
-               'Du hast gesehen, was der Bot kann. Das steckt in jedem Tarif. «Voller Zugang» schaltet alle Funktionen frei — ohne Mengenbegrenzung. Buch-Vertonung wird separat bezahlt.')}
+            {t('Ты увидел, что умеет бот. Вот что входит в каждый тариф. «Полный доступ» открывает все функции — отдельных лимитов по разделам нет. Озвучка книг оплачивается отдельно.',
+               'Du hast gesehen, was der Bot kann. Das steckt in jedem Tarif. «Voller Zugang» schaltet alle Funktionen frei — ohne eigene Limits je Bereich. Buch-Vertonung wird separat bezahlt.')}
           </p>
 
           <div className="ob-cmp">
@@ -985,7 +985,25 @@ function StepBody(props) {
           <div className="ob-cmp-legend">
             <span><i className="yes">✓</i>{t('входит', 'inklusive')}</span>
             <span><i className="no">✕</i>{t('нет', 'nein')}</span>
-            <span><b style={{ color: '#1b7a53' }}>∞</b>{t('без ограничений', 'unbegrenzt')}</span>
+            <span><b style={{ color: '#1b7a53' }}>∞</b>{t('без отдельного лимита', 'ohne eigenes Limit')}</span>
+          </div>
+
+          {/* Честная рамка «полного доступа»: у функций нет своих квот, но общий дневной
+              запас есть. Показываем его НЕ списком одинаковых операций, а «днём целиком» —
+              человеку важно увидеть комплекс, а не счётчик кнопок. Числа занижены
+              относительно реального потолка, чтобы обещание выполнялось с запасом. */}
+          <div className="ob-info is-fairuse">
+            <div className="ic">⚡</div>
+            <div>
+              <h4>{t('Один общий запас на день — вместо лимитов на каждую кнопку',
+                     'Ein gemeinsames Tagesbudget — statt Limits pro Funktion')}</h4>
+              <p>{t('Все функции открыты. Есть только общий дневной запас на самый тяжёлый ИИ — чтобы один человек не занял мощности всех. ',
+                    'Alle Funktionen sind frei. Es gibt nur ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — damit nicht einer die Kapazität aller belegt. ')}
+                <b>{t('Его хватает, например, на 3 набора переводов с подробным разбором ошибок и ещё 4 новых слова. Или на 9 новых слов с полным разбором и один набор переводов. Или на 6 тренировок навыка, набор переводов и пару новых слов.',
+                      'Es reicht zum Beispiel für 3 Übersetzungssets mit ausführlicher Fehleranalyse und dazu 4 neue Wörter. Oder für 9 neue Wörter mit voller Analyse und ein Übersetzungsset. Oder für 6 Skill-Trainings, ein Übersetzungsset und ein paar neue Wörter.')}</b>{' '}
+                {t('Смешивай как угодно — это общий запас, а не отдельные квоты. Совсем ничего не тратят слова, которые уже есть в нашем словаре, повторение карточек, игры, дуэли, а также чтение и озвучка «Классики». Запас обновляется каждый день в 00:00.',
+                   'Misch es frei — es ist ein gemeinsames Budget, keine Einzelquoten. Gar nichts kosten Wörter, die schon in unserem Wörterbuch stehen, Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker». Das Budget erneuert sich täglich um 00:00.')}</p>
+            </div>
           </div>
 
           <div className="ob-info is-articles">
@@ -997,7 +1015,7 @@ function StepBody(props) {
                 <b>{t('каждое слово и предложение кликабельно', 'jedes Wort und jeder Satz antippbar')}</b>{' '}
                 {t('— нажми, чтобы увидеть перевод, и сразу сохрани нужные слова в свой словарь для изучения. ',
                    '— tippe drauf für die Übersetzung und speichere passende Wörter direkt in dein Wörterbuch zum Lernen. ')}
-                <b>{t('На Free — 1 статья в день, в «Полном доступе» — без ограничений.', 'Free — 1 Artikel pro Tag, voller Zugang — unbegrenzt.')}</b></p>
+                <b>{t('На Free — 1 статья в день, в «Полном доступе» — без дневного лимита на статьи.', 'Free — 1 Artikel pro Tag, voller Zugang — kein Tageslimit für Artikel.')}</b></p>
             </div>
           </div>
 

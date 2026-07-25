@@ -618,7 +618,7 @@ export default function DeepAnalysis({ startParam }) {
                 <div className="deep-feel-plaque-title">На сегодня «Почувствовать слово» закончилось</div>
                 <div className="deep-feel-plaque-text">
                   На бесплатном тарифе это доступно {Math.max(1, Number(feelLimit.limit || 1))}× в день — обновится завтра.
-                  В «Полном доступе» «Почувствовать слово» без ограничений.
+                  В «Полном доступе» отдельного лимита у него нет — только общий дневной запас.
                 </div>
                 <button type="button" className="deep-feel-plaque-close" onClick={() => setFeelLimit(null)}>Понятно</button>
               </div>

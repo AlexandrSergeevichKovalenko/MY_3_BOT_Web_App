@@ -4951,11 +4951,11 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           <span>
             {tr(
               title
-                ? `Раздел «${title}» входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.`
-                : 'Этот раздел входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.',
+                ? `Раздел «${title}» входит в расширенный режим. Подключите подписку, чтобы им пользоваться.`
+                : 'Этот раздел входит в расширенный режим. Подключите подписку, чтобы им пользоваться.',
               title
-                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschränkungen zu nutzen.`
-                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschränkungen zu nutzen.'
+                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn zu nutzen.`
+                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn zu nutzen.'
             )}
           </span>
         </div>
@@ -7095,11 +7095,11 @@ function AppInner() {
           <span>
             {tr(
               title
-                ? `Раздел «${title}» входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.`
-                : 'Этот раздел входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.',
+                ? `Раздел «${title}» входит в расширенный режим. Подключите подписку, чтобы им пользоваться.`
+                : 'Этот раздел входит в расширенный режим. Подключите подписку, чтобы им пользоваться.',
               title
-                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschränkungen zu nutzen.`
-                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschränkungen zu nutzen.'
+                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn zu nutzen.`
+                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn zu nutzen.'
             )}
           </span>
         </div>
@@ -8583,6 +8583,12 @@ function AppInner() {
       tr('📊 Аналитика, 🗓 Задачи на день, 📅 План недели, 🗺 Карта слабых навыков с тренировкой.', '📊 Analyse, 🗓 Tagesaufgaben, 📅 Wochenplan, 🗺 Schwache-Skills-Karte mit Training.'),
       tr('Создавать свои дуэли, настраивать расписание, приоритетная обработка.', 'Eigene Duelle erstellen, Plan einstellen, priorisierte Verarbeitung.'),
       tr('«Числа на слух» (своя тренировка): до 5 в день.', 'Zahlen-Diktat (eigenes Training): bis zu 5 pro Tag.'),
+      // Честная рамка вместо обещания безлимита: у функций нет своих квот, но общий дневной
+      // запас есть. Описываем его «днём целиком», а не счётчиком одинаковых операций.
+      tr('Один общий дневной запас на самый тяжёлый ИИ — вместо лимитов на каждую функцию. Хватает, например, на 3 набора переводов с разбором ошибок и ещё 4 новых слова; или на 9 новых слов с полным разбором и один набор переводов.',
+         'Ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — statt Limits pro Funktion. Es reicht z. B. für 3 Übersetzungssets mit Fehleranalyse und 4 neue Wörter; oder für 9 neue Wörter mit voller Analyse und ein Übersetzungsset.'),
+      tr('Запас не тратят: слова, которые уже есть в нашем словаре, повторение карточек, игры, дуэли, чтение и озвучка «Классики». Обновляется каждый день в 00:00.',
+         'Nichts vom Budget kosten: Wörter, die schon in unserem Wörterbuch stehen, Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker». Erneuert sich täglich um 00:00.'),
     ];
     return {
       free: {
@@ -8940,9 +8946,12 @@ function AppInner() {
       if (!payload || typeof payload !== 'object') return '';
       const errorCode = String(payload.error || '').trim();
       if (errorCode === 'cost_cap_exceeded') {
+        // Не «доступ закрыт», а «на сегодня хватит»: блокируется ТОЛЬКО новая тяжёлая
+        // генерация, а знакомые слова, повторения, игры и чтение продолжают работать —
+        // так и говорим, иначе человек решит, что сломалось всё приложение.
         return tr(
-          'На сегодня дневной лимит запросов исчерпан. Попробуй, пожалуйста, завтра 🙌',
-          'Das Tageslimit für Anfragen ist erreicht. Bitte versuche es morgen wieder 🙌'
+          'Сегодня ты позанимался особенно много — дневной запас на новые разборы исчерпан 🙌 Он обновится в 00:00. Сейчас работают словарь по знакомым словам, повторения, игры и чтение.',
+          'Du hast heute besonders viel gelernt — das Tagesbudget für neue Analysen ist aufgebraucht 🙌 Es erneuert sich um 00:00. Wörterbuch für bekannte Wörter, Wiederholungen, Spiele und Lesen funktionieren weiter.'
         );
       }
       if (errorCode === 'feature_limit_exceeded') {
@@ -26455,7 +26464,7 @@ function AppInner() {
       } else if (code === 'LIMIT_FREE_PLAN_1_ARTICLE') {
         const articleLimitMsg = tr(
           'На бесплатном плане можно открыть 1 статью из интернета в день. Лимит обновится завтра в 00:00 по Вене. Оформи «Полный доступ» — и открывай статьи без дневного лимита.',
-          'Im Free-Plan kannst du 1 Web-Artikel pro Tag öffnen. Das Limit wird morgen um 00:00 Uhr (Wien) zurückgesetzt. Hol dir vollen Zugang und lies Artikel ohne Limit.'
+          'Im Free-Plan kannst du 1 Web-Artikel pro Tag öffnen. Das Limit wird morgen um 00:00 Uhr (Wien) zurückgesetzt. Hol dir vollen Zugang und lies Artikel ohne Tageslimit.'
         );
         setReaderError(articleLimitMsg);
         // Feed opens close the add panel, so the inline error above isn't visible —
@@ -29180,8 +29189,8 @@ function AppInner() {
           'Die ausführliche Analyse deiner Fehler gibt es im vollen Zugang.'
         )
         : tr(
-          'Бесплатный разбор на сегодня использован. С «Полным доступом» — без ограничений.',
-          'Die kostenlose Analyse für heute ist aufgebraucht. Mit vollem Zugang — ohne Limit.'
+          'Бесплатный разбор на сегодня использован. С «Полным доступом» дневного лимита на разборы нет.',
+          'Die kostenlose Analyse für heute ist aufgebraucht. Mit vollem Zugang gibt es kein Tageslimit für Analysen.'
         ),
     });
   };
