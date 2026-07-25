@@ -2909,7 +2909,12 @@ _LEGACY_API_PREFIXES = (
 _LEGACY_API_EXACT_PATHS = {"/token", "/message"}
 _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/token": {"cap": True, "paid_feature": "voice_assistant", "paid_feature_title": "Голосовой ассистент"},
-    "/api/webapp/dictionary": {"cap": True},
+    # NOT here on purpose: /api/webapp/dictionary enforces the daily cost cap INSIDE the
+    # endpoint (see lookup_webapp_dictionary), because the before_request guard cannot tell
+    # a free cache/pool hit from a paid GPT generation — it only sees the path. Gating the
+    # whole endpoint meant a capped user lost the dictionary entirely, including words we
+    # already own and serve at zero cost. That is the core loop of the app, and blocking it
+    # saved nothing. The in-endpoint check sits right before the first branch that spends.
     "/api/webapp/dictionary/collocations": {"cap": True, "paid_feature": "collocations", "paid_feature_title": "Коллокации"},
     # Quick-dict «Почувствовать слово» shares the SAME daily free limit as the flashcards
     # surface (feature_code=feel_word_daily) — one budget per user across both surfaces.
@@ -36635,6 +36640,26 @@ def lookup_webapp_dictionary():
                     }
                 )
 
+        # ── Дневной лимит расходов проверяем ЗДЕСЬ, а не в общем before_request-гейте ──
+        # Всё, что выше по коду, отдаётся из кеша, общего пула или уже запущенной чужой
+        # работы — это стоит ровно ноль. Блокировать такие ответы бессмысленно: человек
+        # теряет словарь (ядро приложения), а мы не экономим ни цента. Ниже начинается
+        # работа за деньги — запрос к GPT и/или постановка задачи на обогащение пула, —
+        # и вот её лимит охраняет. Гейт пути снят в _BILLING_GUARD_RULES, см. комментарий там.
+        # Fail-open: если сама проверка упала, поиск слова не должен из-за этого умереть.
+        try:
+            cap_error = enforce_daily_cost_cap(
+                user_id=int(user_id),
+                now_ts_utc=datetime.now(timezone.utc),
+                tz="Europe/Vienna",
+            )
+        except Exception:
+            logging.warning("Dictionary lookup cost-cap check failed, allowing", exc_info=True)
+            cap_error = None
+        if cap_error:
+            _log_dictionary_profile()
+            return jsonify(cap_error), 429
+
         lookup_id = f"dict_{int(time.time() * 1000)}_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()[:10]}"
         limit_error = _reserve_dictionary_lookup_execution(
             user_id=int(user_id),
@@ -37071,6 +37096,25 @@ def stream_webapp_dictionary():
                 )), 429
     except Exception:
         logging.debug("dictionary stream save-limit precheck failed", exc_info=True)
+
+    # Дневной лимит — той же логикой, что и в /api/webapp/dictionary: выше по коду всё
+    # отдаётся из кеша или общего пула бесплатно, ниже начинается платный разбор через GPT
+    # (именно он пишется на пользователя — set_llm_billing_user в генераторе ниже).
+    # Этот путь НИКОГДА не стоял в _BILLING_GUARD_RULES (гейт матчит путь точно, а
+    # «/api/webapp/dictionary/stream» — отдельный путь), так что до сих пор самый дорогой
+    # пользовательский вызов в приложении шёл мимо лимита совсем.
+    # Fail-open: сбой проверки не должен ломать разбор.
+    try:
+        cap_error = enforce_daily_cost_cap(
+            user_id=int(user_id),
+            now_ts_utc=datetime.now(timezone.utc),
+            tz="Europe/Vienna",
+        )
+    except Exception:
+        logging.warning("Dictionary stream cost-cap check failed, allowing", exc_info=True)
+        cap_error = None
+    if cap_error:
+        return jsonify(cap_error), 429
 
     lookup_id = f"dictstream_{int(time.time() * 1000)}_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()[:10]}"
     limit_error = _reserve_dictionary_lookup_execution(
