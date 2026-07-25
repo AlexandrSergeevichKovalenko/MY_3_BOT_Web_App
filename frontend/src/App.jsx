@@ -8589,10 +8589,14 @@ function AppInner() {
       // при потолке €0.25, занижены. ⚠️ Пересчитать при смене потолка или моделей.
       tr('Один общий дневной запас на самый тяжёлый ИИ — вместо лимитов на каждую функцию.',
          'Ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — statt Limits pro Funktion.'),
-      tr('Хватает, например, на день: 21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, русские субтитры к десяти видео и 20 новых слов с полным разбором. Или на 35 предложений перевода. Или на 12 тренировок по слабым местам.',
-         'Es reicht z. B. für einen Tag mit: 21 Sätzen zum Übersetzen und Prüfen, davon sieben mit ausführlicher Fehleranalyse, russischen Untertiteln zu zehn Videos und 20 neuen Wörtern mit voller Analyse. Oder für 35 Sätze zum Übersetzen. Oder für 12 Trainings zu Schwachstellen.'),
-      tr('Перевод любого слова — всегда бесплатно и без счёта. Запас тратит только полный разбор нового для нашего словаря слова (там уже больше 14 000). Повторение карточек, игры, дуэли, чтение и озвучка «Классики» тоже не тратят ничего. Обновляется каждый день в 00:00.',
-         'Die Übersetzung jedes Wortes ist immer gratis und ohne Zähler. Das Budget kostet nur die vollständige Analyse eines für unser Wörterbuch neuen Wortes (dort sind schon über 14 000). Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker» kosten ebenfalls nichts. Erneuert sich täglich um 00:00.'),
+      tr('Хватает, например, на день: 21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, 2 видео с немецкими и русскими субтитрами, 20 новых слов с полным разбором и «Загадочная история» с разбором. Или на 35 предложений перевода. Или на 12 тренировок по слабым местам.',
+         'Es reicht z. B. für einen Tag mit: 21 Sätzen zum Übersetzen und Prüfen, davon sieben mit ausführlicher Fehleranalyse, 2 Videos mit deutschen und russischen Untertiteln, 20 neuen Wörtern mit voller Analyse und einer Rätselgeschichte mit Auswertung. Oder für 35 Sätze zum Übersetzen. Oder für 12 Trainings zu Schwachstellen.'),
+      tr('Это ориентир, а не рамки: открывай любую функцию, какая нравится, и занимайся как хочешь — никто не считает тебе, «сколько чего осталось».',
+         'Das ist eine Orientierung, kein Korsett: öffne einfach, was dir gefällt, und lerne, wie du willst — niemand zählt dir vor, «wie viel noch übrig ist».'),
+      tr('Сверх любого варианта всегда идут: интерактивные задания и работа над вчерашними ошибками, утренний аудио-разбор ошибок в переводах, спринт синонимов и антонимов и новости дня, чтение книг и статей с кликабельным словом, повторения, дуэли и рейтинги, а «Классику» можно читать и слушать бесплатно.',
+         'Zusätzlich zu jeder Variante immer dabei: interaktive Aufgaben und die Fehlerarbeit von gestern, morgens die Audio-Analyse der Übersetzungsfehler, Synonym- und Antonym-Sprint sowie die Tagesnews, Bücher und Artikel mit antippbaren Wörtern, Wiederholungen, Duelle und Ranglisten — und «Klassiker» kannst du gratis lesen und anhören.'),
+      tr('Перевод любого слова — всегда бесплатно и без счёта. Запас тратит только полный разбор нового для нашего словаря слова (там уже больше 14 000). Обновляется каждый день в 00:00.',
+         'Die Übersetzung jedes Wortes ist immer gratis und ohne Zähler. Das Budget kostet nur die vollständige Analyse eines für unser Wörterbuch neuen Wortes (dort sind schon über 14 000). Erneuert sich täglich um 00:00.'),
     ];
     return {
       free: {

@@ -1005,16 +1005,35 @@ function StepBody(props) {
               <p>{t('Все функции открыты. Есть только общий дневной запас на самый тяжёлый ИИ — чтобы один человек не занял мощности всех. Вот дни, которые в него спокойно укладываются:',
                     'Alle Funktionen sind frei. Es gibt nur ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — damit nicht einer die Kapazität aller belegt. Solche Tage passen locker hinein:')}</p>
               <ul className="ob-fairuse-list">
-                <li>{t('21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, русские субтитры к десяти видео и 20 новых слов с полным разбором',
-                       '21 Sätze übersetzen und prüfen lassen, davon sieben mit ausführlicher Fehleranalyse, russische Untertitel zu zehn Videos und 20 neue Wörter mit voller Analyse')}</li>
+                <li>{t('21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, 2 видео с немецкими и русскими субтитрами, 20 новых слов с полным разбором и «Загадочная история» с разбором',
+                       '21 Sätze übersetzen und prüfen lassen, davon sieben mit ausführlicher Fehleranalyse, 2 Videos mit deutschen und russischen Untertiteln, 20 neue Wörter mit voller Analyse und eine Rätselgeschichte mit Auswertung')}</li>
                 <li>{t('или 35 предложений перевода с проверкой — это пять полных наборов',
                        'oder 35 Sätze übersetzen und prüfen lassen — fünf komplette Sets')}</li>
                 <li>{t('или 12 тренировок по твоим слабым местам',
                        'oder 12 Trainings zu deinen Schwachstellen')}</li>
               </ul>
+              <p className="ob-fairuse-free">
+                {t('Это ориентир, а не рамки. Никто не считает тебе, «сколько чего осталось»: открывай любую функцию, какая нравится, и занимайся как хочешь. Мы просто показали, какой примерно объём входит в тариф.',
+                   'Das ist eine Orientierung, kein Korsett. Niemand zählt dir vor, «wie viel noch übrig ist»: öffne einfach, was dir gefällt, und lerne, wie du willst. Wir zeigen nur ungefähr, welcher Umfang im Tarif steckt.')}
+              </p>
+              <p className="ob-fairuse-plus">{t('И сверх любого варианта — всегда:', 'Und zusätzlich zu jeder Variante — immer dabei:')}</p>
+              <ul className="ob-fairuse-list">
+                <li>{t('интерактивные задания каждый день и работа над ошибками за вчерашние',
+                       'täglich interaktive Aufgaben und die Fehlerarbeit zu den gestrigen')}</li>
+                <li>{t('утренний аудио-разбор твоих вчерашних ошибок в переводах',
+                       'morgens die Audio-Analyse deiner gestrigen Übersetzungsfehler')}</li>
+                <li>{t('спринт синонимов и антонимов и новости дня — сверх дневной нормы заданий',
+                       'Synonym- und Antonym-Sprint sowie die Tagesnews — zusätzlich zum Tagespensum')}</li>
+                <li>{t('чтение книг и статей, где каждое слово и предложение кликабельно',
+                       'Bücher und Artikel lesen, in denen jedes Wort und jeder Satz antippbar ist')}</li>
+                <li>{t('повторение карточек, игры, дуэли, рейтинги и грамоты',
+                       'Karten-Wiederholungen, Spiele, Duelle, Ranglisten und Urkunden')}</li>
+                <li>{t('«Классика» — читать и слушать бесплатно',
+                       '«Klassiker» — kostenlos lesen und anhören')}</li>
+              </ul>
               <p className="ob-fairuse-note">
-                {t('Перевод любого слова — всегда бесплатно и без счёта. Запас тратит только полный разбор слова, которого ещё нет в нашем общем словаре, а там уже больше 14 000 слов. Повторение карточек, игры, дуэли, чтение и озвучка «Классики» тоже не тратят ничего. Обновляется каждый день в 00:00.',
-                   'Die Übersetzung jedes Wortes ist immer gratis und ohne Zähler. Das Budget kostet nur die vollständige Analyse eines Wortes, das noch nicht in unserem gemeinsamen Wörterbuch steht — und dort sind schon über 14 000. Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker» kosten ebenfalls nichts. Es erneuert sich täglich um 00:00.')}
+                {t('Перевод любого слова — всегда бесплатно и без счёта. Запас тратит только полный разбор слова, которого ещё нет в нашем общем словаре, а там уже больше 14 000 слов. Обновляется каждый день в 00:00.',
+                   'Die Übersetzung jedes Wortes ist immer gratis und ohne Zähler. Das Budget kostet nur die vollständige Analyse eines Wortes, das noch nicht in unserem gemeinsamen Wörterbuch steht — und dort sind schon über 14 000. Es erneuert sich täglich um 00:00.')}
               </p>
             </div>
           </div>

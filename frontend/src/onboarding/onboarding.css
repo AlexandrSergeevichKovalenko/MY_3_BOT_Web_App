@@ -499,6 +499,10 @@
 .ob-fairuse-list li { margin: 0 0 5px; }
 .ob-fairuse-list li:last-child { margin-bottom: 0; }
 .ob-info .ob-fairuse-note { margin-top: 8px; }
+/* Главная мысль блока: перечисленные дни — ОРИЕНТИР, а не рамки. Без выделения её
+   читают как список лимитов, то есть ровно наоборот. */
+.ob-info .ob-fairuse-free { margin-top: 9px; color: var(--ob-ink); font-weight: 650; }
+.ob-info .ob-fairuse-plus { margin-top: 9px; color: var(--ob-ink); font-weight: 700; }
 .ob-info.is-cancel .ic { background: #eef1f5; }
 .ob-info.is-maint { border-style: dashed; }
 .ob-info.is-maint .ic { background: #fbe7e4; }
