@@ -54663,7 +54663,17 @@ def reader_audio_page():
                 document_title=str(document.get("title") or "reader"),
             )
         except GoogleTTSBudgetBlockedError as exc:
-            return jsonify({"error": str(exc), "error_code": "google_tts_budget_blocked"}), 429
+            # str(exc) is an internal budget reason ("google_tts_standard over 4000000
+            # chars…") — never a sentence for a person. The frontend shows the honest
+            # «Озвучка временно на паузе» plaque off error_code; keep the raw reason in
+            # the log where it belongs.
+            logging.warning("[READER_AUDIO] TTS budget blocked user=%s doc=%s page=%s: %s",
+                            user_id_int, document_id_int, page_int, exc)
+            return jsonify({
+                "error": "reader_audio_budget_global",
+                "error_code": "google_tts_budget_blocked",
+                "message": "Озвучка книг сейчас на паузе. Чтение, перевод по тапу и словарь работают как обычно.",
+            }), 429
         except Exception as exc:
             logging.exception("[READER_AUDIO] SYNTHESIS ERROR user=%s doc=%s page=%s: %s", user_id_int, document_id_int, page_int, exc)
             return jsonify({"error": f"Ошибка синтеза: {exc}"}), 500

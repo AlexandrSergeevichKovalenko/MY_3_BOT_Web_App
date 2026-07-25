@@ -15980,8 +15980,11 @@ function AppInner() {
       remaining: Number(payload?.remaining || 0),
       resetAt: String(payload?.reset_at || ''),
       // The global ceiling is a service-wide cap the user can't lift by asking — hide the
-      // "ask admin" button in that case and word it as a temporary service limit.
-      isGlobal: String(payload?.error || '').includes('global'),
+      // "ask admin" button in that case and word it as a temporary service limit. The
+      // exhausted monthly TTS budget is the same class of thing: nothing the reader did,
+      // nothing they can request away.
+      isGlobal: String(payload?.error || '').includes('global')
+        || String(payload?.error_code || '').trim() === 'google_tts_budget_blocked',
     });
   }
 
@@ -25117,7 +25120,8 @@ function AppInner() {
         if (response.status === 429) {
           try {
             const errorPayload = await response.clone().json();
-            if (String(errorPayload?.error || '').includes('monthly_limit_exceeded')) {
+            if (String(errorPayload?.error || '').includes('monthly_limit_exceeded')
+                || String(errorPayload?.error_code || '').trim() === 'google_tts_budget_blocked') {
               openReaderAudioLimitModal(errorPayload);
               return;
             }
@@ -25421,7 +25425,10 @@ function AppInner() {
               }
               // Monthly cap reached (429): show the honest limit plaque, not the generic
               // "try again" toast. Skip on prefetch so a background window doesn't pop it.
-              if (resp.status === 429 && String(payload?.error || '').includes('monthly_limit_exceeded')) {
+              if (resp.status === 429 && (
+                String(payload?.error || '').includes('monthly_limit_exceeded')
+                || String(payload?.error_code || '').trim() === 'google_tts_budget_blocked'
+              )) {
                 if (!prefetchOnly) openReaderAudioLimitModal(payload);
                 return null;
               }
@@ -25837,7 +25844,10 @@ function AppInner() {
             openReaderAudioPremiumPaywall();
             return null;
           }
-          if (resp.status === 429 && String(payload?.error || '').includes('monthly_limit_exceeded')) {
+          if (resp.status === 429 && (
+            String(payload?.error || '').includes('monthly_limit_exceeded')
+            || String(payload?.error_code || '').trim() === 'google_tts_budget_blocked'
+          )) {
             openReaderAudioLimitModal(payload);
             return null;
           }
