@@ -16975,6 +16975,53 @@ body.worldnews-active .webapp-topbar {
     max-height: none !important;
   }
 
+  /* ── Режим «Сменить видео» (поиск): панели субтитров нет, поэтому fill-раскладка
+     выше (:has(.youtube-subtitles-panel)) выключена и снизу торчало пустое бежевое
+     поле. Пиним страницу к видимой высоте и растягиваем сам сменщик (поле ввода +
+     список найденных видео) до нижней кромки — результаты скроллятся на всю высоту,
+     мёртвой полосы внизу больше нет. Триггер — наличие .youtube-watchbar-changer,
+     который существует ТОЛЬКО в этом режиме на телефоне. ── */
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) {
+    height: var(--app-height, 100dvh) !important;
+    max-height: var(--app-height, 100dvh) !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    align-items: stretch;
+    padding-bottom: 0 !important;
+  }
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .webapp-shell,
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .webapp-main,
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .webapp-video-dictionary,
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .youtube-player-first {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .youtube-player-first {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.4cm) !important;
+  }
+  /* Прячем верхнюю шапку YouTube — как и в watch-раскладке. */
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .youtube-player-first-head {
+    display: none !important;
+  }
+  /* Обёртка панели заполняет весь остаток; строка кнопок фиксирована, сменщик тянется. */
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .youtube-watchbar-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .youtube-watchbar {
+    flex: 0 0 auto;
+  }
+  .webapp-page.is-youtube-phone-watch:has(.youtube-watchbar-changer) .youtube-watchbar-changer {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none !important; /* снимаем 46vh-кап — список тянется до низа экрана */
+  }
+
   /* Нет субтитров — состояние показывается ВНУТРИ новой раскладки, а не откатом
      всего экрана на планшетную вёрстку. Панель занимает то же место, что и обычная. */
   /* Панель тёмная (как вся watch-раскладка), поэтому цвета задаём ЯВНО: наследование
