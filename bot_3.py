@@ -48,6 +48,7 @@ from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
     backfill_quick_dictionary_translations,
     backfill_dictionary_card_metainfo,
+    repair_dictionary_cards_from_raw_text,
     _build_shortcut_onboarding_code_text,
     _build_shortcut_onboarding_instructions,
     _build_tts_prewarm_quota_control_text,
@@ -11192,6 +11193,85 @@ async def admin_fix_dict_translations_command(update: Update, context: CallbackC
         meta_text += f"\n\n<b>Примеры:</b>\n{meta_lines}"
     for part in _split_telegram_text(meta_text):
         await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def admin_repair_dict_cards_command(update: Update, context: CallbackContext):
+    """Бесплатный ремонт пустых карточек из уже сохранённого ответа модели (raw_text).
+
+    Сюда попадают карточки, где модель ответила правильно, но её JSON не разобрался, и
+    сохранилась заглушка: пустые значения, часть речи «other», нет артикля («Eltern»).
+    Ответ лежит в базе целиком, поэтому карточка собирается заново БЕЗ запроса к GPT.
+
+    /admin_repair_dict_cards               → пробный прогон по всем пользователям
+    /admin_repair_dict_cards apply         → починить (до 200 записей за раз)
+    /admin_repair_dict_cards apply 500     → размер батча
+    /admin_repair_dict_cards apply me      → только мои записи
+    """
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = [a.strip().lower() for a in (context.args or [])]
+    apply = "apply" in args
+    batch = next((int(a) for a in args if a.isdigit() and 1 <= int(a) <= 5000), 200)
+    target_user_id = int(sender.id) if "me" in args else None
+
+    await message.reply_text(
+        f"🩹 Ремонт карточек из сохранённого ответа ({'apply' if apply else 'проба'}), "
+        f"до {batch} записей. GPT не трогаем — это бесплатно."
+    )
+    try:
+        report = await asyncio.to_thread(
+            repair_dictionary_cards_from_raw_text,
+            dry_run=not apply,
+            max_entries=batch,
+            user_id=target_user_id,
+        )
+    except Exception as exc:
+        logging.exception("admin dict raw_text repair failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Ремонт упал: {exc}")
+        return
+
+    from html import escape as _esc
+    samples = report.get("samples") or []
+    lines = "\n".join(
+        f"  • #{s.get('id')} {_esc(str(s.get('article') or ''))} {_esc(str(s.get('word') or ''))}".rstrip()
+        for s in samples[:15]
+    )
+    text = (
+        f"🩹 <b>Ремонт карточек из ответа модели</b> ({'apply' if apply else 'проба'})\n\n"
+        f"Просмотрено: <b>{report.get('scanned', 0)}</b>\n"
+        f"Починено: <b>{report.get('repaired', 0)}</b>\n"
+        f"Не разобрался даже с ремонтом: {report.get('unparsable', 0)}\n"
+        f"Осталось тонкими (нужен GPT): {report.get('still_thin', 0)}\n"
+        f"Ошибок: {report.get('errors', 0)}\n"
+        f"Осталось в базе: <b>{report.get('remaining', 0)}</b>"
+    )
+    if lines:
+        text += f"\n\n<b>Примеры:</b>\n{lines}"
+    if report.get("remaining") and apply:
+        text += "\n\nЗапусти ещё раз, чтобы взять следующий батч."
+    for part in _split_telegram_text(text):
+        await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+
+
+def _run_dictionary_raw_text_repair_safe() -> None:
+    """Ночной бесплатный ремонт карточек (03:05 Вена — до платного добора пула в 03:10).
+
+    Ни одного вызова GPT: берём ответ модели, который уже сохранён в записи, и собираем
+    из него карточку. Молча — отдельный отчёт не нужен, итог видно в логах."""
+    try:
+        report = repair_dictionary_cards_from_raw_text(dry_run=False, max_entries=300)
+        logging.info(
+            "nightly dictionary raw_text repair: scanned=%s repaired=%s unparsable=%s thin=%s remaining=%s",
+            report.get("scanned"), report.get("repaired"), report.get("unparsable"),
+            report.get("still_thin"), report.get("remaining"),
+        )
+    except Exception:
+        logging.warning("nightly dictionary raw_text repair failed", exc_info=True)
 
 
 async def admin_backfill_frequency_command(update: Update, context: CallbackContext):
@@ -39536,6 +39616,7 @@ def main():
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dict_pool_report", admin_dict_pool_report_command))
     application.add_handler(CommandHandler("admin_pool_enrich", admin_pool_enrich_command))
+    application.add_handler(CommandHandler("admin_repair_dict_cards", admin_repair_dict_cards_command))
     application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
     application.add_handler(CallbackQueryHandler(handle_quarantine_callback, pattern=r"^qz:"))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
@@ -40125,6 +40206,19 @@ def main():
             hour=int((os.getenv("STARS_REPORT_HOUR") or "10").strip() or "10"),
             minute=int((os.getenv("STARS_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("STARS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Бесплатный ремонт карточек из сохранённого ответа модели (03:05 Вена) --
+        # Идёт ПЕРЕД платным добором: часть пустых карточек чинится вообще без GPT —
+        # ответ модели уже лежит в записи, не разобрался только её JSON.
+        scheduler.add_job(
+            _run_dictionary_raw_text_repair_safe,
+            "cron",
+            hour=int((os.getenv("DICT_RAW_REPAIR_HOUR") or "3").strip() or "3"),
+            minute=int((os.getenv("DICT_RAW_REPAIR_MINUTE") or "5").strip() or "5"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,

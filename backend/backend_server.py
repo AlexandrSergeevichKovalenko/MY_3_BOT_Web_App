@@ -333,6 +333,8 @@ from backend.database import (
     upsert_dictionary_pool_entry,
     get_dictionary_entries_for_metainfo_scan,
     count_dictionary_entries_missing_card,
+    get_dictionary_entries_with_stored_raw_text,
+    count_dictionary_entries_with_stored_raw_text,
     get_thin_pool_entries_for_enrichment,
     mark_pool_entry_enrich_failed,
     count_thin_pool_entries,
@@ -9578,6 +9580,153 @@ def run_pool_night_enrichment(
 
 _DICTIONARY_METAINFO_BACKFILL_LOCK = threading.Lock()
 _DICTIONARY_METAINFO_BACKFILL_RUNNING = False
+
+
+def _card_item_from_stored_raw_text(raw_text: str) -> dict:
+    """Rebuild a full card from the model text we ALREADY paid for and stored.
+
+    When the model's JSON did not parse, the save kept the whole answer in `raw_text` and
+    wrote an empty stub next to it. The tolerant parser now reads that same text, so these
+    cards are repairable for free — no second GPT call for something already answered."""
+    from backend.openai_manager import parse_llm_json_object
+
+    raw = parse_llm_json_object(raw_text, context="stored_raw_text_repair")
+    if not isinstance(raw, dict) or not raw or raw.get("parse_failed"):
+        return {}
+    # Which side of the raw answer is German? Decide by SCRIPT, never by the row's stored
+    # pair: the model answers German-first whatever direction was queried, and trusting the
+    # stored pair is exactly what once produced «der Понос».
+    word_source = str(raw.get("word_source") or "").strip()
+    word_target = str(raw.get("word_target") or "").strip()
+    if _CYRILLIC_RE.search(word_source) and word_target and not _CYRILLIC_RE.search(word_target):
+        query_source_lang, query_target_lang = "ru", "de"
+    else:
+        query_source_lang, query_target_lang = "de", "ru"
+    query_word = word_source or word_target
+    if not query_word:
+        return {}
+    try:
+        item, _direction, _detected, _sv, _tv = _build_dictionary_result_from_raw(
+            raw=raw,
+            query_word=query_word,
+            source_lang=query_source_lang,
+            target_lang=query_target_lang,
+            query_source_lang=query_source_lang,
+            query_target_lang=query_target_lang,
+            lookup_lang="",
+        )
+    except Exception:
+        logging.warning("raw_text card rebuild failed for %r", query_word, exc_info=True)
+        return {}
+    return item if isinstance(item, dict) else {}
+
+
+def repair_dictionary_cards_from_raw_text(
+    *,
+    dry_run: bool = True,
+    max_entries: int = 200,
+    user_id: int | None = None,
+    days: int | None = None,
+    progress_cb=None,
+) -> dict:
+    """Free repair pass: empty cards whose model answer is already stored in `raw_text`.
+
+    No GPT at all — we re-read the answer we paid for once, rebuild the card through the
+    normal save pipeline (so the article backstop and the script guards run) and publish
+    it to the shared stores. Cards that still come out thin are left for the paid
+    enrichment; they are never overwritten with something worse than they had."""
+    report = {
+        "dry_run": bool(dry_run), "days": days,
+        "scanned": 0, "repaired": 0, "unparsable": 0, "still_thin": 0,
+        "errors": 0, "remaining": 0, "samples": [],
+    }
+    try:
+        rows = get_dictionary_entries_with_stored_raw_text(
+            user_id=user_id, limit=max_entries, days=days,
+        )
+    except Exception as exc:
+        report["errors"] += 1
+        report["error_detail"] = str(exc)
+        return report
+
+    for row in rows:
+        report["scanned"] += 1
+        response_json = row.get("response_json")
+        if isinstance(response_json, str):
+            try:
+                response_json = json.loads(response_json)
+            except Exception:
+                response_json = {}
+        if not isinstance(response_json, dict):
+            response_json = {}
+        source_lang = str(row.get("source_lang") or "de").strip().lower() or "de"
+        target_lang = str(row.get("target_lang") or "ru").strip().lower() or "ru"
+        german = str(row.get("word_de") or row.get("translation_de") or "").strip()
+        try:
+            rebuilt = _card_item_from_stored_raw_text(str(response_json.get("raw_text") or ""))
+            if not rebuilt:
+                report["unparsable"] += 1
+                continue
+            # No text hints on purpose: the row's OWN source_text/target_text carry its
+            # direction (a ru→de row is «Родители» → «Eltern»), and the rebuilt card is
+            # always German-first. Passing the German side as "source" would flip the pair.
+            source_text, target_text = _resolve_entry_texts_for_pair(
+                entry=row,
+                response_json=response_json,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            merged = dict(response_json)
+            merged.update(_normalize_dictionary_enrich_payload(rebuilt))
+            merged.pop("parse_failed", None)
+            merged = _prepare_dictionary_response_json_for_save(
+                response_json=merged,
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                word_ru=str(row.get("word_ru") or merged.get("word_ru") or "").strip() or None,
+                word_de=str(row.get("word_de") or merged.get("word_de") or "").strip() or None,
+                translation_de=str(row.get("translation_de") or merged.get("translation_de") or "").strip() or None,
+                translation_ru=str(row.get("translation_ru") or merged.get("translation_ru") or "").strip() or None,
+            )
+            if _dictionary_payload_needs_enrichment(merged):
+                report["still_thin"] += 1
+                continue
+            if len(report["samples"]) < 25:
+                report["samples"].append({
+                    "id": row.get("id"),
+                    "word": str(merged.get("word_de") or german),
+                    "article": str(merged.get("article") or ""),
+                })
+            if dry_run:
+                report["repaired"] += 1
+                continue
+            update_webapp_dictionary_entry(int(row.get("id")), merged)
+            _publish_enriched_card_to_shared_stores(
+                payload=merged,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                source_text=source_text,
+                target_text=target_text,
+            )
+            report["repaired"] += 1
+            if progress_cb and report["repaired"] % 25 == 0:
+                try:
+                    progress_cb(report["repaired"], len(rows))
+                except Exception:
+                    pass
+        except Exception as exc:
+            report["errors"] += 1
+            logging.warning(
+                "raw_text card repair failed entry_id=%s word=%r error=%s",
+                row.get("id"), german, exc, exc_info=True,
+            )
+    try:
+        report["remaining"] = count_dictionary_entries_with_stored_raw_text(user_id=user_id, days=days)
+    except Exception:
+        report["remaining"] = 0
+    return report
 
 
 def backfill_dictionary_card_metainfo(

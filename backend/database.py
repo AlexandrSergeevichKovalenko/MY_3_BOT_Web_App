@@ -20327,6 +20327,67 @@ def get_dictionary_entries_for_metainfo_scan(
     ]
 
 
+def _dictionary_stored_raw_text_where(user_id: int | None, days: int | None) -> tuple[str, list]:
+    where = (
+        "WHERE COALESCE(NULLIF(word_de,''), NULLIF(translation_de,'')) IS NOT NULL "
+        "AND COALESCE(response_json->>'raw_text','') <> '' "
+        + _DICTIONARY_EMPTY_CARD_SQL
+    )
+    params: list = []
+    if user_id is not None:
+        where += " AND user_id = %s"
+        params.append(int(user_id))
+    if days is not None:
+        where += " AND created_at >= NOW() - (%s || ' days')::interval"
+        params.append(int(days))
+    return where, params
+
+
+def get_dictionary_entries_with_stored_raw_text(
+    user_id: int | None = None,
+    limit: int = 200,
+    days: int | None = None,
+) -> list[dict]:
+    """Пустые карточки, у которых ответ модели УЖЕ лежит в базе (`raw_text`).
+
+    Это записи, где модель ответила правильно, но её JSON не разобрался — и сохранилась
+    заглушка (пустые значения, часть речи «other», артикля нет). Текст ответа при этом
+    сохранён целиком, так что карточку можно собрать заново БЕЗ обращения к GPT."""
+    where, params = _dictionary_stored_raw_text_where(user_id, days)
+    params = list(params) + [int(limit)]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT id, user_id, word_ru, translation_de, word_de, translation_ru,
+                       source_lang, target_lang, origin_process, response_json
+                FROM bt_3_webapp_dictionary_queries
+                {where}
+                ORDER BY created_at DESC
+                LIMIT %s;
+            """, params)
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "id": r[0], "user_id": r[1], "word_ru": r[2], "translation_de": r[3],
+            "word_de": r[4], "translation_ru": r[5], "source_lang": r[6],
+            "target_lang": r[7], "origin_process": r[8], "response_json": r[9],
+        }
+        for r in rows
+    ]
+
+
+def count_dictionary_entries_with_stored_raw_text(
+    user_id: int | None = None,
+    days: int | None = None,
+) -> int:
+    """«Осталось N» для бесплатного ремонта карточек из сохранённого ответа модели."""
+    where, params = _dictionary_stored_raw_text_where(user_id, days)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries {where};", params)
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
 def get_dictionary_backfill_diagnostics(user_id: int | None = None) -> dict:
     """Lightweight counts so the backfill report can explain a 0-candidate result:
     total entries, top language pairs, and how many de→ru entries lack a Russian
