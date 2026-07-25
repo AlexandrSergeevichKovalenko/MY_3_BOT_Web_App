@@ -574,6 +574,7 @@ from backend.database import (
     count_admin_subscription_available_words,
     has_admin_subscription_available,
     materialize_subscription_card,
+    _trained_german_word_keys,
     count_dictionary_entries_for_language_pair,
     count_starter_dictionary_entries_for_language_pair,
     import_starter_dictionary_snapshot,
@@ -10079,8 +10080,14 @@ def _list_srs_queue_cards(
             lang_filter_sql = ""
             lang_params: list[object] = []
         else:
-            lang_filter_sql = "AND q.source_lang = %s AND q.target_lang = %s"
-            lang_params = [source_lang, target_lang]
+            # BOTH directions of the {de,ru} pair — de→ru and ru→de are the same German↔Russian
+            # vocabulary, so a learner trains all of it (the card renderer normalizes each to the
+            # «Russian → German» format). Was one-directional, which left half the words untrained.
+            lang_filter_sql = (
+                "AND ((q.source_lang = %s AND q.target_lang = %s)"
+                " OR (q.source_lang = %s AND q.target_lang = %s))"
+            )
+            lang_params = [source_lang, target_lang, target_lang, source_lang]
         base_params = [int(user_id), *lang_params]
         recent_seen_cutoff = now_utc - timedelta(hours=FLASHCARD_RECENT_SEEN_HOURS)
         recent_seen_sql = (
@@ -10371,6 +10378,25 @@ def _list_srs_queue_cards(
                         new_selected_ids.add(int(_r[0]))
             except Exception as _sub_e:
                 logging.warning("subscription materialize (prefetch) skipped: %s", _sub_e)
+
+        # One card per German word: drop NEW rows whose German is already being trained in the
+        # other direction, and collapse within-batch twins. Post-filtered in Python (the buffer is
+        # tiny) to avoid a slow per-row SQL subquery. Non-manual mode only; DUE cards untouched.
+        if new_rows and not normalized_allowed_ids and not allowed_card_ids:
+            try:
+                _trained_de = set(_trained_german_word_keys(cur, int(user_id)))
+            except Exception:
+                _trained_de = set()
+            _seen_de: set[str] = set()
+            _deduped_new: list = []
+            for _r in new_rows:
+                _k = str(_r[3] or "").strip().lower()
+                if _k and (_k in _trained_de or _k in _seen_de):
+                    continue
+                if _k:
+                    _seen_de.add(_k)
+                _deduped_new.append(_r)
+            new_rows = _deduped_new
 
         items: list[dict] = []
         for row in due_rows:

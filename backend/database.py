@@ -290,6 +290,30 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "subscription",  # lazily materialized from the admin's dictionary via live subscription
 }
 
+# Dedup for the bidirectional SRS queue: don't INTRODUCE a NEW card whose German word is already
+# being trained via the other-direction row (334 words are saved as both de→ru and ru→de — the
+# learner wants ONE card, not two). Implemented as a PRECOMPUTED small set + `<> ALL(array)`
+# rather than a per-row correlated subquery — the correlated form scanned 13k rows and took ~20s
+# on the hot card-serving path. Applies only to NEW candidates; already-trained duplicates keep
+# their own progress, untouched.
+_SRS_NEW_DEDUP_FILTER_SQL = " AND (q.word_de IS NULL OR LOWER(TRIM(q.word_de)) <> ALL(%s::text[]))"
+
+
+def _trained_german_word_keys(cur, user_id: int) -> list[str]:
+    """Lowercased German words this user already has an SRS card for (any direction). Small set
+    (a user's trained cards number in the hundreds), fetched once via the SRS index to dedup new
+    cards fast."""
+    cur.execute(
+        """
+        SELECT DISTINCT LOWER(TRIM(q.word_de))
+        FROM bt_3_webapp_dictionary_queries q
+        JOIN bt_3_card_srs_state s ON s.user_id = q.user_id AND s.card_id = q.id
+        WHERE q.user_id = %s AND NULLIF(TRIM(COALESCE(q.word_de, '')), '') IS NOT NULL;
+        """,
+        (int(user_id),),
+    )
+    return [r[0] for r in (cur.fetchall() or [])]
+
 UNCLASSIFIED_ERROR_CATEGORY_ALIASES = {"other mistake", "other mistakes"}
 UNCLASSIFIED_ERROR_SUBCATEGORY_ALIASES = {"unclassified mistake", "unclassified mistakes"}
 EXCLUDED_UNCLASSIFIED_SKILL_IDS = {
@@ -24240,7 +24264,7 @@ def count_due_srs_cards(
         if normalized_allowed_ids:
             language_filter_sql, language_params = "", []
         else:
-            language_filter_sql, language_params = _build_language_pair_filter(
+            language_filter_sql, language_params = _build_language_pair_filter_both(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
@@ -24288,7 +24312,7 @@ def count_new_cards_introduced_today(
         if normalized_allowed_ids:
             language_filter_sql, language_params = "", []
         else:
-            language_filter_sql, language_params = _build_language_pair_filter(
+            language_filter_sql, language_params = _build_language_pair_filter_both(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
@@ -24330,7 +24354,7 @@ def has_available_new_srs_cards(
         if normalized_allowed_ids:
             language_filter_sql, language_params = "", []
         else:
-            language_filter_sql, language_params = _build_language_pair_filter(
+            language_filter_sql, language_params = _build_language_pair_filter_both(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
@@ -24364,7 +24388,7 @@ def count_available_new_srs_cards(
 ) -> int:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            language_filter_sql, language_params = _build_language_pair_filter(
+            language_filter_sql, language_params = _build_language_pair_filter_both(
                 source_lang,
                 target_lang,
                 table_alias="q",
@@ -24405,7 +24429,7 @@ def count_due_cards_reviewed_today(
         if normalized_allowed_ids:
             language_filter_sql, language_params = "", []
         else:
-            language_filter_sql, language_params = _build_language_pair_filter(
+            language_filter_sql, language_params = _build_language_pair_filter_both(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
@@ -24463,7 +24487,7 @@ def count_card_review_response_seconds_today(
         if normalized_allowed_ids:
             language_filter_sql, language_params = "", []
         else:
-            language_filter_sql, language_params = _build_language_pair_filter(
+            language_filter_sql, language_params = _build_language_pair_filter_both(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
@@ -24556,7 +24580,7 @@ def reschedule_overdue_srs_cards(
     safe_cpd = max(1, int(cards_per_day))
 
     def _reschedule(cur):
-        language_filter_sql, language_params = _build_language_pair_filter(
+        language_filter_sql, language_params = _build_language_pair_filter_both(
             source_lang, target_lang, table_alias="q",
         )
         cur.execute(
@@ -24607,7 +24631,7 @@ def get_next_due_srs_card(
         if normalized_allowed_ids:
             language_filter_sql, language_params = "", []
         else:
-            language_filter_sql, language_params = _build_language_pair_filter(
+            language_filter_sql, language_params = _build_language_pair_filter_both(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
@@ -24692,10 +24716,11 @@ def get_next_new_srs_candidate(
         if normalized_allowed_ids:
             language_filter_sql, language_params = "", []
         else:
-            language_filter_sql, language_params = _build_language_pair_filter(
+            language_filter_sql, language_params = _build_language_pair_filter_both(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
+        dedup_keys = [] if normalized_allowed_ids else _trained_german_word_keys(cur, user_id)
         # prefer_oldest: pick the oldest saved word regardless of rank (the #6
         # anti-starvation reserve); otherwise frequency-first.
         order_by = (
@@ -24711,13 +24736,14 @@ def get_next_new_srs_candidate(
               ON s.user_id = q.user_id AND s.card_id = q.id
             WHERE q.user_id = %s
               AND s.id IS NULL
+              {_SRS_NEW_DEDUP_FILTER_SQL}
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
               {allowed_sql}
             ORDER BY {order_by}
             LIMIT 1;
             """,
-            [int(user_id), *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
+            [int(user_id), dedup_keys, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         row = cur.fetchone()
         if not row:
