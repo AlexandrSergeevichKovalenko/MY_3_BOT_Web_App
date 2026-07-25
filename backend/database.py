@@ -26152,7 +26152,15 @@ def list_user_vocabulary(
         params.append(int(folder_id))
 
     if search:
-        needle = f"%{search.strip().lower()}%"
+        # Артикль в запросе игнорируем: карточка показывает «die Eltern», а в колонке лежит
+        # «Eltern» — набрав ровно то, что видит на экране, человек не находил своё же слово.
+        # Ищем по основе, поэтому «die Eltern», «Eltern» и «eltern» дают один результат.
+        needle_text = re.sub(
+            r"^(der|die|das|ein|eine|einen|einem|einer|eines)\s+",
+            "",
+            search.strip().lower(),
+        ).strip() or search.strip().lower()
+        needle = f"%{needle_text}%"
         conditions.append(
             "(LOWER(q.word_ru) LIKE %s OR LOWER(q.word_de) LIKE %s"
             " OR LOWER(q.translation_ru) LIKE %s OR LOWER(q.translation_de) LIKE %s)"
