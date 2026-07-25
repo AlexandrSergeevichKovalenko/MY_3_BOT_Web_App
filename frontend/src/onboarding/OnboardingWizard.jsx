@@ -1018,8 +1018,8 @@ function StepBody(props) {
               </p>
               <p className="ob-fairuse-plus">{t('И сверх любого варианта — всегда:', 'Und zusätzlich zu jeder Variante — immer dabei:')}</p>
               <ul className="ob-fairuse-list">
-                <li>{t('интерактивные задания каждый день и работа над ошибками за вчерашние',
-                       'täglich interaktive Aufgaben und die Fehlerarbeit zu den gestrigen')}</li>
+                <li>{t('до 20 интерактивных заданий в день — темп выбираешь сам в настройках, и работа над вчерашними ошибками',
+                       'bis zu 20 interaktive Aufgaben pro Tag — das Tempo wählst du in den Einstellungen — plus die Fehlerarbeit von gestern')}</li>
                 <li>{t('утренний аудио-разбор твоих вчерашних ошибок в переводах',
                        'morgens die Audio-Analyse deiner gestrigen Übersetzungsfehler')}</li>
                 <li>{t('спринт синонимов и антонимов и новости дня — сверх дневной нормы заданий',
