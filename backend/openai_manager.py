@@ -8150,6 +8150,82 @@ def run_quick_article(*, word: str, meaning_ru: str = "") -> str:
     return article if article in _QUICK_ARTICLE_ALLOWED else ""
 
 
+_QUICK_CORRECT_MAX_CHARS = 120
+
+
+def _has_cyrillic(s: str) -> bool:
+    return any("Ѐ" <= ch <= "ӿ" for ch in str(s or ""))
+
+
+def run_quick_correct(*, text: str, source_lang: str = "") -> str:
+    """Fast single chat.completions call → the corrected canonical form of a SHORT
+    word/phrase the user typed into the quick dictionary. Fixes ONLY genuine mistakes
+    (spelling/orthography, a wrong or missing article the user already wrote, case,
+    prepositions) without rephrasing into a synonym, translating, or changing meaning /
+    length. Used at SAVE time so a misspelled lookup is not persisted verbatim into the
+    shared dictionary pool. Returns "" when nothing needs fixing OR on any failure — the
+    caller then keeps the user's own text, so a save NEVER depends on this call. Sets
+    _LAST_LLM_USAGE so the caller can log billing."""
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    t = str(text or "").strip()
+    if not api_key or not t or len(t) > _QUICK_CORRECT_MAX_CHARS:
+        return ""
+    lang = str(source_lang or "").strip().lower()
+    lang_name = {"de": "German", "ru": "Russian"}.get(lang, "the source language")
+    system = (
+        f"You proofread a SHORT {lang_name} word or phrase a learner typed into a "
+        "dictionary to look up. Fix ONLY genuine errors: spelling/orthography, a wrong "
+        "definite article on a noun the user ALREADY wrote with an article, grammatical "
+        "case, and prepositions. Do NOT rephrase into a synonym, do NOT translate, do "
+        "NOT change the meaning, tense, or length, and do NOT add an article the user "
+        "did not write. Keep the user's exact wording wherever it is already correct. "
+        "Respond with STRICT JSON ONLY: {\"corrected\":\"<canonical form>\"}. If the "
+        "input is already correct, return it unchanged in that field."
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=10)
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps({"text": t}, ensure_ascii=False)},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logging.warning("run_quick_correct failed text=%s", t[:64], exc_info=True)
+        return ""
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1-mini",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
+    try:
+        corrected = str((json.loads(resp.choices[0].message.content or "{}") or {}).get("corrected") or "").strip()
+    except Exception:
+        corrected = ""
+    # Reject anything that is not a plausibly-close correction: no change, a full-blown
+    # rewrite/explanation (much longer), or a cross-language answer (a "correction" in the
+    # wrong script means the model translated instead of proofreading).
+    if not corrected or corrected == t:
+        return ""
+    if len(corrected) > len(t) + 24:
+        return ""
+    if lang == "de" and _has_cyrillic(corrected):
+        return ""
+    if lang == "ru" and not _has_cyrillic(corrected):
+        return ""
+    return corrected
+
+
 def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "", mime: str = "image/png") -> dict:
     """Vision gate for a generated rebus component image (pool time, off the hot
     path). Verifies the single main object IS `expected` (the German word) in its

@@ -167,6 +167,7 @@ export default function DictionaryOverlay({ onClose } = {}) {
   const inputRef = useRef(null);
   const streamAbortRef = useRef(null); // aborts an in-flight breakdown SSE stream
   const lookupPromiseRef = useRef(null); // in-flight breakdown promise (shared by tap + save)
+  const correctionCacheRef = useRef(new Map()); // typed phrase → proofread form (dedupes «В словаре»/«Учить»)
   const tts = useTts();
 
   // Surface the "tap a word in Synonyms/Antonyms to save it" hint the first few times
@@ -541,6 +542,29 @@ export default function DictionaryOverlay({ onClose } = {}) {
     }
   }, [item, enrich, streamLookup, fetchDeepBreakdown]);
 
+  // Proofread the SOURCE phrase before it lands in the shared dictionary, so a typo, a
+  // wrong/absent article, a wrong case or preposition is not saved verbatim (the user
+  // asked to be silently corrected). ONE cheap LLM call, cached server-side AND per
+  // typed phrase here (dedupes the «В словаре» + «Учить» double-save). Best-effort: on
+  // any failure we return exactly what the user typed — a save NEVER waits on or dies
+  // with this call.
+  const proofreadSource = useCallback(async (typed) => {
+    const t = String(typed || '').trim();
+    if (!t) return t;
+    const memo = correctionCacheRef.current;
+    if (memo.has(t)) return memo.get(t) || t;
+    try {
+      const c = await api('/api/translate/quick/correct', {
+        text: t, source_lang: quick?.sourceLang || undefined,
+      });
+      const fixed = String(c?.corrected || '').trim();
+      memo.set(t, fixed);
+      return fixed || t;
+    } catch (_e) {
+      return t; // cap reached / offline / error — keep the user's text, still save it
+    }
+  }, [quick]);
+
   // Canonical save through the lookup→save pipeline; returns the save response
   // (incl. entry_id) so callers can chain (e.g. add to the SRS deck).
   const persistEntry = useCallback(async () => {
@@ -552,21 +576,32 @@ export default function DictionaryOverlay({ onClose } = {}) {
     // article we already resolved cheaply so a saved noun keeps its der/die/das
     // ("die Rotznase") — the deeper grammar table is built by the engine on view.
     const rich = (item && enrich === 'done') ? item : null;
+
+    // Silently correct the typed phrase first, and reflect it in the field + card so the
+    // user sees (and saves) the clean form. Mark it handled so the auto-translate effect
+    // doesn't re-fire a fresh translation on the corrected text.
+    const corrected = await proofreadSource(typed);
+    if (corrected && corrected !== typed) {
+      lastAutoRef.current = corrected;
+      setQuery(corrected);
+      setQuick((prev) => (prev ? { ...prev, source: corrected } : prev));
+    }
+
     const art = String(quick?.article || '').trim();
     const hasArticle = (s) => /^(der|die|das)\s/i.test(String(s || ''));
-    let sourceText = typed;
-    let quickForSave = quick;
+    let sourceText = corrected;
+    let quickForSave = quick ? { ...quick, source: corrected } : quick;
     if (!rich && art && quick) {
       if (quick.targetLang === 'de' && !hasArticle(quick.translation)) {
-        quickForSave = { ...quick, translation: `${art} ${quick.translation}` };
-      } else if (quick.sourceLang === 'de' && !hasArticle(typed)) {
-        sourceText = `${art} ${typed}`;
+        quickForSave = { ...quickForSave, translation: `${art} ${quick.translation}` };
+      } else if (quick.sourceLang === 'de' && !hasArticle(sourceText)) {
+        sourceText = `${art} ${sourceText}`;
       }
     }
     return api('/api/webapp/dictionary/save', buildDictionarySavePayload({
       rich, sourceText, quick: quickForSave, origin: 'webapp_quick_dictionary',
     }));
-  }, [item, enrich, quick, query]);
+  }, [item, enrich, quick, query, proofreadSource]);
 
   const onSave = useCallback(() => {
     if (save !== 'idle') return;

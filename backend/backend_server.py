@@ -322,6 +322,7 @@ from backend.openai_manager import (
     run_language_learning_private_question_detailed,
     run_quick_ask,
     run_quick_article,
+    run_quick_correct,
     stream_dictionary_breakdown_sections,
     run_tts_chunk_de,
     get_last_llm_usage,
@@ -1330,6 +1331,11 @@ _DICTIONARY_LOOKUP_INFLIGHT: dict[str, dict[str, Any]] = {}
 _QUICK_TRANSLATE_CACHE_LOCK = threading.Lock()
 _QUICK_TRANSLATE_CACHE: dict[str, dict] = {}
 _QUICK_TRANSLATE_INFLIGHT: dict[str, threading.Event] = {}
+# Cheap source-phrase corrections (quick dictionary save path). key -> (expires_at, corrected).
+# A cached "" means "already correct, nothing to fix" and still saves a repeat LLM call.
+_QUICK_CORRECT_CACHE_LOCK = threading.Lock()
+_QUICK_CORRECT_CACHE: dict[str, tuple[float, str]] = {}
+_QUICK_CORRECT_CACHE_MAX_ITEMS = 4000
 _DICTIONARY_ENRICHMENT_LOCK = threading.Lock()
 _DICTIONARY_ENRICHMENT_JOBS: dict[str, dict[str, Any]] = {}
 _DICTIONARY_ENRICHMENT_CACHE_TO_LOOKUP_ID: dict[str, str] = {}
@@ -6562,6 +6568,43 @@ def _release_quick_translate_inflight_slot(cache_key: str) -> None:
         event = _QUICK_TRANSLATE_INFLIGHT.pop(safe_cache_key, None)
     if event is not None:
         event.set()
+
+
+def _build_quick_correct_cache_key(*, text: str, source_lang: str) -> str:
+    safe_text = str(text or "").strip()
+    safe_lang = _normalize_short_lang_code(source_lang, fallback="") or ""
+    text_hash = hashlib.sha1(safe_text.encode("utf-8", "ignore")).hexdigest()
+    return f"{safe_lang}:{text_hash}"
+
+
+def _get_cached_quick_correct(cache_key: str) -> str | None:
+    """Returns the cached corrected form, "" for a cached "already correct", or None on a
+    miss (so the caller can tell "no correction needed" from "not looked up yet")."""
+    key = str(cache_key or "").strip()
+    if not key:
+        return None
+    now_ts = time.time()
+    with _QUICK_CORRECT_CACHE_LOCK:
+        row = _QUICK_CORRECT_CACHE.get(key)
+        if not row:
+            return None
+        if float(row[0]) <= now_ts:
+            _QUICK_CORRECT_CACHE.pop(key, None)
+            return None
+        return row[1]
+
+
+def _set_cached_quick_correct(cache_key: str, corrected: str) -> None:
+    key = str(cache_key or "").strip()
+    if not key:
+        return
+    now_ts = time.time()
+    with _QUICK_CORRECT_CACHE_LOCK:
+        _QUICK_CORRECT_CACHE[key] = (now_ts + float(QUICK_TRANSLATE_CACHE_TTL_SEC), str(corrected or ""))
+        if len(_QUICK_CORRECT_CACHE) > _QUICK_CORRECT_CACHE_MAX_ITEMS:
+            overflow = len(_QUICK_CORRECT_CACHE) - _QUICK_CORRECT_CACHE_MAX_ITEMS
+            for stale_key in sorted(_QUICK_CORRECT_CACHE, key=lambda k: _QUICK_CORRECT_CACHE[k][0])[:overflow]:
+                _QUICK_CORRECT_CACHE.pop(stale_key, None)
 
 
 def _get_cached_dictionary_lookup_with_tier(cache_key: str) -> tuple[dict | None, str]:
@@ -36002,6 +36045,66 @@ def translate_quick_article():
     cached = _get_cached_quick_translate(cache_key)
     article = str((cached or {}).get("article") or "").strip() if isinstance(cached, dict) else ""
     return jsonify({"article": article})
+
+
+@app.route("/api/translate/quick/correct", methods=["POST"])
+def translate_quick_correct():
+    """Cheap, best-effort proofreading of the user's SOURCE phrase, called by the quick
+    dictionary at SAVE time so a typo / wrong-article lookup is not persisted verbatim
+    into the shared dictionary pool. ONE small gpt-4.1-mini call, cached (incl. the
+    "nothing to fix" result). Returns {"corrected": "<form>"} — empty when the input is
+    already correct or on ANY failure, so the client keeps the user's text and the save
+    never depends on this call (mirrors the "saving cannot depend on a paid request"
+    rule of the whole dictionary pipeline)."""
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text") or "").strip()
+    source_lang = _normalize_short_lang_code(payload.get("source_lang"), fallback="") or ""
+    if not text:
+        return jsonify({"corrected": ""})
+
+    # Resolve the acting user for the abandonment gate + billing (best-effort, like quick translate).
+    user_id_for_billing: int | None = None
+    init_data = str(payload.get("initData") or "").strip()
+    if init_data and _telegram_hash_is_valid(init_data):
+        try:
+            candidate_user_id = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
+            if candidate_user_id is not None:
+                user_id_for_billing = int(candidate_user_id)
+        except Exception:
+            user_id_for_billing = None
+    acting_user_id = _resolve_webapp_user_id(payload) or user_id_for_billing
+    if acting_user_id and _dict_user_has_left_bot(acting_user_id):
+        return _dict_gate_response()
+    if user_id_for_billing is None and acting_user_id:
+        user_id_for_billing = int(acting_user_id)
+
+    cache_key = _build_quick_correct_cache_key(text=text, source_lang=source_lang)
+    cached = _get_cached_quick_correct(cache_key)
+    if cached is not None:
+        return jsonify({"corrected": cached})
+
+    try:
+        corrected = run_quick_correct(text=text, source_lang=source_lang)
+    except Exception:
+        logging.debug("quick correct failed", exc_info=True)
+        corrected = ""
+    _set_cached_quick_correct(cache_key, corrected)
+
+    if corrected and user_id_for_billing is not None:
+        try:
+            _billing_log_openai_usage(
+                user_id=int(user_id_for_billing),
+                action_type="quick_correct",
+                source_lang=source_lang or None,
+                target_lang=None,
+                usage=get_last_llm_usage(reset=True),
+                seed=f"quick_correct:{user_id_for_billing}:{time.time_ns()}",
+                metadata={"origin": "quick_dictionary_save", "text": text[:64]},
+            )
+        except Exception:
+            logging.debug("quick_correct billing log failed", exc_info=True)
+
+    return jsonify({"corrected": corrected})
 
 
 def _with_grammar_tables(item):
