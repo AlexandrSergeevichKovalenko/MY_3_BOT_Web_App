@@ -559,13 +559,28 @@ export default function ReaderSection(props) {
     timers.push(window.setTimeout(() => {
       if (!cancelled) rafs.push(window.requestAnimationFrame(place));
     }, 240));
+    // GLOBAL blank-after-reopen fix: on some iOS WebKit states the re-mounted track has
+    // the content laid out and the transform correct (proven by diagnostics: wantTx ==
+    // realTx == dom) yet paints nothing at all. Force a hard repaint of the track once
+    // the layout has settled — an off→on display flip makes WebKit re-rasterize the
+    // whole element. The inline transform survives the toggle, so the page stays put.
+    timers.push(window.setTimeout(() => {
+      if (cancelled) return;
+      const t = readerColTrackRef.current;
+      if (!t) return;
+      const prevDisplay = t.style.display;
+      t.style.display = 'none';
+      void t.offsetHeight; // force reflow
+      t.style.display = prevDisplay || '';
+      rafs.push(window.requestAnimationFrame(place));
+    }, 380));
 
     return () => {
       cancelled = true;
       rafs.forEach((id) => window.cancelAnimationFrame(id));
       timers.forEach((id) => window.clearTimeout(id));
     };
-  }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight, readerDocumentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Animate the turn + record the new reading position.
   React.useEffect(() => {
