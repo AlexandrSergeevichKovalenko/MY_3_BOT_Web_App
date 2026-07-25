@@ -1988,11 +1988,11 @@ export default function OnboardingWizard() {
               type="button"
               className="ob-btn ob-next"
               onClick={goNext}
-              disabled={!canNext || finishing || done || (!review && (!contentReady || !atBottom))}
+              disabled={!canNext || finishing || done || !contentReady || !atBottom}
             >
               {done ? t('✅ Готово', '✅ Fertig')
-                : !review && !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
-                : !review && !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
+                : !contentReady ? t('⏳ Загрузка…', '⏳ Lädt…')
+                : !atBottom ? t('↓ Прокрути вниз', '↓ Nach unten scrollen')
                 : isLast ? (TOUR_IN_PLACE ? t('Закрыть', 'Schließen') : !HAS_ACCOUNT ? t('🚀 Установить бота', '🚀 Bot installieren') : IS_PUBLIC ? t('🎯 Открыть приложение', '🎯 App öffnen') : t('🎯 Закрыть и открыть приложение', '🎯 Schließen und App öffnen'))
                 : t('Далее →', 'Weiter →')}
             </button>
