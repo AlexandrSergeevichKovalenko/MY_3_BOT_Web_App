@@ -248,6 +248,9 @@ export default function ReaderSection(props) {
   const readerColPitchRef = React.useRef(0);
   const readerColOriginRef = React.useRef(0);
   const readerGestureRef = React.useRef({ down: false, x: 0, y: 0, moved: false, base: 0 });
+  // TEMP on-screen diagnostics for the blank-page bug — surfaces the real measured
+  // geometry so a single screenshot tells us what the pagination actually computed.
+  const [readerColDbg, setReaderColDbg] = React.useState(null);
 
   const sectionClass = [
     'webapp-section',
@@ -354,13 +357,17 @@ export default function ReaderSection(props) {
     }
     let pitch = w; // safe fallback (too little content to measure)
     let maxK = 0;
+    let colStepRaw = 0;
+    let clamped = false;
     const steps = [];
     colMin.forEach((edge, k) => { steps.push((edge - x0) / k); if (k > maxK) maxK = k; });
     if (steps.length) {
       steps.sort((a, b) => a - b);
       const colStep = steps[Math.floor(steps.length / 2)];
+      colStepRaw = colStep;
       const screenStep = colStep * cols;
       if (screenStep > w * 0.5 && screenStep < w * 1.5) pitch = screenStep;
+      else clamped = true;
     }
     readerColPitchRef.current = pitch;
     readerColOriginRef.current = x0;
@@ -369,6 +376,13 @@ export default function ReaderSection(props) {
     const n = maxK > 0
       ? Math.max(1, Math.floor(maxK / cols) + 1)
       : Math.max(1, Math.round((maxX - x0) / pitch) + 1);
+    // TEMP diagnostics — one screenshot reveals what the engine actually computed.
+    setReaderColDbg({
+      w, cw: Math.round(colWidth), gap, nom: Math.round(nominalStep), cols,
+      pitch: Math.round(pitch * 100) / 100, colStep: Math.round(colStepRaw * 100) / 100,
+      clamped, x0: Math.round(x0), maxX: Math.round(maxX),
+      spans: spans.length, colsFound: colMin.size, maxK, n,
+    });
     return { n };
   };
 
@@ -1735,6 +1749,23 @@ export default function ReaderSection(props) {
                   >
                     {isCurrentReaderPageBookmarked && (
                       <span className="reader-page-bookmark-indicator" aria-hidden="true" />
+                    )}
+                    {readerColDbg && (
+                      <div
+                        style={{
+                          position: 'absolute', top: 4, left: 4, zIndex: 50,
+                          background: 'rgba(15,23,42,0.9)', color: '#fff',
+                          font: '600 10px/1.35 ui-monospace,Menlo,monospace',
+                          padding: '5px 7px', borderRadius: 7, pointerEvents: 'none',
+                          whiteSpace: 'pre', letterSpacing: '0.2px',
+                        }}
+                      >
+                        {`w=${readerColDbg.w} cw=${readerColDbg.cw} gap=${readerColDbg.gap} nom=${readerColDbg.nom} cols=${readerColDbg.cols}
+pitch=${readerColDbg.pitch}${readerColDbg.clamped ? '(CLAMP→w)' : ''} colStep=${readerColDbg.colStep}
+x0=${readerColDbg.x0} maxX=${readerColDbg.maxX} spans=${readerColDbg.spans}
+colsFound=${readerColDbg.colsFound} maxK=${readerColDbg.maxK} n=${readerColDbg.n}
+idx=${readerColIndex} tx=${Math.round(-readerColIndex * (readerColPitchRef.current || 0))}`}
+                      </div>
                     )}
                     <div ref={readerColTrackRef} className="reader-col-track">
                       {readerShowsLazyOriginalPage
