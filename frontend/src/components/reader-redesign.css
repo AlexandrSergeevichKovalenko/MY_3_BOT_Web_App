@@ -4624,7 +4624,9 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   overflow-wrap: break-word;
   -webkit-hyphens: auto;
   hyphens: auto;
-  will-change: transform;
+  /* will-change is toggled from JS ONLY during a page-turn animation — see
+     applyReaderColTransform. A PERMANENT composited layer for this very wide track
+     makes iOS WebKit leave far columns' tiles unpainted (blank pages after a jump). */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

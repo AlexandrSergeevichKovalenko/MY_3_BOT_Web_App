@@ -248,6 +248,7 @@ export default function ReaderSection(props) {
   const readerColPitchRef = React.useRef(0);
   const readerColOriginRef = React.useRef(0);
   const readerColLastTxRef = React.useRef(0); // TEMP diag: last transform actually applied
+  const readerColWillChangeTimer = React.useRef(0);
   const readerGestureRef = React.useRef({ down: false, x: 0, y: 0, moved: false, base: 0 });
   // TEMP on-screen diagnostics for the blank-page bug — surfaces the real measured
   // geometry so a single screenshot tells us what the pagination actually computed.
@@ -284,6 +285,21 @@ export default function ReaderSection(props) {
     // Snappier page-turn: shorter with a decel (ease-out) curve so the page arrives
     // crisply and settles — reads more like a physical page flip than the old linear-ish glide.
     track.style.transition = animate ? 'transform .26s cubic-bezier(.2,.68,.32,1)' : 'none';
+    // will-change ONLY during the turn animation. The track is very wide (whole doc =
+    // thousands of px); a PERMANENT will-change:transform keeps it as one composited
+    // layer whose far tiles iOS WebKit leaves UNPAINTED after a jump/reopen → blank
+    // pages at a correct transform. So promote for the animation, then drop the layer
+    // (will-change:auto) so WebKit repaints the visible columns fresh on every jump.
+    window.clearTimeout(readerColWillChangeTimer.current);
+    if (animate) {
+      track.style.willChange = 'transform';
+      readerColWillChangeTimer.current = window.setTimeout(() => {
+        const t = readerColTrackRef.current;
+        if (t) t.style.willChange = 'auto';
+      }, 340);
+    } else {
+      track.style.willChange = 'auto';
+    }
     track.style.transform = `translateX(${px}px)`;
   };
   // Apply column styles, then MEASURE the true pitch/origin/column-count from the
