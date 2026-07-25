@@ -519,6 +519,55 @@ export default function ReaderSection(props) {
     return () => { ro.disconnect(); window.cancelAnimationFrame(raf); };
   }, [readerColUsesEngine]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // SELF-HEAL blank pages. The geometry (pitch/origin) is measured once against the
+  // rendered spans; if that measure landed on an unsettled layout (the Telegram sheet
+  // still resizing, late reflow, a stale pitch carried over from the previous document),
+  // the transform step no longer matches the real column pitch and the visible column
+  // falls into the gap → «one page shows, the rest are blank until a full re-open».
+  // The ResizeObserver only fires on a size CHANGE, so a stale-but-static layout never
+  // heals itself. This poll runs for a few seconds after the content changes: if the
+  // current column holds NO text span while the track clearly has content, it re-measures
+  // from the live span offsets (which converges to the true pitch) and re-anchors to the
+  // reading position. On a correctly-paginated page the check is a no-op.
+  React.useEffect(() => {
+    if (!readerColUsesEngine) return undefined;
+    let stopped = false;
+    let ticks = 0;
+    let timer = 0;
+    const tick = () => {
+      if (stopped) return;
+      const vp = readerColViewportRef.current;
+      const track = readerColTrackRef.current;
+      const step = readerColStep();
+      if (vp && track && vp.clientWidth > 0 && step > 1) {
+        const spans = track.querySelectorAll('[data-start]');
+        if (spans.length > 0) {
+          const cur = readerColIndexRef.current;
+          const lo = cur * step - 2;
+          const hi = (cur + 1) * step;
+          let visible = false;
+          for (let i = 0; i < spans.length; i += 1) {
+            const x = readerColOffsetOf(spans[i]);
+            if (x >= lo && x < hi) { visible = true; break; }
+          }
+          if (!visible) {
+            const { n } = measureReaderColGeometry();
+            readerColCountRef.current = n;
+            setReaderColCount(n);
+            const idx = Math.max(0, Math.min(readerColFindColOfChar(readerColAnchorCharRef.current), n - 1));
+            readerColIndexRef.current = idx;
+            setReaderColIndex(idx);
+            applyReaderColTransform(-idx * readerColStep(), false);
+          }
+        }
+      }
+      ticks += 1;
+      if (ticks < 12) timer = window.setTimeout(tick, 300); // ~3.6s watchdog
+    };
+    timer = window.setTimeout(tick, 300);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [readerColUsesEngine, readerColContentSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Follow the spoken word during audio: scroll to the column holding the
   // currently-highlighted word. Uses the LIVE DOM span, so it's immune to the
   // window-coordinate shifts that made the view jump to a page start when audio

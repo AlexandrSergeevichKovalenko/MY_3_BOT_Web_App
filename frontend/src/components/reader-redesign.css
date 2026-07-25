@@ -255,6 +255,20 @@
   display: flex;
   gap: 8px;
   align-items: center;
+  /* Action buttons keep their full size and stay right-aligned — they must never be
+     shrunk or overlapped by the title. The title side takes the remaining space. */
+  flex: 0 0 auto;
+}
+
+/* A short shelf title (Статьи / Мои книги / Классика / Архив) can't wrap, so on a
+   narrow phone it used to overflow its (shrinkable) box and visually crash into the
+   first action icon. Give it the remaining width and clip with an ellipsis instead
+   of spilling. The overview title («Моя библиотека») is left to wrap (below). */
+.webapp-reader .reader-library-mode:not([data-shelf="overview"]) .reader-lib-header-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .webapp-reader .reader-lib-icon-btn {
@@ -312,6 +326,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  /* Take the space the fixed-size actions don't use, and allow shrinking so the
+     ellipsis rule above can engage instead of the title bleeding over the icons. */
+  flex: 1 1 auto;
   min-width: 0;
 }
 .webapp-reader .reader-shelf-back {
@@ -2640,6 +2657,15 @@
    ╰───────────────────────────────────────────────────────────────────────╯ */
 @media (max-width: 520px) {
   .webapp-reader .reader-lib-header-title { font-size: 20px; }
+  /* Tighten the whole header row so a short shelf title + back + count + all three
+     actions fit on one line without the title needing to ellipsize. */
+  .webapp-reader .reader-lib-header { padding: 8px 12px 4px; gap: 8px; }
+  .webapp-reader .reader-lib-header-lead { gap: 8px; }
+  .webapp-reader .reader-lib-header-actions { gap: 6px; }
+  .webapp-reader .reader-lib-icon-btn { width: 32px; height: 32px; }
+  .webapp-reader .reader-shelf-back { width: 32px; height: 32px; }
+  .webapp-reader .reader-lib-add-btn { height: 32px; padding: 0 11px; font-size: 12px; }
+  .webapp-reader .reader-shelf-title-count { padding: 2px 8px; font-size: 11.5px; }
   .webapp-reader .reader-lib-controls { flex-wrap: wrap; }
   .webapp-reader .reader-page-sheet { padding: 22px 18px 18px; }
   .webapp-reader .reader-topbar { padding: 8px 12px 10px; }
