@@ -1005,16 +1005,16 @@ function StepBody(props) {
               <p>{t('Все функции открыты. Есть только общий дневной запас на самый тяжёлый ИИ — чтобы один человек не занял мощности всех. Вот дни, которые в него спокойно укладываются:',
                     'Alle Funktionen sind frei. Es gibt nur ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — damit nicht einer die Kapazität aller belegt. Solche Tage passen locker hinein:')}</p>
               <ul className="ob-fairuse-list">
-                <li>{t('21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, русские субтитры к пяти видео и коллокации к словам',
-                       '21 Sätze übersetzen und prüfen lassen, davon sieben mit ausführlicher Fehleranalyse, russische Untertitel zu fünf Videos und Kollokationen zu Wörtern')}</li>
-                <li>{t('или 9 совершенно новых слов с полным разбором и набор переводов на 7 предложений',
-                       'oder 9 völlig neue Wörter mit voller Analyse und ein Übersetzungsset mit 7 Sätzen')}</li>
-                <li>{t('или 7 тренировок по твоим слабым местам, набор переводов и пара новых слов',
-                       'oder 7 Trainings zu deinen Schwachstellen, ein Übersetzungsset und ein paar neue Wörter')}</li>
+                <li>{t('21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, русские субтитры к десяти видео и 20 новых слов с полным разбором',
+                       '21 Sätze übersetzen und prüfen lassen, davon sieben mit ausführlicher Fehleranalyse, russische Untertitel zu zehn Videos und 20 neue Wörter mit voller Analyse')}</li>
+                <li>{t('или 35 предложений перевода с проверкой — это пять полных наборов',
+                       'oder 35 Sätze übersetzen und prüfen lassen — fünf komplette Sets')}</li>
+                <li>{t('или 12 тренировок по твоим слабым местам',
+                       'oder 12 Trainings zu deinen Schwachstellen')}</li>
               </ul>
               <p className="ob-fairuse-note">
-                {t('«Совершенно новое» — это слово, которого ещё нет в нашем общем словаре, а там уже больше 14 000 слов. Знакомые слова, повторение карточек, игры, дуэли, чтение и озвучка «Классики» запас не тратят вообще. Обновляется каждый день в 00:00.',
-                   '«Völlig neu» heißt: ein Wort, das noch nicht in unserem gemeinsamen Wörterbuch steht — und dort sind schon über 14 000. Bekannte Wörter, Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker» kosten gar nichts vom Budget. Es erneuert sich täglich um 00:00.')}
+                {t('Перевод любого слова — всегда бесплатно и без счёта. Запас тратит только полный разбор слова, которого ещё нет в нашем общем словаре, а там уже больше 14 000 слов. Повторение карточек, игры, дуэли, чтение и озвучка «Классики» тоже не тратят ничего. Обновляется каждый день в 00:00.',
+                   'Die Übersetzung jedes Wortes ist immer gratis und ohne Zähler. Das Budget kostet nur die vollständige Analyse eines Wortes, das noch nicht in unserem gemeinsamen Wörterbuch steht — und dort sind schon über 14 000. Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker» kosten ebenfalls nichts. Es erneuert sich täglich um 00:00.')}
               </p>
             </div>
           </div>

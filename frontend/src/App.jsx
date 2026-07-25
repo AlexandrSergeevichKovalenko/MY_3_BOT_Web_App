@@ -8589,10 +8589,10 @@ function AppInner() {
       // при потолке €0.25, занижены. ⚠️ Пересчитать при смене потолка или моделей.
       tr('Один общий дневной запас на самый тяжёлый ИИ — вместо лимитов на каждую функцию.',
          'Ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — statt Limits pro Funktion.'),
-      tr('Хватает, например, на день: 21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, русские субтитры к пяти видео и коллокации к словам. Или на 9 совершенно новых слов с полным разбором и набор переводов. Или на 7 тренировок по слабым местам, набор переводов и пару новых слов.',
-         'Es reicht z. B. für einen Tag mit: 21 Sätzen zum Übersetzen und Prüfen, davon sieben mit ausführlicher Fehleranalyse, russischen Untertiteln zu fünf Videos und Kollokationen zu Wörtern. Oder für 9 völlig neue Wörter mit voller Analyse und ein Übersetzungsset. Oder für 7 Trainings zu Schwachstellen, ein Übersetzungsset und ein paar neue Wörter.'),
-      tr('«Совершенно новое» — слово, которого ещё нет в нашем общем словаре (там уже больше 14 000). Знакомые слова, повторение карточек, игры, дуэли, чтение и озвучка «Классики» запас не тратят вообще. Обновляется каждый день в 00:00.',
-         '«Völlig neu» heißt: ein Wort, das noch nicht in unserem gemeinsamen Wörterbuch steht (dort sind schon über 14 000). Bekannte Wörter, Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker» kosten gar nichts vom Budget. Erneuert sich täglich um 00:00.'),
+      tr('Хватает, например, на день: 21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, русские субтитры к десяти видео и 20 новых слов с полным разбором. Или на 35 предложений перевода. Или на 12 тренировок по слабым местам.',
+         'Es reicht z. B. für einen Tag mit: 21 Sätzen zum Übersetzen und Prüfen, davon sieben mit ausführlicher Fehleranalyse, russischen Untertiteln zu zehn Videos und 20 neuen Wörtern mit voller Analyse. Oder für 35 Sätze zum Übersetzen. Oder für 12 Trainings zu Schwachstellen.'),
+      tr('Перевод любого слова — всегда бесплатно и без счёта. Запас тратит только полный разбор нового для нашего словаря слова (там уже больше 14 000). Повторение карточек, игры, дуэли, чтение и озвучка «Классики» тоже не тратят ничего. Обновляется каждый день в 00:00.',
+         'Die Übersetzung jedes Wortes ist immer gratis und ohne Zähler. Das Budget kostet nur die vollständige Analyse eines für unser Wörterbuch neuen Wortes (dort sind schon über 14 000). Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker» kosten ebenfalls nichts. Erneuert sich täglich um 00:00.'),
     ];
     return {
       free: {

@@ -2752,6 +2752,13 @@ Rules:
   descriptive sentence. Right: "ехать", "уютный", "начинать". Wrong: "ехать на транспорте,
   передвигаться", "создающий ощущение уюта, тепло и комфорт", "начинать что-либо делать или
   происходить". Put the nuance in "context", never in "value".
+- DO NOT TRANSLATE A WORD WITH ITS NEAR-SYNONYM'S TRANSLATION. When the headword has close German
+  neighbours, the value must capture THIS word, not the neighbour: gemütlich = "уютный" (NOT
+  "удобный" — that is bequem); Sehnsucht = "тоска" (NOT "желание" — that is Wunsch); Feierabend =
+  "конец рабочего дня" (NOT "вечер" — that is Abend). Prefer the equivalent a bilingual dictionary
+  prints, even when a blander word would also fit the sentence.
+- SELF-CHECK BEFORE RETURNING: back-translate translations[0].value. If it comes back as a DIFFERENT
+  German word than the headword, you picked a neighbour — replace it with the right equivalent.
 - Rank meanings strictly by frequency.
 - Each meaning must include one short real example pair.
 - Provide up to 2 short natural usage_examples different from meaning examples.
@@ -2779,6 +2786,8 @@ Rules:
 - GERMAN HEADWORD NORMALIZATION:
   - Whenever the source-side or target-side main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun". Never return a bare German noun.
   - Whenever the main German word is a standalone verb, normalize it to the infinitive.
+  - The article belongs to the GERMAN noun only. Never glue der/die/das onto a word in the
+    learner's language: "die перчатка" is always wrong — either "der Handschuh" or "перчатка".
 - If adjective: include comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
 - save_worthy_options must contain exactly 3 practical items whenever possible:
