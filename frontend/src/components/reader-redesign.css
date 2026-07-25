@@ -260,16 +260,20 @@
   flex: 0 0 auto;
 }
 
-/* A short shelf title (Статьи / Мои книги / Классика / Архив) can't wrap, so on a
-   narrow phone it used to overflow its (shrinkable) box and visually crash into the
-   first action icon. Give it the remaining width and clip with an ellipsis instead
-   of spilling. The overview title («Моя библиотека») is left to wrap (below). */
+/* A short shelf title (Статьи / Мои книги / Классика / Архив) is shown in FULL and
+   never wraps. Room is made instead by collapsing the «Добавить» button to just its
+   «+» icon on a narrow phone (below), so the title no longer collides with the icons.
+   The lead clips as a last-resort safety only if space is still impossibly tight. */
 .webapp-reader .reader-library-mode:not([data-shelf="overview"]) .reader-lib-header-title {
-  min-width: 0;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
+.webapp-reader .reader-lib-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+}
+.webapp-reader .reader-lib-add-ico { font-size: 16px; line-height: 1; font-weight: 800; }
 
 .webapp-reader .reader-lib-icon-btn {
   width: 34px;
@@ -326,10 +330,11 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  /* Take the space the fixed-size actions don't use, and allow shrinking so the
-     ellipsis rule above can engage instead of the title bleeding over the icons. */
+  /* Take the space the fixed-size actions don't use. overflow:hidden is a last-resort
+     clip so a title can never bleed over the action icons even in a pathological width. */
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 .webapp-reader .reader-shelf-back {
   width: 34px;
@@ -2664,7 +2669,10 @@
   .webapp-reader .reader-lib-header-actions { gap: 6px; }
   .webapp-reader .reader-lib-icon-btn { width: 32px; height: 32px; }
   .webapp-reader .reader-shelf-back { width: 32px; height: 32px; }
-  .webapp-reader .reader-lib-add-btn { height: 32px; padding: 0 11px; font-size: 12px; }
+  /* Collapse «Добавить» to a square «+» button so the full shelf title always fits. */
+  .webapp-reader .reader-lib-add-btn { height: 32px; width: 32px; padding: 0; font-size: 12px; }
+  .webapp-reader .reader-lib-add-btn .reader-lib-add-label { display: none; }
+  .webapp-reader .reader-lib-add-ico { font-size: 18px; }
   .webapp-reader .reader-shelf-title-count { padding: 2px 8px; font-size: 11.5px; }
   .webapp-reader .reader-lib-controls { flex-wrap: wrap; }
   .webapp-reader .reader-page-sheet { padding: 22px 18px 18px; }
