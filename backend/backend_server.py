@@ -8656,8 +8656,7 @@ def _strip_spurious_leading_article(text: str) -> str | None:
 _GERMAN_PLURALE_TANTUM = {
     "eltern", "großeltern", "urgroßeltern", "schwiegereltern", "stiefeltern",
     "pflegeeltern", "adoptiveltern", "geschwister", "leute", "ferien",
-    "kosten", "unkosten", "einkünfte", "einnahmen", "gebühren", "spesen",
-    "finanzen", "personalien", "geschwisterkinder", "hausaufgaben",
+    "kosten", "unkosten", "einkünfte", "spesen", "finanzen", "personalien",
 }
 
 
