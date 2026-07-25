@@ -27600,20 +27600,29 @@ function AppInner() {
   // German der/die/das for a single noun that missed the instant Wiktionary lookup — an LLM
   // job patches the cache, so poll the probe a few times (mirrors the quick dict). `seq` guards
   // against a newer lookup: a stale probe must never overwrite the current word's article.
-  const resolveYoutubeDictArticleProbe = async (germanWord, sourceLang, targetLang, seq) => {
+  const resolveYoutubeDictArticleProbe = async (germanWord, probeText, sourceLang, targetLang, seq) => {
     const g = String(germanWord || '').trim();
     if (!g || /\s/.test(g) || g[0] !== g[0].toUpperCase()) return; // single, capitalized noun only
+    // Этот probe читает кеш быстрого перевода, который фоновый LLM-джоб дописывает
+    // артиклем. Кеш ключуется ИСХОДНЫМ запросом (text + langs) — поэтому опрашивать
+    // нужно ТЕМИ ЖЕ text/langs, что ушли в /api/translate/quick, а НЕ переведённым
+    // немецким словом. Раньше сюда шло немецкое слово ("Freund") → ключ не совпадал и
+    // артикль НИКОГДА не приходил для поиска RU→DE (а офлайн-словарь крошечный, ~3.9k
+    // слов, «Freund» в нём нет — значит весь артикль держится на этом фолбэке).
+    // Проверено на проде: probe с «Друг» отдаёт der, с «Freund» — пусто.
+    const text = String(probeText || g).trim();
     for (const delay of [900, 1300, 1600, 2000, 2500]) {
       await new Promise((r) => setTimeout(r, delay));
       if (seq !== youtubeDictLookupSeqRef.current) return;
       let art = '';
       try {
-        const a = await dictApi('/api/translate/quick/article', { text: g, source_lang: sourceLang || 'de', target_lang: targetLang || 'ru' });
+        const a = await dictApi('/api/translate/quick/article', { text, source_lang: sourceLang || null, target_lang: targetLang || null });
         art = String(a?.article || '').trim();
       } catch (_e) { /* keep polling */ }
       if (seq !== youtubeDictLookupSeqRef.current) return;
       if (art) {
         youtubeDictArticleCacheRef.current.set(g.toLowerCase(), art);
+        youtubeDictArticleCacheRef.current.set(text.toLowerCase(), art);
         setYoutubeDictQuickArticle((prev) => prev || art);
         return;
       }
@@ -27677,7 +27686,15 @@ function AppInner() {
         youtubeDictArticleCacheRef.current.set(q.toLowerCase(), instantArticle);
         setYoutubeDictQuickArticle((prev) => prev || instantArticle);
       } else if (germanWord) {
-        resolveYoutubeDictArticleProbe(germanWord, src || 'de', tgt || 'ru', seq);
+        // Опрашиваем ТЕМИ ЖЕ text/langs, что ушли в /api/translate/quick (исходный запрос
+        // + отправленные source/target), иначе ключ кеша не совпадёт — см. probe выше.
+        resolveYoutubeDictArticleProbe(
+          germanWord,
+          String(quick?.cleaned || q),
+          String(quick?.sourceLangHint || '').toLowerCase(),
+          String(quick?.targetLang || '').toLowerCase(),
+          seq,
+        );
       }
     } catch (_e) {
       // MT failed — fall through and just wait on the structured result below.
