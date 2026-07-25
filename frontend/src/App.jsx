@@ -9583,7 +9583,7 @@ function AppInner() {
       if (!isAsyncGuardCurrent(browserAuthRequestIdRef, requestId)) {
         return;
       }
-      setBrowserAuthError(`${tr('Ошибка входа', 'Login-Fehler')}: ${error.message}`);
+      setBrowserAuthError(normalizeNetworkErrorMessage(error, 'Ошибка входа. Попробуйте позже.', 'Login-Fehler. Bitte später erneut versuchen.'));
     } finally {
       if (isAsyncGuardCurrent(browserAuthRequestIdRef, requestId)) {
         setBrowserAuthLoading(false);
@@ -13411,7 +13411,7 @@ function AppInner() {
         } catch (error) {
           if (starterDictionaryPollTokenRef.current !== pollToken) return;
           setStarterDictionaryActionMessage('');
-          setStarterDictionaryActionError(String(error?.message || tr('Ошибка статуса базового словаря', 'Fehler beim Basiswörterbuch-Status')));
+          setStarterDictionaryActionError(normalizeNetworkErrorMessage(error, 'Не удалось получить статус базового словаря.', 'Basiswörterbuch-Status nicht verfügbar.'));
           return;
         }
       }
@@ -13509,7 +13509,7 @@ function AppInner() {
         setStarterDictionaryPromptOpen(false);
       }
     } catch (error) {
-      setStarterDictionaryActionError(String(error?.message || tr('Не удалось применить действие по базовому словарю.', 'Aktion für Basiswörterbuch fehlgeschlagen.')));
+      setStarterDictionaryActionError(normalizeNetworkErrorMessage(error, 'Не удалось применить действие по базовому словарю.', 'Aktion für Basiswörterbuch fehlgeschlagen.'));
     } finally {
       setStarterDictionaryActionLoading(false);
     }
@@ -13553,7 +13553,7 @@ function AppInner() {
       if (!isAsyncGuardCurrent(languageProfileRequestIdRef, requestId)) {
         return null;
       }
-      setLanguageProfileError(`${tr('Ошибка профиля языка', 'Sprachprofil-Fehler')}: ${error.message}`);
+      setLanguageProfileError(normalizeNetworkErrorMessage(error, 'Ошибка профиля языка. Попробуйте позже.', 'Sprachprofil-Fehler. Bitte später erneut versuchen.'));
       return null;
     } finally {
       if (isAsyncGuardCurrent(languageProfileRequestIdRef, requestId)) {
@@ -13647,9 +13647,9 @@ function AppInner() {
           }
         }
       } catch (error) {
-        setLanguageProfileError(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
+        setLanguageProfileError(normalizeNetworkErrorMessage(error, 'Ошибка сохранения профиля. Попробуйте позже.', 'Fehler beim Speichern des Profils. Bitte später erneut versuchen.'));
         if (!silent) {
-          showInlineToast(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
+          showInlineToast(normalizeNetworkErrorMessage(error, 'Не удалось сохранить профиль. Попробуйте позже.', 'Profil konnte nicht gespeichert werden. Bitte später erneut versuchen.'));
           setLanguageProfileModalOpen(true);
         }
       } finally {
@@ -16876,7 +16876,7 @@ function AppInner() {
   const handleConnect = async (e) => {
     e.preventDefault();
     if (!telegramID || !username) {
-      alert(tr('Пожалуйста, введите ваше имя', 'Bitte gib deinen Namen ein'));
+      showNoticeModal({ emoji: '✍️', title: tr('Введите имя', 'Namen eingeben'), message: tr('Пожалуйста, введите ваше имя.', 'Bitte gib deinen Namen ein.') });
       return;
     }
     if (isKnownFreePaidSurfaceMode) {
@@ -16902,7 +16902,7 @@ function AppInner() {
         return;
       }
       console.error(error);
-      alert(error.message);
+      setAssistantError(normalizeNetworkErrorMessage(error, 'Не удалось запустить разговор. Попробуйте позже.', 'Gespräch konnte nicht gestartet werden. Bitte später erneut versuchen.'));
     }
   };
 
@@ -19979,7 +19979,7 @@ function AppInner() {
       return data;
     } catch (error) {
       if (!options?.suppressError) {
-        setWebappError(`${tr('Ошибка загрузки предложений', 'Fehler beim Laden der Sätze')}: ${error.message}`);
+        setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка загрузки предложений. Попробуйте позже.', 'Fehler beim Laden der Sätze. Bitte später erneut versuchen.'));
       }
       return null;
     }
@@ -20064,7 +20064,7 @@ function AppInner() {
         setSelectedTopic(items.find((item) => !isStoryTopic(item) && !isCustomTopic(item)) || items[0]);
       }
     } catch (error) {
-      setTopicsError(`${tr('Ошибка тем', 'Themenfehler')}: ${error.message}`);
+      setTopicsError(normalizeNetworkErrorMessage(error, 'Ошибка тем. Попробуйте позже.', 'Themenfehler. Bitte später erneut versuchen.'));
     } finally {
       setTopicsLoading(false);
     }
@@ -21211,7 +21211,7 @@ function AppInner() {
       const data = await response.json();
       setStoryHistory(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
-      setStoryHistoryError(`${tr('Ошибка истории', 'Story-Fehler')}: ${error.message}`);
+      setStoryHistoryError(normalizeNetworkErrorMessage(error, 'Ошибка истории. Попробуйте позже.', 'Story-Fehler. Bitte später erneut versuchen.'));
     } finally {
       setStoryHistoryLoading(false);
     }
@@ -21359,7 +21359,7 @@ function AppInner() {
       await loadSessionInfo();
       await loadSentences({ sessionId: storySessionId });
     } catch (error) {
-      setWebappError(`${tr('Ошибка старта истории', 'Story-Startfehler')}: ${error.message}`);
+      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка старта истории. Попробуйте позже.', 'Story-Startfehler. Bitte später erneut versuchen.'));
     } finally {
       setWebappLoading(false);
     }
@@ -21439,7 +21439,7 @@ function AppInner() {
       await loadSessionInfo();
       if (data.story_id) void handleLoadStoryLeaderboard(data.story_id);
     } catch (error) {
-      setWebappError(`${tr('Ошибка истории', 'Story-Fehler')}: ${error.message}`);
+      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка истории. Попробуйте позже.', 'Story-Fehler. Bitte später erneut versuchen.'));
     } finally {
       setWebappLoading(false);
     }
@@ -21543,7 +21543,7 @@ function AppInner() {
       await loadSessionInfo();
       await loadSentences({ sessionId: storySessionId });
     } catch (error) {
-      setWebappError(`${tr('Ошибка старта арены', 'Arena-Startfehler')}: ${error.message}`);
+      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка старта арены. Попробуйте позже.', 'Arena-Startfehler. Bitte später erneut versuchen.'));
     } finally {
       setWebappLoading(false);
     }
@@ -23021,12 +23021,12 @@ function AppInner() {
             showDictionarySaveLimitToast();
           } else {
             setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
-            showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
+            showInlineToast((console.warn('[dict-save]', message), tr('Не удалось сохранить. Попробуйте ещё раз.', 'Speichern fehlgeschlagen. Bitte erneut versuchen.')));
           }
         }
       })();
     } catch (error) {
-      setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+      setDictionaryError(normalizeNetworkErrorMessage(error, 'Ошибка сохранения. Попробуйте позже.', 'Speicherfehler. Bitte später erneut versuchen.'));
     } finally {
       setDictionaryLoading(false);
     }
@@ -23089,7 +23089,7 @@ function AppInner() {
       }, 90);
       clearSelection();
     } catch (error) {
-      setDictionaryError(`${tr('Ошибка словаря', 'Wörterbuchfehler')}: ${error.message}`);
+      setDictionaryError(normalizeNetworkErrorMessage(error, 'Ошибка словаря. Попробуйте позже.', 'Wörterbuchfehler. Bitte später erneut versuchen.'));
     } finally {
       setDictionaryLoading(false);
     }
@@ -23532,7 +23532,7 @@ function AppInner() {
           setSelectionGptSaveMessage('');
           setSelectionGptSaveError(getDictionarySaveLimitText());
         } else {
-          showInlineToast(tr('Ошибка сохранения: ', 'Speicherfehler: ') + failedItems[0]);
+          showInlineToast((console.warn('[examples-save]', failedItems), tr('Не удалось сохранить некоторые примеры. Попробуйте ещё раз.', 'Einige Beispiele konnten nicht gespeichert werden. Bitte erneut versuchen.')));
           setSelectionGptSaveError(failedItems.join('\n'));
         }
         setSelectionGptOpen(true);
@@ -27254,7 +27254,7 @@ function AppInner() {
       const data = await response.json();
       setFolders(data.items || []);
     } catch (error) {
-      setFoldersError(`${tr('Ошибка папок', 'Ordnerfehler')}: ${error.message}`);
+      setFoldersError(normalizeNetworkErrorMessage(error, 'Ошибка папок. Попробуйте позже.', 'Ordnerfehler. Bitte später erneut versuchen.'));
     } finally {
       setFoldersLoading(false);
     }
@@ -27292,7 +27292,7 @@ function AppInner() {
       setShowNewFolderForm(false);
       setNewFolderName('');
     } catch (error) {
-      setFoldersError(`${tr('Ошибка создания папки', 'Fehler beim Erstellen des Ordners')}: ${error.message}`);
+      setFoldersError(normalizeNetworkErrorMessage(error, 'Ошибка создания папки. Попробуйте позже.', 'Fehler beim Erstellen des Ordners. Bitte später erneut versuchen.'));
     } finally {
       setFoldersLoading(false);
     }
@@ -27705,7 +27705,7 @@ function AppInner() {
         setYoutubeDictResult(item);
       } else if (!paintedPartial) setYoutubeDictError('Fehler');
     } catch (err) {
-      if (!paintedPartial) setYoutubeDictError(String(err.message || 'Fehler'));
+      if (!paintedPartial) setYoutubeDictError(normalizeNetworkErrorMessage(err, 'Не удалось загрузить словарь. Попробуйте позже.', 'Wörterbuch konnte nicht geladen werden. Bitte später erneut versuchen.'));
       // If the partial already painted, keep it — a translation beats an error.
     } finally {
       setYoutubeDictLoading(false);
@@ -28151,7 +28151,7 @@ function AppInner() {
         // fallback below
       }
     }
-    window.alert(message);
+    showNoticeModal({ emoji: 'ℹ️', title, message });
   };
 
   const getActiveSubtitleIndex = () => {
@@ -28839,7 +28839,7 @@ function AppInner() {
       }
       setMovies([]);
     } catch (error) {
-      setYoutubeTranscriptError(`${tr('Ошибка сохранения субтитров', 'Fehler beim Speichern der Untertitel')}: ${error.message}`);
+      setYoutubeTranscriptError(normalizeNetworkErrorMessage(error, 'Ошибка сохранения субтитров. Попробуйте позже.', 'Fehler beim Speichern der Untertitel. Bitte später erneut versuchen.'));
     }
   };
 
@@ -28950,7 +28950,7 @@ function AppInner() {
       translationCheckPollTokenRef.current += 1;
       setTranslationCheckProgress({ active: false, done: 0, total: 0 });
     } catch (error) {
-      setWebappError(`${tr('Ошибка завершения', 'Abschlussfehler')}: ${error.message}`);
+      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка завершения. Попробуйте позже.', 'Abschlussfehler. Bitte später erneut versuchen.'));
     } finally {
       translationFinishInFlightRef.current = false;
       setWebappLoading(false);
@@ -29234,7 +29234,7 @@ function AppInner() {
       setExplanationQuestionOpen((prev) => ({ ...prev, [key]: false }));
       setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: '' }));
     } catch (error) {
-      setWebappError(`${tr('Ошибка вопроса', 'Fragefehler')}: ${error.message}`);
+      setWebappError(normalizeNetworkErrorMessage(error, 'Ошибка вопроса. Попробуйте позже.', 'Fragefehler. Bitte später erneut versuchen.'));
     } finally {
       setExplanationQuestionLoading((prev) => ({ ...prev, [key]: false }));
     }
@@ -30558,7 +30558,7 @@ function AppInner() {
         : []);
       setCollocationsError(canSaveBase
         ? ''
-        : `${tr('Ошибка связок', 'Kollokationsfehler')}: ${error.message}`);
+        : normalizeNetworkErrorMessage(error, 'Не удалось загрузить связки. Попробуйте позже.', 'Kollokationen konnten nicht geladen werden. Bitte später erneut versuchen.'));
     } finally {
       setCollocationsLoading(false);
     }
@@ -30646,7 +30646,7 @@ function AppInner() {
           showDictionarySaveLimitToast();
         } else {
           setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
-          showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
+          showInlineToast((console.warn('[dict-save]', message), tr('Не удалось сохранить. Попробуйте ещё раз.', 'Speichern fehlgeschlagen. Bitte erneut versuchen.')));
         }
         setCollocationsVisible(true);
       }
@@ -31211,7 +31211,7 @@ function AppInner() {
       }
     } catch (error) {
       setYoutubeSearchResults([]);
-      setYoutubeSearchError(`${tr('Ошибка поиска YouTube', 'YouTube-Suchfehler')}: ${error.message}`);
+      setYoutubeSearchError(normalizeNetworkErrorMessage(error, 'Ошибка поиска YouTube. Попробуйте позже.', 'YouTube-Suchfehler. Bitte später erneut versuchen.'));
     } finally {
       setYoutubeSearchLoading(false);
     }
@@ -31273,7 +31273,7 @@ function AppInner() {
       }
     } catch (error) {
       setYoutubeSearchResults([]);
-      setYoutubeSearchError(`${tr('Ошибка поиска YouTube', 'YouTube-Suchfehler')}: ${error.message}`);
+      setYoutubeSearchError(normalizeNetworkErrorMessage(error, 'Ошибка поиска YouTube. Попробуйте позже.', 'YouTube-Suchfehler. Bitte später erneut versuchen.'));
     } finally {
       setYoutubeSearchLoading(false);
     }
@@ -31688,7 +31688,7 @@ function AppInner() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setMoviesError(`${tr('Ошибка каталога', 'Katalogfehler')}: ${err.message}`);
+        setMoviesError(normalizeNetworkErrorMessage(err, 'Ошибка каталога. Попробуйте позже.', 'Katalogfehler. Bitte später erneut versuchen.'));
       })
       .finally(() => {
         if (!cancelled) setMoviesLoading(false);
@@ -32277,7 +32277,7 @@ function AppInner() {
       setHistoryItems(data.items || []);
       setHistoryVisible(true);
     } catch (error) {
-      setHistoryError(`${tr('Ошибка загрузки истории', 'Fehler beim Laden der Historie')}: ${error.message}`);
+      setHistoryError(normalizeNetworkErrorMessage(error, 'Ошибка загрузки истории. Попробуйте позже.', 'Fehler beim Laden der Historie. Bitte später erneut versuchen.'));
     } finally {
       setHistoryLoading(false);
     }
@@ -33021,7 +33021,7 @@ function AppInner() {
       setEconomicsSummary(data?.summary || null);
     } catch (error) {
       setEconomicsSummary(null);
-      setEconomicsError(`${tr('Ошибка экономики', 'Kostenfehler')}: ${error.message}`);
+      setEconomicsError(normalizeNetworkErrorMessage(error, 'Ошибка экономики. Попробуйте позже.', 'Kostenfehler. Bitte später erneut versuchen.'));
     } finally {
       setEconomicsLoading(false);
     }
@@ -33045,7 +33045,7 @@ function AppInner() {
       const data = await response.json();
       setBillingStatus(data || null);
     } catch (error) {
-      setBillingStatusError(`${tr('Ошибка подписки', 'Abo-Fehler')}: ${error.message}`);
+      setBillingStatusError(normalizeNetworkErrorMessage(error, 'Ошибка подписки. Попробуйте позже.', 'Abo-Fehler. Bitte später erneut versuchen.'));
     } finally {
       setBillingStatusLoading(false);
     }
@@ -33071,7 +33071,7 @@ function AppInner() {
         : [];
       setBillingPlans(normalizedPlans);
     } catch (error) {
-      setBillingPlansError(`${tr('Ошибка тарифов', 'Tarif-Fehler')}: ${error.message}`);
+      setBillingPlansError(normalizeNetworkErrorMessage(error, 'Ошибка тарифов. Попробуйте позже.', 'Tarif-Fehler. Bitte später erneut versuchen.'));
     } finally {
       setBillingPlansLoading(false);
     }
@@ -33267,7 +33267,7 @@ function AppInner() {
       }
       openBillingUrl(url);
     } catch (error) {
-      setBillingStatusError(`${tr('Ошибка управления подпиской', 'Fehler bei der Abo-Verwaltung')}: ${error.message}`);
+      setBillingStatusError(normalizeNetworkErrorMessage(error, 'Ошибка управления подпиской. Попробуйте позже.', 'Fehler bei der Abo-Verwaltung. Bitte später erneut versuchen.'));
     } finally {
       setBillingActionLoading(false);
     }
@@ -40204,7 +40204,7 @@ function AppInner() {
                           }
                           setAssistantToken(null);
                         }}
-                        onError={(e) => setAssistantError(`LiveKit error: ${e?.message || e}`)}
+                        onError={(e) => { try { console.warn('[livekit]', e); } catch (_err) { /* noop */ } setAssistantError(tr('Сбой голосовой связи. Попробуйте переподключиться.', 'Sprachverbindung gestört. Bitte erneut verbinden.')); }}
                         className={`voice-assistant-room ${isLightTheme ? 'is-theme-light' : ''}`}
                       >
                         {({ ControlBar }) => (
