@@ -41710,7 +41710,7 @@ function AppInner() {
                         <p className="billing-plan__tag">{tr('Всё важное для учёбы, с дневными лимитами.', 'Alles Wichtige zum Lernen, mit Tageslimits.')}</p>
                         <ul className="billing-feats">
                           <li>{tr('Переводы с разбором: 1 набор/день (7 предложений).', 'Übersetzungen mit Analyse: 1 Set/Tag (7 Sätze).')}</li>
-                          <li>{tr('Словарь: библиотека без лимита + 3 новых разбора/день + 20 сохранений.', 'Wörterbuch: Bibliothek unbegrenzt + 3 neue Analysen/Tag + 20 Speicherungen.')}</li>
+                          <li>{tr('Словарь: перевод любого слова бесплатно и без счёта + 1 полный разбор нового слова в день + 20 сохранений.', 'Wörterbuch: Übersetzung jedes Wortes gratis und ohne Zähler + 1 vollständige Analyse eines neuen Wortes pro Tag + 20 Speicherungen.')}</li>
                           <li>{tr('«Объяснить ошибки» и «Спроси GPT»: по 1/день.', '„Fehler erklären“ und „GPT fragen“: je 1/Tag.')}</li>
                           <li>{tr('Карточки: 10 новых слов/режим + 20 повторений/день.', 'Karten: 10 neue Wörter/Modus + 20 Wiederholungen/Tag.')}</li>
                           <li>{tr('«Почувствуй слово»: 1/день.', '„Wort fühlen“: 1/Tag.')}</li>

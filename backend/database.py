@@ -36505,9 +36505,13 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
         # Free "taster": N NEW-word deep breakdowns per day. Library/shared-pool hits are
         # FREE and UNLIMITED for everyone — this cap fires ONLY when a genuinely new word
         # needs fresh GPT generation (all cache/pool/reverse/active-job hits return before
-        # the reservation). Pro/trial bypass entirely. Kept in line with the Free daily
-        # cost backstop (~€0.05 ≈ a few generations). Env-tunable without a deploy.
-        "free_limit": max(1, int((os.getenv("DICTIONARY_NEW_WORD_FREE_LIMIT") or "3").strip() or "3")),
+        # the reservation). Pro/trial bypass entirely.
+        # WAS 3, NOW 1: a fresh breakdown measures ~€0.018 (gpt-4.1, ~3.2k prompt tokens in +
+        # ~1.6k JSON tokens out), so three of them = €0.054 — ALREADY past the Free daily cost
+        # backstop of €0.05. The two limits contradicted each other and the cost cap won
+        # anyway, cutting the user off mid-taster. One breakdown is the honest taster and
+        # stays comfortably inside the €0.05. Env-tunable.
+        "free_limit": max(1, int((os.getenv("DICTIONARY_NEW_WORD_FREE_LIMIT") or "1").strip() or "1")),
         "reset_policy": "daily_europe_vienna",
     },
     "shortcut_forwarded_message_daily": {
