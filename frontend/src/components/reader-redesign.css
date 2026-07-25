@@ -2740,7 +2740,9 @@
 .webapp-reader .reader-hero-cover img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* Show the WHOLE cover (never crop the bottom off the book) — the container's
+     gradient shows as a slim frame behind if the cover's aspect ratio differs. */
+  object-fit: contain;
 }
 
 .webapp-reader .reader-hero-cover-initials {

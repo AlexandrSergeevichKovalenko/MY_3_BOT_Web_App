@@ -26457,16 +26457,16 @@ function AppInner() {
           'На бесплатном плане можно открыть 1 статью из интернета в день. Лимит обновится завтра в 00:00 по Вене. Оформи «Полный доступ» — и открывай статьи без дневного лимита.',
           'Im Free-Plan kannst du 1 Web-Artikel pro Tag öffnen. Das Limit wird morgen um 00:00 Uhr (Wien) zurückgesetzt. Hol dir vollen Zugang und lies Artikel ohne Limit.'
         );
+        // Keep the inline plaque as a fallback, but the REAL feedback is our established
+        // centered ProFeatureModal — it renders in the standalone home-screen app too, where
+        // Telegram.WebApp.showPopup silently no-ops (that was the "no reaction at all" bug).
+        // [[feedback_consumer_app_not_for_programmers]]
         setReaderError(articleLimitMsg);
-        // Feed opens close the add panel, so the inline error above isn't visible —
-        // surface the limit via a Telegram popup too.
-        try {
-          window.Telegram?.WebApp?.showPopup?.({
-            title: tr('Лимит статей на сегодня', 'Artikel-Limit für heute'),
-            message: articleLimitMsg,
-            buttons: [{ id: 'ok', type: 'default', text: 'OK' }],
-          });
-        } catch (_popupError) { /* noop */ }
+        setProFeatureModal({
+          emoji: '📰',
+          title: tr('Лимит статей на сегодня', 'Artikel-Limit für heute'),
+          intro: articleLimitMsg,
+        });
       } else {
         setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить текст в читалку.', 'Text konnte nicht in den Leser geladen werden.'));
       }
@@ -33150,10 +33150,10 @@ function AppInner() {
     setBillingStatusNotice('');
     setBillingStatusError('');
     setBillingPayInTelegram(null);
-    if (!initData) {
-      setBillingStatusError(initDataMissingMsg);
-      return;
-    }
+    // NOTE: do NOT bail on missing initData here. In the standalone home-screen app / browser
+    // there is no initData (the session runs on an app-token), yet the upgrade must still WORK —
+    // it just can't charge Stars in place, so it hands off into Telegram below. Bailing early was
+    // exactly why the «Vollen Zugang holen» button did nothing outside Telegram.
     // Everything is sold via native Telegram Stars now (Stripe is retired): Pro as a monthly
     // subscription, coffee/cheesecake as one-time donations that also grant bonus Pro days.
     // Stars can be charged ONLY inside the real Telegram app. The standalone PWA / browser still
@@ -33164,7 +33164,9 @@ function AppInner() {
     const isSupport = code === 'support_coffee' || code === 'support_cheesecake';
     if (code !== 'pro' && !isSupport) return;
     const startAppForCode = code === 'pro' ? 'buypro' : code; // support_coffee | support_cheesecake
-    const canPayHere = appMode === 'telegram' && typeof telegramApp?.openInvoice === 'function';
+    // Stars can be charged in place ONLY inside real Telegram AND with initData (the invoice call
+    // needs it). Anywhere else → hand off into Telegram instead of failing.
+    const canPayHere = appMode === 'telegram' && !!initData && typeof telegramApp?.openInvoice === 'function';
     if (!canPayHere) {
       let botUrl = '';
       try {
