@@ -319,52 +319,56 @@ export default function ReaderSection(props) {
     track.style.columnGap = `${gap}px`;
     // MEASURE the true pitch from where the columns actually landed — do NOT assume
     // pitch === viewport width. The browser's used column width can differ from the
-    // requested (w − 2M) by a sub-pixel amount; that tiny error accumulates across
+    // requested (w − 2M) by a sub-pixel amount; that tiny error ACCUMULATES across
     // columns, so by the 7th–9th screen the transform (index × w) lands in a column
-    // GAP and the page renders blank («first page fine, later pages empty»). Reading
-    // the real column-to-column step and multiplying by `cols` gives a drift-free step.
+    // GAP and the page renders blank («first page fine, later pages empty»).
+    //
+    // Method: bin every span into its nominal column k = floor((x − x0)/nominalStep).
+    // FLOOR (not round) matters: a column's spans span [colLeft, colLeft+colWidth] and
+    // colWidth is nearly a whole step, so round() would push mid-line words into the next
+    // column and corrupt its edge — floor keeps every span in its own column. Accumulated
+    // drift stays far below a column over a page range, so binning is unambiguous.
+    // Each column's TRUE left edge is the min offset of the spans binned into it (every
+    // text line starts at the column's left margin). The per-column step for column k is
+    // (leftEdge_k − x0)/k; the MEDIAN of these over all populated columns is the true
+    // step — the long lever arm of far columns averages out the sub-pixel noise, and the
+    // median is immune to the odd column whose first line happens to be indented. This is
+    // robust to sparse/short-line columns (nav-menu junk) that broke gap-based detection.
+    const nominalStep = (colWidth + gap) || w;
     const spans = track.querySelectorAll('[data-start]');
-    const xs = [];
+    let x0 = Infinity;
+    let maxX = 0;
+    const colMin = new Map(); // nominal column index → its leftmost span offset
     for (let i = 0; i < spans.length; i += 1) {
       const x = spans[i].offsetLeft;
-      if (Number.isFinite(x)) xs.push(x);
+      if (!Number.isFinite(x)) continue;
+      if (x < x0) x0 = x;
+      if (x > maxX) maxX = x;
     }
-    xs.sort((a, b) => a - b);
-    const x0 = xs.length ? xs[0] : 0;
-    const maxX = xs.length ? xs[xs.length - 1] : 0;
-    // Columns are separated by an empty gap (column-gap = 2M) with no spans, so the
-    // left edge of each populated column is the first offset after a jump wider than
-    // roughly that gap. The distance between consecutive edges is one column step.
-    const boundaryJump = Math.max(8, gap * 0.6);
-    const edges = [];
-    let prev = -Infinity;
-    for (let i = 0; i < xs.length; i += 1) {
-      if (xs[i] - prev > boundaryJump) edges.push(xs[i]);
-      prev = xs[i];
+    if (x0 === Infinity) x0 = 0;
+    for (let i = 0; i < spans.length; i += 1) {
+      const x = spans[i].offsetLeft;
+      if (!Number.isFinite(x)) continue;
+      const k = Math.floor((x - x0) / nominalStep);
+      if (k > 0 && (!colMin.has(k) || x < colMin.get(k))) colMin.set(k, x);
     }
-    let pitch = w; // safe fallback (used when there isn't enough content to measure)
-    if (edges.length >= 2) {
-      // The real column step sits very close to the requested colWidth+gap — the drift
-      // we're correcting is sub-pixel. Keep only edge-to-edge distances near that
-      // nominal step: this drops FALSE edges inside a sparse column (too small) and
-      // DOUBLE steps across a blank column (too large), then takes the median of the
-      // survivors as the true step. Multiply by `cols` for the per-screen pitch.
-      const nominalColStep = colWidth + gap;
-      const good = [];
-      for (let i = 1; i < edges.length; i += 1) {
-        const d = edges[i] - edges[i - 1];
-        if (d > nominalColStep * 0.7 && d < nominalColStep * 1.3) good.push(d);
-      }
-      if (good.length) {
-        good.sort((a, b) => a - b);
-        const colStep = good[Math.floor(good.length / 2)];
-        const screenStep = colStep * cols;
-        if (screenStep > w * 0.5 && screenStep < w * 1.5) pitch = screenStep;
-      }
+    let pitch = w; // safe fallback (too little content to measure)
+    let maxK = 0;
+    const steps = [];
+    colMin.forEach((edge, k) => { steps.push((edge - x0) / k); if (k > maxK) maxK = k; });
+    if (steps.length) {
+      steps.sort((a, b) => a - b);
+      const colStep = steps[Math.floor(steps.length / 2)];
+      const screenStep = colStep * cols;
+      if (screenStep > w * 0.5 && screenStep < w * 1.5) pitch = screenStep;
     }
     readerColPitchRef.current = pitch;
     readerColOriginRef.current = x0;
-    const n = Math.max(1, Math.round((maxX - x0) / pitch) + 1);
+    // Page count from the farthest populated column (exact), falling back to the pitch
+    // estimate when nothing could be binned.
+    const n = maxK > 0
+      ? Math.max(1, Math.floor(maxK / cols) + 1)
+      : Math.max(1, Math.round((maxX - x0) / pitch) + 1);
     return { n };
   };
 
