@@ -11238,7 +11238,7 @@ async def admin_repair_dict_cards_command(update: Update, context: CallbackConte
     from html import escape as _esc
     samples = report.get("samples") or []
     lines = "\n".join(
-        f"  • #{s.get('id')} {_esc(str(s.get('article') or ''))} {_esc(str(s.get('word') or ''))}".rstrip()
+        f"  • #{s.get('id')} {_esc(str(s.get('word') or ''))}".rstrip()
         for s in samples[:15]
     )
     text = (

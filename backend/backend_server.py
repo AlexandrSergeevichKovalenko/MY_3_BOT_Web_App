@@ -9693,10 +9693,11 @@ def repair_dictionary_cards_from_raw_text(
                 report["still_thin"] += 1
                 continue
             if len(report["samples"]) < 25:
+                # word_de уже НЕСЁТ артикль после нормализации заголовка («die Eltern»),
+                # поэтому отдельным полем его не отдаём — иначе отчёт печатает «die die Eltern».
                 report["samples"].append({
                     "id": row.get("id"),
                     "word": str(merged.get("word_de") or german),
-                    "article": str(merged.get("article") or ""),
                 })
             if dry_run:
                 report["repaired"] += 1
