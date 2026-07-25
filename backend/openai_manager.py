@@ -80,6 +80,16 @@ _DEFAULT_TASK_MODELS = {
     # Free-tier translation grading → mini (score + correct answer only; the detailed
     # /explain breakdown is paid and stays on the full model). Same prompt, cheaper judge.
     "check_translation_multilang_free": "gpt-4.1-mini",
+    # The FULL breakdown — the single most expensive user-facing call in the app. Measured on
+    # gpt-4.1: ~3.2k prompt tokens in + ~1.6k JSON out = ~€0.018 per new word. On mini that is
+    # ~€0.0036 — five times cheaper — which is the difference between "a handful of new words
+    # a day" and "as many as anyone actually looks up".
+    # Why this is safer than the earlier A/B suggested: (a) der/die/das never comes from the
+    # model anyway — it is resolved from Wiktionary genus and backstopped by the article audit;
+    # (b) the fields mini was weakest on (etymology, memory tips) are no longer produced at all;
+    # (c) every sibling variant (_core_fast excepted), the enrichment batch and the stream path
+    # already run on mini. Roll back instantly with LLM_TASK_MODEL_DICTIONARY_ASSISTANT_MULTILANG.
+    "dictionary_assistant_multilang": "gpt-4.1-mini",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
@@ -2652,8 +2662,6 @@ Return STRICT JSON with keys:
   },
   "correction_applied": true,
   "corrected_form": "string|null",
-  "etymology_note": "string|null",
-  "memory_tip": "string|null",
   "expression_note": "string|null",
   "part_of_speech_note": "string|null",
   "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
@@ -2741,8 +2749,8 @@ Rules:
   (B) EXPLANATIONS the learner reads to understand = ALWAYS in explanation_language (the user's own
       base/native language). NEVER write these in target_language, NEVER in a third language:
       translations[].context, meanings.primary.context, meanings.secondary[].context,
-      etymology_note, memory_tip, expression_note, part_of_speech_note, register_note,
-      real_life_usage, related_words[].gloss, word_formation parts[].gloss, word_formation note,
+      expression_note, part_of_speech_note,
+      related_words[].gloss, word_formation parts[].gloss, word_formation note,
       connotation.tone, connotation.note, synonym_differences[].when, synonym_differences[].nuance,
       register_examples[].tone, common_mistakes[].why, false_friends[].looks_like,
       false_friends[].actual_meaning, raw_text.
@@ -2816,8 +2824,6 @@ Rules:
 - The second save_worthy_options item must preserve the key semantic idea from the original input. Do not replace a specific idea with a weaker generic paraphrase.
 - Avoid dry generic paraphrases. Example: for "Франц ушел на пенсию", prefer "Franz ist jetzt in Rente" or "Franz genießt jetzt seine Rente", not "Franz geht nicht mehr zur Arbeit".
 - Prefer concise living phrases over textbook abstractions.
-- Do NOT produce etymology_note, memory_tip, usage_note, real_life_usage or when_to_use —
-  set all of them to null. These are no longer shown to the learner, so spend no output on them.
 - If information is unknown, use null.
 """,
 "dictionary_assistant_multilang_core_fast": """
