@@ -404,6 +404,31 @@ export default function ReaderSection(props) {
     return { n };
   };
 
+  // TEMP diag: probe the CURRENT column — how many data-start spans sit in it and how
+  // many carry VISIBLE (non-whitespace) text, plus a sample. Distinguishes a genuine
+  // whitespace-only column (ink=0, a content problem) from a paint bug (ink>0 but blank).
+  const readerColInkProbe = () => {
+    const track = readerColTrackRef.current;
+    const step = readerColStep();
+    if (!track || step <= 1) return { in: 0, ink: 0, s: '' };
+    const cur = readerColIndexRef.current;
+    const lo = cur * step - 2;
+    const hi = (cur + 1) * step;
+    const spans = track.querySelectorAll('[data-start]');
+    let inCol = 0;
+    let ink = 0;
+    let sample = '';
+    for (let i = 0; i < spans.length; i += 1) {
+      const x = readerColOffsetOf(spans[i]);
+      if (x >= lo && x < hi) {
+        inCol += 1;
+        const txt = (spans[i].textContent || '').replace(/\s+/g, '');
+        if (txt) { ink += 1; if (!sample) sample = (spans[i].textContent || '').trim().slice(0, 16); }
+      }
+    }
+    return { in: inCol, ink, s: sample };
+  };
+
   // Content signature: in window mode this changes ONLY when the loaded window
   // itself changes (extension / new doc / external jump), NOT on every page turn,
   // so turning columns inside the window never re-measures or fights the engine.
@@ -1784,7 +1809,8 @@ pitch=${readerColDbg.pitch}${readerColDbg.clamped ? '(CLAMP→w)' : ''} colStep=
 x0=${readerColDbg.x0} maxX=${readerColDbg.maxX} spans=${readerColDbg.spans}
 colsFound=${readerColDbg.colsFound} maxK=${readerColDbg.maxK} n=${readerColDbg.n}
 idx=${readerColIndex} wantTx=${Math.round(-readerColIndex * (readerColPitchRef.current || 0))}
-realTx=${readerColLastTxRef.current} dom=${(readerColTrackRef.current && readerColTrackRef.current.style.transform) || '—'}`}
+realTx=${readerColLastTxRef.current} dom=${(readerColTrackRef.current && readerColTrackRef.current.style.transform) || '—'}
+${(() => { const p = readerColInkProbe(); return `curCol in=${p.in} ink=${p.ink} «${p.s}»`; })()}`}
                       </div>
                     )}
                     <div ref={readerColTrackRef} className="reader-col-track">
