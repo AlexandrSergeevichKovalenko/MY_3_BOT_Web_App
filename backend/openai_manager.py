@@ -227,6 +227,110 @@ DICTIONARY_QUICK_TRANSLATE_FALLBACK_ENABLED = _env_flag("DICTIONARY_QUICK_TRANSL
 LLM_ALLOW_ASSISTANTS_FALLBACK = _env_flag("LLM_ALLOW_ASSISTANTS_FALLBACK", True)
 
 
+def strip_json_fence(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+    return cleaned
+
+
+def _escape_stray_quotes_in_json(text: str) -> str:
+    """Escape unescaped double quotes that sit INSIDE a JSON string.
+
+    The model regularly quotes a German word inside a native-language explanation
+    («"Eltern" с единственным числом глагола»), which makes json.loads reject an
+    otherwise perfect word card — and the empty-stub fallback then wipes article and
+    part_of_speech, so the user gets a blank card (case: «die Eltern», 24.07).
+
+    Single pass: a quote inside a string really terminates it only when the next
+    non-space character is JSON-structural (,:}]) or the text ends; anything else is
+    content, so escape it."""
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if not in_string:
+            out.append(char)
+            if char == '"':
+                in_string = True
+            index += 1
+            continue
+        if escaped:
+            out.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            out.append(char)
+            escaped = True
+            index += 1
+            continue
+        if char == '"':
+            probe = index + 1
+            while probe < length and text[probe] in " \t\r\n":
+                probe += 1
+            if probe >= length or text[probe] in ",:}]":
+                out.append(char)
+                in_string = False
+            else:
+                out.append('\\"')
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def parse_llm_json(text: str, *, context: str = "") -> dict | list | None:
+    """json.loads for model output, with repairs for the slips models actually make.
+
+    Order: as-is → stray quotes inside strings → trailing commas → largest {...}/[...]
+    substring. Returns None only when nothing parses, so callers can tell "the model
+    said nothing usable" from "the model answered but formatted it badly" — the latter
+    used to be silently downgraded to an empty card."""
+    cleaned = strip_json_fence(text)
+    if not cleaned:
+        return None
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    candidates: list[str] = []
+    repaired = _escape_stray_quotes_in_json(cleaned)
+    if repaired != cleaned:
+        candidates.append(repaired)
+    for base in (repaired, cleaned):
+        without_trailing_commas = re.sub(r",\s*([}\]])", r"\1", base)
+        if without_trailing_commas != base:
+            candidates.append(without_trailing_commas)
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = cleaned.find(opener)
+        end = cleaned.rfind(closer)
+        if start >= 0 and end > start:
+            chunk = cleaned[start:end + 1]
+            candidates.append(chunk)
+            chunk_repaired = _escape_stray_quotes_in_json(chunk)
+            if chunk_repaired != chunk:
+                candidates.append(chunk_repaired)
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        logging.info("llm json repaired%s (len=%d)", f" [{context}]" if context else "", len(cleaned))
+        return parsed
+    return None
+
+
+def parse_llm_json_object(text: str, *, context: str = "") -> dict:
+    """parse_llm_json narrowed to an object; {} when the text yields no dict."""
+    parsed = parse_llm_json(text, context=context)
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _build_taxonomy_hint_block(
     categories: list[str] | None,
     subcategories: dict[str, list[str]] | None,
@@ -6365,13 +6469,7 @@ async def run_enrich_word_multilang(
         poll_interval_seconds=2.0,
     )
 
-    try:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        return {}
+    return parse_llm_json_object(content, context=task_name)
 
 
 async def run_dictionary_lookup(word_ru: str) -> dict:
@@ -6384,11 +6482,11 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
         poll_interval_seconds=2.0,
     )
 
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
+    parsed = parse_llm_json_object(content, context=task_name)
+    if not parsed:
         return {
             "word_ru": word_ru,
+            "parse_failed": bool(str(content or "").strip()),
             "part_of_speech": "other",
             "translation_de": "",
             "translations": [],
@@ -6423,6 +6521,7 @@ async def run_dictionary_lookup(word_ru: str) -> dict:
             "save_worthy_options": [],
             "raw_text": content,
         }
+    return parsed
 
 
 async def run_dictionary_lookup_de(word_de: str) -> dict:
@@ -6435,11 +6534,11 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
         poll_interval_seconds=2.0,
     )
 
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
+    parsed = parse_llm_json_object(content, context=task_name)
+    if not parsed:
         return {
             "word_de": word_de,
+            "parse_failed": bool(str(content or "").strip()),
             "part_of_speech": "other",
             "translation_ru": "",
             "translations": [],
@@ -6473,6 +6572,7 @@ async def run_dictionary_lookup_de(word_de: str) -> dict:
             "save_worthy_options": [],
             "raw_text": content,
         }
+    return parsed
 
 
 async def run_dictionary_lookup_multilang(
@@ -6562,20 +6662,25 @@ async def run_dictionary_lookup_multilang(
         except Exception as fallback_exc:
             logging.warning("quick dictionary fallback translate failed: %s", fallback_exc)
 
-    cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
-    try:
-        parsed = json.loads(cleaned)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
+    cleaned = strip_json_fence(content)
+    parsed = parse_llm_json(cleaned, context=task_name)
+    if isinstance(parsed, dict):
+        return parsed
+    if cleaned:
+        # The model DID answer — we just could not read it. Say so loudly: everything below
+        # is an empty stub, and a caller that merges it blindly erases article/pos/meanings
+        # from a card that was already correct.
+        logging.warning(
+            "%s: unparsable model answer for %r (len=%d) — falling back to the empty stub",
+            task_name, str(word or "").strip(), len(cleaned),
+        )
 
     return {
         "detected_language": "source",
         "word_source": word,
         "word_target": quick_target,
+        # Marker for the merge/save paths: this payload carries NO knowledge, only shape.
+        "parse_failed": bool(cleaned),
         "translations": (
             [{"value": quick_target, "context": "quick_translate", "is_primary": True}]
             if quick_target
@@ -6701,12 +6806,9 @@ async def run_dictionary_lookup_multilang_core_fast_batch(
             except Exception:
                 logging.warning("dictionary fast batch chunk failed (size=%d)", len(chunk), exc_info=True)
                 return {}
-        cleaned = str(content or "").strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
-        try:
-            parsed = json.loads(cleaned)
-        except Exception:
+        cleaned = strip_json_fence(content)
+        parsed = parse_llm_json(cleaned, context="dictionary_fast_batch")
+        if parsed is None:
             logging.warning("dictionary fast batch chunk parse failed (size=%d)", len(chunk))
             return {}
         parsed_items = parsed.get("items") if isinstance(parsed, dict) else parsed
@@ -6847,24 +6949,9 @@ async def run_tts_chunk_de(sentence: str) -> dict:
         poll_interval_seconds=2.0,
     )
 
-    cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
-    try:
-        parsed = json.loads(cleaned)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-    if match:
-        try:
-            parsed = json.loads(match.group(0))
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
+    parsed = parse_llm_json_object(content, context=task_name)
+    if parsed:
+        return parsed
 
     return {"language": "de", "chunks": []}
 
