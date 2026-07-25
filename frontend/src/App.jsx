@@ -36416,7 +36416,7 @@ function AppInner() {
                         (DE/RU/размер/скраббер) сами выключены, пока не готово. Иначе — старый транспорт. */}
                     {(isWideLayout && !youtubeNewsMode)
                       ? (youtubeId && renderYoutubePuzzleBar())
-                      : (youtubeSubtitlesReady && renderYoutubeSentenceJumpBar())}
+                      : (youtubeSubtitlesReady && !youtubeChangeOpen && renderYoutubeSentenceJumpBar())}
                     </>
                     )}
                     {youtubeNewsMode && worldNewsLoading && !worldNewsData && (
