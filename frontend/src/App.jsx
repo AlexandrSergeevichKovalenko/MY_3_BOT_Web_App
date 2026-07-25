@@ -26471,10 +26471,21 @@ function AppInner() {
       const code = String(error?.code || '').trim();
       setReaderErrorCode(code);
       if (code === 'LIMIT_FREE_PLAN_1_BOOK') {
-        setReaderError(tr(
-          'На бесплатном плане открыта «Классика» и статьи из интернета. Оформи полный доступ, чтобы загружать свои книги и PDF.',
-          'Im Free-Plan sind «Klassiker» und Web-Artikel offen. Hol dir vollen Zugang, um eigene Bücher und PDFs hochzuladen.'
-        ));
+        const bookLimitMsg = tr(
+          'Загрузка своих книг и PDF — в «Полном доступе». На бесплатном плане открыта «Классика» (с озвучкой) и статьи из интернета.',
+          'Eigene Bücher und PDFs hochladen gibt es im vollen Zugang. Im Free-Plan sind «Klassiker» (mit Audio) und Web-Artikel offen.'
+        );
+        // Same reason as the article limit below: a silently-uploaded own book that gets
+        // rejected server-side left the user with NO feedback at all (no plaque was visible
+        // after the file picker). Surface the established centered ProFeatureModal so it's a
+        // clear, human paywall — works in the standalone icon-app too.
+        // [[feedback_consumer_app_not_for_programmers]]
+        setReaderError(bookLimitMsg);
+        setProFeatureModal({
+          emoji: '📚',
+          title: tr('Свои книги — в «Полном доступе»', 'Eigene Bücher — mit vollem Zugang'),
+          intro: bookLimitMsg,
+        });
       } else if (code === 'LIMIT_FREE_PLAN_1_ARTICLE') {
         const articleLimitMsg = tr(
           'На бесплатном плане можно открыть 1 статью из интернета в день. Лимит обновится завтра в 00:00 по Вене. Оформи «Полный доступ» — и открывай статьи без дневного лимита.',
