@@ -248,12 +248,8 @@ export default function ReaderSection(props) {
   // the laid-out word spans and page by exactly that. Works on any screen.
   const readerColPitchRef = React.useRef(0);
   const readerColOriginRef = React.useRef(0);
-  const readerColLastTxRef = React.useRef(0); // TEMP diag: last transform actually applied
   const readerColWillChangeTimer = React.useRef(0);
   const readerGestureRef = React.useRef({ down: false, x: 0, y: 0, moved: false, base: 0 });
-  // TEMP on-screen diagnostics for the blank-page bug — surfaces the real measured
-  // geometry so a single screenshot tells us what the pagination actually computed.
-  const [readerColDbg, setReaderColDbg] = React.useState(null);
 
   const sectionClass = [
     'webapp-section',
@@ -282,7 +278,6 @@ export default function ReaderSection(props) {
   const applyReaderColTransform = (px, animate) => {
     const track = readerColTrackRef.current;
     if (!track) return;
-    readerColLastTxRef.current = Math.round(px); // TEMP diag: what was actually applied
     // Snappier page-turn: shorter with a decel (ease-out) curve so the page arrives
     // crisply and settles — reads more like a physical page flip than the old linear-ish glide.
     track.style.transition = animate ? 'transform .26s cubic-bezier(.2,.68,.32,1)' : 'none';
@@ -376,17 +371,13 @@ export default function ReaderSection(props) {
     }
     let pitch = w; // safe fallback (too little content to measure)
     let maxK = 0;
-    let colStepRaw = 0;
-    let clamped = false;
     const steps = [];
     colMin.forEach((edge, k) => { steps.push((edge - x0) / k); if (k > maxK) maxK = k; });
     if (steps.length) {
       steps.sort((a, b) => a - b);
       const colStep = steps[Math.floor(steps.length / 2)];
-      colStepRaw = colStep;
       const screenStep = colStep * cols;
       if (screenStep > w * 0.5 && screenStep < w * 1.5) pitch = screenStep;
-      else clamped = true;
     }
     readerColPitchRef.current = pitch;
     readerColOriginRef.current = x0;
@@ -395,39 +386,7 @@ export default function ReaderSection(props) {
     const n = maxK > 0
       ? Math.max(1, Math.floor(maxK / cols) + 1)
       : Math.max(1, Math.round((maxX - x0) / pitch) + 1);
-    // TEMP diagnostics — one screenshot reveals what the engine actually computed.
-    setReaderColDbg({
-      w, cw: Math.round(colWidth), gap, nom: Math.round(nominalStep), cols,
-      pitch: Math.round(pitch * 100) / 100, colStep: Math.round(colStepRaw * 100) / 100,
-      clamped, x0: Math.round(x0), maxX: Math.round(maxX),
-      spans: spans.length, colsFound: colMin.size, maxK, n,
-    });
     return { n };
-  };
-
-  // TEMP diag: probe the CURRENT column — how many data-start spans sit in it and how
-  // many carry VISIBLE (non-whitespace) text, plus a sample. Distinguishes a genuine
-  // whitespace-only column (ink=0, a content problem) from a paint bug (ink>0 but blank).
-  const readerColInkProbe = () => {
-    const track = readerColTrackRef.current;
-    const step = readerColStep();
-    if (!track || step <= 1) return { in: 0, ink: 0, s: '' };
-    const cur = readerColIndexRef.current;
-    const lo = cur * step - 2;
-    const hi = (cur + 1) * step;
-    const spans = track.querySelectorAll('[data-start]');
-    let inCol = 0;
-    let ink = 0;
-    let sample = '';
-    for (let i = 0; i < spans.length; i += 1) {
-      const x = readerColOffsetOf(spans[i]);
-      if (x >= lo && x < hi) {
-        inCol += 1;
-        const txt = (spans[i].textContent || '').replace(/\s+/g, '');
-        if (txt) { ink += 1; if (!sample) sample = (spans[i].textContent || '').trim().slice(0, 16); }
-      }
-    }
-    return { in: inCol, ink, s: sample };
   };
 
   // Content signature: in window mode this changes ONLY when the loaded window
@@ -588,7 +547,6 @@ export default function ReaderSection(props) {
     if (!readerColUsesEngine) return;
     applyReaderColTransform(-readerColIndex * readerColStep(), true);
     readerColSyncPosition();
-    setReaderColDbg((d) => (d ? { ...d } : d)); // TEMP: re-render so overlay shows the applied tx
   }, [readerColIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-measure on viewport resize (rotation / chrome toggle / keyboard) AND on
@@ -1809,25 +1767,6 @@ export default function ReaderSection(props) {
                   >
                     {isCurrentReaderPageBookmarked && (
                       <span className="reader-page-bookmark-indicator" aria-hidden="true" />
-                    )}
-                    {readerColDbg && (
-                      <div
-                        style={{
-                          position: 'absolute', top: 4, left: 4, zIndex: 50,
-                          background: 'rgba(15,23,42,0.9)', color: '#fff',
-                          font: '600 10px/1.35 ui-monospace,Menlo,monospace',
-                          padding: '5px 7px', borderRadius: 7, pointerEvents: 'none',
-                          whiteSpace: 'pre', letterSpacing: '0.2px',
-                        }}
-                      >
-                        {`w=${readerColDbg.w} cw=${readerColDbg.cw} gap=${readerColDbg.gap} nom=${readerColDbg.nom} cols=${readerColDbg.cols}
-pitch=${readerColDbg.pitch}${readerColDbg.clamped ? '(CLAMP→w)' : ''} colStep=${readerColDbg.colStep}
-x0=${readerColDbg.x0} maxX=${readerColDbg.maxX} spans=${readerColDbg.spans}
-colsFound=${readerColDbg.colsFound} maxK=${readerColDbg.maxK} n=${readerColDbg.n}
-idx=${readerColIndex} wantTx=${Math.round(-readerColIndex * (readerColPitchRef.current || 0))}
-realTx=${readerColLastTxRef.current} dom=${(readerColTrackRef.current && readerColTrackRef.current.style.transform) || '—'}
-${(() => { const p = readerColInkProbe(); return `curCol in=${p.in} ink=${p.ink} «${p.s}»`; })()}`}
-                      </div>
                     )}
                     <div ref={readerColTrackRef} className="reader-col-track">
                       {readerShowsLazyOriginalPage
