@@ -32,3 +32,42 @@
 - Перед началом — `git fetch bot3_webapp && git pull --rebase` (в своём worktree).
 - Railway автодеплоит при пуше в `refactor/interface` (сервисы из репо `MY_3_BOT_Web_App`).
   Инфра (PgBouncer/Redis/Postgres) — отдельные сервисы/репозитории, их не трогаем.
+
+## 4. Частые задачи — где что лежит
+(Ориентир, а не догма — перед правкой проверяй актуальность grep’ом.)
+
+**Структура кода**
+- Фронт (React SPA): `frontend/src/App.jsx` — основной огромный файл; компоненты в
+  `frontend/src/components/` и игры в `frontend/src/answer/`.
+- Бэкенд (Flask API): `backend/backend_server.py` — огромный, все эндпоинты;
+  `backend/database.py` — слой БД; `backend/admin_command_catalog.py` — админ-команды (~115).
+
+**Проверка изменений**
+- Фронт компилится: `cd frontend && npm run build` (ТОЛЬКО локально, dist не коммитим).
+- Прод: пуш в `refactor/interface` → Railway пересоберёт и задеплоит.
+- Состояние деплоя/сервисов: `railway status --json` (проект MY_THIRD_BOT / production).
+
+**Читалка (Reader)**
+- `frontend/src/components/ReaderSection.jsx` + `reader-redesign.css`.
+- Paywall = зелёная плашка `.reader-upsell` (крона/иконка/CTA), НЕ красный `webapp-error`.
+- «Классика» (public-книги): чтение И озвучка — БЕСПЛАТНО для всех (бэкенд
+  `/reader/audio/page` отдаёт public бесплатно). Свои книги: аудио платное (per-book Stars).
+- Веб-статьи free: 1/день; тип источника для гейта — `"url"` (не `"html"`).
+
+**Словарь**
+- `bt_3_dictionary_entries` — ОБЩИЙ пул слов (кеш→пул→GPT), не личный per-user.
+- Не путать общий кеш (экономия GPT) с личным пулом тренировки.
+
+**Тарифы / paywall / гейтинг**
+- Free + «Полный доступ» (€5, оплата Telegram Stars; Stripe отключён).
+- Paywall показывай через `ProFeatureModal` или амбер `paid-feature-card` (App.css) —
+  НИКОГДА через красный `webapp-error`.
+- Апгрейд из кода: `handleBillingUpgrade('pro')` (передавай код тарифа, не event!).
+
+**Тексты для пользователя**
+- Никаких сырых ошибок сервера/БД в UI — чистое человеческое сообщение, техтекст в консоль.
+- Копирайт newcomer: простыми словами что/где/как/зачем, без инсайдерского сленга.
+
+**База в проде**
+- Живая база — `zephyr` через PgBouncer. Запросы — через `railway` CLI.
+- НЕ использовать `DATABASE_URL_RAILWAY` (указывает на старую мёртвую `centerbeam`).
