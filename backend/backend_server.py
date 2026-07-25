@@ -51848,19 +51848,20 @@ def ingest_reader_content():
     client_cover = str(form_payload.get("cover_image_url") or payload.get("cover_image_url") or "").strip()
     upload_tmp_path = ""
 
-    if not init_data:
-        return jsonify({"error": "initData обязателен"}), 400
     if not input_text and not input_url and not file_content_b64 and uploaded_file is None:
         return jsonify({"error": "Нужно передать text, url или файл"}), 400
 
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
+    # Resolve the user from Telegram initData when present/valid, else from the app-browser
+    # token (X-App-Token header / app_token) — the standalone home-screen app has no Telegram
+    # initData and authenticates every /api call by that token, exactly like the rest of the
+    # webapp. Without this, "add article" was the only reader action that refused the app.
+    user_id = None
+    if init_data and _telegram_hash_is_valid(init_data):
+        user_id = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
     if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
+        user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "initData обязателен"}), 400
 
     try:
         get_or_create_user_subscription(user_id=int(user_id), now_ts=datetime.now(timezone.utc))
@@ -52489,18 +52490,16 @@ def reader_library_status():
     init_data = payload.get("initData")
     document_id = payload.get("document_id")
 
-    if not init_data:
+    # Telegram initData when present/valid, else the app-browser token (standalone app).
+    user_id = None
+    if init_data and _telegram_hash_is_valid(init_data):
+        user_id = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
+    if not user_id:
+        user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
         return jsonify({"error": "initData обязателен"}), 400
     if document_id is None:
         return jsonify({"error": "document_id обязателен"}), 400
-    if not _telegram_hash_is_valid(init_data):
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-
-    parsed = _parse_telegram_init_data(init_data)
-    user_data = parsed.get("user") or {}
-    user_id = user_data.get("id")
-    if not user_id:
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
@@ -52544,7 +52543,16 @@ def reader_library_open():
         init_data = payload.get("initData")
         document_id = payload.get("document_id")
 
-        if not init_data:
+        # Resolve the user from Telegram initData (present & valid) OR the app-browser token
+        # (X-App-Token) — the standalone home-screen app has no initData and authenticates by
+        # that token, like the rest of the webapp. Telegram users stay on the initData path.
+        user_id = None
+        if init_data and _telegram_hash_is_valid(init_data):
+            user_id = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
+        if not user_id:
+            user_id = _resolve_webapp_user_id(payload)
+
+        if not user_id:
             _log_flow_observation(
                 "reader_open",
                 "reader_open_completed",
@@ -52570,36 +52578,6 @@ def reader_library_open():
                 **summarize_db_acquire_events(db_acquire_events),
             )
             return jsonify({"error": "document_id обязателен"}), 400
-        if not _telegram_hash_is_valid(init_data):
-            _log_flow_observation(
-                "reader_open",
-                "reader_open_completed",
-                request_id=request_id,
-                correlation_id=correlation_id,
-                final_status="error",
-                error_code="invalid_init_data",
-                duration_ms=_elapsed_ms_since(started_perf),
-                http_status=401,
-                **summarize_db_acquire_events(db_acquire_events),
-            )
-            return jsonify({"error": "initData не прошёл проверку"}), 401
-
-        parsed = _parse_telegram_init_data(init_data)
-        user_data = parsed.get("user") or {}
-        user_id = user_data.get("id")
-        if not user_id:
-            _log_flow_observation(
-                "reader_open",
-                "reader_open_completed",
-                request_id=request_id,
-                correlation_id=correlation_id,
-                final_status="error",
-                error_code="missing_user_id",
-                duration_ms=_elapsed_ms_since(started_perf),
-                http_status=400,
-                **summarize_db_acquire_events(db_acquire_events),
-            )
-            return jsonify({"error": "user_id отсутствует в initData"}), 400
 
         language_pair_started_perf = time.perf_counter()
         source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))

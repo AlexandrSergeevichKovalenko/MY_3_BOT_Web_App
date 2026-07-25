@@ -24536,6 +24536,21 @@ function AppInner() {
     tryTelegram();
   }, [telegramApp, tr]);
 
+  // The standalone home-screen app has no Telegram initData — it authenticates every
+  // /api call via an X-App-Token header (added by the fetch shim in main.jsx). So reader
+  // actions must be allowed when we have EITHER a Telegram initData OR that app token;
+  // gating on initData alone wrongly blocked "add article" in the installed app while
+  // everything else (which relies on the same token) worked.
+  const hasStandaloneAppSession = useCallback(() => {
+    try {
+      if (localStorage.getItem('app_browser_token_v1')) return true;
+      const sp = new URLSearchParams(window.location.search || '');
+      if (sp.get('aqt')) return true;
+      if (/^\/webapp\/t\//.test(window.location.pathname || '')) return true;
+    } catch (_e) { /* ignore */ }
+    return false;
+  }, []);
+
   const openReaderArticleClipUrl = useCallback(() => {
     const url = String(readerArticleClipUrl || '').trim();
     setReaderArticleClipUrl('');
@@ -24547,7 +24562,7 @@ function AppInner() {
 
   // ── "Источники": curated in-app article feed → open directly in the reader ──
   const fetchReaderSourceArticles = useCallback(async (sourceId) => {
-    if (!initData) {
+    if (!initData && !hasStandaloneAppSession()) {
       setReaderSourcesError(initDataMissingMsg);
       return;
     }
@@ -24576,7 +24591,7 @@ function AppInner() {
     } finally {
       setReaderSourcesLoading(false);
     }
-  }, [initData, initDataMissingMsg, tr]);
+  }, [initData, initDataMissingMsg, tr, hasStandaloneAppSession]);
 
   const openReaderSourcesPanel = useCallback(() => {
     setReaderSourcesOpen((prev) => {
@@ -26235,7 +26250,7 @@ function AppInner() {
       ));
       return;
     }
-    if (!initData) {
+    if (!initData && !hasStandaloneAppSession()) {
       setReaderError(initDataMissingMsg);
       return;
     }
