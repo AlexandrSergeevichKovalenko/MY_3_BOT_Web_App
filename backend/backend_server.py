@@ -63452,6 +63452,39 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
                 return field_a, field_b  # swapped: source=de, target=ru → fix
         return field_b, field_a  # default: trust field names
 
+    def _shared_prefix_len(a: str, b: str) -> int:
+        length = 0
+        for x, y in zip(a, b):
+            if x != y:
+                break
+            length += 1
+        return length
+
+    def _native_side_leaks_headword(native_sentence: str, headword: str) -> bool:
+        """True when the native (e.g. Russian) half of an example still contains the
+        foreign headword untranslated — the classic GPT slip "translated everything
+        except the looked-up word" («разные Auffassungen» instead of «разные взгляды»).
+        Matched on a stem so declensions (Auffassung/Auffassungen) are caught, and only
+        for latin tokens, so purely-Cyrillic sentences are never touched."""
+        native = _normalize_space(native_sentence)
+        head = _normalize_space(headword)
+        if not native or not head:
+            return False
+        head_stem = head.split()[-1].casefold()  # drop a leading article: "die Auffassung"
+        if len(head_stem) < 4:
+            return False
+        for token in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]{4,}", native):
+            low = token.casefold()
+            prefix = _shared_prefix_len(low, head_stem)
+            if prefix >= 5 or (prefix >= 4 and prefix == min(len(low), len(head_stem))):
+                return True
+        return False
+
+    # Untranslatable headwords (brands, loanwords: Netflix, Google) legitimately reappear
+    # in the native example — the word IS its own translation. Detect that so the leak
+    # guard below never strips a genuine loanword.
+    _headword_is_loanword = _native_side_leaks_headword(translated_text, target_text)
+
     example_lines: list[str] = []
     for item in usage_examples[:3]:
         if not isinstance(item, dict):
@@ -63459,7 +63492,19 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
         learning_sentence, native_sentence_raw = _split_example_fields(item)
         if not learning_sentence:
             continue
+        # Corrupted learning sentence (German with Cyrillic spliced in, e.g. "…dich auch
+        # так.") — a learner must never read that. Drop the whole example.
+        if target_lang != "ru" and _cyrillic_re.search(learning_sentence):
+            continue
         native_sentence = _native_text(native_sentence_raw, source_lang) if native_sentence_raw else ""
+        # Native half still carries the (translatable) foreign headword → GPT left the
+        # looked-up word untranslated. Drop the corrupted half; show German-only.
+        if (
+            native_sentence
+            and not _headword_is_loanword
+            and _native_side_leaks_headword(native_sentence, target_text)
+        ):
+            native_sentence = ""
         if native_sentence:
             example_lines.append(f"{len(example_lines) + 1}. {learning_sentence} — {native_sentence}")
         else:
