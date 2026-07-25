@@ -247,6 +247,7 @@ export default function ReaderSection(props) {
   // the laid-out word spans and page by exactly that. Works on any screen.
   const readerColPitchRef = React.useRef(0);
   const readerColOriginRef = React.useRef(0);
+  const readerColLastTxRef = React.useRef(0); // TEMP diag: last transform actually applied
   const readerGestureRef = React.useRef({ down: false, x: 0, y: 0, moved: false, base: 0 });
   // TEMP on-screen diagnostics for the blank-page bug — surfaces the real measured
   // geometry so a single screenshot tells us what the pagination actually computed.
@@ -279,6 +280,7 @@ export default function ReaderSection(props) {
   const applyReaderColTransform = (px, animate) => {
     const track = readerColTrackRef.current;
     if (!track) return;
+    readerColLastTxRef.current = Math.round(px); // TEMP diag: what was actually applied
     // Snappier page-turn: shorter with a decel (ease-out) curve so the page arrives
     // crisply and settles — reads more like a physical page flip than the old linear-ish glide.
     track.style.transition = animate ? 'transform .26s cubic-bezier(.2,.68,.32,1)' : 'none';
@@ -529,6 +531,7 @@ export default function ReaderSection(props) {
     if (!readerColUsesEngine) return;
     applyReaderColTransform(-readerColIndex * readerColStep(), true);
     readerColSyncPosition();
+    setReaderColDbg((d) => (d ? { ...d } : d)); // TEMP: re-render so overlay shows the applied tx
   }, [readerColIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-measure on viewport resize (rotation / chrome toggle / keyboard) AND on
@@ -1764,7 +1767,8 @@ export default function ReaderSection(props) {
 pitch=${readerColDbg.pitch}${readerColDbg.clamped ? '(CLAMP→w)' : ''} colStep=${readerColDbg.colStep}
 x0=${readerColDbg.x0} maxX=${readerColDbg.maxX} spans=${readerColDbg.spans}
 colsFound=${readerColDbg.colsFound} maxK=${readerColDbg.maxK} n=${readerColDbg.n}
-idx=${readerColIndex} tx=${Math.round(-readerColIndex * (readerColPitchRef.current || 0))}`}
+idx=${readerColIndex} wantTx=${Math.round(-readerColIndex * (readerColPitchRef.current || 0))}
+realTx=${readerColLastTxRef.current} dom=${(readerColTrackRef.current && readerColTrackRef.current.style.transform) || '—'}`}
                       </div>
                     )}
                     <div ref={readerColTrackRef} className="reader-col-track">
