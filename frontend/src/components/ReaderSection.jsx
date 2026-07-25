@@ -74,6 +74,7 @@ export default function ReaderSection(props) {
     readerLoading, readerError, readerErrorCode,
 
     // ── reading state ────────────────────────────────────────────
+    readerOpenNonce,
     readerDocumentId, readerTitle, readerContent,
     readerPages, readerDisplayPages, readerPageCount,
     readerCurrentPage, setReaderCurrentPage,
@@ -580,7 +581,7 @@ export default function ReaderSection(props) {
       rafs.forEach((id) => window.cancelAnimationFrame(id));
       timers.forEach((id) => window.clearTimeout(id));
     };
-  }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight, readerDocumentId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readerColUsesEngine, readerColContentSig, readerFontSize, readerFontWeight, readerDocumentId, readerOpenNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Animate the turn + record the new reading position.
   React.useEffect(() => {
@@ -677,7 +678,7 @@ export default function ReaderSection(props) {
     };
     timer = window.setTimeout(tick, 300);
     return () => { stopped = true; window.clearTimeout(timer); };
-  }, [readerColUsesEngine, readerColContentSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readerColUsesEngine, readerColContentSig, readerOpenNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Follow the spoken word during audio: scroll to the column holding the
   // currently-highlighted word. Uses the LIVE DOM span, so it's immune to the
