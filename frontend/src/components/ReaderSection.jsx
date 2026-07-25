@@ -317,17 +317,51 @@ export default function ReaderSection(props) {
     track.style.paddingRight = `${M}px`;
     track.style.columnWidth = `${colWidth}px`;
     track.style.columnGap = `${gap}px`;
-    // Pitch is EXACTLY the viewport width — one swipe turns a whole screen
-    // (= `cols` columns), integer, no drift.
+    // MEASURE the true pitch from where the columns actually landed — do NOT assume
+    // pitch === viewport width. The browser's used column width can differ from the
+    // requested (w − 2M) by a sub-pixel amount; that tiny error accumulates across
+    // columns, so by the 7th–9th screen the transform (index × w) lands in a column
+    // GAP and the page renders blank («first page fine, later pages empty»). Reading
+    // the real column-to-column step and multiplying by `cols` gives a drift-free step.
     const spans = track.querySelectorAll('[data-start]');
-    let x0 = Infinity, maxX = 0;
+    const xs = [];
     for (let i = 0; i < spans.length; i += 1) {
       const x = spans[i].offsetLeft;
-      if (x < x0) x0 = x;
-      if (x > maxX) maxX = x;
+      if (Number.isFinite(x)) xs.push(x);
     }
-    if (x0 === Infinity) x0 = 0;
-    const pitch = w;
+    xs.sort((a, b) => a - b);
+    const x0 = xs.length ? xs[0] : 0;
+    const maxX = xs.length ? xs[xs.length - 1] : 0;
+    // Columns are separated by an empty gap (column-gap = 2M) with no spans, so the
+    // left edge of each populated column is the first offset after a jump wider than
+    // roughly that gap. The distance between consecutive edges is one column step.
+    const boundaryJump = Math.max(8, gap * 0.6);
+    const edges = [];
+    let prev = -Infinity;
+    for (let i = 0; i < xs.length; i += 1) {
+      if (xs[i] - prev > boundaryJump) edges.push(xs[i]);
+      prev = xs[i];
+    }
+    let pitch = w; // safe fallback (used when there isn't enough content to measure)
+    if (edges.length >= 2) {
+      // The real column step sits very close to the requested colWidth+gap — the drift
+      // we're correcting is sub-pixel. Keep only edge-to-edge distances near that
+      // nominal step: this drops FALSE edges inside a sparse column (too small) and
+      // DOUBLE steps across a blank column (too large), then takes the median of the
+      // survivors as the true step. Multiply by `cols` for the per-screen pitch.
+      const nominalColStep = colWidth + gap;
+      const good = [];
+      for (let i = 1; i < edges.length; i += 1) {
+        const d = edges[i] - edges[i - 1];
+        if (d > nominalColStep * 0.7 && d < nominalColStep * 1.3) good.push(d);
+      }
+      if (good.length) {
+        good.sort((a, b) => a - b);
+        const colStep = good[Math.floor(good.length / 2)];
+        const screenStep = colStep * cols;
+        if (screenStep > w * 0.5 && screenStep < w * 1.5) pitch = screenStep;
+      }
+    }
     readerColPitchRef.current = pitch;
     readerColOriginRef.current = x0;
     const n = Math.max(1, Math.round((maxX - x0) / pitch) + 1);
@@ -1039,8 +1073,10 @@ export default function ReaderSection(props) {
                       type="button"
                       className={`reader-lib-add-btn${readerAddOpen ? ' is-open' : ''}`}
                       onClick={() => setReaderAddOpen((prev) => !prev)}
+                      aria-label={readerAddOpen ? tr('Скрыть', 'Schließen') : tr('Добавить', 'Hinzufügen')}
                     >
-                      {readerAddOpen ? tr('✕ Скрыть', '✕ Schließen') : tr('+ Добавить', '+ Hinzufügen')}
+                      <span className="reader-lib-add-ico" aria-hidden="true">{readerAddOpen ? '✕' : '+'}</span>
+                      <span className="reader-lib-add-label">{readerAddOpen ? tr('Скрыть', 'Schließen') : tr('Добавить', 'Hinzufügen')}</span>
                     </button>
                   )}
                 </div>
