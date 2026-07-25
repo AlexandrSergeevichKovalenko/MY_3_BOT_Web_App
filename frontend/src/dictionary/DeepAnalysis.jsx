@@ -75,29 +75,6 @@ function RichText({ text }) {
   return <>{out}</>;
 }
 
-const REGISTER_LABELS = { colloquial: 'разговорный', neutral: 'нейтральный', formal: 'официальный' };
-
-function RegisterRow({ row, tts }) {
-  const [open, setOpen] = useState(false);
-  const de = clean(row?.example_target);
-  const ru = clean(row?.example_source);
-  const level = clean(row?.level).toLowerCase();
-  const tone = clean(row?.tone);
-  if (!de) return null;
-  return (
-    <div className={`deep-reg-row lvl-${level || 'neutral'}`}>
-      <div className="deep-reg-top">
-        <span className="deep-reg-badge">{REGISTER_LABELS[level] || level || '—'}</span>
-        {tone && <span className="deep-reg-tone">{tone}</span>}
-      </div>
-      <div className="deep-reg-de"><span>{de}</span><SpeakButton text={de} tts={tts} sm /></div>
-      {ru && (open
-        ? <div className="deep-reg-ru">{ru}</div>
-        : <button type="button" className="deep-reveal" onClick={() => setOpen(true)}>Показать перевод</button>)}
-    </div>
-  );
-}
-
 export default function DeepAnalysis({ startParam }) {
   const target = useMemo(() => parseTarget(startParam), [startParam]);
   const [item, setItem] = useState(null);
@@ -434,14 +411,6 @@ export default function DeepAnalysis({ startParam }) {
   const ipa = clean(pron.ipa);
   const stress = clean(pron.stress);
 
-  const connotation = item?.connotation && typeof item.connotation === 'object' ? item.connotation : null;
-  const conTone = clean(connotation?.tone);
-  const conNote = clean(connotation?.note);
-  const synDiffs = Array.isArray(item?.synonym_differences) ? item.synonym_differences.filter((x) => clean(x?.word)) : [];
-  const regExamples = Array.isArray(item?.register_examples) ? item.register_examples.filter((x) => clean(x?.example_target)) : [];
-  const mistakes = Array.isArray(item?.common_mistakes) ? item.common_mistakes.filter((x) => clean(x?.mistake) || clean(x?.correction)) : [];
-  const falseFriends = Array.isArray(item?.false_friends) ? item.false_friends.filter((x) => clean(x?.word)) : [];
-
   const colloText = (c) => (c && typeof c === 'object') ? (clean(c.target) || clean(c.source) || clean(c.value)) : clean(c);
   const colloSub = (c) => (c && typeof c === 'object') ? clean(c.source) : '';
 
@@ -490,63 +459,12 @@ export default function DeepAnalysis({ startParam }) {
 
         <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} onSaveExample={saveExample} savedChips={savedChips} />
 
-        {(conTone || conNote) && (
-          <section className="deep-sec sec-nuance">
-            <h3 className="deep-sec-h">🎭 Нюанс и коннотация</h3>
-            {conTone && <div className="deep-tone-chip">{conTone}</div>}
-            {conNote && <p className="deep-sec-note">{conNote}</p>}
-          </section>
-        )}
-
-        {synDiffs.length > 0 && (
-          <section className="deep-sec sec-syn">
-            <h3 className="deep-sec-h">🔀 Чем отличается от синонимов</h3>
-            <div className="deep-syn-list">
-              {synDiffs.map((s, i) => (
-                <div className="deep-syn-row" key={`${clean(s.word)}-${i}`}>
-                  <button type="button" className={`deep-syn-word${savedChips.has(clean(s.word)) ? ' is-saved' : ''}`}
-                    onClick={() => saveChip(clean(s.word))}>
-                    {clean(s.word)}{savedChips.has(clean(s.word)) ? ' ✓' : ''}
-                  </button>
-                  {clean(s.when) && <div className="deep-syn-when"><b>Когда:</b> {clean(s.when)}</div>}
-                  {clean(s.nuance) && <div className="deep-syn-nuance"><b>Оттенок:</b> {clean(s.nuance)}</div>}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {regExamples.length > 0 && (
-          <section className="deep-sec sec-reg">
-            <h3 className="deep-sec-h">🪜 Регистр и градация</h3>
-            <div className="deep-reg-list">
-              {regExamples.map((row, i) => <RegisterRow key={i} row={row} tts={tts} />)}
-            </div>
-          </section>
-        )}
-
-        {(mistakes.length > 0 || falseFriends.length > 0) && (
-          <section className="deep-sec sec-warn">
-            <h3 className="deep-sec-h">⚠️ Ошибки и ложные друзья</h3>
-            {mistakes.map((m, i) => (
-              <div className="deep-mistake" key={`m-${i}`}>
-                <div className="deep-mis-line">
-                  <span className="deep-mis-bad">✗ {clean(m.mistake)}</span>
-                  <span className="deep-mis-arrow">→</span>
-                  <span className="deep-mis-good">✓ {clean(m.correction)}</span>
-                </div>
-                {clean(m.why) && <div className="deep-mis-why">{clean(m.why)}</div>}
-              </div>
-            ))}
-            {falseFriends.map((f, i) => (
-              <div className="deep-ff" key={`f-${i}`}>
-                <div className="deep-ff-head"><b>{clean(f.word)}</b>
-                  {clean(f.looks_like) && <span className="deep-ff-look"> ≠ «{clean(f.looks_like)}»</span>}</div>
-                {clean(f.actual_meaning) && <div className="deep-ff-mean">На самом деле: {clean(f.actual_meaning)}</div>}
-              </div>
-            ))}
-          </section>
-        )}
+        {/* Секции «Нюанс и коннотация», «Чем отличается от синонимов», «Регистр и градация»
+            и «Ошибки и ложные друзья» УБРАНЫ (2026-07-25). Эти четыре блока давали примерно
+            половину всего вывода модели — самая дорогая часть разбора, — а открывали их редко.
+            Модель их больше не генерирует (поля убраны из промпта), так что рисовать нечего.
+            Старые записи общего пула эти поля ещё содержат, но показывать их только для
+            «старых» слов = случайная разница между карточками, поэтому не рисуем вовсе. */}
 
         {/* 📌 Варианты для сохранения — мультивыбор + папка + «Сохранить выбранное» */}
         {!isGuest && options.length > 0 && (

@@ -2710,22 +2710,6 @@ Return STRICT JSON with keys:
   "related_words": [
     {"word": "<same-root German word, with article if noun>", "gloss": "<short meaning>"}
   ],
-  "connotation": {
-    "tone": "string|null",
-    "note": "string|null"
-  },
-  "synonym_differences": [
-    {"word": "<near-synonym in target_language>", "when": "...", "nuance": "..."}
-  ],
-  "register_examples": [
-    {"level": "colloquial|neutral|formal", "example_target": "...", "example_source": "...", "tone": "..."}
-  ],
-  "common_mistakes": [
-    {"mistake": "...", "correction": "...", "why": "..."}
-  ],
-  "false_friends": [
-    {"word": "...", "looks_like": "...", "actual_meaning": "..."}
-  ],
   "usage_examples": [
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."}
@@ -2743,28 +2727,16 @@ Rules:
 - LANGUAGE SPLIT — THIS IS CRITICAL. There are TWO distinct kinds of fields:
   (A) WORD/TRANSLATION values = the foreign words the learner is studying. These are ALWAYS in
       target_language: word_target, translations[].value, meanings.primary.value,
-      meanings.secondary[].value, synonyms, antonyms, related_words[].word, common_collocations,
-      synonym_differences[].word, register_examples[].example_target, common_mistakes[].mistake,
-      common_mistakes[].correction, false_friends[].word.
+      meanings.secondary[].value, synonyms, antonyms, related_words[].word, common_collocations.
   (B) EXPLANATIONS the learner reads to understand = ALWAYS in explanation_language (the user's own
       base/native language). NEVER write these in target_language, NEVER in a third language:
       translations[].context, meanings.primary.context, meanings.secondary[].context,
-      expression_note, part_of_speech_note,
-      related_words[].gloss, word_formation parts[].gloss, word_formation note,
-      connotation.tone, connotation.note, synonym_differences[].when, synonym_differences[].nuance,
-      register_examples[].tone, common_mistakes[].why, false_friends[].looks_like,
-      false_friends[].actual_meaning, raw_text.
-      (register_examples[].example_source follows the usual bilingual-example rule: explanation_language.)
-  explanation_language is INDEPENDENT of source_language/target_language: those only set the
-  translation direction and may be swapped for reverse lookups, but every explanation ALWAYS stays
-  in explanation_language regardless of which language the looked-up word is in. If explanation_language
-  is missing, fall back to source_language.
-  Do NOT infer the explanation language from the value fields — the values are foreign on purpose.
-  The explanation language is explanation_language, full stop. Example: explanation_language=ru,
-  target_language=de — translations[].value="das Gerede", translations[].context MUST be Russian
-  (e.g. "разговорное, неодобрительное"), NOT German.
-  (Only exception: if the looked-up item itself is English, the item word may stay English, but every
-  EXPLANATION still stays in explanation_language.)
+      expression_note, part_of_speech_note, raw_text,
+      related_words[].gloss, word_formation parts[].gloss, word_formation note.
+  explanation_language is INDEPENDENT of source_language/target_language and never inferred from the
+  value fields (those are foreign on purpose). Missing → fall back to source_language.
+  Example: explanation_language=ru, target_language=de → translations[].value="das Gerede" but
+  translations[].context MUST be Russian ("разговорное, неодобрительное"), NOT German.
 - Examples are BILINGUAL and help the learner read the target language:
   meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
   meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
@@ -2775,13 +2747,21 @@ Rules:
   - First must be most common (is_primary=true).
   - Others reflect nuance (formal, informal, slang, emotional).
 - Provide exactly one primary meaning and up to two secondary meanings.
+- VALUES ARE EQUIVALENTS, NOT DEFINITIONS. translations[].value and meanings.*.value must be the
+  word you would write in a dictionary entry: one word, or a short phrase of 2-3 words. NEVER a
+  descriptive sentence. Right: "ехать", "уютный", "начинать". Wrong: "ехать на транспорте,
+  передвигаться", "создающий ощущение уюта, тепло и комфорт", "начинать что-либо делать или
+  происходить". Put the nuance in "context", never in "value".
 - Rank meanings strictly by frequency.
 - Each meaning must include one short real example pair.
 - Provide up to 2 short natural usage_examples different from meaning examples.
 - Keep explanations compact but clear.
 - For noisy grammar-construction input, the base save_worthy_options item must use the normalized clean construction, not the raw fragment.
 - If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
-- If verb: include separable/inseparable if relevant, up to 3 useful government patterns, and key forms.
+- If verb: include separable/inseparable if relevant and key forms. government_patterns is REQUIRED
+  for verbs (1-3 patterns): which preposition and which case the verb takes, each with an example.
+  This is the single most useful thing a German learner needs and must never come back empty for a
+  verb. Also fill it for nouns/adjectives that govern a fixed preposition (die Angst vor + Dativ).
   Always fill forms.present_2sg (du-form), forms.present_3sg (er-form) and forms.imperative_sg (du-imperative)
   for German verbs, especially irregular/strong ones (e.g. fahren → du fährst, er fährt, imperative "fahr").
 - word_formation: ONLY for German compound or clearly derived words. Break the word into its real
@@ -2791,26 +2771,11 @@ Rules:
   parts=[]. Glosses must be in the explanation language.
 - level: the CEFR level (A1–C2) at which a learner typically meets this word. frequency: how common it is
   in everyday German. Use null if genuinely unsure.
-- synonyms (up to 4) and antonyms (up to 3): close German synonyms / opposites; omit antonyms when none exist.
+- synonyms: give at least 3 (up to 4) whenever the language offers them — a single synonym is not
+  enough for a learner to feel the word. Fewer only when the word genuinely has no close synonyms.
+  antonyms (up to 3): omit when none exist.
 - related_words (up to 4): SAME-ROOT German words (word family) with a short gloss; nouns carry their article.
 - register: one short stylistic label for the word; null only if truly neutral-unknown.
-- DEPTH FIELDS — fill these to give the learner a FEELING for the word, not just a translation.
-  Provide them for content words (noun/verb/adjective/adverb/phrase); use null or [] when they would
-  be artificial (function words, numbers, proper names) or when you are genuinely unsure.
-  - connotation: the emotional/stylistic coloring. connotation.tone = a short label (e.g.
-    "неодобрительное, ироничное", "тёплое, разговорное"); connotation.note = 1 short sentence on the
-    feeling/force the word carries and when it lands that way.
-  - synonym_differences (up to 3): the closest confusable near-synonyms in target_language, each with
-    "when" (in what situation you pick this one) and "nuance" (the fine shade of meaning that sets it
-    apart from the headword). Pick genuinely confusable words, not random synonyms.
-  - register_examples (up to 3): the SAME idea said across registers — colloquial → neutral → formal.
-    Each item: level, one natural example_target sentence, its example_source translation, and a short
-    "tone" note. Skip a level if it has no natural form.
-  - common_mistakes (up to 3): real mistakes learners make with THIS word (wrong case/preposition,
-    wrong auxiliary, wrong meaning). Each: the wrong form (mistake), the fixed form (correction), and
-    "why" it is wrong. false_friends (up to 2): only genuine false friends for a Russian/English
-    speaker — word (the German word), looks_like (the deceptive lookalike in the learner's language),
-    actual_meaning (what it really means). Use [] when there is no real false friend.
 - GERMAN HEADWORD NORMALIZATION:
   - Whenever the source-side or target-side main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun". Never return a bare German noun.
   - Whenever the main German word is a standalone verb, normalize it to the infinitive.
