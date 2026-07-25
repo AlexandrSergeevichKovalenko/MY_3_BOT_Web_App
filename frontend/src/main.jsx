@@ -128,7 +128,31 @@ if (shouldTreatAsTelegram) {
   }
   import('virtual:pwa-register')
     .then(({ registerSW }) => {
-      registerSW({ immediate: true });
+      registerSW({
+        immediate: true,
+        // Make a fresh deploy land WITHOUT any user action — no "clear your cache",
+        // no reinstall, no per-user hand-holding. registerSW on its own only checks
+        // for a new worker on a hard navigation; an iOS home-screen PWA relaunched
+        // from a suspended state does none, so it can keep serving a stale bundle for
+        // days (the root cause of "nothing changed after deploy"). Force
+        // registration.update() every time the app returns to the foreground (plus a
+        // slow safety interval for sessions left open): that re-fetches sw.js, the new
+        // worker installs, skipWaiting + clientsClaim make it take control, and the
+        // controllerchange handler above reloads once — so the newest build goes live
+        // on the very next open, invisibly, for every user.
+        onRegisteredSW(_swScriptUrl, registration) {
+          if (!registration) return;
+          const checkForUpdate = () => { registration.update().catch(() => {}); };
+          const checkIfVisible = () => {
+            if (document.visibilityState === 'visible') checkForUpdate();
+          };
+          document.addEventListener('visibilitychange', checkIfVisible);
+          window.addEventListener('focus', checkForUpdate);
+          window.addEventListener('pageshow', checkForUpdate);
+          setInterval(checkForUpdate, 60 * 60 * 1000); // hourly safety net for long-open sessions
+          checkForUpdate(); // and once right now
+        },
+      });
     })
     .catch(() => {
       // ignore SW registration errors in non-PWA environments
