@@ -36348,6 +36348,29 @@ DAILY_COST_CAP_EXCLUDED_ACTION_TYPES = (
     "sprint_distractor_prosecutor",
     "sprint_distractor_judge",
     "sprint_correct_examples",
+    # Book narration (Reader). Two separate reasons, same conclusion — never on the
+    # subscription's daily AI budget:
+    #   • OWN books: the user already paid for that book's audio (per-book Stars unlock).
+    #     Charging it again against the daily cap = paying twice (money + budget), and at
+    #     ~€0.08/page it would burn a whole day's cap in under two pages.
+    #   • CLASSICS: free for everyone by design; the narration is generated once and then
+    #     served from cache to ALL readers, so it is shared content, not personal use.
+    #     Its real constraint is the monthly google_tts_standard free bucket (4M chars),
+    #     which the provider budget already guards — NOT a per-user euro cap.
+    # OPEN QUESTION (parked with the owner): classics are synthesized on demand rather than
+    # pre-generated (storage cost) while unread books get pruned ~2×/year — so how to fund
+    # and pace classic narration still needs a decision. Revisit before launch.
+    "reader_audio_tts",
+    "reader_audio_tts_pages",
+    "reader_audio_tts_fallback",
+)
+
+# Revenue-side infrastructure: what the PAYMENT rails cost us is a business expense tied to
+# the user paying us — it is not something they "consumed". Left in, a single subscription
+# payment (observed: €0.54 of Stripe fees) instantly exceeds a daily cap several times over
+# and locks the user out of the app on the very day they paid.
+DAILY_COST_CAP_EXCLUDED_PROVIDERS = (
+    "stripe",
 )
 
 
@@ -36370,9 +36393,12 @@ def get_today_cost_eur(user_id: int, tz: str = TRIAL_POLICY_TZ) -> float:
                 WHERE user_id = %s
                   AND (event_time AT TIME ZONE %s)::date = %s
                   AND action_type <> ALL(%s)
+                  AND provider <> ALL(%s)
                 GROUP BY currency;
                 """,
-                (user_id_value, tz_name, day_local, list(DAILY_COST_CAP_EXCLUDED_ACTION_TYPES)),
+                (user_id_value, tz_name, day_local,
+                 list(DAILY_COST_CAP_EXCLUDED_ACTION_TYPES),
+                 list(DAILY_COST_CAP_EXCLUDED_PROVIDERS)),
             )
             rows = cursor.fetchall() or []
             total_eur = 0.0
@@ -37690,10 +37716,12 @@ def get_trailing_days_cost_eur(user_id: int, days: int = 7, tz: str = TRIAL_POLI
                 WHERE user_id = %s
                   AND (event_time AT TIME ZONE %s)::date BETWEEN %s AND %s
                   AND action_type <> ALL(%s)
+                  AND provider <> ALL(%s)
                 GROUP BY currency;
                 """,
                 (user_id_value, tz_name, start_local, today_local,
-                 list(DAILY_COST_CAP_EXCLUDED_ACTION_TYPES)),
+                 list(DAILY_COST_CAP_EXCLUDED_ACTION_TYPES),
+                 list(DAILY_COST_CAP_EXCLUDED_PROVIDERS)),
             )
             rows = cursor.fetchall() or []
     total_eur = 0.0
@@ -37718,7 +37746,10 @@ DAILY_COST_CAP_AVG_WINDOW_DAYS = 7
 def _resolve_weekly_avg_cap_eur(entitlement: dict) -> float | None:
     mode = str(entitlement.get("effective_mode") or "").strip().lower()
     if mode == "pro":
-        value = _env_decimal("PRO_WEEKLY_AVG_COST_CAP_EUR", "0.30")
+        # 0.12 ≈ what a Pro seat can sustain against €5/mo net (€0.167/day gross) while the
+        # daily arm (0.25) still absorbs an occasional heavy day. Measured real usage sits at
+        # €0.003–0.034 per active day, so this binds only on sustained outliers.
+        value = _env_decimal("PRO_WEEKLY_AVG_COST_CAP_EUR", "0.12")
     else:
         value = _env_decimal("FREE_WEEKLY_AVG_COST_CAP_EUR", None)
     return float(value) if value is not None else None

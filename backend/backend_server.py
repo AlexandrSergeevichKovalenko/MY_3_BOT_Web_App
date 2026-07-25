@@ -13892,6 +13892,12 @@ def _sync_aux_price_snapshots_from_env() -> dict:
         ("AGENT_TTS_PRICE_PER_MINUTE_USD", "agent_tts", "agent_tts_output", "audio_minutes", "per_minute"),
         ("LIVEKIT_PRICE_PER_MINUTE_USD", "livekit", "room_minute", "audio_minutes", "per_minute"),
         ("GOOGLE_TTS_PRICE_PER_1M_CHARS_USD", "google_tts", "google_tts_chars", "chars", "per_1m_chars"),
+        # Standard + paid TTS buckets had NO price spec, so every event they produced was
+        # recorded at cost 0 (measured: 5 687 events priced at zero — single-word audio and
+        # classic-book narration were invisible in accounting AND in the per-user cap).
+        # Google list prices: Standard ~$4/1M chars, Chirp3-HD (paid book voice) ~$30/1M.
+        ("GOOGLE_TTS_STANDARD_PRICE_PER_1M_CHARS_USD", "google_tts_standard", "google_tts_standard_chars", "chars", "per_1m_chars"),
+        ("GOOGLE_TTS_PAID_PRICE_PER_1M_CHARS_USD", "google_tts_paid", "google_tts_paid_chars", "chars", "per_1m_chars"),
         ("GOOGLE_TRANSLATE_PRICE_PER_1M_CHARS_USD", "google_translate", "google_translate_chars", "chars", "per_1m_chars"),
         ("DEEPL_PRICE_PER_1M_CHARS_USD", "deepl_free", "deepl_chars", "chars", "per_1m_chars"),
         ("AZURE_TRANSLATOR_PRICE_PER_1M_CHARS_USD", "azure_translator", "azure_translate_chars", "chars", "per_1m_chars"),
@@ -14017,6 +14023,8 @@ def _billing_log_event_safe(
     def _resolve_price_mapping(provider_value: str, units_type_value: str) -> tuple[str, str, str] | None:
         mapping = {
             ("google_tts", "chars"): ("google_tts", "google_tts_chars", "chars"),
+            ("google_tts_standard", "chars"): ("google_tts_standard", "google_tts_standard_chars", "chars"),
+            ("google_tts_paid", "chars"): ("google_tts_paid", "google_tts_paid_chars", "chars"),
             ("google_translate", "chars"): ("google_translate", "google_translate_chars", "chars"),
             ("deepl_free", "chars"): ("deepl_free", "deepl_chars", "chars"),
             ("azure_translator", "chars"): ("azure_translator", "azure_translate_chars", "chars"),

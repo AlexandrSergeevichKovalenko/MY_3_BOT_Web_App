@@ -43,6 +43,7 @@ def _collect_personal_costs_eur(target_day: date, tz_name: str, *, days: int = 1
         get_db_connection_context,
         convert_cost_to_eur,
         DAILY_COST_CAP_EXCLUDED_ACTION_TYPES,
+        DAILY_COST_CAP_EXCLUDED_PROVIDERS,
     )
     start = target_day - timedelta(days=max(1, days) - 1)
     with get_db_connection_context() as conn:
@@ -54,9 +55,12 @@ def _collect_personal_costs_eur(target_day: date, tz_name: str, *, days: int = 1
                 WHERE user_id IS NOT NULL
                   AND (event_time AT TIME ZONE %s)::date BETWEEN %s AND %s
                   AND action_type <> ALL(%s)
+                  AND provider <> ALL(%s)
                 GROUP BY user_id, currency;
                 """,
-                (tz_name, start, target_day, list(DAILY_COST_CAP_EXCLUDED_ACTION_TYPES)),
+                (tz_name, start, target_day,
+                 list(DAILY_COST_CAP_EXCLUDED_ACTION_TYPES),
+                 list(DAILY_COST_CAP_EXCLUDED_PROVIDERS)),
             )
             rows = cursor.fetchall() or []
     out: dict[int, float] = {}
