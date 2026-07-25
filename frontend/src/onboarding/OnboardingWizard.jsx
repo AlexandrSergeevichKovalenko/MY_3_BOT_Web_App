@@ -989,20 +989,33 @@ function StepBody(props) {
           </div>
 
           {/* Честная рамка «полного доступа»: у функций нет своих квот, но общий дневной
-              запас есть. Показываем его НЕ списком одинаковых операций, а «днём целиком» —
-              человеку важно увидеть комплекс, а не счётчик кнопок. Числа занижены
-              относительно реального потолка, чтобы обещание выполнялось с запасом. */}
+              запас есть. Показываем его НЕ счётчиком одинаковых операций («10 разборов» —
+              человеку это ничего не говорит), а ДНЁМ ЦЕЛИКОМ: комплексом, в котором он
+              узнаёт свой сценарий. Три разных дня — чтобы каждый нашёл близкий себе.
+              Единицы человеческие: предложения, а не «наборы»; и разбираем НЕ все
+              предложения подряд (никому не нужно 21 разбор), а треть — как в жизни.
+              Числа посчитаны от замеренной себестоимости при потолке €0.25 и занижены
+              (0.194 / 0.213 / 0.208), чтобы обещание выполнялось с запасом.
+              ⚠️ Пересчитать при смене потолка или моделей. */}
           <div className="ob-info is-fairuse">
             <div className="ic">⚡</div>
             <div>
               <h4>{t('Один общий запас на день — вместо лимитов на каждую кнопку',
                      'Ein gemeinsames Tagesbudget — statt Limits pro Funktion')}</h4>
-              <p>{t('Все функции открыты. Есть только общий дневной запас на самый тяжёлый ИИ — чтобы один человек не занял мощности всех. ',
-                    'Alle Funktionen sind frei. Es gibt nur ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — damit nicht einer die Kapazität aller belegt. ')}
-                <b>{t('Его хватает, например, на 3 набора переводов с подробным разбором ошибок и ещё 4 новых слова. Или на 9 новых слов с полным разбором и один набор переводов. Или на 6 тренировок навыка, набор переводов и пару новых слов.',
-                      'Es reicht zum Beispiel für 3 Übersetzungssets mit ausführlicher Fehleranalyse und dazu 4 neue Wörter. Oder für 9 neue Wörter mit voller Analyse und ein Übersetzungsset. Oder für 6 Skill-Trainings, ein Übersetzungsset und ein paar neue Wörter.')}</b>{' '}
-                {t('Смешивай как угодно — это общий запас, а не отдельные квоты. Совсем ничего не тратят слова, которые уже есть в нашем словаре, повторение карточек, игры, дуэли, а также чтение и озвучка «Классики». Запас обновляется каждый день в 00:00.',
-                   'Misch es frei — es ist ein gemeinsames Budget, keine Einzelquoten. Gar nichts kosten Wörter, die schon in unserem Wörterbuch stehen, Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker». Das Budget erneuert sich täglich um 00:00.')}</p>
+              <p>{t('Все функции открыты. Есть только общий дневной запас на самый тяжёлый ИИ — чтобы один человек не занял мощности всех. Вот дни, которые в него спокойно укладываются:',
+                    'Alle Funktionen sind frei. Es gibt nur ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — damit nicht einer die Kapazität aller belegt. Solche Tage passen locker hinein:')}</p>
+              <ul className="ob-fairuse-list">
+                <li>{t('21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, русские субтитры к пяти видео и коллокации к словам',
+                       '21 Sätze übersetzen und prüfen lassen, davon sieben mit ausführlicher Fehleranalyse, russische Untertitel zu fünf Videos und Kollokationen zu Wörtern')}</li>
+                <li>{t('или 9 совершенно новых слов с полным разбором и набор переводов на 7 предложений',
+                       'oder 9 völlig neue Wörter mit voller Analyse und ein Übersetzungsset mit 7 Sätzen')}</li>
+                <li>{t('или 7 тренировок по твоим слабым местам, набор переводов и пара новых слов',
+                       'oder 7 Trainings zu deinen Schwachstellen, ein Übersetzungsset und ein paar neue Wörter')}</li>
+              </ul>
+              <p className="ob-fairuse-note">
+                {t('«Совершенно новое» — это слово, которого ещё нет в нашем общем словаре, а там уже больше 14 000 слов. Знакомые слова, повторение карточек, игры, дуэли, чтение и озвучка «Классики» запас не тратят вообще. Обновляется каждый день в 00:00.',
+                   '«Völlig neu» heißt: ein Wort, das noch nicht in unserem gemeinsamen Wörterbuch steht — und dort sind schon über 14 000. Bekannte Wörter, Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker» kosten gar nichts vom Budget. Es erneuert sich täglich um 00:00.')}
+              </p>
             </div>
           </div>
 

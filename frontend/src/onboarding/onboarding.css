@@ -494,6 +494,11 @@
 .ob-info.is-stars .ic { background: #e7f0fd; }
 .ob-info.is-articles .ic { background: #e6f2ef; }
 .ob-info.is-fairuse .ic { background: #fbeecf; }
+/* «День целиком» читается списком, а не сплошным абзацем — иначе комплекс не считывается. */
+.ob-fairuse-list { margin: 7px 0 0; padding-left: 17px; font-size: 13px; line-height: 1.45; color: var(--ob-muted); }
+.ob-fairuse-list li { margin: 0 0 5px; }
+.ob-fairuse-list li:last-child { margin-bottom: 0; }
+.ob-info .ob-fairuse-note { margin-top: 8px; }
 .ob-info.is-cancel .ic { background: #eef1f5; }
 .ob-info.is-maint { border-style: dashed; }
 .ob-info.is-maint .ic { background: #fbe7e4; }

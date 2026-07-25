@@ -8584,11 +8584,15 @@ function AppInner() {
       tr('Создавать свои дуэли, настраивать расписание, приоритетная обработка.', 'Eigene Duelle erstellen, Plan einstellen, priorisierte Verarbeitung.'),
       tr('«Числа на слух» (своя тренировка): до 5 в день.', 'Zahlen-Diktat (eigenes Training): bis zu 5 pro Tag.'),
       // Честная рамка вместо обещания безлимита: у функций нет своих квот, но общий дневной
-      // запас есть. Описываем его «днём целиком», а не счётчиком одинаковых операций.
-      tr('Один общий дневной запас на самый тяжёлый ИИ — вместо лимитов на каждую функцию. Хватает, например, на 3 набора переводов с разбором ошибок и ещё 4 новых слова; или на 9 новых слов с полным разбором и один набор переводов.',
-         'Ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — statt Limits pro Funktion. Es reicht z. B. für 3 Übersetzungssets mit Fehleranalyse und 4 neue Wörter; oder für 9 neue Wörter mit voller Analyse und ein Übersetzungsset.'),
-      tr('Запас не тратят: слова, которые уже есть в нашем словаре, повторение карточек, игры, дуэли, чтение и озвучка «Классики». Обновляется каждый день в 00:00.',
-         'Nichts vom Budget kosten: Wörter, die schon in unserem Wörterbuch stehen, Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker». Erneuert sich täglich um 00:00.'),
+      // запас есть. Описываем его «днём целиком» в человеческих единицах (предложения, а не
+      // «наборы»), а не счётчиком одинаковых операций. Числа — от замеренной себестоимости
+      // при потолке €0.25, занижены. ⚠️ Пересчитать при смене потолка или моделей.
+      tr('Один общий дневной запас на самый тяжёлый ИИ — вместо лимитов на каждую функцию.',
+         'Ein gemeinsames Tagesbudget für die schwersten KI-Aufgaben — statt Limits pro Funktion.'),
+      tr('Хватает, например, на день: 21 предложение перевода с проверкой, подробный разбор ошибок в семи из них, русские субтитры к пяти видео и коллокации к словам. Или на 9 совершенно новых слов с полным разбором и набор переводов. Или на 7 тренировок по слабым местам, набор переводов и пару новых слов.',
+         'Es reicht z. B. für einen Tag mit: 21 Sätzen zum Übersetzen und Prüfen, davon sieben mit ausführlicher Fehleranalyse, russischen Untertiteln zu fünf Videos und Kollokationen zu Wörtern. Oder für 9 völlig neue Wörter mit voller Analyse und ein Übersetzungsset. Oder für 7 Trainings zu Schwachstellen, ein Übersetzungsset und ein paar neue Wörter.'),
+      tr('«Совершенно новое» — слово, которого ещё нет в нашем общем словаре (там уже больше 14 000). Знакомые слова, повторение карточек, игры, дуэли, чтение и озвучка «Классики» запас не тратят вообще. Обновляется каждый день в 00:00.',
+         '«Völlig neu» heißt: ein Wort, das noch nicht in unserem gemeinsamen Wörterbuch steht (dort sind schon über 14 000). Bekannte Wörter, Karten-Wiederholungen, Spiele, Duelle sowie Lesen und Vertonung der «Klassiker» kosten gar nichts vom Budget. Erneuert sich täglich um 00:00.'),
     ];
     return {
       free: {
