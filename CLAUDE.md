@@ -17,12 +17,15 @@
 **Каждый агент работает в своём git worktree на своей ветке.** Скрипт в корне репо:
 ```bash
 ./agent-worktree.sh <имя>          # → ../<repo>-<имя>, ветка agent/<имя> (node_modules симлинкнут)
+./agent-worktree.sh --merge <имя>  # влить ветку агента в refactor/interface + запушить + убрать worktree
 ./agent-worktree.sh --list         # показать все worktree
-./agent-worktree.sh --remove <имя> # убрать по окончании
+./agent-worktree.sh --remove <имя> # убрать worktree без слияния
 ```
 - Основной каталог держим «чистым» / для владельца; агентов — по отдельным worktree.
 - Работай ТОЛЬКО в своём каталоге. Коммить маленько и часто на ветке `agent/<имя>`.
-- Готово → `git push -u bot3_webapp agent/<имя>` → PR в `refactor/interface`.
+- Готово → закоммить всё в `agent/<имя>`, затем приёмка работы одной командой:
+  `./agent-worktree.sh --merge <имя>` (сливает в `refactor/interface`, пушит, убирает worktree).
+  Либо, если нужен формальный ревью, — `git push -u bot3_webapp agent/<имя>` и PR на GitHub.
 
 ## 3. Git-гигиена (общий репозиторий)
 - Рабочая ветка — `refactor/interface`. **Никогда не коммить/пушить в `main`.**
