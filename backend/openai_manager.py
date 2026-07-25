@@ -2757,8 +2757,10 @@ Rules:
   "удобный" — that is bequem); Sehnsucht = "тоска" (NOT "желание" — that is Wunsch); Feierabend =
   "конец рабочего дня" (NOT "вечер" — that is Abend). Prefer the equivalent a bilingual dictionary
   prints, even when a blander word would also fit the sentence.
-- SELF-CHECK BEFORE RETURNING: back-translate translations[0].value. If it comes back as a DIFFERENT
-  German word than the headword, you picked a neighbour — replace it with the right equivalent.
+  (A back-translation self-check was tried here and REVERTED: "back-translate your value; if it
+  returns a different German word, replace it" is trivially satisfied by echoing the German headword
+  itself, and mini started doing exactly that — "der Zug", "gemütlich", "der Handschuh" landed in
+  the value fields instead of the translation. Do not re-add it in that form.)
 - Rank meanings strictly by frequency.
 - Each meaning must include one short real example pair.
 - Provide up to 2 short natural usage_examples different from meaning examples.
