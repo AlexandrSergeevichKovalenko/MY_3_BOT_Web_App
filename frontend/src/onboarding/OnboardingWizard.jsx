@@ -1496,7 +1496,18 @@ export default function OnboardingWizard() {
       ro = new ResizeObserver(() => checkScrollBottom());
       ro.observe(content);
     }
-    return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); clearTimeout(tSafe); if (ro) ro.disconnect(); };
+    // Belt-and-suspenders: ResizeObserver proved unreliable inside the Telegram WebView —
+    // a media step (MediaTile does an async HEAD, then mounts <video>) could grow the page
+    // AFTER the timed checks without RO firing, leaving «Далее» wrongly unlocked at the top.
+    // A short poll re-evaluates the gate for the first few seconds regardless of RO, so a
+    // late-loading video always re-locks the button until the user actually scrolls down.
+    // (checkScrollBottom only reads the DOM + setState; unchanged value → React no-op.)
+    const poll = setInterval(checkScrollBottom, 250);
+    const tPollStop = setTimeout(() => clearInterval(poll), 6000);
+    return () => {
+      cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); clearTimeout(tSafe);
+      clearInterval(poll); clearTimeout(tPollStop); if (ro) ro.disconnect();
+    };
   }, [idx, checkScrollBottom]);
 
   const goNext = useCallback(async () => {
