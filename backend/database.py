@@ -19454,11 +19454,15 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
         return
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            # updated_at ОБЯЗАТЕЛЕН: приложение держит локальную копию словаря и досинхронизирует
+            # её запросом «что изменилось после updated_since». Без этой отметки обогащённая или
+            # починенная карточка оставалась на устройстве прежней — пустой (найдено 25.07).
             if translation_de is not None:
                 cursor.execute("""
                     UPDATE bt_3_webapp_dictionary_queries
                     SET response_json = %s,
-                        translation_de = %s
+                        translation_de = %s,
+                        updated_at = NOW()
                     WHERE id = %s;
                 """, (
                     json.dumps(response_json, ensure_ascii=False),
@@ -19468,7 +19472,8 @@ def update_webapp_dictionary_entry(entry_id: int, response_json: dict, translati
             else:
                 cursor.execute("""
                     UPDATE bt_3_webapp_dictionary_queries
-                    SET response_json = %s
+                    SET response_json = %s,
+                        updated_at = NOW()
                     WHERE id = %s;
                 """, (
                     json.dumps(response_json, ensure_ascii=False),
