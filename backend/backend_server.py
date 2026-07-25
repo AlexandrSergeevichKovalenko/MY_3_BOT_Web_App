@@ -6607,6 +6607,71 @@ def _set_cached_quick_correct(cache_key: str, corrected: str) -> None:
                 _QUICK_CORRECT_CACHE.pop(stale_key, None)
 
 
+def _proofread_dictionary_source_for_save(text: str, *, source_lang: str, user_id: int | None) -> str:
+    """Server-side twin of the /api/translate/quick/correct route, called from the dictionary
+    SAVE endpoints so a typed phrase is proofread no matter WHICH surface saved it. The
+    client-side proofread only covers the quick-dictionary overlay; wiring it here means every
+    manual-entry surface (in-app dictionary, reader, YouTube, world-news, deep analysis, ask/
+    answer overlays, …) is corrected too — the mechanism must be origin-independent.
+
+    Returns the corrected form, or "" when nothing needs fixing / on ANY failure — the caller
+    then keeps the user's exact text. Cached (incl. the "nothing to fix" result, and shared
+    with the client route's cache, so the overlay's own call is not billed twice); best-effort
+    billing. A save NEVER waits on or fails because of this call."""
+    clean = str(text or "").strip()
+    lang = _normalize_short_lang_code(source_lang, fallback="") or ""
+    # Only the two languages run_quick_correct guards with a script check (de/ru). Skipping the
+    # rest avoids a weakly-guarded "correction" silently translating a non-de/ru phrase.
+    if not clean or lang not in ("ru", "de"):
+        return ""
+    cache_key = _build_quick_correct_cache_key(text=clean, source_lang=lang)
+    cached = _get_cached_quick_correct(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        corrected = run_quick_correct(text=clean, source_lang=lang)
+    except Exception:
+        logging.debug("save-time quick correct failed", exc_info=True)
+        corrected = ""
+    _set_cached_quick_correct(cache_key, corrected)
+    if corrected and user_id is not None:
+        try:
+            _billing_log_openai_usage(
+                user_id=int(user_id),
+                action_type="quick_correct",
+                source_lang=lang or None,
+                target_lang=None,
+                usage=get_last_llm_usage(reset=True),
+                seed=f"quick_correct_save:{user_id}:{time.time_ns()}",
+                metadata={"origin": "dictionary_save", "text": clean[:64]},
+            )
+        except Exception:
+            logging.debug("save-time quick_correct billing log failed", exc_info=True)
+    return corrected
+
+
+def _apply_dictionary_source_proofread(
+    *, source_text, word_ru, word_de, translation_ru, translation_de, source_lang, user_id,
+):
+    """Proofread the source phrase and propagate the fix to the columns that MIRROR the source
+    side only (never the translation side, which is the other language). Returns the possibly-
+    updated (source_text, word_ru, word_de, translation_ru, translation_de) tuple; a no-op when
+    there is nothing to fix."""
+    corrected = _proofread_dictionary_source_for_save(source_text, source_lang=source_lang, user_id=user_id)
+    original = source_text
+    if corrected and corrected != original:
+        source_text = corrected
+        if word_ru == original:
+            word_ru = corrected
+        if word_de == original:
+            word_de = corrected
+        if translation_ru == original:
+            translation_ru = corrected
+        if translation_de == original:
+            translation_de = corrected
+    return source_text, word_ru, word_de, translation_ru, translation_de
+
+
 def _get_cached_dictionary_lookup_with_tier(cache_key: str) -> tuple[dict | None, str]:
     cached = _get_cached_dictionary_lookup(cache_key)
     if cached:
@@ -44023,6 +44088,20 @@ def save_webapp_dictionary_entry():
             translation_de = _sanitize_bilingual_dictionary_target(source_text, translation_de or target_text, target_lang) or target_text
             word_de = _sanitize_bilingual_dictionary_target(source_text, word_de or target_text, target_lang) or target_text
 
+    # Universal server-side proofread of the user's typed SOURCE phrase — runs for EVERY save
+    # surface, so a typo / wrong article / wrong case never reaches the personal card OR the
+    # shared pool regardless of where the user typed it. Best-effort + cached: on cap/offline/
+    # error the user's exact text is kept and the save proceeds normally.
+    source_text, word_ru, word_de, translation_ru, translation_de = _apply_dictionary_source_proofread(
+        source_text=source_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        translation_de=translation_de,
+        source_lang=source_lang,
+        user_id=int(user_id),
+    )
+
     if folder_id is None:
         try:
             default_folder = get_or_create_dictionary_folder(
@@ -44292,6 +44371,18 @@ def save_mobile_dictionary_entry():
         elif source_lang == "ru" and target_lang == "de":
             translation_de = _sanitize_bilingual_dictionary_target(source_text, translation_de or target_text, target_lang) or target_text
             word_de = _sanitize_bilingual_dictionary_target(source_text, word_de or target_text, target_lang) or target_text
+
+    # Universal server-side proofread of the user's typed SOURCE phrase (see the webapp save
+    # endpoint) — origin-independent, best-effort, cached; keeps the user's text on any failure.
+    source_text, word_ru, word_de, translation_ru, translation_de = _apply_dictionary_source_proofread(
+        source_text=source_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        translation_de=translation_de,
+        source_lang=source_lang,
+        user_id=int(user_id),
+    )
 
     if folder_id is None:
         try:
