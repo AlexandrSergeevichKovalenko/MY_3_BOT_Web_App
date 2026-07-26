@@ -380,10 +380,29 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
                 rejected += 1
                 continue
             art = str(v.get("article") or art).strip().lower()
-        # Deterministic guard wins for high-confidence rules (compound head / suffix).
-        hint = strong_gender(w)
-        if hint:
-            art = hint
+        # СПРАВОЧНИК ГЛАВНЕЕ МОДЕЛИ — та же лестница, что и в автозаливке выше:
+        # Wiktionary (кэш → живой запрос) → правило композита → «не знаем».
+        # Ручной путь не привилегирован: неверный артикль отсюда учит человека
+        # ровно так же, как неверный артикль из генератора.
+        source = "manual"
+        verified = True
+        try:
+            from backend.article_authority import authoritative_article
+            verdict, src = authoritative_article(w, allow_network=True)
+            if verdict:
+                if verdict != art:
+                    logging.warning(
+                        "article manual: %s — заявлено «%s», справочник «%s» (%s), берём справочник",
+                        w, art, verdict, src)
+                art = verdict
+                source = src
+            else:
+                # Ни Wiktionary, ни правило композита не подтвердили род. В игру не пускаем:
+                # строка видна на ревью, но человеку неподтверждённый артикль не показываем.
+                logging.warning("article manual: %s — род не подтверждён (%s), кладём на ревью", w, src)
+                source, verified = "manual-unverified", False
+        except Exception:
+            logging.warning("article manual: справочник недоступен для %s", w, exc_info=True)
         if art not in ("der", "die", "das"):
             rejected += 1
             continue
@@ -391,7 +410,7 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
             "word": w, "article": art,
             "meaning_ru": c["meaning_ru"] or trmap.get(w.lower(), ""),
             "plural": "", "difficulty": "B",
-            "subtopic": "manual", "source": "manual", "verified": True,
+            "subtopic": "manual", "source": source, "verified": verified,
         })
         existing.add(w.lower())
 
