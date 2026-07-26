@@ -3615,6 +3615,14 @@ def serve_frontend(path):
             return _apply_hashed_asset_cache_headers(response)
         if normalized_path == "index.html":
             return _apply_webapp_entry_cache_headers(response)
+        # The service-worker script and its runtime MUST never be HTTP-cached. If sw.js is
+        # served cacheable, the browser's periodic "is there a new worker?" check re-reads the
+        # STALE cached sw.js, sees identical bytes, and concludes "no update" — so a deployed
+        # build never reaches installed home-screen PWAs (they stay frozen for days, exactly the
+        # "nothing changed after deploy / clearing cache" symptom). no-store forces a real
+        # revalidation every time, so a fresh sw.js is fetched and the update actually fires.
+        if normalized_path in {"sw.js", "registerSW.js", "manifest.webmanifest"} or normalized_path.startswith("workbox-"):
+            return _apply_webapp_entry_cache_headers(response)
         return response
 
     # иначе отдаём index.html (SPA-логика)
