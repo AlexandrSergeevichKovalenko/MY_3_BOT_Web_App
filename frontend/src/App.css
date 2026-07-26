@@ -755,6 +755,32 @@ body {
   display: none !important;
 }
 
+/* Маленький лис (38px) рядом с вердиктом «Correct!/Incorrect» — эмоция без
+   потери места. По умолчанию скрыт; показывается только в тренировке. Строка
+   «иконка + текст» центрируется, текст выравнивается влево и не переносится. */
+.quiz-result-fox { display: none; }
+.webapp-page.is-flashcard-study .quiz-result {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: left;
+}
+.webapp-page.is-flashcard-study .quiz-result-fox {
+  display: block;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  border-radius: 50%;
+}
+.webapp-page.is-flashcard-study .quiz-result-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 /* Статусные сообщения тренировки (загрузка/пусто/ошибка) не липнут к
    скруглённому левому краю панели — «Загружаем карточки…» обрезалось буквой «З». */
 .webapp-page.is-flashcard-study .webapp-muted,

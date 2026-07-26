@@ -39867,8 +39867,18 @@ function AppInner() {
                                       {isAnswered && (
                                         <>
                                           <div className={`quiz-result ${isCorrectAnswer ? 'is-correct' : 'is-wrong'}`}>
-                                            <div className="quiz-result-title">{isCorrectAnswer ? 'Correct!' : 'Incorrect'}</div>
-                                            <div className="quiz-result-subtitle">{isCorrectAnswer ? 'Great job - keep going' : 'Review and try again'}</div>
+                                            {/* Маленький лис рядом с вердиктом — эмоция без потери места
+                                                (полноразмерный маскот убран, чтобы «Continue» влезал). */}
+                                            <img
+                                              src={isCorrectAnswer ? heroMascotSrc : heroCrySrc}
+                                              alt=""
+                                              aria-hidden="true"
+                                              className="quiz-result-fox"
+                                            />
+                                            <div className="quiz-result-copy">
+                                              <div className="quiz-result-title">{isCorrectAnswer ? 'Correct!' : 'Incorrect'}</div>
+                                              <div className="quiz-result-subtitle">{isCorrectAnswer ? 'Great job - keep going' : 'Review and try again'}</div>
+                                            </div>
                                           </div>
                                           {supplementalMeaningRows.length > 0 && (
                                             <div className="flashcard-meaning-list">
