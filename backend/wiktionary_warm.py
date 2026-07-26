@@ -94,8 +94,9 @@ def _real_words() -> set[str]:
 def build_candidates(limit: int) -> list[str]:
     """Настоящие слова, о которых мы ещё НЕ спрашивали Wiktionary.
 
-    Сначала слова банка (их подтверждение убирает ручной разбор напрямую), затем головы
-    композитов — но только те, что сами есть в нашем словаре как отдельные слова.
+    Сначала ГОЛОВЫ композитов (частотные слова, страница у них почти всегда есть, и одна
+    голова закрывает правилом композита все слова банка с таким окончанием), затем сами
+    слова банка. Головы берём только те, что сами встречаются как отдельные слова.
     """
     from backend.database import get_db_connection_context
     with get_db_connection_context() as conn:
@@ -109,15 +110,11 @@ def build_candidates(limit: int) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
 
-    for w in bank:                       # приоритет: сами слова банка
-        low = w.lower()
-        if low not in cached and low not in seen:
-            out.append(w)
-            seen.add(low)
-            if len(out) >= limit:
-                return out
-
-    for w in bank:                       # затем головы, но ТОЛЬКО настоящие слова
+    # СНАЧАЛА головы композитов. Отдача несопоставима: голова — обычное частотное слово
+    # («Kurs», «Beet», «Strauch»), страница в Wiktionary у неё почти всегда есть. И одна
+    # такая голова закрывает правилом композита ВСЕ слова банка, которые ей кончаются.
+    # Замер: 90 слов-композитов дали 1 род на 90 запросов — вот почему порядок именно такой.
+    for w in bank:
         low = w.lower()
         for cut in range(3, len(low) - 3):
             tail = low[cut:]
@@ -128,6 +125,16 @@ def build_candidates(limit: int) -> list[str]:
                 seen.add(tail)
                 if len(out) >= limit:
                     return out
+
+    # Затем сами слова банка: у большинства своей страницы нет (это композиты), но
+    # подтверждённые снимаются с ручного разбора напрямую.
+    for w in bank:
+        low = w.lower()
+        if low not in cached and low not in seen:
+            out.append(w)
+            seen.add(low)
+            if len(out) >= limit:
+                return out
     return out
 
 
@@ -253,11 +260,13 @@ def build_warm_report_text(*, target_day: date | None = None) -> str:
     dur = sum(float(r[8] or 0) for r in runs)
     left = runs[-1][11]
 
+    # Порядок важен: «нечего спрашивать» — только если ВСЕ прогоны за день были такими.
+    # Иначе один пустой прогон затирал вердикт настоящего, и отчёт врал про успех.
     if bad and "rate_limited" in statuses:
         verdict = "⚠️ Прервались: Wiktionary попросил сбавить темп. Остаток спросим следующей ночью."
     elif "partial" in statuses:
         verdict = "⚠️ Прошло частично — часть ответов не записалась, подробности ниже."
-    elif "nothing_to_do" in statuses:
+    elif statuses == {"nothing_to_do"}:
         verdict = "✅ Спрашивать было нечего: все настоящие слова уже в справочнике."
     else:
         verdict = "✅ Прошло штатно."
