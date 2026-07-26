@@ -91,6 +91,8 @@ from backend.background_jobs import (  # noqa: E402
     run_admin_economics_report_actor,
     run_cap_health_report_actor,
     run_article_review_dm_actor,
+    run_wiktionary_warm_actor,
+    run_wiktionary_warm_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
     run_tts_prewarm_quota_control_actor,
@@ -390,6 +392,14 @@ def _dispatch_admin_economics_report() -> None:
 
 def _dispatch_cap_health_report() -> None:
     run_cap_health_report_actor.send()
+
+
+def _dispatch_wiktionary_warm() -> None:
+    run_wiktionary_warm_actor.send()
+
+
+def _dispatch_wiktionary_warm_report() -> None:
+    run_wiktionary_warm_report_actor.send()
 
 
 def _dispatch_article_review_dm() -> None:
@@ -712,6 +722,35 @@ def _build_scheduler():
             hour=_int_env("CAP_HEALTH_REPORT_HOUR", 9),
             minute=_int_env("CAP_HEALTH_REPORT_MINUTE", 15),
             timezone=_tz(os.getenv("CAP_HEALTH_REPORT_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
+    # -- Ночной прогрев справочника родов. Небольшая порция настоящих слов (200/ночь):
+    # разовый прогон на 3000 упёрся в HTTP 429 и дал 8% полезного, поэтому темп важнее
+    # объёма. Ставим 03:40 — после ночного добора словаря в 03:10, чтобы не толкаться.
+    if _enabled("WIKTIONARY_WARM_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_wiktionary_warm,
+            "cron",
+            hour=_int_env("WIKTIONARY_WARM_HOUR", 3),
+            minute=_int_env("WIKTIONARY_WARM_MINUTE", 40),
+            timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Утренний отчёт по запросам к Wiktionary: сколько спросили, сколько ответов,
+    # что не нашлось, упало или притормозили. 07:15 — до начала рабочего дня.
+    if _enabled("WIKTIONARY_WARM_REPORT_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_wiktionary_warm_report,
+            "cron",
+            hour=_int_env("WIKTIONARY_WARM_REPORT_HOUR", 7),
+            minute=_int_env("WIKTIONARY_WARM_REPORT_MINUTE", 15),
+            timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,

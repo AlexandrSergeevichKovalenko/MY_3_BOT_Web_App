@@ -2038,6 +2038,20 @@ def run_cap_health_report_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_wiktionary_warm_actor() -> None:
+    """Ночной прогрев справочника родов: небольшая порция настоящих слов."""
+    from backend.wiktionary_warm import run_warm
+    run_warm()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_wiktionary_warm_report_actor() -> None:
+    """Утренний отчёт: что вчера спросили у Wiktionary и чем это кончилось."""
+    from backend.wiktionary_warm import send_warm_report
+    send_warm_report()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_article_review_dm_actor() -> None:
     """Личка со словами, чей род не подтвердил ни Wiktionary, ни правило композита."""
     from backend.article_review import send_article_review_dm

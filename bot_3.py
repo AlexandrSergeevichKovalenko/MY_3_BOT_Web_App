@@ -11803,6 +11803,34 @@ async def handle_appcap_callback(update: Update, context: CallbackContext) -> No
         pass
 
 
+async def handle_wiktionary_warm_command(update: Update, context: CallbackContext) -> None:
+    """/wiktionary_warm [N] — прогреть справочник родов сейчас и показать отчёт.
+
+    Без аргумента шлёт отчёт за вчера (тот же, что приходит в 07:15). С числом —
+    сначала спрашивает Wiktionary про N слов, потом отчитывается за сегодня."""
+    user = update.effective_user
+    if not user or not _is_admin_user(user.id):
+        return
+    args = (context.args or [])
+    limit = int(args[0]) if args and str(args[0]).isdigit() else 0
+    from datetime import datetime, timezone
+    try:
+        from backend.wiktionary_warm import run_warm, build_warm_report_text
+        if limit:
+            await update.message.reply_text(f"Спрашиваю Wiktionary про {limit} слов…")
+            res = await asyncio.to_thread(run_warm, limit=limit)
+            day = datetime.now(timezone.utc).date()
+            text = await asyncio.to_thread(build_warm_report_text, target_day=day)
+            if res.get("status") == "rate_limited":
+                text += "\n\n<i>Wiktionary попросил сбавить темп — остаток спросим ночью.</i>"
+        else:
+            text = await asyncio.to_thread(build_warm_report_text)
+        await update.message.reply_text(text, parse_mode="HTML")
+    except Exception:
+        logging.warning("wiktionary_warm command failed", exc_info=True)
+        await update.message.reply_text("Не получилось. Подробности в логах.")
+
+
 async def handle_artikel_review_command(update: Update, context: CallbackContext) -> None:
     """/artikel_review — позвать разбор артиклей сейчас, не дожидаясь расписания."""
     user = update.effective_user
@@ -39761,6 +39789,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
     application.add_handler(CallbackQueryHandler(handle_article_review_callback, pattern=r"^artrev:"))
     application.add_handler(CommandHandler("artikel_review", handle_artikel_review_command))
+    application.add_handler(CommandHandler("wiktionary_warm", handle_wiktionary_warm_command))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
     application.add_handler(CommandHandler("r2_usage", r2_usage_command))
     application.add_handler(CommandHandler("pool_r2_orphans", pool_r2_orphans_command))
