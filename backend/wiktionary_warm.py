@@ -319,7 +319,14 @@ def build_warm_report_text(*, target_day: date | None = None) -> str:
     statuses = {str(r[6]) for r in runs}
     errors = [str(r[7]) for r in runs if str(r[7] or "").strip()]
     dur = sum(float(r[8] or 0) for r in runs)
-    left = runs[-1][11]
+    # Считаем очередь ЖИВЬЁМ, а не из журнала: запись хранит цифру на момент прогона,
+    # и после разовой догоняющей сверки отчёт бодро сообщал «осталось 2509», когда
+    # очередь была уже пуста. Отчёт, который врёт в цифре, хуже отсутствующего.
+    try:
+        left = len(build_candidates(1000000))
+    except Exception:
+        logging.warning("warm report: не смог пересчитать очередь", exc_info=True)
+        left = runs[-1][11]
 
     # Порядок важен: «нечего спрашивать» — только если ВСЕ прогоны за день были такими.
     # Иначе один пустой прогон затирал вердикт настоящего, и отчёт врал про успех.
