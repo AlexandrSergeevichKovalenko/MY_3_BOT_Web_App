@@ -82,6 +82,21 @@ TWO_GENDER_NOUNS: list[dict] = [
     {"word": "Mangel", "theme_key": "haus_wohnen", "senses": [
         {"article": "der", "meaning_ru": "недостаток, нехватка"},
         {"article": "die", "meaning_ru": "каток для белья"}]},
+    # Найдены сверкой банка с Wiktionary 26.07.2026: лежали в банке одним артиклем,
+    # хотя род зависит от значения. Не убираем из игры — наоборот, это ценная
+    # тренировка: показываем русское значение, и человек отвечает осознанно.
+    {"word": "Korn", "theme_key": "essen_trinken", "senses": [
+        {"article": "das", "meaning_ru": "зерно; зёрнышко"},
+        {"article": "der", "meaning_ru": "хлебная водка (шнапс)"}]},
+    {"word": "Service", "theme_key": "essen_trinken", "senses": [
+        {"article": "der", "meaning_ru": "обслуживание, сервис"},
+        {"article": "das", "meaning_ru": "сервиз (посуда)"}]},
+    {"word": "Hasel", "theme_key": "natur_landschaft", "senses": [
+        {"article": "die", "meaning_ru": "лещина, орешник"},
+        {"article": "der", "meaning_ru": "елец (рыба)"}]},
+    {"word": "Pik", "theme_key": "kunst_kultur", "senses": [
+        {"article": "das", "meaning_ru": "пики (карточная масть)"},
+        {"article": "der", "meaning_ru": "зуб на кого-то, затаённая обида"}]},
 ]
 
 

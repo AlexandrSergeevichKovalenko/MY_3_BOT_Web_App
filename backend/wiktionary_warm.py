@@ -221,6 +221,36 @@ def run_warm(*, limit: int | None = None) -> dict[str, Any]:
     return row
 
 
+def bank_vs_wiktionary_mismatches() -> list[tuple[str, str, str]]:
+    """Слова банка, чей артикль РАСХОДИТСЯ с прямым ответом Wiktionary.
+
+    Это единственная проверка, которая ловит ошибку в уже показываемом слове — не в
+    новом на входе, а в том, что человек видит прямо сейчас. Двухродовые пропускаем:
+    у них артикль зависит от значения, и расхождение там не ошибка.
+    Возвращает [(слово, артикль_в_банке, артикль_по_Wiktionary)].
+    """
+    from backend.article_authority import _load
+    from backend.database import get_db_connection_context
+    genus, ambiguous = _load()
+    out: list[tuple[str, str, str]] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT word, article FROM bt_3_article_sprint_nouns "
+                "WHERE NOT retired AND COALESCE(article,'') <> ''"
+            )
+            for word, article in cur.fetchall() or []:
+                w = str(word).strip()
+                art = str(article or "").strip().lower()
+                low = w.lower()
+                if low in ambiguous:
+                    continue
+                ref = genus.get(low)
+                if ref and ref != art:
+                    out.append((w, art, ref))
+    return sorted(out)
+
+
 def build_warm_report_text(*, target_day: date | None = None) -> str:
     """Утренний отчёт: что вчера спросили у Wiktionary и чем это кончилось."""
     from backend.database import get_db_connection_context
@@ -243,11 +273,26 @@ def build_warm_report_text(*, target_day: date | None = None) -> str:
             cur.execute("SELECT COUNT(*) FROM bt_3_article_sprint_nouns WHERE NOT verified AND NOT retired")
             waiting = int((cur.fetchone() or [0])[0] or 0)
 
+    # Сверка уже показываемых слов с эталоном — то, ради чего отчёт вообще нужен:
+    # новое расхождение всплывает на следующее утро, а не через месяц из скриншота.
+    try:
+        mism = bank_vs_wiktionary_mismatches()
+    except Exception:
+        logging.warning("warm report: сверка с Wiktionary не удалась", exc_info=True)
+        mism = []
+    if mism:
+        preview = ", ".join(f"{w} ({a}→{r})" for w, a, r in mism[:5])
+        more = f" … и ещё {len(mism) - 5}" if len(mism) > 5 else ""
+        mism_line = (f"\n⚠️ <b>Расхождений с Wiktionary: {len(mism)}</b>\n<i>{preview}{more}</i>")
+    else:
+        mism_line = "\n✅ Расхождений с Wiktionary нет — все показываемые артикли сходятся."
+
     head = f"📚 <b>Справочник родов — {day.strftime('%d.%m.%Y')}</b>"
     if not runs:
         return (f"{head}\n\nНочной прогрев не запускался: строк за этот день нет.\n"
                 f"В справочнике сейчас <b>{decided}</b> слов с однозначным родом.\n"
-                f"Ждут ручного подтверждения: <b>{waiting}</b>.")
+                f"Ждут ручного подтверждения: <b>{waiting}</b>."
+                f"\n{mism_line}")
 
     req = sum(r[0] for r in runs)
     res = sum(r[1] for r in runs)
@@ -280,6 +325,7 @@ def build_warm_report_text(*, target_day: date | None = None) -> str:
         "",
         f"В справочнике теперь <b>{decided}</b> слов с однозначным родом.",
         f"Осталось спросить: <b>{left}</b> · ждут твоего подтверждения: <b>{waiting}</b>",
+        mism_line,
         "", verdict,
     ]
     if errors:
