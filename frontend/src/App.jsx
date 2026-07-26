@@ -39843,8 +39843,8 @@ function AppInner() {
                                       <FitText
                                         className={`quiz-study-question ${(isSentenceTrainingMode || isSentenceGapQuiz) ? 'is-sentence-gap' : ''}`}
                                         refitKey={`${questionWord}|${isAnswered}`}
-                                        min={18}
-                                        max={39}
+                                        min={16}
+                                        max={(isSentenceTrainingMode || isSentenceGapQuiz) ? (isAnswered ? 25 : 30) : 39}
                                       >
                                         {(isSentenceTrainingMode || isSentenceGapQuiz) && isAnswered
                                           ? renderSentenceWithGapAnswer(
@@ -39859,13 +39859,10 @@ function AppInner() {
                                         <div className="quiz-study-translation">{sentenceTranslation}</div>
                                       )}
 
-                                      <div className={`quiz-mascot-circle ${isAnswered ? (isCorrectAnswer ? 'is-correct' : 'is-wrong') : ''}`}>
-                                        <img
-                                          src={quizMascotSrc}
-                                          alt="Deutsch mascot"
-                                          className="quiz-mascot-image"
-                                        />
-                                      </div>
+                                      {/* Маскот-лис убран из тренировок Quiz/Sätze: он съедал ~200px
+                                          по вертикали и «Continue» уезжал за экран на длинных
+                                          предложениях. Остаются Correct/Incorrect + варианты + кнопка —
+                                          всё помещается без скролла. (FSRS не затронут.) */}
 
                                       {isAnswered && (
                                         <>

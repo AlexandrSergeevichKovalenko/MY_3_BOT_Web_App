@@ -755,6 +755,14 @@ body {
   display: none !important;
 }
 
+/* Статусные сообщения тренировки (загрузка/пусто/ошибка) не липнут к
+   скруглённому левому краю панели — «Загружаем карточки…» обрезалось буквой «З». */
+.webapp-page.is-flashcard-study .webapp-muted,
+.webapp-page.is-flashcard-study .webapp-error {
+  padding-left: 18px;
+  padding-right: 18px;
+}
+
 /* Blöcke: «Подсказка» и «Проверить» одинаковой ширины и нормальной (низкой)
    высоты — были аномально большими (min-height 54px / font 31px). */
 .webapp-page.is-flashcard-study .blocks-footer .primary-button,
