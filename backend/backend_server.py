@@ -1095,7 +1095,9 @@ SENTENCE_TRAINING_GPT_SEED_TARGET = max(20, int((os.getenv("SENTENCE_TRAINING_GP
 SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST = max(1, int((os.getenv("SENTENCE_TRAINING_GPT_SEED_MAX_GENERATE_PER_REQUEST") or "8").strip()))
 SENTENCE_TRAINING_LOOKUP_LIMIT = max(100, int((os.getenv("SENTENCE_TRAINING_LOOKUP_LIMIT") or "600").strip()))
 SENTENCE_TRAINING_LLM_MAX_PER_REQUEST = max(0, int((os.getenv("SENTENCE_TRAINING_LLM_MAX_PER_REQUEST") or "10").strip()))
-SENTENCE_GAP_CACHE_VERSION = 3
+# v4: жёсткий страж качества пропущенного слова (не филлер, а ключевая лексика) —
+# bump инвалидирует ВСЕ старые кеши, они перегенерятся с новым стражем для всех.
+SENTENCE_GAP_CACHE_VERSION = 4
 SENTENCE_PREWARM_ENABLED = str(os.getenv("SENTENCE_PREWARM_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 SENTENCE_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("SENTENCE_PREWARM_INTERVAL_MINUTES") or "60").strip()))
 SENTENCE_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("SENTENCE_PREWARM_LOOKBACK_HOURS") or "168").strip())))
@@ -15511,9 +15513,18 @@ HARD RULES:
    Priority 3: separable verb anchor.
    Priority 4: core meaning noun.
    Priority 5: object pronoun that trains case understanding (mich, dich, dir, ihm, ihn, etc.).
-3) Avoid trivial/weak targets unless no better candidate exists in the sentence.
-   Almost never remove: haben/sein and their forms, etwas, sehr, auch, schon, nur, doch, wirklich, leicht,
-   weak filler adverbs, and weak function words.
+3) HARD: correct_word MUST be a KEY content word that carries the sentence meaning —
+   the word WITHOUT WHICH THE SENTENCE CANNOT BE UNDERSTOOD. This is a vocabulary
+   lesson: teach the essential word, never a word the reader could drop without
+   changing the meaning.
+   NEVER choose as correct_word (reject and pick the main verb/noun instead):
+   sehr, bitte, auch, schon, nur, doch, wirklich, etwas, mal, eben, halt, ja, nein,
+   denn, noch, immer, wieder, hier, da, dort, dann, so, gut, gern(e), leicht, bald,
+   jetzt, heute, vielleicht, ganz, ziemlich, fast, kaum, sogar, eigentlich, natürlich,
+   leider, oft, einfach, also, zwar, articles (der/die/das/ein/…), basic subject
+   pronouns (ich/du/er/es/wir/ihr/man), coordinating conjunctions (und/oder/aber),
+   and haben/sein and their forms. If the ONLY removable word would be such a filler,
+   choose the main lexical verb or the core noun of the sentence instead.
 4) Build sentence_with_gap by replacing this exact contiguous element with exactly "___" (once).
 5) The removed element is correct_word.
 6) correct_word and all options MUST be German only (Latin letters incl. ÄÖÜäöüß, spaces, hyphen). No Cyrillic.
@@ -15583,6 +15594,42 @@ _AUX_SEIN_FORMS = {
     "gewesen", "seiend",
 }
 _BLOCKED_AUX_VERB_FORMS = _AUX_HABEN_FORMS | _AUX_SEIN_FORMS
+
+# Слова, которые НЕЛЬЗЯ пропускать в «Satz Ergänzen»: это не ключевая лексика, а
+# филлеры/частицы/слабые наречия/артикли/базовые местоимения и союзы. Убери такое
+# из предложения — смысл не изменится, учить тут нечего («sehr», «bitte», «auch»…).
+# Цель тренировки — основополагающее смысловое слово (глагол/существительное/
+# смысловой предлог), без которого предложение не понять. Объектные местоимения
+# (mich/dich/dir/ihm…) НЕ включены — они тренируют падеж и допустимы (Priority 5).
+_TRIVIAL_GAP_WORDS = {
+    # частицы / филлеры / слабые наречия
+    "sehr", "bitte", "auch", "schon", "nur", "doch", "wirklich", "etwas", "mal",
+    "eben", "halt", "ja", "nein", "denn", "noch", "immer", "wieder", "hier", "da",
+    "dort", "dann", "so", "gut", "gern", "gerne", "leicht", "bald", "jetzt",
+    "heute", "morgen", "gestern", "vielleicht", "ganz", "ziemlich", "fast",
+    "kaum", "sogar", "überhaupt", "ueberhaupt", "eigentlich", "natürlich",
+    "natuerlich", "leider", "oft", "manchmal", "nie", "gerade", "wohl", "echt",
+    "total", "voll", "irgendwie", "sowieso", "trotzdem", "dennoch", "außerdem",
+    "ausserdem", "zwar", "also", "nämlich", "naemlich", "quasi", "praktisch",
+    "einfach", "eh", "ohnehin", "mehr", "weniger", "wenig", "viel", "hin", "her",
+    # артикли
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+    "einer", "eines",
+    # базовые (подлежащные) местоимения
+    "ich", "du", "er", "es", "wir", "ihr", "man", "mein", "dein", "sein",
+    "unser", "euer",
+    # координирующие союзы
+    "und", "oder", "aber", "sondern", "sowie",
+}
+
+
+def _is_trivial_gap_word(value: str | None) -> bool:
+    """True, если ВСЕ токены пропущенного слова — тривиальные (филлер/служебное).
+    Тогда задание бессмысленно как урок лексики и должно быть отклонено."""
+    tokens = re.findall(r"[A-Za-zÄÖÜäöüß]+", _normalize_space(value).lower())
+    if not tokens:
+        return True
+    return all(tok in _TRIVIAL_GAP_WORDS for tok in tokens)
 
 
 def _normalize_comparable_dictionary_text(value: str | None) -> str:
@@ -15804,6 +15851,11 @@ def _validate_sentence_context_quiz(item: dict) -> dict:
         focus_type = "verb"
     if focus_type == "verb" and _contains_blocked_auxiliary_form(correct_word):
         raise ValueError("correct_word must not be a haben/sein auxiliary form in verb focus")
+    # ХАРД-СТРАЖ качества: пропускаем только КЛЮЧЕВОЕ смысловое слово, не филлер.
+    # «sehr», «bitte», «auch», артикли, базовые местоимения/союзы — отклоняем, чтобы
+    # задание регенерировалось (или пересобралось из ключевого слова в fallback).
+    if _is_trivial_gap_word(correct_word):
+        raise ValueError("correct_word is a trivial filler/function word, not a key content word")
 
     left, right = sentence_with_gap.split("___", 1)
     reconstructed = _normalize_space(f"{left}{correct_word}{right}")
@@ -15875,16 +15927,32 @@ def _build_fallback_sentence_context_quiz(german_sentence: str, translation_ru: 
     sentence = _normalize_space(german_sentence)
     translation = _normalize_space(translation_ru)
     words = re.findall(r"[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?", sentence)
-    stop = {"und", "oder", "aber", "ich", "du", "er", "sie", "wir", "ihr", "sie", "der", "die", "das", "ein", "eine"}
-    candidates = [
-        w for w in words
-        if len(w) >= 4
-        and w.lower() not in stop
-        and not _contains_blocked_auxiliary_form(w)
-    ]
-    if not candidates:
-        candidates = [w for w in words if not _contains_blocked_auxiliary_form(w)] or words
-    correct_word = candidates[0] if candidates else "Wort"
+
+    # Выбираем КЛЮЧЕВОЕ смысловое слово, а не первое подходящее: существительные
+    # (с заглавной и НЕ в начале предложения — там заглавная не значит существительное)
+    # и глаголы получают приоритет; филлеры/служебные/вспомогательные исключены.
+    def _key_score(word: str, idx: int) -> int:
+        lw = word.lower()
+        if len(word) < 4 or lw in _TRIVIAL_GAP_WORDS or _contains_blocked_auxiliary_form(word):
+            return -1
+        score = len(word)                       # длиннее → обычно содержательнее
+        if word[:1].isupper() and idx > 0:      # существительное (не начало предложения)
+            score += 12
+        if lw.endswith(("en", "ern", "eln")):   # вероятный глагол/инфинитив
+            score += 6
+        return score
+
+    scored = sorted(
+        ((_key_score(w, i), -i, w) for i, w in enumerate(words)),
+        reverse=True,
+    )
+    correct_word = next((w for s, _, w in scored if s > 0), None)
+    if not correct_word:
+        # запасной путь: любое неслужебное неаукс-слово, иначе — первое слово
+        correct_word = next(
+            (w for w in words if w.lower() not in _TRIVIAL_GAP_WORDS and not _contains_blocked_auxiliary_form(w)),
+            words[0] if words else "Wort",
+        )
     sentence_with_gap = re.sub(rf"\b{re.escape(correct_word)}\b", "___", sentence, count=1)
     distractor_pool = [w for w in words if w.lower() != correct_word.lower() and len(w) >= 3]
     while len(distractor_pool) < 3:
@@ -15978,10 +16046,17 @@ def _build_sentence_quiz_from_dictionary_entry(
     payload = cached
     if payload is None:
         if allow_llm:
-            try:
-                payload = _request_sentence_context_quiz_via_openai(german_sentence, translation_ru)
-            except Exception as exc:
-                logging.warning("Sentence quiz generation failed for entry %s: %s", entry.get("id"), exc)
+            payload = None
+            # Две попытки у модели: если она пропустила филлер, страж отклонит и мы
+            # дадим ей второй шанс, прежде чем падать в простой (менее умный) fallback.
+            for _attempt in range(2):
+                try:
+                    payload = _request_sentence_context_quiz_via_openai(german_sentence, translation_ru)
+                    break
+                except Exception as exc:
+                    logging.warning("Sentence quiz generation attempt failed for entry %s: %s", entry.get("id"), exc)
+                    payload = None
+            if payload is None:
                 payload = _build_fallback_sentence_context_quiz(german_sentence, translation_ru)
         else:
             payload = _build_fallback_sentence_context_quiz(german_sentence, translation_ru)
