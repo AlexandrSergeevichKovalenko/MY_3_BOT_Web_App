@@ -2038,6 +2038,13 @@ def run_cap_health_report_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_monthly_budget_policy_actor() -> None:
+    """Добрать платные резервы сверх бесплатных квот (extra_limit_units живёт помесячно)."""
+    from backend.monthly_budget_policy import ensure_monthly_extra_limits
+    ensure_monthly_extra_limits()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_wiktionary_warm_actor() -> None:
     """Ночной прогрев справочника родов: небольшая порция настоящих слов."""
     from backend.wiktionary_warm import run_warm

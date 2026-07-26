@@ -92,6 +92,7 @@ from backend.background_jobs import (  # noqa: E402
     run_cap_health_report_actor,
     run_article_review_dm_actor,
     run_wiktionary_warm_actor,
+    run_monthly_budget_policy_actor,
     run_wiktionary_warm_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
@@ -392,6 +393,10 @@ def _dispatch_admin_economics_report() -> None:
 
 def _dispatch_cap_health_report() -> None:
     run_cap_health_report_actor.send()
+
+
+def _dispatch_monthly_budget_policy() -> None:
+    run_monthly_budget_policy_actor.send()
 
 
 def _dispatch_wiktionary_warm() -> None:
@@ -725,6 +730,23 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,
+        )
+
+    # -- Платные резервы сверх бесплатных квот. extra_limit_units в
+    # bt_3_provider_budget_controls живёт ПОМЕСЯЧНО и первого числа обнуляется вместе с
+    # новым месяцем. Договорённость была «$8 в месяц», а не «$8 в июле», поэтому резерв
+    # проставляется сам: ежедневно в 00:10, идемпотентно (добирает только если ниже).
+    # Один пропущенный месяц = озвучка молча выключится на 4-миллионном символе.
+    if _enabled("MONTHLY_BUDGET_POLICY_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_monthly_budget_policy,
+            "cron",
+            hour=_int_env("MONTHLY_BUDGET_POLICY_HOUR", 0),
+            minute=_int_env("MONTHLY_BUDGET_POLICY_MINUTE", 10),
+            timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
 
     # -- Ночной прогрев справочника родов. Небольшая порция настоящих слов (200/ночь):
@@ -1209,6 +1231,12 @@ def main() -> int:
 
     scheduler.start()
     logging.info("scheduler_service: APScheduler started with %d jobs", len(scheduler.get_jobs()))
+    # Резервы сверх бесплатных квот — сразу при старте, не дожидаясь ночного прогона:
+    # деплой первого числа иначе оставил бы месяц без резерва до 00:10 следующих суток.
+    try:
+        _dispatch_monthly_budget_policy()
+    except Exception:
+        logging.warning("scheduler_service: не смог применить месячные резервы при старте", exc_info=True)
     try:
         refill_tz_name = (os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ") or default_tz_name).strip() or default_tz_name
         today_local = datetime.now(_tz(refill_tz_name, default_tz_name)).date().isoformat()
