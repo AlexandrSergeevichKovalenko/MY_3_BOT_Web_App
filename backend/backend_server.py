@@ -216,10 +216,19 @@ from backend.voice_scenario_service import (
 )
 from livekit.api import AccessToken, VideoGrants
 from pathlib import Path
-try:
-    import stripe
-except Exception:  # pragma: no cover - optional in bot-only deploys
-    stripe = None
+# Stripe is RETIRED (payments went to Telegram Stars) and STRIPE_BILLING_ENABLED is off in
+# production. Every one of the 22 `stripe.` call sites below is already guarded by
+# `stripe is None`, so with the flag off none of them can run — yet importing the SDK at
+# module level still cost ~26 MB of RSS in EVERY process that touches this file: the bot,
+# BACKGROUND_JOBS and AUX_BACKGROUND_WORKER all pull backend_server for a single function
+# and inherit the whole import graph. Import it only when Stripe is actually switched on.
+# Flag is read from env here (the STRIPE_BILLING_ENABLED constant is defined further down).
+stripe = None
+if (os.getenv("STRIPE_BILLING_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on"):
+    try:
+        import stripe
+    except Exception:  # pragma: no cover - optional in bot-only deploys
+        stripe = None
 BASE_DIR = Path(__file__).resolve().parent.parent
 try:
     import spacy
@@ -255,13 +264,31 @@ try:
     from apscheduler.schedulers.background import BackgroundScheduler
 except Exception:  # pragma: no cover - optional in some deploys
     BackgroundScheduler = None
-try:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-except Exception:  # pragma: no cover - optional in some deploys
-    matplotlib = None
-    plt = None
+# matplotlib costs ~54 MB of RSS and is used by exactly five chart builders, none of which
+# sits on an interactive request path (certificates, analytics pictures, admin charts).
+# Loading it lazily costs the FIRST chart after a restart 0.33 s (measured in the prod
+# container); every later call is a sys.modules dict lookup — microseconds. In exchange the
+# bot and the queue workers, which never draw a chart, stop paying for it at all.
+# Kept behind a getter (not a bare import inside each function) so the "not installed"
+# fallback stays in ONE place and the five `if plt is None: return None` guards work as-is.
+_MATPLOTLIB_PLT = None
+_MATPLOTLIB_IMPORT_TRIED = False
+
+
+def _get_plt():
+    """matplotlib.pyplot on first use, or None if it is unavailable."""
+    global _MATPLOTLIB_PLT, _MATPLOTLIB_IMPORT_TRIED
+    if _MATPLOTLIB_IMPORT_TRIED:
+        return _MATPLOTLIB_PLT
+    _MATPLOTLIB_IMPORT_TRIED = True
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as _plt
+        _MATPLOTLIB_PLT = _plt
+    except Exception:  # pragma: no cover - optional in some deploys
+        _MATPLOTLIB_PLT = None
+    return _MATPLOTLIB_PLT
 
 
 def _extract_api_error_message(value: Any) -> str:
@@ -21071,6 +21098,7 @@ def _build_private_analytics_chart_png(
     end_date: date,
     username: str,
 ) -> bytes | None:
+    plt = _get_plt()
     if plt is None:
         return None
 
@@ -21189,6 +21217,7 @@ def _build_compare_leaderboard_chart_png(
     highlight_user_id: int | None = None,
     max_items: int = 8,
 ) -> bytes | None:
+    plt = _get_plt()
     if plt is None:
         return None
 
@@ -24641,6 +24670,7 @@ def _build_translation_focus_pool_admin_report_png(
     snapshot_date: date,
     tz_name: str,
 ) -> bytes | None:
+    plt = _get_plt()
     if plt is None or not rows:
         return None
     top_themes = _build_translation_focus_pool_report_themes(
@@ -57753,6 +57783,7 @@ def _build_plan_goals_chart_png(
     period_label: str,
     metrics: dict | None,
 ) -> bytes | None:
+    plt = _get_plt()
     if plt is None:
         return None
     metrics = metrics or {}
@@ -59933,6 +59964,7 @@ def _build_group_week_vs_avg_chart_png(
 ) -> bytes | None:
     """Co-op weekly bar chart: this week vs the group's 4-week average (+ record).
     Fuchs/Felix warm palette; the current week is the amber hero bar."""
+    plt = _get_plt()
     if plt is None:
         return None
     outer_bg = "#efe2cd"; inner_bg = "#f8f1e5"; grid_color = "#d9cabb"
