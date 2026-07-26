@@ -5758,8 +5758,15 @@ function AppInner() {
       window.location.pathname === '/webapp' ||
       window.location.pathname === '/webapp/review' ||
       window.location.pathname.startsWith('/webapp/t/'); // standalone home-screen icon launch
-    return Boolean(telegramApp?.initData || initData) || params.get('mode') === 'webapp' || isWebappPath;
-  }, [telegramApp, initData]);
+    // The installed standalone PWA IS the web app from the very FIRST paint. Recognise it by
+    // display-mode (appMode==='pwa') so we don't render the non-webapp chrome (home «Startseite»
+    // pill + old section layout) on a cold launch while the app-token→initData exchange is still
+    // in flight — which showed the OLD start screen until a manual refresh flipped it to the new one.
+    return appMode === 'pwa'
+      || Boolean(telegramApp?.initData || initData)
+      || params.get('mode') === 'webapp'
+      || isWebappPath;
+  }, [appMode, telegramApp, initData]);
   const billingReturnContext = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     const startParam = String(telegramApp?.initDataUnsafe?.start_param || '').trim().toLowerCase();
