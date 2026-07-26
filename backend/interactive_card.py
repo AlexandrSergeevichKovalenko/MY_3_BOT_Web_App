@@ -56,6 +56,46 @@ def _text_h(d, text, font):
     return bb[3] - bb[1], bb[1]
 
 
+def _wrap_lines(d, text, font, max_w):
+    """Greedy word-wrap: split into lines no wider than max_w (break at spaces)."""
+    words = str(text or "").split()
+    if not words:
+        return [""]
+    lines, cur = [], words[0]
+    for w in words[1:]:
+        trial = f"{cur} {w}"
+        if d.textlength(trial, font=font) <= max_w:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    lines.append(cur)
+    return lines
+
+
+def _fit_wrap(d, text, size, max_w, *, bold=True, min_size=40, max_lines=2):
+    """Largest font size (down to min_size) at which `text` fits in ≤max_lines
+    lines of width max_w. Wraps at spaces — never truncates with «…».
+    Returns (size, font, lines)."""
+    size = int(size)
+    while size > min_size:
+        f = _font(size, bold)
+        lines = _wrap_lines(d, text, f, max_w)
+        if len(lines) <= max_lines and all(d.textlength(ln, font=f) <= max_w for ln in lines):
+            return size, f, lines
+        size -= 2
+    f = _font(min_size, bold)
+    return min_size, f, _wrap_lines(d, text, f, max_w)[:max_lines]
+
+
+def _fit_font(d, text, size, max_w, *, bold=True, min_size=26):
+    """Largest single-line font (down to min_size) at which `text` fits max_w."""
+    size = int(size)
+    while size > min_size and d.textlength(str(text or ""), font=_font(size, bold)) > max_w:
+        size -= 2
+    return _font(size, bold)
+
+
 def _pill(d, cx, cy, text, font, *, bg, fg, pad_x=34, pad_y=18, radius=None):
     """A centered rounded pill with text. Returns its (left, top, right, bottom)."""
     tw = d.textlength(text, font=font)
@@ -80,13 +120,28 @@ def _header(base, d, *, badge, title, subtitle, accent):
     x0, y0 = W / 2 - w / 2, 150 - h / 2
     d.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=h / 2, outline=accent, width=4)
     d.text((W / 2 - tw / 2, 150 - h / 2 + pad_y - off), badge, font=f, fill=accent)
-    _ctext(d, W // 2, 232, _ltext_trunc(title, _font(86), d, W - 120), _font(86), GOLD)
+    # Заголовок: перенос по словам до 2 строк + подгонка шрифта. Никаких «…».
+    # («Работа над ошибками» → «Работа над» / «ошибками», а не «Работа над ошиб…».)
+    t_size, t_font, t_lines = _fit_wrap(d, title, 86, W - 120, bold=True, min_size=58, max_lines=2)
+    t_lh = t_size + 14
+    ty = 232 - (len(t_lines) - 1) * t_lh // 2
+    for ln in t_lines:
+        _ctext(d, W // 2, ty, ln, t_font, GOLD)
+        ty += t_lh
     if subtitle:
-        _ctext(d, W // 2, 352, _ltext_trunc(subtitle, _font(40, False), d, W - 160), _font(40, False), MUTED)
+        s_size, s_font, s_lines = _fit_wrap(d, subtitle, 40, W - 160, bold=False, min_size=28, max_lines=2)
+        sy = ty + 12
+        for ln in s_lines:
+            _ctext(d, W // 2, sy, ln, s_font, MUTED)
+            sy += s_size + 10
 
 
 def _footer_cta(d, text, accent):
-    _pill(d, W // 2, H - 120, text, _font(44), bg=accent, fg=INK, pad_x=56, pad_y=28)
+    # Ужимаем шрифт, чтобы вся фраза влезала в плашку с полями по краям экрана
+    # (было: длинный CTA вылезал за оба конца жёлтой плашки).
+    pad_x = 56
+    f = _fit_font(d, text, 44, W - 120 - pad_x * 2, bold=True, min_size=26)
+    _pill(d, W // 2, H - 120, text, f, bg=accent, fg=INK, pad_x=pad_x, pad_y=28)
 
 
 # ── Motifs ───────────────────────────────────────────────────────────────────
