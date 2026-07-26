@@ -30457,3 +30457,157 @@ html[data-scheme="light"] .story-modal-guess-answer,
     color: #b45f13 !important;
   }
 }
+
+/* ═══ Wortblöcke (Blocks) — ТЕЛЕФОН, премиум как остальные тренировки ═══
+   Было: тёмно-синяя коробка + тёмные плитки/слоты/кнопки. Стало: та же
+   бежевая карта-подложка; амбер-чип режима; слоты-мишени пунктиром/амбером;
+   плитки — тёплые (--t-bg-card-alt, как варианты Quiz) с глубиной; поляна —
+   мягкая тёплая зона; кнопки премиум (амбер/призрачная). Drag-логика и позиции
+   плиток (JS) НЕ тронуты — только визуал. Токены → работает в свет/тёмной теме.
+   FSRS/планшет не трогаем. */
+@media (max-width: 699.98px) {
+  /* Амбер-чип режима «Block Mode» */
+  .webapp-page.is-flashcard-study .blocks-session-topline > span:first-child {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #b45f13 !important;
+    background: rgba(214, 122, 36, 0.14);
+    padding: 4px 10px;
+    border-radius: 999px;
+  }
+  /* Карта-подложка */
+  .webapp-page.is-flashcard-study .flashcard-blocks .blocks-trainer {
+    background: linear-gradient(168deg, var(--t-bg-card-alt, #fff8ee), var(--t-bg-card, #f9f1e4)) !important;
+    border: 1px solid var(--t-border, #d2c2aa) !important;
+    border-radius: 24px !important;
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.6) inset,
+      0 26px 48px -26px rgba(105, 78, 47, 0.5),
+      0 8px 18px -14px rgba(105, 78, 47, 0.4) !important;
+    color: var(--t-text-primary, #1f1a14) !important;
+  }
+  /* Промпт (перевод, что собрать) — чернильный */
+  .webapp-page.is-flashcard-study .blocks-prompt {
+    color: var(--t-text-primary, #1f1a14) !important;
+  }
+  /* Таймер — амбер-чип (был огромный тёмный) */
+  .webapp-page.is-flashcard-study .blocks-timer {
+    min-width: 0 !important;
+    font-size: 15px !important;
+    font-weight: 800 !important;
+    padding: 5px 11px !important;
+    color: #b45f13 !important;
+    background: rgba(214, 122, 36, 0.14) !important;
+    border: 0 !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-timer.is-danger {
+    color: #c0392b !important;
+    background: rgba(200, 60, 40, 0.14) !important;
+  }
+  /* Зона мишеней */
+  .webapp-page.is-flashcard-study .blocks-target {
+    background: rgba(214, 122, 36, 0.05) !important;
+    border: 1px solid var(--t-border-subtle, #e2d5bf) !important;
+    box-shadow: none !important;
+  }
+  /* Пустой слот — пунктирная мишень */
+  .webapp-page.is-flashcard-study .blocks-slot {
+    border: 2px dashed rgba(168, 92, 17, 0.34) !important;
+    background: rgba(214, 122, 36, 0.05) !important;
+    color: var(--t-text-muted, #5a4a39) !important;
+    border-radius: 12px !important;
+  }
+  /* Заполненный слот — тёплая плитка с глубиной */
+  .webapp-page.is-flashcard-study .blocks-slot.is-filled {
+    border: 1px solid var(--t-border-subtle, #e2d5bf) !important;
+    background: var(--t-bg-card-alt, #fff8ee) !important;
+    color: var(--t-text-primary, #1f1a14) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7), 0 8px 16px -10px rgba(74, 54, 20, 0.55) !important;
+    text-shadow: none !important;
+  }
+  /* Активный / целевой слот — амбер */
+  .webapp-page.is-flashcard-study .blocks-slot.is-selected,
+  .webapp-page.is-flashcard-study .blocks-slot.is-hovered {
+    border: 2px solid #e0a44a !important;
+    background: rgba(214, 122, 36, 0.14) !important;
+    box-shadow: 0 0 0 3px rgba(214, 122, 36, 0.14) !important;
+  }
+  /* Поляна — мягкая тёплая зона */
+  .webapp-page.is-flashcard-study .blocks-playground {
+    background: rgba(120, 96, 58, 0.05) !important;
+    border: 1px dashed rgba(120, 96, 58, 0.18) !important;
+    box-shadow: none !important;
+  }
+  /* Плитки — тёплые с глубиной (как варианты Quiz), единый набор */
+  .webapp-page.is-flashcard-study .blocks-tile,
+  .webapp-page.is-flashcard-study .blocks-tile.color-0,
+  .webapp-page.is-flashcard-study .blocks-tile.color-1,
+  .webapp-page.is-flashcard-study .blocks-tile.color-2,
+  .webapp-page.is-flashcard-study .blocks-tile.color-3,
+  .webapp-page.is-flashcard-study .blocks-tile.color-4,
+  .webapp-page.is-flashcard-study .blocks-tile.color-5,
+  .webapp-page.is-flashcard-study .blocks-fly-token {
+    background: var(--t-bg-card-alt, #fff8ee) !important;
+    border: 1px solid var(--t-border-subtle, #e2d5bf) !important;
+    color: var(--t-text-primary, #1f1a14) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8), 0 10px 18px -10px rgba(74, 54, 20, 0.55) !important;
+    text-shadow: none !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-tile.is-dragging {
+    box-shadow: 0 14px 24px -10px rgba(74, 54, 20, 0.7) !important;
+    filter: none !important;
+  }
+  /* Футер и кнопки */
+  .webapp-page.is-flashcard-study .blocks-footer {
+    border-top: 1px solid var(--t-border-subtle, #e2d5bf) !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-footer .primary-button {
+    font-size: 16px !important;
+    color: #fff !important;
+    border: 0 !important;
+    background: linear-gradient(180deg, #e0a44a, #c26a17) !important;
+    box-shadow: 0 14px 26px -12px rgba(214, 122, 36, 0.7) !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-footer .secondary-button {
+    font-size: 16px !important;
+    color: var(--t-text-primary, #1f1a14) !important;
+    background: var(--t-bg-card-alt, #fff8ee) !important;
+    border: 1px solid var(--t-border-subtle, #e2d5bf) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7), 0 8px 16px -10px rgba(74, 54, 20, 0.5) !important;
+  }
+  /* Результат */
+  .webapp-page.is-flashcard-study .blocks-result.ok {
+    background: rgba(95, 154, 90, 0.12) !important;
+    border: 1px solid rgba(95, 154, 90, 0.3) !important;
+    color: var(--t-text-primary, #1f1a14) !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-result.bad {
+    background: rgba(180, 74, 53, 0.1) !important;
+    border: 1px solid rgba(180, 74, 53, 0.3) !important;
+    color: var(--t-text-primary, #1f1a14) !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-result.ok .blocks-result-badge {
+    background: rgba(95, 154, 90, 0.18) !important;
+    border-color: transparent !important;
+    color: #2f7d40 !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-result.bad .blocks-result-badge {
+    background: rgba(180, 74, 53, 0.16) !important;
+    border-color: transparent !important;
+    color: #b44a35 !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-result-value {
+    color: var(--t-text-primary, #1f1a14) !important;
+  }
+  /* Подписи в результате — читаемо на светло-зелёной/красной панели */
+  .webapp-page.is-flashcard-study .blocks-result-label,
+  .webapp-page.is-flashcard-study .blocks-result-meta,
+  .webapp-page.is-flashcard-study .blocks-result-meta-label {
+    color: var(--t-text-muted, #5a4a39) !important;
+  }
+  .webapp-page.is-flashcard-study .blocks-result-meta strong {
+    color: var(--t-text-primary, #1f1a14) !important;
+  }
+}
