@@ -115,7 +115,16 @@ def genus_for_titles(titles: list[str]) -> dict[str, str]:
     for i in range(0, len(missing), _BATCH):
         batch = missing[i:i + _BATCH]
         got = _api_fetch(batch)
-        # Any requested title the API didn't return (should be rare) → treat as '-'.
+        if not got:
+            # ВЕСЬ запрос не удался (сеть или HTTP 429) — ответа не было вовсе.
+            # Раньше здесь всё равно проставлялось '-' («страницы нет»), и один
+            # упор в лимит навсегда помечал сотни настоящих слов несуществующими:
+            # больше их никто не переспрашивал, а арбитр рода вечно отвечал «не знаю».
+            # Ничего не записываем и прекращаем проход — переспросим в следующий раз.
+            logging.warning("wiktionary genus: пачка не ответила (%d слов), "
+                            "прекращаем и НЕ помечаем их как отсутствующие", len(batch))
+            break
+        # Титул, которого нет в ответе на УСПЕШНЫЙ запрос, — действительно без страницы.
         for t in batch:
             if t not in got:
                 got[t] = "-"
