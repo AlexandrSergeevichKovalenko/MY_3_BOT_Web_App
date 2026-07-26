@@ -1,4 +1,4 @@
-"""Daily "Лимиты и средние" admin report — per-tier (Pro/Free) picture of PERSONAL
+"""Daily "Лимиты и средние" admin report — per-tier («Полный доступ»/Free) picture of PERSONAL
 daily cost vs the cost cap, so the owner sees the averages AND who is actually hitting
 the limit (to react, not go blind). Mirrors provider_cost_truth.py: build_* text +
 send_* DM with a run-guard against double-send.
@@ -105,7 +105,7 @@ def build_cap_health_text(*, target_day: date | None = None, tz_name: str | None
         resolve_entitlement,
         get_admin_telegram_ids,
         get_billing_plan,
-        _env_decimal,
+        _resolve_weekly_avg_cap_eur,
     )
     tz_name = tz_name or _tz_name()
     day = target_day or (datetime.now(timezone.utc).date() - timedelta(days=1))
@@ -118,8 +118,10 @@ def build_cap_health_text(*, target_day: date | None = None, tz_name: str | None
     free_plan = get_billing_plan("free") or {}
     pro_daily = float(pro_plan.get("daily_cost_cap_eur")) if pro_plan.get("daily_cost_cap_eur") is not None else None
     free_daily = float(free_plan.get("daily_cost_cap_eur")) if free_plan.get("daily_cost_cap_eur") is not None else None
-    _pa = _env_decimal("PRO_WEEKLY_AVG_COST_CAP_EUR", "0.30")
-    pro_avg_cap = float(_pa) if _pa is not None else None
+    # Pull the weekly-average cap from the SAME resolver the enforcement path uses, so the
+    # report can never drift from the real cap (it used to hardcode 0.30 while enforcement
+    # applied 0.12 → the report advertised a limit the system didn't actually use).
+    pro_avg_cap = _resolve_weekly_avg_cap_eur({"effective_mode": "pro"})
 
     buckets: dict[str, dict[str, list]] = {
         "pro": {"today": [], "avg7": [], "blocked": [], "near": []},
@@ -153,7 +155,7 @@ def build_cap_health_text(*, target_day: date | None = None, tz_name: str | None
         header,
         "   (личные затраты юзеров, пул исключён; админы не в счёт)",
         "",
-        f"🟣 PRO   cap {_f(pro_daily) if pro_daily else '—'}/день · {_f(pro_avg_cap) if pro_avg_cap else '—'}/ср.7д",
+        f"🟣 Полный доступ   cap {_f(pro_daily) if pro_daily else '—'}/день · {_f(pro_avg_cap) if pro_avg_cap else '—'}/ср.7д",
         _tier_stats(buckets["pro"]["today"], pro_daily, buckets["pro"]["avg7"], pro_avg_cap,
                     buckets["pro"]["blocked"], buckets["pro"]["near"]),
         "",
