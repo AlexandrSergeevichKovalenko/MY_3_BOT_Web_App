@@ -221,6 +221,22 @@ def run_warm(*, limit: int | None = None) -> dict[str, Any]:
     return row
 
 
+# Слова, где Wiktionary формально расходится с банком, но прав БАНК. Без этого списка
+# отчёт вечно показывал бы одни и те же шесть расхождений — а отчёт, который каждый день
+# кричит об одном и том же, перестают читать.
+_JUSTIFIED_MISMATCHES = {
+    # Wiktionary даёт лемму единственного числа, а учим мы форму множественного —
+    # именно в ней слово и живёт в речи.
+    "geschwister", "adoptivgeschwister", "pumps",
+    # Региональная норма: die SMS в Германии, das/der в Австрии и Швейцарии.
+    "sms",
+    # Wiktionary отвечает про женское имя Jasmin, а у нас растение — der Jasmin.
+    "jasmin",
+    # das Rom — город; der Rom — представитель народа рома. У нас город.
+    "rom",
+}
+
+
 def bank_vs_wiktionary_mismatches() -> list[tuple[str, str, str]]:
     """Слова банка, чей артикль РАСХОДИТСЯ с прямым ответом Wiktionary.
 
@@ -243,7 +259,7 @@ def bank_vs_wiktionary_mismatches() -> list[tuple[str, str, str]]:
                 w = str(word).strip()
                 art = str(article or "").strip().lower()
                 low = w.lower()
-                if low in ambiguous:
+                if low in ambiguous or low in _JUSTIFIED_MISMATCHES:
                     continue
                 ref = genus.get(low)
                 if ref and ref != art:
