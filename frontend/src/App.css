@@ -30349,8 +30349,12 @@ html[data-scheme="light"] .story-modal-guess-answer,
     background: rgba(255, 255, 255, 0.22);
     color: #fff;
   }
+  /* «Continue» — единственный, кто прижат к САМОМУ низу карты (margin-top:auto):
+     вопрос/варианты/вердикт остаются группой вверху, а кнопка уезжает в нижний
+     воздух под большой палец. */
   .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-actions {
-    margin-top: clamp(4px, 1vh, 10px);
+    margin-top: auto;
+    padding-top: clamp(10px, 2vh, 18px);
   }
 }
 
