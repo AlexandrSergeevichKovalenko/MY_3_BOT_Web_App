@@ -6069,8 +6069,6 @@ function AppInner() {
   const [worldNewsQuizIndex, setWorldNewsQuizIndex] = useState(0); // current quiz question
   const [worldNewsVideoEnded, setWorldNewsVideoEnded] = useState(false); // reveals the quiz CTA
   const [worldNewsShowOriginal, setWorldNewsShowOriginal] = useState(true); // DE subtitles toggle (news mode)
-  const [worldNewsRuLockedNotice, setWorldNewsRuLockedNotice] = useState(false); // free users: "RU sub = Pro" plaque (5s)
-  const worldNewsRuLockedTimerRef = useRef(null);
   const [youtubeError, setYoutubeError] = useState('');
   const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
   const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
@@ -22160,18 +22158,14 @@ function AppInner() {
     return String(pair.source_lang || languageProfile?.native_language || 'ru').toUpperCase();
   };
   // News mode «Русский» button. RU subtitles synced to the video are a Pro feature:
-  // free users see a soft 5-second plaque instead of the translation column, and keep
-  // watching with the German subtitles they already have.
+  // free users get the SAME shared top toast as every other locked surface (not a
+  // bespoke inline plaque), and keep watching with the German subtitles they have.
   const handleWorldNewsRuToggle = () => {
     if (isKnownFreePaidSurfaceMode) {
-      if (worldNewsRuLockedTimerRef.current) {
-        clearTimeout(worldNewsRuLockedTimerRef.current);
-      }
-      setWorldNewsRuLockedNotice(true);
-      worldNewsRuLockedTimerRef.current = setTimeout(() => {
-        setWorldNewsRuLockedNotice(false);
-        worldNewsRuLockedTimerRef.current = null;
-      }, 5000);
+      showAppToast(tr(
+        '🔒 Русские субтитры — в «Полном доступе». Немецкие остаются с тобой.',
+        '🔒 Russische Untertitel — mit vollem Zugang. Deutsche bleiben dir erhalten.',
+      ));
       return;
     }
     setYoutubeTranslationEnabled((v) => !v);
@@ -22199,11 +22193,6 @@ function AppInner() {
     setYoutubeOverlayEnabled(next && subtitlesVisible);
     setYoutubeSettingsOpen(false);
   };
-  useEffect(() => () => {
-    if (worldNewsRuLockedTimerRef.current) {
-      clearTimeout(worldNewsRuLockedTimerRef.current);
-    }
-  }, []);
   const movieLanguageOptions = useMemo(() => {
     const set = new Set();
     movies.forEach((item) => set.add(getMovieLanguageCode(item)));
@@ -31422,8 +31411,8 @@ function AppInner() {
           const data = JSON.parse(message);
           if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
             message = `${YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX}${tr(
-              'Субтитры для этого видео недоступны.\n\nВключите субтитры YouTube кнопкой CC или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
-              'Untertitel für dieses Video sind nicht verfügbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder wählen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Wörter zu speichern.'
+              'Субтитры для этого видео недоступны.\n\nВключите оригинальные субтитры YouTube или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
+              'Untertitel für dieses Video sind nicht verfügbar.\n\nAktivieren Sie die YouTube-Untertitel oder wählen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Wörter zu speichern.'
             )}`;
           } else {
             message = data.error || message;
@@ -31469,8 +31458,8 @@ function AppInner() {
           const data = JSON.parse(message);
           if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
             message = `${YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX}${tr(
-              'Субтитры для этого видео недоступны.\n\nВключите субтитры YouTube кнопкой CC или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
-              'Untertitel für dieses Video sind nicht verfügbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder wählen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Wörter zu speichern.'
+              'Субтитры для этого видео недоступны.\n\nВключите оригинальные субтитры YouTube или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
+              'Untertitel für dieses Video sind nicht verfügbar.\n\nAktivieren Sie die YouTube-Untertitel oder wählen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Wörter zu speichern.'
             )}`;
           } else {
             message = data.error || message;
@@ -36425,10 +36414,10 @@ function AppInner() {
                               <div className="yt-nosubs-card">
                                 <img className="yt-nosubs-fox" src={heroStickerSrc} alt="" aria-hidden="true" />
                                 <strong className="yt-nosubs-title">{tr('Субтитры недоступны', 'Untertitel nicht verfügbar')}</strong>
-                                <span className="yt-nosubs-copy">{tr('К этому видео у нас пока нет субтитров. Попробуй оригинальные субтитры YouTube (CC) или смени видео.', 'Für dieses Video haben wir noch keine Untertitel. Versuch die YouTube-Untertitel (CC) oder wähle ein anderes Video.')}</span>
+                                <span className="yt-nosubs-copy">{tr('К этому видео у нас пока нет субтитров. Попробуй оригинальные субтитры YouTube или смени видео.', 'Für dieses Video haben wir noch keine Untertitel. Versuch die YouTube-Untertitel oder wähle ein anderes Video.')}</span>
                                 <div className="yt-nosubs-actions">
                                   <button type="button" className={`yt-nosubs-btn is-primary ${youtubeNativeCcOn ? 'is-on' : ''}`} onClick={toggleYoutubeNativeCc}>
-                                    {youtubeNativeCcOn ? tr('CC включены', 'CC an') : tr('Попробовать CC', 'CC versuchen')}
+                                    {youtubeNativeCcOn ? tr('Субтитры YouTube включены', 'YouTube-Untertitel an') : tr('Субтитры YouTube', 'YouTube-Untertitel')}
                                   </button>
                                   <button type="button" className="yt-nosubs-btn" onClick={() => setYoutubeForceShowPanel(true)}>
                                     {tr('Сменить видео', 'Video wechseln')}
@@ -36760,7 +36749,7 @@ function AppInner() {
                                 className={`yt-panel-empty-btn is-primary ${youtubeNativeCcOn ? 'is-on' : ''}`}
                                 onClick={toggleYoutubeNativeCc}
                               >
-                                {youtubeNativeCcOn ? tr('CC включены', 'CC an') : tr('Попробовать CC', 'CC versuchen')}
+                                {youtubeNativeCcOn ? tr('Субтитры YouTube включены', 'YouTube-Untertitel an') : tr('Субтитры YouTube', 'YouTube-Untertitel')}
                               </button>
                               <button
                                 type="button"
@@ -36886,22 +36875,6 @@ function AppInner() {
                                     });
                                   })()}
                                 </div>
-                              </div>
-                            </div>
-                          )}
-                          {worldNewsRuLockedNotice && !youtubeTranslationEnabled && (
-                            <div className="youtube-subtitles-block youtube-subtitles-block-ru worldnews-ru-locked" role="status">
-                              <div className="worldnews-ru-locked-card">
-                                <span className="worldnews-ru-locked-icon" aria-hidden="true">🔒</span>
-                                <strong className="worldnews-ru-locked-title">
-                                  {tr('Синхронные русские субтитры — в «Полном доступе»', 'Synchrone russische Untertitel — nur mit vollem Zugang')}
-                                </strong>
-                                <span className="worldnews-ru-locked-text">
-                                  {tr(
-                                    'Немецкие субтитры остаются с вами — можно смотреть и нажимать на слова как обычно.',
-                                    'Die deutschen Untertitel bleiben — du kannst weiterschauen und Wörter wie gewohnt antippen.',
-                                  )}
-                                </span>
                               </div>
                             </div>
                           )}
