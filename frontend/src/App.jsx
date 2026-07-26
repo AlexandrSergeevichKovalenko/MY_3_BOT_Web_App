@@ -22176,27 +22176,33 @@ function AppInner() {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
     return String(pair.source_lang || languageProfile?.native_language || 'ru').toUpperCase();
   };
-  // News mode «Русский» button. RU subtitles synced to the video are a Pro feature:
-  // free users get the SAME shared top toast as every other locked surface (not a
-  // bespoke inline plaque), and keep watching with the German subtitles they have.
+  // Синхронные русские субтитры — фича «Полного доступа». Раньше свободным
+  // пользователям показывался ВЕРХНИЙ тост, который перекрывался шапкой Telegram
+  // и обрезался («залупа сверху»). Теперь — нормальная центральная модалка
+  // ProFeatureModal с CTA на оплату, как и все остальные paywall'ы в приложении.
+  // [[feedback_consumer_app_not_for_programmers]]
+  const openRuSubtitlesUpgradeModal = () => {
+    setProFeatureModal({
+      emoji: '🔒',
+      title: tr('Русские субтитры — в «Полном доступе»', 'Russische Untertitel — mit vollem Zugang'),
+      intro: tr(
+        'Синхронные русские субтитры к видео открываются в «Полном доступе». Немецкие остаются с тобой в любом случае.',
+        'Synchrone russische Untertitel zum Video gibt es im vollen Zugang. Die deutschen bleiben dir in jedem Fall erhalten.',
+      ),
+    });
+  };
+  // News mode «Русский» button. RU subtitles synced to the video are a Pro feature.
   const handleWorldNewsRuToggle = () => {
     if (isKnownFreePaidSurfaceMode) {
-      showAppToast(tr(
-        '🔒 Русские субтитры — в «Полном доступе». Немецкие остаются с тобой.',
-        '🔒 Russische Untertitel — mit vollem Zugang. Deutsche bleiben dir erhalten.',
-      ));
+      openRuSubtitlesUpgradeModal();
       return;
     }
     setYoutubeTranslationEnabled((v) => !v);
   };
   // Regular-catalog «RU» button — same rule as News: synced Russian subtitles are Pro.
-  // Free users keep the German subtitles and get a soft toast instead.
   const handleCatalogRuToggle = () => {
     if (isKnownFreePaidSurfaceMode) {
-      showAppToast(tr(
-        '🔒 Русские субтитры — в «Полном доступе». Немецкие остаются с тобой.',
-        '🔒 Russische Untertitel — mit vollem Zugang. Deutsche bleiben dir erhalten.',
-      ));
+      openRuSubtitlesUpgradeModal();
       return;
     }
     setYoutubeTranslationEnabled((v) => !v);
