@@ -108,6 +108,18 @@ def strong_gender(word: str) -> str | None:
     w = str(word or "").strip().lower()
     if len(w) < 4 or w in _AMBIGUOUS_NOUNS or w in _SUFFIX_EXCEPTIONS:
         return None
+    # 0) СПРАВОЧНИК: род самого слова из Wiktionary, иначе правило композита по всем
+    # 19k родов кэша. Раньше здесь работал только словарь голов из ~60 записей ниже —
+    # в нём нет ни Kurs, ни Beet, ни Strauch, поэтому в банк уехали «die Wechselkurs»,
+    # «der Rosenbeet», «die Haselnussstrauch». У Wechselkurs правильный род в кэше БЫЛ.
+    # Сети здесь нет: функция зовётся и на выдаче карточки (resolve_article).
+    try:
+        from backend.article_authority import authoritative_article
+        verdict, _source = authoritative_article(word, allow_network=False)
+        if verdict:
+            return verdict
+    except Exception:
+        logging.warning("strong_gender: справочник недоступен для %s", word, exc_info=True)
     # 1) compound head (longest matching head wins) — very reliable
     best = None
     for head, g in _HEAD_GENDER.items():
@@ -241,11 +253,37 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             if is_ambiguous_noun(w):
                 rejected += 1
                 continue
-            # Deterministic guard wins when a high-confidence rule applies (compound
-            # head / decisive suffix) — catches misses like "die Schädelbruch".
-            hint = strong_gender(w)
-            if hint:
-                art = hint
+            # СПРАВОЧНИК ГЛАВНЕЕ МОДЕЛИ. Сначала спрашиваем Wiktionary про само слово —
+            # здесь МОЖНО ходить в сеть (заливка идёт фоном, а ответ оседает в кэше и
+            # дальше достаётся бесплатно). Не знает — правило композита. Модель у нас
+            # уже один раз ошиблась на «die Wechselkurs», её слово тут не последнее.
+            source = "gpt"
+            try:
+                from backend.article_authority import authoritative_article
+                verdict, src = authoritative_article(w, allow_network=True)
+                if verdict:
+                    if verdict != art:
+                        logging.warning(
+                            "article intake: %s — модель дала «%s», справочник «%s» (%s), берём справочник",
+                            w, art, verdict, src)
+                    art = verdict
+                    source = src
+                else:
+                    # Рода не знает ни Wiktionary, ни правило композита. Спрашивать модель
+                    # бессмысленно — она и ошиблась. Кладём НЕПРОВЕРЕННЫМ: в игру такие
+                    # строки не попадают, но и слово не теряется, его видно на ревью.
+                    logging.warning("article intake: %s — род не подтверждён (%s), в игру не пускаем", w, src)
+                    rows.append({
+                        "word": w, "article": art,
+                        "meaning_ru": str(n.get("meaning_ru") or ""),
+                        "plural": str(n.get("plural") or ""),
+                        "difficulty": str(n.get("difficulty") or "B"),
+                        "subtopic": subtopic, "source": "gpt-unverified", "verified": False,
+                    })
+                    existing.add(w.lower())
+                    continue
+            except Exception:
+                logging.warning("article intake: справочник недоступен для %s", w, exc_info=True)
             if art not in ("der", "die", "das") or not w or w.lower() in existing:
                 rejected += 1
                 continue
@@ -254,7 +292,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 "meaning_ru": str(n.get("meaning_ru") or ""),
                 "plural": str(n.get("plural") or ""),
                 "difficulty": str(n.get("difficulty") or "B"),
-                "subtopic": subtopic, "source": "gpt", "verified": True,
+                "subtopic": subtopic, "source": source, "verified": True,
             })
             existing.add(w.lower())
 
