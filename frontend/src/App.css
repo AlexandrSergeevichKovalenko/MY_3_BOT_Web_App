@@ -30119,9 +30119,11 @@ html[data-scheme="light"] .story-modal-guess-answer,
   box-shadow: 0 24px 50px -26px rgba(10, 8, 30, 0.75) !important;
   display: flex !important;
   flex-direction: column !important;
-  justify-content: center !important;
+  /* space-evenly = адаптив по высоте: на большом экране контент распределяется
+     и использует место, на маленьком — упаковывается компактно. */
+  justify-content: space-evenly !important;
   align-items: stretch !important;
-  gap: 20px !important;
+  gap: 16px !important;
   padding: 22px 18px !important;
   overflow: hidden !important;
   position: relative !important;
@@ -30199,4 +30201,40 @@ html[data-scheme="light"] .story-modal-guess-answer,
 }
 .webapp-page.is-flashcard-study .flashcard-preview-feel-status {
   color: rgba(244, 241, 255, 0.75) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Вертикальная адаптивность живого Quiz (Quiz/Sätze) — телефон.
+   Было: карточка по высоте контента, прибита к верху, снизу «мёртвое» бежевое
+   поле. Стало: слой и карта тянутся на всю высоту экрана, содержимое
+   распределяется по центру заполненной карты; на маленьком экране упаковывается
+   и при нехватке высоты прокручивается изнутри (safe center не режет верх).
+   FSRS и планшет не затронуты. ═══════════════════════════════════════════════ */
+@media (max-width: 699.98px) {
+  .webapp-page.is-flashcard-study .flashcard-stage.is-session.is-quiz-layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .webapp-page.is-flashcard-study .flashcard-quiz-layout {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-layout-head {
+    flex: 0 0 auto;
+  }
+  .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-study-card {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex !important;
+    flex-direction: column;
+    justify-content: safe center;
+    overflow-y: auto;
+  }
+  /* «Continue» прижат к низу заполненной карты. */
+  .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-actions {
+    margin-top: auto;
+    padding-top: 4px;
+  }
 }
