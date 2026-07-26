@@ -39562,11 +39562,22 @@ function AppInner() {
                                   <div className={`flashcard-preview-card ${(String(previewLearningText).length > 22 || String(previewNativeText).length > 22) ? 'is-long-content' : ''}`}>
                                     <FitText
                                       className="flashcard-preview-word"
-                                      text={previewLearningText}
                                       refitKey={previewLearningText}
                                       min={22}
                                       max={54}
-                                    />
+                                    >
+                                      {(() => {
+                                        // Подсветка артикля по роду (der синий / die розовый / das зелёный).
+                                        const m = String(previewLearningText || '').match(/^(der|die|das)\s+([\s\S]+)$/i);
+                                        if (!m) return previewLearningText;
+                                        return (
+                                          <>
+                                            <span className={`flashcard-preview-article ${dictGenderClass(m[1])}`}>{m[1]}</span>
+                                            {' '}{m[2]}
+                                          </>
+                                        );
+                                      })()}
+                                    </FitText>
                                     <div className="flashcard-preview-native-box">
                                       {/* Звук встроен в угол плашки задания — отдельная строка
                                           «Слушать» убрана, чтобы карточка помещалась на экран без

@@ -30278,13 +30278,14 @@ html[data-scheme="light"] .story-modal-guess-answer,
     gap: clamp(8px, 1.8vh, 16px);
     padding: 4px 2px;
   }
+  /* Лис вписан ЦЕЛИКОМ (object-fit:contain), без круглой обрезки — иначе кругом
+     срезало ушки Felix. Мягкий радиальный ореол остаётся как подложка. */
   .webapp-page.is-flashcard-study .quiz-hero-mascot {
-    width: clamp(64px, 13vh, 112px);
-    height: clamp(64px, 13vh, 112px);
+    width: clamp(72px, 14vh, 124px);
+    height: clamp(72px, 14vh, 124px);
     object-fit: contain;
-    border-radius: 50%;
     flex: 0 0 auto;
-    background: radial-gradient(circle at 50% 36%, rgba(224, 164, 74, 0.18), transparent 70%);
+    background: radial-gradient(circle at 50% 45%, rgba(224, 164, 74, 0.16), transparent 68%);
   }
   .webapp-page.is-flashcard-study .quiz-prompt-eyebrow {
     font-size: 12px;
@@ -30372,4 +30373,68 @@ html[data-scheme="light"] .story-modal-guess-answer,
   background: rgba(214, 122, 36, 0.14);
   padding: 4px 10px;
   border-radius: 999px;
+}
+
+/* ═══ «Обзор» (превью Quiz/Sätze/Blocks) — ТЕЛЕФОН, премиум как на тесте ═══
+   Было: тёмно-синяя карта-коробка + тёмная плашка перевода (см. коммент ~11709).
+   Стало: та же премиальная бежевая карта-подложка, слово-герой с подсветкой
+   артикля по роду (der синий / die розовый / das зелёный), перевод — кремовая
+   плашка со звуком, значения тёмным по кремовому. FSRS/планшет (≥700) не трогаем. */
+@media (max-width: 699.98px) {
+  .webapp-page.is-flashcard-study .flashcard-preview-card {
+    align-self: stretch !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: clamp(12px, 2.4vh, 20px) !important;
+    border: 1px solid var(--t-border, #d2c2aa) !important;
+    border-radius: 24px !important;
+    background: linear-gradient(168deg, var(--t-bg-card-alt, #fff8ee), var(--t-bg-card, #f9f1e4)) !important;
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.6) inset,
+      0 26px 48px -26px rgba(105, 78, 47, 0.5),
+      0 8px 18px -14px rgba(105, 78, 47, 0.4) !important;
+    padding: clamp(16px, 3vh, 28px) clamp(14px, 4vw, 20px) !important;
+    overflow-y: auto !important;
+  }
+  /* Слово-герой — чернильное, крупное (FitText сам подгоняет кегль по ширине). */
+  .webapp-page.is-flashcard-study .flashcard-preview-word {
+    color: var(--t-text-primary, #201b14) !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.02em !important;
+    line-height: 1.08 !important;
+  }
+  .webapp-page.is-flashcard-study .flashcard-preview-article { font-style: italic; }
+  .webapp-page.is-flashcard-study .flashcard-preview-article.g-m { color: #3a72c4 !important; }
+  .webapp-page.is-flashcard-study .flashcard-preview-article.g-f { color: #c9506e !important; }
+  .webapp-page.is-flashcard-study .flashcard-preview-article.g-n { color: #3f9a56 !important; }
+  /* Перевод — кремовая плашка со звуком в углу (не тёмно-синий блок). */
+  .webapp-page.is-flashcard-study .flashcard-preview-native-box {
+    width: min(100%, 320px) !important;
+    border: 1px solid var(--t-border-subtle, #e2d5bf) !important;
+    border-radius: 16px !important;
+    background: var(--t-bg-card-alt, #fff8ee) !important;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7), 0 12px 24px -16px rgba(105, 78, 47, 0.55) !important;
+    padding: 14px 46px 14px 16px !important;
+  }
+  .webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-native-translation {
+    color: var(--t-text-primary, #201b14) !important;
+    font-weight: 700 !important;
+    line-height: 1.22 !important;
+  }
+  /* Значения — тёмным по кремовому (перебиваем светлые «для тёмной плашки»). */
+  .webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-meaning-item {
+    background: rgba(120, 96, 58, 0.06) !important;
+    border-color: rgba(120, 96, 58, 0.14) !important;
+    color: var(--t-text-secondary, #3d3428) !important;
+  }
+  .webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-meaning-text {
+    color: var(--t-text-secondary, #3d3428) !important;
+  }
+  .webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-meaning-rank {
+    color: #b45f13 !important;
+  }
 }
