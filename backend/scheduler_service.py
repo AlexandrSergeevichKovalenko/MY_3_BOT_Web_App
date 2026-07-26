@@ -90,6 +90,7 @@ from backend.background_jobs import (  # noqa: E402
     run_database_table_sizes_report_actor,
     run_admin_economics_report_actor,
     run_cap_health_report_actor,
+    run_article_review_dm_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
     run_tts_prewarm_quota_control_actor,
@@ -389,6 +390,10 @@ def _dispatch_admin_economics_report() -> None:
 
 def _dispatch_cap_health_report() -> None:
     run_cap_health_report_actor.send()
+
+
+def _dispatch_article_review_dm() -> None:
+    run_article_review_dm_actor.send()
 
 
 def _dispatch_weekly_global_ranking_report() -> None:
@@ -707,6 +712,22 @@ def _build_scheduler():
             hour=_int_env("CAP_HEALTH_REPORT_HOUR", 9),
             minute=_int_env("CAP_HEALTH_REPORT_MINUTE", 15),
             timezone=_tz(os.getenv("CAP_HEALTH_REPORT_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
+    # -- Артикли на подтверждение: слова, чей род не подтвердил ни Wiktionary, ни правило
+    # композита, лежат verified=False и в игру не идут. Раз в N дней шлём их админу с
+    # кнопками der/die/das — тап записывает артикль и слово сразу уходит в тренировку.
+    # Задание крутится ежедневно; сам разброс «раз в N дней» держит run-guard по периоду.
+    if _enabled("ARTICLE_REVIEW_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_article_review_dm,
+            "cron",
+            hour=_int_env("ARTICLE_REVIEW_HOUR", 11),
+            minute=_int_env("ARTICLE_REVIEW_MINUTE", 30),
+            timezone=_tz(os.getenv("ARTICLE_REVIEW_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,

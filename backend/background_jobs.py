@@ -2038,6 +2038,13 @@ def run_cap_health_report_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_article_review_dm_actor() -> None:
+    """Личка со словами, чей род не подтвердил ни Wiktionary, ни правило композита."""
+    from backend.article_review import send_article_review_dm
+    send_article_review_dm()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_tts_prewarm_scheduler_actor() -> None:
     from backend.tts_scheduler import run_tts_prewarm_scheduler_job
     run_tts_prewarm_scheduler_job()

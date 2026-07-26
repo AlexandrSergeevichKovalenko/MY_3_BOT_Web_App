@@ -47268,6 +47268,73 @@ def update_article_sprint_article(row_id: int, new_article: str) -> None:
         conn.commit()
 
 
+def list_unverified_article_nouns(limit: int = 10) -> list[dict]:
+    """Слова, чей род не подтвердил ни Wiktionary, ни правило композита.
+
+    Такие строки кладутся с verified=False (см. article_sprint_generator): в тренировку
+    они не попадают, чтобы человек не заучил выдуманный моделью артикль. Здесь их
+    забирает разбор в личке — админ ставит род одним тапом, и слово входит в игру."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, theme_key, word, article, COALESCE(meaning_ru,''), COALESCE(source,'') "
+                "FROM bt_3_article_sprint_nouns "
+                "WHERE NOT verified AND NOT retired "
+                "ORDER BY id LIMIT %s;",
+                (max(1, int(limit)),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "theme_key": str(r[1]), "word": str(r[2]),
+             "draft_article": str(r[3] or ""), "meaning_ru": str(r[4]),
+             "source": str(r[5])} for r in rows]
+
+
+def count_unverified_article_nouns() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_article_sprint_nouns WHERE NOT verified AND NOT retired;"
+            )
+            return int((cursor.fetchone() or [0])[0] or 0)
+
+
+def confirm_article_noun(row_id: int, article: str, *, admin_id: int | None = None) -> dict | None:
+    """Админ подтвердил род: ставим артикль, помечаем проверенным — слово идёт в игру.
+
+    Возвращает {word, article} для ответа в личку, либо None если строки нет."""
+    art = str(article or "").strip().lower()
+    if art not in ("der", "die", "das"):
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_nouns "
+                "SET article = %s, verified = TRUE, source = %s, updated_at = NOW() "
+                "WHERE id = %s AND NOT retired "
+                "RETURNING word, theme_key;",
+                (art, f"admin:{int(admin_id)}" if admin_id else "admin", int(row_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    if not row:
+        return None
+    return {"word": str(row[0]), "theme_key": str(row[1]), "article": art}
+
+
+def skip_article_noun(row_id: int) -> dict | None:
+    """Админ решил, что слово в игре не нужно (двухродовое, мусор) — снимаем с показа."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_nouns SET retired = TRUE, updated_at = NOW() "
+                "WHERE id = %s RETURNING word;",
+                (int(row_id),),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return {"word": str(row[0])} if row else None
+
+
 def retire_article_sprint_noun(row_id: int) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

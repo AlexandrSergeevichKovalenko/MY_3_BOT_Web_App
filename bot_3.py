@@ -11803,6 +11803,65 @@ async def handle_appcap_callback(update: Update, context: CallbackContext) -> No
         pass
 
 
+async def handle_artikel_review_command(update: Update, context: CallbackContext) -> None:
+    """/artikel_review — позвать разбор артиклей сейчас, не дожидаясь расписания."""
+    user = update.effective_user
+    if not user or not _is_admin_user(user.id):
+        return
+    await update.message.reply_text("Собираю слова без подтверждённого рода…")
+    try:
+        from backend.article_review import send_article_review_dm
+        res = await asyncio.to_thread(send_article_review_dm, force=True)
+    except Exception:
+        logging.warning("artikel_review failed", exc_info=True)
+        await update.message.reply_text("Не получилось. Подробности в логах.")
+        return
+    if res.get("reason") == "nothing_to_review":
+        await update.message.reply_text("Все слова с подтверждённым родом — разбирать нечего 🎉")
+    elif not res.get("ok"):
+        await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
+
+
+async def handle_article_review_callback(update: Update, context: CallbackContext) -> None:
+    """Тап по der/die/das в личке: артикль записан → слово сразу уходит в тренировку.
+
+    Замыкает цикл: арбитр рода (article_authority) кладёт неподтверждённые слова
+    verified=False, раз в N дней они приходят сюда, один тап — и слово в игре.
+    Сообщение редактируется на месте, чтобы в переписке не оставалось кнопок,
+    по которым уже нажали."""
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")   # artrev:<der|die|das|skip>:<row_id>
+    action = parts[1] if len(parts) > 1 else ""
+    row_id = parts[2] if len(parts) > 2 else ""
+    if not action or not str(row_id).isdigit():
+        await query.answer("Не понял кнопку.", show_alert=True)
+        return
+    await query.answer("Записываю…", show_alert=False)
+    try:
+        from backend.article_review import apply_review
+        text = await asyncio.to_thread(apply_review, action, int(row_id), admin_id=int(admin.id))
+    except Exception:
+        logging.warning("article review action failed", exc_info=True)
+        try:
+            await query.message.reply_text("Не получилось записать. Подробности в логах.")
+        except Exception:
+            pass
+        return
+    try:
+        await query.edit_message_text(text, parse_mode="HTML")
+    except Exception:
+        try:
+            await query.message.reply_text(text, parse_mode="HTML")
+        except Exception:
+            pass
+
+
 async def handle_tts_budget_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     admin = update.effective_user
@@ -39700,6 +39759,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
     application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
+    application.add_handler(CallbackQueryHandler(handle_article_review_callback, pattern=r"^artrev:"))
+    application.add_handler(CommandHandler("artikel_review", handle_artikel_review_command))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
     application.add_handler(CommandHandler("r2_usage", r2_usage_command))
     application.add_handler(CommandHandler("pool_r2_orphans", pool_r2_orphans_command))
