@@ -30103,3 +30103,100 @@ html[data-scheme="light"] .story-modal-guess-answer,
   display:inline-flex; align-items:center; justify-content:center;
 }
 .webapp-dictionary .vocab-due-cta-arrow{ flex:0 0 auto; font-size:16px; opacity:0.9; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FOKUS — иммерсивный дизайн превью-карточки тренировки (Quiz / Blocks / Sätze).
+   Утверждён пользователем. Тёмная карта-герой с тёплым свечением: слово крупно
+   белым, задание/перевод — «стеклянная» плашка, звук — янтарный круг-плей,
+   «Почувствовать» — янтарная кнопка. МЕНЯЕТСЯ ТОЛЬКО ВИД, функционал прежний.
+   FSRS не затронут. Размещено в конце файла, чтобы перебить прежние светлые
+   оверрайды превью (телефон — тёмно-синяя плашка, планшет — кремовая).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.webapp-page.is-flashcard-study .flashcard-preview-card {
+  background:
+    radial-gradient(120% 90% at 20% 0%, #3a2c5e 0%, #20213f 42%, #121428 100%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+  box-shadow: 0 24px 50px -26px rgba(10, 8, 30, 0.75) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  align-items: stretch !important;
+  gap: 20px !important;
+  padding: 22px 18px !important;
+  overflow: hidden !important;
+  position: relative !important;
+}
+/* тёплое янтарное свечение снизу-справа */
+.webapp-page.is-flashcard-study .flashcard-preview-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(60% 40% at 78% 72%, rgba(224, 164, 74, 0.30), transparent 70%);
+}
+.webapp-page.is-flashcard-study .flashcard-preview-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* слово-герой — крупное белое */
+.webapp-page.is-flashcard-study .flashcard-preview-word {
+  color: #ffffff !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.02em !important;
+  text-shadow: 0 6px 28px rgba(0, 0, 0, 0.42);
+  margin: 0 !important;
+}
+
+/* задание/перевод — «стеклянная» плашка */
+.webapp-page.is-flashcard-study .flashcard-preview-native-box {
+  background: rgba(255, 255, 255, 0.09) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  border-radius: 18px !important;
+  box-shadow: 0 16px 40px -22px rgba(0, 0, 0, 0.7) !important;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  padding: 16px 60px 16px 18px !important;
+}
+.webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-native-translation {
+  color: #f4f1ff !important;
+  font-weight: 600 !important;
+}
+.webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-meaning-item,
+.webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-meaning-text {
+  color: rgba(244, 241, 255, 0.9) !important;
+}
+.webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-meaning-rank {
+  color: var(--amber, #e0a44a) !important;
+}
+
+/* звук → янтарный круг-плей, по центру правого края плашки */
+.webapp-page.is-flashcard-study .flashcard-preview-speaker {
+  top: 50% !important;
+  right: 12px !important;
+  transform: translateY(-50%);
+  width: 38px !important;
+  height: 38px !important;
+  background: var(--amber, #e0a44a) !important;
+  color: #2a1c05 !important;
+  box-shadow: 0 6px 16px rgba(224, 164, 74, 0.5) !important;
+  font-size: 16px !important;
+}
+
+/* ru-подсказка под плашкой (Satz Ergänzen) */
+.webapp-page.is-flashcard-study .flashcard-preview-ru-hint {
+  color: rgba(244, 241, 255, 0.72) !important;
+}
+
+/* «Почувствовать слово» — янтарная кнопка */
+.webapp-page.is-flashcard-study .flashcard-preview-feel-btn {
+  background: linear-gradient(180deg, #f0b45c, #e0a44a) !important;
+  color: #2a1c05 !important;
+  border: none !important;
+  box-shadow: 0 12px 26px -12px rgba(224, 164, 74, 0.7) !important;
+  font-weight: 800 !important;
+}
+.webapp-page.is-flashcard-study .flashcard-preview-feel-status {
+  color: rgba(244, 241, 255, 0.75) !important;
+}
