@@ -10,6 +10,11 @@ const isWebappPath = typeof window !== 'undefined'
   && (window.location.pathname === '/webapp' || window.location.pathname === '/webapp/review');
 const hasTelegramUrlHints = params.has('tgWebAppData') || params.get('mode') === 'webapp' || isWebappPath;
 const shouldTreatAsTelegram = appMode === 'telegram' || hasTelegramUrlHints;
+// Both the Telegram webview AND the installed home-screen PWA must guard against a stale
+// bundle: Telegram relaunches from suspension without a hard navigation, and the PWA's
+// service-worker precache can pin an old app shell for days. Without this, the PWA keeps
+// rendering a previous build even though the server already serves the new one.
+const shouldEnsureFreshBundle = shouldTreatAsTelegram || appMode === 'pwa';
 
 function getCurrentWebappAssetPath() {
   if (typeof document === 'undefined') return '';
@@ -34,8 +39,30 @@ function buildTelegramReloadUrl(buildId = '') {
   return url.toString();
 }
 
-async function ensureFreshTelegramBundle() {
-  if (!shouldTreatAsTelegram || typeof window === 'undefined' || typeof fetch !== 'function') {
+// Wipe the service-worker precache + registrations. A standalone PWA is served its app
+// shell FROM the SW precache, so a plain reload just re-serves the SAME stale bundle — we
+// must drop the caches and unregister the worker first, then reload to fetch the live build.
+async function purgeAppShellCaches() {
+  try {
+    if (typeof caches !== 'undefined' && typeof caches.keys === 'function') {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    }
+  } catch (_cacheError) {
+    // best-effort
+  }
+  try {
+    if (typeof navigator !== 'undefined' && navigator.serviceWorker?.getRegistrations) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    }
+  } catch (_swError) {
+    // best-effort
+  }
+}
+
+async function ensureFreshBundle() {
+  if (!shouldEnsureFreshBundle || typeof window === 'undefined' || typeof fetch !== 'function') {
     return true;
   }
   try {
@@ -55,7 +82,9 @@ async function ensureFreshTelegramBundle() {
     if (!currentAssetPath || !serverAssetPath || currentAssetPath === serverAssetPath) {
       return true;
     }
-    const reloadMarkerKey = serverBuildId ? `telegram-webapp-reload:${serverBuildId}` : '';
+    // Stale bundle detected. Attempt the heavy recovery at most once per build per session
+    // (after a successful purge+reload the asset paths match, so this won't loop).
+    const reloadMarkerKey = serverBuildId ? `webapp-stale-reload:${serverBuildId}` : '';
     if (reloadMarkerKey) {
       try {
         if (window.sessionStorage.getItem(reloadMarkerKey) === '1') {
@@ -65,6 +94,11 @@ async function ensureFreshTelegramBundle() {
       } catch (_storageError) {
         // ignore storage failures
       }
+    }
+    // PWA: the stale shell comes from the SW precache — a reload alone re-serves it. Drop the
+    // caches + unregister the worker so the reload hits the server for the current build.
+    if (appMode === 'pwa') {
+      await purgeAppShellCaches();
     }
     window.location.replace(buildTelegramReloadUrl(serverBuildId));
     return false;
@@ -681,7 +715,7 @@ async function bootstrapApp() {
   // Full app path. If launched as the standalone home-screen icon (app token in the URL,
   // outside Telegram), bake the token into the manifest link so a re-install stays authed.
   applyAppHomeScreenMeta();
-  const canRender = await ensureFreshTelegramBundle();
+  const canRender = await ensureFreshBundle();
   if (!canRender) return;
   const App = await loadAppComponent();
   if (!App) return;
