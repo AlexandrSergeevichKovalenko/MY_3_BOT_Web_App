@@ -11600,6 +11600,22 @@ body:has(.webapp-page.is-theme-light),
   .webapp-page .webapp-flashcards .flashcard-preview-listen-label {
     color: #5d5244 !important;
   }
+  /* На телефоне плашка перевода остаётся тёмно-синей (в отличие от планшета, где её
+     перекрашивают в кремовую). При этом правило светлой темы (.is-theme-light
+     .flashcard-meaning-item, ниже по файлу) красит нюансы в тёмно-коричневый #3d2e1e —
+     тёмный текст на тёмно-синем фоне = не видно. Внутри синей плашки держим нюансы
+     светлыми, чтобы читались на тёмном фоне в любой теме. */
+  .webapp-page .webapp-flashcards .flashcard-preview-native-box .flashcard-meaning-item {
+    background: rgba(10, 20, 42, 0.46) !important;
+    border-color: rgba(136, 170, 232, 0.24) !important;
+    color: rgba(223, 234, 252, 0.92) !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-native-box .flashcard-meaning-text {
+    color: rgba(223, 234, 252, 0.92) !important;
+  }
+  .webapp-page .webapp-flashcards .flashcard-preview-native-box .flashcard-meaning-rank {
+    color: #9fc0ff !important;
+  }
 }
 
 .flashcard-word-block {
