@@ -2700,6 +2700,12 @@
   border: 1px solid rgba(255,255,255,0.09);
   box-shadow: 0 10px 30px -16px rgba(0,0,0,0.5);
   overflow: hidden;
+  /* Keep natural height: overflow:hidden (needed for rounded corners) makes this
+     flex item's auto min-height collapse to 0, so in the height-bounded reader
+     library column (standalone PWA inflates the shelf cards via vh-clamps) the
+     deficit was shrinking THIS card and clipping its «Weiterlesen» button. The
+     flex:1 .reader-shelves absorbs slack instead; the page scrolls if truly short. */
+  flex-shrink: 0;
   cursor: pointer;
   transition: transform .15s, box-shadow .18s;
   -webkit-tap-highlight-color: transparent;
