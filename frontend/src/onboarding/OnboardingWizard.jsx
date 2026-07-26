@@ -933,7 +933,7 @@ function StepBody(props) {
           { f: t('Видео-рекомендация недели', 'Video-Empfehlung der Woche'), free: NO, pro: YES, ex: true },
         ] },
         { title: t('📬 Задания по расписанию', '📬 Aufgaben nach Plan'), rows: [
-          { f: t('Заданий в день', 'Aufgaben pro Tag'), free: '6', pro: '12 → 20' },
+          { f: t('Заданий в день', 'Aufgaben pro Tag'), free: '6', pro: '20' },
           { f: t('Своё расписание и часы', 'Eigener Plan & Zeiten'), free: NO, pro: YES, ex: true },
           { f: t('Приоритетная обработка', 'Priorisierte Verarbeitung'), free: NO, pro: YES, ex: true },
         ] },
