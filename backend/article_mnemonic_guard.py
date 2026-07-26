@@ -120,7 +120,14 @@ def validate_mnemonic(*, word: str, article: str, text: str) -> tuple[bool, str]
     for m in _ART_NOUN_RE.finditer(body):
         said_art, noun = m.group(1).lower(), m.group(2)
         low = noun.lower()
-        if low in ambiguous or low == w.lower():
+        # Самый прямой случай: подсказка называет артикль САМОГО слова. Он обязан совпасть
+        # с тем, что стоит в базе, — иначе карточка и подсказка учат разному (так и вышло
+        # с «die Platzbauch» после исправления артикля на der).
+        if low == w.lower():
+            if said_art != art:
+                return False, f"подсказка говорит «{said_art} {w}», а в базе «{art} {w}»"
+            continue
+        if low in ambiguous:
             continue
         real = known.get(low)
         if real and real != said_art:
