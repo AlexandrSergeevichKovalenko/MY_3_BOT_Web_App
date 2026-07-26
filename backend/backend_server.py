@@ -68,7 +68,6 @@ import queue
 from dataclasses import asdict
 from collections import Counter, OrderedDict, deque
 from urllib.parse import urlparse
-from youtube_transcript_api import YouTubeTranscriptApi
 import os
 import hmac
 import hashlib
@@ -93,8 +92,8 @@ from zoneinfo import ZoneInfo
 from datetime import timedelta, date
 from calendar import monthrange
 import importlib.metadata as importlib_metadata
-import youtube_transcript_api as yta
-from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConfig
+# youtube_transcript_api (~22 МБ) импортируется внутри четырёх функций, которые им
+# реально пользуются: субтитры нужны одному разделу, а платили за них все процессы.
 from datetime import datetime, timezone
 from io import BytesIO
 from uuid import uuid4
@@ -214,7 +213,9 @@ from backend.voice_scenario_service import (
     create_voice_scenario as create_voice_scenario_service,
     get_voice_scenario as get_voice_scenario_service,
 )
-from livekit.api import AccessToken, VideoGrants
+# LiveKit (~34 MB) is needed by exactly ONE endpoint — the voice-room token — and the voice
+# assistant is switched off. Imported inside that endpoint instead of at startup, so the bot
+# and the queue workers stop carrying an SDK for a feature that is not running.
 from pathlib import Path
 # Stripe is RETIRED (payments went to Telegram Stars) and STRIPE_BILLING_ENABLED is off in
 # production. Every one of the 22 `stripe.` call sites below is already guarded by
@@ -871,7 +872,10 @@ load_dotenv()
 try:
     yta_version = importlib_metadata.version("youtube-transcript-api")
 except Exception:
-    yta_version = getattr(yta, "__version__", "unknown")
+    # Раньше здесь был фолбэк на yta.__version__ — ровно он и заставлял импортировать
+    # пакет (22 МБ) на старте КАЖДОГО процесса ради строчки в логе. Метаданные
+    # importlib читает с диска без импорта; не прочиталось — значит "unknown".
+    yta_version = "unknown"
 logging.info("✅ youtube_transcript_api version: %s", yta_version)
 if os.getenv("YOUTUBE_TRANSCRIPT_PROXY") or os.getenv("YOUTUBE_TRANSCRIPT_PROXY_AU") or os.getenv("YOUTUBE_TRANSCRIPT_PROXY_DE"):
     logging.info("✅ YouTube transcript proxy configured")
@@ -3725,6 +3729,7 @@ def get_token_api():
         participant_attributes = {"voice_session_id": str(voice_session_id)}
 
     _ensure_livekit_config()
+    from livekit.api import AccessToken, VideoGrants  # ~34 MB — только для этого эндпоинта
     grant = VideoGrants(
         room_join=True,
         room="sales-assistant-room",
@@ -26186,6 +26191,8 @@ def _get_yta_special_exceptions() -> tuple[type[BaseException], ...]:
     Resolve dynamically to avoid hard import failures.
     """
     names = ("RequestBlocked", "AgeRestricted", "VideoUnplayable")
+    import youtube_transcript_api as yta
+
     excs: list[type[BaseException]] = []
     for name in names:
         exc = getattr(yta, name, None)
@@ -26214,6 +26221,8 @@ def _fetch_with_yta(video_id: str, lang: str | None, proxy_config=None) -> list[
     """
     Use instance.fetch(...) with the new youtube-transcript-api API.
     """
+    from youtube_transcript_api import YouTubeTranscriptApi
+
     yta = YouTubeTranscriptApi(proxy_config=proxy_config)
     fetch_fn = getattr(yta, "fetch", None)
     if not callable(fetch_fn):
@@ -26455,6 +26464,10 @@ def _fetch_youtube_transcript(
     3) Webshare rotation + DE/AT filter (only if allow_proxy=True)
     4) Generic proxy + DE/AT filter (only if allow_proxy=True)
     """
+    # Прокси-конфиги нужны только здесь; импорт локальный, чтобы не тянуть пакет в процессы,
+    # которые субтитрами не занимаются (см. комментарий у модульных импортов выше).
+    from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConfig
+
     # SYNTHETIC_LOAD_MODE: return a fixed transcript fixture, no YouTube network.
     from backend.synthetic_load import synthetic_youtube_transcript_or_none
     _synthetic = synthetic_youtube_transcript_or_none(video_id, lang)

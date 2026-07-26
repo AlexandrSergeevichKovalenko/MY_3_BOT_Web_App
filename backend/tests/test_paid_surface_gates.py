@@ -148,12 +148,15 @@ class PaidSurfaceGateTests(unittest.TestCase):
             self._assert_paid_required(response, feature="analytics", feature_title="Аналитика")
             blocked_mock.assert_not_called()
 
+    # LiveKit импортируется ВНУТРИ эндпоинта (SDK весит ~34 МБ, а голосовой ассистент
+    # отключён), поэтому патчим источник — livekit.api.AccessToken, а не атрибут модуля
+    # backend_server: такого атрибута больше нет.
     def test_free_user_blocked_on_voice_token_before_livekit_token_generation(self):
         with patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("free")), \
              patch.object(server, "_sync_user_subscription_from_live_stripe") as stripe_mock, \
              patch.object(server, "enforce_daily_cost_cap") as cap_mock, \
              patch.object(server, "_ensure_livekit_config") as livekit_config_mock, \
-             patch.object(server, "AccessToken") as token_mock:
+             patch("livekit.api.AccessToken") as token_mock:
             response = self.client.get("/api/token?user_id=77&username=Iryna")
 
         self._assert_paid_required(response, feature="voice_assistant", feature_title="Голосовой ассистент")
@@ -200,7 +203,7 @@ class PaidSurfaceGateTests(unittest.TestCase):
              patch.object(server, "enforce_daily_cost_cap", return_value=None), \
              patch.object(server, "_check_voice_minutes_daily_limit", return_value={}), \
              patch.object(server, "_ensure_livekit_config") as livekit_config_mock, \
-             patch.object(server, "AccessToken", DummyAccessToken):
+             patch("livekit.api.AccessToken", DummyAccessToken):
             token_response = self.client.get("/api/token?user_id=77&username=Iryna")
 
         self.assertEqual(token_response.status_code, 200)

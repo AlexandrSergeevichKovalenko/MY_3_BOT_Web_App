@@ -39,7 +39,9 @@ from telegram.error import TimedOut, BadRequest, RetryAfter, Forbidden
 import tempfile
 import sys
 import threading
-import livekit.api # Нужен для LiveKit комнат
+# `import livekit.api` УДАЛЁН: единственный код, который им пользовался (создание комнат,
+# ~строка 22670), закомментирован целиком, а сам SDK стоил боту 34 МБ ОЗУ при каждом старте.
+# Понадобится снова — импортировать внутри той функции, а не на верхнем уровне модуля.
 import multiprocessing
 from typing import Any, Callable
 from backend.analytics import fetch_user_summary, get_period_bounds
