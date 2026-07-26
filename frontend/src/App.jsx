@@ -39864,7 +39864,10 @@ function AppInner() {
 
                                     <div className={quizStudyCardClassName}>
                                       <div className="quiz-prompt-zone">
-                                      {!isAnswered && (
+                                      {!isAnswered && !(isSentenceTrainingMode || isSentenceGapQuiz) && (
+                                        // Лис-герой только для Quiz. В Satz Ergänzen предложение с
+                                        // пропуском само «герой» и длинное — лис бы конкурировал и
+                                        // съедал высоту, выталкивая варианты. Там показываем только eyebrow.
                                         <img
                                           src={heroThinkSrc}
                                           alt=""

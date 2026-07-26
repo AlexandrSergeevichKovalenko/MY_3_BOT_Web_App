@@ -770,10 +770,10 @@ body {
 .webapp-page.is-flashcard-study .quiz-result-fox {
   display: block;
   flex: 0 0 auto;
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   object-fit: contain;
-  border-radius: 50%;
+  /* без border-radius:50% — круглая обрезка срезала ушки Felix (как у лиса-героя) */
 }
 .webapp-page.is-flashcard-study .quiz-result-copy {
   display: flex;
@@ -30294,6 +30294,17 @@ html[data-scheme="light"] .story-modal-guess-answer,
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: #b45f13;
+  }
+  /* В состоянии «ответ» eyebrow прячем: вердикт «Correct!/Incorrect» и так всё
+     говорит, а на длинных предложениях (Satz Ergänzen) эта строка выпихивала
+     «Continue» за низ. Экономим высоту. */
+  .webapp-page.is-flashcard-study .flashcard-quiz-layout.is-answered .quiz-prompt-eyebrow {
+    display: none;
+  }
+  /* Длинное предложение с переводом в ответе — самый плотный случай: чуть ужимаем
+     перевод, чтобы «Continue» помещался без скролла на обычных телефонах. */
+  .webapp-page.is-flashcard-study .flashcard-quiz-layout.is-answered .quiz-study-translation {
+    margin-top: 0;
   }
   /* Пояс «низ»: варианты → вердикт → «Continue» — ЦЕЛЬНОЙ группой сразу под
      вопросом, в удобной верхней зоне (не «на полу», не тянуться вниз). Свободная
