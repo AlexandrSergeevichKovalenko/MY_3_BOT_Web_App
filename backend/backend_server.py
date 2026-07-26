@@ -230,25 +230,72 @@ if (os.getenv("STRIPE_BILLING_ENABLED") or "").strip().lower() in ("1", "true", 
     except Exception:  # pragma: no cover - optional in bot-only deploys
         stripe = None
 BASE_DIR = Path(__file__).resolve().parent.parent
-try:
-    import spacy
-except Exception:  # pragma: no cover - optional dependency
-    spacy = None
+# spaCy is the single heaviest import in this file: ~71 MB of RSS on its own, and it drags
+# in blis (29 MB of .so) and numpy (47 MB). It has exactly ONE consumer — _get_de_nlp() for
+# German lemma normalization — and the language model was already loaded lazily there. Only
+# the `import spacy` itself was eager, so every process that touches backend_server (the
+# bot, BACKGROUND_JOBS, AUX_BACKGROUND_WORKER) paid for an NLP stack it never calls.
+# First call pays 0.44 s (measured in the prod container), every later call is a dict lookup.
+_SPACY_MODULE = None
+_SPACY_IMPORT_TRIED = False
+
+
+def _get_spacy():
+    """The spacy module on first use, or None if it is unavailable."""
+    global _SPACY_MODULE, _SPACY_IMPORT_TRIED
+    if _SPACY_IMPORT_TRIED:
+        return _SPACY_MODULE
+    _SPACY_IMPORT_TRIED = True
+    try:
+        import spacy as _spacy
+        _SPACY_MODULE = _spacy
+    except Exception:  # pragma: no cover - optional dependency
+        _SPACY_MODULE = None
+    return _SPACY_MODULE
 try:
     import argostranslate.translate as argos_translate
 except Exception:  # pragma: no cover - optional dependency
     argos_translate = None
-try:
-    from pypdf import PdfReader
-except Exception:  # pragma: no cover - optional dependency
-    PdfReader = None
-try:
-    # PyMuPDF (fitz) reconstructs words far better than pypdf on typeset books:
-    # pypdf inserts spurious spaces between glyphs on character-positioned fonts
-    # ("D r. m e d. C h r i s t i a n"), fitz does not. Preferred extractor.
-    import fitz as _pymupdf  # PyMuPDF
-except Exception:  # pragma: no cover - optional dependency
-    _pymupdf = None
+# PDF engines are needed ONLY when a book is uploaded to the Reader — a path the bot and the
+# queue workers never touch, yet they paid ~34 MB (PyMuPDF, 50 MB of .so on disk) + ~26 MB
+# (pypdf) for it at every start. Both first imports are cheap (0.05 s measured), and book
+# ingestion already takes seconds, so the deferred cost is invisible where it lands.
+_PYMUPDF_MODULE = None
+_PYMUPDF_IMPORT_TRIED = False
+_PYPDF_READER = None
+_PYPDF_IMPORT_TRIED = False
+
+
+def _get_pymupdf():
+    """PyMuPDF (fitz) on first use, or None if unavailable.
+
+    Preferred over pypdf for text: pypdf inserts spurious spaces between glyphs on
+    character-positioned fonts ("D r. m e d. C h r i s t i a n"), fitz does not.
+    """
+    global _PYMUPDF_MODULE, _PYMUPDF_IMPORT_TRIED
+    if _PYMUPDF_IMPORT_TRIED:
+        return _PYMUPDF_MODULE
+    _PYMUPDF_IMPORT_TRIED = True
+    try:
+        import fitz as _fitz  # PyMuPDF
+        _PYMUPDF_MODULE = _fitz
+    except Exception:  # pragma: no cover - optional dependency
+        _PYMUPDF_MODULE = None
+    return _PYMUPDF_MODULE
+
+
+def _get_pdf_reader():
+    """pypdf's PdfReader class on first use, or None if unavailable."""
+    global _PYPDF_READER, _PYPDF_IMPORT_TRIED
+    if _PYPDF_IMPORT_TRIED:
+        return _PYPDF_READER
+    _PYPDF_IMPORT_TRIED = True
+    try:
+        from pypdf import PdfReader as _PdfReader
+        _PYPDF_READER = _PdfReader
+    except Exception:  # pragma: no cover - optional dependency
+        _PYPDF_READER = None
+    return _PYPDF_READER
 try:
     from ebooklib import epub as _ebooklib_epub, ITEM_DOCUMENT as _EPUB_ITEM_DOCUMENT
 except Exception:  # pragma: no cover - optional dependency
@@ -16560,6 +16607,7 @@ def _extract_pdf_source_page_texts(data: bytes) -> list[str]:
     fallback when PyMuPDF is unavailable in the runtime.
     """
     source_texts: list[str] = []
+    _pymupdf = _get_pymupdf()
     if _pymupdf is not None:
         try:
             with _pymupdf.open(stream=data, filetype="pdf") as doc:
@@ -16576,6 +16624,7 @@ def _extract_pdf_source_page_texts(data: bytes) -> list[str]:
         except Exception:
             logging.exception("reader PDF extraction via PyMuPDF failed; falling back to pypdf")
             source_texts = []
+    PdfReader = _get_pdf_reader()
     if PdfReader is None:
         raise RuntimeError("PDF extraction is unavailable: install PyMuPDF or pypdf")
     reader = PdfReader(BytesIO(data))
@@ -16649,6 +16698,7 @@ def _extract_pdf_outline(data: bytes) -> list[tuple[str, int]]:
     Returns [] when the PDF has no outline (then the TOC falls back to the strict
     first-line heuristic). This is the RELIABLE chapter source for real books.
     """
+    _pymupdf = _get_pymupdf()
     if _pymupdf is None or not data:
         return []
     try:
@@ -16737,6 +16787,7 @@ def _detect_pdf_heading_texts(data: bytes) -> list[dict]:
     """Detect HEADING blocks in a PDF from the document's OWN font signal (no per-book
     guessing): the dominant span size is the body; blocks whose size is meaningfully
     larger (or bold + a bit larger) and short are headings. Returns [{text, level}]."""
+    _pymupdf = _get_pymupdf()
     if _pymupdf is None:
         return []
     size_weight: dict[int, int] = {}
@@ -17756,6 +17807,7 @@ def _reader_pdf_cumlens(user_id: int, document_id: int) -> list[int] | None:
     cached = _reader_pdf_cumlens_cache.get(int(document_id))
     if cached is not None:
         return cached
+    _pymupdf = _get_pymupdf()
     if _pymupdf is None:
         return None
     try:
@@ -17803,6 +17855,7 @@ def _render_reader_pdf_page(user_id: int, document_id: int, page: int, zoom: int
     """(public_url, page_count) for a physical PDF page rendered as an image, cached
     in R2. url is None when the source PDF was not retained (book ingested before the
     Original-mode feature → needs re-upload)."""
+    _pymupdf = _get_pymupdf()
     if _pymupdf is None:
         return None, 0
     page = max(1, int(page))
@@ -17887,6 +17940,7 @@ def _extract_pdf_title_and_cover(data: bytes, *, user_id: int, document_id: int)
     in R2. Best-effort — never raises."""
     title = ""
     cover_url = ""
+    _pymupdf = _get_pymupdf()
     if _pymupdf is None or not data:
         return title, cover_url
     try:
@@ -26075,6 +26129,7 @@ _de_nlp = None
 def _get_de_nlp():
     global _de_nlp
     if _de_nlp is None:
+        spacy = _get_spacy()
         if spacy is None:
             raise RuntimeError("spaCy не установлен")
         _de_nlp = spacy.load("de_core_news_sm")
