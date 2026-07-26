@@ -39847,12 +39847,27 @@ function AppInner() {
                                 return (
                                   <div className={quizLayoutClassName}>
                                     <div className="quiz-layout-head">
-                                      <span>{screenModeLabel}</span>
+                                      <span className="quiz-mode-chip">{screenModeLabel}</span>
                                       <span className="flashcard-counter">{flashcardIndex + 1} / {flashcards.length}</span>
                                     </div>
 
                                     <div className={quizStudyCardClassName}>
                                       <div className="quiz-prompt-zone">
+                                      {!isAnswered && (
+                                        <img
+                                          src={heroThinkSrc}
+                                          alt=""
+                                          aria-hidden="true"
+                                          className="quiz-hero-mascot"
+                                        />
+                                      )}
+                                      <div className="quiz-prompt-eyebrow">
+                                        {isAnswered
+                                          ? tr('Правильный ответ', 'Richtige Antwort')
+                                          : (isSentenceTrainingMode || isSentenceGapQuiz
+                                            ? tr('Заполни пропуск', 'Lücke ausfüllen')
+                                            : tr('Выбери перевод', 'Wähle die Übersetzung'))}
+                                      </div>
                                       <div className="quiz-study-mode-title">{isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergänzen' : 'Quiz Mode'}</div>
                                       <FitText
                                         className={`quiz-study-question ${(isSentenceTrainingMode || isSentenceGapQuiz) ? 'is-sentence-gap' : ''}`}
@@ -39941,7 +39956,8 @@ function AppInner() {
                                                   }
                                                 }}
                                               >
-                                                <span>{option}</span>
+                                                <span className="quiz-option-index" aria-hidden="true">{['А', 'Б', 'В', 'Г', 'Д', 'Е'][idx] || (idx + 1)}</span>
+                                                <span className="quiz-option-text">{option}</span>
                                                 {isAnswered && (option === correct || isSelected) && (
                                                   <span className="quiz-option-mark">
                                                     {option === correct ? '✓' : (isSelected ? '✕' : '')}
