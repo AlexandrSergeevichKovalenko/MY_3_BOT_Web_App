@@ -39852,6 +39852,7 @@ function AppInner() {
                                     </div>
 
                                     <div className={quizStudyCardClassName}>
+                                      <div className="quiz-prompt-zone">
                                       <div className="quiz-study-mode-title">{isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergänzen' : 'Quiz Mode'}</div>
                                       <FitText
                                         className={`quiz-study-question ${(isSentenceTrainingMode || isSentenceGapQuiz) ? 'is-sentence-gap' : ''}`}
@@ -39871,41 +39872,14 @@ function AppInner() {
                                       {(isSentenceTrainingMode || isSentenceGapQuiz) && sentenceTranslation && (
                                         <div className="quiz-study-translation">{sentenceTranslation}</div>
                                       )}
+                                      </div>
 
-                                      {/* Маскот-лис убран из тренировок Quiz/Sätze: он съедал ~200px
-                                          по вертикали и «Continue» уезжал за экран на длинных
-                                          предложениях. Остаются Correct/Incorrect + варианты + кнопка —
-                                          всё помещается без скролла. (FSRS не затронут.) */}
-
-                                      {isAnswered && (
-                                        <>
-                                          <div className={`quiz-result ${isCorrectAnswer ? 'is-correct' : 'is-wrong'}`}>
-                                            {/* Маленький лис рядом с вердиктом — эмоция без потери места
-                                                (полноразмерный маскот убран, чтобы «Continue» влезал). */}
-                                            <img
-                                              src={isCorrectAnswer ? heroMascotSrc : heroCrySrc}
-                                              alt=""
-                                              aria-hidden="true"
-                                              className="quiz-result-fox"
-                                            />
-                                            <div className="quiz-result-copy">
-                                              <div className="quiz-result-title">{isCorrectAnswer ? 'Correct!' : 'Incorrect'}</div>
-                                              <div className="quiz-result-subtitle">{isCorrectAnswer ? 'Great job - keep going' : 'Review and try again'}</div>
-                                            </div>
-                                          </div>
-                                          {supplementalMeaningRows.length > 0 && (
-                                            <div className="flashcard-meaning-list">
-                                              {supplementalMeaningRows.map((row) => (
-                                                <div key={`quiz-meaning-${entry.id || flashcardIndex}-${row.rank}-${row.text}`} className="flashcard-meaning-item">
-                                                  <span className="flashcard-meaning-rank">{row.rank}.</span>
-                                                  <span className="flashcard-meaning-text">{row.text}</span>
-                                                </div>
-                                              ))}
-                                            </div>
-                                          )}
-                                        </>
-                                      )}
-
+                                      <div className="quiz-answer-zone">
+                                      {/* Пояс «низ»: варианты → вердикт → значения → «Continue».
+                                          Вердикт стоит ПОД вариантами (а не над ними), чтобы список
+                                          ответов не «прыгал» между состояниями «вопрос» и «ответ».
+                                          Маскот-лис убран из тренировок Quiz/Sätze (съедал ~200px).
+                                          FSRS не затронут. */}
                                       <div className="flashcard-options quiz-options">
                                         {flashcardOptions.map((option, idx) => {
                                           const isSelected = flashcardSelection === idx;
@@ -39980,6 +39954,34 @@ function AppInner() {
                                       </div>
 
                                       {isAnswered && (
+                                        <>
+                                          <div className={`quiz-result ${isCorrectAnswer ? 'is-correct' : 'is-wrong'}`}>
+                                            {/* Маленький лис рядом с вердиктом — эмоция без потери места. */}
+                                            <img
+                                              src={isCorrectAnswer ? heroMascotSrc : heroCrySrc}
+                                              alt=""
+                                              aria-hidden="true"
+                                              className="quiz-result-fox"
+                                            />
+                                            <div className="quiz-result-copy">
+                                              <div className="quiz-result-title">{isCorrectAnswer ? 'Correct!' : 'Incorrect'}</div>
+                                              <div className="quiz-result-subtitle">{isCorrectAnswer ? 'Great job - keep going' : 'Review and try again'}</div>
+                                            </div>
+                                          </div>
+                                          {supplementalMeaningRows.length > 0 && (
+                                            <div className="flashcard-meaning-list">
+                                              {supplementalMeaningRows.map((row) => (
+                                                <div key={`quiz-meaning-${entry.id || flashcardIndex}-${row.rank}-${row.text}`} className="flashcard-meaning-item">
+                                                  <span className="flashcard-meaning-rank">{row.rank}.</span>
+                                                  <span className="flashcard-meaning-text">{row.text}</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </>
+                                      )}
+
+                                      {isAnswered && (
                                         <div className="quiz-actions">
                                           <button
                                             type="button"
@@ -39996,6 +39998,7 @@ function AppInner() {
                                           </button>
                                         </div>
                                       )}
+                                      </div>
                                     </div>
                                   </div>
                                 );

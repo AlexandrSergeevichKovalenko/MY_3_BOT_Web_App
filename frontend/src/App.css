@@ -12020,6 +12020,24 @@ body:has(.webapp-page.is-theme-light),
   gap: 12px;
 }
 
+/* Два пояса теста: «центр» (вопрос) и «низ» (варианты+вердикт+кнопка).
+   Базовые правила действуют на всех размерах, чтобы контент внутри карты
+   стекался ровно (планшет/браузер тоже). Телефон добавляет к ним растяжение
+   на всю высоту и прижатие низа — в @media ниже. */
+.quiz-prompt-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+}
+.quiz-answer-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .quiz-study-mode-title {
   text-align: center;
   font-size: 34px;
@@ -30204,12 +30222,19 @@ html[data-scheme="light"] .story-modal-guess-answer,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   Вертикальная адаптивность живого Quiz (Quiz/Sätze) — телефон.
-   Было: карточка по высоте контента, прибита к верху, снизу «мёртвое» бежевое
-   поле. Стало: слой и карта тянутся на всю высоту экрана, содержимое
-   распределяется по центру заполненной карты; на маленьком экране упаковывается
-   и при нехватке высоты прокручивается изнутри (safe center не режет верх).
-   FSRS и планшет не затронуты. ═══════════════════════════════════════════════ */
+   Тест-состояние Quiz/Sätze — телефон. ТРЁХПОЯСНАЯ адаптивная раскладка.
+   Было: одна высокая «карта-коробка» внутри сцены; контент по центру карты
+   (justify: safe center) → симметричные дыры сверху и снизу в режиме «вопрос»,
+   а вердикт вставлялся НАД вариантами → список «прыгал» между состояниями.
+   Стало: убираем внутреннюю коробку (сцена — единственная поверхность) и делим
+   экран на три пояса:
+     • верх  (.quiz-layout-head)  — прогресс/режим, высота постоянна;
+     • центр (.quiz-prompt-zone)  — вопрос, забирает свободную высоту («воздух»
+       вокруг него), шрифт держит FitText → не уходит за край по ширине;
+     • низ   (.quiz-answer-zone)  — варианты → вердикт → значения → «Continue»,
+       притянут к низу под большой палец; геометрия одинакова в «вопрос»/«ответ».
+   При нехватке высоты низ не режется — карта прокручивается изнутри.
+   FSRS и планшет (≥700px) не затронуты. ══════════════════════════════════════ */
 @media (max-width: 699.98px) {
   .webapp-page.is-flashcard-study .flashcard-stage.is-session.is-quiz-layout {
     display: flex;
@@ -30221,20 +30246,39 @@ html[data-scheme="light"] .story-modal-guess-answer,
     display: flex;
     flex-direction: column;
   }
+  /* Пояс «верх» */
   .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-layout-head {
     flex: 0 0 auto;
   }
+  /* Карта = колонка на всю высоту, БЕЗ коробки: сцена уже единственная
+     поверхность (варианты остаются кремовыми карточками). */
   .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-study-card {
     flex: 1 1 auto;
     min-height: 0;
     display: flex !important;
     flex-direction: column;
-    justify-content: safe center;
+    justify-content: flex-start;
+    gap: 10px;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 4px 0 max(14px, env(safe-area-inset-bottom, 0px)) !important;
     overflow-y: auto;
   }
-  /* «Continue» прижат к низу заполненной карты. */
+  /* Пояс «центр»: вопрос забирает свободную высоту, воздух вокруг него */
+  .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-prompt-zone {
+    flex: 1 1 auto;
+    min-height: 0;
+    justify-content: center;
+    padding: 4px 2px;
+  }
+  /* Пояс «низ»: притянут книзу, стабилен между состояниями */
+  .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-answer-zone {
+    flex: 0 0 auto;
+    gap: 8px;
+  }
   .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-actions {
-    margin-top: auto;
-    padding-top: 4px;
+    margin-top: 2px;
+    padding-top: 2px;
   }
 }
