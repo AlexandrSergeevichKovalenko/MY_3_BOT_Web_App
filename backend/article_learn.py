@@ -161,6 +161,19 @@ def _generate_and_cache_mnemonics(items: list[dict]) -> dict:
             continue
         if method == "compound" and head and head.lower() not in word.lower():
             continue  # rejected false compound split
+        # Артикль слова у нас защищён (род из Wiktionary), а текст подсказки до сих пор
+        # не проверял никто — в прод попадали «das Körper → значит der Wirbelkörper» и
+        # «-nis — почти всегда die» (наша же таблица правил говорит: обычно das).
+        # Не прошло проверку — НЕ сохраняем: карточка возьмёт детерминированный
+        # gender_tip(), он строится по той же таблице и соврать не может.
+        try:
+            from backend.article_mnemonic_guard import validate_mnemonic
+            ok, why = validate_mnemonic(word=word, article=str(src.get("a") or "").lower(), text=mn)
+            if not ok:
+                logging.warning("mnemonic rejected word=%s: %s | %s", word, why, mn[:120])
+                continue
+        except Exception:
+            logging.warning("mnemonic guard failed word=%s (пропускаю проверку)", word, exc_info=True)
         try:
             store_article_noun_mnemonic(word=word, article=str(src.get("a") or "").lower(),
                                         mnemonic=mn, method=method, head=head)
