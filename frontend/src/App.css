@@ -693,6 +693,78 @@ body {
   font-size: clamp(21px, min(7vw, 3.9vh), 34px) !important;
 }
 
+/* ═══ Редизайн тренировок Quiz/Blocks/Sätze (вариант B) ═══
+   Слова НЕ рвутся посреди букв (было «…pflic|ht»): компонент FitText держит
+   слово целым и уменьшает шрифт, пока оно влезет в строку по ширине блока.
+   Звук встроен в угол плашки задания, бейджи DE/RU убраны (в JSX), кнопки
+   нормального размера — всё помещается на экран без скролла. Интервальное
+   повторение (fsrs) не затрагивается — оно вне is-flashcard-study. */
+.fit-text {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: normal;
+  word-break: keep-all;
+  hyphens: none;
+}
+.webapp-page.is-flashcard-study .flashcard-preview-word,
+.webapp-page.is-flashcard-study .flashcard-native-translation,
+.webapp-page.is-flashcard-study .quiz-study-question {
+  overflow-wrap: normal !important;
+  word-break: keep-all !important;
+  hyphens: none !important;
+}
+
+/* Звук в углу тёмной плашки задания (светлый кружок на тёмно-синем). */
+.webapp-page.is-flashcard-study .flashcard-preview-native-box {
+  position: relative;
+  padding-right: 46px !important;
+}
+.webapp-page.is-flashcard-study .flashcard-preview-speaker {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  cursor: pointer;
+  color: #eaf2ff;
+  background: rgba(224, 164, 74, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(234, 242, 255, 0.14);
+}
+.webapp-page.is-flashcard-study .flashcard-preview-speaker:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* Светлая тема (бежевая плашка на планшете): кружок — на бренде. */
+.webapp-page.is-theme-light.is-flashcard-study .flashcard-preview-speaker {
+  color: #b45f13;
+  background: rgba(214, 122, 36, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(60, 48, 30, 0.1);
+}
+
+/* Убираем дублирующий заголовок режима внутри карточки Quiz —
+   режим уже показан плашкой в шапке экрана. */
+.webapp-page.is-flashcard-study .quiz-study-mode-title {
+  display: none !important;
+}
+
+/* Blöcke: «Подсказка» и «Проверить» одинаковой ширины и нормальной (низкой)
+   высоты — были аномально большими (min-height 54px / font 31px). */
+.webapp-page.is-flashcard-study .blocks-footer .primary-button,
+.webapp-page.is-flashcard-study .blocks-footer .secondary-button {
+  min-height: 34px !important;
+  padding: 5px 14px !important;
+  font-size: 15px !important;
+  flex: 1 1 0 !important;
+}
+
 /* Home dashboard (phone): pin the whole chain to the EXACT visible viewport
    (--app-height) and let the Bento grid flex to fill the leftover height, so the
    12 tiles always fit ANY phone height and the screen can't drift/jitter. With no

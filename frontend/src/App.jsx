@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import './App.css';
 import './components/reader-redesign.css';
 import BlocksTrainer from './components/BlocksTrainer';
+import FitText from './components/FitText';
 import HomeDashboardTiles from './components/HomeDashboardTiles';
 import ReaderSection from './components/ReaderSection';
 import HomeMoreTiles from './components/HomeMoreTiles';
@@ -39546,14 +39547,44 @@ function AppInner() {
                                     <span className="flashcard-preview-mode">{previewModeLabel}</span>
                                   </div>
                                   <div className={`flashcard-preview-card ${(String(previewLearningText).length > 22 || String(previewNativeText).length > 22) ? 'is-long-content' : ''}`}>
-                                    <div className="flashcard-preview-lang-row">
-                                      <span className="flashcard-lang-tag">{learningCode}</span>
-                                      <span className="flashcard-lang-tag is-native">{nativeCode}</span>
-                                    </div>
-                                    <div className="flashcard-preview-word">{previewLearningText}</div>
-                                    <div className="flashcard-preview-divider" />
+                                    <FitText
+                                      className="flashcard-preview-word"
+                                      text={previewLearningText}
+                                      refitKey={previewLearningText}
+                                      min={22}
+                                      max={54}
+                                    />
                                     <div className="flashcard-preview-native-box">
-                                      <div className="flashcard-native-translation">{previewNativeText}</div>
+                                      {/* Звук встроен в угол плашки задания — отдельная строка
+                                          «Слушать» убрана, чтобы карточка помещалась на экран без
+                                          скролла (кнопка «Почувствовать» больше не обрезается). */}
+                                      <button
+                                        type="button"
+                                        className={`flashcard-preview-speaker ${previewTtsLoading ? 'is-loading' : ''}`}
+                                        onClick={async () => {
+                                          const text = resolveFlashcardGerman(entry);
+                                          if (!text || previewTtsLoading) return;
+                                          try {
+                                            setPreviewAudioPlaying(true);
+                                            await playTtsWithUi(previewTtsKey, text, getLearningTtsLocale());
+                                          } finally {
+                                            setPreviewAudioPlaying(false);
+                                            setPreviewAudioReady(true);
+                                          }
+                                        }}
+                                        aria-label={tr('Слушать', 'Listen')}
+                                        title={tr('Слушать', 'Listen')}
+                                        disabled={previewTtsLoading}
+                                      >
+                                        {renderTtsButtonContent(previewTtsLoading)}
+                                      </button>
+                                      <FitText
+                                        className="flashcard-native-translation"
+                                        text={previewNativeText}
+                                        refitKey={previewNativeText}
+                                        min={16}
+                                        max={38}
+                                      />
                                       {previewSupplementalMeaningRows.length > 0 && (
                                         <div className="flashcard-meaning-list">
                                           {previewSupplementalMeaningRows.map((row) => (
@@ -39568,30 +39599,6 @@ function AppInner() {
                                     {sentencePreviewRuHint && (
                                       <div className="flashcard-preview-ru-hint">{sentencePreviewRuHint}</div>
                                     )}
-                                    <button
-                                      type="button"
-                                      className={`flashcard-audio-replay flashcard-preview-listen ${previewTtsLoading ? 'is-loading' : ''}`}
-                                      onClick={async () => {
-                                        const text = resolveFlashcardGerman(entry);
-                                        if (!text || previewTtsLoading) return;
-                                        try {
-                                          setPreviewAudioPlaying(true);
-                                          await playTtsWithUi(previewTtsKey, text, getLearningTtsLocale());
-                                        } finally {
-                                          setPreviewAudioPlaying(false);
-                                          setPreviewAudioReady(true);
-                                        }
-                                      }}
-                                      aria-label={tr('Повторить аудио', 'Audio wiederholen')}
-                                      title={tr('Повторить аудио', 'Audio wiederholen')}
-                                      disabled={previewTtsLoading}
-                                    >
-                                      {renderTtsButtonContent(previewTtsLoading)}
-                                    </button>
-                                    <div className="flashcard-preview-listen-label">
-                                      {tr('Слушать', 'Listen')}
-                                    </div>
-                                    <div className="flashcard-preview-divider" />
                                     <div className="flashcard-actions-row flashcard-preview-feel-row">
                                       <button
                                         type="button"
@@ -39833,7 +39840,12 @@ function AppInner() {
 
                                     <div className={quizStudyCardClassName}>
                                       <div className="quiz-study-mode-title">{isSentenceTrainingMode || isSentenceGapQuiz ? 'Satz Ergänzen' : 'Quiz Mode'}</div>
-                                      <div className={`quiz-study-question ${(isSentenceTrainingMode || isSentenceGapQuiz) ? 'is-sentence-gap' : ''}`}>
+                                      <FitText
+                                        className={`quiz-study-question ${(isSentenceTrainingMode || isSentenceGapQuiz) ? 'is-sentence-gap' : ''}`}
+                                        refitKey={`${questionWord}|${isAnswered}`}
+                                        min={18}
+                                        max={39}
+                                      >
                                         {(isSentenceTrainingMode || isSentenceGapQuiz) && isAnswered
                                           ? renderSentenceWithGapAnswer(
                                             questionWord,
@@ -39841,7 +39853,7 @@ function AppInner() {
                                             isCorrectAnswer ? 'correct' : 'wrong'
                                           )
                                           : questionWord}
-                                      </div>
+                                      </FitText>
 
                                       {(isSentenceTrainingMode || isSentenceGapQuiz) && sentenceTranslation && (
                                         <div className="quiz-study-translation">{sentenceTranslation}</div>
