@@ -16080,6 +16080,108 @@ def _build_sentence_quiz_from_dictionary_entry(
     return _merge_sentence_quiz_into_entry(entry, payload, sentence_origin="dictionary")
 
 
+def regenerate_all_sentence_gap_tasks(
+    *,
+    only_trivial: bool = False,
+    max_items: int | None = None,
+    dry_run: bool = False,
+    log=None,
+) -> dict:
+    """Активный прогон по ВСЕМУ пулу: пересобирает кешированные «Satz Ergänzen»
+    задания с новым стражем качества (ключевое слово вместо филлера). Работает
+    для всех пользователей (данные в общем пуле bt_3_webapp_dictionary_queries).
+
+    only_trivial — трогать только заведомо мусорные (пропущено филлер-слово).
+    dry_run — только посчитать, ничего не менять.
+    Возвращает статистику."""
+    from backend.database import get_db_connection_context
+
+    def _emit(msg: str) -> None:
+        if log:
+            log(msg)
+
+    stats = {
+        "scanned": 0, "trivial_before": 0, "regenerated": 0,
+        "fixed_trivial": 0, "still_trivial": 0, "failed": 0, "skipped": 0,
+    }
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            # ::text LIKE — безопасно и для jsonb, и для text-колонки.
+            cursor.execute(
+                """
+                SELECT id, word_ru, translation_de, word_de, translation_ru,
+                       source_lang, target_lang, response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE response_json::text LIKE '%sentence_gap_v2%'
+                ORDER BY id
+                """
+            )
+            rows = cursor.fetchall()
+
+    _emit(f"Найдено записей с кешем sentence_gap_v2: {len(rows)}")
+
+    for row in rows:
+        if max_items is not None and stats["scanned"] >= max_items:
+            break
+        entry = {
+            "id": row[0], "word_ru": row[1], "translation_de": row[2],
+            "word_de": row[3], "translation_ru": row[4],
+            "source_lang": row[5], "target_lang": row[6], "response_json": row[7],
+        }
+        stats["scanned"] += 1
+
+        response_json = _coerce_response_json(entry.get("response_json"))
+        cache = response_json.get("sentence_gap_v2")
+        old_word = ""
+        if isinstance(cache, dict) and isinstance(cache.get("payload"), dict):
+            old_word = _normalize_space(cache["payload"].get("correct_word"))
+        old_trivial = bool(old_word) and _is_trivial_gap_word(old_word)
+        if old_trivial:
+            stats["trivial_before"] += 1
+
+        if only_trivial and not old_trivial:
+            stats["skipped"] += 1
+            continue
+        if dry_run:
+            continue
+
+        # Форсируем регенерацию: убираем старый кеш, чтобы не переиспользовался.
+        stripped = dict(response_json)
+        stripped.pop("sentence_gap_v2", None)
+        entry["response_json"] = stripped
+
+        src = _normalize_short_lang_code(entry.get("source_lang") or "ru", fallback="ru")
+        tgt = _normalize_short_lang_code(entry.get("target_lang") or "de", fallback="de")
+        try:
+            result = _build_sentence_quiz_from_dictionary_entry(
+                entry, source_lang=src, target_lang=tgt, allow_llm=True
+            )
+        except Exception as exc:
+            stats["failed"] += 1
+            _emit(f"[fail] id={entry['id']}: {exc}")
+            continue
+        if result is None:
+            stats["failed"] += 1
+            continue
+
+        new_word = _normalize_space(
+            _coerce_response_json(result.get("response_json")).get("correct_word")
+            or result.get("target_text")
+        )
+        stats["regenerated"] += 1
+        if old_trivial:
+            if _is_trivial_gap_word(new_word):
+                stats["still_trivial"] += 1
+            else:
+                stats["fixed_trivial"] += 1
+        if stats["regenerated"] % 25 == 0:
+            _emit(f"…перегенерировано {stats['regenerated']}")
+
+    _emit(f"Готово: {stats}")
+    return stats
+
+
 def _is_gpt_seed_sentence_entry(entry: dict | None) -> bool:
     response_json = _coerce_response_json((entry or {}).get("response_json"))
     return str(response_json.get("sentence_origin") or "").strip() == "gpt_seed"
