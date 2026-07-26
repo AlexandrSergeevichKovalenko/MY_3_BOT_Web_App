@@ -652,6 +652,7 @@ from backend.database import (
     _trained_german_word_keys,
     count_dictionary_entries_for_language_pair,
     count_starter_dictionary_entries_for_language_pair,
+    fetch_random_pool_words,
     import_starter_dictionary_snapshot,
     delete_starter_dictionary_snapshot,
     has_youtube_proxy_subtitles_access,
@@ -47940,6 +47941,51 @@ def get_webapp_dictionary_cards():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+
+
+@app.route("/api/webapp/dictionary/distractors", methods=["POST"])
+def get_webapp_dictionary_distractors():
+    """Random learning-language words from the shared pool, used to fill quiz options to
+    4 when the local session/dictionary is too small (single-word «разбор» sessions, or a
+    fresh account without the starter dictionary). Best-effort: on any error return an
+    empty list so the quiz just falls back to whatever local options it had."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        limit = max(1, min(60, int(payload.get("limit", 12) or 12)))
+    except (TypeError, ValueError):
+        limit = 12
+    exclude = payload.get("exclude") or []
+    exclude_norms = {str(x or "").strip().lower() for x in exclude if str(x or "").strip()}
+
+    # The quiz options are in the learning language (German for this app); target_lang is
+    # the learning side of the canonical native→learning pair.
+    try:
+        words = fetch_random_pool_words(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            learning_lang=target_lang,
+            limit=limit,
+            exclude_norms=exclude_norms,
+        )
+    except Exception as exc:
+        logger.warning("distractor pool fetch failed for user %s: %s", user_id, exc)
+        words = []
+
+    return jsonify({"ok": True, "words": words})
 
 
 @app.route("/api/webapp/dictionary/folders", methods=["POST"])

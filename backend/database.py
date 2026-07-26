@@ -16917,6 +16917,69 @@ def count_starter_dictionary_entries_for_language_pair(
             return _count(own_cursor)
 
 
+def fetch_random_pool_words(
+    *,
+    source_lang: str | None,
+    target_lang: str | None,
+    learning_lang: str | None = "de",
+    limit: int = 12,
+    exclude_norms=None,
+) -> list[str]:
+    """Random headwords in the LEARNING language from the SHARED pool
+    (bt_3_dictionary_entries) — used only as a quiz-distractor fallback when a
+    session/personal dictionary has too few words to fill 4 options (e.g. a single-word
+    «разбор» session or a fresh account without the starter dictionary).
+
+    Off the hot path: one small fetch per training session, not per card. The pool is a
+    few thousand rows per pair, so ORDER BY RANDOM() is cheap enough. We over-fetch (×3)
+    so caller-side exclusions still leave enough candidates.
+    """
+    safe_limit = max(1, min(60, int(limit or 12)))
+    learn = str(learning_lang or "de").strip().lower()
+    # word_de / word_ru are canonical, direction-independent columns (German is always in
+    # word_de). Non-de/ru natives still learn German → default to word_de.
+    word_col = "word_ru" if learn == "ru" else "word_de"
+    src = str(source_lang or "").strip().lower()
+    tgt = str(target_lang or "").strip().lower()
+    exclude = {
+        str(x or "").strip().lower()
+        for x in (exclude_norms or set())
+        if str(x or "").strip()
+    }
+
+    def _fetch(cur) -> list[str]:
+        cur.execute(
+            f"""
+            SELECT DISTINCT NULLIF(TRIM({word_col}), '') AS w
+            FROM bt_3_dictionary_entries
+            WHERE ((source_lang = %s AND target_lang = %s)
+                OR (source_lang = %s AND target_lang = %s))
+              AND NULLIF(TRIM({word_col}), '') IS NOT NULL
+            ORDER BY RANDOM()
+            LIMIT %s;
+            """,
+            [src, tgt, tgt, src, safe_limit * 3],
+        )
+        out: list[str] = []
+        seen: set[str] = set()
+        for row in cur.fetchall() or []:
+            word = str((row or [None])[0] or "").strip()
+            if not word:
+                continue
+            key = word.lower()
+            if key in exclude or key in seen:
+                continue
+            seen.add(key)
+            out.append(word)
+            if len(out) >= safe_limit:
+                break
+        return out
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _fetch(own_cursor)
+
+
 def delete_starter_dictionary_snapshot(
     *,
     user_id: int,

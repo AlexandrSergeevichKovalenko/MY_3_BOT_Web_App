@@ -6528,6 +6528,9 @@ function AppInner() {
   const [flashcardsEmptyState, setFlashcardsEmptyState] = useState(null);
   const [flashcards, setFlashcards] = useState([]);
   const [flashcardPool, setFlashcardPool] = useState([]);
+  // Shared-pool words (learning language) used only to top up quiz options to 4 when the
+  // session/personal dictionary is too small to yield enough distractors on its own.
+  const [flashcardDistractorWords, setFlashcardDistractorWords] = useState([]);
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [flashcardSelection, setFlashcardSelection] = useState(null);
   const [flashcardOptions, setFlashcardOptions] = useState([]);
@@ -19762,6 +19765,21 @@ function AppInner() {
     flashcardRoundStartRef.current = Date.now();
   }, [flashcards, flashcardIndex]);
 
+  // When the shared-pool distractor batch arrives after the card is already shown, top up
+  // the current options to 4 — but only while the card is unanswered, so we never disturb
+  // an answer already in progress or reset the round timer.
+  useEffect(() => {
+    if (!flashcards.length) return;
+    if (flashcardSelection !== null) return;
+    if (flashcardOptions.length >= 4) return;
+    const entry = flashcards[flashcardIndex];
+    const rebuilt = buildFlashcardOptions(entry, flashcards);
+    if (rebuilt.length > flashcardOptions.length) {
+      setFlashcardOptions(rebuilt);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flashcardDistractorWords]);
+
   useEffect(() => {
     if (!flashcardPreviewActive || !flashcardsOnly) {
       stopTtsPlayback();
@@ -27283,6 +27301,27 @@ function AppInner() {
         setFlashcardPool([]);
       }
     })();
+
+    // Always warm a batch of shared-pool words as a distractor fallback — even for manual
+    // single-word sessions, where the pool above is just the one word being studied and
+    // would otherwise leave the quiz with a single option.
+    (async () => {
+      try {
+        const distractorResponse = await fetchWithTimeout('/api/webapp/dictionary/distractors', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, limit: 24 }),
+        }, 12000);
+        if (distractorResponse.ok) {
+          const distractorData = await distractorResponse.json();
+          setFlashcardDistractorWords(Array.isArray(distractorData.words) ? distractorData.words : []);
+        } else {
+          setFlashcardDistractorWords([]);
+        }
+      } catch (_error) {
+        setFlashcardDistractorWords([]);
+      }
+    })();
   };
 
   const loadFolders = async () => {
@@ -27385,6 +27424,23 @@ function AppInner() {
         .filter(Boolean)
         .filter((value) => value !== correct)
     ));
+
+    // Top up from the shared pool when the local session/dictionary can't yield 3
+    // distractors (single-word «разбор» sessions, or a fresh account without the starter
+    // dictionary). Without this the quiz shows a single option — no real choice.
+    if (values.length < 3 && Array.isArray(flashcardDistractorWords) && flashcardDistractorWords.length) {
+      const correctNorm = String(correct).trim().toLowerCase();
+      const existingNorms = new Set(values.map((value) => String(value).trim().toLowerCase()));
+      for (const word of flashcardDistractorWords) {
+        const text = String(word || '').trim();
+        if (!text) continue;
+        const norm = text.toLowerCase();
+        if (norm === correctNorm || existingNorms.has(norm)) continue;
+        existingNorms.add(norm);
+        values.push(text);
+        if (values.length >= 3) break;
+      }
+    }
 
     const distractors = [];
     while (distractors.length < 3 && values.length > 0) {
