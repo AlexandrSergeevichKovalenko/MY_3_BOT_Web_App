@@ -12109,6 +12109,45 @@ body:has(.webapp-page.is-theme-light),
   min-height: 40px;
 }
 
+/* ═══ Ответ дан: компактный экран, который нормально заканчивается снизу ═══
+   После ответа карточка добирает маскота + «Correct!» + список значений поверх
+   вопроса и 4 вариантов — на невысоких телефонах это выше видимой области, и
+   последний (зелёный) вариант обрезался краем, а «Продолжить» уезжал за экран
+   («огрызок» без явного конца). В состоянии is-answered убираем дублирующий
+   заголовок «Quiz Mode» (он уже есть в шапке), ужимаем маскота и отступы —
+   тогда все варианты видны целиком и низ читается как реальный конец экрана.
+   Только телефон: на планшете/браузере высоты хватает и так. */
+@media (max-width: 699.98px) {
+  .flashcard-quiz-layout.is-answered .quiz-study-mode-title {
+    display: none;
+  }
+  .webapp-flashcards .flashcard-quiz-layout.is-answered .quiz-mascot-circle {
+    width: min(100%, 60px) !important;
+    margin-top: 0;
+  }
+  .flashcard-quiz-layout.is-answered .quiz-study-card {
+    gap: 7px;
+    padding-top: 12px;
+  }
+  .flashcard-quiz-layout.is-answered .quiz-study-question {
+    font-size: clamp(22px, 5vw, 27px);
+  }
+  .flashcard-quiz-layout.is-answered .quiz-result {
+    margin: 0;
+  }
+  .flashcard-quiz-layout.is-answered .flashcard-meaning-item {
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+  .flashcard-quiz-layout.is-answered .quiz-options {
+    gap: 8px;
+  }
+  /* Небольшой нижний отступ, чтобы последняя строка не липла к самому краю. */
+  .webapp-page.is-flashcard-study .flashcard-stage.is-session.is-quiz-layout {
+    padding-bottom: 20px;
+  }
+}
+
 .quiz-actions {
   margin-top: 2px;
 }

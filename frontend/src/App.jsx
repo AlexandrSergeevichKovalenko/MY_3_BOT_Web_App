@@ -39817,6 +39817,7 @@ function AppInner() {
                                   'flashcard flashcard-quiz-layout',
                                   quizNeedsCompact ? 'is-compact' : '',
                                   quizNeedsUltraCompact ? 'is-ultra-compact' : '',
+                                  isAnswered ? 'is-answered' : '',
                                 ].filter(Boolean).join(' ');
                                 const quizStudyCardClassName = [
                                   'quiz-study-card',
