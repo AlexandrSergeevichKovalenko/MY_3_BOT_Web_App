@@ -573,6 +573,50 @@
   color: var(--dmps-text-muted, #94a3b8);
 }
 
+/* «Так же пишется»: другие слова с тем же написанием, но другим родом
+   (der Kiefer — челюсть / die Kiefer — сосна). Тап открывает соседнее слово. */
+.dq-homographs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.dq-homographs-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--dmps-text-muted, #94a3b8);
+}
+.dq-homograph {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--dmps-text-secondary, #cbd5e1);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.dq-homograph:active {
+  background: rgba(148, 163, 184, 0.16);
+}
+.dq-homograph.is-static {
+  cursor: default;
+  opacity: 0.9;
+}
+.dq-homograph-word {
+  font-weight: 600;
+}
+.dq-homograph-gloss {
+  color: var(--dmps-text-muted, #94a3b8);
+}
+
 /* Numbered meanings, each with an optional example pair. */
 .dq-meanings {
   list-style: none;

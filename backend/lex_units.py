@@ -114,6 +114,33 @@ def _pick_unit(units: list[dict], *, requested_article: str) -> dict | None:
     return sorted(pool, key=lambda u: ((u.get("gender") or "я"), u["id"]))[0]
 
 
+def _collect_homographs(cur, units: list[dict], chosen: dict, *, want_lang: str) -> list[dict]:
+    """Другие слова с тем же написанием: «der Kiefer» (челюсть) и «die Kiefer» (сосна).
+
+    Запрос без артикля угадать нечем, поэтому одно слово мы показываем, а про остальные
+    честно говорим «ещё есть» — иначе человек уверен, что у слова один смысл, и второй
+    он никогда не увидит."""
+    others = [u for u in units if u["id"] != chosen["id"]]
+    out: list[dict] = []
+    for unit in others:
+        links = _fetch_links(cur, unit["id"], want_lang=want_lang)
+        translation = ""
+        for link in links:
+            value = link["display"]
+            if _EXERCISE_BLANK in value or _GRAMMAR_NOTE_RE.search(value):
+                continue
+            translation = value
+            break
+        out.append({
+            "display": unit["display"],
+            "gender": unit.get("gender") or "",
+            "part_of_speech": unit.get("pos") or "",
+            "translation": translation,
+            "unit_id": unit["id"],
+        })
+    return out
+
+
 def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang: str) -> dict:
     """Карточка в том виде, какой ждёт фронт.
 
@@ -297,7 +324,18 @@ def lookup(word: str, *, source_lang: str, target_lang: str) -> dict | None:
                     # Единица есть, а перевода на нужный язык нет — отдавать нечего,
                     # пусть обычный путь сходит в переводчик.
                     return None
-                return _build_item(unit, links, source_lang=query_lang, target_lang=other_lang)
+                item = _build_item(unit, links, source_lang=query_lang, target_lang=other_lang)
+                # Соседей ищем по написанию БЕЗ артикля, даже когда спросили с ним:
+                # человек, открывший «der Kiefer», должен знать, что есть и «die Kiefer».
+                siblings = units
+                bare_key = normalize_query(word)
+                if bare_key and bare_key != keys[0]:
+                    siblings = _fetch_units(cur, lang=query_lang, surface_key=bare_key) or units
+                if len(siblings) > 1:
+                    item["homographs"] = _collect_homographs(
+                        cur, siblings, unit, want_lang=other_lang,
+                    )
+                return item
     except Exception as exc:
         logging.debug("lex units lookup failed for %r: %s", word, exc)
         return None

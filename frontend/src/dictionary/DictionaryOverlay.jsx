@@ -926,7 +926,18 @@ export default function DictionaryOverlay({ onClose } = {}) {
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
             {tts.errorMsg && <div className="dd-err" role="status">🔊 {tts.errorMsg}</div>}
-            {item && <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} onSaveExample={saveExample} savedChips={savedChips} />}
+            {item && (
+              <WordBreakdown
+                item={item}
+                tts={tts}
+                onSaveChip={saveChip}
+                onSaveExample={saveExample}
+                savedChips={savedChips}
+                // Тап по «так же пишется» открывает соседнее слово: запрос идёт С АРТИКЛЕМ,
+                // иначе снова вернулось бы то же самое — угадать по написанию нечем.
+                onPickHomograph={(text) => { setQuery(text); translate(text); }}
+              />
+            )}
             {(enrich === 'loading' || enrich === 'streaming') && (
               <BreakdownSkeleton arrived={streamSections} />
             )}
