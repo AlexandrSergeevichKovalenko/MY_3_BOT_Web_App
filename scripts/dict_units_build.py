@@ -278,7 +278,10 @@ def main() -> int:
         k = kind_of(text)
         if not k:
             return None
-        body = strip_article(text)
+        # Артикль снимаем ТОЛЬКО у отдельного слова. У фразы первое «Das» — не артикль
+        # перед существительным, а часть предложения: «Das kriegen wir hin» превращалось
+        # в «kriegen wir hin», и человек видел обрубок вместо своей сохранённой фразы.
+        body = strip_article(text) if k == "word" else re.sub(r"\s+", " ", text.strip())
         if k != "word":
             u = store.get(lang=lang, kind=k, lemma=body, display=body)
             u["surfaces"].add((norm(body), "exact"))

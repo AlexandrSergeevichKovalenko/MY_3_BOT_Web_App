@@ -195,6 +195,7 @@ from backend.job_queue import (
 from backend.translation_workflow import _extract_correct_translation
 from backend.german_grammar_tables import build_grammar_tables
 from backend.dictionary_pool_reverse import build_reverse_pool_item
+from backend import lex_units
 from backend.reader_audio_singleflight import (
     acquire_reader_audio_singleflight_slot,
     release_reader_audio_singleflight_slot,
@@ -1259,6 +1260,11 @@ DICTIONARY_SHARED_CACHE_ENABLED = str(os.getenv("DICTIONARY_SHARED_CACHE_ENABLED
 # Обратное сопоставление в пуле (слово, известное как ЦЕЛЬ перевода). По умолчанию
 # ВЫКЛЮЧЕНО: включается переменной окружения без деплоя и так же мгновенно откатывается.
 DICTIONARY_POOL_REVERSE_ENABLED = str(os.getenv("DICTIONARY_POOL_REVERSE_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
+# Слой ЕДИНИЦ: поиск по слову, а не по строке текста (backend/lex_units.py).
+# Пока рубильник выключен, словарь работает ровно как раньше — слой лежит рядом и
+# ни на что не влияет. Включённый слой отвечает ДО общего банка: он знает про слово
+# больше (артикль, часть речи, все переводы) и не умеет приклеивать чужой разбор.
+DICTIONARY_UNITS_LOOKUP_ENABLED = str(os.getenv("DICTIONARY_UNITS_LOOKUP_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
 DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK = str(os.getenv("DICTIONARY_ENABLE_REVERSE_LLM_FALLBACK") or "0").strip().lower() in {"1", "true", "yes", "on"}
 # When ON, the in-app dictionary consults our bundled DE↔RU dictionaries (FreeDict ~22k →
 # WikDict) BEFORE the CORE GPT call. On a hit we serve the base translation/article/forms
@@ -7042,6 +7048,10 @@ def _load_reverse_pool_item(*, word: str, source_lang: str, target_lang: str) ->
     направлении. Карточка собирается разворотом (см. dictionary_pool_reverse) — она почти
     всегда НЕПОЛНАЯ, и это нормально: вызывающая сторона использует её как готовое ядро и
     экономит основной запрос к GPT, оставляя только дообогащение."""
+    # Слой единиц делает то же самое честно (слово ↔ слово), поэтому при включённом слое
+    # костыль отключается: именно он приклеил разбор «der Rüpel» к заголовку «der Flegel».
+    if DICTIONARY_UNITS_LOOKUP_ENABLED:
+        return _load_item_from_units_layer(word=word, source_lang=source_lang, target_lang=target_lang)
     if not DICTIONARY_POOL_REVERSE_ENABLED:
         return None
     try:
@@ -7073,10 +7083,36 @@ def _reverse_pool_item_to_core_raw(item: dict, *, detected: str = "source") -> d
     }
 
 
+def _load_item_from_units_layer(*, word: str, source_lang: str, target_lang: str) -> dict | None:
+    """Ответ из слоя ЕДИНИЦ: написание → указатель → слово → переводы.
+
+    Заменяет собой и прямой поиск по общему банку, и «обратное сопоставление» по русской
+    стороне: «враг» — такая же единица, как «der Feind», и связь между ними уже есть.
+    Именно обратное сопоставление склеило когда-то разбор «der Rüpel» с заголовком
+    «der Flegel» — в слое единиц такое невозможно, разбор лежит на своей единице."""
+    if not DICTIONARY_UNITS_LOOKUP_ENABLED:
+        return None
+    try:
+        return lex_units.lookup(word, source_lang=source_lang, target_lang=target_lang)
+    except Exception as exc:
+        logging.debug("units lookup failed for %r: %s", word, exc)
+        return None
+
+
 def _load_dictionary_item_from_pool(*, word: str, source_lang: str, target_lang: str) -> dict | None:
     """Первая инстанция любого запроса перевода: наш собственный пул. Отдаём карточку
     только если она ПОЛНАЯ — тонкую отдавать нельзя, иначе пользователь навсегда получит
     обрезанный разбор вместо настоящего."""
+    # Слой единиц спрашиваем ПЕРВЫМ: он опознаёт слово, а не строку текста, поэтому
+    # находит и то, что банк видит только в обратном направлении. Правило «отдаём лишь
+    # полную карточку» действует и здесь.
+    unit_item = _load_item_from_units_layer(word=word, source_lang=source_lang, target_lang=target_lang)
+    if (
+        isinstance(unit_item, dict)
+        and unit_item.get("__lex_has_card")
+        and not _dictionary_payload_needs_enrichment(unit_item)
+    ):
+        return unit_item
     try:
         entry = get_pool_dictionary_entry(
             source_lang=source_lang,
@@ -7318,6 +7354,48 @@ def _sanitize_learning_language_fields(item: dict, learn_lang: str) -> dict:
             if isinstance(r, dict) and not _entry_wrong_script_for_learning_lang(r.get("word"), ll)
         ]
     return item
+
+
+def _keep_core_headword(
+    core_raw: dict[str, Any] | None,
+    merged_raw: dict[str, Any] | None,
+    *,
+    query_source_lang: str,
+    query_target_lang: str,
+) -> dict[str, Any]:
+    """Не дать дообогащению подменить РАЗБИРАЕМОЕ СЛОВО.
+
+    Ядро карточки (находка в нашем словаре или основной ответ GPT) уже назвало немецкое
+    слово. Дообогащение просят разобрать ИСХОДНЫЙ запрос — для «Грубиян» оно свободно
+    отвечает другим синонимом, и склейка меняет заголовок, оставляя формы, транскрипцию и
+    примеры от прежнего слова. Так карточка «der Flegel» получила формы «der Rüpel»
+    (26.07). Здесь слово ядра остаётся за ядром, а вместе с ним и всё, что описывает
+    именно его; расхождение пишем в лог, чтобы такие случаи было видно."""
+    core = core_raw if isinstance(core_raw, dict) else {}
+    merged = merged_raw if isinstance(merged_raw, dict) else {}
+    german_key = "word_source" if str(query_source_lang or "").lower() == "de" else "word_target"
+    core_word = str(core.get(german_key) or "").strip()
+    merged_word = str(merged.get(german_key) or "").strip()
+    if not core_word or not merged_word:
+        return merged
+    normalize = lambda value: re.sub(r"^(?:der|die|das)\s+", "", value.strip(), flags=re.I).casefold()
+    if normalize(core_word) == normalize(merged_word):
+        return merged
+    logging.warning(
+        "dictionary enrichment renamed the word (%r → %r) — keeping the core word and its facts",
+        core_word, merged_word,
+    )
+    fixed = dict(merged)
+    fixed[german_key] = core_word
+    # Всё это описывает КОНКРЕТНОЕ немецкое слово: если слово осталось прежним, то и
+    # факты о нём должны быть прежними, а не от синонима, который назвало дообогащение.
+    for field in ("forms", "pronunciation", "article", "usage_examples",
+                  "common_collocations", "government_patterns", "grammar_tables"):
+        if field in core:
+            fixed[field] = copy.deepcopy(core[field])
+        else:
+            fixed.pop(field, None)
+    return fixed
 
 
 def _merge_dictionary_raw_payloads(
@@ -19961,6 +20039,11 @@ def _run_dictionary_enrichment_job(lookup_id: str) -> None:
         )
         usage_enrichment = get_last_llm_usage(reset=True)
         merged_raw = _merge_dictionary_raw_payloads(core_raw, enrichment_raw if isinstance(enrichment_raw, dict) else {})
+        merged_raw = _keep_core_headword(
+            core_raw, merged_raw,
+            query_source_lang=str(job.get("query_source_lang") or ""),
+            query_target_lang=str(job.get("query_target_lang") or ""),
+        )
         final_item, final_direction, _detected, _source_value, _target_value = _build_dictionary_result_from_raw(
             raw=merged_raw,
             query_word=str(job.get("word") or ""),
