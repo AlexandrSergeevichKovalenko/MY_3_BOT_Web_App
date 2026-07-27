@@ -1058,7 +1058,7 @@ BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or 
 READER_AUDIO_PAGES_7D_LIMIT = max(1, int((os.getenv("READER_AUDIO_PAGES_7D_LIMIT") or "10").strip() or "10"))
 READER_AUDIO_PAGES_WINDOW_DAYS = max(1, int((os.getenv("READER_AUDIO_PAGES_WINDOW_DAYS") or "7").strip() or "7"))
 FREE_FLASHCARDS_WORDS_DAILY_PER_MODE = max(1, int((os.getenv("FREE_FLASHCARDS_WORDS_DAILY_PER_MODE") or "10").strip() or "10"))
-BLOCKS_SINGLE_WORD_MAX_LEN = 10
+BLOCKS_SINGLE_WORD_MAX_LEN = max(4, int((os.getenv("BLOCKS_SINGLE_WORD_MAX_LEN") or "14").strip() or "14"))
 # Blocks оставляет только короткие карточки (≤ MAX_LEN), поэтому очередь надо
 # сканировать широким срезом: если брать лишь первые N «по сроку», короткие
 # слова из глубины очереди никогда не попадут в набор и режим будет пустым.
