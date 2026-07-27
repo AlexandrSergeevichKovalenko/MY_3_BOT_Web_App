@@ -6972,6 +6972,9 @@ function AppInner() {
   const [vocabBulkDeleteError, setVocabBulkDeleteError] = useState('');
   const [vocabEditItem, setVocabEditItem] = useState(null);
   const [vocabEditWord, setVocabEditWord] = useState('');
+  // «Разбить на значения»: карточка, которую предлагаем разбить, и флаг работы.
+  const [vocabSplitItem, setVocabSplitItem] = useState(null);
+  const [vocabSplitLoading, setVocabSplitLoading] = useState(false);
   const [vocabEditTrans, setVocabEditTrans] = useState('');
   const [vocabEditTransSecondary, setVocabEditTransSecondary] = useState('');
   const [vocabEditTransTertiary, setVocabEditTransTertiary] = useState('');
@@ -10898,6 +10901,31 @@ function AppInner() {
       setVocabLoading(false);
     }
   }, [initData, vocabFolderFilter, vocabSearch, vocabSort, vocabOffset, fetchWithTimeout, tr, isOnline, webappUser?.id]);
+
+  // Разбить карточку с несколькими смыслами на отдельные карточки. Исходная остаётся
+  // и берёт первое значение вместе со всей историей повторений — её терять нельзя,
+  // поэтому автоматически это никогда не делается, только по кнопке.
+  const splitVocabEntrySenses = useCallback(async () => {
+    if (!vocabSplitItem || !initData || vocabSplitLoading) return;
+    setVocabSplitLoading(true);
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/split-senses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, entry_id: vocabSplitItem.id }),
+      }, 15000);
+      if (!response.ok) return;
+      setVocabSplitItem(null);
+      setVocabExpandedId(null);
+      // Карточек стало больше — перечитываем список с начала, чтобы новые встали
+      // на свои места вместе со старой.
+      await loadVocabLibrary({ reset: true });
+    } catch (_err) {
+      // тихо: человек увидит, что список не изменился, и сможет повторить
+    } finally {
+      setVocabSplitLoading(false);
+    }
+  }, [vocabSplitItem, vocabSplitLoading, initData, fetchWithTimeout, loadVocabLibrary]);
 
   const deleteVocabEntry = useCallback(async () => {
     if (!vocabDeleteItem || !initData) return;
@@ -37904,6 +37932,15 @@ function AppInner() {
                                               <LibraryWordDetail item={item} />
                                             </div>
                                             <div className="vocab-word-actions vocab-word-fullscreen-actions">
+                                              {splitTranslationSenses(displayTrans).length > 1 && (
+                                                <button
+                                                  type="button"
+                                                  className="vocab-action-btn vocab-action-split"
+                                                  onClick={() => setVocabSplitItem(item)}
+                                                >
+                                                  ✂️ {tr('Разбить на значения', 'In Bedeutungen teilen')}
+                                                </button>
+                                              )}
                                               <button
                                                 type="button"
                                                 className="vocab-action-btn vocab-action-edit"
@@ -38655,6 +38692,56 @@ function AppInner() {
                     )}
 
                     {/* Delete confirm */}
+                    {vocabSplitItem && (() => {
+                      const splitSource = sanitizeBilingualTargetText(
+                        vocabSplitItem.display_word || vocabSplitItem.word_de || '',
+                        vocabSplitItem.display_translation || vocabSplitItem.translation_ru || vocabSplitItem.word_ru || '',
+                        vocabSplitItem.target_lang || '',
+                      );
+                      const parts = splitTranslationSenses(splitSource);
+                      return (
+                        <div className="vocab-delete-overlay" onClick={(e) => { if (e.target.classList.contains('vocab-delete-overlay')) setVocabSplitItem(null); }}>
+                          <div className="vocab-delete-card">
+                            <div className="vocab-delete-icon">✂️</div>
+                            <div className="vocab-delete-title">
+                              {tr(`Разбить на ${parts.length} карточки?`, `In ${parts.length} Karten teilen?`)}
+                            </div>
+                            <div className="vocab-delete-word">
+                              {vocabSplitItem.display_word || vocabSplitItem.word_de || vocabSplitItem.word_ru}
+                            </div>
+                            <div className="vocab-delete-sub">
+                              {tr(
+                                'Эта карточка останется и будет учить первое значение — история повторений сохранится. Остальные значения станут новыми карточками и начнут с нуля. Ничего не удаляется.',
+                                'Diese Karte bleibt und lernt die erste Bedeutung — der Wiederholungsverlauf bleibt erhalten. Die übrigen Bedeutungen werden zu neuen Karten und starten bei null. Nichts wird gelöscht.',
+                              )}
+                            </div>
+                            <div className="vocab-split-preview">
+                              {parts.slice(0, 6).map((part, index) => (
+                                <div key={`split-${part.value}`} className={`vocab-split-row ${index === 0 ? 'is-kept' : ''}`}>
+                                  <span className="vocab-split-rank">{index + 1}.</span>
+                                  <span className="vocab-split-text">{part.value}</span>
+                                  {index === 0 && <span className="vocab-split-note">{tr('остаётся здесь', 'bleibt hier')}</span>}
+                                </div>
+                              ))}
+                            </div>
+                            <div className="vocab-delete-actions">
+                              <button type="button" className="vocab-del-cancel" onClick={() => setVocabSplitItem(null)}>
+                                {tr('Отмена', 'Abbrechen')}
+                              </button>
+                              <button
+                                type="button"
+                                className="vocab-split-confirm"
+                                disabled={vocabSplitLoading}
+                                onClick={() => void splitVocabEntrySenses()}
+                              >
+                                {vocabSplitLoading ? '…' : tr('Разбить', 'Teilen')}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {vocabDeleteItem && (
                       <div className="vocab-delete-overlay" onClick={(e) => { if (e.target.classList.contains('vocab-delete-overlay')) setVocabDeleteItem(null); }}>
                         <div className="vocab-delete-card">

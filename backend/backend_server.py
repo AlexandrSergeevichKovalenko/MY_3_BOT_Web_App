@@ -196,6 +196,7 @@ from backend.translation_workflow import _extract_correct_translation
 from backend.german_grammar_tables import build_grammar_tables
 from backend.dictionary_pool_reverse import build_reverse_pool_item
 from backend import lex_units
+from backend import lex_senses
 from backend.reader_audio_singleflight import (
     acquire_reader_audio_singleflight_slot,
     release_reader_audio_singleflight_slot,
@@ -485,6 +486,8 @@ from backend.database import (
     get_vocabulary_folders_with_counts,
     delete_vocabulary_entry,
     edit_vocabulary_entry,
+    get_vocabulary_entry_for_user,
+    split_vocabulary_entry_senses,
     bulk_assign_vocabulary_folder,
     bulk_delete_vocabulary_entries,
     rename_dictionary_folder,
@@ -48522,6 +48525,60 @@ def webapp_vocabulary_edit():
     if updated is None:
         return jsonify({"error": "Запись не найдена"}), 404
     return jsonify({"ok": True, "item": updated})
+
+
+@app.route("/api/webapp/vocabulary/split-senses", methods=["POST"])
+def webapp_vocabulary_split_senses():
+    """Разбить карточку на несколько — по одной на значение.
+
+    Часть сохранённых переводов склеена из смыслов: «1прикладывать; накладывать
+    2 надевать 3 строить…». Такую карточку нельзя честно оценить в тренировке, поэтому
+    человек может нажать «Разбить на значения» и получить отдельную карточку на каждый
+    смысл. Делается ТОЛЬКО по его действию: у карточек накоплена история повторений,
+    ломать её автоматически нельзя.
+
+    Исходная карточка остаётся и берёт первое значение — вместе со своей историей."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_id = payload.get("entry_id")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not entry_id:
+        return jsonify({"error": "entry_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    user_id = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+
+    try:
+        entry = get_vocabulary_entry_for_user(user_id=int(user_id), entry_id=int(entry_id))
+    except Exception:
+        logging.warning("split-senses: не удалось прочитать карточку", exc_info=True)
+        entry = None
+    if not entry:
+        return jsonify({"error": "Карточка не найдена"}), 404
+
+    source_text = str(entry.get("word_ru") or entry.get("translation_ru") or "").strip()
+    senses = lex_senses.split_translation(source_text)
+    if len(senses) < 2:
+        # Не ошибка: просто делить нечего. Человеку — спокойный ответ, не красная плашка.
+        return jsonify({"ok": True, "created": 0, "message": "В этой карточке одно значение"})
+
+    try:
+        result = split_vocabulary_entry_senses(
+            user_id=int(user_id), entry_id=int(entry_id), senses=senses,
+        )
+    except Exception as exc:
+        logging.warning("split-senses failed: %s", exc, exc_info=True)
+        return jsonify({"error": "Не удалось разбить карточку, попробуйте ещё раз"}), 500
+
+    return jsonify({
+        "ok": True,
+        "created": int(result.get("created") or 0),
+        "kept": result.get("kept") or "",
+        "senses": [s["value"] for s in senses],
+    })
 
 
 @app.route("/api/webapp/vocabulary/bulk-assign-folder", methods=["POST"])
