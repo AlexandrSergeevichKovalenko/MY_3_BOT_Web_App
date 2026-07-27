@@ -13467,6 +13467,13 @@ body:has(.webapp-page.is-theme-light),
   font-size: var(--word-slot-font-size, 22px);
 }
 
+/* Визуальный зазор между артиклем и словом (там, где в оригинале был пробел):
+   «der Funkspruch», а не «derFunkspruch». Margin не влияет на bounding-rect
+   слота → drag&drop не ломается. */
+.blocks-target.is-word .blocks-slot.has-word-gap {
+  margin-right: 10px;
+}
+
 .blocks-slot {
   min-width: 28px;
   min-height: 36px;

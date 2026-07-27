@@ -113,6 +113,23 @@ export default function BlocksTrainer({
 
   const type = useMemo(() => detectCardType(answer, cardType), [answer, cardType]);
   const targetTokens = useMemo(() => tokenize(answer, type), [answer, type]);
+  // WORD-режим склеивает буквы без пробелов («der Funkspruch» → буквы d,e,r,F,…).
+  // Запоминаем, ПОСЛЕ какого индекса буквы в оригинале стоял пробел, чтобы дать
+  // визуальный зазор между артиклем и словом (и между словами словосочетания).
+  const gapAfter = useMemo(() => {
+    const set = new Set();
+    if (type !== 'WORD') return set;
+    const raw = String(answer || '').trim();
+    let letterIdx = -1;
+    for (const ch of raw) {
+      if (/\s/.test(ch)) {
+        if (letterIdx >= 0) set.add(letterIdx);
+      } else {
+        letterIdx += 1;
+      }
+    }
+    return set;
+  }, [answer, type]);
   const timerMs = useMemo(() => calcTimerMs(answer, timerMode), [answer, timerMode]);
 
   const [tiles, setTiles] = useState([]);
@@ -718,7 +735,8 @@ export default function BlocksTrainer({
     }, 120);
   }, [status, slotRects, targetTokens.length]);
 
-  const displayAnswer = type === 'PHRASE' ? targetTokens.join(' ') : targetTokens.join('');
+  // Показываем ответ с оригинальными пробелами («der Funkspruch», а не «derFunkspruch»).
+  const displayAnswer = String(answer || '').trim() || (type === 'PHRASE' ? targetTokens.join(' ') : targetTokens.join(''));
   const visibleTiles = tiles.filter((tile) => tile.slotIndex === null);
   const timerSeconds = timeLeftMs === null ? null : Math.ceil(timeLeftMs / 1000);
   const text = {
@@ -774,6 +792,7 @@ export default function BlocksTrainer({
                   selectedSlotIndex === idx ? 'is-selected' : '',
                   hoverSlotIndex === idx ? 'is-hovered' : '',
                   snapSlotIndex === idx ? 'is-snapping' : '',
+                  gapAfter.has(idx) ? 'has-word-gap' : '',
                 ].filter(Boolean).join(' ')}
                 role="button"
                 tabIndex={0}
