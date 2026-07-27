@@ -77,3 +77,29 @@ CREATE TABLE IF NOT EXISTS bt_3_lex_unit_sources (
 );
 CREATE INDEX IF NOT EXISTS idx_lex_unit_sources_entry
     ON bt_3_lex_unit_sources (entry_id);
+
+-- ── 5. Значения: перевод крепится к ЗНАЧЕНИЮ, а не к слову ─────────────────────
+-- Так устроены все нормальные словари (Wiktionary/Wikidata, PONS, Duden): у значения
+-- свой номер, переводы висят на нём. У нас перевод был просто текстом, поэтому в базу
+-- попадали свалки вида «1прикладывать; накладывать 2 надевать 3 строить» — одно
+-- «значение», внутри которого их шесть. Разрезаем на входе и складываем сюда.
+--
+-- Пометки («перен.», «разг.», «Genitiv/Dativ») тоже живут здесь отдельными полями,
+-- а не внутри текста перевода: тогда их можно показать значком, скрыть или отфильтровать.
+CREATE TABLE IF NOT EXISTS bt_3_lex_senses (
+    id         BIGSERIAL PRIMARY KEY,
+    unit_id    BIGINT NOT NULL REFERENCES bt_3_lex_units(id) ON DELETE CASCADE,
+    sense_no   INTEGER NOT NULL,          -- порядковый номер значения у слова
+    label      TEXT,                      -- пометка: «перен.», «разг.», область
+    note       TEXT,                      -- пояснение из скобок, если оно осмысленное
+    source     TEXT,                      -- откуда значение: разрез | обогащение | вручную
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (unit_id, sense_no)
+);
+CREATE INDEX IF NOT EXISTS idx_lex_senses_unit ON bt_3_lex_senses (unit_id, sense_no);
+
+-- Связь-перевод принадлежит значению, если оно известно. Колонка необязательная:
+-- старые связи продолжают работать как раньше, пока значение не проставлено.
+ALTER TABLE bt_3_lex_links ADD COLUMN IF NOT EXISTS sense_id BIGINT
+    REFERENCES bt_3_lex_senses(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_lex_links_sense ON bt_3_lex_links (sense_id);

@@ -28,6 +28,11 @@ _ARTICLE_RE = re.compile(r"^(der|die|das)\s+", re.I)
 # Сколько переводов показывать: первый — главный, остальные как «ещё говорят».
 _MAX_LINKS = 6
 
+# Ранг, в который отправлены «свалки» — старые переводы вида «1прикладывать; накладывать
+# 2 надевать 3 строить». Они разрезаны на отдельные значения и в базе остались, но
+# показывать их нельзя: человек должен видеть значения, а не строку из словаря.
+_DEMOTED_RANK = 900
+
 # Служебные пометки, осевшие в банке под видом переводов: «приюта; хостела
 # (Genitiv/Dativ)». Человеку это не перевод, а мусор — в списке значений не показываем.
 # Из базы ничего не удаляем: фильтр только на выдаче.
@@ -79,11 +84,15 @@ def _fetch_links(cur, unit_id: int, *, want_lang: str) -> list[dict]:
         SELECT u.id, u.lang, u.kind, u.display, u.lemma, u.pos, u.gender, l.rank, u.card
         FROM bt_3_lex_links l
         JOIN bt_3_lex_units u ON u.id = l.to_unit
-        WHERE l.from_unit = %s AND u.lang = %s
-        ORDER BY l.rank, u.id
+        -- Заготовки упражнений отсекаем В ЗАПРОСЕ, а не после: у «anlegen» их 33 штуки,
+        -- и при отборе «первых шести» они съедали выдачу целиком — слово оставалось
+        -- вообще без перевода. Связи с разобранным значением идут первыми.
+        WHERE l.from_unit = %s AND u.lang = %s AND l.rank < %s
+          AND position('___' in u.display) = 0
+        ORDER BY (l.sense_id IS NULL), l.rank, u.id
         LIMIT %s;
         """,
-        (unit_id, want_lang, _MAX_LINKS),
+        (unit_id, want_lang, _DEMOTED_RANK, _MAX_LINKS),
     )
     return [
         {"id": r[0], "lang": r[1], "kind": r[2], "display": r[3], "lemma": r[4],
