@@ -2741,6 +2741,11 @@ Rules:
   meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
   meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
   usage_examples[].target must be in target_language and usage_examples[].source must be in source_language.
+- NEVER leave a half-translated sentence. The source_language side must be FULLY in
+  source_language: no target_language words, phrases or verb chunks may remain inside it.
+  Wrong: "На дороге внезапно rast ein LKW." Right: "По дороге внезапно мчится грузовик."
+  This applies even when the looked-up input is a multi-word chunk taken from a subtitle
+  or a sentence — translate that chunk too, do not carry it over verbatim.
   Always provide BOTH sides — never leave the source side in target_language.
 - For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
 - Provide 3 most frequent real-life translation variants in "translations" whenever possible.
@@ -3126,6 +3131,11 @@ Reader-focused rules:
   meanings.primary.example_target and meanings.secondary[].example_target must be in target_language.
   meanings.primary.example_source and meanings.secondary[].example_source must be in source_language.
   usage_examples[].target must be in target_language and usage_examples[].source must be in source_language.
+- NEVER leave a half-translated sentence. The source_language side must be FULLY in
+  source_language: no target_language words, phrases or verb chunks may remain inside it.
+  Wrong: "На дороге внезапно rast ein LKW." Right: "По дороге внезапно мчится грузовик."
+  This applies even when the looked-up input is a multi-word chunk taken from a subtitle
+  or a sentence — translate that chunk too, do not carry it over verbatim.
 - Usage examples:
   - provide 2-3 examples maximum.
   - examples must prefer the most typical real-life collocations of the word.
