@@ -30214,9 +30214,10 @@ html[data-scheme="light"] .story-modal-guess-answer,
   font-size: 16px !important;
 }
 
-/* ru-подсказка под плашкой (Satz Ergänzen) */
+/* ru-подсказка под плашкой (Satz Ergänzen) — токен, а не белый (был невидим на
+   кремовой карте). Тёмный в светлой теме, светлый в тёмной. */
 .webapp-page.is-flashcard-study .flashcard-preview-ru-hint {
-  color: rgba(244, 241, 255, 0.72) !important;
+  color: var(--t-text-secondary, #3d3428) !important;
 }
 
 /* «Почувствовать слово» — янтарная кнопка */
@@ -30228,7 +30229,7 @@ html[data-scheme="light"] .story-modal-guess-answer,
   font-weight: 800 !important;
 }
 .webapp-page.is-flashcard-study .flashcard-preview-feel-status {
-  color: rgba(244, 241, 255, 0.75) !important;
+  color: var(--t-text-muted, #5a4a39) !important;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -30504,8 +30505,14 @@ html[data-scheme="light"] .story-modal-guess-answer,
     color: var(--t-text-primary, #1f1a14) !important;
   }
   /* Промпт (перевод, что собрать) — чернильный */
+  /* Промпт: был clamp(32-42px) при width 13ch → длинные значения раздувались на
+     6 строк и давили карту. Уменьшаем кегль и расширяем — длинный текст читается
+     компактно, короткое слово всё ещё крупное. */
   .webapp-page.is-flashcard-study .blocks-prompt {
     color: var(--t-text-primary, #1f1a14) !important;
+    font-size: clamp(19px, 4.6vw, 30px) !important;
+    width: min(100%, 22ch) !important;
+    line-height: 1.18 !important;
   }
   /* Таймер — амбер-чип (был огромный тёмный) */
   .webapp-page.is-flashcard-study .blocks-timer {
@@ -30574,9 +30581,17 @@ html[data-scheme="light"] .story-modal-guess-answer,
     box-shadow: 0 14px 24px -10px rgba(74, 54, 20, 0.7) !important;
     filter: none !important;
   }
-  /* Футер и кнопки */
+  /* Футер и кнопки. order:2 — кнопки в самом низу; блок результата (order:1)
+     поднимается НАД ними (был некрасиво прилеплен под кнопками и обрезался). */
   .webapp-page.is-flashcard-study .blocks-footer {
+    order: 2 !important;
     border-top: 1px solid var(--t-border-subtle, #e2d5bf) !important;
+  }
+  /* Результат — над футером, компактно */
+  .webapp-page.is-flashcard-study .blocks-result {
+    order: 1 !important;
+    padding: 12px 14px !important;
+    gap: 8px !important;
   }
   .webapp-page.is-flashcard-study .blocks-footer .primary-button {
     font-size: 16px !important;
