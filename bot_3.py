@@ -6435,7 +6435,11 @@ async def _ensure_reply_keyboard_delivered(bot, chat_id: int, force: bool = Fals
         sent = await ExtBot.send_message(
             bot,
             chat_id=uid,
-            text="📋 Меню под рукой — задания, тренажёры и словарь на кнопках снизу.",
+            text=(
+                "📋 Меню под рукой — задания, тренажёры и словарь на кнопках снизу.\n\n"
+                "💡 Если кнопки меню вдруг пропадут (Telegram иногда их сворачивает) — "
+                "напиши /start, и они сразу вернутся."
+            ),
             reply_markup=kb,
         )
         _kb_last_attach[uid] = pytime.time()
@@ -12443,7 +12447,8 @@ async def _send_onboarding_prompt(update: Update, context: CallbackContext) -> N
         "👋 <b>Willkommen!</b>\n\n"
         "Давай за пару минут настроим бота под тебя — язык, словарь, темп заданий. "
         "Потом покажу, как всё работает.\n\n"
-        "Нажми кнопку ниже 👇"
+        "Нажми кнопку ниже 👇\n\n"
+        "💡 Меню — на кнопках внизу экрана. Если они вдруг пропадут — напиши /start."
     )
     poster = None
     try:
