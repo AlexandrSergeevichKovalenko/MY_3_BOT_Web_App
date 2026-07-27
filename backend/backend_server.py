@@ -1059,6 +1059,10 @@ READER_AUDIO_PAGES_7D_LIMIT = max(1, int((os.getenv("READER_AUDIO_PAGES_7D_LIMIT
 READER_AUDIO_PAGES_WINDOW_DAYS = max(1, int((os.getenv("READER_AUDIO_PAGES_WINDOW_DAYS") or "7").strip() or "7"))
 FREE_FLASHCARDS_WORDS_DAILY_PER_MODE = max(1, int((os.getenv("FREE_FLASHCARDS_WORDS_DAILY_PER_MODE") or "10").strip() or "10"))
 BLOCKS_SINGLE_WORD_MAX_LEN = 10
+# Blocks оставляет только короткие карточки (≤ MAX_LEN), поэтому очередь надо
+# сканировать широким срезом: если брать лишь первые N «по сроку», короткие
+# слова из глубины очереди никогда не попадут в набор и режим будет пустым.
+BLOCKS_CANDIDATE_SCAN_LIMIT = max(60, int((os.getenv("BLOCKS_CANDIDATE_SCAN_LIMIT") or "240").strip() or "240"))
 FREE_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("FREE_VOICE_MINUTES_DAILY_LIMIT") or "3").strip() or "3"))
 PAID_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("PAID_VOICE_MINUTES_DAILY_LIMIT") or "15").strip() or "15"))
 FREE_READER_STORAGE_DAYS = max(1, int((os.getenv("FREE_READER_STORAGE_DAYS") or "30").strip() or "30"))
@@ -48732,12 +48736,20 @@ def get_webapp_flashcard_set():
             profile_payload["selection_strategy"] = "sentence_supplemental"
             profile_payload["is_supplemental_mode"] = True
         else:
+            # Для Blocks добираем широкий срез очереди (фильтр «короткого слова»
+            # ниже отсеет длинные), чтобы короткие карточки из глубины очереди
+            # тоже попадали в набор, а не только первые set_size «по сроку».
+            queue_fetch_limit = (
+                max(int(set_size), BLOCKS_CANDIDATE_SCAN_LIMIT)
+                if training_mode == "blocks"
+                else int(set_size)
+            )
             items, selection_diagnostics = _list_srs_queue_cards(
                 user_id=int(user_id),
                 now_utc=datetime.now(timezone.utc),
                 source_lang=source_lang,
                 target_lang=target_lang,
-                limit=set_size,
+                limit=queue_fetch_limit,
                 folder_mode=str(folder_mode or "all"),
                 folder_id=resolved_folder_id,
                 queue_source=queue_source,
@@ -48764,7 +48776,8 @@ def get_webapp_flashcard_set():
                     if answer and len(answer) <= BLOCKS_SINGLE_WORD_MAX_LEN:
                         blocks_items.append(item)
                 profile_payload["blocks_eligible_len10_server"] = len(blocks_items)
-                decorated_items = blocks_items
+                # Очередь сканировали широко — итоговый набор режем до set_size.
+                decorated_items = blocks_items[: max(1, int(set_size))]
             if decorated_items:
                 mark_flashcards_seen(
                     user_id=int(user_id),
