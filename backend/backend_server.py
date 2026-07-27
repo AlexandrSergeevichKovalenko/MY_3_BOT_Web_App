@@ -63786,6 +63786,135 @@ def admin_load_wikdict():
                     "seed_state": seed_state})
 
 
+_LATIN_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
+_LATIN_RUN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]{2,}(?:[\s,–—-]+[A-Za-zÀ-ÖØ-öø-ÿ]{2,})+")
+_CYRILLIC_TEXT_RE = re.compile(r"[А-Яа-яЁё]")
+
+
+def _dict_shared_prefix_len(a: str, b: str) -> int:
+    length = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        length += 1
+    return length
+
+
+def _native_half_leaks_headword(native_sentence: str, headword: str) -> bool:
+    """Родная (например, русская) половина примера всё ещё несёт искомое слово
+    непереведённым — обычный срыв GPT «перевёл всё, кроме того, что спросили»
+    («разные Auffassungen» вместо «разные взгляды»).
+
+    Сверяем КАЖДОЕ слово запроса, а не только последнее: для выражения «rast ein LKW»
+    последним стоит «LKW» из трёх букв, проверка отключалась целиком, и в перевод
+    уезжала вся немецкая связка. Сравнение по основе — чтобы ловить склонения."""
+    native = re.sub(r"\s+", " ", str(native_sentence or "")).strip()
+    head = re.sub(r"\s+", " ", str(headword or "")).strip()
+    if not native or not head:
+        return False
+    stems = [t.casefold() for t in _LATIN_TOKEN_RE.findall(head) if len(t) >= 4]
+    if not stems:
+        return False
+    for token in _LATIN_TOKEN_RE.findall(native):
+        if len(token) < 4:
+            continue
+        low = token.casefold()
+        for stem in stems:
+            prefix = _dict_shared_prefix_len(low, stem)
+            if prefix >= 5 or (prefix >= 4 and prefix == min(len(low), len(stem))):
+                return True
+    return False
+
+
+def _native_half_is_untranslated(native_sentence: str, native_lang: str) -> bool:
+    """Родная половина не переведена, если в ней стоит связка из двух и более
+    латинских слов подряд: «На дороге внезапно rast ein LKW».
+
+    Одиночное латинское слово не трогаем — это законная цитата или имя (Netflix,
+    Berlin). Работает только для языков с некириллическим чужим письмом, то есть
+    когда родной язык кириллический."""
+    native = re.sub(r"\s+", " ", str(native_sentence or "")).strip()
+    if not native or str(native_lang or "").strip().lower() != "ru":
+        return False
+    if not _CYRILLIC_TEXT_RE.search(native):
+        return False  # предложение целиком не на родном языке — этим ведает другая проверка
+    for run in _LATIN_RUN_RE.findall(native):
+        words = _LATIN_TOKEN_RE.findall(run)
+        # Заглавные подряд — скорее название («Deutsche Bahn»), а не хвост перевода.
+        if len(words) >= 2 and any(w[:1].islower() for w in words):
+            return True
+    return False
+
+
+def _clean_example_pair(*, learning_sentence: str, native_sentence: str,
+                        headword: str, native_lang: str, learning_lang: str,
+                        headword_is_loanword: bool = False) -> tuple[str, str]:
+    """Пара «изучаемое предложение / перевод» после проверок. Испорченный перевод
+    обнуляем, а не выбрасываем пример целиком: предложение без перевода полезнее каши."""
+    learning = re.sub(r"\s+", " ", str(learning_sentence or "")).strip()
+    native = re.sub(r"\s+", " ", str(native_sentence or "")).strip()
+    if learning and str(learning_lang or "").lower() != "ru" and _CYRILLIC_TEXT_RE.search(learning):
+        return "", ""  # в изучаемое предложение вклинилась кириллица — читать такое нельзя
+    if native and not headword_is_loanword and _native_half_leaks_headword(native, headword):
+        native = ""
+    if native and _native_half_is_untranslated(native, native_lang):
+        native = ""
+    return learning, native
+
+
+def sanitize_dictionary_payload_examples(result: dict, *, source_lang: str, target_lang: str) -> dict:
+    """Чистим примеры В САМИХ ДАННЫХ, а не только в собранном тексте разбора.
+
+    Фронт рисует блок «Примеры» с галочками из сырого ответа, поэтому чистка одного
+    лишь текста оставляла на экране ровно ту же кашу («На дороге внезапно rast ein
+    LKW»), от которой текст уже был избавлен."""
+    if not isinstance(result, dict) or not result:
+        return result
+    headword = str(result.get("word_target") or result.get("word_source") or "").strip()
+    translated = str(result.get("word_source") or "").strip()
+    # Слово, которое и по-русски пишется латиницей (Netflix, Google), законно
+    # повторяется в переводе — тогда страж заголовка не применяем.
+    headword_is_loanword = _native_half_leaks_headword(translated, headword)
+
+    cleaned = dict(result)
+    examples = cleaned.get("usage_examples")
+    if isinstance(examples, list):
+        fixed: list = []
+        for item in examples:
+            if not isinstance(item, dict):
+                continue
+            learning, native = _clean_example_pair(
+                learning_sentence=item.get("target"), native_sentence=item.get("source"),
+                headword=headword, native_lang=source_lang, learning_lang=target_lang,
+                headword_is_loanword=headword_is_loanword,
+            )
+            if not learning:
+                continue
+            fixed.append({**item, "target": learning, "source": native})
+        cleaned["usage_examples"] = fixed
+
+    meanings = cleaned.get("meanings")
+    if isinstance(meanings, dict):
+        def _fix_meaning(meaning: object) -> object:
+            if not isinstance(meaning, dict):
+                return meaning
+            learning, native = _clean_example_pair(
+                learning_sentence=meaning.get("example_target"),
+                native_sentence=meaning.get("example_source"),
+                headword=headword, native_lang=source_lang, learning_lang=target_lang,
+                headword_is_loanword=headword_is_loanword,
+            )
+            return {**meaning, "example_target": learning, "example_source": native}
+
+        fixed_meanings = dict(meanings)
+        if "primary" in fixed_meanings:
+            fixed_meanings["primary"] = _fix_meaning(fixed_meanings.get("primary"))
+        if isinstance(fixed_meanings.get("secondary"), list):
+            fixed_meanings["secondary"] = [_fix_meaning(m) for m in fixed_meanings["secondary"]]
+        cleaned["meanings"] = fixed_meanings
+    return cleaned
+
+
 def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
     if not isinstance(result, dict):
         return "📘 **Перевод**\n—"
@@ -64055,25 +64184,9 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
             length += 1
         return length
 
-    def _native_side_leaks_headword(native_sentence: str, headword: str) -> bool:
-        """True when the native (e.g. Russian) half of an example still contains the
-        foreign headword untranslated — the classic GPT slip "translated everything
-        except the looked-up word" («разные Auffassungen» instead of «разные взгляды»).
-        Matched on a stem so declensions (Auffassung/Auffassungen) are caught, and only
-        for latin tokens, so purely-Cyrillic sentences are never touched."""
-        native = _normalize_space(native_sentence)
-        head = _normalize_space(headword)
-        if not native or not head:
-            return False
-        head_stem = head.split()[-1].casefold()  # drop a leading article: "die Auffassung"
-        if len(head_stem) < 4:
-            return False
-        for token in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]{4,}", native):
-            low = token.casefold()
-            prefix = _shared_prefix_len(low, head_stem)
-            if prefix >= 5 or (prefix >= 4 and prefix == min(len(low), len(head_stem))):
-                return True
-        return False
+    # Страж вынесен на уровень модуля: этим же кодом чистятся САМИ ДАННЫЕ перед
+    # отправкой на фронт, иначе блок «Примеры» с галочками остаётся грязным.
+    _native_side_leaks_headword = _native_half_leaks_headword
 
     # Untranslatable headwords (brands, loanwords: Netflix, Google) legitimately reappear
     # in the native example — the word IS its own translation. Detect that so the leak
@@ -64099,6 +64212,10 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
             and not _headword_is_loanword
             and _native_side_leaks_headword(native_sentence, target_text)
         ):
+            native_sentence = ""
+        # Перевод недоделан наполовину: «На дороге внезапно rast ein LKW». Заголовок тут
+        # ни при чём — просто кусок изучаемого языка остался внутри русской фразы.
+        if native_sentence and _native_half_is_untranslated(native_sentence, source_lang):
             native_sentence = ""
         if native_sentence:
             example_lines.append(f"{len(example_lines) + 1}. {learning_sentence} — {native_sentence}")
@@ -64216,6 +64333,11 @@ def explain_webapp_translation():
                 )
             )
             if isinstance(dictionary_result, dict):
+                # Чистим примеры в САМИХ данных: блок «Примеры» с галочками фронт
+                # рисует из этого ответа напрямую, мимо собранного ниже текста.
+                dictionary_result = sanitize_dictionary_payload_examples(
+                    dictionary_result, source_lang=source_lang, target_lang=target_lang,
+                )
                 dictionary_result_payload = dictionary_result
                 detected = str(dictionary_result.get("detected_language") or "").strip().lower()
                 if detected == "target":
