@@ -18,6 +18,7 @@ import ProTrialModal from './components/ProTrialModal';
 import StarsInfoModal from './components/StarsInfoModal';
 import BonusProDaysModal from './components/BonusProDaysModal';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
+import { splitTranslationSenses } from './dictionary/senses';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
@@ -39390,7 +39391,22 @@ function AppInner() {
                             const isCardReversed = (srsCard?.source_lang || 'ru') === 'de';
                             const sourceText = isCardReversed ? (cardTexts?.targetText || '—') : (cardTexts?.sourceText || '—');
                             const targetText = isCardReversed ? (cardTexts?.sourceText || '—') : (cardTexts?.targetText || '—');
-                            const supplementalMeaningRows = getSavedEntrySupplementalMeaningRows(srsCard, targetText, 2);
+                            // Перевод в личной карточке может быть склейкой смыслов
+                            // («1прикладывать; накладывать 2 надевать 3 строить…»). Такую
+                            // карточку невозможно честно оценить, поэтому крупно показываем
+                            // ПЕРВОЕ значение, остальные — строкой ниже. Сами данные не трогаем.
+                            const targetSenses = splitTranslationSenses(targetText);
+                            const hasSplitSenses = targetSenses.length > 1;
+                            const answerText = hasSplitSenses ? targetSenses[0].value : targetText;
+                            const extraSenseRows = hasSplitSenses
+                              ? targetSenses.slice(1, 6).map((sense, index) => ({
+                                rank: index + 2,
+                                text: sense.label ? `${sense.value} (${sense.label})` : sense.value,
+                              }))
+                              : [];
+                            const supplementalMeaningRows = hasSplitSenses
+                              ? extraSenseRows
+                              : getSavedEntrySupplementalMeaningRows(srsCard, targetText, 2);
                             const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
                             const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
                             const srsReplayTtsTarget = resolveDictionaryTargetTts(srsCard, direction);
@@ -39404,7 +39420,7 @@ function AppInner() {
                                   <div className="fsrs-divider" />
                                   {srsRevealAnswer && (
                                     <>
-                                      <div className="fsrs-card-target">{targetText}</div>
+                                      <div className="fsrs-card-target">{answerText}</div>
                                       {supplementalMeaningRows.length > 0 && (
                                         <div className="flashcard-meaning-list">
                                           {supplementalMeaningRows.map((row) => (
