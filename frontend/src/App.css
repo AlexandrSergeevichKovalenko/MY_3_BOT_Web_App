@@ -8706,12 +8706,23 @@ body:has(.webapp-page.is-theme-light),
   padding: 0 12px 10px;
 }
 .vocab-action-btn {
-  flex: 1;
-  padding: 9px 12px;
+  /* Три кнопки в ряд: равная ширина независимо от длины подписи — иначе «Разбить на
+     значения» растянулась бы за счёт соседей и ряд поехал бы. */
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 46px;
+  padding: 8px 6px;
   border-radius: 10px;
   border: none;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  hyphens: auto;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: opacity 0.12s, transform 0.1s;
@@ -8727,6 +8738,71 @@ body:has(.webapp-page.is-theme-light),
   color: #F87171;
   border: 1px solid rgba(239,68,68,0.2);
 }
+/* «Разбить на значения» — созидательное действие, поэтому спокойный янтарь, а не
+   тревожный красный удаления и не синий правки. */
+.vocab-action-split {
+  background: rgba(245,158,11,0.14);
+  color: #FBBF24;
+  border: 1px solid rgba(245,158,11,0.26);
+}
+
+/* Список значений в окне подтверждения: сразу видно, что останется здесь,
+   а что станет новыми карточками. */
+.vocab-split-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin: 12px 0 4px;
+  text-align: left;
+}
+.vocab-split-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: rgba(148,163,184,0.10);
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+.vocab-split-row.is-kept {
+  background: rgba(245,158,11,0.12);
+  border: 1px solid rgba(245,158,11,0.22);
+}
+.vocab-split-rank {
+  font-weight: 700;
+  opacity: 0.55;
+  font-size: 12px;
+}
+.vocab-split-text { flex: 1; min-width: 0; }
+.vocab-split-note {
+  font-size: 11px;
+  font-weight: 600;
+  color: #FBBF24;
+  white-space: nowrap;
+}
+.vocab-split-confirm {
+  flex: 1;
+  padding: 11px 14px;
+  border-radius: 11px;
+  border: 1px solid rgba(245,158,11,0.3);
+  background: rgba(245,158,11,0.18);
+  color: #FBBF24;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.vocab-split-confirm:disabled { opacity: 0.6; cursor: default; }
+.webapp-page.is-theme-light .vocab-action-split {
+  background: rgba(217,119,6,0.10);
+  color: #B45309;
+  border-color: rgba(217,119,6,0.22);
+}
+.webapp-page.is-theme-light .vocab-split-row { background: rgba(15,23,42,0.05); }
+.webapp-page.is-theme-light .vocab-split-row.is-kept { background: rgba(217,119,6,0.10); }
+.webapp-page.is-theme-light .vocab-split-note,
+.webapp-page.is-theme-light .vocab-split-confirm { color: #B45309; }
 
 .vocab-load-more {
   display: block;

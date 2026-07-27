@@ -26511,6 +26511,106 @@ def bulk_delete_vocabulary_entries(user_id: int, entry_ids: list[int]) -> int:
     return len(found_ids)
 
 
+def get_vocabulary_entry_for_user(*, user_id: int, entry_id: int) -> dict | None:
+    """Одна карточка личного словаря — только своя: чужую по номеру не достать."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, word_ru, translation_de, word_de, translation_ru,
+                       source_lang, target_lang, folder_id, lex_unit_id
+                FROM bt_3_webapp_dictionary_queries
+                WHERE id = %s AND user_id = %s;
+                """,
+                (int(entry_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    keys = ("id", "word_ru", "translation_de", "word_de", "translation_ru",
+            "source_lang", "target_lang", "folder_id", "lex_unit_id")
+    return dict(zip(keys, row))
+
+
+def split_vocabulary_entry_senses(
+    user_id: int,
+    entry_id: int,
+    senses: list[dict],
+) -> dict:
+    """Разбить одну карточку на несколько — по одной на значение.
+
+    Исходная карточка ОСТАЁТСЯ и получает первое значение: так у неё сохраняется вся
+    накопленная история повторений, интервал и папка. Остальные значения становятся
+    новыми карточками — они начинают с нуля, потому что человек их ещё не учил.
+
+    Ничего не удаляется. Немецкая сторона, папка и привязка к слову словаря копируются
+    как есть."""
+    if not senses or len(senses) < 2:
+        return {"ok": False, "reason": "nothing_to_split", "created": 0}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, word_ru, translation_de, word_de, translation_ru,
+                       source_lang, target_lang, response_json, folder_id,
+                       canonical_entry_id, semantic_tag, lex_unit_id
+                FROM bt_3_webapp_dictionary_queries
+                WHERE id = %s AND user_id = %s;
+                """,
+                (int(entry_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {"ok": False, "reason": "not_found", "created": 0}
+            (_id, _user, _word_ru, translation_de, word_de, _translation_ru,
+             source_lang, target_lang, response_json, folder_id,
+             canonical_entry_id, semantic_tag, lex_unit_id) = row
+            payload = _coerce_json_object(response_json)
+
+            first = str(senses[0].get("value") or "").strip()
+            if first:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET word_ru = %s, translation_ru = %s, updated_at = NOW()
+                    WHERE id = %s AND user_id = %s;
+                    """,
+                    (first, first, int(entry_id), int(user_id)),
+                )
+
+            created = 0
+            for sense in senses[1:]:
+                value = str(sense.get("value") or "").strip()
+                if not value:
+                    continue
+                sense_payload = dict(payload)
+                # Разбор относится к СЛОВУ, а не к одному его значению: оставляем как есть,
+                # но помечаем, какое значение учит эта карточка — иначе на обороте снова
+                # вылезет весь список смыслов.
+                sense_payload["sense_value"] = value
+                sense_payload["translations"] = [{"value": value, "context": "", "is_primary": True}]
+                sense_payload["dictionary_senses"] = [{
+                    "rank": 1, "label": "main", "value": value,
+                    "context": str(sense.get("label") or ""), "example_source": "", "example_target": "",
+                }]
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_webapp_dictionary_queries
+                        (user_id, word_ru, translation_de, word_de, translation_ru,
+                         source_lang, target_lang, response_json, folder_id,
+                         canonical_entry_id, origin_process, semantic_tag, lex_unit_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'sense_split', %s, %s)
+                    ON CONFLICT DO NOTHING;
+                    """,
+                    (int(user_id), value, translation_de, word_de, value,
+                     source_lang, target_lang, Json(sense_payload), folder_id,
+                     canonical_entry_id, semantic_tag, lex_unit_id),
+                )
+                created += cursor.rowcount
+        conn.commit()
+    return {"ok": True, "created": created, "kept": first}
+
+
 def edit_vocabulary_entry(
     user_id: int,
     entry_id: int,
