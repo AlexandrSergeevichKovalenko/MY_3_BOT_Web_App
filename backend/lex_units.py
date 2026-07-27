@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -30,6 +31,10 @@ _MAX_LINKS = 6
 # Служебные пометки, осевшие в банке под видом переводов: «приюта; хостела
 # (Genitiv/Dativ)». Человеку это не перевод, а мусор — в списке значений не показываем.
 # Из базы ничего не удаляем: фильтр только на выдаче.
+# Заготовка упражнения «Er ___ heute früh mit dem Projekt» — не перевод, а задание
+# тренажёра, осевшее в банке отдельной записью. В списке значений ему не место.
+_EXERCISE_BLANK = "___"
+
 _GRAMMAR_NOTE_RE = re.compile(
     r"\((?:[^)]*\b(?:genitiv|dativ|akkusativ|nominativ|plural|singular|мн\.?\s*ч|ед\.?\s*ч)\b[^)]*)\)",
     re.I,
@@ -154,7 +159,10 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     }
     # Все переводы, а не только главный: «грубиян» ведёт и к der Rüpel, и к der Flegel,
     # и человек должен видеть оба, а не гадать, почему показали одно.
-    shown = [link for link in links if not _GRAMMAR_NOTE_RE.search(link["display"])] or links[:1]
+    shown = [
+        link for link in links
+        if not _GRAMMAR_NOTE_RE.search(link["display"]) and _EXERCISE_BLANK not in link["display"]
+    ] or links[:1]
     if shown:
         item["translations"] = [
             {"value": link["display"], "context": "", "is_primary": index == 0}
@@ -171,6 +179,79 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     # полноты) и уехала бы человеку голой, минуя дообогащение.
     item["__lex_has_card"] = bool(unit.get("card"))
     return item
+
+
+def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru") -> list[dict]:
+    """Слова слоя, у которых ещё нет разбора, — по востребованности.
+
+    Ночной добор обязан смотреть СЮДА, а не в старый банк: после переключения поиск
+    читает единицы, и добор в банк наполнял бы то, чего никто не открывает.
+
+    Востребованность считаем честно: сколько людей сохранили это слово себе, а при
+    равенстве — из скольких записей банка оно собрано."""
+    if limit <= 0:
+        return []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT u.id, u.display, u.lemma, u.gender, u.pos,
+                           COALESCE(p.saved, 0) AS saved,
+                           COALESCE(s.sources, 0) AS sources,
+                           (SELECT u2.display FROM bt_3_lex_links l
+                              JOIN bt_3_lex_units u2 ON u2.id = l.to_unit
+                             WHERE l.from_unit = u.id AND u2.lang = %s
+                               AND position('___' in u2.display) = 0
+                             ORDER BY l.rank, u2.id LIMIT 1) AS translation
+                    FROM bt_3_lex_units u
+                    LEFT JOIN (
+                        SELECT lex_unit_id, COUNT(*) AS saved
+                        FROM bt_3_webapp_dictionary_queries
+                        WHERE lex_unit_id IS NOT NULL GROUP BY lex_unit_id
+                    ) p ON p.lex_unit_id = u.id
+                    LEFT JOIN (
+                        SELECT unit_id, COUNT(*) AS sources
+                        FROM bt_3_lex_unit_sources GROUP BY unit_id
+                    ) s ON s.unit_id = u.id
+                    WHERE u.lang = %s AND u.kind = 'word' AND u.card IS NULL
+                    ORDER BY saved DESC, sources DESC, u.id
+                    LIMIT %s;
+                    """,
+                    (native_lang, lang, int(limit)),
+                )
+                rows = cur.fetchall()
+    except Exception as exc:
+        logging.debug("units needing card failed: %s", exc)
+        return []
+    # Перевод здесь не обязателен: разбор строится ПО НЕМЕЦКОМУ СЛОВУ, а перевод нужен
+    # лишь для строки отчёта. Требование перевода выкидывало из очереди как раз частые
+    # глаголы (anfangen, aufstehen), у которых в банке связаны только заготовки
+    # упражнений, — и они бы так и остались без разбора.
+    return [
+        {"id": r[0], "display": r[1], "lemma": r[2], "gender": r[3], "pos": r[4],
+         "saved": r[5], "sources": r[6], "translation": r[7] or ""}
+        for r in rows
+    ]
+
+
+def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащение") -> bool:
+    """Положить разбор НА единицу. Пишем только в слой; общий банк не трогаем."""
+    if not isinstance(card, dict) or not card:
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_lex_units SET card = %s::jsonb, card_source = %s, updated_at = NOW() "
+                    "WHERE id = %s;",
+                    (json.dumps(card, ensure_ascii=False), source, int(unit_id)),
+                )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logging.debug("save unit card failed for %s: %s", unit_id, exc)
+        return False
 
 
 def lookup(word: str, *, source_lang: str, target_lang: str) -> dict | None:

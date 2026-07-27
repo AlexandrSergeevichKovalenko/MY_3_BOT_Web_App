@@ -9725,6 +9725,75 @@ _POOL_NIGHT_ENRICH_LOCK = threading.Lock()
 _POOL_NIGHT_ENRICH_RUNNING = False
 
 
+def _run_units_night_enrichment(
+    *,
+    cap: int,
+    dry_run: bool,
+    report: dict,
+    learning_lang: str = "de",
+    native_lang: str = "ru",
+    progress_cb=None,
+) -> dict:
+    """Ночной добор разбора для СЛОВ СЛОЯ ЕДИНИЦ.
+
+    Отличие от добора по банку одно, но важное: разбор кладётся на саму единицу, поэтому
+    он не может «переехать» к соседнему слову — у каждого слова свой ящик. Порядок —
+    по востребованности: сначала то, что люди действительно сохранили себе.
+
+    Отчёт возвращается в том же виде, что и у добора по банку, чтобы утренняя сводка
+    и админ-команда продолжали работать без правок."""
+    units = lex_units.units_needing_card(cap, lang=learning_lang, native_lang=native_lang)
+    report["picked"] = len(units)
+    report["mode"] = "units"
+    for index, unit in enumerate(units):
+        if progress_cb is not None:
+            try:
+                progress_cb(index, len(units), report)
+            except Exception:
+                logging.debug("units enrich progress_cb failed", exc_info=True)
+        german = str(unit.get("display") or unit.get("lemma") or "").strip()
+        translation = str(unit.get("translation") or "").strip()
+        if len(report["samples"]) < 20:
+            report["samples"].append({
+                "word": german, "translation": translation,
+                "demand": unit.get("saved") or unit.get("sources"),
+            })
+        if dry_run:
+            continue
+        try:
+            enrich_data = _normalize_dictionary_enrich_payload(
+                _rich_enrich_card_fields(
+                    source_text=german, target_text=translation,
+                    source_lang=learning_lang, target_lang=native_lang,
+                )
+            )
+            enrich_data = _drop_wrong_language_examples(enrich_data, learning_lang=learning_lang)
+            if not enrich_data:
+                report["skipped"] += 1
+                report["skipped_empty"] += 1
+                if len(report["skipped_samples"]) < 15:
+                    report["skipped_samples"].append({"word": german, "reason": "empty"})
+                continue
+            # Та же планка, что и везде: тонкую карточку не сохраняем, пусть слово
+            # останется кандидатом, а не притворяется разобранным.
+            if _dictionary_payload_needs_enrichment(enrich_data):
+                report["skipped"] += 1
+                report["skipped_thin"] += 1
+                if len(report["skipped_samples"]) < 15:
+                    report["skipped_samples"].append({"word": german, "reason": "thin"})
+                continue
+            if lex_units.save_unit_card(unit["id"], enrich_data):
+                report["enriched"] += 1
+            else:
+                report["errors"] += 1
+        except Exception:
+            logging.warning("units night enrich failed for %r", german, exc_info=True)
+            report["errors"] += 1
+    remaining = lex_units.units_needing_card(cap + 1, lang=learning_lang, native_lang=native_lang)
+    report["remaining"] = max(0, len(remaining) - report["enriched"])
+    return report
+
+
 def run_pool_night_enrichment(
     *,
     limit: int | None = None,
@@ -9763,6 +9832,20 @@ def run_pool_night_enrichment(
                 report["already_running"] = True
                 return report
             _POOL_NIGHT_ENRICH_RUNNING = True
+    # Когда поиск читает слой единиц, добирать надо ИМЕННО единицы: иначе ночной бюджет
+    # уходил бы на строки старого банка, которые больше никто не открывает.
+    if DICTIONARY_UNITS_LOOKUP_ENABLED:
+        try:
+            return _run_units_night_enrichment(
+                cap=cap, dry_run=dry_run, report=report,
+                learning_lang=source_lang if source_lang == "de" else "de",
+                native_lang=target_lang if source_lang == "de" else source_lang,
+                progress_cb=progress_cb,
+            )
+        finally:
+            if not dry_run:
+                with _POOL_NIGHT_ENRICH_LOCK:
+                    _POOL_NIGHT_ENRICH_RUNNING = False
     try:
         rows = get_thin_pool_entries_for_enrichment(
             limit=cap, source_lang=source_lang, target_lang=target_lang,
