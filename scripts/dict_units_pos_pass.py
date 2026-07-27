@@ -164,6 +164,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--titles-file", default="",
+                    help="спросить именно эти заголовки (по одному в строке), а не весь банк")
     args = ap.parse_args()
 
     dsn = os.environ.get("DATABASE_URL")
@@ -174,18 +176,29 @@ def main() -> int:
     cur = conn.cursor()
     ensure_table(cur)
 
-    candidates = collect_candidates(cur)
     cur.execute("SELECT title FROM bt_3_wiktionary_pos_cache;")
     have = {r[0] for r in cur.fetchall()}
-    todo = sorted({v for k, v in candidates.items() if v not in have})
+    if args.titles_file:
+        # Точечный доспрос: слова, у которых страница с ЗАГЛАВНОЙ говорит
+        # «существительное», а русский перевод глагольный («Wählen» → «Выбрать»).
+        # Спрашиваем ту же страницу со строчной — в Wiktionary это другая статья.
+        with open(args.titles_file, encoding="utf-8") as fh:
+            wanted = [w.strip() for w in fh if w.strip()]
+        candidates = {w.casefold(): w for w in wanted}
+        todo = sorted({w for w in wanted if w not in have})
+    else:
+        candidates = collect_candidates(cur)
+        todo = sorted({v for k, v in candidates.items() if v not in have})
     print("однословных записей без части речи: %d" % len(candidates))
     print("  уже разобрано:                    %d" % (len(candidates) - len(todo)))
     print("  спросить у Wiktionary:            %d  (~%d запросов)" % (len(todo), (len(todo) - 1) // BATCH + 1 if todo else 0))
-    if args.dry_run or not todo:
+    if args.dry_run:
         return 0
     if args.limit:
         todo = todo[: args.limit]
 
+    # Пустой первый заход не должен обрывать проход: второй заход (со строчной
+    # буквы) добирает как раз то, чего первый найти не мог.
     for i in range(0, len(todo), BATCH):
         batch = todo[i:i + BATCH]
         got = {}
@@ -201,17 +214,83 @@ def main() -> int:
             break
         for title in batch:
             got.setdefault(title, ([], "-"))
-        cur.executemany(
-            """
-            INSERT INTO bt_3_wiktionary_pos_cache (title, pos_list, genus, checked_at)
-            VALUES (%s, %s, %s, NOW())
-            ON CONFLICT (title) DO UPDATE
-              SET pos_list = EXCLUDED.pos_list, genus = EXCLUDED.genus, checked_at = NOW();
-            """,
-            [(t, ",".join(p), g) for t, (p, g) in got.items()],
-        )
+        # Проход по сети длинный, а прокси базы рвёт простаивающую сессию —
+        # на записи переподключаемся, иначе теряем всю пачку и весь остаток прохода.
+        payload = [(t, ",".join(p), g) for t, (p, g) in got.items()]
+        for write_try in range(3):
+            try:
+                cur.executemany(
+                    """
+                    INSERT INTO bt_3_wiktionary_pos_cache (title, pos_list, genus, checked_at)
+                    VALUES (%s, %s, %s, NOW())
+                    ON CONFLICT (title) DO UPDATE
+                      SET pos_list = EXCLUDED.pos_list, genus = EXCLUDED.genus, checked_at = NOW();
+                    """,
+                    payload,
+                )
+                break
+            except psycopg2.Error as exc:
+                print("    запись не прошла (%s), переподключаюсь" % exc)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = connect(dsn)
+                conn.autocommit = True
+                cur = conn.cursor()
         print("  %5d/%d …" % (min(i + BATCH, len(todo)), len(todo)), flush=True)
         time.sleep(PAUSE)
+
+    # ── Второй заход: та же страница, но со строчной буквы ──────────────────────
+    # В Wiktionary регистр ПЕРВОЙ буквы значим: «bewältigen» и «Bewältigen» —
+    # разные страницы. У нас слово может лежать с заглавной просто потому, что
+    # приехало из начала предложения, и тогда первый заход не находит ничего.
+    cur.execute("SELECT title FROM bt_3_wiktionary_pos_cache WHERE pos_list = '';")
+    empties = [r[0] for r in cur.fetchall()]
+    cur.execute("SELECT title FROM bt_3_wiktionary_pos_cache;")
+    known_titles = {r[0] for r in cur.fetchall()}
+    lower_todo = sorted({t[:1].lower() + t[1:] for t in empties
+                         if t[:1].isupper() and (t[:1].lower() + t[1:]) not in known_titles})
+    if lower_todo:
+        print("\nвторой заход, те же слова со строчной буквы: %d (~%d запросов)"
+              % (len(lower_todo), (len(lower_todo) - 1) // BATCH + 1))
+        for i in range(0, len(lower_todo), BATCH):
+            batch = lower_todo[i:i + BATCH]
+            got = {}
+            for attempt in range(RETRIES):
+                got = fetch(batch)
+                if got:
+                    break
+                time.sleep(PAUSE * (2 ** attempt) * 5)
+            if not got:
+                print("  не отвечает на %d слове — остальное доспросим позже" % i)
+                break
+            for title in batch:
+                got.setdefault(title, ([], "-"))
+            payload = [(t, ",".join(pp), g) for t, (pp, g) in got.items()]
+            for _ in range(3):
+                try:
+                    cur.executemany(
+                        """
+                        INSERT INTO bt_3_wiktionary_pos_cache (title, pos_list, genus, checked_at)
+                        VALUES (%s, %s, %s, NOW())
+                        ON CONFLICT (title) DO UPDATE
+                          SET pos_list = EXCLUDED.pos_list, genus = EXCLUDED.genus, checked_at = NOW();
+                        """,
+                        payload,
+                    )
+                    break
+                except psycopg2.Error as exc:
+                    print("    запись не прошла (%s), переподключаюсь" % exc)
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = connect(dsn)
+                    conn.autocommit = True
+                    cur = conn.cursor()
+            print("  %5d/%d …" % (min(i + BATCH, len(lower_todo)), len(lower_todo)), flush=True)
+            time.sleep(PAUSE)
 
     cur.execute("SELECT pos_list, COUNT(*) FROM bt_3_wiktionary_pos_cache GROUP BY 1 ORDER BY 2 DESC LIMIT 15;")
     print("\nчто получилось (часть речи → сколько слов):")
