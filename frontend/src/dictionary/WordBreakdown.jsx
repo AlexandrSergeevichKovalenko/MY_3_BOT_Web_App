@@ -648,7 +648,21 @@ function GrammarTables({ tables }) {
 // The full POS-aware breakdown of an item (fresh lookup OR saved response_json).
 // `tts` enables audio; `onSaveChip`/`savedChips` enable tap-to-save chips (both
 // optional — when omitted the chips are inert text and audio buttons hide).
-export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips, hideMeanings }) {
+// Одинаково пишущиеся слова с разным родом: «der Kiefer» (челюсть) и «die Kiefer» (сосна).
+// Запрос без артикля угадать нечем, поэтому одно показываем, а про остальные говорим прямо —
+// иначе человек уверен, что смысл один, и второй никогда не увидит.
+function homographList(item) {
+  const list = Array.isArray(item?.homographs) ? item.homographs : [];
+  return list
+    .map((h) => ({
+      display: String(h?.display || '').trim(),
+      translation: String(h?.translation || '').trim(),
+      gender: String(h?.gender || '').trim(),
+    }))
+    .filter((h) => h.display);
+}
+
+export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips, hideMeanings, onPickHomograph }) {
   // Resolve example-sentence audio URLs (deterministic R2, NO synthesis) when the examples
   // change, so tapping an example's 🔊 plays an already-cached clip instantly. Must run before
   // the early return to keep hook order stable.
@@ -692,6 +706,7 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   const antonyms = stringList(item.antonyms);
   const related = relatedList(item);
   const register = registerLabel(item);
+  const homographs = homographList(item);
 
   return (
     <>
@@ -702,6 +717,24 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
           {register && <span className="dq-register-chip">{register}</span>}
           {pron && <span className="dq-ipa">{pron}</span>}
           <FreqBar frequency={item.frequency} />
+        </div>
+      )}
+
+      {homographs.length > 0 && (
+        <div className="dq-homographs">
+          <span className="dq-homographs-label">Так же пишется</span>
+          {homographs.map((h) => (
+            <button
+              key={h.display}
+              type="button"
+              className={`dq-homograph ${onPickHomograph ? '' : 'is-static'}`}
+              onClick={onPickHomograph ? () => { haptic('light'); onPickHomograph(h.display); } : undefined}
+              disabled={!onPickHomograph}
+            >
+              <span className={`dq-homograph-word ${genderClass(h.gender)}`}>{h.display}</span>
+              {h.translation && <span className="dq-homograph-gloss">— {h.translation}</span>}
+            </button>
+          ))}
         </div>
       )}
 
