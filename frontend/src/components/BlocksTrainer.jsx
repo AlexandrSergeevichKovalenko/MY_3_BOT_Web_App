@@ -148,7 +148,25 @@ export default function BlocksTrainer({
 
   const allSlotsFilled = slots.length > 0 && slots.every((item) => item !== null);
   const isFinished = status !== 'idle';
-  const tileWidthPx = type === 'WORD' ? 60 : TILE_WIDTH;
+  // PHRASE-плитки — это целые слова разной длины. Раньше они были фиксированной
+  // ширины (76px) с большим шрифтом (43px) → длинные немецкие слова («übergeben»,
+  // «weigern») не влезали в плитку и уезжали за экран. Считаем ширину под самое
+  // длинное слово (с потолком, чтобы плитки влезали в ряд) и шрифт, который
+  // ужимается для длинных слов. Ту же ширину отдаём в scatter-математику ниже.
+  const phraseLayout = useMemo(() => {
+    if (type !== 'PHRASE') return { width: TILE_WIDTH, font: 22 };
+    const longest = targetTokens.reduce((m, t) => Math.max(m, String(t || '').length), 1);
+    const baseFont = 26;
+    let width = Math.round(longest * baseFont * 0.60) + 20;
+    // потолок 140px: две плитки влезают в ряд даже на узком (320px) телефоне
+    width = Math.max(66, Math.min(width, 140));
+    // Если ширину упёрли в потолок — уменьшаем шрифт, чтобы слово всё равно влезло.
+    const fitFont = Math.floor((width - 16) / Math.max(1, longest * 0.60));
+    return { width, font: Math.max(14, Math.min(baseFont, fitFont)) };
+  }, [type, targetTokens]);
+  const tileWidthPx = type === 'WORD' ? 60 : phraseLayout.width;
+  const phraseTilePx = `${phraseLayout.width}px`;
+  const phraseFontPx = `${phraseLayout.font}px`;
   const isWordMode = type === 'WORD';
   const wordSlotSizing = useMemo(() => {
     const tokenCount = targetTokens.length;
@@ -833,8 +851,8 @@ export default function BlocksTrainer({
                 '--from-y': `${fly.fromY}px`,
                 '--to-x': `${fly.toX}px`,
                 '--to-y': `${fly.toY}px`,
-                width: type === 'WORD' ? '60px' : undefined,
-                fontSize: type === 'WORD' ? '22px' : undefined,
+                width: type === 'WORD' ? '60px' : phraseTilePx,
+                fontSize: type === 'WORD' ? '22px' : phraseFontPx,
               }}
             >
               {fly.text}
@@ -853,8 +871,8 @@ export default function BlocksTrainer({
               ].filter(Boolean).join(' ')}
               style={{
                 transform: `translate3d(${tile.x}px, ${tile.y}px, 0) rotate(${dragTileId === tile.id ? tile.angle * 0.25 : tile.angle}deg)`,
-                width: type === 'WORD' ? '60px' : undefined,
-                fontSize: type === 'WORD' ? '22px' : undefined,
+                width: type === 'WORD' ? '60px' : phraseTilePx,
+                fontSize: type === 'WORD' ? '22px' : phraseFontPx,
               }}
               onPointerDown={(event) => onTilePointerDown(event, tile)}
               disabled={isFinished}
