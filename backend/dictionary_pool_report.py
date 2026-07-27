@@ -127,8 +127,8 @@ def build_dictionary_pool_report_text(stats: dict[str, Any]) -> str:
         lines.append("  · откуда отдали: " + ", ".join(f"{s['scope']}: {s['count']}" for s in scopes[:6]))
     if llm_extra:
         lines.append(
-            f"Сверх того вызовов GPT на карточку: <b>{llm_extra}</b> "
-            "(обогащение, коллокации, объяснения — не запросы перевода)"
+            f"Ещё вызовов GPT по карточкам (не переводы): <b>{llm_extra}</b> за окно "
+            "(обогащение, коллокации, объяснения — суммарно, не на каждую карточку)"
         )
         lines.append("  · " + ", ".join(f"{a['action']}: {a['count']}" for a in extra_actions[:5]))
 
