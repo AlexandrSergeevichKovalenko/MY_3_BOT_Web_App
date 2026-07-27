@@ -52,6 +52,18 @@ _BEDEUTUNGEN_RE = re.compile(r"\{\{Bedeutungen\}\}(.*?)(?=\n\{\{[A-ZÄÖÜ]|\Z)"
 _WIKI_MARKUP_RE = re.compile(r"\[\[([^\]|]*\|)?|\]\]|'''|''|\{\{[^}]*\}\}")
 
 SCHEMA_SQL = """
+-- Какому из одинаково пишущихся слов принадлежит значение: «челюсть» → der Kiefer,
+-- «сосна» → die Kiefer. Без этого справочника пересборка слоя заново разложила бы
+-- значения наугад, и ручное разведение пропадало бы каждый раз.
+CREATE TABLE IF NOT EXISTS bt_3_lex_gloss_rulings (
+    lemma_key  TEXT NOT NULL,
+    gloss_key  TEXT NOT NULL,      -- нормализованное значение на родном языке
+    article    TEXT NOT NULL,      -- der | die | das
+    source     TEXT,               -- откуда решение: разведение | текущее состояние
+    checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (lemma_key, gloss_key)
+);
+
 CREATE TABLE IF NOT EXISTS bt_3_lex_form_rulings (
     lemma_key     TEXT NOT NULL,
     article       TEXT NOT NULL,      -- разбираемый вариант: der | die | das
@@ -201,9 +213,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--export-rulings", action="store_true",
+                    help="записать в справочник решения, УЖЕ отражённые в слое, без вызовов GPT")
     args = ap.parse_args()
-    if not args.dry_run and not args.apply:
-        raise SystemExit("укажи --dry-run или --apply")
+    if not args.dry_run and not args.apply and not args.export_rulings:
+        raise SystemExit("укажи --dry-run, --apply или --export-rulings")
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         raise SystemExit("нужен DATABASE_URL")
@@ -214,6 +228,41 @@ def main() -> int:
     conn.autocommit = False
     cur = conn.cursor()
     cur.execute(SCHEMA_SQL)
+
+    if args.export_rulings:
+        # Слой уже разведён руками — переносим его нынешнее состояние в справочник,
+        # чтобы пересборка не разложила значения заново наугад. GPT не дёргаем.
+        cur.execute(
+            """
+            SELECT de.lemma_key, lower(btrim(ru.display)), de.gender
+            FROM bt_3_lex_links l
+            JOIN bt_3_lex_units de ON de.id = l.from_unit AND de.lang = 'de' AND de.kind = 'word'
+            JOIN bt_3_lex_units ru ON ru.id = l.to_unit AND ru.lang <> 'de'
+            WHERE de.gender IS NOT NULL
+              AND de.lemma_key IN (
+                  SELECT lemma_key FROM bt_3_lex_units
+                  WHERE lang = 'de' AND kind = 'word' AND gender IS NOT NULL
+                  GROUP BY lemma_key HAVING COUNT(DISTINCT gender) > 1
+              );
+            """
+        )
+        rows = cur.fetchall()
+        for lemma_key, gloss_key, article in rows:
+            cur.execute(
+                """
+                INSERT INTO bt_3_lex_gloss_rulings (lemma_key, gloss_key, article, source)
+                VALUES (%s, %s, %s, 'текущее состояние')
+                ON CONFLICT (lemma_key, gloss_key) DO UPDATE
+                  SET article = EXCLUDED.article, source = EXCLUDED.source, checked_at = NOW();
+                """,
+                (lemma_key, gloss_key, article),
+            )
+        conn.commit()
+        print("в справочник значений записано: %d (по %d написаниям)"
+              % (len(rows), len({r[0] for r in rows})))
+        cur.close()
+        conn.close()
+        return 0
 
     # Что Wiktionary знает о роде — оба наших справочника, объединённо.
     cur.execute("SELECT title, genus FROM bt_3_wiktionary_genus_cache;")
