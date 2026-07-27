@@ -6328,7 +6328,7 @@ async def handle_admin_commands_callback(update: Update, context: CallbackContex
 # per user — and once on the first reply after every redeploy, so a changed
 # layout updates itself automatically. In-memory by design: a fresh process →
 # empty map → re-attaches on each user's next reply.
-_KB_REATTACH_SECONDS = 6 * 3600
+_KB_REATTACH_SECONDS = 2 * 3600
 _kb_last_attach: dict[int, float] = {}
 
 
@@ -6354,7 +6354,7 @@ def _kb_should_attach(user_id: int) -> bool:
 # it once, sending a single lightweight standalone menu message if not.
 # Bump REPLY_KEYBOARD_VERSION to force a one-time re-delivery to everyone (e.g. after a
 # layout change) — the next DM push to each user re-sends the fresh keyboard.
-REPLY_KEYBOARD_VERSION = "2026-07-21"
+REPLY_KEYBOARD_VERSION = "2026-07-27"
 # In-memory cache of "user already has version X" so the hot send path stays O(1) once
 # warmed. Empty on a fresh process → first DM send per user does one DB read.
 _kb_delivered_versions: dict[int, str] = {}
@@ -6403,20 +6403,27 @@ async def _set_reply_keyboard_anchor(chat_id: int, message) -> None:
         logging.debug("set reply keyboard anchor failed chat_id=%s", chat_id, exc_info=True)
 
 
-async def _ensure_reply_keyboard_delivered(bot, chat_id: int) -> None:
+async def _ensure_reply_keyboard_delivered(bot, chat_id: int, force: bool = False) -> None:
     """Guarantee this DM user has received the current reply-keyboard at least once.
     Cheap fast-paths (memory, then a one-time DB read); only genuinely un-delivered
-    users get a single standalone menu message. Best-effort — never raises."""
+    users get a single standalone menu message. Best-effort — never raises.
+
+    force=True re-delivers even if this version was already marked delivered. Used by
+    /start — the user's explicit «верни меню» gesture. The DM keyboard can be lost on
+    Telegram's side (anchor message deleted, client state), and the once-per-version
+    gate would otherwise NEVER re-send it → "кнопки пропали навсегда". /start must
+    always bring them back."""
     uid = int(chat_id)
-    if _kb_delivered_versions.get(uid) == REPLY_KEYBOARD_VERSION:
-        return
-    try:
-        stored = await asyncio.to_thread(get_reply_keyboard_delivered_version, uid)
-    except Exception:
-        stored = None
-    if stored == REPLY_KEYBOARD_VERSION:
-        _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION
-        return
+    if not force:
+        if _kb_delivered_versions.get(uid) == REPLY_KEYBOARD_VERSION:
+            return
+        try:
+            stored = await asyncio.to_thread(get_reply_keyboard_delivered_version, uid)
+        except Exception:
+            stored = None
+        if stored == REPLY_KEYBOARD_VERSION:
+            _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION
+            return
     # Mark BEFORE sending so a burst of pushes (e.g. a 7-card batch) sends only one
     # standalone message; roll back if the send fails so a later push retries.
     _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION
@@ -12680,6 +12687,15 @@ async def start(update: Update, context: CallbackContext):
 
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
     if update.effective_chat and update.effective_chat.type == "private":
+        # /start = явный жест пользователя «верни мне меню». Принудительно пере-доставляем
+        # reply-клавиатуру ДАЖE если версия уже помечена доставленной: DM-клавиатуру можно
+        # потерять на стороне Telegram (удалён якорь / состояние клиента), а обычная
+        # доставка «раз на версию» её больше никогда не пере-шлёт → «кнопки пропали».
+        if user:
+            try:
+                await _ensure_reply_keyboard_delivered(context.bot, int(user.id), force=True)
+            except Exception:
+                pass
         # /start is an explicit "начни здесь" action → always route to the onboarding
         # wizard (it holds the real setup: язык, словарь, установка Shortcut, иконка
         # словаря, темп заданий), not the plain returning-user menu.
