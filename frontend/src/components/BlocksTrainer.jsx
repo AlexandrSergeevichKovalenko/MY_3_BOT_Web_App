@@ -722,6 +722,7 @@ export default function BlocksTrainer({
   const visibleTiles = tiles.filter((tile) => tile.slotIndex === null);
   const timerSeconds = timeLeftMs === null ? null : Math.ceil(timeLeftMs / 1000);
   const text = {
+    eyebrow: labels.eyebrow || 'Собери перевод',
     promptFallback: labels.promptFallback || 'Соберите ответ',
     hint: labels.hint || 'Подсказка',
     check: labels.check || 'Проверить',
@@ -736,6 +737,7 @@ export default function BlocksTrainer({
   return (
     <div className={`blocks-trainer ${status !== 'idle' ? `is-${status}` : ''}`}>
       <div className="blocks-section blocks-section-task">
+        <div className="blocks-eyebrow">{text.eyebrow}</div>
         <div className="blocks-head">
           <div className="blocks-prompt-wrap">
             <div className="blocks-prompt">{prompt || text.promptFallback}</div>

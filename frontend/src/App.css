@@ -13357,6 +13357,16 @@ body:has(.webapp-page.is-theme-light),
   color: rgba(219, 229, 249, 0.95);
 }
 
+/* Амбер-плашка над промптом — консистентно с Quiz/Satz («Собери перевод»). */
+.blocks-eyebrow {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #b45f13;
+}
+
 .blocks-trainer {
   display: grid;
   gap: 14px;
@@ -30270,12 +30280,15 @@ html[data-scheme="light"] .story-modal-guess-answer,
     padding: clamp(12px, 2.4vh, 22px) clamp(12px, 3.4vw, 16px) clamp(12px, 2vh, 16px) !important;
     overflow-y: auto;
   }
-  /* Пояс «центр»: лис-герой + eyebrow + вопрос. НЕ растягиваем (flex:0) — иначе он
-     раздувается и придавливает варианты «к полу», а сверху зияет пустота. Держим
-     вопрос у ВЕРХА карты; свободную высоту забирает пояс «низ» ниже. */
+  /* Пояс «центр»: лис-герой + eyebrow + вопрос. Небольшой flex-grow (0.55) при
+     justify-flex-end добавляет «воздух» НАД кластером «вопрос+варианты+вердикт»,
+     а пояс «низ» (grow 1) — под ним. Итог: кластер стоит у оптического центра
+     (~40% сверху / 60% снизу), «Continue» остаётся притянут к полу. Кластер
+     цельный (варианты сразу под вопросом), без дыр между элементами. */
   .webapp-page.is-flashcard-study .flashcard-quiz-layout .quiz-prompt-zone {
-    flex: 0 0 auto;
-    justify-content: center;
+    flex: 0.55 1 auto;
+    min-height: 0;
+    justify-content: flex-end;
     gap: clamp(8px, 1.8vh, 16px);
     padding: 2px 2px 0;
   }
@@ -30444,10 +30457,12 @@ html[data-scheme="light"] .story-modal-guess-answer,
     font-weight: 700 !important;
     line-height: 1.22 !important;
   }
-  /* Значения — тёмным по кремовому (перебиваем светлые «для тёмной плашки»). */
+  /* Значения — ЧИСТЫЕ строки (без плиток-коробочек): просто текст тёмным по
+     кремовому. Перебиваем и светлые «для тёмной плашки», и рамку/фон плитки. */
   .webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-meaning-item {
-    background: rgba(120, 96, 58, 0.06) !important;
-    border-color: rgba(120, 96, 58, 0.14) !important;
+    background: transparent !important;
+    border: 0 !important;
+    padding: 2px 0 !important;
     color: var(--t-text-secondary, #3d3428) !important;
   }
   .webapp-page.is-flashcard-study .flashcard-preview-native-box .flashcard-meaning-text {
