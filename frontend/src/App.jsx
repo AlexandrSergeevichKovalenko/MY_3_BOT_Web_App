@@ -27515,10 +27515,13 @@ function AppInner() {
     const translationArray = Array.isArray(responseJson.translations)
       ? responseJson.translations.filter(Boolean)
       : [];
-    const raw = translationArray[0]
-      || translationDe
+    // Blocks собирают немецкое слово: приоритет немецкому заголовку карточки,
+    // перевод (translations[0]) — только крайний фолбэк, чтобы фильтр длины
+    // на бэкенде и то, что реально собирает игрок, совпадали.
+    const raw = translationDe
       || entry?.word_de
       || responseJson.word_de
+      || translationArray[0]
       || '';
     if (!raw) return '';
     const normalized = String(raw).replace(/\s+/g, ' ').trim();

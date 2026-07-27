@@ -48662,7 +48662,9 @@ def get_webapp_flashcard_set():
     def _resolve_blocks_answer_for_profile(entry: dict) -> str:
         item = entry if isinstance(entry, dict) else {}
         response_json = _coerce_response_json(item.get("response_json"))
-        text_from_entry = (
+        # Blocks собирают НЕМЕЦКОЕ слово из букв, поэтому длину карточки меряем
+        # по немецкому заголовку, а НЕ по русскому переводу (translations[0]).
+        german_text = (
             item.get("target_text")
             or item.get("translation_de")
             or item.get("word_de")
@@ -48671,15 +48673,16 @@ def get_webapp_flashcard_set():
             or response_json.get("word_de")
             or ""
         )
-        translations = response_json.get("translations")
-        first_translation = ""
-        if isinstance(translations, list):
-            for candidate in translations:
-                candidate_text = str(candidate or "").strip()
-                if candidate_text:
-                    first_translation = candidate_text
-                    break
-        raw = first_translation or str(text_from_entry or "")
+        raw = str(german_text or "")
+        if not raw.strip():
+            # Немецкого поля нет — крайний фолбэк на первый перевод.
+            translations = response_json.get("translations")
+            if isinstance(translations, list):
+                for candidate in translations:
+                    candidate_text = str(candidate or "").strip()
+                    if candidate_text:
+                        raw = candidate_text
+                        break
         normalized = re.sub(r"\s+", " ", raw).strip()
         if ";" in normalized or "/" in normalized:
             return re.split(r"[;/]", normalized, maxsplit=1)[0].strip() or normalized
