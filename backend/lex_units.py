@@ -159,10 +159,20 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     }
     # Все переводы, а не только главный: «грубиян» ведёт и к der Rüpel, и к der Flegel,
     # и человек должен видеть оба, а не гадать, почему показали одно.
-    shown = [
-        link for link in links
-        if not _GRAMMAR_NOTE_RE.search(link["display"]) and _EXERCISE_BLANK not in link["display"]
-    ] or links[:1]
+    shown: list[dict] = []
+    seen_values: set[str] = set()
+    for link in links:
+        value = link["display"]
+        # Заготовку упражнения не показываем НИКОГДА, даже если других переводов нет:
+        # «anfangen → Er ___ heute früh mit dem Projekt» — это задание тренажёра, а не
+        # перевод. Лучше карточка без перевода (её доберёт обогащение), чем с бессмыслицей.
+        if _EXERCISE_BLANK in value or _GRAMMAR_NOTE_RE.search(value):
+            continue
+        key = _SPACE_RE.sub(" ", value.strip()).casefold()
+        if key in seen_values:
+            continue  # «приют» из двух разных записей банка — один перевод, не два
+        seen_values.add(key)
+        shown.append(link)
     if shown:
         item["translations"] = [
             {"value": link["display"], "context": "", "is_primary": index == 0}
