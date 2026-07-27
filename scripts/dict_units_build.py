@@ -237,6 +237,28 @@ def main() -> int:
     genus = dict(cur.fetchall())
     print("  Wiktionary: части речи %d, роды %d" % (len(wikt), len(genus)))
 
+    # Решения по одинаково пишущимся словам, принятые разведением: «der Herberge» —
+    # не слово, а падежная форма от «die Herberge». Без этого справочника пересборка
+    # создала бы отброшенные единицы заново, и вся ручная работа пропадала бы.
+    rulings: dict[tuple, str] = {}
+    try:
+        cur.execute("SELECT lemma_key, article, base_article FROM bt_3_lex_form_rulings "
+                    "WHERE verdict = 'form' AND base_article IS NOT NULL;")
+        rulings = {(r[0], r[1]): r[2] for r in cur.fetchall()}
+    except Exception:
+        conn.rollback()  # справочника ещё нет — первая сборка, это нормально
+    # Какому из одинаково пишущихся слов принадлежит значение: «челюсть» → der Kiefer,
+    # «сосна» → die Kiefer. Запись банка без артикля («Челюсть, сосна → Kiefer») иначе
+    # ложится наугад, и разведение приходилось бы повторять после каждой пересборки.
+    gloss_rulings: dict[tuple, str] = {}
+    try:
+        cur.execute("SELECT lemma_key, gloss_key, article FROM bt_3_lex_gloss_rulings;")
+        gloss_rulings = {(r[0], r[1]): r[2] for r in cur.fetchall()}
+    except Exception:
+        conn.rollback()
+    print("  решений по одинаковым написаниям: %d, по значениям: %d"
+          % (len(rulings), len(gloss_rulings)))
+
     print("читаю банк…")
     cur.execute(
         """
@@ -274,7 +296,7 @@ def main() -> int:
     links: dict[tuple, dict] = {}
     skipped = 0
 
-    def unit_for(lang: str, text: str, entry_id: int, side: str, rj: dict):
+    def unit_for(lang: str, text: str, entry_id: int, side: str, rj: dict, force_gender: str = ""):
         k = kind_of(text)
         if not k:
             return None
@@ -289,6 +311,7 @@ def main() -> int:
             return u
         key = (lang, norm(body))
         pos = pos_src = gender = gender_src = None
+        forced_surface = ""  # написание, ставшее указателем по решению разведения
         if lang == "de":
             pos, pos_src = resolve_pos(lemma=body, surfaces=set(), pool_pos=pool_pos[key],
                                        wikt=wikt, glosses=glosses[key])
@@ -303,6 +326,18 @@ def main() -> int:
                     gender, gender_src = row_article, "запись"
                 if gender and pos is None:
                     pos, pos_src = "noun", "род"
+                # Разведение уже решило, что этот артикль у слова — не отдельное слово, а
+                # его форма («der Herberge» от «die Herberge»). Новую единицу не заводим,
+                # написание становится указателем базового слова.
+                ruled_base = rulings.get((norm(body), gender or ""))
+                if ruled_base:
+                    gender, gender_src = ruled_base, "разведение"
+                    forced_surface = norm(text)
+                # Значение уже разведено вручную («челюсть» — это der Kiefer): род берём
+                # оттуда, иначе запись без артикля снова легла бы наугад.
+                if force_gender in GENUS_TO_ARTICLE.values():
+                    gender, gender_src = force_gender, "разведение(значение)"
+                    pos = pos or "noun"
             if pos in NOT_NOUN_POS:
                 gender, gender_src = None, None
         display = body
@@ -321,6 +356,9 @@ def main() -> int:
         u["surfaces"].add((norm(body), "no_article" if article_of(text) else "exact"))
         if article_of(text):
             u["surfaces"].add((norm(text), "exact"))
+        if forced_surface:
+            # «der Herberge» ведёт в «die Herberge» — как форма, а не как своё слово.
+            u["surfaces"].add((forced_surface, "inflected"))
         u["sources"].add((entry_id, side))
         # Разбор кладём самый полный из встретившихся — но ТОЛЬКО если он про это же
         # слово. Именно на этом сломался словарь: карточка «der Flegel» несла формы и
@@ -353,6 +391,23 @@ def main() -> int:
             skipped += 1
             continue
         src = sources[0]
+
+        def german_for_gloss(default_unit: dict, gloss_unit: dict) -> dict:
+            """Для одинаково пишущихся слов немецкая единица выбирается ПО ЗНАЧЕНИЮ.
+
+            Запись «Челюсть, сосна → Kiefer» не содержит артикля, и без справочника оба
+            значения повисали на одном слове. Со справочником «челюсть» уходит к
+            der Kiefer, «сосна» — к die Kiefer, и пересборка это повторяет."""
+            if default_unit["lang"] != "de" or default_unit["kind"] != "word":
+                return default_unit
+            ruled = gloss_rulings.get((default_unit["lemma_key"], norm(gloss_unit["display"])))
+            if not ruled or ruled == (default_unit.get("gender") or ""):
+                return default_unit
+            de_text = st if sl == "de" else tt
+            de_side = "source" if sl == "de" else "target"
+            return unit_for(
+                "de", de_text, _id, de_side, rj, force_gender=ruled,
+            ) or default_unit
         # Слова из списка на исходной стороне — равноправные единицы, связываем каждое.
         for extra in sources[1:]:
             for t in targets:
@@ -361,7 +416,9 @@ def main() -> int:
                     if lk not in links:
                         links[lk] = {"rank": 20, "source": "пул"}
         for i, t in enumerate(targets):
-            for a, b, rank in ((src, t, 10 + i), (t, src, 10 + i)):
+            src_for_link = german_for_gloss(src, t)
+            t = german_for_gloss(t, src)
+            for a, b, rank in ((src_for_link, t, 10 + i), (t, src_for_link, 10 + i)):
                 lk = (a["key"], b["key"])
                 cur_link = links.get(lk)
                 if cur_link is None or rank < cur_link["rank"]:
