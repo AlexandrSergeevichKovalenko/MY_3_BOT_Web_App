@@ -24,6 +24,11 @@ from backend.database import get_db_connection_context
 
 _SPACE_RE = re.compile(r"\s+")
 _ARTICLE_RE = re.compile(r"^(der|die|das)\s+", re.I)
+# В тексте слово стоит с ПАДЕЖНЫМ артиклем: «den Rüpeln», «des Helden», «einem Kind».
+# Для поиска снимаем любой из них; для определения рода годится только именительный
+# (см. article_of): «den» бывает и мужским винительным, и множественным дательным.
+_ANY_ARTICLE_RE = re.compile(
+    r"^(?:der|die|das|den|dem|des|ein|eine|einen|einem|einer|eines)\s+", re.I)
 
 # Сколько переводов показывать: первый — главный, остальные как «ещё говорят».
 _MAX_LINKS = 6
@@ -53,7 +58,7 @@ def normalize_query(text: str) -> str:
     одно написание, а вот РАЗНЫЕ единицы за ним стоят разные, и выбирает их вызывающая
     сторона по артиклю запроса."""
     compact = _SPACE_RE.sub(" ", str(text or "").strip())
-    return _ARTICLE_RE.sub("", compact).strip().casefold()
+    return _ANY_ARTICLE_RE.sub("", compact).strip().casefold()
 
 
 def article_of(text: str) -> str:
