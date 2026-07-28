@@ -421,6 +421,8 @@ from backend.database import (
     is_telegram_user_allowed,
     auto_grant_telegram_user,
     invalidate_telegram_user_allowed_cache,
+    publish_cache_invalidation,
+    CACHE_INVALIDATION_FEED_KEY,
     ensure_webapp_tables,
     create_shortcut_pairing_code,
     link_shortcut_installation,
@@ -3029,7 +3031,10 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     # Paid: Russian translated subtitles (the Pro «синхронные русские субтитры» feature).
     "/api/webapp/youtube/translate": {"cap": True, "paid_feature": "youtube_subtitles", "paid_feature_title": "YouTube: русские субтитры"},
     "/api/webapp/submit-group": {"cap": True},
-    "/api/webapp/story/submit": {"cap": True, "paid_feature": "mystery_story", "paid_feature_title": "Загадочная история"},
+    # feature MUST match the in-endpoint gate on /api/webapp/story/start ("story_mode") —
+    # the app keys the paywall on this code, and one feature answering under two names
+    # splits it in two everywhere we ever count by it.
+    "/api/webapp/story/submit": {"cap": True, "paid_feature": "story_mode", "paid_feature_title": "Загадочная история"},
     "/api/today/theory/prepare": {"cap": True, "feature_code": "skill_training_daily", "paid_feature": "skill_training", "paid_feature_title": "Тренировка навыка"},
     "/api/today/theory/check": {"cap": True, "paid_feature": "skill_training", "paid_feature_title": "Тренировка навыка"},
 }
@@ -3466,6 +3471,11 @@ def enforce_webapp_access():
     is_protected = path.startswith("/api/webapp/") or path in _ACCESS_PROTECTED_EXACT_PATHS
     if not is_protected or path in _ACCESS_PUBLIC_WEBAPP_PATHS:
         return None
+
+    # Cheap flag check; starts the cross-process cache-invalidation reader once per process.
+    # Hooked here as well as in the billing guard so an /allow or /deny propagates even in a
+    # worker that has not yet served a billing-guarded path.
+    _ensure_cache_invalidation_feed_started()
 
     payload = request.get_json(silent=True) or {}
     init_data = _extract_request_init_data(payload)
@@ -5959,9 +5969,10 @@ _BILLING_GUARD_CACHE_TTL_SEC = max(0, int(str(os.getenv("BILLING_GUARD_CACHE_TTL
 _BILLING_GUARD_NO_CACHE_PATHS = {"/api/webapp/youtube/transcript"}
 
 
-def _invalidate_billing_guard_cache_for_user(user_id: int) -> None:
-    """Drop a user's cached billing decisions (e.g. right after they upgrade/pay) so entitlement
-    changes take effect immediately instead of waiting out the TTL."""
+def _drop_local_billing_guard_cache(user_id: int) -> None:
+    """Drop this PROCESS's cached billing decisions for one user. No announcement — used both
+    by the local invalidation below and by the cross-process feed reader (which must not
+    re-publish what it just consumed)."""
     try:
         prefix = f"{int(user_id)}|"
     except Exception:
@@ -5971,7 +5982,104 @@ def _invalidate_billing_guard_cache_for_user(user_id: int) -> None:
             _BILLING_GUARD_DECISION_CACHE.pop(k, None)
 
 
+def _invalidate_billing_guard_cache_for_user(user_id: int) -> None:
+    """Drop a user's cached billing decisions (e.g. right after they upgrade/pay) so entitlement
+    changes take effect immediately instead of waiting out the TTL.
+
+    The decision cache lives in PROCESS memory, so dropping it here fixes only the worker that
+    handled the payment. With WEB_CONCURRENCY=1 that is everyone; the moment the service is
+    scaled wider, a paying user would keep seeing «нужен тариф» on every other worker until the
+    TTL expired. Announcing the change on the shared feed keeps that from becoming true.
+    """
+    _drop_local_billing_guard_cache(user_id)
+    try:
+        publish_cache_invalidation("billing", int(user_id))
+    except Exception:
+        logging.debug("billing invalidation publish failed uid=%s", user_id, exc_info=True)
+
+
+_CACHE_INVALIDATION_FEED_ENABLED = str(
+    os.getenv("CACHE_INVALIDATION_FEED_ENABLED") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+_CACHE_INVALIDATION_FEED_POLL_SEC = max(
+    1, min(60, int(str(os.getenv("CACHE_INVALIDATION_FEED_POLL_SEC") or "5").strip() or "5"))
+)
+# Re-read a small overlapping window each tick. Two processes never share a clock exactly,
+# and dropping a cache entry twice is harmless — missing an event is not.
+_CACHE_INVALIDATION_FEED_LOOKBACK_SEC = 30
+_cache_invalidation_feed_thread: threading.Thread | None = None
+_cache_invalidation_feed_lock = threading.Lock()
+
+
+def _apply_cache_invalidation_event(kind: str, user_id: int) -> None:
+    if kind == "billing":
+        _drop_local_billing_guard_cache(user_id)
+        return
+    if kind == "allowlist":
+        _HOTPATH_ALLOWLIST_CACHE.invalidate(_allowlist_cache_key(user_id))
+        _HOTPATH_ALLOWLIST_CACHE.invalidate(_self_serve_attempt_memo_key(user_id))
+        try:
+            invalidate_telegram_user_allowed_cache(user_id)
+        except Exception:
+            logging.debug("allowlist local invalidation failed uid=%s", user_id, exc_info=True)
+
+
+def _cache_invalidation_feed_loop() -> None:
+    """Poll the shared invalidation feed and apply the events to THIS process's caches.
+
+    One Redis read every few seconds per process, regardless of traffic — deliberately not
+    a per-request check, which would trade a rare staleness window for a permanent network
+    hop on the hot path. Everything is wrapped: a Redis outage degrades to today's
+    TTL-bounded behaviour instead of killing the thread.
+    """
+    last_seen = time.time() - _CACHE_INVALIDATION_FEED_LOOKBACK_SEC
+    while True:
+        time.sleep(_CACHE_INVALIDATION_FEED_POLL_SEC)
+        try:
+            client = get_redis_client()
+            if client is None:
+                continue
+            now = time.time()
+            members = client.zrangebyscore(CACHE_INVALIDATION_FEED_KEY, last_seen, "+inf")
+            for member in members or []:
+                parts = str(member).split(":")
+                if len(parts) < 2:
+                    continue
+                try:
+                    _apply_cache_invalidation_event(parts[0], int(parts[1]))
+                except Exception:
+                    logging.debug("cache invalidation event apply failed: %s", member, exc_info=True)
+            last_seen = now - _CACHE_INVALIDATION_FEED_LOOKBACK_SEC
+        except Exception:
+            logging.debug("cache invalidation feed poll failed", exc_info=True)
+
+
+def _ensure_cache_invalidation_feed_started() -> None:
+    """Start the feed reader lazily, on the first guarded request. Keeps the thread out of
+    processes that merely import this module (bot, workers, tests)."""
+    global _cache_invalidation_feed_thread
+    if not _CACHE_INVALIDATION_FEED_ENABLED or _cache_invalidation_feed_thread is not None:
+        return
+    with _cache_invalidation_feed_lock:
+        if _cache_invalidation_feed_thread is not None:
+            return
+        try:
+            thread = threading.Thread(
+                target=_cache_invalidation_feed_loop,
+                name="cache-invalidation-feed",
+                daemon=True,
+            )
+            thread.start()
+            _cache_invalidation_feed_thread = thread
+            logging.info(
+                "cache invalidation feed reader started (poll=%ss)", _CACHE_INVALIDATION_FEED_POLL_SEC
+            )
+        except Exception:
+            logging.warning("failed to start cache invalidation feed reader", exc_info=True)
+
+
 def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
+    _ensure_cache_invalidation_feed_started()
     rule = _BILLING_GUARD_RULES.get(path) or {}
     user_id = _extract_guard_user_id_for_path(path)
     if user_id is None:

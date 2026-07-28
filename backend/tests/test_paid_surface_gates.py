@@ -12,6 +12,12 @@ from backend.voice_assessment_service import VoiceAssessment
 class PaidSurfaceGateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = server.app.test_client()
+        # The billing guard caches its decision per (user_id|path) for 180s in process
+        # memory. Every case here drives the SAME user id, so without this reset a «free»
+        # case poisons the later «pro» ones: the guard answers from cache and never reaches
+        # the patched entitlement, and the tests fail only when run together.
+        with server._BILLING_GUARD_DECISION_CACHE_LOCK:
+            server._BILLING_GUARD_DECISION_CACHE.clear()
 
     @staticmethod
     @contextmanager

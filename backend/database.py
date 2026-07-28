@@ -12435,6 +12435,44 @@ def invalidate_telegram_user_allowed_cache(user_id: int | None = None) -> None:
             _ALLOWED_USER_CACHE.pop(int(user_id), None)
 
 
+CACHE_INVALIDATION_FEED_KEY = "webapp:cache:invalidations"
+CACHE_INVALIDATION_FEED_RETENTION_SEC = max(
+    60, min(3600, int(os.getenv("CACHE_INVALIDATION_FEED_RETENTION_SEC", "600") or "600"))
+)
+
+
+def publish_cache_invalidation(kind: str, user_id: int) -> None:
+    """Announce «this user's cached decision is stale» to every OTHER process.
+
+    Deleting a shared Redis key is not enough: each web worker also keeps the decision in
+    its own memory for up to its TTL, and a delete performed by the bot process cannot
+    reach that memory. Workers read this feed on a timer (see the reader in the web tier),
+    so the fix propagates without any process paying a Redis call per request.
+
+    Best-effort by design: no Redis, or a failed write, simply means the old TTL-bounded
+    behaviour — never an error on the caller's path.
+    """
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is None:
+            return
+        now = time.time()
+        # Unique member per event: a plain "kind:uid" would be de-duplicated by ZADD and a
+        # later invalidation would silently keep the FIRST timestamp, so a reader that has
+        # already passed that point would never see the new event. The random suffix is not
+        # decoration — a timestamp alone collides when two events land in the same
+        # millisecond (e.g. a payment webhook and a manual grant), and the second one would
+        # then vanish exactly when it matters most.
+        member = f"{str(kind or 'unknown').strip()}:{int(user_id)}:{now:.3f}:{uuid4().hex[:8]}"
+        client.zadd(CACHE_INVALIDATION_FEED_KEY, {member: now})
+        client.zremrangebyscore(
+            CACHE_INVALIDATION_FEED_KEY, 0, now - CACHE_INVALIDATION_FEED_RETENTION_SEC
+        )
+    except Exception:
+        logging.debug("publish cache invalidation failed kind=%s uid=%s", kind, user_id, exc_info=True)
+
+
 def _invalidate_webapp_allowlist_redis(user_id: int) -> None:
     """Delete the shared Redis webapp-allowlist cache key so the web tier
     re-evaluates this user immediately after an allow/revoke (its hot-path cache
@@ -12446,6 +12484,9 @@ def _invalidate_webapp_allowlist_redis(user_id: int) -> None:
             client.delete(f"webapp:allowlist:{int(user_id)}")
     except Exception:
         logging.debug("invalidate webapp allowlist redis failed uid=%s", user_id, exc_info=True)
+    # Shared key is gone; now tell the web workers to drop their in-memory copy too —
+    # otherwise a /deny stays invisible to a warm worker for the full positive TTL.
+    publish_cache_invalidation("allowlist", int(user_id))
 
 
 def is_telegram_user_allowed(user_id: int) -> bool:
