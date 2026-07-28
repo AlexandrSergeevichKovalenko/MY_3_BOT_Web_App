@@ -16240,6 +16240,34 @@ def save_webapp_dictionary_query(
     )
 
 
+def _attach_entry_to_lex_unit_quietly(
+    entry_id: int,
+    *,
+    word_de: str | None,
+    word_ru: str | None,
+    source_lang: str | None,
+    target_lang: str | None,
+) -> None:
+    """Привязать сохранённую карточку к её слову в слое единиц.
+
+    Стоит именно ЗДЕСЬ, на уровне записи в базу, потому что путей сохранения несколько
+    и они не сходятся выше: бот пишет напрямую через этот модуль, минуя помощников
+    веб-слоя. Из-за этого 17 карточек за день остались без привязки. Модуль слоя
+    импортируем внутри функции — иначе получилось бы кольцо импортов.
+
+    Сбой привязки никогда не ломает сохранение: она вспомогательная."""
+    if not entry_id:
+        return
+    try:
+        from backend.lex_units import attach_entry_to_unit
+        attach_entry_to_unit(
+            int(entry_id), word_de=word_de, word_ru=word_ru,
+            source_lang=source_lang, target_lang=target_lang,
+        )
+    except Exception:
+        logging.debug("attach entry to lex unit skipped", exc_info=True)
+
+
 def save_webapp_dictionary_query_returning_id(
     user_id: int,
     word_ru: str | None,
@@ -16270,6 +16298,10 @@ def save_webapp_dictionary_query_returning_id(
             origin_meta=origin_meta,
             semantic_tag=semantic_tag,
         )
+    _attach_entry_to_lex_unit_quietly(
+        inserted_id, word_de=word_de, word_ru=word_ru,
+        source_lang=source_lang, target_lang=target_lang,
+    )
     return inserted_id if inserted_id > 0 else 0
 
 
@@ -16303,6 +16335,10 @@ def save_webapp_dictionary_query_returning_id_with_inserted(
             origin_meta=origin_meta,
             semantic_tag=semantic_tag,
         )
+    _attach_entry_to_lex_unit_quietly(
+        inserted_id, word_de=word_de, word_ru=word_ru,
+        source_lang=source_lang, target_lang=target_lang,
+    )
     return (inserted_id if inserted_id > 0 else 0, bool(inserted))
 
 
