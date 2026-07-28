@@ -31593,6 +31593,10 @@ _DIGEST_CATEGORIES = [
     ("sp",   "🏃 Спринт син/ант"),
     ("ast",  "📐 Артикль-спринт"),
     ("ad",   "📝 Адъектив-спринт"),
+    # Wo-Frage sprint. A category missing from this list is not shown as a raw code — the
+    # digest loop iterates over THIS order, so its answers silently vanish from the
+    # breakdown while still counting in the day's totals, and the rows stop adding up.
+    ("wf",   "❓ Wo-Frage-спринт"),
 ]
 
 

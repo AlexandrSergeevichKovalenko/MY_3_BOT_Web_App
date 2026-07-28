@@ -37257,36 +37257,6 @@ def lookup_webapp_dictionary():
     source_lang, target_lang, _profile = _get_user_language_pair(user_id_for_log)
     mark("lang_pair")
 
-    # Free-tier save-limit precheck: if today's dictionary save quota is already
-    # exhausted, refuse the lookup up front. Otherwise we would run the LLM
-    # lookup + collocation generation (DB + model load) only to block the user
-    # at save time — wasted work that is never persisted. Mirrors the save
-    # endpoint's limit logic (see dictionary_lookup_save_daily there).
-    try:
-        _dict_save_feature = "dictionary_lookup_save_daily"
-        _ent = resolve_entitlement(user_id=user_id_for_log, tz="Europe/Vienna")
-        _mode = str(_ent.get("effective_mode") or "free").strip().lower() or "free"
-        if _mode == "free":
-            _limit_meta = get_free_feature_limit_metadata(_dict_save_feature) or {}
-            _limit_value = float(_limit_meta.get("free_limit") or 0)
-            _used_today = get_free_feature_usage_today(
-                user_id=user_id_for_log,
-                feature_key=_dict_save_feature,
-                tz="Europe/Vienna",
-            )
-            if _limit_value >= 0 and _used_today + 1.0 > _limit_value:
-                _log_dictionary_profile()
-                return jsonify(
-                    build_free_limit_error(
-                        _dict_save_feature,
-                        used=_used_today,
-                        limit=_limit_value,
-                        tz="Europe/Vienna",
-                    )
-                ), 429
-    except Exception:
-        logging.debug("dictionary lookup save-limit precheck failed", exc_info=True)
-
     cache_key = ""
     cache_key_shared = ""
     normalized_word = _normalize_dictionary_lookup_word(word_ru)
@@ -37566,6 +37536,39 @@ def lookup_webapp_dictionary():
         if cap_error:
             _log_dictionary_profile()
             return jsonify(cap_error), 429
+
+        # Free-tier save-limit precheck. It lives HERE, next to the cost cap, for the same
+        # reason: only paid work is worth refusing. Running the LLM lookup for someone who
+        # cannot save the result today is waste — but a word we ALREADY own costs nothing,
+        # and blocking that took the dictionary away from a free user for the rest of the
+        # day while saving us nothing. (It used to sit at the top of this endpoint, ahead of
+        # the cache, which is exactly what the «cache hits are free and unlimited» rule on
+        # dictionary_lookup_daily forbids.) Saving is still capped — the save endpoint
+        # enforces its own limit and shows the upsell there.
+        try:
+            _dict_save_feature = "dictionary_lookup_save_daily"
+            _ent = resolve_entitlement(user_id=user_id_for_log, tz="Europe/Vienna")
+            _mode = str(_ent.get("effective_mode") or "free").strip().lower() or "free"
+            if _mode == "free":
+                _limit_meta = get_free_feature_limit_metadata(_dict_save_feature) or {}
+                _limit_value = float(_limit_meta.get("free_limit") or 0)
+                _used_today = get_free_feature_usage_today(
+                    user_id=user_id_for_log,
+                    feature_key=_dict_save_feature,
+                    tz="Europe/Vienna",
+                )
+                if _limit_value >= 0 and _used_today + 1.0 > _limit_value:
+                    _log_dictionary_profile()
+                    return jsonify(
+                        build_free_limit_error(
+                            _dict_save_feature,
+                            used=_used_today,
+                            limit=_limit_value,
+                            tz="Europe/Vienna",
+                        )
+                    ), 429
+        except Exception:
+            logging.debug("dictionary lookup save-limit precheck failed", exc_info=True)
 
         lookup_id = f"dict_{int(time.time() * 1000)}_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()[:10]}"
         limit_error = _reserve_dictionary_lookup_execution(
@@ -65755,13 +65758,25 @@ def finish_webapp_translation():
         _release_shared_idempotency(finish_idempotency_key, finish_idempotency_token)
 
 
+def _startup_schema_bootstrap_enabled() -> bool:
+    """Importing this module runs schema DDL against whatever DATABASE_URL is configured.
+
+    In a service that is exactly right. In a test run it is not: the developer's environment
+    carries PRODUCTION credentials, so `pytest` alone opened a connection to the live database
+    and issued DDL there — and when that connection was slow, unrelated tests failed with a
+    psycopg2 timeout. The flag lets the test suite import the app without touching any
+    database; production never sets it, so its startup is unchanged.
+    """
+    return str(os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") or "").strip().lower() not in {"1", "true", "yes", "on"}
+
+
 _backend_startup_completed_successfully = False
 try:
     try:
         _run_startup_phase(
             "ensure_phase1_projection_schema",
             ensure_phase1_projection_schema,
-            enabled=True,
+            enabled=_startup_schema_bootstrap_enabled(),
             category="schema_bootstrap",
             required_before_first_request=False,
         )
@@ -65772,7 +65787,7 @@ try:
         _run_startup_phase(
             "ensure_shortcut_schema",
             ensure_shortcut_tables,
-            enabled=True,
+            enabled=_startup_schema_bootstrap_enabled(),
             category="schema_bootstrap",
             required_before_first_request=False,
         )

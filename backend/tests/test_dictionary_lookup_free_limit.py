@@ -41,9 +41,18 @@ class DictionaryLookupFreeLimitWebappTests(unittest.TestCase):
         stack.enter_context(patch.object(server, "_billing_log_openai_usage"))
         return stack, {"usage": usage_mock, "increment": increment_mock, "reserve": reserve_mock}
 
+    # A cached payload only counts as servable if it is a REAL card (examples/tables/meanings);
+    # a bare word+translation is a thin save and gets re-enriched, i.e. it is NOT a cache hit.
+    SERVABLE_ITEM = {
+        "source_text": "Haus",
+        "target_text": "дом",
+        "entry_kind": "word",
+        "usage_examples": [{"source": "Das Haus ist alt.", "target": "Дом старый."}],
+    }
+
     def test_mini_app_memory_cache_hit_does_not_consume_lookup_limit(self):
         stack, mocks = self._base_patches(mode="free", usage=30.0)
-        cached_payload = {"item": {"source_text": "Haus", "target_text": "дом"}, "direction": "de-ru"}
+        cached_payload = {"item": dict(self.SERVABLE_ITEM), "direction": "de-ru"}
         with stack, \
              patch.object(server, "_get_cached_dictionary_lookup_with_tier", return_value=(cached_payload, "memory")), \
              patch.object(server, "_run_dictionary_core_lookup_sync") as core_mock:
@@ -57,7 +66,10 @@ class DictionaryLookupFreeLimitWebappTests(unittest.TestCase):
 
     def test_mini_app_db_cache_hit_does_not_consume_lookup_limit(self):
         stack, mocks = self._base_patches(mode="free", usage=30.0)
-        cached_payload = {"item": {"source_text": "laufen", "target_text": "бежать"}, "direction": "de-ru"}
+        cached_payload = {
+            "item": dict(self.SERVABLE_ITEM, source_text="laufen", target_text="бежать"),
+            "direction": "de-ru",
+        }
         with stack, \
              patch.object(server, "_get_cached_dictionary_lookup_with_tier", return_value=(cached_payload, "db")), \
              patch.object(server, "_run_dictionary_core_lookup_sync") as core_mock:
@@ -90,8 +102,27 @@ class DictionaryLookupFreeLimitWebappTests(unittest.TestCase):
         mocks["reserve"].assert_called_once()
         self.assertEqual(mocks["reserve"].call_args.kwargs["feature_key"], "dictionary_lookup_daily")
 
-    def test_free_thirty_first_mini_app_lookup_is_blocked_before_openai(self):
+    def test_free_user_out_of_save_quota_is_blocked_before_openai(self):
+        """Save quota spent → a NEW word (cache miss) is refused before the LLM runs:
+        we would pay for a card the user cannot keep. Cached words stay free — see the
+        cache-hit tests above; that is the whole point of checking this on the paid path."""
+        # _base_patches mocks the limit metadata as 30 for every feature, so 30 used = spent.
         stack, mocks = self._base_patches(mode="free", usage=30.0)
+        with stack, \
+             patch.object(server, "_get_cached_dictionary_lookup_with_tier", return_value=(None, "none")), \
+             patch.object(server, "_run_dictionary_core_lookup_sync") as core_mock:
+            response = self._post_lookup()
+
+        self.assertEqual(response.status_code, 429)
+        payload = response.get_json()
+        self.assertEqual(payload["feature"], "dictionary_lookup_save_daily")
+        core_mock.assert_not_called()
+        mocks["increment"].assert_not_called()
+
+    def test_free_user_out_of_new_word_quota_is_blocked_before_openai(self):
+        """Save quota still available, but today's NEW-word breakdowns are used up:
+        the reservation blocks, and the error names that feature."""
+        stack, mocks = self._base_patches(mode="free", usage=0.0)
         mocks["reserve"].return_value = {
             "ok": False,
             "blocked": True,

@@ -84,11 +84,17 @@ class ActivityAggregationTests(unittest.TestCase):
 
     def test_one_param_per_union_part_all_since_hours(self):
         _, cur = self._run([])
-        # 10 per-item tables + 2 listening subqueries + 3 sprint/battle tables = 15 parts,
-        # each parameterised by the same window → 15 identical params, 15 placeholders.
-        self.assertEqual(len(cur.executed_params), 15)
-        self.assertTrue(all(p == 24 for p in cur.executed_params))
-        self.assertEqual(cur.executed_sql.replace("%%", "").count("%s"), 15)
+        # The invariant is «one window parameter per UNION part, all identical» — NOT a
+        # particular number of parts. Counting parts from the SQL itself keeps this test
+        # alive when a new interactive type is added (a hardcoded 15 just went red when
+        # Wo-Frage arrived, hiding the real check behind a number nobody updates).
+        union_parts = cur.executed_sql.count("UNION ALL") + 1
+        # …plus ONE trailing parameter that is not a window at all: the synthetic-user id
+        # floor in the outer «WHERE user_id < %s», which keeps load-test users out.
+        self.assertEqual(len(cur.executed_params), union_parts + 1)
+        self.assertTrue(all(p == 24 for p in cur.executed_params[:union_parts]))
+        self.assertGreater(cur.executed_params[-1], 1_000_000_000)
+        self.assertEqual(cur.executed_sql.replace("%%", "").count("%s"), union_parts + 1)
 
     def test_covers_all_channel_independent_tables(self):
         # The whole point of the fix: read each type's OWN table (both channels), not
