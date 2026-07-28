@@ -421,6 +421,7 @@ from backend.database import (
     is_telegram_user_allowed,
     auto_grant_telegram_user,
     invalidate_telegram_user_allowed_cache,
+    has_reply_keyboard_delivered,
     publish_cache_invalidation,
     CACHE_INVALIDATION_FEED_KEY,
     ensure_webapp_tables,
@@ -3258,6 +3259,52 @@ def _notify_admins_new_user_async(user_id: int, display_name: str, source: str) 
         threading.Thread(target=_send, name="notify-new-user", daemon=True).start()
     except Exception:
         logging.debug("new-user notify thread spawn failed", exc_info=True)
+
+
+_DM_REACHABLE_CACHE_TTL_SEC = max(
+    60, min(86400, int((os.getenv("DM_REACHABLE_CACHE_TTL_SEC") or "21600").strip() or "21600"))
+)
+# «Not reachable» expires fast on purpose: the nudge asks the user to open the bot, and the
+# moment they do it must stop showing. A long negative TTL would keep nagging someone who
+# already did what we asked.
+_DM_UNREACHABLE_CACHE_TTL_SEC = max(
+    30, min(600, int((os.getenv("DM_UNREACHABLE_CACHE_TTL_SEC") or "120").strip() or "120"))
+)
+
+
+def _is_dm_reachable(user_id: int) -> bool:
+    """Can the bot write to this user at all? Cached — the answer changes once per lifetime."""
+    cache_key = ("dm_reachable", int(user_id))
+    cached = _HOTPATH_ALLOWLIST_CACHE.get(cache_key, allow_stale=True)
+    if cached is not None:
+        return bool(cached.get("payload"))
+    try:
+        with db_acquire_scope("dm_reachable_probe"):
+            reachable = bool(has_reply_keyboard_delivered(int(user_id)))
+    except Exception:
+        logging.debug("dm reachability probe failed uid=%s", user_id, exc_info=True)
+        # Fail as «reachable»: a DB hiccup must never make us nag a normal user.
+        return True
+    ttl = _DM_REACHABLE_CACHE_TTL_SEC if reachable else _DM_UNREACHABLE_CACHE_TTL_SEC
+    _HOTPATH_ALLOWLIST_CACHE.put(cache_key, reachable, fresh_ttl_sec=ttl, stale_ttl_sec=ttl)
+    return reachable
+
+
+def _build_dm_start_hint(user_id: int, user_name: str = "") -> dict | None:
+    """Nudge payload for someone playing a group task who never opened the bot in a DM.
+
+    They can play here and now, but every task, reminder and result the bot sends lands in a
+    private chat Telegram will not let us open on our own — so without one tap from them the
+    app stays a one-off page. Returns None (no nudge) for everyone else.
+    """
+    if _is_dm_reachable(int(user_id)):
+        return None
+    name = str(user_name or "").strip()
+    return {
+        "name": name,
+        "bot_username": str(TELEGRAM_BOT_USERNAME or "").strip().lstrip("@"),
+        "start_param": "fromgame",
+    }
 
 
 def _self_serve_attempt_memo_key(user_id: int) -> tuple[str, int]:
@@ -28262,7 +28309,13 @@ def get_answer_task():
         return jsonify({"error": "unsupported kind"}), 400
     if meta is None:
         return jsonify({"error": "Задание не найдено"}), 404
-    return jsonify({"ok": True, **meta})
+    payload_out = {"ok": True, **meta}
+    # Someone who reached this task through a group/forwarded link may never have opened the
+    # bot in a DM — and that is the only channel through which tasks are delivered.
+    dm_hint = _build_dm_start_hint(int(user_id), user_name)
+    if dm_hint:
+        payload_out["dm_hint"] = dm_hint
+    return jsonify(payload_out)
 
 
 @app.route("/api/answer/submit", methods=["POST"])

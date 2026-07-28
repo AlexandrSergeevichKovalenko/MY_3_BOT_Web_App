@@ -185,6 +185,42 @@ class WebappSelfServeGrantTests(unittest.TestCase):
         grant.assert_not_called()
 
 
+class DmStartHintTests(unittest.TestCase):
+    """Someone playing a group task who never opened the bot in a DM gets one soft nudge —
+    the bot cannot write to them first, so without that tap they receive nothing."""
+
+    def setUp(self):
+        import backend.backend_server as server
+        for uid in (61001, 61002, 61003):
+            server._HOTPATH_ALLOWLIST_CACHE.invalidate(("dm_reachable", uid))
+
+    def test_no_hint_for_a_normal_dm_user(self):
+        import backend.backend_server as server
+        with patch.object(server, "has_reply_keyboard_delivered", Mock(return_value=True)):
+            self.assertIsNone(server._build_dm_start_hint(61001, "Anna"))
+
+    def test_hint_carries_name_and_bot(self):
+        import backend.backend_server as server
+        with patch.object(server, "has_reply_keyboard_delivered", Mock(return_value=False)), \
+             patch.object(server, "TELEGRAM_BOT_USERNAME", "test_bot"):
+            hint = server._build_dm_start_hint(61002, "Anna")
+        self.assertEqual(hint["name"], "Anna")
+        self.assertEqual(hint["bot_username"], "test_bot")
+
+    def test_db_failure_never_nags_a_normal_user(self):
+        import backend.backend_server as server
+        with patch.object(server, "has_reply_keyboard_delivered", Mock(side_effect=RuntimeError("db down"))):
+            self.assertIsNone(server._build_dm_start_hint(61003, "Anna"))
+
+    def test_reachability_is_cached(self):
+        import backend.backend_server as server
+        probe = Mock(return_value=True)
+        with patch.object(server, "has_reply_keyboard_delivered", probe):
+            for _ in range(25):
+                server._is_dm_reachable(61001)
+        self.assertEqual(probe.call_count, 1)
+
+
 class DigestFormattingTests(unittest.TestCase):
     def test_empty_and_populated(self):
         import bot_3

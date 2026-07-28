@@ -1149,6 +1149,33 @@ export default function AnswerOverlay({ startParam }) {
       <button className="ans-btn" disabled={submitting} onClick={() => submit()}>
         {submitting ? 'Prüfe …' : 'Prüfen ✓'}
       </button>
+
+      <DmStartHint hint={meta?.dm_hint} />
     </div></div>
+  );
+}
+
+/** Shown to someone who opened this task from a group/forwarded link and never opened the
+ *  bot in a private chat. They can play right here — but tasks, reminders and results are
+ *  delivered in a DM, and Telegram does not let the bot open that chat on its own. One tap
+ *  fixes it forever, so the nudge is soft and disappears by itself afterwards. */
+function DmStartHint({ hint }) {
+  if (!hint || !hint.bot_username) return null;
+  const name = String(hint.name || '').trim();
+  const url = `https://t.me/${hint.bot_username}?start=${encodeURIComponent(hint.start_param || 'fromgame')}`;
+  const open = () => {
+    haptic('light');
+    try {
+      if (tg?.openTelegramLink) { tg.openTelegramLink(url); return; }
+    } catch (_e) { /* fall through to a plain navigation */ }
+    try { window.open(url, '_blank'); } catch (_e) { /* ignore */ }
+  };
+  return (
+    <div className="ans-dm-hint">
+      <p className="ans-dm-hint-text">
+        {name ? `${name}, ` : ''}открой бота один раз — и задания будут приходить тебе в личку.
+      </p>
+      <button className="ans-btn-ghost ans-dm-hint-btn" onClick={open}>Открыть бота</button>
+    </div>
   );
 }

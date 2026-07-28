@@ -26150,6 +26150,23 @@ def get_reply_keyboard_delivered_version(user_id: int) -> str | None:
         return None
 
 
+def has_reply_keyboard_delivered(user_id: int) -> bool:
+    """True when the bot has ever delivered the DM keyboard to this user.
+
+    Used as the «личка работает» signal: Telegram forbids the bot from writing first, so a
+    delivered keyboard proves the user once pressed START. Someone who entered only through
+    a Mini-App link has no row here — and no way to receive tasks — which is exactly who we
+    want to nudge. One primary-key lookup; the caller caches it.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_reply_keyboard_state WHERE user_id = %s LIMIT 1;",
+                (int(user_id),),
+            )
+            return cursor.fetchone() is not None
+
+
 def mark_reply_keyboard_delivered(user_id: int, keyboard_version: str) -> None:
     """Record that the given keyboard version reached this DM user (upsert)."""
     with get_db_connection_context() as conn:
