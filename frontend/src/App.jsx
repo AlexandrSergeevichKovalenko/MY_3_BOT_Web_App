@@ -10071,16 +10071,28 @@ function AppInner() {
       || item?.word_ru
       || ''
     ).trim();
+    // Сторону для озвучки выбираем ПО ПИСЬМУ, а не по направлению карточки: письмо —
+    // факт, направление — лишь запись в графе, и она бывает перепутана (у части старых
+    // карточек немецкий текст лежит в русской графе). Из-за этого вслух читался русский.
+    const sourceIsLearning = sourceText && detectTtsLangFromText(sourceText) === learningLang;
+    const targetIsLearning = targetText && detectTtsLangFromText(targetText) === learningLang;
+    if (sourceIsLearning && !targetIsLearning) {
+      return { text: sourceText, locale: getTtsLocaleForLang(learningLang), learningLang };
+    }
+    if (targetIsLearning && !sourceIsLearning) {
+      return { text: targetText, locale: getTtsLocaleForLang(learningLang), learningLang };
+    }
+    // Обе стороны на изучаемом языке (или письмо не различает) — тогда направление.
     if (sourceLang === learningLang && sourceText) {
       return { text: sourceText, locale: getTtsLocaleForLang(learningLang), learningLang };
     }
     if (targetLang === learningLang && targetText) {
       return { text: targetText, locale: getTtsLocaleForLang(learningLang), learningLang };
     }
-    if (sourceText && detectTtsLangFromText(sourceText) === learningLang) {
+    if (sourceIsLearning) {
       return { text: sourceText, locale: getTtsLocaleForLang(learningLang), learningLang };
     }
-    if (targetText && detectTtsLangFromText(targetText) === learningLang) {
+    if (targetIsLearning) {
       return { text: targetText, locale: getTtsLocaleForLang(learningLang), learningLang };
     }
     return { text: '', locale: getTtsLocaleForLang(learningLang), learningLang };
@@ -13359,8 +13371,14 @@ function AppInner() {
     const _srsCardDir = (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
     const _srsCardTexts = getDictionarySourceTarget(srsCard, _srsCardDir);
     const _srsCardReversed = (srsCard?.source_lang || 'ru') === 'de';
-    const answerText = (_srsCardReversed ? _srsCardTexts?.sourceText : _srsCardTexts?.targetText) || '';
-    const langCode = detectTtsLangFromText(answerText);
+    // Вслух читаем изучаемый язык, а не «ответную сторону»: у части старых карточек
+    // стороны записаны наоборот, и озвучивался русский текст. Письмо надёжнее графы.
+    const _srsLearning = normalizeLangCode(languageProfile?.learning_language) || 'de';
+    const _srsSide = resolveDictionaryTargetTts(srsCard, _srsCardDir);
+    const answerText = _srsSide?.text
+      || (_srsCardReversed ? _srsCardTexts?.sourceText : _srsCardTexts?.targetText)
+      || '';
+    const langCode = detectTtsLangFromText(answerText) || _srsLearning;
     const locale = getTtsLocaleForLang(langCode);
     srsAutoTtsPlayedRef.current = key;
     let timerId = null;

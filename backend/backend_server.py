@@ -8548,6 +8548,36 @@ def _strip_bilingual_ru_combo(value):
     return value
 
 
+def _fix_swapped_sides_before_save(kwargs: dict) -> dict:
+    """Не дать сохранить карточку сторонами наоборот.
+
+    В личных карточках нашлась запись, где немецкий текст лежал в русской графе, а
+    русский — в немецкой. Последствие видно не сразу: в тренировке вслух читается
+    русская фраза вместо немецкой, потому что «изучаемая сторона» определяется по графе.
+    Защита от переворота стояла только в одном пути сохранения, а карточка пришла из
+    бота — мимо неё. Здесь сходятся ВСЕ пути, поэтому проверяем тут.
+
+    Меняем местами только при однозначном признаке: в немецкой графе кириллица, а в
+    русской — латиница без кириллицы. Спорные случаи не трогаем."""
+    if "de" not in {str(kwargs.get("source_lang") or "").lower(), str(kwargs.get("target_lang") or "").lower()}:
+        return kwargs
+    word_de = str(kwargs.get("word_de") or "")
+    word_ru = str(kwargs.get("word_ru") or "")
+    if not word_de or not word_ru:
+        return kwargs
+    cyrillic = re.compile(r"[А-Яа-яЁё]")
+    latin = re.compile(r"[A-Za-zÄÖÜäöüß]")
+    if cyrillic.search(word_de) and latin.search(word_ru) and not cyrillic.search(word_ru):
+        logging.warning("dictionary save: стороны перепутаны, меняю местами (%r ↔ %r)",
+                        word_de[:40], word_ru[:40])
+        fixed = dict(kwargs)
+        fixed["word_de"], fixed["word_ru"] = kwargs.get("word_ru"), kwargs.get("word_de")
+        fixed["translation_de"], fixed["translation_ru"] = (
+            kwargs.get("translation_ru"), kwargs.get("translation_de"))
+        return fixed
+    return kwargs
+
+
 def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
     """Сразу привязать сохранённую карточку к её слову в слое.
 
@@ -8569,6 +8599,7 @@ def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
 
 
 def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
+    kwargs = _fix_swapped_sides_before_save(kwargs)
     try:
         entry_id = save_webapp_dictionary_query_returning_id(**kwargs)
         _attach_saved_entry_to_lex_unit(entry_id, kwargs)
@@ -8587,6 +8618,7 @@ def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
 
 
 def _save_dictionary_entry_with_inserted_schema_retry(**kwargs) -> tuple[int, bool]:
+    kwargs = _fix_swapped_sides_before_save(kwargs)
     try:
         result = save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
         _attach_saved_entry_to_lex_unit((result or (None,))[0], kwargs)
