@@ -540,15 +540,21 @@ class ShortcutLookupSplitTests(unittest.TestCase):
         increment_mock.assert_not_called()
         enqueue_mock.assert_not_called()
 
-    def test_free_shortcut_lookup_sixteenth_request_is_blocked_before_enqueue(self):
+    def test_shortcut_lookup_blocked_by_run_gate_never_reaches_the_work(self):
+        """The run limit is enforced HERE, on the work endpoint, so hand-editing the shortcut
+        to skip /run-check changes nothing. A block answers 200 with allowed=false on
+        purpose: the iOS Shortcut reads that field and shows the message; an HTTP error
+        would surface as a broken shortcut instead."""
         with patch.object(server, "resolve_shortcut_install_token", return_value={"installation_id": 11, "user_id": 77}), \
              patch.object(server, "is_telegram_user_allowed", return_value=True), \
-             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free", "plan_code": "free"}), \
-             patch.object(server, "get_free_feature_limit_metadata", return_value={"free_limit": 15}), \
-             patch.object(server, "get_free_feature_usage_today", return_value=15.0), \
-             patch.object(server, "increment_free_feature_usage") as increment_mock, \
              patch.object(server, "_shortcut_dedup_reserve", return_value=False), \
              patch.object(server, "can_enqueue_background_jobs", return_value=True), \
+             patch.object(server, "_shortcut_run_gate",
+                          return_value=(False, "daily_limit", {"is_pro": False, "in_window": True,
+                                                               "total_runs": 15,
+                                                               "message": "Лимит запусков исчерпан."})), \
+             patch.object(server, "record_shortcut_run_check"), \
+             patch.object(server, "_notify_shortcut_run_status"), \
              patch.object(server, "_start_shortcut_lookup_enqueue_runner") as enqueue_mock, \
              patch.object(server, "_shortcut_split_blocks") as split_mock:
             response = self.client.post(
@@ -556,22 +562,22 @@ class ShortcutLookupSplitTests(unittest.TestCase):
                 json={"text": "noisy input", "install_token": "install-token-value"},
             )
 
-        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["error"], "free_limit_exceeded")
-        self.assertEqual(payload["feature"], "shortcut_forwarded_message_daily")
+        self.assertFalse(payload["allowed"])
+        self.assertEqual(payload["reason"], "daily_limit")
+        self.assertEqual(payload["blocks_sent"], 0)
         enqueue_mock.assert_not_called()
         split_mock.assert_not_called()
-        increment_mock.assert_not_called()
 
-    def test_pro_shortcut_lookup_is_not_blocked_by_free_limit(self):
+    def test_allowed_run_reaches_the_work(self):
         with patch.object(server, "resolve_shortcut_install_token", return_value={"installation_id": 11, "user_id": 77}), \
              patch.object(server, "is_telegram_user_allowed", return_value=True), \
-             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "pro", "plan_code": "pro"}), \
-             patch.object(server, "get_free_feature_usage_today") as usage_mock, \
-             patch.object(server, "increment_free_feature_usage") as increment_mock, \
              patch.object(server, "_shortcut_dedup_reserve", return_value=False), \
              patch.object(server, "can_enqueue_background_jobs", return_value=True), \
+             patch.object(server, "_shortcut_run_gate",
+                          return_value=(True, "ok", {"is_pro": True, "in_window": True, "total_runs": 3})), \
+             patch.object(server, "record_shortcut_run_check"), \
              patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value="job-456") as enqueue_mock:
             response = self.client.post(
                 "/api/shortcut/lookup",
@@ -580,8 +586,6 @@ class ShortcutLookupSplitTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         enqueue_mock.assert_called_once()
-        usage_mock.assert_not_called()
-        increment_mock.assert_not_called()
 
 
 if __name__ == "__main__":

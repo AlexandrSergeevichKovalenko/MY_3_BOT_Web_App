@@ -114,7 +114,12 @@ class ShortcutInstallTokenCacheTests(unittest.TestCase):
         )
         connection = _FakeConnection(cursor)
 
-        with patch("backend.database._shortcut_cache_get_installation", return_value=None), patch(
+        # The resolver refuses to touch the DB until the shortcut tables are known to exist.
+        # That flag used to be set as a SIDE EFFECT of importing the app (which ran DDL
+        # against the live database), so this test silently depended on a production
+        # connection. State it explicitly instead.
+        with patch("backend.database._SHORTCUT_SCHEMA_READY", True), \
+             patch("backend.database._shortcut_cache_get_installation", return_value=None), patch(
             "backend.database._shortcut_cache_set_installation"
         ) as cache_set_mock, patch("backend.database.get_db_connection_context", _db_context(connection)):
             result = database.resolve_shortcut_install_token(

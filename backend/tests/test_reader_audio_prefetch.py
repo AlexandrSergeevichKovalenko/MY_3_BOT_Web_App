@@ -31,6 +31,8 @@ class ReaderAudioPrefetchTests(unittest.TestCase):
              patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
              patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})), \
              patch.object(server, "_resolve_user_entitlement", return_value=({"effective_mode": "pro"}, None)), \
+             patch.object(server, "is_book_audio_unlocked", return_value=True), \
+             patch.object(server, "_resolve_reader_document_for_user", return_value=(document, True)), \
              patch.object(server, "get_reader_library_document", return_value=document), \
              patch.object(server, "get_cached_reader_audio_page", return_value=None), \
              patch.object(server, "is_reader_audio_page_async_enabled", return_value=False), \

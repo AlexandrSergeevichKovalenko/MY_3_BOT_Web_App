@@ -61,15 +61,32 @@ class GradeTests(unittest.TestCase):
 
 
 class ServeTests(unittest.TestCase):
-    def _serve(self, *, reservation, item):
+    """The endless drill became a PAID feature: free users get an upsell screen instead of
+    a daily allowance (numbers still reach them through the normal rotation), and paid
+    tiers are capped per day so the TTS bill stays bounded."""
+
+    def _serve(self, *, reservation, item, mode="pro"):
         stack = ExitStack()
-        stack.enter_context(patch("backend.database.reserve_free_feature_usage", return_value=reservation))
+        stack.enter_context(patch("backend.database.resolve_entitlement",
+                                  return_value={"effective_mode": mode}))
+        stack.enter_context(patch("backend.database.reserve_numdict_practice_pro_usage",
+                                  return_value=reservation))
         pick = stack.enter_context(patch("backend.database.pick_numdict_practice_item", return_value=item))
         mark = stack.enter_context(patch("backend.database.mark_numdict_practice_seen"))
         stack.enter_context(patch.object(ev, "_numdict_audio_url", return_value="https://r2/nd-1.mp3"))
         with stack:
             data = ev.load_numdict_practice_next(user_id=77)
         return data, pick, mark
+
+    def test_free_user_gets_the_pro_upsell_not_a_daily_allowance(self):
+        data, pick, mark = self._serve(
+            reservation={"ok": True, "blocked": False}, item=READY_ITEM, mode="free",
+        )
+        self.assertTrue(data["done"])
+        self.assertTrue(data["upsell"])
+        self.assertTrue(data["pro_only"])
+        pick.assert_not_called()   # never touch the pool for someone who cannot play
+        mark.assert_not_called()
 
     def test_served_item_never_leaks_the_answer(self):
         data, _pick, mark = self._serve(
@@ -83,20 +100,18 @@ class ServeTests(unittest.TestCase):
         self.assertEqual(data["audio_url"], "https://r2/nd-1.mp3")
         mark.assert_called_once()  # serve marks seen so the next call advances
 
-    def test_capped_free_user_gets_friendly_done_payload(self):
+    def test_capped_paid_user_gets_friendly_done_payload(self):
+        """A paid user who used up today's drill quota is told so plainly — no upsell
+        (they already pay) and no error screen."""
         data, pick, mark = self._serve(
-            reservation={
-                "ok": False, "blocked": True, "used": 20.0, "limit": 20.0,
-                "error": {"feature_title": "Числа на слух (тренажёр)", "limit": 20,
-                          "used": 20, "reset_at": "2026-06-29T00:00:00+02:00",
-                          "message": "На сегодня хватит."},
-            },
+            reservation={"ok": False, "blocked": True, "used": 20.0, "limit": 20.0},
             item=READY_ITEM,
         )
         self.assertTrue(data["done"])
         self.assertTrue(data["capped"])
-        self.assertTrue(data["upsell"])
-        self.assertEqual(data["limit"], 20)
+        self.assertFalse(data["upsell"])
+        self.assertEqual(data["limit"], 20.0)
+        self.assertIn("завтра", data["message"])
         pick.assert_not_called()   # capped before touching the pool
         mark.assert_not_called()
 
@@ -109,7 +124,7 @@ class ServeTests(unittest.TestCase):
         self.assertTrue(data["empty"])
         mark.assert_not_called()
 
-    def test_pro_user_is_unlimited(self):
+    def test_paid_user_within_quota_gets_an_item(self):
         data, _pick, _mark = self._serve(
             reservation={"ok": True, "blocked": False, "used": None, "limit": None},
             item=READY_ITEM,
