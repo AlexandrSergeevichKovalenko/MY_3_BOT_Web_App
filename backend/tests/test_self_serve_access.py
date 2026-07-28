@@ -159,6 +159,25 @@ class WebappSelfServeGrantTests(unittest.TestCase):
         self.assertTrue(allowed)
         notify.assert_not_called()
 
+    def test_denied_user_does_not_re_hit_the_db_on_every_request(self):
+        """A denied client keeps retrying. Without the attempt memo each retry re-ran the
+        denial lookup + recheck — a per-request DB path anyone denied could amplify."""
+        import backend.backend_server as server
+        uid = 555002
+        server._HOTPATH_ALLOWLIST_CACHE.invalidate(server._allowlist_cache_key(uid))
+        server._HOTPATH_ALLOWLIST_CACHE.invalidate(server._self_serve_attempt_memo_key(uid))
+        grant = Mock(return_value=False)
+        with patch.object(server, "auto_grant_telegram_user", grant), \
+             patch.object(server, "invalidate_telegram_user_allowed_cache", Mock()), \
+             patch.object(server, "is_telegram_user_allowed", Mock(return_value=False)) as allowed_lookup:
+            for _ in range(50):
+                self.assertFalse(server._is_webapp_user_allowed(uid))
+        # One real attempt, then the memo answers — not 50 round-trips to the database.
+        # Two allow-list reads are expected and constant: the initial cache-miss lookup
+        # plus the post-grant recheck; both are then cached for the negative TTL.
+        self.assertEqual(grant.call_count, 1)
+        self.assertLessEqual(allowed_lookup.call_count, 2)
+
     def test_synthetic_load_test_users_are_never_auto_granted(self):
         import backend.backend_server as server
         with patch.object(server, "auto_grant_telegram_user", Mock(return_value=True)) as grant:

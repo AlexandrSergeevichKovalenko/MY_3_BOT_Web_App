@@ -3255,6 +3255,25 @@ def _notify_admins_new_user_async(user_id: int, display_name: str, source: str) 
         logging.debug("new-user notify thread spawn failed", exc_info=True)
 
 
+def _self_serve_attempt_memo_key(user_id: int) -> tuple[str, int]:
+    return ("self_serve_attempt", int(user_id))
+
+
+def _remember_self_serve_attempt(user_id: int) -> None:
+    """Remember «tried to self-serve-grant this user and the door stayed shut».
+
+    Same TTL as the negative allow-list decision (WEBAPP_ALLOWLIST_NEG_CACHE_TTL_SEC, 60s),
+    so an admin's /allow is never delayed by more than what the allow-list cache already
+    costs — the memo only suppresses the redundant grant attempt, never a positive answer.
+    """
+    _HOTPATH_ALLOWLIST_CACHE.put(
+        _self_serve_attempt_memo_key(int(user_id)),
+        True,
+        fresh_ttl_sec=WEBAPP_ALLOWLIST_NEG_CACHE_TTL_SEC,
+        stale_ttl_sec=WEBAPP_ALLOWLIST_NEG_CACHE_TTL_SEC,
+    )
+
+
 def _self_serve_source_label(user_data: dict | None, parsed_init_data: dict | None) -> str:
     start_param = ""
     if isinstance(parsed_init_data, dict):
@@ -3286,6 +3305,15 @@ def _grant_self_serve_webapp_access(
     uid = int(user_id)
     if uid <= 0 or _is_synthetic_telegram_user_id(uid):
         return False
+    # A denied user's client keeps retrying, and every retry lands here with a cached
+    # "not allowed" — without this memo each one re-ran the denial lookup + recheck
+    # (3 SELECTs, 2 pool checkouts) with nothing cached in between, i.e. a per-request
+    # DB path anyone denied could amplify at will. The grant itself needs to happen once
+    # per user in a lifetime, so remembering "just tried, door stayed shut" for the same
+    # 60s the negative allow-list decision already lives costs nothing and adds no lag.
+    memo_key = _self_serve_attempt_memo_key(uid)
+    if _HOTPATH_ALLOWLIST_CACHE.get(memo_key, allow_stale=False) is not None:
+        return False
     display_name = _extract_display_name(user_data or {}) if user_data else None
     source = str(source_override or "").strip() or _self_serve_source_label(user_data, parsed_init_data)
     try:
@@ -3293,6 +3321,7 @@ def _grant_self_serve_webapp_access(
             granted = bool(auto_grant_telegram_user(uid, display_name, source))
     except Exception:
         logging.warning("self-serve webapp access grant failed user_id=%s", uid, exc_info=True)
+        _remember_self_serve_attempt(uid)
         return False
     if not granted:
         # Either an admin denied this user, or another entry point won the race and the row
@@ -3306,6 +3335,8 @@ def _grant_self_serve_webapp_access(
             logging.warning("self-serve access recheck failed user_id=%s", uid, exc_info=True)
             allowed = False
         _cache_webapp_allowlist(uid, allowed)
+        if not allowed:
+            _remember_self_serve_attempt(uid)
         return allowed
     _cache_webapp_allowlist(uid, True)
     _notify_admins_new_user_async(uid, display_name or "", source)
