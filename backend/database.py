@@ -17165,6 +17165,17 @@ def import_starter_dictionary_snapshot(
                 )
                 if not source_text or not target_text:
                     continue
+                # Стартовый словарь — это снимок ЧУЖИХ карточек, и битая карточка
+                # расходится по всем новичкам. Так одна старая запись «Взять*» без
+                # немецкой стороны уехала десяти людям: когда немецкого нет, обе
+                # стороны заполняются одним и тем же русским текстом, и проверка «непусто»
+                # такое пропускает. Отсеиваем здесь, у источника раздачи.
+                if _normalize_dictionary_text_key(source_text) == _normalize_dictionary_text_key(target_text):
+                    continue
+                if "de" in {row_source_lang, row_target_lang}:
+                    german_side = source_text if row_source_lang == "de" else target_text
+                    if not re.search(r"[A-Za-zÄÖÜäöüß]", german_side or ""):
+                        continue  # немецкой стороны по факту нет — учить нечему
                 key = (
                     _normalize_dictionary_text_key(source_text),
                     _normalize_dictionary_text_key(target_text),
