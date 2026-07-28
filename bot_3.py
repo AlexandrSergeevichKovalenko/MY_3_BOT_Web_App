@@ -11194,6 +11194,43 @@ async def admin_dedup_report_command(update: Update, context: CallbackContext):
         await message.reply_text(f"❌ Не удалось собрать отчёт по дубликатам: {exc}")
 
 
+async def admin_fix_srs_counters_command(update: Update, context: CallbackContext):
+    """Пересчитать «повторений/забываний» по журналу ответов для ВСЕХ пользователей.
+
+    Оба счётчика месяцами писались нулём (библиотека убрала поля, из которых мы их читали),
+    поэтому в списке слов у всех стояло «повт. 0». Журнал цел, значит правда восстановима.
+
+    Использование:
+      /admin_fix_srs_counters          → показать, сколько карточек разошлось (ничего не менять)
+      /admin_fix_srs_counters apply    → пересчитать и записать
+    """
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    apply = bool(context.args) and str(context.args[0]).strip().lower() == "apply"
+    try:
+        from backend.database import backfill_srs_counters_from_review_log
+        stats = await asyncio.to_thread(backfill_srs_counters_from_review_log, apply=apply)
+    except Exception as exc:
+        logging.warning("admin_fix_srs_counters failed", exc_info=True)
+        await message.reply_text(f"❌ Не удалось пересчитать: {exc}")
+        return
+    if not apply:
+        await message.reply_text(
+            f"🔍 Карточек всего: {stats['total_cards']}\n"
+            f"Расходится с журналом: {stats['stale']}\n\n"
+            f"Записать: /admin_fix_srs_counters apply"
+        )
+        return
+    await message.reply_text(
+        f"✅ Пересчитано карточек: {stats['updated']} (из {stats['total_cards']})."
+    )
+
+
 async def admin_fix_dict_translations_command(update: Update, context: CallbackContext):
     """Backfill quick-dictionary entries (incl. tapped synonym chips) that were saved as
     bare German text without a Russian translation.
@@ -39929,6 +39966,7 @@ def main():
     application.add_handler(CommandHandler("adjsprint", admin_adjektiv_sprint_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("admin_fix_dict_translations", admin_fix_dict_translations_command))
+    application.add_handler(CommandHandler("admin_fix_srs_counters", admin_fix_srs_counters_command))
     application.add_handler(CommandHandler("admin_backfill_frequency", admin_backfill_frequency_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))

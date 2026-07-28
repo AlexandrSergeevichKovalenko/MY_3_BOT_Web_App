@@ -243,4 +243,7 @@ stripe==11.6.0
 
 gunicorn
 
-fsrs>=6.1.1
+# Upper bound on purpose: this library already removed fields we read (Card.reps /
+# Card.lapses), and the loss was silent — the scheduler kept working while both counters
+# wrote 0 for months. A major bump must be a deliberate, tested step, not a redeploy.
+fsrs>=6.1.1,<7

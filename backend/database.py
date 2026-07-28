@@ -24541,6 +24541,52 @@ def upsert_card_srs_state(
             return _upsert(own_cursor)
 
 
+def backfill_srs_counters_from_review_log(*, apply: bool = False) -> dict[str, Any]:
+    """Recompute reps/lapses for EVERY card from the review log.
+
+    Needed because both counters wrote 0 for months (the fsrs library dropped the fields we
+    read them from). The log holds one row per answer with its rating, so the true values
+    are recoverable exactly: reps = answers, lapses = answers rated «Again» (1).
+
+    Idempotent — re-running changes nothing once the state matches. `apply=False` only
+    reports how many rows would change, so the repair can be inspected before it is made.
+    """
+    aggregate_sql = """
+        SELECT user_id, card_id,
+               COUNT(*)::int AS reps,
+               COUNT(*) FILTER (WHERE rating = 1)::int AS lapses
+        FROM bt_3_card_review_log
+        GROUP BY user_id, card_id
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM bt_3_card_srs_state s
+                JOIN ({aggregate_sql}) agg
+                  ON agg.user_id = s.user_id AND agg.card_id = s.card_id
+                WHERE s.reps IS DISTINCT FROM agg.reps OR s.lapses IS DISTINCT FROM agg.lapses;
+                """
+            )
+            stale = int((cursor.fetchone() or [0])[0])
+            updated = 0
+            if apply and stale:
+                cursor.execute(
+                    f"""
+                    UPDATE bt_3_card_srs_state s
+                    SET reps = agg.reps, lapses = agg.lapses, updated_at = NOW()
+                    FROM ({aggregate_sql}) agg
+                    WHERE agg.user_id = s.user_id AND agg.card_id = s.card_id
+                      AND (s.reps IS DISTINCT FROM agg.reps OR s.lapses IS DISTINCT FROM agg.lapses);
+                    """
+                )
+                updated = int(cursor.rowcount or 0)
+            cursor.execute("SELECT COUNT(*) FROM bt_3_card_srs_state;")
+            total_cards = int((cursor.fetchone() or [0])[0])
+    return {"total_cards": total_cards, "stale": stale, "updated": updated, "applied": bool(apply)}
+
+
 def count_due_srs_cards(
     user_id: int,
     now_utc: datetime | None = None,

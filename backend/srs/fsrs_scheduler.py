@@ -98,10 +98,11 @@ def _build_fsrs_card(state: dict | None, now_utc: datetime) -> Card:
     card.last_review = state.get("last_review_at")
     card.stability = float(state.get("stability") or 0.0) or None
     card.difficulty = float(state.get("difficulty") or 0.0) or None
-    card.reps = int(state.get("reps") or 0)
-    card.lapses = int(state.get("lapses") or 0)
-    card.scheduled_days = int(state.get("interval_days") or 0)
     card.step = int(state.get("step") or 0)
+    # reps / lapses / scheduled_days are NOT set here on purpose: the fsrs library dropped
+    # those fields from Card, so assigning them only created stray attributes on our object
+    # that the scheduler returns nothing for — which is exactly how both counters silently
+    # stayed at 0 for every card. We keep them ourselves in schedule_review().
     return card
 
 
@@ -139,13 +140,22 @@ def schedule_review(
     status = _status_from_state(getattr(reviewed_card, "state", State.Learning))
     interval_days = _interval_days(due_at, reviewed_at)
 
+    # Counted by us, from our own stored state. The library used to expose reps/lapses on
+    # Card and no longer does, so reading them back off the scheduler's result silently
+    # produced 0 on every review — 884 reviewed cards in production sat at reps=0, lapses=0.
+    # They are our columns and our semantics anyway: reps = how many times this card was
+    # answered, lapses = how many of those answers were «не помню» (Again).
+    previous = current_state if isinstance(current_state, dict) else {}
+    reps = int(previous.get("reps") or 0) + 1
+    lapses = int(previous.get("lapses") or 0) + (1 if rating_enum == Rating.Again else 0)
+
     result = ScheduledResult(
         status=status,
         due_at=due_at,
         last_review_at=reviewed_at,
         interval_days=interval_days,
-        reps=int(getattr(reviewed_card, "reps", 0) or 0),
-        lapses=int(getattr(reviewed_card, "lapses", 0) or 0),
+        reps=reps,
+        lapses=lapses,
         stability=float(getattr(reviewed_card, "stability", 0.0) or 0.0),
         difficulty=float(getattr(reviewed_card, "difficulty", 0.0) or 0.0),
         step=int(getattr(reviewed_card, "step", 0) or 0),
