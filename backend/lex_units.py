@@ -21,6 +21,7 @@ import re
 from typing import Any
 
 from backend.database import get_db_connection_context
+from backend.lex_senses import split_translation
 
 _SPACE_RE = re.compile(r"\s+")
 _ARTICLE_RE = re.compile(r"^(der|die|das)\s+", re.I)
@@ -284,6 +285,147 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
          "saved": r[5], "sources": r[6], "translation": r[7] or ""}
         for r in rows
     ]
+
+
+def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "ru") -> dict:
+    """Перечитать переводы слова из его РАЗБОРА и разложить по значениям.
+
+    Разбор знает про слово больше, чем строка перевода из старого банка: у «die Scheide»
+    в связях было только «влагалище», а разбор называет и «ножны» — целый смысл, которого
+    человек иначе не увидит. У «betreffen» связь была «касаться, относиться» одной
+    строкой, а в разборе это два значения.
+
+    Поэтому после появления разбора переводы берём из него: главное значение первым,
+    остальные следом. Старые связи НЕ удаляем — просто отодвигаем ниже: они могли
+    прийти из живого сохранения человека, и терять их нельзя."""
+    if not isinstance(card, dict) or not card:
+        return {"senses": 0, "links": 0}
+    meanings = card.get("meanings") if isinstance(card.get("meanings"), dict) else {}
+    values: list[dict] = []
+    primary = meanings.get("primary")
+    if isinstance(primary, dict) and str(primary.get("value") or "").strip():
+        values.append({"value": str(primary["value"]).strip(),
+                       "note": str(primary.get("context") or "").strip()})
+    for item in (meanings.get("secondary") or []):
+        if isinstance(item, dict) and str(item.get("value") or "").strip():
+            values.append({"value": str(item["value"]).strip(),
+                           "note": str(item.get("context") or "").strip()})
+    if not values:
+        for item in (card.get("translations") or []):
+            value = item.get("value") if isinstance(item, dict) else item
+            if isinstance(value, str) and value.strip():
+                values.append({"value": value.strip(), "note": ""})
+    # Разбор тоже бывает склеен: «ромб (геометрическая фигура); решётка (символ #)» —
+    # это два значения в одной строке. Прогоняем через общий разрезатель, иначе свалка
+    # вернулась бы с другой стороны. Длинные определения переводом не считаем и кладём
+    # в пояснение к значению: «направление, к которому движутся» — это не перевод.
+    unique: list[dict] = []
+    seen: set[str] = set()
+    for item in values:
+        for part in split_translation(item["value"]):
+            value = part["value"].strip()
+            if not value:
+                continue
+            note = "; ".join(x for x in (part.get("label"), item.get("note")) if x)
+            if len(value) > 60:
+                if unique:
+                    unique[-1]["note"] = "; ".join(x for x in (unique[-1].get("note"), value) if x)[:500]
+                continue
+            key = normalize_query(value)
+            if key and key not in seen:
+                seen.add(key)
+                unique.append({"value": value, "note": note})
+    if not unique:
+        return {"senses": 0, "links": 0}
+
+    made_links = 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                # Разбор описывает НАПИСАНИЕ, а не конкретное слово: у «die Kiefer»
+                # (сосна) в карточке оказались оба смысла, и перенос приклеил к ней
+                # «челюсть». Поэтому сверяемся со справочником разведения — он знает,
+                # какому роду принадлежит значение, — и чужое не берём.
+                cur.execute(
+                    "SELECT lemma_key, COALESCE(gender, '') FROM bt_3_lex_units WHERE id = %s;",
+                    (unit_id,),
+                )
+                row = cur.fetchone()
+                lemma_key, own_gender = (row or ("", ""))
+                rulings: dict[str, str] = {}
+                if lemma_key:
+                    try:
+                        cur.execute(
+                            "SELECT gloss_key, article FROM bt_3_lex_gloss_rulings WHERE lemma_key = %s;",
+                            (lemma_key,),
+                        )
+                        rulings = {r[0]: r[1] for r in cur.fetchall()}
+                    except Exception:
+                        rulings = {}  # справочника ещё нет — работаем как раньше
+                if rulings and own_gender:
+                    unique = [
+                        item for item in unique
+                        if rulings.get(item["value"].strip().casefold(), own_gender) == own_gender
+                    ]
+                    if not unique:
+                        return {"senses": 0, "links": 0}
+                # Всё, что было раньше, отодвигаем за значения разбора, но сохраняем.
+                cur.execute(
+                    "UPDATE bt_3_lex_links SET rank = GREATEST(rank, 30) "
+                    "WHERE from_unit = %s AND rank < 30;",
+                    (unit_id,),
+                )
+                for sense_no, item in enumerate(unique, 1):
+                    value = item["value"]
+                    cur.execute(
+                        """
+                        INSERT INTO bt_3_lex_senses (unit_id, sense_no, label, note, source)
+                        VALUES (%s, %s, NULL, %s, 'разбор')
+                        ON CONFLICT (unit_id, sense_no) DO UPDATE
+                          SET note = EXCLUDED.note, source = 'разбор'
+                        RETURNING id;
+                        """,
+                        (unit_id, sense_no, item["note"][:500] or None),
+                    )
+                    sense_id = cur.fetchone()[0]
+                    kind = "word" if " " not in value else (
+                        "sentence" if len(value.split()) > 4 else "collocation")
+                    cur.execute(
+                        """
+                        INSERT INTO bt_3_lex_units (lang, kind, lemma, lemma_key, display, card_source)
+                        VALUES (%s, %s, %s, %s, %s, 'разбор')
+                        ON CONFLICT (lang, kind, lemma_key, COALESCE(pos, ''), COALESCE(gender, ''))
+                        DO UPDATE SET updated_at = NOW()
+                        RETURNING id;
+                        """,
+                        (native_lang, kind, value, normalize_query(value), value),
+                    )
+                    target_id = cur.fetchone()[0]
+                    cur.execute(
+                        """
+                        INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
+                        VALUES (%s, %s, %s, 'exact') ON CONFLICT DO NOTHING;
+                        """,
+                        (native_lang, normalize_query(value), target_id),
+                    )
+                    for a, b in ((unit_id, target_id), (target_id, unit_id)):
+                        cur.execute(
+                            """
+                            INSERT INTO bt_3_lex_links (from_unit, to_unit, rank, source, sense_id)
+                            VALUES (%s, %s, %s, 'разбор', %s)
+                            ON CONFLICT (from_unit, to_unit) DO UPDATE
+                              SET rank = LEAST(bt_3_lex_links.rank, EXCLUDED.rank),
+                                  sense_id = COALESCE(bt_3_lex_links.sense_id, EXCLUDED.sense_id),
+                                  source = 'разбор';
+                            """,
+                            (a, b, 9 + sense_no, sense_id),
+                        )
+                    made_links += 1
+            conn.commit()
+    except Exception as exc:
+        logging.debug("sync links from card failed for %s: %s", unit_id, exc)
+        return {"senses": 0, "links": 0}
+    return {"senses": len(unique), "links": made_links}
 
 
 def count_units_needing_card(*, lang: str = "de") -> int:

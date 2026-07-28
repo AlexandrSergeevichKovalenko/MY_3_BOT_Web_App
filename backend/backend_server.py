@@ -9800,6 +9800,13 @@ def _run_units_night_enrichment(
                 continue
             if lex_units.save_unit_card(unit["id"], enrich_data):
                 report["enriched"] += 1
+                # Разбор знает про слово больше, чем старая строка перевода из банка:
+                # у «die Scheide» в связях было только «влагалище», хотя есть и «ножны».
+                # Поэтому сразу перечитываем переводы из разбора и раскладываем по
+                # значениям — иначе смысл так и остался бы невидимым.
+                lex_units.sync_unit_links_from_card(
+                    unit["id"], enrich_data, native_lang=native_lang,
+                )
             else:
                 report["errors"] += 1
         except Exception:
