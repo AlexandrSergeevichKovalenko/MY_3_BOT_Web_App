@@ -16240,6 +16240,19 @@ def save_webapp_dictionary_query(
     )
 
 
+def _attach_missing_entries_quietly() -> None:
+    """Подобрать карточки без указателя на слово — после массовых операций.
+
+    Импорт стартового словаря и перенос по подписке пишут карточки пачкой, минуя
+    обычный путь сохранения. Вместо того чтобы затыкать каждый такой путь по
+    отдельности (и забывать следующий), после них запускается общий подбор."""
+    try:
+        from backend.lex_units import attach_missing_entries
+        attach_missing_entries()
+    except Exception:
+        logging.debug("подбор карточек без указателя пропущен", exc_info=True)
+
+
 def _attach_entry_to_lex_unit_quietly(
     entry_id: int,
     *,
@@ -16779,6 +16792,7 @@ def materialize_subscription_card(
         with conn.cursor() as own_cursor:
             result = _do(own_cursor)
         conn.commit()
+    _attach_missing_entries_quietly()
     return result
 
 
@@ -17371,6 +17385,10 @@ def import_starter_dictionary_snapshot(
                     skipped_existing_count += 1
                 existing_keys.add(item["key"])
 
+    # Импорт кладёт карточки пачкой мимо обычного пути сохранения — сразу подбираем
+    # их, чтобы у новичка слова с первой минуты были связаны со словарём.
+    if inserted_count:
+        _attach_missing_entries_quietly()
     return {
         "source_user_id": source_user,
         "target_user_id": target_user,
