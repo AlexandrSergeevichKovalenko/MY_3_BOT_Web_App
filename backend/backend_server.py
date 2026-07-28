@@ -9227,6 +9227,7 @@ def _rich_enrich_card_fields(
     target_text: str,
     source_lang: str,
     target_lang: str,
+    timeout_seconds: float | None = None,
 ) -> dict:
     """Produce a FULL, unified card for a German headword by running the SAME rich
     `dictionary_assistant_multilang` prompt the LIVE dictionary lookup uses.
@@ -9260,6 +9261,9 @@ def _rich_enrich_card_fields(
                 source_lang="de",
                 target_lang=native_lang,
                 explanation_lang=native_lang,
+                # В фоне никто не ждёт ответа, поэтому жёсткий «живой» таймаут здесь
+                # только вредит: ночью 85 слов из 200 срывались на 14 секундах.
+                responses_timeout_seconds=timeout_seconds,
             )
         )
     except Exception as exc:
@@ -9728,6 +9732,10 @@ def _drop_wrong_language_examples(enrich_data: dict | None, *, learning_lang: st
 
 _POOL_ENRICH_SINGLE_PAIR = False  # True = только заданная пара (для ручной отладки)
 POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "200").strip() or "200")
+# Ночью ответа никто не ждёт, а полный разбор — тяжёлый запрос: с «живым» таймаутом в
+# 14 секунд 85 слов из 200 срывались, не дождавшись ответа. Даём фону нормальное время.
+POOL_NIGHT_ENRICH_TIMEOUT_SECONDS = max(
+    5.0, float((os.getenv("POOL_NIGHT_ENRICH_TIMEOUT_SECONDS") or "60").strip() or "60"))
 _POOL_NIGHT_ENRICH_LOCK = threading.Lock()
 _POOL_NIGHT_ENRICH_RUNNING = False
 
@@ -9772,6 +9780,7 @@ def _run_units_night_enrichment(
                 _rich_enrich_card_fields(
                     source_text=german, target_text=translation,
                     source_lang=learning_lang, target_lang=native_lang,
+                    timeout_seconds=POOL_NIGHT_ENRICH_TIMEOUT_SECONDS,
                 )
             )
             enrich_data = _drop_wrong_language_examples(enrich_data, learning_lang=learning_lang)
@@ -9893,6 +9902,7 @@ def run_pool_night_enrichment(
                     _rich_enrich_card_fields(
                         source_text=source_text, target_text=target_text,
                         source_lang=row_source_lang, target_lang=row_target_lang,
+                        timeout_seconds=POOL_NIGHT_ENRICH_TIMEOUT_SECONDS,
                     )
                 )
                 enrich_data = _drop_wrong_language_examples(enrich_data, learning_lang="de")
