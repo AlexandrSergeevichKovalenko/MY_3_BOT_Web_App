@@ -7090,6 +7090,16 @@ def _reverse_pool_item_to_core_raw(item: dict, *, detected: str = "source") -> d
     }
 
 
+def _dictionary_answer_scope(item: dict | None, default: str) -> str:
+    """Метка «кто ответил» для телеметрии: слой единиц или старый банк.
+
+    Без честной метки отчёт не отличает одно от другого — а решать, можно ли убирать
+    старый путь, надо по числу, а не на ощупь."""
+    if isinstance(item, dict) and item.get("__lex_unit_id"):
+        return "lex_units" if item.get("__lex_has_card") else "lex_units_seed"
+    return default
+
+
 def _load_item_from_units_layer(*, word: str, source_lang: str, target_lang: str) -> dict | None:
     """Ответ из слоя ЕДИНИЦ: написание → указатель → слово → переводы.
 
@@ -37006,7 +37016,7 @@ def lookup_webapp_dictionary():
                     feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
                     event_type="cache_hit",
                     origin="webapp_dictionary",
-                    metadata={"word": word_ru, "cache_scope": "shared_pool"},
+                    metadata={"word": word_ru, "cache_scope": _dictionary_answer_scope(pool_item, "shared_pool")},
                 )
                 _log_dictionary_profile()
                 return jsonify(
@@ -37164,7 +37174,7 @@ def lookup_webapp_dictionary():
                     feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
                     event_type="cache_hit",
                     origin="webapp_dictionary",
-                    metadata={"word": word_ru, "cache_scope": "shared_pool_reverse_seed"},
+                    metadata={"word": word_ru, "cache_scope": _dictionary_answer_scope(reverse_item, "shared_pool_reverse_seed")},
                 )
             if base_seed is None and DICTIONARY_BASE_BEFORE_GPT_ENABLED and {query_source_lang, query_target_lang} == {"de", "ru"}:
                 base_seed = _base_dict_core_seed(
@@ -37187,6 +37197,15 @@ def lookup_webapp_dictionary():
                     lookup_lang=lookup_lang,
                 )
                 llm_calls_total = 1
+                # Явная отметка «пришлось идти в GPT»: без неё в отчёте видно только
+                # попадания, и доля обслуженного своими силами не считается.
+                log_limit_runtime_event(
+                    user_id=int(user_id),
+                    feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+                    event_type="llm_call",
+                    origin="webapp_dictionary",
+                    metadata={"word": word_ru, "cache_scope": "gpt"},
+                )
             mark("llm_main")
             usage_main = core_payload.get("usage")
             gateway_path = str(core_payload.get("gateway_path") or "unknown")

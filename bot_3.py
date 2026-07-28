@@ -8592,6 +8592,23 @@ def _send_pool_enrich_morning_report() -> None:
         logging.exception("pool enrich morning report failed")
 
 
+def _send_dictionary_layer_report_safe() -> None:
+    """Ежедневный отчёт «Словарь за сутки» владельцу в личку.
+
+    Показывает главное одним взглядом: сколько запросов словарь обслужил сам, сколько
+    пришлось отдать GPT и во что это обошлось. По этим числам и решается, можно ли
+    убирать старый путь поиска — раньше это было не измерить, метки телеметрии не
+    отличали новый слой от старого банка."""
+    try:
+        from backend.dictionary_layer_report import send_dictionary_layer_report
+        result = send_dictionary_layer_report()
+        _record_sched_heartbeat("dictionary_layer_report", "completed", result)
+        logging.info("dictionary layer report sent: %s", result)
+    except Exception as exc:
+        logging.exception("dictionary layer report failed")
+        _record_sched_heartbeat("dictionary_layer_report", "failed", {"error": str(exc)[:300]})
+
+
 def _run_pool_night_enrichment_safe() -> None:
     """Ночной добор тонких записей общего пула (03:10 Вена — после ретенции, до утра).
     Крутится в потоке BackgroundScheduler → обязан быть синхронным. Потолок задаёт
@@ -10695,6 +10712,19 @@ async def admin_dedup_enqueue_command(update: Update, context: CallbackContext):
     except Exception as exc:
         logging.exception("admin dedup enqueue failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Не удалось поставить в очередь: {exc}")
+
+
+async def dict_layer_report_command(update: Update, context: CallbackContext):
+    """/dict_report — «Словарь за сутки» по запросу, тем же текстом, что приходит утром."""
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not is_admin(user_id):
+        return
+    try:
+        from backend.dictionary_layer_report import build_report_text
+        await update.message.reply_text(build_report_text(), parse_mode="HTML")
+    except Exception:
+        logging.exception("dict_report command failed")
+        await update.message.reply_text("Не удалось собрать отчёт, подробности в логах.")
 
 
 async def admin_pool_enrich_command(update: Update, context: CallbackContext):
@@ -39726,6 +39756,8 @@ def main():
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dict_pool_report", admin_dict_pool_report_command))
     application.add_handler(CommandHandler("admin_pool_enrich", admin_pool_enrich_command))
+    application.add_handler(CommandHandler("dict_report", dict_layer_report_command))
+
     application.add_handler(CommandHandler("admin_repair_dict_cards", admin_repair_dict_cards_command))
     application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
     application.add_handler(CallbackQueryHandler(handle_quarantine_callback, pattern=r"^qz:"))
@@ -40359,6 +40391,19 @@ def main():
             "cron",
             hour=int((os.getenv("POOL_ENRICH_REPORT_HOUR") or "7").strip() or "7"),
             minute=int((os.getenv("POOL_ENRICH_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
+        # -- Ежедневно 09:15 Europe/Vienna: «Словарь за сутки» владельцу в личку --
+        # Сколько обслужил свой словарь, сколько ушло в GPT, во что обошлось. Это те
+        # самые числа, по которым решается судьба старого пути поиска.
+        scheduler.add_job(
+            _send_dictionary_layer_report_safe,
+            "cron",
+            hour=int((os.getenv("DICT_LAYER_REPORT_HOUR") or "9").strip() or "9"),
+            minute=int((os.getenv("DICT_LAYER_REPORT_MINUTE") or "15").strip() or "15"),
             timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
