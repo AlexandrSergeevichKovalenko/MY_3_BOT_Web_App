@@ -23,9 +23,29 @@ if "backend.openai_manager" not in sys.modules:
     openai_manager_stub.run_check_translation_multilang = _unused_async
     openai_manager_stub.run_check_translation_story = _unused_async
     openai_manager_stub.run_check_story_guess_semantic = _unused_async
+    # Keep in step with translation_workflow's import list — a missing name here fails the
+    # whole module import with a confusing «unknown location», but only when this file runs
+    # alone (in a full suite the real module is already imported and the stub is skipped).
+    openai_manager_stub.run_check_translation_story_arena = _unused_async
+    openai_manager_stub.run_story_explanation_structured = _unused_async
     sys.modules["backend.openai_manager"] = openai_manager_stub
 
-if "psycopg2" not in sys.modules:
+def _psycopg2_available() -> bool:
+    """Prefer the REAL psycopg2 when it is installed. The hand-written stub below exists so
+    this module can be imported without the driver, but it has to be kept in step with every
+    name the code touches by hand — and it silently fell behind (missing Error,
+    execute_values semantics…), which shows up as a baffling «unknown location» ImportError.
+    """
+    try:
+        import psycopg2  # noqa: F401
+        import psycopg2.extras  # noqa: F401
+        import psycopg2.pool  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+if "psycopg2" not in sys.modules and not _psycopg2_available():
     psycopg2_stub = types.ModuleType("psycopg2")
     psycopg2_stub.Binary = lambda value: value
 
@@ -130,7 +150,21 @@ class TranslationSentenceSelectionTests(unittest.TestCase):
 
         from unittest.mock import patch
 
+        # Rows are inserted in ONE batch via psycopg2's execute_values now, not row by row.
+        # Emulating psycopg2 internals in the cursor double (it wants .connection/.mogrify)
+        # would test psycopg2; record the batch instead and hand back the RETURNING rows.
+        def _fake_execute_values(cur, _sql, argslist, template=None, fetch=False, **_kwargs):
+            rows = []
+            for args in argslist:
+                cur.inserted_rows.append(tuple(args))
+                row_id = len(cur.inserted_rows)
+                sentence, unique_id = args[0], args[1]
+                rows.append((row_id, sentence, unique_id, 9000 + row_id))
+            return rows if fetch else None
+
         with patch(
+            "backend.translation_workflow.execute_values", _fake_execute_values,
+        ), patch(
             "backend.translation_workflow._get_mastered_sentence_keys_with_cursor",
             return_value={"mastered a", "mastered b"},
         ), patch(

@@ -81,9 +81,11 @@ class TranslationFocusPoolAdminReportTextTests(unittest.TestCase):
         self.assertIn("RU → DE  ·  Сегодня: 19  |  Вчера: 12  |  Δ +7", report)
         self.assertIn("Readiness: zero-ready 25%  ·  fill-required 50%", report)
         self.assertIn("Refill: today no · last 2026-05-06 · finished 2026-05-06 23:00:00+02:00", report)
-        self.assertIn("🔴 Дефицит (топ тем):", report)
-        self.assertIn("Praepositionen: 10/19  Δ +3  gap −9", report)
-        self.assertIn("Nebensaetze: 9/12  Δ +4  gap −3", report)
+        # The deficit section was renamed and now measures against the FORECAST need for
+        # the day (not the raw target), and «gap» reads «нехв» — an admin report in Russian.
+        self.assertIn("🔴 Ниже прогноза (нужен долив):", report)
+        self.assertIn("Praepositionen: 10/13  Δ +3  нехв −3", report)
+        self.assertIn("Buckets ✅: 0/3  ·  Ниже цели: 3", report)
 
 
 if __name__ == "__main__":

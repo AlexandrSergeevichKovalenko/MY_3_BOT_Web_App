@@ -13,11 +13,17 @@ class ReaderPdfNormalizationTests(unittest.TestCase):
 
         normalized = server._normalize_reader_pages_for_response("pdf", pages)
 
+        # This function no longer rewrites dot leaders into «........» — squeezing table-of-
+        # contents lines happens in the TOC pass (see the next test). What it must still
+        # guarantee: every page comes back, in order, with its text intact and without the
+        # blank-line pile-ups that used to open holes in the middle of a page.
         self.assertEqual(len(normalized), 2)
+        self.assertEqual([p["page_number"] for p in normalized], [9, 10])
         self.assertIn("Geleitwort von Frank Hoepfel", normalized[0]["text"])
-        self.assertIn("........", normalized[0]["text"])
         self.assertIn("1.1 Definition", normalized[1]["text"])
-        self.assertNotIn("\n\n\n", normalized[1]["text"])
+        for page in normalized:
+            self.assertNotIn("\n\n\n", page["text"])
+            self.assertTrue(page["text"].strip())
 
     def test_pdf_toc_lines_are_compacted_into_entries(self):
         raw = """

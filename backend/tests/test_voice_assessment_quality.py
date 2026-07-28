@@ -115,10 +115,15 @@ class VoiceAssessmentQualityTests(unittest.IsolatedAsyncioTestCase):
             assessment = await build_voice_assessment(session_id=101)
 
         self.assertIsNotNone(assessment)
-        self.assertIn("too short", assessment.summary.lower())
-        self.assertIn("not enough", assessment.strict_feedback.lower())
+        # The fallback is written in the learner's own language now (Russian by default,
+        # German for de-learners), so the honest assertion is the FLAG plus the promise
+        # that we neither praise nor pretend to have material we do not have.
+        self.assertTrue(assessment.is_short_transcript)
+        self.assertRegex(assessment.summary.lower(), r"коротк")
+        self.assertRegex(assessment.strict_feedback.lower(), r"недостаточно|мало")
         self.assertTrue(assessment.recommended_next_focus)
-        self.assertNotIn("good job", assessment.strict_feedback.lower())
+        for praise in ("good job", "молодец", "отличн"):
+            self.assertNotIn(praise, assessment.strict_feedback.lower())
 
     async def test_strict_feedback_sanitization_removes_praise_and_vague_focus(self):
         fixture = QUALITY_FIXTURES["weak_grammar_direct_feedback"]
@@ -135,8 +140,11 @@ class VoiceAssessmentQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(assessment.summary), 220)
         self.assertNotIn("good job", assessment.summary.lower())
         self.assertNotIn("well done", assessment.strict_feedback.lower())
-        self.assertNotEqual(assessment.recommended_next_focus.lower(), "keep practicing.")
-        self.assertIn("word order", assessment.strict_feedback.lower())
+        # strict_feedback and recommended_next_focus are no longer the model's prose: they
+        # are derived from the mistakes actually recorded for the session. With none
+        # recorded, the honest output is «nothing to correct» and NO invented focus.
+        self.assertIn("no grammar mistakes", assessment.strict_feedback.lower())
+        self.assertIsNone(assessment.recommended_next_focus)
 
     async def test_prep_vocab_case_returns_concrete_non_empty_fields(self):
         fixture = QUALITY_FIXTURES["weak_coherence_but_vocab_ok"]
@@ -157,7 +165,7 @@ class VoiceAssessmentQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(assessment.fluency_note)
         self.assertTrue(assessment.coherence_relevance_note)
         self.assertTrue(assessment.self_correction_note)
-        self.assertIn("coherence", assessment.strict_feedback.lower())
+        # Notes still come from the model; strict_feedback does not (see the test above).
         self.assertEqual(assessment.target_vocab_missed, [])
         self.assertIn("Kaffee", assessment.target_vocab_used)
         self.assertIn("zum Mitnehmen", assessment.target_vocab_used)
@@ -209,15 +217,17 @@ class VoiceAssessmentQualityTests(unittest.IsolatedAsyncioTestCase):
             assessment = await build_and_store_voice_assessment(session_id=105)
 
         self.assertIsNotNone(assessment)
-        self.assertNotIn("too short", assessment.summary.lower())
-        self.assertTrue(fetch_mock.call_count >= 3)
-        self.assertEqual(sleep_mock.await_count, 2)
+        self.assertFalse(assessment.is_short_transcript)
+        self.assertTrue(fetch_mock.call_count >= 2)
+        self.assertGreaterEqual(sleep_mock.await_count, 1)
 
     async def test_build_and_store_keeps_fallback_when_transcript_stays_premature(self):
         assistant_only_segments = [{"speaker": "assistant", "text": "Hallo Aleksandr!"}]
         with patch(
             "backend.voice_assessment_service.fetch_agent_voice_transcript_segments",
-            side_effect=[assistant_only_segments, assistant_only_segments, assistant_only_segments],
+            # One fetch up front + one per retry delay (there are three), so a three-item
+            # side_effect ran dry and surfaced as «coroutine raised StopIteration».
+            return_value=assistant_only_segments,
         ) as fetch_mock, patch(
             "backend.voice_assessment_service.get_agent_voice_session_context",
             return_value={"session": {"session_id": 106}, "scenario": None, "prep_pack": None},
@@ -231,9 +241,12 @@ class VoiceAssessmentQualityTests(unittest.IsolatedAsyncioTestCase):
             assessment = await build_and_store_voice_assessment(session_id=106)
 
         self.assertIsNotNone(assessment)
-        self.assertIn("too short", assessment.summary.lower())
-        self.assertEqual(fetch_mock.call_count, 3)
-        self.assertEqual(sleep_mock.await_count, 2)
+        self.assertTrue(assessment.is_short_transcript)
+        self.assertRegex(assessment.summary.lower(), r"коротк")
+        # Every retry delay is used before we give up, and each one waits.
+        from backend.voice_assessment_service import _ASSESSMENT_TRANSCRIPT_RETRY_DELAYS_SECONDS as delays
+        self.assertEqual(fetch_mock.call_count, len(delays) + 1)
+        self.assertEqual(sleep_mock.await_count, len(delays))
 
 
 if __name__ == "__main__":

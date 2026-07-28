@@ -26,11 +26,16 @@ class OpenAIManagerPromptingTests(unittest.TestCase):
         self.assertIn("Prefer natural collocations and characteristic real usage", prompt)
         self.assertIn("Never output broken fragments, literal translations, or awkward artificial phrases.", prompt)
 
-    def test_wortgruppe_prompt_requires_full_phrase(self) -> None:
+    def test_wortgruppe_prompt_keeps_its_contract(self) -> None:
+        """The prompt itself was rewritten (C1–C2 rebuild), so this pins the CONTRACT the
+        rest of the code depends on, not the wording: the sentence/gap/answer triple, the
+        rule that re-inserting the answer restores the sentence exactly, and the Russian
+        hint the UI shows. Wording is free to improve; these fields are not."""
         prompt = system_message["aufgabe_wortgruppe"]
-        self.assertIn("vollständige grammatische Wortgruppe", prompt)
-        self.assertIn("Vermeide Single-Word-Lösungen vollständig.", prompt)
-        self.assertIn("hint_ru", prompt)
+        for field in ("vollsatz", "satz", "correct", "hint_ru", "lemmas"):
+            self.assertIn(field, prompt, f"поле {field} исчезло из промпта")
+        self.assertIn("_____", prompt)                 # exactly one gap marker
+        self.assertRegex(prompt, r"C1[–-]C2|C1|C2")    # the level it is written for
 
 
 if __name__ == "__main__":

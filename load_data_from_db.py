@@ -15,16 +15,11 @@ else:
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, sslmode='require')
 
-# Проверка подключения
-conn = get_db_connection()
-cursor = conn.cursor()
-cursor.execute("SELECT version();")
-db_version = cursor.fetchone()
-
-print(f"✅ База данных подключена! Версия: {db_version}")
-
-cursor.close()
-conn.close()
+# NB: there used to be a connectivity smoke check right here — it opened a real connection
+# at IMPORT time just to print the server version. bot_3 imports this module, so every bot
+# start (and every test run, and every tooling import) paid for a database round-trip before
+# a single line of work, and a slow database turned a plain import into a timeout. The
+# functions below open their own connections when they are actually used.
 
 def load_data_for_analytics(user_id: int, start_date, end_date, period: str = 'week') -> pd.DataFrame:
     with get_db_connection() as conn:
