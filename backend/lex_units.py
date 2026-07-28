@@ -287,6 +287,106 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
     ]
 
 
+def _kind_for_text(text: str) -> str:
+    body = _ANY_ARTICLE_RE.sub("", str(text or "").strip()).strip()
+    if not body:
+        return ""
+    if " " not in body:
+        return "word"
+    return "sentence" if len(body.split()) > 4 or body.rstrip().endswith((".", "!", "?")) else "collocation"
+
+
+def ensure_unit(text: str, lang: str) -> int | None:
+    """Найти единицу по написанию, а если её нет — завести.
+
+    Нужно на сохранении: слово, которое человек только что положил себе в словарь,
+    обязано сразу иметь дом в слое. Иначе указатель у карточки остаётся пустым, и
+    разрыв растёт с каждым новым сохранением."""
+    key = normalize_query(text)
+    kind = _kind_for_text(text)
+    if not key or not kind or not lang:
+        return None
+    body = _ANY_ARTICLE_RE.sub("", _SPACE_RE.sub(" ", str(text).strip())).strip()
+    display = _SPACE_RE.sub(" ", str(text).strip()) if kind != "word" else body
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT u.id FROM bt_3_lex_surfaces s
+                    JOIN bt_3_lex_units u ON u.id = s.unit_id
+                    WHERE s.lang = %s AND s.surface_key = %s
+                    ORDER BY (u.card IS NULL), u.id LIMIT 1;
+                    """,
+                    (lang, key),
+                )
+                row = cur.fetchone()
+                if row:
+                    return int(row[0])
+                cur.execute(
+                    """
+                    INSERT INTO bt_3_lex_units (lang, kind, lemma, lemma_key, display, card_source)
+                    VALUES (%s, %s, %s, %s, %s, 'сохранение')
+                    ON CONFLICT (lang, kind, lemma_key, COALESCE(pos, ''), COALESCE(gender, ''))
+                    DO UPDATE SET updated_at = NOW()
+                    RETURNING id;
+                    """,
+                    (lang, kind, body or display, key, display),
+                )
+                unit_id = int(cur.fetchone()[0])
+                cur.execute(
+                    """
+                    INSERT INTO bt_3_lex_surfaces (lang, surface_key, unit_id, match_kind)
+                    VALUES (%s, %s, %s, 'exact') ON CONFLICT DO NOTHING;
+                    """,
+                    (lang, key, unit_id),
+                )
+            conn.commit()
+        return unit_id
+    except Exception as exc:
+        logging.debug("ensure unit failed for %r: %s", text, exc)
+        return None
+
+
+def attach_entry_to_unit(
+    entry_id: int,
+    *,
+    word_de: str | None = None,
+    word_ru: str | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> int | None:
+    """Проставить у только что сохранённой карточки указатель на её слово.
+
+    Лучше делать это на сохранении, чем догонять разовыми проходами: иначе каждый
+    новый день добавляет карточки без указателя, и слой отстаёт от жизни."""
+    langs = {str(source_lang or "").lower(), str(target_lang or "").lower()}
+    text, lang = "", ""
+    if "de" in langs and str(word_de or "").strip():
+        text, lang = str(word_de).strip(), "de"
+    elif str(word_ru or "").strip():
+        text = str(word_ru).strip()
+        lang = next((l for l in langs if l and l != "de"), "ru")
+    if not text:
+        return None
+    unit_id = ensure_unit(text, lang)
+    if not unit_id:
+        return None
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_webapp_dictionary_queries SET lex_unit_id = %s "
+                    "WHERE id = %s AND lex_unit_id IS NULL;",
+                    (unit_id, int(entry_id)),
+                )
+            conn.commit()
+    except Exception as exc:
+        logging.debug("attach entry %s to unit failed: %s", entry_id, exc)
+        return None
+    return unit_id
+
+
 def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "ru") -> dict:
     """Перечитать переводы слова из его РАЗБОРА и разложить по значениям.
 

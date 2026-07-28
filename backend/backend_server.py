@@ -8548,9 +8548,31 @@ def _strip_bilingual_ru_combo(value):
     return value
 
 
+def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
+    """Сразу привязать сохранённую карточку к её слову в слое.
+
+    Делаем это на сохранении, а не разовыми проходами: иначе каждый новый день
+    добавляет карточки без указателя и слой отстаёт от жизни. Строго не критично —
+    сбой привязки не должен ломать само сохранение."""
+    if not entry_id:
+        return
+    try:
+        lex_units.attach_entry_to_unit(
+            int(entry_id),
+            word_de=kwargs.get("word_de"),
+            word_ru=kwargs.get("word_ru"),
+            source_lang=kwargs.get("source_lang"),
+            target_lang=kwargs.get("target_lang"),
+        )
+    except Exception:
+        logging.debug("attach saved entry to lex unit failed", exc_info=True)
+
+
 def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
     try:
-        return save_webapp_dictionary_query_returning_id(**kwargs)
+        entry_id = save_webapp_dictionary_query_returning_id(**kwargs)
+        _attach_saved_entry_to_lex_unit(entry_id, kwargs)
+        return entry_id
     except Exception as exc:
         if not _is_missing_dictionary_schema_error(exc):
             raise
@@ -8559,12 +8581,16 @@ def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
             exc,
         )
         ensure_webapp_tables()
-    return save_webapp_dictionary_query_returning_id(**kwargs)
+    entry_id = save_webapp_dictionary_query_returning_id(**kwargs)
+    _attach_saved_entry_to_lex_unit(entry_id, kwargs)
+    return entry_id
 
 
 def _save_dictionary_entry_with_inserted_schema_retry(**kwargs) -> tuple[int, bool]:
     try:
-        return save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
+        result = save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
+        _attach_saved_entry_to_lex_unit((result or (None,))[0], kwargs)
+        return result
     except Exception as exc:
         if not _is_missing_dictionary_schema_error(exc):
             raise
@@ -8573,7 +8599,9 @@ def _save_dictionary_entry_with_inserted_schema_retry(**kwargs) -> tuple[int, bo
             exc,
         )
         ensure_webapp_tables()
-    return save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
+    result = save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
+    _attach_saved_entry_to_lex_unit((result or (None,))[0], kwargs)
+    return result
 
 
 def _flip_inverted_ru_de_dictionary_payload(
