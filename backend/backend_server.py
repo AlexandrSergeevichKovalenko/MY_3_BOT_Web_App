@@ -419,6 +419,8 @@ from backend.database import (
     get_dictionary_backfill_diagnostics,
     update_dictionary_entry_full_columns,
     is_telegram_user_allowed,
+    auto_grant_telegram_user,
+    invalidate_telegram_user_allowed_cache,
     ensure_webapp_tables,
     create_shortcut_pairing_code,
     link_shortcut_installation,
@@ -3222,9 +3224,99 @@ def _cache_webapp_instance_lease(user_id: int, lease: dict | None) -> None:
     _HOTPATH_INSTANCE_LEASE_CACHE.invalidate(cache_key)
 
 
+def _notify_admins_new_user_async(user_id: int, display_name: str, source: str) -> None:
+    """Fire-and-forget «+1» DM to admins. Never on the request's critical path: this runs
+    once per brand-new user, and a slow Telegram API call must not delay their first screen."""
+
+    def _send() -> None:
+        try:
+            admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+        except Exception:
+            return
+        if not admin_ids:
+            return
+        text = (
+            "🆕 Новый пользователь подключился\n\n"
+            f"User: {display_name or f'user_{int(user_id)}'}\n"
+            f"User ID: {int(user_id)}\n"
+            f"Откуда: {source}\n\n"
+            f"Закрыть доступ: /deny {int(user_id)}"
+        )
+        url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/sendMessage"
+        for admin_id in admin_ids:
+            try:
+                requests.post(url, json={"chat_id": int(admin_id), "text": text}, timeout=10)
+            except Exception:
+                logging.debug("new-user admin notify failed", exc_info=True)
+
+    try:
+        threading.Thread(target=_send, name="notify-new-user", daemon=True).start()
+    except Exception:
+        logging.debug("new-user notify thread spawn failed", exc_info=True)
+
+
+def _self_serve_source_label(user_data: dict | None, parsed_init_data: dict | None) -> str:
+    start_param = ""
+    if isinstance(parsed_init_data, dict):
+        start_param = str(parsed_init_data.get("start_param") or "").strip()
+    if start_param.startswith("ref_"):
+        referrer = start_param[4:].strip()
+        return f"реферальная ссылка (от {referrer})" if referrer else "реферальная ссылка"
+    if start_param.startswith("razbor_"):
+        return "ссылка на «Полный разбор»"
+    if start_param.startswith("dive_"):
+        return "ссылка на разбор вопроса"
+    if start_param:
+        return f"приложение (?startapp={start_param[:40]})"
+    return "приложение (Mini App)"
+
+
+def _grant_self_serve_webapp_access(
+    user_id: int,
+    user_data: dict | None = None,
+    parsed_init_data: dict | None = None,
+    source_override: str | None = None,
+) -> bool:
+    """Let a brand-new user in on their first Mini-App open, and tell the admin.
+
+    Invite share-cards open the Mini App DIRECTLY (t.me/<bot>/app?startapp=…) without ever
+    sending /start, so the bot-side self-serve grant never runs for them. Without this the
+    invite funnel would still dead-end on a 403. Returns True when access now exists.
+    """
+    uid = int(user_id)
+    if uid <= 0 or _is_synthetic_telegram_user_id(uid):
+        return False
+    display_name = _extract_display_name(user_data or {}) if user_data else None
+    source = str(source_override or "").strip() or _self_serve_source_label(user_data, parsed_init_data)
+    try:
+        with db_acquire_scope("self_serve_access_grant"):
+            granted = bool(auto_grant_telegram_user(uid, display_name, source))
+    except Exception:
+        logging.warning("self-serve webapp access grant failed user_id=%s", uid, exc_info=True)
+        return False
+    if not granted:
+        # Either an admin denied this user, or another entry point won the race and the row
+        # already exists. Re-read the source of truth (bypassing the caches we know are stale
+        # here) so a concurrent grant still lets the user through instead of 403-ing them.
+        try:
+            invalidate_telegram_user_allowed_cache(uid)
+            with db_acquire_scope("self_serve_access_recheck"):
+                allowed = bool(is_telegram_user_allowed(uid))
+        except Exception:
+            logging.warning("self-serve access recheck failed user_id=%s", uid, exc_info=True)
+            allowed = False
+        _cache_webapp_allowlist(uid, allowed)
+        return allowed
+    _cache_webapp_allowlist(uid, True)
+    _notify_admins_new_user_async(uid, display_name or "", source)
+    return True
+
+
 def _is_webapp_user_allowed(user_id: int) -> bool:
     allowed, _source = _resolve_webapp_user_allowed(int(user_id))
-    return bool(allowed)
+    if allowed:
+        return True
+    return _grant_self_serve_webapp_access(int(user_id))
 
 
 def _is_synthetic_telegram_user_id(user_id: int) -> bool:
@@ -3402,7 +3494,16 @@ def enforce_webapp_access():
 
     is_allowed, allowlist_cache_source = _resolve_webapp_user_allowed(int(resolved_user_id))
     if not is_allowed:
-        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
+        # Self-serve access: a first-time visitor who arrived by invite link is let in here
+        # and the admin is notified. Only an admin-denied user still gets the 403.
+        is_allowed = _grant_self_serve_webapp_access(
+            int(resolved_user_id),
+            resolved_user_data,
+            resolved_parsed,
+        )
+        allowlist_cache_source = "self_serve"
+    if not is_allowed:
+        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
 
     g.telegram_user_id = int(resolved_user_id)
     g.telegram_user = resolved_user_data
@@ -3779,8 +3880,10 @@ def exchange_mobile_access_token():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     user_id = int(user_id)
-    if not is_telegram_user_allowed(user_id):
-        return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+    if not _resolve_webapp_user_allowed(user_id)[0] and not _grant_self_serve_webapp_access(
+        user_id, user_data, parsed
+    ):
+        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
 
     username = _extract_display_name(user_data)
     try:
@@ -3838,9 +3941,6 @@ def web_auth_telegram():
         return jsonify({"error": "user_id invalid"}), 400
     user_id = int(user_id_raw)
 
-    if not is_telegram_user_allowed(user_id):
-        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
-
     user_data = {
         "id": user_id,
         "first_name": str(payload.get("first_name") or "").strip(),
@@ -3848,6 +3948,14 @@ def web_auth_telegram():
         "username": str(payload.get("username") or "").strip(),
         "photo_url": str(payload.get("photo_url") or "").strip(),
     }
+
+    if not _resolve_webapp_user_allowed(user_id)[0] and not _grant_self_serve_webapp_access(
+        user_id,
+        user_data,
+        None,
+        source_override="вход через Telegram в браузере",
+    ):
+        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
     init_data = _build_signed_init_data_for_user(user_data, auth_date=int(time.time()))
     if not init_data:
         return jsonify({"error": "Не удалось выпустить initData"}), 500
@@ -4448,7 +4556,7 @@ def _authenticate_webapp_request(payload: dict | None = None) -> tuple[int | Non
     if not user_id:
         return None, None, "initData не прошёл проверку и токен недействителен"
     if not _is_webapp_user_allowed(int(user_id)):
-        return None, None, "Доступ к WebApp закрыт. Ожидайте одобрения администратора."
+        return None, None, "Доступ к приложению закрыт администратором."
     return int(user_id), username, None
 
 
@@ -5776,7 +5884,7 @@ def _get_authenticated_user_from_request_init_data() -> tuple[int | None, str | 
     if not user_id:
         return None, None, "initData не прошёл проверку или user_id отсутствует"
     if not _is_webapp_user_allowed(int(user_id)):
-        return None, None, "Доступ к WebApp закрыт. Ожидайте одобрения администратора."
+        return None, None, "Доступ к приложению закрыт администратором."
     return int(user_id), username, None
 
 
@@ -20555,7 +20663,7 @@ def _get_mobile_authenticated_user() -> tuple[int | None, str | None, object | N
     user_id = int(data.get("uid"))
     username = (data.get("usr") or "").strip() or None
     if not is_telegram_user_allowed(user_id):
-        return None, None, (jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403)
+        return None, None, (jsonify({"error": "Доступ к приложению закрыт администратором."}), 403)
     return user_id, username, None
 
 
@@ -27817,7 +27925,7 @@ def claim_webapp_instance():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     if not _is_webapp_user_allowed(int(user_id)):
-        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
+        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
 
     instance_id = _extract_webapp_instance_id(payload)
     if not instance_id:
@@ -27868,7 +27976,7 @@ def release_webapp_instance():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     if not _is_webapp_user_allowed(int(user_id)):
-        return jsonify({"error": "Доступ к WebApp закрыт. Ожидайте одобрения администратора."}), 403
+        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
 
     instance_id = _extract_webapp_instance_id(payload)
     if not instance_id:
@@ -27923,6 +28031,12 @@ def _answer_auth_user_id() -> tuple[int | None, str, tuple]:
     if not user_id:
         return None, "", (jsonify({"error": "user_id отсутствует в initData"}), 400)
     user_name = str(user_data.get("first_name") or user_data.get("username") or "").strip()
+    # A valid Telegram signature alone is NOT access: without this check the /api/answer/*
+    # family (including the GPT-spending deepdive endpoints) stayed reachable for a user an
+    # admin had denied. _is_webapp_user_allowed self-serve-grants a first-time visitor, so
+    # only a denied user is turned away here.
+    if not _is_webapp_user_allowed(int(user_id)):
+        return None, "", (jsonify({"error": "Доступ к приложению закрыт администратором."}), 403)
     return int(user_id), user_name, ()
 
 
@@ -49264,7 +49378,7 @@ def get_next_srs_card():
     if not user_id:
         return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
     if not _is_webapp_user_allowed(int(user_id)):
-        return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
     mark("validated")
 
     try:
@@ -49332,7 +49446,7 @@ def get_srs_prefetch_cards():
     if not user_id:
         return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
     if not _is_webapp_user_allowed(int(user_id)):
-        return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     now_utc = datetime.now(timezone.utc)
@@ -49547,7 +49661,7 @@ def review_srs_card():
     if not user_id:
         return jsonify({"error": "initData не прошёл проверку или user_id отсутствует"}), 401
     if not _is_webapp_user_allowed(int(user_id)):
-        return jsonify({"error": "Доступ закрыт. Ожидайте одобрения администратора."}), 403
+        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
     mark("validated")
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     mark("lang_pair")

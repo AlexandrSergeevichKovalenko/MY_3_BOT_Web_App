@@ -168,6 +168,9 @@ from backend.database import (
     log_billing_event,
     log_limit_runtime_event,
     allow_telegram_user,
+    AUTO_ACCESS_NOTE_PREFIX,
+    auto_grant_telegram_user,
+    get_access_growth_snapshot,
     revoke_telegram_user,
     schedule_telegram_user_removal,
     cancel_telegram_user_removal,
@@ -6893,15 +6896,91 @@ async def _notify_admins_access_request(context: CallbackContext, user) -> None:
             logging.warning(f"Не удалось отправить запрос администратору {admin_id}: {exc}")
 
 
+def _auto_access_source_label(context: CallbackContext) -> str:
+    """Human-readable «откуда пришёл» for the admin notification, from the /start payload.
+
+    Every share surface funnels into t.me/<bot>?start=<payload>, so the payload is the
+    only honest signal we have about which invite actually brought the person in.
+    """
+    args = getattr(context, "args", None) or []
+    payload = str(args[0] or "").strip() if args else ""
+    if not payload:
+        return "прямая ссылка"
+    if payload.startswith("ref_"):
+        referrer = payload[4:].strip()
+        return f"реферальная ссылка (от {referrer})" if referrer else "реферальная ссылка"
+    if payload.startswith("razbor_"):
+        return "ссылка на «Полный разбор»"
+    if payload.startswith("dive_"):
+        return "ссылка на разбор вопроса"
+    known = {
+        "access": "ссылка «открыть личный чат»",
+        "dict": "быстрый словарь",
+        "webapp": "ссылка на приложение",
+        "quiz": "ссылка на тренировку",
+        "tour": "онбординг-тур",
+    }
+    return known.get(payload, f"ссылка ?start={payload[:40]}")
+
+
+async def _notify_admins_new_user(context: CallbackContext, user, *, source: str) -> None:
+    """«+1» DM to every admin right after a self-serve grant.
+
+    Access is no longer a decision, so this is pure visibility — but it still carries
+    /deny, because closing the door afterwards is now the admin's only lever.
+    """
+    admin_ids = get_admin_telegram_ids()
+    if not admin_ids:
+        return
+    user_id = int(user.id)
+    username = _display_user_name(user)
+    text = (
+        "🆕 Новый пользователь подключился\n\n"
+        f"User: {username}\n"
+        f"User ID: {user_id}\n"
+        f"Откуда: {source}\n\n"
+        f"Закрыть доступ: /deny {user_id}"
+    )
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text)
+        except Exception as exc:
+            logging.warning("не удалось отправить админу %s уведомление о новом пользователе: %s", admin_id, exc)
+
+
+async def _send_access_closed_reply(update: Update, context: CallbackContext) -> None:
+    """Reply for the only people who still hit a closed door: those an admin denied."""
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if _is_group_chat_type(getattr(chat, "type", None)):
+        delivered_private = await _send_access_denied_private(context, int(user.id)) if user else False
+        if message and not delivered_private:
+            await message.reply_text(
+                "ℹ️ Не могу написать вам в личные сообщения.\n"
+                "Откройте чат с ботом и нажмите /start.",
+                reply_markup=_open_private_chat_keyboard(getattr(context.bot, "username", None)),
+            )
+        return
+    if message:
+        await message.reply_text(
+            "⛔️ Доступ к боту закрыт администратором.\n"
+            "Если это ошибка — нажмите кнопку ниже, и я передам запрос.",
+            reply_markup=_request_access_keyboard(),
+        )
+
+
 def _request_access_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("📨 Запросить доступ", callback_data="access:request")]]
     )
 
 
+# Reached only by someone who has not opened the bot yet (self-serve access is granted
+# on /start) or by someone an admin denied. Both are fixed by the same one tap.
 _ACCESS_DENIED_TEXT = (
-    "⛔️ Доступ к боту закрыт.\n"
-    "Нажмите кнопку ниже для отправки запроса администратору."
+    "👋 Чтобы начать, откройте чат с ботом и нажмите /start — доступ откроется сразу.\n"
+    "Если доступ был закрыт администратором, нажмите кнопку ниже, и я передам запрос."
 )
 
 
@@ -7455,7 +7534,7 @@ async def enforce_user_access(update: Update, context: CallbackContext):
                 pass
     elif update.callback_query:
         try:
-            await update.callback_query.answer("Доступ закрыт. Ожидайте одобрения администратора.", show_alert=True)
+            await update.callback_query.answer("Откройте бота и нажмите /start — доступ откроется сразу.", show_alert=True)
         except Exception:
             pass
     elif message:
@@ -7854,6 +7933,26 @@ async def allowed_users_command(update: Update, context: CallbackContext):
             row += f" ({item['username']})"
         lines.append(row)
     await update.effective_message.reply_text("\n".join(lines))
+
+
+async def new_users_command(update: Update, context: CallbackContext):
+    """/newusers [часы] — тот же дайджест подключений, что приходит утром, но по запросу."""
+    sender = update.effective_user
+    if not sender or not update.effective_message:
+        return
+    if not _is_admin_user(sender.id):
+        await update.effective_message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    hours = 24
+    if context.args:
+        try:
+            hours = max(1, min(24 * 90, int(context.args[0])))
+        except ValueError:
+            await update.effective_message.reply_text("Использование: /newusers [часы], например /newusers 168")
+            return
+    snapshot = await asyncio.to_thread(get_access_growth_snapshot, hours)
+    header = f"Период: последние {hours} ч.\n"
+    await update.effective_message.reply_text(header + _format_access_digest_text(snapshot))
 
 
 async def pending_requests_command(update: Update, context: CallbackContext):
@@ -12692,33 +12791,29 @@ async def _onboarding_nudge_job(context: CallbackContext) -> None:
 async def start(update: Update, context: CallbackContext):
     """Запуск бота и отправка главного меню."""
     user = update.effective_user
-    # First-touch referral capture must run BEFORE the access gate (a brand-new user
-    # gets bounced to the approval queue, but we still want to remember who invited).
+    # First-touch referral capture must run BEFORE access is granted: _maybe_capture_referral
+    # only attributes users who are NOT yet allowed, and the self-serve grant below flips
+    # exactly that flag. Swap the order and every referral silently stops counting.
     if user:
         try:
             await _maybe_capture_referral(context, update, int(user.id))
         except Exception:
             logging.warning("referral capture failed", exc_info=True)
-    if user and not is_telegram_user_allowed(int(user.id)):
-        await _notify_admins_access_request(context, user)
-        message = update.effective_message
-        chat = update.effective_chat
-        is_group_chat = _is_group_chat_type(getattr(chat, "type", None))
-        if is_group_chat:
-            delivered_private = await _send_access_denied_private(context, int(user.id))
-            if message and not delivered_private:
-                await message.reply_text(
-                    "ℹ️ Не могу написать вам в личные сообщения.\n"
-                    "Откройте чат с ботом и нажмите /start, затем «📨 Запросить доступ».",
-                    reply_markup=_open_private_chat_keyboard(getattr(context.bot, "username", None)),
-                )
-        elif message:
-            await message.reply_text(
-                "⛔️ Доступ к боту пока не выдан.\n"
-                "Нажмите кнопку ниже или дождитесь подтверждения администратора.",
-                reply_markup=_request_access_keyboard(),
-            )
-        return
+    if user and not await asyncio.to_thread(is_telegram_user_allowed, int(user.id)):
+        # Self-serve access: an invite link is the invitation. Only someone an admin
+        # explicitly denied stays out (auto_grant_telegram_user returns False for them).
+        source = _auto_access_source_label(context)
+        granted = await asyncio.to_thread(
+            auto_grant_telegram_user,
+            int(user.id),
+            _display_user_name(user),
+            source,
+        )
+        if granted:
+            await _notify_admins_new_user(context, user, source=source)
+        else:
+            await _send_access_closed_reply(update, context)
+            return
 
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
     if update.effective_chat and update.effective_chat.type == "private":
@@ -14327,6 +14422,44 @@ def _purge_stale_pending_all_users() -> int:
         "dict_pending: nightly stale sweep removed=%d (max_age=%ss)", removed, _DICT_PENDING_MAX_AGE_SEC
     )
     return removed
+
+
+def _format_access_digest_text(snapshot: dict) -> str:
+    new_users = list(snapshot.get("new_users") or [])
+    total_real = int(snapshot.get("total_real") or 0)
+    if not new_users:
+        return f"👥 За сутки новых пользователей нет.\nВсего живых пользователей: {total_real}."
+    lines = [f"👥 За сутки подключились: {len(new_users)}", f"Всего живых пользователей: {total_real}", ""]
+    for item in new_users[:20]:
+        name = str(item.get("username") or "").strip() or f"user_{item.get('user_id')}"
+        note = str(item.get("note") or "").strip()
+        source = note.split(":", 1)[1].strip() if note.startswith(AUTO_ACCESS_NOTE_PREFIX) else "выдан вручную"
+        lines.append(f"• {name} (id {item.get('user_id')}) — {source}")
+    if len(new_users) > 20:
+        lines.append(f"…и ещё {len(new_users) - 20}")
+    return "\n".join(lines)
+
+
+async def _daily_access_digest_job(context: CallbackContext) -> None:
+    """Morning «кто подключился за сутки» digest for admins.
+
+    The per-user «+1» DM can drown in a busy day (that is exactly how four access
+    requests sat unanswered for months); this is the one message that always states
+    the totals, so the growth signal never depends on catching each event live.
+    """
+    try:
+        admin_ids = get_admin_telegram_ids()
+        if not admin_ids:
+            return
+        snapshot = await asyncio.to_thread(get_access_growth_snapshot, 24)
+        text = _format_access_digest_text(snapshot)
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(chat_id=int(admin_id), text=text)
+            except Exception as exc:
+                logging.warning("daily_access_digest: не доставлено админу %s: %s", admin_id, exc)
+    except Exception:
+        logging.exception("daily_access_digest failed")
 
 
 async def _nightly_pending_cleanup_job(context: CallbackContext) -> None:
@@ -39745,6 +39878,7 @@ def main():
     application.add_handler(CommandHandler("admin_subs", admin_subs_command))
     application.add_handler(CommandHandler("reader_audio_setlimit", _admin_reader_audio_setlimit_command))
     application.add_handler(CommandHandler("allowed", allowed_users_command))
+    application.add_handler(CommandHandler("newusers", new_users_command))
     application.add_handler(CommandHandler("pending", pending_requests_command))
     application.add_handler(CommandHandler("pending_purges", pending_purges_command))
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
@@ -40058,6 +40192,15 @@ def main():
             logging.info("scheduled nightly_pending_cleanup at 23:59 Europe/Vienna")
         except Exception:
             logging.warning("failed to schedule nightly_pending_cleanup", exc_info=True)
+        try:
+            application.job_queue.run_daily(
+                _daily_access_digest_job,
+                time=time(hour=9, minute=5, tzinfo=ZoneInfo("Europe/Vienna")),
+                name="daily_access_digest",
+            )
+            logging.info("scheduled daily_access_digest at 09:05 Europe/Vienna")
+        except Exception:
+            logging.warning("failed to schedule daily_access_digest", exc_info=True)
         try:
             application.job_queue.run_daily(
                 _nightly_frequency_backfill_job,

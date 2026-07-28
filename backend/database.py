@@ -12516,6 +12516,128 @@ def allow_telegram_user(
     _invalidate_webapp_allowlist_redis(int(user_id))
 
 
+AUTO_ACCESS_NOTE_PREFIX = "self-serve access"
+
+
+def is_access_denied_for_user(user_id: int) -> bool:
+    """True when an admin explicitly closed the door for this user.
+
+    Self-serve access opens the app to anyone who follows an invite, so «denied»
+    has to be remembered somewhere — otherwise a /deny is undone by the user's very
+    next /start. Two independent traces count, because /deny writes different rows
+    depending on how the user got in:
+      * a rejected access request — the user came through the old approval queue;
+      * a removal-queue row that is NOT 'canceled' — the user was already inside
+        (auto-granted or approved) and got revoked. 'canceled' means an admin gave
+        access back via /allow, so it is deliberately not a denial.
+    """
+    uid = int(user_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_access_requests WHERE user_id = %s AND status = 'rejected' LIMIT 1;",
+                (uid,),
+            )
+            if cursor.fetchone() is not None:
+                return True
+            cursor.execute(
+                """
+                SELECT 1 FROM bt_3_user_removal_queue
+                WHERE user_id = %s AND status <> 'canceled'
+                LIMIT 1;
+                """,
+                (uid,),
+            )
+            return cursor.fetchone() is not None
+
+
+def auto_grant_telegram_user(
+    user_id: int,
+    username: str | None = None,
+    source: str = "direct",
+) -> bool:
+    """Self-serve access grant. Returns True only when the row is genuinely NEW.
+
+    ON CONFLICT DO NOTHING (not DO UPDATE) on purpose: an existing row may carry an
+    admin's own note/added_by, and two entry points can race on the same brand-new
+    user (bot /start and the Mini App opening at once). The RETURNING tells the caller
+    whether it is the one that actually let this person in, so the admin gets exactly
+    one «+1» notification and the daily digest can't double-count.
+    """
+    uid = int(user_id)
+    if is_access_denied_for_user(uid):
+        return False
+    note = f"{AUTO_ACCESS_NOTE_PREFIX}: {str(source or 'direct').strip() or 'direct'}"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_allowed_users (user_id, username, added_by, note)
+                VALUES (%s, %s, NULL, %s)
+                ON CONFLICT (user_id) DO NOTHING
+                RETURNING user_id;
+                """,
+                (uid, username, note),
+            )
+            granted = cursor.fetchone() is not None
+    if granted:
+        invalidate_telegram_user_allowed_cache(uid)
+        _invalidate_webapp_allowlist_redis(uid)
+    return granted
+
+
+def get_access_growth_snapshot(hours: int = 24) -> dict:
+    """Numbers behind the admin's daily «кто подключился» digest.
+
+    Synthetic load-test users live in the same table, so they are filtered out by
+    user_id floor AND by their note prefixes — otherwise a load run reads as 60 new
+    signups. Returns the fresh arrivals (with how they got in) plus the running total.
+    """
+    window_hours = max(1, int(hours or 24))
+    synthetic_floor = 9_000_000_000
+    real_user_filter = """
+        user_id < %s
+        AND COALESCE(note, '') NOT LIKE 'load_test%%'
+        AND COALESCE(note, '') NOT LIKE '%%smoke%%'
+        AND COALESCE(note, '') NOT LIKE '%%synthetic%%'
+        AND COALESCE(note, '') NOT LIKE '%%runtime validation%%'
+        AND COALESCE(note, '') NOT LIKE 'phase_c_worker%%'
+        AND COALESCE(note, '') NOT LIKE 'postclaim_timeout%%'
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT user_id, username, note, created_at
+                FROM bt_3_allowed_users
+                WHERE {real_user_filter}
+                  AND created_at >= NOW() - (%s * INTERVAL '1 hour')
+                ORDER BY created_at DESC;
+                """,
+                (synthetic_floor, window_hours),
+            )
+            new_rows = [
+                {
+                    "user_id": int(row[0]),
+                    "username": row[1],
+                    "note": row[2],
+                    "created_at": row[3],
+                }
+                for row in cursor.fetchall()
+            ]
+            cursor.execute(
+                f"SELECT COUNT(*) FROM bt_3_allowed_users WHERE {real_user_filter};",
+                (synthetic_floor,),
+            )
+            total_real = int((cursor.fetchone() or [0])[0])
+    return {
+        "window_hours": window_hours,
+        "new_users": new_rows,
+        "new_count": len(new_rows),
+        "total_real": total_real,
+    }
+
+
 def revoke_telegram_user(user_id: int) -> bool:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
