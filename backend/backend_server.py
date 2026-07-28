@@ -9805,8 +9805,9 @@ def _run_units_night_enrichment(
         except Exception:
             logging.warning("units night enrich failed for %r", german, exc_info=True)
             report["errors"] += 1
-    remaining = lex_units.units_needing_card(cap + 1, lang=learning_lang, native_lang=native_lang)
-    report["remaining"] = max(0, len(remaining) - report["enriched"])
+    # Остаток берём отдельным подсчётом, а не из выборки: она ограничена ночным
+    # потолком, и сводка отчиталась бы «осталось 86» при 3356 неразобранных.
+    report["remaining"] = lex_units.count_units_needing_card(lang=learning_lang)
     return report
 
 
