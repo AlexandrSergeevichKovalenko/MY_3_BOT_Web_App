@@ -3591,7 +3591,13 @@ def enforce_webapp_access():
         )
         allowlist_cache_source = "self_serve"
     if not is_allowed:
-        return jsonify({"error": "Доступ к приложению закрыт администратором."}), 403
+        # `reason` lets the SPA show a calm full-screen card instead of a red error banner
+        # (the same central 403 interceptor that handles the bot-left gate picks it up).
+        return jsonify({
+            "error": "Доступ к приложению закрыт администратором.",
+            "reason": "access_closed",
+            "bot_username": str(TELEGRAM_BOT_USERNAME or "").strip().lstrip("@"),
+        }), 403
 
     g.telegram_user_id = int(resolved_user_id)
     g.telegram_user = resolved_user_data

@@ -605,6 +605,48 @@ function showAppBlockedGate(botUsername) {
   } catch (_e) { /* ignore */ }
 }
 
+let __accessClosedGateShown = false;
+/** Access was closed by an admin (/deny). Same shape as the bot-left gate, amber instead of
+ *  indigo: the app is not broken, someone decided this — so no red, no server text, one way
+ *  out (open the bot, where «Запросить доступ» lives). */
+function showAccessClosedGate(botUsername) {
+  if (__accessClosedGateShown || __appBlockedGateShown) return;
+  __accessClosedGateShown = true;
+  const uname = String(botUsername || 'Ich_Deutsch_bot').trim().replace(/^@/, '') || 'Ich_Deutsch_bot';
+  const de = (() => { try { return (localStorage.getItem('ui_lang') || '').toLowerCase() === 'de'; } catch (_e) { return false; } })();
+  const title = de ? 'Zugang geschlossen' : 'Доступ закрыт';
+  const body = de
+    ? 'Der Administrator hat den Zugang zur App geschlossen. Wenn das ein Versehen ist, öffne den Bot und stelle eine Anfrage.'
+    : 'Администратор закрыл доступ к приложению. Если это ошибка — откройте бота и отправьте запрос.';
+  const btn = de ? 'Bot öffnen' : 'Открыть бота';
+  const openBot = () => {
+    const https = `https://t.me/${uname}?start=access`;
+    try { window.location.href = `tg://resolve?domain=${uname}&start=access`; } catch (_e) { /* ignore */ }
+    setTimeout(() => {
+      if (document.hidden) return;
+      try { window.location.href = https; } catch (_e) { /* ignore */ }
+    }, 800);
+  };
+  try {
+    const wrap = document.createElement('div');
+    wrap.setAttribute('style', [
+      'position:fixed', 'inset:0', 'z-index:2147483647', 'display:flex',
+      'align-items:center', 'justify-content:center', 'padding:24px', 'box-sizing:border-box',
+      'background:linear-gradient(160deg,#f59e0b 0%,#d97706 100%)', 'color:#fff',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', 'text-align:center',
+    ].join(';'));
+    wrap.innerHTML = `
+      <div style="max-width:340px;display:flex;flex-direction:column;align-items:center;gap:16px">
+        <div style="font-size:56px;line-height:1">🦊</div>
+        <div style="font-size:22px;font-weight:700;line-height:1.25">${title}</div>
+        <div style="font-size:15px;line-height:1.5;opacity:.94">${body}</div>
+        <button type="button" style="margin-top:8px;border:0;border-radius:14px;padding:14px 22px;font-size:16px;font-weight:600;background:#fff;color:#b45309;cursor:pointer">${btn}</button>
+      </div>`;
+    wrap.querySelector('button').addEventListener('click', openBot);
+    document.body.appendChild(wrap);
+  } catch (_e) { /* ignore */ }
+}
+
 function installAppTokenAuthShim() {
   if (typeof window === 'undefined' || typeof window.fetch !== 'function') return;
   if (window.__appAuthShimInstalled) return;
@@ -653,6 +695,12 @@ function installAppTokenAuthShim() {
           if (resp && resp.status === 403) {
             resp.clone().json().then((j) => {
               if (j && (j.blocked || j.reason === 'bot_blocked')) showAppBlockedGate(j.bot_username);
+              // Access closed by an admin (/deny). Rare and deliberate — but it must read as
+              // a decision, not as a crash, so it gets a calm card instead of a red banner.
+              else if (j && (j.reason === 'access_closed'
+                || (typeof j.error === 'string' && j.error.includes('закрыт администратором')))) {
+                showAccessClosedGate(j.bot_username);
+              }
             }).catch(() => {});
           }
         } catch (_e) { /* ignore */ }
