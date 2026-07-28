@@ -249,22 +249,34 @@ class BillingEconomicsTests(unittest.TestCase):
         _, params = cursor.executed[0]
         self.assertEqual(len(params), 12)
 
-    def test_feature_usage_today_counts_distinct_translation_sets(self):
-        cursor = _DummyCursor([
-            (1,),
-        ])
+    def test_translation_usage_counts_sentences_and_converts_to_whole_sets(self):
+        """Usage is measured in SENTENCES actually translated today, then floored into whole
+        sets. Counting finished sessions instead burned the daily quota for a set that was
+        shown but never answered, and let the quota be gamed by stopping one short."""
+        from backend.database import _TRANSLATION_SET_COMPLETE_MIN as set_size
 
+        for translated, expected_sets in (
+            (0, 0.0),                       # shown but not answered → costs nothing
+            (set_size - 1, 0.0),            # one short of a set → still nothing
+            (set_size, 1.0),
+            (set_size * 2 + 3, 2.0),        # leftovers do not round up
+        ):
+            with self.subTest(translated=translated):
+                cursor = _DummyCursor([(translated,)])
+                with patch("backend.database.get_db_connection_context", _db_context(cursor)):
+                    usage = _get_feature_usage_today(
+                        user_id=77,
+                        feature_code="translation_daily_sets",
+                        tz="Europe/Vienna",
+                    )
+                self.assertEqual(usage, expected_sets)
+
+        cursor = _DummyCursor([(set_size,)])
         with patch("backend.database.get_db_connection_context", _db_context(cursor)):
-            usage = _get_feature_usage_today(
-                user_id=77,
-                feature_code="translation_daily_sets",
-                tz="Europe/Vienna",
-            )
-
-        self.assertEqual(usage, 1.0)
-        self.assertEqual(len(cursor.executed), 1)
+            _get_feature_usage_today(user_id=77, feature_code="translation_daily_sets", tz="Europe/Vienna")
         query, params = cursor.executed[0]
-        self.assertIn("COUNT(DISTINCT ds.session_id)", query)
+        # Distinct sentence per session: a re-submitted sentence must not count twice.
+        self.assertIn("DISTINCT t.session_id, t.sentence_id", query)
         self.assertEqual(params[0], 77)
 
     def test_enforce_feature_limit_blocks_second_free_translation_set(self):
@@ -560,8 +572,11 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(free["effective_mode"], "free")
         self.assertEqual(free["source_of_entitlement"], "free_default")
         self.assertIn("reset_at", free)
-        self.assertEqual(trial["effective_mode"], "trial")
-        self.assertEqual(trial["source_of_entitlement"], "explicit_trial_subscription")
+        # The free-plan product trial is discontinued: 'trialing' on a FREE plan is simply
+        # Free, and the source says where it came from. (A paid plan in 'trialing' — a card
+        # was added — is a different thing entirely and stays Pro, see below.)
+        self.assertEqual(trial["effective_mode"], "free")
+        self.assertEqual(trial["source_of_entitlement"], "legacy_free_trial")
         self.assertEqual(pro["effective_mode"], "pro")
         self.assertEqual(pro["source_of_entitlement"], "paid_subscription")
 

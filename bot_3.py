@@ -2305,7 +2305,16 @@ def initialise_database():
 
     print("✅ Таблицы проверены и готовы к использованию.")
 
-initialise_database()
+
+# Importing this module creates tables in whatever database the environment points at —
+# and a developer machine carries PRODUCTION credentials, so `pytest` alone connected to
+# the live database and ran DDL there. Worse, when that connection was slow the import
+# itself timed out and unrelated tests failed. The test suite sets the flag (see
+# backend/tests/conftest.py); production does not, so the bot starts exactly as before.
+if str(os.getenv("SKIP_STARTUP_SCHEMA_BOOTSTRAP") or "").strip().lower() in {"1", "true", "yes", "on"}:
+    logging.info("initialise_database skipped: SKIP_STARTUP_SCHEMA_BOOTSTRAP is set")
+else:
+    initialise_database()
 
 async def log_all_messages(update: Update, context: CallbackContext):
     """Логируем ВСЕ текстовые сообщения для отладки."""

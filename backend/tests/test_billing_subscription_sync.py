@@ -56,6 +56,7 @@ class BillingSubscriptionSyncTests(unittest.TestCase):
         }
 
         with patch.object(server, "STRIPE_SECRET_KEY", "sk_test"), \
+             patch.object(server, "STRIPE_BILLING_ENABLED", True), \
              patch.object(server, "stripe", fake_stripe), \
              patch.object(server, "_upsert_subscription_from_stripe_payload", return_value=updated_subscription) as upsert_mock, \
              patch.object(server, "_invalidate_billing_front_caches_for_user") as invalidate_mock:
@@ -97,6 +98,7 @@ class BillingSubscriptionSyncTests(unittest.TestCase):
         )
 
         with patch.object(server, "STRIPE_SECRET_KEY", "sk_test"), \
+             patch.object(server, "STRIPE_BILLING_ENABLED", True), \
              patch.object(server, "stripe", fake_stripe):
             result = server._sync_user_subscription_from_live_stripe(
                 user_id=43,
@@ -104,6 +106,37 @@ class BillingSubscriptionSyncTests(unittest.TestCase):
             )
 
         self.assertEqual(result, local_subscription)
+        fake_stripe.Subscription.list.assert_not_called()
+        fake_stripe.Subscription.retrieve.assert_not_called()
+
+    def test_retired_stripe_never_resurrects_pro(self):
+        """Production rule today: Stripe is retired (payments moved to Telegram Stars).
+        A leftover live Stripe subscription — including a test-mode one — must NOT hand
+        anybody Pro. The tests above patch the flag ON to exercise the machinery; this one
+        pins what actually happens in production, where the flag is off."""
+        local_subscription = {
+            "user_id": 77,
+            "plan_code": "free",
+            "status": "inactive",
+            "stripe_customer_id": "cus_leftover",
+            "stripe_subscription_id": "sub_leftover",
+        }
+        fake_stripe = SimpleNamespace(
+            Subscription=SimpleNamespace(list=Mock(), retrieve=Mock()),
+        )
+
+        with patch.object(server, "STRIPE_SECRET_KEY", "sk_test"), \
+             patch.object(server, "STRIPE_BILLING_ENABLED", False), \
+             patch.object(server, "stripe", fake_stripe), \
+             patch.object(server, "_upsert_subscription_from_stripe_payload") as upsert_mock:
+            result = server._sync_user_subscription_from_live_stripe(
+                user_id=77,
+                subscription=local_subscription,
+            )
+
+        self.assertEqual(result, local_subscription)
+        self.assertEqual(result["plan_code"], "free")
+        upsert_mock.assert_not_called()
         fake_stripe.Subscription.list.assert_not_called()
         fake_stripe.Subscription.retrieve.assert_not_called()
 
@@ -190,6 +223,7 @@ class BillingSubscriptionSyncTests(unittest.TestCase):
         }
 
         with patch.object(server, "STRIPE_SECRET_KEY", "sk_test"), \
+             patch.object(server, "STRIPE_BILLING_ENABLED", True), \
              patch.object(server, "stripe", fake_stripe), \
              patch.object(server, "_upsert_subscription_from_stripe_payload", return_value=updated_subscription) as upsert_mock, \
              patch.object(server, "_invalidate_billing_front_caches_for_user"):

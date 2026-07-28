@@ -17,6 +17,11 @@ class _FakeRedis:
     def setex(self, key, ttl, value):
         self.values[key] = value
 
+    def set(self, key, value, ex=None):
+        # The writer moved from setex() to set(..., ex=ttl); without this the test dies on
+        # an AttributeError in the double instead of checking anything about the job status.
+        self.values[key] = value
+
 
 class ReaderAudioPageJobQueueTests(unittest.TestCase):
     def test_reader_audio_page_job_status_round_trip(self):

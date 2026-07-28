@@ -17,6 +17,11 @@ class _FakeRedis:
     def setex(self, key, ttl, value):
         self.kv[key] = value
 
+    def set(self, key, value, ex=None):
+        # The writer moved from setex() to set(..., ex=ttl); a double that lacks this
+        # method turns a passing test into an AttributeError, not a real failure.
+        self.kv[key] = value
+
     def delete(self, *keys):
         for k in keys:
             self.kv.pop(k, None)
@@ -136,10 +141,16 @@ class BotAutosaveDigestTests(unittest.TestCase):
         self.assertEqual(chosen["target"], "мера наказания")
         # semantic_category routed into lookup so the save lands in the right folder
         self.assertEqual(payload["lookup"].get("semantic_category"), "Право")
-        # buttons removed immediately + digest consumed
-        self.assertIn(None, query.markup_edits)
+        # The save is optimistic: the button turns into «💾 Сохраняем…» at once and then
+        # «✅ Сохранено», instead of the keyboard simply vanishing — the user sees that
+        # their tap landed. Digest is consumed either way.
+        labels = [btn.text for markup in query.markup_edits if markup is not None
+                  for row in markup.inline_keyboard for btn in row]
+        self.assertIn("✅ Сохранено", labels)
         self.assertNotIn(bot_3._autosave_digest_redis_key(self.digest_id), self.redis.kv)
-        self.assertTrue(any("Сохранено в словарь: 1" in r for r in query.message.replies))
+        # Confirmation lives ON the button now. No extra chat message is sent — that was
+        # the point of the change: one tap, one visible result, no message spam below.
+        self.assertEqual(query.message.replies, [])
 
     def test_save_requires_selection(self):
         query = _FakeQuery(f"asv_save:{self.digest_id}", self.uid)  # nothing selected
@@ -153,7 +164,10 @@ class BotAutosaveDigestTests(unittest.TestCase):
 
 
 class _FakeReplyMessage:
-    def __init__(self):
+    def __init__(self, text=""):
+        # The tap handler derives the current state from the tapped BUTTON LABEL
+        # (zero DB round-trips), so the double must carry that label.
+        self.text = text
         self.replies = []  # (text, reply_markup)
 
     async def reply_text(self, text, parse_mode=None, reply_markup=None, **kwargs):
@@ -204,9 +218,11 @@ class BotAutosaveToggleButtonTests(unittest.TestCase):
         self.assertEqual(len(update.message.replies), 1)
         text, markup = update.message.replies[0]
         self.assertIn("включён", text)
-        # re-rendered reply keyboard shows the ON label
+        # The confirmation re-delivers the DM keyboard so the user is never left without
+        # buttons. The autosave toggle itself lives in «⚙️ Настройки» now, so this asserts
+        # that a keyboard came back — not that a particular button is on it.
         flat = [btn.text for row in markup.keyboard for btn in row]
-        self.assertIn("🌙 Автосейв: ВКЛ", flat)
+        self.assertTrue(flat)
 
 
 if __name__ == "__main__":
