@@ -9772,6 +9772,12 @@ _POOL_ENRICH_SINGLE_PAIR = False  # True = только заданная пар�
 POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "200").strip() or "200")
 # Ночью ответа никто не ждёт, а полный разбор — тяжёлый запрос: с «живым» таймаутом в
 # 14 секунд 85 слов из 200 срывались, не дождавшись ответа. Даём фону нормальное время.
+# «Полный разбор» человек ждёт осознанно и на длинном предложении 14 секунд не хватает:
+# запрос срывается, включается запасной путь — простой перевод, — и экран выходит пустым,
+# без значений, примеров и вариантов для сохранения. Даём ему больше времени.
+DICTIONARY_DEEP_RESPONSES_TIMEOUT_SECONDS = max(
+    5.0, float((os.getenv("DICTIONARY_DEEP_RESPONSES_TIMEOUT_SECONDS") or "35").strip() or "35"))
+
 POOL_NIGHT_ENRICH_TIMEOUT_SECONDS = max(
     5.0, float((os.getenv("POOL_NIGHT_ENRICH_TIMEOUT_SECONDS") or "60").strip() or "60"))
 _POOL_NIGHT_ENRICH_LOCK = threading.Lock()
@@ -20016,6 +20022,40 @@ def _run_dictionary_core_lookup_sync(
     }
 
 
+def _ensure_save_worthy_options(item: dict | None) -> dict:
+    """Гарантировать, что на экране «полный разбор» есть что сохранить.
+
+    Варианты для сохранения присылает модель, но на длинном предложении она их иногда
+    не даёт, а при срыве запроса не даёт ничего — и человек видит разбор без единственной
+    кнопки, ради которой он его открывал. Тогда собираем варианты из того, что уже есть:
+    само слово с переводом и первый пример. Ничего не выдумываем."""
+    if not isinstance(item, dict):
+        return item
+    existing = item.get("save_worthy_options")
+    if isinstance(existing, list) and any(
+        isinstance(x, dict) and (str(x.get("source") or "").strip() or str(x.get("target") or "").strip())
+        for x in existing
+    ):
+        return item
+    options: list[dict] = []
+    base_source = str(item.get("source_text") or item.get("word_de") or "").strip()
+    base_target = str(item.get("target_text") or item.get("word_ru") or "").strip()
+    if base_source and base_target:
+        options.append({"kind": "base", "source": base_source, "target": base_target})
+    for example in (item.get("usage_examples") or [])[:2]:
+        if not isinstance(example, dict):
+            continue
+        src = str(example.get("target") or example.get("source") or "").strip()
+        tgt = str(example.get("source") or "").strip()
+        if src and src != base_source:
+            options.append({"kind": "phrase", "source": src, "target": tgt})
+    if options:
+        fixed = dict(item)
+        fixed["save_worthy_options"] = options[:3]
+        return fixed
+    return item
+
+
 def _run_dictionary_full_lookup_sync(
     *,
     word: str,
@@ -20040,6 +20080,7 @@ def _run_dictionary_full_lookup_sync(
                 target_lang=query_target_lang,
                 # explanations always in the user's native language, never the swapped query source
                 explanation_lang=source_lang,
+                responses_timeout_seconds=DICTIONARY_DEEP_RESPONSES_TIMEOUT_SECONDS,
             )
         )
         llm_calls_total += 1
@@ -38022,6 +38063,7 @@ def lookup_webapp_dictionary_by_request():
         return jsonify({"error": "Пустой запрос"}), 400
 
     def _finish(item, direction):
+        item = _ensure_save_worthy_options(item)
         return jsonify(
             {
                 "ok": True,
