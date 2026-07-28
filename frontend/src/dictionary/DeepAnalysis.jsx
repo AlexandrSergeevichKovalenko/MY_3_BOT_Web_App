@@ -117,6 +117,30 @@ export default function DeepAnalysis({ startParam }) {
     return () => { try { tg?.offEvent?.('themeChanged', applyScheme); } catch (_e) { /* ignore */ } };
   }, []);
 
+  // Тап по «так же пишется» открывает соседнее слово прямо здесь: «der Kiefer» (челюсть)
+  // и «die Kiefer» (сосна) — разные слова, и человек должен иметь возможность перейти,
+  // а не гадать. Запрос идёт С АРТИКЛЕМ, иначе вернулось бы то же самое.
+  const openHomograph = useCallback(async (text) => {
+    const word = clean(text);
+    if (!word) return;
+    setPhase('loading');
+    try {
+      const data = await api('/api/webapp/dictionary', { word, lookup_lang: 'de' });
+      const rich = data?.item || null;
+      if (rich) {
+        rich.__direction = clean(data?.direction) || '';
+        rich.__language_pair = data?.language_pair || null;
+        setItem(rich);
+        setDeepId('');
+        setSavedChips(new Set());
+      }
+      setPhase('done');
+    } catch (_err) {
+      // Не нашлось — молча остаёмся на прежнем слове: пустой экран хуже, чем текущий.
+      setPhase('done');
+    }
+  }, []);
+
   // Load the breakdown: run lookup on open (req_) or fetch pre-computed (deep_).
   useEffect(() => {
     let alive = true;
@@ -457,7 +481,14 @@ export default function DeepAnalysis({ startParam }) {
           )}
         </div>
 
-        <WordBreakdown item={item} tts={tts} onSaveChip={saveChip} onSaveExample={saveExample} savedChips={savedChips} />
+        <WordBreakdown
+          item={item}
+          tts={tts}
+          onSaveChip={saveChip}
+          onSaveExample={saveExample}
+          savedChips={savedChips}
+          onPickHomograph={openHomograph}
+        />
 
         {/* Секции «Нюанс и коннотация», «Чем отличается от синонимов», «Регистр и градация»
             и «Ошибки и ложные друзья» УБРАНЫ (2026-07-25). Эти четыре блока давали примерно
