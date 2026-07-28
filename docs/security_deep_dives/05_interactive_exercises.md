@@ -141,12 +141,23 @@ Two storage/anti-abuse mechanisms worth knowing:
 
 ## 1.6 DEEP DIVE — the `pin` mechanic (tap the object in a picture)
 
-This is format `au`/`pin` ("🖼 Finde im Bild"): you see a generated scene, tap the named object, and
-type its article. It's the most interesting validation in the app because the "right answer" is a
-**region of a picture**, and vision models are unreliable at coordinates — so the design uses
-**several independent layers**, some at generation time and some at grading time.
+This is format `au`/`pin` ("🖼 Finde im Bild"): you see a scene, tap the named object, and type its
+article. The "right answer" is a **region of a picture**, so the interesting question is *where does
+that region come from, and how do we decide a tap hit it?*
 
-### 1.6.1 New concepts you need first
+> **Evolution note (worth understanding — the design was reversed).** An earlier version of this
+> mechanic was **fully automated**: DALL·E rendered a scene with a mandatory bigger *decoy*, then a
+> vision model was asked to *locate* the object **twice**, the two boxes were cross-checked by
+> **IoU** and stored as their **union**, and at grade time a **second vision "is the mark on the
+> target?" call** plus a background **self-heal** re-located wrong boxes. It was clever but fragile:
+> vision models ground coordinates poorly for small objects, so items were sometimes unwinnable, and
+> every dispute cost an OpenAI vision call. That whole pipeline has been **removed** and replaced
+> with a **human-in-the-loop "scene studio"**: an admin draws the answer box **by hand**, once, and
+> that box is the single source of truth. Grading is now **purely deterministic — no AI at answer
+> time.** This is a nice real-world lesson: sometimes the robust design is *less* clever. Below is
+> the current system; the old one is gone from the code.
+
+### 1.6.1 Concepts you need
 
 - **Normalized coordinates.** Instead of pixels (which differ per screen), a point is stored as two
   fractions in `0..1`: `x=0.5, y=0.5` is the image's center, regardless of displayed size. This makes
@@ -155,62 +166,57 @@ type its article. It's the most interesting validation in the app because the "r
   `(x,y)` plus width and height, all normalized `0..1`. So `[0.2, 0.3, 0.1, 0.15]` is a box starting
   at 20%/30% across, 10% wide, 15% tall.
 - **Point-in-box hit test.** "Is a tap inside the box?" → check `x` is between the box's left and
-  right edges and `y` between top and bottom.
-- **IoU (Intersection over Union).** A number `0..1` measuring how much two boxes overlap:
-  `overlap_area / combined_area`. `1.0` = identical boxes; `0.0` = no overlap. Used to check whether
-  two independent guesses agree.
-- **Vision model, two modes.** We use an OpenAI vision model two different ways: `locate` (give me the
-  bbox of object X) and `point-check` (does this drawn mark sit on object X?). The key insight in our
-  code: **vision models ground raw coordinates poorly but read a drawn marker reliably** — so grading
-  never asks the model for numbers, it draws the tap and asks yes/no.
+  right edges and `y` between top and bottom (with a small tolerance margin).
 
-### 1.6.2 Generation time (pool) — building a trustworthy target region
+### 1.6.2 Authoring time — the admin "scene studio"
 
-Pin items are built **off the critical path**, when the pool is topped up (`bot_3.py`, the
-`fmt == "pin"` branch at `32167`+ and the vision step at `32253`+). The steps:
+Pin items are created **by an admin**, not by the AI. The endpoints (all admin-only via
+`_pin_review_admin_id`, in `backend/backend_server.py`) form a small studio:
 
-1. **Render a scene with a deliberate decoy.** DALL·E (OpenAI's image generator) draws the scene from
-   a blueprint prompt (`aufgabe_pin_blueprint`, `openai_manager.py:4097`) that **requires** the target
-   to *not* be the biggest/central object and **mandates a bigger decoy of the same category**
-   (`openai_manager.py:4108`). That "подвох" (trick) is what makes the game non-trivial — you can't
-   just tap the obvious big thing.
-2. **Locate the target with vision — twice, independently** (`bot_3.py:32271` and `32275`):
-   ```python
-   loc  = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
-   loc2 = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
-   ```
-   `run_vision_locate` (`openai_manager.py:7083`) asks the model for strict JSON
-   `{"present": bool, "bbox": [x,y,w,h]}` with `temperature=0` and `response_format={"type":
-   "json_object"}` (**JSON mode** = the model must return valid JSON; **temperature=0** = most
-   deterministic output). It then **sanity-clamps**: rejects anything not inside `[0,1]` or degenerate
-   (`openai_manager.py:7134`). If the object isn't clearly present → the item is **rejected**, no
-   silent fallback.
-3. **Require the two locates to agree (IoU gate)** (`bot_3.py:32280`):
-   ```python
-   from backend.answer_eval import PIN_BBOX_MIN_IOU, pin_bbox_iou, pin_bbox_union
-   iou = pin_bbox_iou(loc["bbox"], loc2["bbox"])
-   if iou < PIN_BBOX_MIN_IOU:          # 0.35 — the two guesses point at different things → drop item
-       ... reject ...
-   payload["bbox"] = pin_bbox_union(loc["bbox"], loc2["bbox"])   # store the UNION of the two
-   ```
-   The IoU formula (`pin_bbox_iou`, `answer_eval.py:2158`):
-   ```python
-   ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))   # width of the overlap rectangle
-   iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))   # height of the overlap rectangle
-   inter = ix * iy                                       # overlap area
-   union = aw * ah + bw * bh - inter                     # combined area (don't double-count overlap)
-   return (inter / union) if union > 0 else 0.0
-   ```
-   If the two independent locates overlap by at least 35%, we trust them and store their **union**
-   (`pin_bbox_union`, `answer_eval.py:2172`) — the smallest box covering both, so a slightly-off locate
-   still accepts an honest tap. If they disagree, the item is thrown away (a target nobody can
-   reliably find would mis-grade everyone).
-4. A **difficulty gate** also drops trivially-easy nouns (`_PIN_TRIVIAL_NOUNS`, `bot_3.py:31898`,
-   checked at `32176`).
+| Endpoint | Handler | Does |
+| --- | --- | --- |
+| `POST /api/answer/pinreview/scenes` | `answer_pin_scenes_create` (`:28372`) | queue scene descriptions → background DALL·E render |
+| `POST /api/answer/pinreview/upload` | `answer_pin_scene_upload` (`:28391`) | admin uploads own photo (base64, ≤12 MB) → ready scene |
+| `GET  …/scenes/ready` | `answer_pin_scenes_ready` (`:28425`) | list scenes awaiting a target |
+| `POST …/addtarget` | `answer_pin_add_target` (`:28436`) | **the core: the hand-drawn box + typed word** |
+| `POST …/deltarget` | `answer_pin_del_target` (`:28478`) | retire a mis-added target |
+| `POST …/scenedone` | `answer_pin_scene_done` (`:28493`) | mark a scene done/skipped |
 
-So before an item is ever shown, it survived: object-present check ×2, an agreement check, a
-non-degenerate clamp, and a triviality filter. The stored answer is a **union of two agreeing vision
-guesses**, not a single guess.
+The heart is `answer_pin_add_target` (`backend_server.py:28436`). The admin has drawn a rectangle on
+the image and typed `der/die/das <word>`; the server validates both and stores them:
+
+```python
+word = str(payload.get("word") or "").strip()
+m = re.match(r"^(der|die|das)\s+(.+)$", word, flags=re.IGNORECASE)   # must start with an article
+if not m: return jsonify({"error": "Слово должно начинаться с артикля …"}), 400
+article = m.group(1).lower()
+target_label = f"{article} {m.group(2).strip()}"
+bbox = payload.get("bbox")
+if not (isinstance(bbox, list) and len(bbox) == 4): return jsonify({"error": "нет рамки"}), 400
+x, y, w, h = (float(v) for v in bbox)
+# box sanity: inside the image and not a pin-prick
+if not (0 <= x <= 1 and 0 <= y <= 1 and w > 0.005 and h > 0.005
+        and x + w <= 1.001 and y + h <= 1.001):
+    return jsonify({"error": "рамка вне картинки или слишком мелкая"}), 400
+aufgabe_id = create_pin_target_from_scene(                       # database.py:48841
+    scene_id=scene_id, image_object_key=scene["image_object_key"],
+    bbox=[round(x, 4), round(y, 4), round(w, 4), round(h, 4)],   # stored, rounded to 4 decimals
+    target_label=target_label, article=article)
+```
+
+So the **only** source of the answer box is a human's drawn rectangle, sanity-checked to be inside
+the image (`0..1`) and not degenerate (`w,h > 0.005`), and stored normalized. No vision, no IoU, no
+union. A `_PIN_TRIVIAL_NOUNS` difficulty gate still exists (`bot_3.py`, ~`:32724`) but is **bypassed
+for admin-chosen words** (`if not admin_chosen and noun in _PIN_TRIVIAL_NOUNS: …`) — the admin is
+trusted to pick a fair target. For review, `draw_pin_bbox_preview` (`openai_manager.py:7908`) renders
+the image with the stored box framed (green) so the admin can eyeball it on an acceptance screen
+(used by `admin_pin_check_command` in `bot_3.py`).
+
+> **Dead/stale code to know about (honest findings):** `run_vision_object_coverage`
+> (`openai_manager.py:7856`) — a "how big is the object" vision check — exists but is **called from
+> nowhere** (only its own error-log line references it). And a comment in `_check_aufgabe`
+> (`answer_eval.py:2231`) still says grading "adds the vision re-check on a bbox miss" — that is now
+> **false**; there is no vision at grade time. Both are cleanup candidates (see recommendations).
 
 ### 1.6.3 Runtime — capturing the tap (frontend)
 
@@ -235,27 +241,29 @@ Because the coordinate is normalized against the **displayed** image, the server
 knowledge of screen size or original resolution — `0.5,0.5` means "center" for everyone. The submit
 serializes to a compact string `"x.xxxx,y.yyyy"` or `"x,y|article"` (`AufgabeGame.jsx:292`).
 
-### 1.6.4 Grading time — the layered verdict (backend)
+### 1.6.4 Grading time — purely deterministic (backend)
 
-`_grade_pin` (`answer_eval.py:2244`) runs the layers in a deliberate order:
+Because the box was drawn by a human and is trusted, grading is now a simple, AI-free check.
+`_grade_pin` (`answer_eval.py:2158`) — read the docstring, it states the philosophy:
 
 ```python
 def _grade_pin(payload, raw_input):
+    """... The region is drawn BY HAND on the acceptance screen, so it is the source of
+    truth — no vision second-guessing. A miss is a miss; the learner is told which half
+    (tap or article) failed."""
     tap, article = _parse_pin_answer(raw_input)        # "x,y|article" → ((x,y), "der")   (:2134)
     if not tap: return False, ""
     req_article = str(payload.get("article") or "").strip().lower()
     ok_article = (not req_article) or check_quiz_freeform_deterministic(article, req_article)
-    ok_tap = _pin_bbox_hit(payload, tap)               # LAYER 1: geometry (below)
-    if not ok_tap and ok_article:                      # only worth a paid recheck if it'd FLIP the verdict
-        ok_tap = _pin_vision_hit(payload, tap)         # LAYER 2: vision on a drawn mark
-        if ok_tap:
-            _spawn_pin_bbox_repair(payload)            # LAYER 3: self-heal a wrong box in the background
+    ok_tap = _pin_bbox_hit(payload, tap)               # the ONE check: point-in-box (below)
     if ok_tap and ok_article:
         return True, ""
-    # ... else an HONEST per-half reason: which of {object, article} failed ...
+    # else: an HONEST per-half reason — which of {object, article} failed:
+    #   "предмет верно, но артикль другой" / "артикль верный, но не тот предмет" / "оба мимо"
+    return False, reason
 ```
 
-**Layer 1 — the geometric hit-test** (`_pin_bbox_hit`, `answer_eval.py:2145`):
+The single geometric check is `_pin_bbox_hit` (`answer_eval.py:2145`), unchanged from before:
 
 ```python
 bx, by, bw, bh = (float(v) for v in bbox)
@@ -264,45 +272,27 @@ m = 0.06   # forgiving margin so a near-miss on a clear object still counts
 return (bx - m) <= x <= (bx + bw + m) and (by - m) <= y <= (by + bh + m)
 ```
 
-This is a point-in-box test on normalized coords, but with a **0.06 margin** added on all four sides
-(a **tolerance**: a tap 6% of the image outside the box still counts, so a near-miss on an obvious
-object isn't punished). `(bx - m) <= x <= (bx + bw + m)` is Python's chained comparison — "x is
-between the left edge minus margin and the right edge plus margin", and the same for `y`.
+This is a point-in-box test on normalized coords with a **0.06 margin** added on all four sides (a
+**tolerance**: a tap up to 6% of the image outside the box still counts). `(bx - m) <= x <= (bx + bw
++ m)` is Python's chained comparison — "x is between the left edge minus margin and the right edge
+plus margin", same for `y`. That's the whole grader now: no vision call, no background repair, no
+per-answer OpenAI spend. **Honest failure reasons** still tell the learner which half (object vs
+article) failed (`answer_eval.py:2172`).
 
-**Layer 2 — the vision re-check, but only when it matters.** The stored bbox is still just two vision
-guesses; for small objects it can be off. So on a **bbox miss where the article is correct** (i.e.
-the tap is the *only* reason for a ❌), we spend one vision call to double-check. Crucially it does
-**not** ask the model about numbers. `_pin_vision_hit` (`answer_eval.py:2224`) → `run_vision_point_check`
-(`openai_manager.py:7162`): first `_mark_tap_on_image` (`openai_manager.py:7139`) draws a
-white-haloed **red ring + crosshair** at `(x·w, y·h)` using PIL (Python Imaging Library), then asks
-strict JSON `{"on_target": true|false}` — *"be strict about which object, forgiving about precision"*.
-The rationale is in the code comment (`openai_manager.py:7139`): vision models read a **drawn marker**
-far more reliably than raw coordinates. This layer runs **only on disputes**, so the OpenAI spend is
-bounded.
-
-**Layer 3 — self-healing (background).** If Layer 2 credits a tap that Layer 1 rejected, the stored
-box was on the wrong object — so `_spawn_pin_bbox_repair` (`answer_eval.py:2214`) fires a background
-thread (`threading.Thread(..., daemon=True)`) that **re-locates the object twice** and either stores
-the new agreeing union or **retires** the item if the two locates disagree (`_pin_bbox_repair`,
-`answer_eval.py:2187`). So a bad box fixes itself for the next learner instead of mis-grading everyone
-forever.
-
-**Honest failure reasons.** Instead of a bare ❌, it tells the learner *which half* failed — object
-vs article (`answer_eval.py:2267`) — because with a possibly-imperfect box, "you tapped wrong" must be
-truthful.
-
-### 1.6.5 The layers, at a glance
+### 1.6.5 The layers, at a glance (current)
 
 | When | Layer | What it guards against |
 | --- | --- | --- |
-| pool | object present ×2 (`run_vision_locate`) | showing a picture that doesn't contain the target |
-| pool | non-degenerate `[0,1]` clamp | a garbage/out-of-frame box |
-| pool | IoU ≥ 0.35 agreement | two guesses pointing at different things |
-| pool | store the **union** | a slightly-off single guess rejecting honest taps |
-| pool | triviality gate | too-easy items |
+| authoring | **a human draws the box** (`answer_pin_add_target`) | an AI mis-locating small objects → unwinnable items |
+| authoring | article regex `^(der\|die\|das)\s+…` | a target stored without/with a wrong article |
+| authoring | box sanity `0..1`, `w,h > 0.005`, `x+w,y+h ≤ 1.001` | a box outside the image or a pin-prick |
+| authoring | admin acceptance preview (`draw_pin_bbox_preview`) | a wrong box shipping unreviewed |
+| authoring | trivial-noun gate (bypassed for admin) | too-easy auto-picked targets |
 | grade | bbox hit-test + 0.06 margin | precise-but-harsh rejection of near-misses |
-| grade | vision point-check (on dispute only) | a wrong stored box making an item unwinnable |
-| grade | background bbox repair / retire | a bad box mis-grading future learners |
+
+Compared to the old design, every *generation-time vision layer* and every *grade-time vision layer*
+is replaced by one thing: a trusted human box. Fewer moving parts, zero answer-time AI cost,
+deterministic and repeatable grading.
 
 # 🥷 2. Threats
 
@@ -314,10 +304,12 @@ truthful.
   marked correct.
 - **T4 — IDOR.** Submit an answer for a `dispatch_id` that belongs to another user/chat, or load
   another user's task, to grade content you weren't given or corrupt their attempt.
-- **T5 — Cost abuse via the vision re-check.** Deliberately near-miss on many `pin` tasks to force the
-  Layer-2 OpenAI vision call repeatedly and run up our bill.
-- **T6 — Prompt/vision injection.** Put text in the `target_label` or craft an image so the vision
-  `locate`/`point-check` prompt is subverted into always saying "on_target".
+- **T5 — Authoring abuse (non-admin).** Call the `pinreview` endpoints directly to create or poison
+  targets — a box nobody can hit, an offensive uploaded image, or a wrong article — which would then
+  be served to real learners.
+- **T6 — Injection via scene text.** Put instructions in a scene description or `target_label` so the
+  **background** DALL·E render or the language-enrichment step is subverted. (There is no longer any
+  vision at answer time to attack — that surface is gone.)
 
 # 🛡️ 3. Defenses
 
@@ -337,42 +329,43 @@ truthful.
 - **T4 fails on auth + ownership.** Every `/api/answer/*` route resolves the acting user from
   `initData` via `_answer_auth_user_id` (`backend_server.py:26447`, block 02); attempts are keyed by
   `(dispatch_id, user_id)`, so you can only affect **your own** row.
-- **T5 is bounded by design.** The vision re-check runs **only** on a bbox miss *and* a correct
-  article (`answer_eval.py:2258`) — i.e. only on genuine disputes, one call each, and only for `pin`.
-  A random spammer who also gets the article wrong never triggers it. (Still worth a per-user rate
-  limit — see recommendations.)
-- **T6 is contained by strict-JSON + narrow questions + temperature 0.** Both vision prompts demand
-  a tiny fixed JSON shape (`{"present":…}` / `{"on_target":…}`), parse only that boolean, run at
-  `temperature=0`, and default to the safe answer on any parse failure (`present=False` / `on_target`
-  false → bbox verdict stands). The label is our own generated word, not free user input, which
-  shrinks the injection surface further.
+- **T5 fails on admin-only auth + input validation.** Every `pinreview` endpoint checks
+  `_pin_review_admin_id` first; a non-admin is rejected. The admin's own inputs are still validated —
+  article regex `^(der|die|das)…`, box sanity (`0..1`, `w,h > 0.005`, `x+w,y+h ≤ 1.001`), upload size
+  ≤ 12 MB — so even a fat-fingered target can't store a broken box.
+- **T6 is much smaller than before.** There is **no answer-time model call** to inject into (the
+  vision `locate`/`point-check` are gone). The only remaining surface is the background scene
+  render / language enrichment, which runs off the request path on admin-provided text; strict-JSON
+  parsing and `temperature=0` apply where a model is still used.
 
 # 📈 4. Recommendations
 
-1. **Rate-limit `pin` submissions per user** (a Redis token bucket) so T5 can't farm vision calls even
-   with occasional correct articles.
+1. **Delete the dead code / fix the stale comments** left by the rewrite: `run_vision_object_coverage`
+   (`openai_manager.py:7856`) has **no callers**, and the comment in `_check_aufgabe`
+   (`answer_eval.py:2231`) still claims a vision re-check that no longer exists. Both mislead a reader
+   (and you — that's why this doc flags them).
 2. **Add a server-side sanity check on submitted coords** (reject values outside `[0,1]` or malformed
    `"x,y"` before grading) — cheap, and it hardens T2's malformed-input variants.
 3. **Assert in a test that `/api/answer/task` never includes `bbox`/`article`/`correct_*`** for any
    kind — a single parametrized pytest so a future refactor can't accidentally leak the answer (T1).
-4. **Log disputes and repairs.** The Layer-2 recheck and Layer-3 repair already log; feed those into
-   monitoring — a spike in "box was wrong" repairs flags a bad generation batch (quality) *or* an
-   abuse pattern (cost).
-5. **Cap `time_ms` / detect impossible speeds.** An answer submitted in a few milliseconds after the
-   task loads is a script, not a human — useful signal for T3/T5.
+4. **Log admin authoring actions** (who added / retired which target, on which scene). The human is
+   now the source of truth for pin, so an audit trail makes an offensive or broken target traceable.
+5. **Cap `time_ms` / detect impossible speeds.** An answer submitted a few milliseconds after the task
+   loads is a script, not a human — useful signal for T3.
 
 # Self-check
 
-1. Trace what happens when you tap an object, get a bbox **miss**, but your **article is right**.
-   Which three functions run, in order, and what does each decide?
-2. Why are two `run_vision_locate` calls made at pool time instead of one, and what does IoU ≥ 0.35
-   guarantee about the stored box? What is stored — one box or a combination?
-3. The vision re-check draws a red ring and asks `{"on_target": …}` instead of asking the model for
-   the object's coordinates. Why is that more reliable (quote the code's reasoning)?
+1. Trace `_grade_pin` when the tap lands **in** the box but the typed **article is wrong**. What does
+   it return, and what message does the learner see? (No AI is involved — name every step.)
+2. The pin answer box now comes from a **human**, not the AI. Name two validations
+   `answer_pin_add_target` runs on the admin's box + word before storing them.
+3. The mechanic used to run a vision "is the mark on target?" recheck and even self-heal wrong boxes,
+   then that whole pipeline was **removed**. Give the engineering reason the simpler human-in-the-loop
+   design is more robust here.
 4. `/api/answer/task` deliberately omits one field that would let a cheater win instantly. Which
    field, and where is the answer actually revealed to the client?
 5. `record_aufgabe_answer` uses `ON CONFLICT (dispatch_id, user_id) DO NOTHING`. What attack does that
    defeat, and what does the evaluator return on a second submit?
 
-Last checked against the code: 2026-07-21 (line numbers re-verified against current source; repo is
-edited concurrently — if a line is off by a few, grep the function name).
+Last checked against the code: 2026-07-28 (pin mechanic re-mapped after the human-in-the-loop rewrite;
+repo is edited concurrently — if a line is off by a few, grep the function name).
