@@ -286,6 +286,26 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
     ]
 
 
+def count_units_needing_card(*, lang: str = "de") -> int:
+    """Сколько слов ещё без разбора — ЧЕСТНОЕ число для утренней сводки.
+
+    Считать остаток «сколько взяли минус сколько сделали» нельзя: выборка ограничена
+    ночным потолком, и сводка отчиталась бы «осталось 86» при 3356 неразобранных, то
+    есть «одна ночь» вместо семнадцати."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_lex_units "
+                    "WHERE lang = %s AND kind = 'word' AND card IS NULL;",
+                    (lang,),
+                )
+                return int(cur.fetchone()[0])
+    except Exception as exc:
+        logging.debug("count units needing card failed: %s", exc)
+        return 0
+
+
 def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащение") -> bool:
     """Положить разбор НА единицу. Пишем только в слой; общий банк не трогаем."""
     if not isinstance(card, dict) or not card:
