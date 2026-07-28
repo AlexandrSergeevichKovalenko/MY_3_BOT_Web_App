@@ -9833,6 +9833,15 @@ def _run_units_night_enrichment(
 
     Отчёт возвращается в том же виде, что и у добора по банку, чтобы утренняя сводка
     и админ-команда продолжали работать без правок."""
+    # Сначала подбираем карточки, оставшиеся без указателя на слово: путей сохранения
+    # много, и каждый новый легко забыть. Подбор дешёвый и обычно находит ноль.
+    try:
+        attach_report = lex_units.attach_missing_entries()
+        if attach_report.get("attached"):
+            report["cards_attached"] = attach_report["attached"]
+    except Exception:
+        logging.debug("привязка карточек перед добором не удалась", exc_info=True)
+
     units = lex_units.units_needing_card(cap, lang=learning_lang, native_lang=native_lang)
     report["picked"] = len(units)
     report["mode"] = "units"

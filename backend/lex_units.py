@@ -387,6 +387,44 @@ def attach_entry_to_unit(
     return unit_id
 
 
+def attach_missing_entries(limit: int = 5000) -> dict:
+    """Подобрать все карточки, оставшиеся без указателя на слово.
+
+    Проставлять указатель в момент сохранения правильно, но одного этого мало: путей
+    записи много (приложение, бот, шорткат, импорт, перенос по подписке), и каждый
+    новый путь легко забыть — так уже случилось дважды за два дня. Поэтому кроме
+    простановки на месте есть этот подбор: он ловит всё, что просочилось, независимо
+    от того, каким путём карточка появилась.
+
+    Дешёвый: обычно находит ноль строк."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, word_de, word_ru, source_lang, target_lang
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE lex_unit_id IS NULL
+                    ORDER BY id DESC LIMIT %s;
+                    """,
+                    (int(limit),),
+                )
+                rows = cur.fetchall()
+    except Exception as exc:
+        logging.debug("attach missing entries: выборка не удалась: %s", exc)
+        return {"found": 0, "attached": 0}
+    attached = 0
+    for entry_id, word_de, word_ru, source_lang, target_lang in rows:
+        if attach_entry_to_unit(
+            entry_id, word_de=word_de, word_ru=word_ru,
+            source_lang=source_lang, target_lang=target_lang,
+        ):
+            attached += 1
+    if rows:
+        logging.info("привязка карточек к словам: найдено %d, привязано %d", len(rows), attached)
+    return {"found": len(rows), "attached": attached}
+
+
 def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "ru") -> dict:
     """Перечитать переводы слова из его РАЗБОРА и разложить по значениям.
 
