@@ -2297,6 +2297,9 @@ Output rules:
 - If adjective: provide comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is idiomatic, fixed, formal/informal, spoken/written.
 - memory_tip must help the learner feel and remember the word vividly.
+- forms: если формы нет (слово без множественного числа и т. п.) — ставь null.
+  НЕ пиши в графу формы пояснение вроде «— (обычно не употребляется во множественном
+  числе)»: это попадает на экран как форма слова и выглядит ошибкой.
 - save_worthy_options must contain exactly 3 practical items whenever possible:
   1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input. If the input is a full sentence, keep it a full sentence and preserve the core meaning completely.
   2) REAL-LIFE SPEECH CARD: a short, high-frequency collocation or complete everyday sentence built around the same core meaning. It must sound like something a native speaker would actually say tomorrow.
@@ -3115,6 +3118,9 @@ Reader-focused rules:
     usage_note, memory_tip, raw_text.
   - Do not infer the explanation language from the foreign value fields. E.g. explanation_language=ru,
     target_language=de → values in German, all context/notes in Russian.
+- forms: если формы нет (слово без множественного числа и т. п.) — ставь null.
+  НЕ пиши в графу формы пояснение вроде «— (обычно не употребляется во множественном
+  числе)»: это попадает на экран как форма слова и выглядит ошибкой.
 - Meanings:
   - primary meaning must be short, simple, practical.
   - include no more than 2 secondary meanings.
