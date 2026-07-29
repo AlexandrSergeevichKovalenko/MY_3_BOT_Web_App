@@ -78,11 +78,27 @@ def ensure_german_form_index_schema() -> None:
                     lemma        TEXT NOT NULL,
                     number_tag   TEXT NOT NULL,
                     source       TEXT NOT NULL,
+                    priority     SMALLINT NOT NULL DEFAULT 0,
                     checked_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 """
             )
+            cursor.execute(
+                "ALTER TABLE bt_3_german_form_index "
+                "ADD COLUMN IF NOT EXISTS priority SMALLINT NOT NULL DEFAULT 0;"
+            )
         conn.commit()
+
+
+# Насколько источник заслуживает доверия. Прочитанная страница самой поверхности
+# сильнее, чем упоминание её в шапке чужой статьи, а то — сильнее, чем наш forms_json.
+# Слабый источник не имеет права перетереть сильный: иначе затравка из forms_json
+# однажды переписала бы прямой ответ Wiktionary.
+_SOURCE_PRIORITY = {
+    "wiktionary": 3,
+    "wiktionary_übersicht": 2,
+    "forms_json": 1,
+}
 
 
 def upsert_form_index(rows: list[dict]) -> int:
@@ -94,10 +110,14 @@ def upsert_form_index(rows: list[dict]) -> int:
         surface = _clean_surface(row.get("surface"))
         lemma = _clean_surface(row.get("lemma")) or surface
         number_tag = str(row.get("number_tag") or "").strip().lower()
-        if not surface or number_tag not in (SG, PL):
+        # UNKNOWN пишется намеренно: «у Wiktionary про это слово ничего нет». Строка
+        # нужна, чтобы ночной прогрев не спрашивал одно и то же каждую ночь; опознание
+        # такие строки пропускает и честно отвечает «не знаю».
+        if not surface or number_tag not in (SG, PL, UNKNOWN):
             continue
-        items.append((surface.casefold(), surface, lemma, number_tag,
-                      str(row.get("source") or "wiktionary").strip()))
+        source = str(row.get("source") or "wiktionary").strip()
+        items.append((surface.casefold(), surface, lemma, number_tag, source,
+                      _SOURCE_PRIORITY.get(source, 0)))
     if not items:
         return 0
     items.sort(key=lambda it: it[0])
@@ -107,14 +127,16 @@ def upsert_form_index(rows: list[dict]) -> int:
             cursor.executemany(
                 """
                 INSERT INTO bt_3_german_form_index
-                    (surface_key, surface, lemma, number_tag, source, checked_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                    (surface_key, surface, lemma, number_tag, source, priority, checked_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (surface_key) DO UPDATE SET
                     surface    = EXCLUDED.surface,
                     lemma      = EXCLUDED.lemma,
                     number_tag = EXCLUDED.number_tag,
                     source     = EXCLUDED.source,
-                    checked_at = NOW();
+                    priority   = EXCLUDED.priority,
+                    checked_at = NOW()
+                WHERE EXCLUDED.priority >= bt_3_german_form_index.priority;
                 """,
                 items,
             )
@@ -140,6 +162,8 @@ def _load_form_index() -> dict[str, tuple[str, str, str]]:
                     "SELECT surface_key, lemma, number_tag, source FROM bt_3_german_form_index;"
                 )
                 for key, lemma, number_tag, source in cursor.fetchall() or []:
+                    if str(number_tag) not in (SG, PL):
+                        continue      # строки «спрашивали, ответа нет» — только для прогрева
                     index[str(key)] = (str(lemma), str(number_tag), str(source or ""))
     except Exception:
         logging.warning("german_surface: индекс форм недоступен", exc_info=True)

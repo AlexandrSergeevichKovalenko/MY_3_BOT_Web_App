@@ -93,6 +93,7 @@ from backend.background_jobs import (  # noqa: E402
     run_article_review_dm_actor,
     run_wiktionary_warm_actor,
     run_monthly_budget_policy_actor,
+    run_german_form_index_warm_actor,
     run_wiktionary_warm_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
@@ -405,6 +406,10 @@ def _dispatch_wiktionary_warm() -> None:
 
 def _dispatch_wiktionary_warm_report() -> None:
     run_wiktionary_warm_report_actor.send()
+
+
+def _dispatch_german_form_index_warm() -> None:
+    run_german_form_index_warm_actor.send()
 
 
 def _dispatch_article_review_dm() -> None:
@@ -758,6 +763,21 @@ def _build_scheduler():
             "cron",
             hour=_int_env("WIKTIONARY_WARM_HOUR", 3),
             minute=_int_env("WIKTIONARY_WARM_MINUTE", 40),
+            timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Ночной прогрев индекса форм: слово это или форма слова. Ставим 04:10 — после
+    # прогрева родов в 03:40, чтобы две ночные задачи не стучались в Wiktionary разом
+    # и не ловили общий 429. Порция такая же небольшая: темп важнее объёма.
+    if _enabled("GERMAN_FORM_WARM_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_german_form_index_warm,
+            "cron",
+            hour=_int_env("GERMAN_FORM_WARM_HOUR", 4),
+            minute=_int_env("GERMAN_FORM_WARM_MINUTE", 10),
             timezone=_tz(os.getenv("WIKTIONARY_WARM_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,

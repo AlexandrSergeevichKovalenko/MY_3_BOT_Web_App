@@ -2052,6 +2052,15 @@ def run_wiktionary_warm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_german_form_index_warm_actor() -> None:
+    """Ночной прогрев индекса форм: «эта поверхность — слово или его форма».
+    Пока индекс не полон, опознание вынуждено догадываться по окончанию и принимает
+    за формы настоящие слова (der Stürmer, das Abkommen), а из-за этого молчит артикль."""
+    from backend.german_form_warm import run_warm
+    run_warm()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_wiktionary_warm_report_actor() -> None:
     """Утренний отчёт: что вчера спросили у Wiktionary и чем это кончилось."""
     from backend.wiktionary_warm import send_warm_report
