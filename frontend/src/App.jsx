@@ -30271,6 +30271,11 @@ function AppInner() {
       target_lang: targetLang,
       part_of_speech: '',
       article,
+      // Число показанной поверхности и слово, формой которого она оказалась. Без них
+      // карточка снова стала бы печатать артикль леммы рядом с формой («das Probleme»)
+      // и строить склонение от формы, а не от слова.
+      grammatical_number: String(quick.number || '').trim(),
+      lemma_de: String(quick.lemma || '').trim(),
       forms: {},
       usage_examples: [],
       provider: quick.provider || '',
@@ -30289,11 +30294,15 @@ function AppInner() {
           await new Promise((r) => window.setTimeout(r, delay));
           if (dictArticlePollTokenRef.current !== articleToken) return;
           let art = '';
+          let num = '';
+          let lem = '';
           try {
             const a = await dictApi('/api/translate/quick/article', {
               text: sourceWord, source_lang: pair.source_lang, target_lang: pair.target_lang,
             });
             art = String(a?.article || '').trim();
+            num = String(a?.number || '').trim();
+            lem = String(a?.lemma || '').trim();
           } catch (_e) { /* keep polling */ }
           if (dictArticlePollTokenRef.current !== articleToken) return;
           if (art) {
@@ -30301,7 +30310,11 @@ function AppInner() {
               if (!prev || String(prev.article || '').trim()) return prev;
               const t = String(prev.target_text || prev.translation_de || '').trim();
               const withArt = hasArt(t) ? t : `${art} ${t}`;
-              return { ...prev, article: art, target_text: withArt, translation_de: withArt, word_de: withArt };
+              return {
+                ...prev, article: art, target_text: withArt, translation_de: withArt, word_de: withArt,
+                grammatical_number: num || prev.grammatical_number || '',
+                lemma_de: lem || prev.lemma_de || '',
+              };
             });
             return;
           }

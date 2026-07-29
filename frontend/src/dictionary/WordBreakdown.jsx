@@ -117,12 +117,28 @@ export function articleInWord(text) {
 export function stripLeadingArticle(text) {
   return String(text || '').replace(/^(der|die|das)\s+/i, '');
 }
-// `quick` optional: quick-dict's article comes from the deterministic Wiktionary
-// table, so prefer it when present. Order: Wiktionary → word_de token → field.
+// Число поверхности, которую мы показываем: 'pl' у формы множественного, иначе ''.
+// Сервер присылает его вместе с артиклем — без него нельзя ни выбрать артикль, ни
+// построить склонение, потому что артикль принадлежит форме, а не слову вообще.
+export function resolveNumber(item, quick) {
+  const n = String((quick && quick.number) || (item && item.grammatical_number) || '')
+    .trim().toLowerCase();
+  return n === 'pl' ? 'pl' : '';
+}
+// Лемма, если показанная поверхность — форма («Probleme» → «Problem»).
+export function resolveLemma(item, quick) {
+  return clean((quick && quick.lemma) || (item && item.lemma_de) || '');
+}
+// `quick` — быстрый ответ, `item` — разбор. Раньше быстрый артикль побеждал МОЛЧА,
+// и «das» из быстрого пути перебивал «die» из разбора: так на экране и получалось
+// «das Probleme». Теперь: у именительного множественного артикль всегда «die», а
+// если два источника разошлись — верим разбору, он полнее.
 export function resolveArticle(item, quick) {
-  return cleanArticle(quick && quick.article)
-    || articleInWord(item && item.word_de)
-    || cleanArticle(item && item.article);
+  if (resolveNumber(item, quick) === 'pl') return 'die';
+  const fromQuick = cleanArticle(quick && quick.article);
+  const fromItem = articleInWord(item && item.word_de) || cleanArticle(item && item.article);
+  if (fromQuick && fromItem && fromQuick !== fromItem) return fromItem;
+  return fromQuick || fromItem;
 }
 
 // Russian labels for the part-of-speech badge.
@@ -396,12 +412,31 @@ function _genderFromArticle(a) {
   const x = String(a || '').trim().toLowerCase();
   return x === 'der' ? 'm' : x === 'die' ? 'f' : x === 'das' ? 'n' : null;
 }
-function buildNounDeclension(wordDe, article, plural, genitive) {
-  const gender = _genderFromArticle(article);
-  if (!gender) return null;
-  const noun = _stripArticle(wordDe);
-  if (!noun) return null;
-  const pluralNoun = plural ? _stripArticle(plural) : '';
+// `lemma`/`number` описывают, ЧТО нам дали: слово или его форму. У формы
+// множественного колонка Singular обязана строиться от ЛЕММЫ — иначе выходит
+// выдуманное «die Probleme / der Probleme» (именно это и было на экране). Леммы нет —
+// колонки единственного нет вовсе: врать нельзя, а показать множественное можно.
+function buildNounDeclension(wordDe, article, plural, genitive, lemma, number) {
+  const isPlural = number === 'pl';
+  const lemmaNoun = _stripArticle(lemma || '');
+  const surface = _stripArticle(wordDe);
+  if (!surface) return null;
+  const noun = isPlural ? lemmaNoun : surface;
+  const gender = _genderFromArticle(isPlural ? '' : article) || (noun ? _genderFromArticle(article) : '');
+  if (isPlural && !lemmaNoun) {
+    // Только множественное: артикли die/die/den/der, падежи по правилу.
+    const pl = surface;
+    return {
+      gender: '', article: 'die', singular: '', plural: pl, has_plural: true,
+      has_singular: false, requested: 'plural',
+      rows: _CASES.map((c) => ({
+        case: c, label: _CASE_LABELS[c],
+        plural: `${_ART_PL[c]} ${(c === 'dat' && !/[ns]$/i.test(pl)) ? `${pl}n` : pl}`.trim(),
+      })),
+    };
+  }
+  if (!gender || !noun) return null;
+  const pluralNoun = isPlural ? surface : (plural ? _stripArticle(plural) : '');
   let genSg = _stripArticle(genitive || '');
   if (!genSg) {
     if (gender === 'f') genSg = noun;
@@ -416,7 +451,11 @@ function buildNounDeclension(wordDe, article, plural, genitive) {
     }
     return row;
   });
-  return { gender, article: _ART_SG[gender].nom, singular: noun, plural: pluralNoun || null, has_plural: !!pluralNoun, rows };
+  return {
+    gender, article: _ART_SG[gender].nom, singular: noun,
+    plural: pluralNoun || null, has_plural: !!pluralNoun, has_singular: true,
+    requested: isPlural ? 'plural' : 'singular', rows,
+  };
 }
 function _expandFromBase(base) {
   const low = base.toLowerCase();
@@ -498,7 +537,8 @@ function buildGrammarTablesJS(item) {
   if (pos === 'noun') {
     // Gender from the RESOLVED article (word_de token first), never the raw
     // `article` field — a wrong "der" there built a masculine "der Kabel" table.
-    const t = buildNounDeclension(wordDe, resolveArticle(item), f.plural, f.genitive);
+    const t = buildNounDeclension(wordDe, resolveArticle(item), f.plural, f.genitive,
+      resolveLemma(item), resolveNumber(item));
     return t ? { declension: t } : null;
   }
   if (pos === 'verb') {
@@ -579,19 +619,35 @@ function GrammarTables({ tables }) {
 
   if (decl && Array.isArray(decl.rows) && decl.rows.length > 0) {
     const gc = genderClassFromKey(decl.gender);
+    // Спрашивали форму множественного — подсвечиваем ту колонку, за которой пришли,
+    // а колонку единственного строим от леммы (или не показываем вовсе).
+    const showSingular = decl.has_singular !== false;
+    const wantPlural = decl.requested === 'plural';
     return (
       <details className="dq-gt" open>
         <summary>Склонение{decl.plural ? ` · мн. ${decl.plural}` : ''}</summary>
         <table className="dq-decl" lang="de">
           <thead>
-            <tr><th /><th>Singular</th>{decl.has_plural && <th>Plural</th>}</tr>
+            <tr>
+              <th />
+              {showSingular && <th className={wantPlural ? '' : 'is-asked'}>Singular</th>}
+              {decl.has_plural && <th className={wantPlural ? 'is-asked' : ''}>Plural</th>}
+            </tr>
           </thead>
           <tbody>
             {decl.rows.map((r) => (
               <tr key={r.case}>
                 <td className="dq-decl-case">{r.label}</td>
-                <td><ColoredForm text={r.singular} genderCls={gc} /></td>
-                {decl.has_plural && <td><ColoredForm text={r.plural} /></td>}
+                {showSingular && (
+                  <td className={wantPlural ? '' : 'is-asked'}>
+                    <ColoredForm text={r.singular} genderCls={gc} />
+                  </td>
+                )}
+                {decl.has_plural && (
+                  <td className={wantPlural ? 'is-asked' : ''}>
+                    <ColoredForm text={r.plural} />
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -691,8 +747,13 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
   // Reject a server declension whose article contradicts the resolved gender
   // (a stale "der Kabel" table for a neuter noun) and rebuild it client-side.
   const _resolvedArt = resolveArticle(item);
-  const _serverDeclBad = !!(serverGt && serverGt.declension && _resolvedArt
-    && !clean(serverGt.declension.rows?.[0]?.singular).toLowerCase().startsWith(_resolvedArt + ' '));
+  // Серверная таблица строится от заголовка как от единственного числа. Если заголовок —
+  // форма множественного, такая таблица выдумывает единственное («die Probleme / der
+  // Probleme»), поэтому её отбрасываем и пересобираем от леммы.
+  const _serverDeclBad = !!(serverGt && serverGt.declension && (
+    resolveNumber(item) === 'pl'
+    || (_resolvedArt
+        && !clean(serverGt.declension.rows?.[0]?.singular).toLowerCase().startsWith(_resolvedArt + ' '))));
   const gt = (serverGt && !_serverDeclBad && (serverGt.declension || serverGt.conjugation || serverGt.comparison))
     ? serverGt : buildGrammarTablesJS(item);
   const hasTables = !!(gt && (gt.declension || gt.conjugation || gt.comparison));
