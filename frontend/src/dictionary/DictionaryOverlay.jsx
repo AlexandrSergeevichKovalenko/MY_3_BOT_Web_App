@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import '../answer/answer.css';
 import './dict.css';
-import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
+import { WordBreakdown, useTts, SpeakButton, genderClass, resolveArticle, resolveNumber, resolveLemma, cleanArticle as cleanArticleText, stripLeadingArticle, api, haptic, getInitData, getDictToken } from './WordBreakdown';
 import BreakdownSkeleton from './BreakdownSkeleton';
 import { guessPair, buildDictionarySavePayload } from './saveUtils';
 import { humanizeDictError } from './errors.js';
@@ -237,6 +237,12 @@ export default function DictionaryOverlay({ onClose } = {}) {
     : (quick?.source || '');
   // One clean der/die/das for both the source and translation spans.
   const dqArticle = resolveArticle(item, quick);
+  // Показанная поверхность может быть формой слова. Тогда артикль у неё свой («die»
+  // у именительного множественного), а само слово подписывается отдельной строкой —
+  // как это делают dict.cc и DWDS. Артикль леммы берём из разбора, если он уже пришёл.
+  const dqNumber = resolveNumber(item, quick);
+  const dqLemma = resolveLemma(item, quick);
+  const dqLemmaArticle = dqNumber === 'pl' ? cleanArticleText(item?.article) : '';
   const correctedNote = (corrDe && quick?.sourceLang === 'de'
     && corrDe.toLowerCase() !== String(quick?.source || '').trim().toLowerCase())
     ? corrDe : '';
@@ -284,8 +290,13 @@ export default function DictionaryOverlay({ onClose } = {}) {
         direction: `${detected}-${targetLang}`,
         provider: String(data?.provider || '').trim(),
         // Article for a single German noun, resolved instantly from the local
-        // Wiktionary table so "die Wortverbindung" shows without the full breakdown.
+        // reference so "die Wortverbindung" shows without the full breakdown.
         article: String(data?.article || '').trim(),
+        // Число и слово, формой которого оказалась поверхность: без них артикль
+        // выбрать нельзя («die Probleme», а не «das Probleme»), а склонение
+        // построилось бы от формы.
+        number: String(data?.grammatical_number || '').trim(),
+        lemma: String(data?.lemma_de || '').trim(),
       };
       setQuick(nextQuick);
       setPhase('done'); haptic('ok');
@@ -299,15 +310,21 @@ export default function DictionaryOverlay({ onClose } = {}) {
             await new Promise((r) => setTimeout(r, delay));
             if (mySeq !== seqRef.current) return;
             let art = '';
+            let num = '';
+            let lem = '';
             try {
               const a = await api('/api/translate/quick/article', {
                 text, source_lang: pair.source, target_lang: pair.target,
               });
               art = String(a?.article || '').trim();
+              num = String(a?.number || '').trim();
+              lem = String(a?.lemma || '').trim();
             } catch (_e) { /* keep polling */ }
             if (mySeq !== seqRef.current) return;
             if (art) {
-              setQuick((prev) => (prev && !prev.article ? { ...prev, article: art } : prev));
+              setQuick((prev) => (prev && !prev.article
+                ? { ...prev, article: art, number: num || prev.number, lemma: lem || prev.lemma }
+                : prev));
               return;
             }
           }
@@ -587,7 +604,10 @@ export default function DictionaryOverlay({ onClose } = {}) {
       setQuick((prev) => (prev ? { ...prev, source: corrected } : prev));
     }
 
-    const art = String(quick?.article || '').trim();
+    // Сохраняем РАЗРЕШЁННЫЙ артикль, а не сырой быстрый: у формы множественного это
+    // «die», а не род леммы. Иначе в ОБЩИЙ пул уезжало «das Probleme» — и доставалось
+    // всем, кто потом искал это слово.
+    const art = resolveArticle(item, quick);
     const hasArticle = (s) => /^(der|die|das)\s/i.test(String(s || ''));
     let sourceText = corrected;
     let quickForSave = quick ? { ...quick, source: corrected } : quick;
@@ -925,6 +945,18 @@ export default function DictionaryOverlay({ onClose } = {}) {
               {headTranslation}
               {germanText && <SpeakButton text={germanText} tts={tts} />}
             </div>
+            {/* Спросили форму множественного — показываем именно её (с «die», как и
+                положено множественному), а слово называем строкой ниже: тап открывает
+                его карточку. Подменять запрос леммой нельзя — человек просил другое. */}
+            {dqNumber === 'pl' && dqLemma && (
+              <button
+                type="button"
+                className="dq-lemma-note"
+                onClick={() => { setQuery(dqLemma); translate(dqLemma); }}
+              >
+                мн. ч. от <b>{dqLemmaArticle ? `${dqLemmaArticle} ` : ''}{dqLemma}</b>
+              </button>
+            )}
             {tts.errorMsg && <div className="dd-err" role="status">🔊 {tts.errorMsg}</div>}
             {item && (
               <WordBreakdown

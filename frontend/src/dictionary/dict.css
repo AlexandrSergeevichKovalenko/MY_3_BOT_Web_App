@@ -846,6 +846,36 @@ html[data-scheme="light"] .dq-gt > summary,
   font-weight: 600;
   color: var(--dmps-text-muted, #94a3b8) !important;
 }
+/* Колонка, за которой человек пришёл: спросил «Probleme» — подсвечено множественное.
+   Остальное показано рядом, чтобы слово было видно целиком, но не спорило с запросом. */
+.dq-decl th.is-asked {
+  color: var(--dmps-accent, #a78bfa);
+}
+.dq-decl td.is-asked {
+  background: rgba(167, 139, 250, 0.08);
+  border-radius: 6px;
+}
+
+/* «мн. ч. от das Problem» — подпись под заголовком: показанная поверхность остаётся
+   той, что просили, а слово называется отдельно и по тапу открывается. */
+.dq-lemma-note {
+  display: inline-block;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--dmps-text-muted, #94a3b8);
+  cursor: pointer;
+  text-align: left;
+}
+.dq-lemma-note b {
+  font-weight: 600;
+  color: var(--dmps-text-title, #e2e8f0);
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.5);
+}
 
 /* Conjugation blocks */
 .dq-stamm {

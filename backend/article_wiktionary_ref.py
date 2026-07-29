@@ -63,9 +63,9 @@ def genera_to_articles(code: str | None) -> set:
     return {_GENUS_TO_ARTICLE[c] for c in str(code or "") if c in _GENUS_TO_ARTICLE}
 
 
-def _api_fetch(titles: list[str]) -> dict[str, str]:
-    """Raw network fetch → {title: genus}. Missing pages map to '-'. Never raises;
-    on error returns {} so the caller treats those titles as unknown this run."""
+def _fetch_wikitext(titles: list[str]) -> dict[str, str | None]:
+    """Raw network fetch → {title: wikitext}. Missing page → None. Never raises;
+    on error returns {} so the caller treats the whole batch as unanswered."""
     params = {
         "action": "query", "format": "json", "formatversion": "2",
         "prop": "revisions", "rvprop": "content", "rvslots": "main",
@@ -77,24 +77,113 @@ def _api_fetch(titles: list[str]) -> dict[str, str]:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
     except Exception:
-        logging.warning("wiktionary genus fetch failed (%d titles)", len(titles), exc_info=True)
+        logging.warning("wiktionary fetch failed (%d titles)", len(titles), exc_info=True)
         return {}
 
-    out: dict[str, str] = {}
+    out: dict[str, str | None] = {}
     # Map any redirect normalizations back so we key on the requested title.
     query = data.get("query") or {}
     for p in query.get("pages") or []:
         title = str(p.get("title") or "")
         if p.get("missing"):
-            out[title] = "-"
+            out[title] = None
             continue
         try:
-            content = p["revisions"][0]["slots"]["main"]["content"]
+            out[title] = p["revisions"][0]["slots"]["main"]["content"]
         except (KeyError, IndexError, TypeError):
-            out[title] = "-"
-            continue
-        out[title] = _genera_from_wikitext(content)
+            out[title] = None
     return out
+
+
+def _api_fetch(titles: list[str]) -> dict[str, str]:
+    """Raw network fetch → {title: genus}. Missing pages map to '-'. Never raises;
+    on error returns {} so the caller treats those titles as unknown this run."""
+    pages = _fetch_wikitext(titles)
+    return {title: (_genera_from_wikitext(text) if text else "-")
+            for title, text in pages.items()}
+
+
+# ── Число и лемма: «это слово или его форма» ──────────────────────────────────
+# Страница склонённой формы устроена однозначно и разбирается без догадок:
+#   === {{Wortart|Deklinierte Form|Deutsch}} ===
+#   {{Grammatische Merkmale}}
+#   *Nominativ Plural des Substantivs '''[[Problem]]'''
+# Страница слова, наоборот, несёт шапку {{Deutsch Substantiv Übersicht}}, откуда
+# заодно бесплатно достаётся его множественное число.
+_DECLINED_HEAD = re.compile(r"\{\{Wortart\|Deklinierte Form\|Deutsch\}\}")
+_GRAM_LINE = re.compile(
+    r"^\*\s*(Nominativ|Genitiv|Dativ|Akkusativ)\s+(Singular|Plural)\s+des\s+Substantivs\s+"
+    r"'''\[\[([^\]|]+)",
+    re.MULTILINE,
+)
+_GRUNDFORM = re.compile(r"\{\{Grundformverweis(?:\s+Dekl)?\|([^}|]+)")
+# Поля шапки. У двуродовых слов Wiktionary НУМЕРУЕТ их («Nominativ Singular 1=Spind»,
+# «Nominativ Singular 2=Spind»), поэтому номер обязателен в шаблоне: без него разбор
+# не находил единственного числа и объявлял «der Spind», «das Versäumnis», «das Zubehör»
+# словами, живущими только во множественном.
+_UEBERSICHT_FIELD = re.compile(
+    r"\|\s*Nominativ\s+(Singular|Plural)\s*\d*\*?\s*=\s*([^\n|}]*)"
+)
+_EMPTY_FIELD_VALUES = {"", "—", "-", "–", "?"}
+
+
+def _german_section(wikitext: str) -> str:
+    """Немецкая часть страницы: на одном заголовке живут и другие языки."""
+    text = str(wikitext or "")
+    head = _DE_HEADER.search(text)
+    block = text[head.end():] if head else text
+    nxt = _NEXT_LANG.search(block)
+    return block[:nxt.start()] if nxt else block
+
+
+def form_facts_from_wikitext(wikitext: str) -> dict:
+    """Что страница говорит о числе: {"is_lemma","number","lemma","plural_surface"}.
+
+    `number` заполняется ТОЛЬКО когда все грамматические строки согласны между собой:
+    «Kindern» — везде Plural, а вот форма, которая читается и как единственное, и как
+    множественное, оставляется без ответа. Догадываться здесь нельзя: этот индекс потом
+    решает, печатать ли артикль.
+    """
+    block = _german_section(wikitext)
+    is_lemma = bool(_OVERVIEW.search(block))
+    facts: dict = {"is_lemma": is_lemma, "number": "", "lemma": "", "plural_surface": ""}
+
+    if is_lemma:
+        singulars, plurals = [], []
+        for kind, value in _UEBERSICHT_FIELD.findall(block):
+            (singulars if kind == "Singular" else plurals).append(value.strip())
+        plural = next((p for p in plurals if p not in _EMPTY_FIELD_VALUES), "")
+        if plural:
+            facts["plural_surface"] = plural
+        # «Живёт только во множественном» (Eltern, Magenbeschwerden) — это когда графа
+        # единственного ЕСТЬ и в ней прочерк. Отсутствие графы ничего не доказывает:
+        # у двуродовых слов она называется иначе, и молчать здесь безопаснее.
+        if plural and singulars and all(s in _EMPTY_FIELD_VALUES for s in singulars):
+            facts["number"] = "pl"
+        return facts
+
+    if not _DECLINED_HEAD.search(block):
+        return facts
+
+    numbers = {m[1] for m in _GRAM_LINE.findall(block)}
+    lemmas = {m[2].strip() for m in _GRAM_LINE.findall(block)}
+    if len(numbers) == 1:
+        facts["number"] = "pl" if numbers.pop() == "Plural" else "sg"
+    if len(lemmas) == 1:
+        facts["lemma"] = lemmas.pop()
+    if not facts["lemma"]:
+        ref = _GRUNDFORM.search(block)
+        if ref:
+            facts["lemma"] = ref.group(1).strip()
+    return facts
+
+
+def form_facts_for_titles(titles: list[str]) -> dict[str, dict]:
+    """Сетевой разбор пачки страниц → {title: form_facts}. Пустой ответ на пачку
+    (сеть или 429) возвращается как {} — вызывающий отступает и не помечает слова."""
+    pages = _fetch_wikitext([str(t).strip() for t in titles if str(t).strip()])
+    return {title: form_facts_from_wikitext(text)
+            for title, text in pages.items() if text}
 
 
 def genus_for_titles(titles: list[str]) -> dict[str, str]:
