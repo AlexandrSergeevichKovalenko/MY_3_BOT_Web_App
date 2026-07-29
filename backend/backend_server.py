@@ -9444,11 +9444,22 @@ def _normalize_saved_german_single_word(
         return compact
     _existing_article, bare = _strip_german_leading_article(compact)
     probe = bare or compact
-    normalized_lemma = _normalize_german_text(probe)
-    if not normalized_lemma:
-        normalized_lemma = probe
     normalized_pos = str(part_of_speech or "").strip().lower()
     normalized_article = _normalize_german_article(article)
+    if normalized_pos == "noun":
+        # Существительное НЕ отдаём лемматизатору spaCy. Маленькая модель
+        # de_core_news_sm откусывает существительным окончание — замер на проде
+        # 29.07.2026: Felge→Felg, Gefriertruhe→Gefriertruh, Abflughalle→Abflughall,
+        # Gepäckwagen→Gepäckwag, Wassertropfen→Wassertropfe, Scheibe→Scheib. Ровно
+        # эти обрезки и уехали в общий пул как заголовки карточек: «die Felg».
+        # Правильная словарная форма берётся у справочника, а не у догадки; молчит
+        # справочник — оставляем написание как есть. Догадка не имеет права
+        # переписывать слово, ровно как и артикль. Форму множественного здесь тоже
+        # НЕ приводим к лемме: спросили «Probleme» — заголовок и остаётся «die
+        # Probleme», а слово едет рядом отдельным полем lemma_de.
+        normalized_lemma = probe
+    else:
+        normalized_lemma = _normalize_german_text(probe) or probe
     if normalized_pos == "noun" and normalized_article:
         bare_noun = normalized_lemma[:1].upper() + normalized_lemma[1:] if normalized_lemma else normalized_lemma
         return f"{normalized_article} {bare_noun}".strip()
