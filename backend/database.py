@@ -16906,7 +16906,11 @@ def remove_untouched_subscription_words(user_id: int, cursor=None) -> int:
                     WHERE r.user_id = q.user_id AND r.card_id = q.id
               )
               AND COALESCE(q.is_learned, FALSE) = FALSE
-              AND q.folder_id IS NULL
+              -- Папку НЕ считаем признаком интереса: импорт сам раскладывал слова по
+              -- смысловым папкам, и из-за этого условия под защиту попадали все до одного
+              -- (999 из 999 у первого же проверенного человека) — то есть не удалялось
+              -- ничего. Осознанный перенос в папку виден по updated_at: перекладывание
+              -- помечает запись изменённой.
               AND (q.updated_at IS NULL OR q.updated_at <= q.created_at + INTERVAL '5 seconds');
             """,
             (int(user_id),),

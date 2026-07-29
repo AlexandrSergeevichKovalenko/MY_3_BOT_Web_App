@@ -55,5 +55,36 @@ class StarterDictionaryDisconnectTests(unittest.TestCase):
         self.assertTrue(upsert_mock.called)
 
 
+class UntouchedRemovalRuleTests(unittest.TestCase):
+    """Что именно удаляется при отключении словаря.
+
+    Правило владельца: «не учил — значит не нужно», но всё, чего человек касался,
+    остаётся: там его история, на ней держится аналитика.
+
+    Первая версия правила защищала ещё и «лежит в папке» — и провалилась: импорт САМ
+    раскладывал слова по смысловым папкам, поэтому под защиту попали все до одного
+    (999 из 999 у первого же проверенного человека), и отключение не удаляло ничего.
+    """
+
+    def test_rule_protects_what_the_person_touched_but_not_folders(self):
+        import inspect
+        import backend.database as db
+        sql = inspect.getsource(db.remove_untouched_subscription_words)
+        # Признаки интереса: прогресс, журнал ответов, отметка «выучено», правка записи.
+        self.assertIn("bt_3_card_srs_state", sql)
+        self.assertIn("bt_3_card_review_log", sql)
+        self.assertIn("is_learned", sql)
+        self.assertIn("updated_at", sql)
+        # А вот папка признаком быть НЕ должна — её проставлял импорт.
+        self.assertNotIn("folder_id IS NULL", sql)
+
+    def test_rule_touches_only_words_that_came_from_the_author(self):
+        import inspect
+        import backend.database as db
+        sql = inspect.getsource(db.remove_untouched_subscription_words)
+        self.assertIn("origin_process = 'subscription'", sql)
+        self.assertIn("starter_dictionary_snapshot", sql)
+
+
 if __name__ == "__main__":
     unittest.main()
