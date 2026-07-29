@@ -104,235 +104,26 @@ class WoFrageAnimacyTests(unittest.TestCase):
                 )
 
 
-# Утверждённые объекты-ВЕЩИ из банка Wo-Fragen. Список закреплён намеренно: проверка
-# должна падать на НЕЗНАКОМОМ слове, а не молча его пропускать. Список людей защищает
-# только от известных слов — заведи кто-нибудь «die Bäckerin», и ни список, ни страж
-# в генераторе её не узнают. А этот тест упадёт сразу и потребует подтвердить, что
-# добавленное слово действительно вещь, а не человек.
-_APPROVED_THINGS = {
-    "das Amt",
-    "das Angebot",
-    "das Auto",
-    "das Buch",
-    "das Eis",
-    "das Ende",
-    "das Erbe",
-    "das Ereignis",
-    "das Ergebnis",
-    "das Erlebnis",
-    "das Essen",
-    "das Fest",
-    "das Gehalt",
-    "das Geld",
-    "das Gemüse",
-    "das Gepäck",
-    "das Geschenk",
-    "das Gesetz",
-    "das Gewissen",
-    "das Glas",
-    "das Glück",
-    "das Haus",
-    "das Interview",
-    "das Kapital",
-    "das Kleid",
-    "das Klima",
-    "das Meer",
-    "das Metall",
-    "das Obst",
-    "das Original",
-    "das Parfüm",
-    "das Prinzip",
-    "das Problem",
-    "das Projekt",
-    "das Rauchen",
-    "das Recht",
-    "das Salz",
-    "das Schicksal",
-    "das Stipendium",
-    "das Studium",
-    "das Talent",
-    "das Team",
-    "das Thema",
-    "das Treffen",
-    "das Verhalten",
-    "das Vorbild",
-    "das Wetter",
-    "das Wissen",
-    "das Wochenende",
-    "das Wort",
-    "das Wunder",
-    "das Ziel",
-    "das Überleben",
-    "der Anlass",
-    "der Antrag",
-    "der Artikel",
-    "der Begriff",
-    "der Bericht",
-    "der Bus",
-    "der Erfolg",
-    "der Fall",
-    "der Fehler",
-    "der Film",
-    "der Garten",
-    "der Geburtstag",
-    "der Hund",
-    "der Job",
-    "der Kaffee",
-    "der Kauf",
-    "der Knoblauch",
-    "der Kompromiss",
-    "der Konflikt",
-    "der Krieg",
-    "der Kurs",
-    "der Lärm",
-    "der Name",
-    "der Pessimismus",
-    "der Plan",
-    "der Preis",
-    "der Rat",
-    "der Rauch",
-    "der Regen",
-    "der Roman",
-    "der Schlüssel",
-    "der Schmerz",
-    "der Schmutz",
-    "der Schritt",
-    "der Sieg",
-    "der Sport",
-    "der Stau",
-    "der Streit",
-    "der Stress",
-    "der Sturm",
-    "der Termin",
-    "der Umzug",
-    "der Unfall",
-    "der Urlaub",
-    "der Verlust",
-    "der Verzicht",
-    "der Vorschlag",
-    "der Vorsitz",
-    "der Vorteil",
-    "der Vorwurf",
-    "der Weg",
-    "der Witz",
-    "der Zweifel",
-    "der Ärger",
-    "die Allergie",
-    "die Angelegenheit",
-    "die Angst",
-    "die Annahme",
-    "die Antwort",
-    "die Arbeit",
-    "die Aufgabe",
-    "die Ausrede",
-    "die Aussage",
-    "die Bank",
-    "die Behörde",
-    "die Bewerbung",
-    "die Bildung",
-    "die Botschaft",
-    "die Diskussion",
-    "die Dunkelheit",
-    "die Einladung",
-    "die Entscheidung",
-    "die Erfahrung",
-    "die Farbe",
-    "die Firma",
-    "die Frage",
-    "die Freiheit",
-    "die Gefahr",
-    "die Gerechtigkeit",
-    "die Gesundheit",
-    "die Gewalt",
-    "die Gewohnheit",
-    "die Grippe",
-    "die Gruppe",
-    "die Hand",
-    "die Heimat",
-    "die Hilfe",
-    "die Hitze",
-    "die Hose",
-    "die Idee",
-    "die Kindheit",
-    "die Kleidung",
-    "die Kontrolle",
-    "die Korruption",
-    "die Krankheit",
-    "die Kritik",
-    "die Kunst",
-    "die Kälte",
-    "die Leistung",
-    "die Liebe",
-    "die Lösung",
-    "die Macht",
-    "die Meinung",
-    "die Miete",
-    "die Musik",
-    "die Müdigkeit",
-    "die Nachricht",
-    "die Ordnung",
-    "die Panik",
-    "die Party",
-    "die Politik",
-    "die Prüfung",
-    "die Pünktlichkeit",
-    "die Qualität",
-    "die Reaktion",
-    "die Regel",
-    "die Reise",
-    "die Rente",
-    "die Ruhe",
-    "die Sicherheit",
-    "die Situation",
-    "die Sitzung",
-    "die Sonne",
-    "die Spinne",
-    "die Stelle",
-    "die Tasche",
-    "die Uhrzeit",
-    "die Umwelt",
-    "die Ungerechtigkeit",
-    "die Unterstützung",
-    "die Vernunft",
-    "die Versicherung",
-    "die Verspätung",
-    "die Vorschrift",
-    "die Wahrheit",
-    "die Woche",
-    "die Zeit",
-    "die Zitrone",
-    "die Zukunft",
-    "die Änderung",
-    "die Überraschung",
-    "die Übertreibung",
-}
-
-
-
-
 class WoFrageApprovedObjectsTests(unittest.TestCase):
+    """Список проверенных вещей живёт в самом генераторе (wg._VETTED_THINGS) — там же,
+    где он применяется на выдаче. Здесь только следим, что он не разошёлся с банком.
+    Подробные проверки генератора — в test_wofrage_generator_quality.py."""
+
     def test_every_thing_object_is_approved(self):
-        current = {
-            obj
-            for entry in wg._BANK
-            if not entry.get("person_only")
-            for obj, _ru in (entry.get("obj") or [])
-        }
-        unknown = sorted(current - _APPROVED_THINGS)
+        unknown = sorted({
+            obj for entry in wg._BANK if not entry.get("person_only")
+            for obj, _ru in (entry.get("obj") or []) if obj not in wg._VETTED_THINGS
+        })
         self.assertEqual(
             unknown, [],
-            "В банке Wo-Fragen появились объекты, которых нет в утверждённом списке: "
-            f"{unknown}.\n"
-            "Проверь каждое: это ВЕЩЬ или ЧЕЛОВЕК? О человеке спрашивают «Auf wen», и такое "
-            "слово в списке вещей ломает задание. Если это вещь — добавь его в "
-            "_APPROVED_THINGS в этом тесте.",
+            "В банке Wo-Fragen появились объекты, которых нет в проверенном списке: "
+            f"{unknown}.\nПроверь каждое: это ВЕЩЬ или ЧЕЛОВЕК? О человеке спрашивают "
+            "«Auf wen», и такое слово в списке вещей ломает задание.",
         )
 
     def test_approved_list_has_no_people(self):
-        """Сам утверждённый список тоже проверяем — на случай, если человек проскочил
-        в него при пополнении."""
-        offenders = sorted(o for o in _APPROVED_THINGS if wg._is_person_noun(o))
-        self.assertEqual(offenders, [], f"люди в утверждённом списке вещей: {offenders}")
+        offenders = sorted(o for o in wg._VETTED_THINGS if wg._is_person_noun(o))
+        self.assertEqual(offenders, [], f"люди в проверенном списке вещей: {offenders}")
 
 
 if __name__ == "__main__":

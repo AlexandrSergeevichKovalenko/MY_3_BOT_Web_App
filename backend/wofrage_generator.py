@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections import Counter
 
 # ── Rules ───────────────────────────────────────────────────────────────────
 _VOWELS = "aeiouäöü"
@@ -188,6 +189,212 @@ _PERSON_NOUNS = {
     "zeuge", "zeugen", "zuhörer", "zuhörerin", "zuhörerinnen", "zuschauer", "zuschauerin",
     "zuschauerinnen", "zwilling", "zwillinge", "ärzte", "ärzten", "ärztin", "ärztinnen",
     "übersetzer", "übersetzerin", "übersetzerinnen",
+}
+
+
+# ── Проверенные ВЕЩИ ────────────────────────────────────────────────────────
+# Каждое слово здесь проверено человеком: это точно предмет/понятие, а не тот,
+# о ком спрашивают «Auf wen». Банк вещей заполняется руками, и незнакомое слово
+# не должно проскочить молча — проверка банка (check_bank) не выпустит объект,
+# которого нет в этом списке. Добавляешь глагол с новым объектом — впиши его сюда
+# ОСОЗНАННО, ответив себе на один вопрос: о нём спрашивают «Worauf» или «Auf wen»?
+_VETTED_THINGS = {
+    "das Amt",
+    "das Angebot",
+    "das Auto",
+    "das Buch",
+    "das Eis",
+    "das Ende",
+    "das Erbe",
+    "das Ereignis",
+    "das Ergebnis",
+    "das Erlebnis",
+    "das Essen",
+    "das Fest",
+    "das Gehalt",
+    "das Geld",
+    "das Gemüse",
+    "das Gepäck",
+    "das Geschenk",
+    "das Gesetz",
+    "das Gewissen",
+    "das Glas",
+    "das Glück",
+    "das Haus",
+    "das Interview",
+    "das Kapital",
+    "das Kleid",
+    "das Klima",
+    "das Meer",
+    "das Metall",
+    "das Obst",
+    "das Original",
+    "das Parfüm",
+    "das Prinzip",
+    "das Problem",
+    "das Projekt",
+    "das Rauchen",
+    "das Recht",
+    "das Salz",
+    "das Schicksal",
+    "das Stipendium",
+    "das Studium",
+    "das Talent",
+    "das Team",
+    "das Thema",
+    "das Treffen",
+    "das Verhalten",
+    "das Vorbild",
+    "das Wetter",
+    "das Wissen",
+    "das Wochenende",
+    "das Wort",
+    "das Wunder",
+    "das Ziel",
+    "das Überleben",
+    "der Anlass",
+    "der Antrag",
+    "der Artikel",
+    "der Begriff",
+    "der Bericht",
+    "der Bus",
+    "der Erfolg",
+    "der Fall",
+    "der Fehler",
+    "der Film",
+    "der Garten",
+    "der Geburtstag",
+    "der Hund",
+    "der Job",
+    "der Kaffee",
+    "der Kauf",
+    "der Knoblauch",
+    "der Kompromiss",
+    "der Konflikt",
+    "der Krieg",
+    "der Kurs",
+    "der Lärm",
+    "der Name",
+    "der Pessimismus",
+    "der Plan",
+    "der Preis",
+    "der Rat",
+    "der Rauch",
+    "der Regen",
+    "der Roman",
+    "der Schlüssel",
+    "der Schmerz",
+    "der Schmutz",
+    "der Schritt",
+    "der Sieg",
+    "der Sport",
+    "der Stau",
+    "der Streit",
+    "der Stress",
+    "der Sturm",
+    "der Termin",
+    "der Umzug",
+    "der Unfall",
+    "der Urlaub",
+    "der Verlust",
+    "der Verzicht",
+    "der Vorschlag",
+    "der Vorsitz",
+    "der Vorteil",
+    "der Vorwurf",
+    "der Weg",
+    "der Witz",
+    "der Zweifel",
+    "der Ärger",
+    "die Allergie",
+    "die Angelegenheit",
+    "die Angst",
+    "die Annahme",
+    "die Antwort",
+    "die Arbeit",
+    "die Aufgabe",
+    "die Ausrede",
+    "die Aussage",
+    "die Bank",
+    "die Behörde",
+    "die Bewerbung",
+    "die Bildung",
+    "die Botschaft",
+    "die Diskussion",
+    "die Dunkelheit",
+    "die Einladung",
+    "die Entscheidung",
+    "die Erfahrung",
+    "die Farbe",
+    "die Firma",
+    "die Frage",
+    "die Freiheit",
+    "die Gefahr",
+    "die Gerechtigkeit",
+    "die Gesundheit",
+    "die Gewalt",
+    "die Gewohnheit",
+    "die Grippe",
+    "die Gruppe",
+    "die Hand",
+    "die Heimat",
+    "die Hilfe",
+    "die Hitze",
+    "die Hose",
+    "die Idee",
+    "die Kindheit",
+    "die Kleidung",
+    "die Kontrolle",
+    "die Korruption",
+    "die Krankheit",
+    "die Kritik",
+    "die Kunst",
+    "die Kälte",
+    "die Leistung",
+    "die Liebe",
+    "die Lösung",
+    "die Macht",
+    "die Meinung",
+    "die Miete",
+    "die Musik",
+    "die Müdigkeit",
+    "die Nachricht",
+    "die Ordnung",
+    "die Panik",
+    "die Party",
+    "die Politik",
+    "die Prüfung",
+    "die Pünktlichkeit",
+    "die Qualität",
+    "die Reaktion",
+    "die Regel",
+    "die Reise",
+    "die Rente",
+    "die Ruhe",
+    "die Sicherheit",
+    "die Situation",
+    "die Sitzung",
+    "die Sonne",
+    "die Spinne",
+    "die Stelle",
+    "die Tasche",
+    "die Uhrzeit",
+    "die Umwelt",
+    "die Ungerechtigkeit",
+    "die Unterstützung",
+    "die Vernunft",
+    "die Verspätung",
+    "die Vorschrift",
+    "die Tasse",
+    "die Wahrheit",
+    "die Wohnung",
+    "die Woche",
+    "die Zeit",
+    "die Zitrone",
+    "die Zukunft",
+    "die Änderung",
+    "die Überraschung",
+    "die Übertreibung",
 }
 
 
@@ -385,9 +592,11 @@ _BANK: list[dict] = [
     {"lemma": "sich gewöhnen an", "prep": "an", "case": "akk", "ru": "привыкать", "person": True,
      "q": ["gewöhnst du dich?", "gewöhnt ihr euch?"],
      "obj": [("das Klima", "климат"), ("die Arbeit", "работа")]},
-    {"lemma": "sich wenden an", "prep": "an", "case": "akk", "ru": "обращаться", "person": True,
+    {"lemma": "sich wenden an", "prep": "an", "case": "akk", "ru": "обращаться", "person_only": True,
+     # «Woran wendest du dich? — Ведомство» — так не говорят: обращаются К КОМУ-ТО,
+     # и ведомство здесь такой же адресат, как человек.
      "q": ["wendest du dich?", "wendet ihr euch?"],
-     "obj": [("die Behörde", "ведомство"), ("die Botschaft", "посольство")]},
+     "obj": []},
     {"lemma": "appellieren an", "prep": "an", "case": "akk", "ru": "апеллировать", "person": False,
      "q": ["appellierst du?", "appelliert ihr?"],
      "obj": [("die Vernunft", "разум"), ("das Gewissen", "совесть")]},
@@ -472,16 +681,17 @@ _BANK: list[dict] = [
      "obj": [("die Arbeit", "работа"), ("der Umzug", "переезд")]},
     {"lemma": "sich bedanken bei", "prep": "bei", "case": "dat", "ru": "благодарить (кого)", "person": True,
      "person_only": True, "q": ["bedankst du dich?", "bedankt ihr euch?"],
-     "obj": [("die Firma", "фирма"), ("die Behörde", "ведомство")]},
+     "obj": []},
     {"lemma": "sich entschuldigen bei", "prep": "bei", "case": "dat", "ru": "извиняться (перед)", "person": True,
      "person_only": True, "q": ["entschuldigst du dich?", "entschuldigt ihr euch?"],
-     "obj": [("der Lehrer", "учитель"), ("die Nachbarin", "соседка")]},
+     "obj": []},
     {"lemma": "bleiben bei", "prep": "bei", "case": "dat", "ru": "оставаться (при)", "person": False,
      "q": ["bleibst du?", "bleibt ihr?"],
      "obj": [("die Meinung", "мнение"), ("der Plan", "план")]},
-    {"lemma": "sich bewerben bei", "prep": "bei", "case": "dat", "ru": "подавать заявку (куда)", "person": False,
+    {"lemma": "sich bewerben bei", "prep": "bei", "case": "dat", "ru": "подавать заявку (куда)", "person_only": True,
+     # «Wobei bewirbst du dich?» — не по-немецки: фирма тут адресат (Bei wem).
      "q": ["bewirbst du dich?", "bewerbt ihr euch?"],
-     "obj": [("die Firma", "фирма"), ("die Bank", "банк")]},
+     "obj": []},
     # ── FÜR + Akkusativ ──
     {"lemma": "sich interessieren für", "prep": "für", "case": "akk", "ru": "интересоваться", "person": True,
      "q": ["interessierst du dich?", "interessiert ihr euch?"],
@@ -529,7 +739,7 @@ _BANK: list[dict] = [
     # ── IN + Akkusativ ──
     {"lemma": "sich verlieben in", "prep": "in", "case": "akk", "ru": "влюбляться", "person": True,
      "person_only": True, "q": ["verliebst du dich?", "verliebt ihr euch?"],
-     "obj": [("der Nachbar", "сосед"), ("die Kollegin", "коллега")]},
+     "obj": []},
     {"lemma": "einwilligen in", "prep": "in", "case": "akk", "ru": "соглашаться (на)", "person": False,
      "q": ["willigst du ein?", "willigt ihr ein?"],
      "obj": [("der Plan", "план"), ("die Änderung", "изменение")]},
@@ -549,28 +759,28 @@ _BANK: list[dict] = [
     # ── MIT + Dativ ──
     {"lemma": "sprechen mit", "prep": "mit", "case": "dat", "ru": "говорить (с)", "person": True,
      "person_only": True, "q": ["sprichst du?", "sprecht ihr?"],
-     "obj": [("die Firma", "фирма"), ("die Behörde", "ведомство")]},
+     "obj": []},
     {"lemma": "reden mit", "prep": "mit", "case": "dat", "ru": "разговаривать (с)", "person": True,
      "person_only": True, "q": ["redest du?", "redet ihr?"],
-     "obj": [("der Nachbar", "сосед"), ("die Lehrerin", "учительница")]},
+     "obj": []},
     {"lemma": "telefonieren mit", "prep": "mit", "case": "dat", "ru": "звонить (кому)", "person": True,
      "person_only": True, "q": ["telefonierst du?", "telefoniert ihr?"],
-     "obj": [("die Mutter", "мама"), ("der Freund", "друг")]},
+     "obj": []},
     {"lemma": "sich treffen mit", "prep": "mit", "case": "dat", "ru": "встречаться (с)", "person": True,
      "person_only": True, "q": ["triffst du dich?", "trefft ihr euch?"],
-     "obj": [("der Kollege", "коллега"), ("die Freundin", "подруга")]},
+     "obj": []},
     {"lemma": "sich streiten mit", "prep": "mit", "case": "dat", "ru": "ссориться (с)", "person": True,
      "person_only": True, "q": ["streitest du dich?", "streitet ihr euch?"],
-     "obj": [("der Bruder", "брат"), ("die Schwester", "сестра")]},
+     "obj": []},
     {"lemma": "sich unterhalten mit", "prep": "mit", "case": "dat", "ru": "беседовать (с)", "person": True,
      "person_only": True, "q": ["unterhältst du dich?", "unterhaltet ihr euch?"],
-     "obj": [("der Gast", "гость"), ("die Kollegin", "коллега")]},
+     "obj": []},
     {"lemma": "sich verstehen mit", "prep": "mit", "case": "dat", "ru": "ладить (с)", "person": True,
      "person_only": True, "q": ["verstehst du dich?", "versteht ihr euch?"],
-     "obj": [("der Nachbar", "сосед"), ("die Chefin", "начальница")]},
+     "obj": []},
     {"lemma": "verheiratet sein mit", "prep": "mit", "case": "dat", "ru": "быть в браке (с)", "person": True,
      "person_only": True, "q": ["bist du verheiratet?", "seid ihr verheiratet?"],
-     "obj": [("der Arzt", "врач"), ("die Lehrerin", "учительница")]},
+     "obj": []},
     {"lemma": "anfangen mit", "prep": "mit", "case": "dat", "ru": "начинать (с)", "person": False,
      "q": ["fängst du an?", "fangt ihr an?"],
      "obj": [("die Arbeit", "работа"), ("das Studium", "учёба")]},
@@ -607,7 +817,7 @@ _BANK: list[dict] = [
      "obj": [("die Heimat", "родина"), ("die Ruhe", "покой")]},
     {"lemma": "greifen nach", "prep": "nach", "case": "dat", "ru": "хватать", "person": False,
      "q": ["greifst du?", "greift ihr?"],
-     "obj": [("das Glas", "стакан"), ("die Hand", "рука")]},
+     "obj": [("das Glas", "стакан"), ("die Tasse", "чашка")]},
     {"lemma": "klingen nach", "prep": "nach", "case": "dat", "ru": "звучать (как)", "person": False,
      "q": ["klingt es?", "klingt das?"],
      "obj": [("der Ärger", "проблемы"), ("die Ausrede", "отговорка")]},
@@ -704,7 +914,7 @@ _BANK: list[dict] = [
      "obj": [("das Wetter", "погода"), ("die Entscheidung", "решение")]},
     {"lemma": "sich verabschieden von", "prep": "von", "case": "dat", "ru": "прощаться (с)", "person": True,
      "person_only": True, "q": ["verabschiedest du dich?", "verabschiedet ihr euch?"],
-     "obj": [("der Gast", "гость"), ("die Freundin", "подруга")]},
+     "obj": []},
     {"lemma": "handeln von", "prep": "von", "case": "dat", "ru": "быть (о чём)", "person": False,
      "q": ["handelt es?", "handelt das Buch?"],
      "obj": [("die Liebe", "любовь"), ("der Krieg", "война")]},
@@ -751,9 +961,11 @@ _BANK: list[dict] = [
      "q": ["zitterst du?", "zittert ihr?"],
      "obj": [("die Angst", "страх"), ("die Kälte", "холод")]},
     # ── ZU + Dativ ──
-    {"lemma": "gehören zu", "prep": "zu", "case": "dat", "ru": "относиться (к)", "person": True,
-     "q": ["gehörst du?", "gehört ihr?"],
-     "obj": [("die Gruppe", "группа"), ("das Team", "команда")]},
+    {"lemma": "gehören zu", "prep": "zu", "case": "dat", "ru": "относиться (к)", "person": False,
+     # Про группу и команду человек законно спросит «Zu wem» — уводим вопрос
+     # на предметы, тогда верный ответ ровно один.
+     "q": ["gehört dieser Schlüssel?", "gehört dieses Zimmer?"],
+     "obj": [("das Auto", "машина"), ("die Wohnung", "квартира")]},
     {"lemma": "einladen zu", "prep": "zu", "case": "dat", "ru": "приглашать (на)", "person": False,
      "q": ["lädst du ein?", "ladet ihr ein?"],
      "obj": [("die Party", "вечеринка"), ("das Essen", "ужин")]},
@@ -784,6 +996,61 @@ _BANK: list[dict] = [
 ]
 
 
+def check_bank() -> list[str]:
+    """Проверка ДАННЫХ банка. Возвращает список претензий (пусто — всё чисто).
+
+    Почему это здесь, а не только в тестах: банк заполняют руками, и одна опечатка
+    («der Feind» среди вещей) превращается в задание, которое противоречит своему же
+    пояснению. Задания собираются заранее и ложатся в базу на весь день — ошибку
+    увидят все, и она там останется. Значит ловим на входе, а не по жалобе.
+    """
+    problems: list[str] = []
+    for entry in _BANK:
+        lemma = str(entry.get("lemma") or "?")
+        prep = str(entry.get("prep") or "")
+        case = str(entry.get("case") or "")
+        if not prep or not prep.isalpha():
+            problems.append(f"{lemma}: нет предлога")
+        if case not in ("akk", "dat"):
+            problems.append(f"{lemma}: падеж «{case}» — бывает только akk или dat")
+        if not (entry.get("q") or []):
+            problems.append(f"{lemma}: нет ни одной фразы-вопроса")
+        for frame in entry.get("q") or []:
+            frame = str(frame)
+            if not frame.strip().endswith("?"):
+                problems.append(f"{lemma}: фраза «{frame}» не кончается вопросительным знаком")
+            if frame[:1].isupper():
+                problems.append(f"{lemma}: фраза «{frame}» с большой буквы — она идёт ПОСЛЕ вопросительного слова")
+        objs = entry.get("obj") or []
+        if entry.get("person_only"):
+            if objs:
+                problems.append(f"{lemma}: помечен «только о людях», но у него есть список вещей")
+            continue
+        if not objs:
+            problems.append(f"{lemma}: нет ни одной вещи для вопроса")
+        for pair in objs:
+            noun = str(pair[0])
+            if _is_person_noun(noun):
+                problems.append(f"{lemma}: «{noun}» — человек, о нём спрашивают «{_person_form(prep, case or 'akk')}»")
+            elif noun not in _VETTED_THINGS:
+                problems.append(f"{lemma}: «{noun}» никем не проверен — вещь это или человек?")
+            if not str(pair[1] or "").strip():
+                problems.append(f"{lemma}: у «{noun}» нет русской подсказки")
+    return problems
+
+
+def _healthy_bank() -> list[dict]:
+    """Банк без записей, к которым есть претензии. Бот не падает, но и мусор не выдаёт."""
+    problems = check_bank()
+    if not problems:
+        return list(_BANK)
+    broken = {p.split(":", 1)[0] for p in problems}
+    logging.error("wofrage: банк заданий с ошибками, эти глаголы не выдаём: %s", sorted(broken))
+    for p in problems:
+        logging.error("wofrage: %s", p)
+    return [e for e in _BANK if str(e.get("lemma")) not in broken]
+
+
 def _decline_clue(prep: str, case: str, obj_phrase: str) -> str:
     """Build the natural answer line for a THING object: 'auf' + 'der Bus'(Akk) → 'Auf den Bus'."""
     parts = obj_phrase.split(" ", 1)
@@ -798,12 +1065,57 @@ def _decline_clue(prep: str, case: str, obj_phrase: str) -> str:
     return combo[:1].upper() + combo[1:]
 
 
-def _options(correct: str, target: str, prep: str, case: str) -> list[str]:
-    """4 choices: correct + the opposite thing/person trap + 2 confusable fillers."""
+def _lemma_head(lemma: str) -> str:
+    """«sich freuen auf» → «sich freuen». Один глагол живёт с разными предлогами."""
+    return str(lemma or "").strip().rsplit(" ", 1)[0].strip()
+
+
+def _build_rivals() -> tuple[dict, dict]:
+    """Второй верный ответ — главная ловушка этого тренажёра, и не для ученика, а для нас.
+
+    «___ leidest du?» подходит и «Woran» (leiden an), и «Worunter» (leiden unter).
+    Если оба лежат в вариантах, человек отвечает верно, а игра засчитывает ошибку.
+    Замер до правки: 2.1% выданных заданий имели два верных ответа.
+
+    Собираем два указателя: по КОРНЮ глагола (kämpfen für/gegen/um) и по ТЕКСТУ
+    рамки (на случай, когда одну фразу делят разные глаголы). Формы соперников
+    потом просто не попадают в варианты ответа.
+    """
+    by_head: dict[str, set] = {}
+    by_frame: dict[str, set] = {}
+    for entry in _BANK:
+        gov = (entry.get("prep"), entry.get("case"))
+        by_head.setdefault(_lemma_head(entry.get("lemma", "")), set()).add(gov)
+        for frame in entry.get("q") or []:
+            by_frame.setdefault(str(frame).strip().lower(), set()).add(gov)
+    return by_head, by_frame
+
+
+def _rival_forms(entry: dict, frame: str) -> set[str]:
+    """Все вопросительные формы, которые для ЭТОЙ фразы тоже верны."""
+    own = (entry.get("prep"), entry.get("case"))
+    govs = set(_RIVALS_BY_HEAD.get(_lemma_head(entry.get("lemma", "")), set()))
+    govs |= set(_RIVALS_BY_FRAME.get(str(frame).strip().lower(), set()))
+    out: set[str] = set()
+    for prep, case in govs:
+        if (prep, case) == own or not prep:
+            continue
+        out.add(_wo_form(prep).capitalize())
+        out.add(_person_form(prep, case or "akk"))
+    return out
+
+
+def _options(correct: str, target: str, prep: str, case: str, banned: set[str] | None = None) -> list[str]:
+    """4 варианта: верный + противоположная форма (вещь↔человек) + 2 похожих.
+
+    `banned` — формы второго верного ответа: их в вариантах быть не должно,
+    иначе у задания два правильных ответа.
+    """
+    banned = set(banned or ())
     opts = {correct}
     trap = _person_form(prep, case) if target == "thing" else _wo_form(prep).capitalize()
     opts.add(trap)
-    pool = _WO_DISTRACTORS + _PERSON_DISTRACTORS
+    pool = [d for d in (_WO_DISTRACTORS + _PERSON_DISTRACTORS) if d not in banned]
     random.shuffle(pool)
     for d in pool:
         if len(opts) >= 4:
@@ -812,6 +1124,10 @@ def _options(correct: str, target: str, prep: str, case: str) -> list[str]:
     out = list(opts)
     random.shuffle(out)
     return out
+
+
+# Указатели соперников строим один раз при загрузке — банк не меняется на ходу.
+_RIVALS_BY_HEAD, _RIVALS_BY_FRAME = _build_rivals()
 
 
 def _erklaerung(entry: dict, target: str, woword: str, personword: str) -> str:
@@ -849,6 +1165,8 @@ def _build_one(entry: dict) -> dict:
         target = "thing"
 
     frame = random.choice(entry["q"])
+    # Формы ВТОРОГО верного ответа для этой фразы — в варианты они не попадут.
+    banned = _rival_forms(entry, frame)
     if target == "person":
         correct = personword
         name, _ = random.choice(_PERSON_NAMES)
@@ -878,7 +1196,7 @@ def _build_one(entry: dict) -> dict:
                 "s": f"___ {frame}",
                 "clue": f"— {clue}",
                 "a": correct,
-                "opts": _options(correct, target, prep, case),
+                "opts": _options(correct, target, prep, case, banned),
                 "target": target,
                 "prep": prep,
                 "case": case,
@@ -899,7 +1217,7 @@ def _build_one(entry: dict) -> dict:
         "s": f"___ {frame}",
         "clue": f"— {clue}",
         "a": correct,
-        "opts": _options(correct, target, prep, case),
+        "opts": _options(correct, target, prep, case, banned),
         "target": target,
         "prep": prep,
         "case": case,
@@ -912,21 +1230,95 @@ def _build_one(entry: dict) -> dict:
     }
 
 
+def check_item(item: dict) -> list[str]:
+    """Проверка ГОТОВОГО задания — последний рубеж перед тем, как его увидит человек.
+
+    Проверяем ровно то, из-за чего задание становится нечестным:
+      • верный ответ есть среди вариантов, вариантов четыре и они разные;
+      • среди вариантов нет ВТОРОГО верного (Woran/Worunter для «leidest du?»);
+      • ответ выведен из предлога глагола, а не из чего-то ещё;
+      • о человеке спрашивают «Bei wem», о вещи — «Wobei», и подсказка не спорит
+        с этим;
+      • во фразе ровно один пропуск, и она осталась вопросом.
+    """
+    problems: list[str] = []
+    answer = str(item.get("a") or "")
+    opts = [str(o) for o in (item.get("opts") or [])]
+    prep, case = str(item.get("prep") or ""), str(item.get("case") or "")
+    target = str(item.get("target") or "")
+    if answer not in opts:
+        problems.append("верного ответа нет среди вариантов")
+    if len(opts) != 4 or len(set(opts)) != 4:
+        problems.append(f"вариантов должно быть 4 разных, а тут {opts}")
+    expected = _wo_form(prep).capitalize() if target == "thing" else _person_form(prep, case)
+    if answer != expected:
+        problems.append(f"ответ «{answer}» не выводится из управления: ждали «{expected}»")
+    opposite = _person_form(prep, case) if target == "thing" else _wo_form(prep).capitalize()
+    if opposite not in opts:
+        problems.append("нет главной ловушки — противоположной формы (вещь↔человек)")
+    rivals = _rival_forms(
+        {"lemma": item.get("lemma"), "prep": prep, "case": case},
+        str(item.get("s") or "").replace("___", "").strip(),
+    )
+    also_right = sorted(rivals & set(opts))
+    if also_right:
+        problems.append(f"в вариантах лежит второй верный ответ: {also_right}")
+    if target == "thing" and _is_person_noun(str(item.get("obj") or "")):
+        problems.append(f"о человеке «{item.get('obj')}» спрашивают как о вещи")
+    sentence = str(item.get("s") or "")
+    if sentence.count("___") != 1 or not sentence.rstrip().endswith("?"):
+        problems.append(f"фраза сломана: «{sentence}»")
+    if not str(item.get("clue") or "").strip("— .").strip():
+        problems.append("пустая подсказка-ответ")
+    if answer.lower() in str(item.get("clue") or "").lower():
+        problems.append("подсказка выдаёт ответ")
+    return problems
+
+
 def build_wofrage_items(n: int = 10) -> list[dict]:
-    """`n` rule-perfect, de-duplicated Wo-Frage items."""
-    if not _BANK:
+    """`n` заданий: проверенных поштучно и без повторов внутри набора.
+
+    Набор ложится в базу на весь день и уходит сразу всем, поэтому «почти верное»
+    задание тут недопустимо: то, что не прошло проверку, не выдаём вовсе.
+    Внутри одного набора один глагол встречается один раз — иначе десятка выглядит
+    как сбой (замер до правки: 16% наборов повторяли глагол, 5% — целую фразу).
+    """
+    bank = _healthy_bank()
+    if not bank:
         return []
+    want = max(0, int(n))
     out: list[dict] = []
-    seen: set[str] = set()
+    used_lemmas: set[str] = set()
+    used_sentences: set[str] = set()
+    rejected = 0
     attempts = 0
-    while len(out) < int(n) and attempts < int(n) * 12:
+    used_preps: Counter = Counter()
+    # Не больше двух заданий на один предлог: до этой правки в 46% наборов какой-то
+    # предлог встречался 3+ раза из 10, и десятка выглядела как одно и то же задание.
+    prep_cap = max(2, -(-want // 5))
+    while len(out) < want and attempts < want * 40:
         attempts += 1
-        item = _build_one(random.choice(_BANK))
-        key = (item["s"] + "|" + item["a"]).lower()
-        if key in seen:
+        pool = [e for e in bank
+                if str(e.get("lemma")) not in used_lemmas
+                and used_preps[str(e.get("prep"))] < prep_cap]
+        pool = pool or [e for e in bank if str(e.get("lemma")) not in used_lemmas] or bank
+        entry = random.choice(pool)
+        item = _build_one(entry)
+        problems = check_item(item)
+        if problems:
+            rejected += 1
+            logging.error("wofrage: задание не прошло проверку и не выдано (%s): %s",
+                          item.get("lemma"), "; ".join(problems))
             continue
-        seen.add(key)
+        sentence = str(item.get("s") or "").lower()
+        if sentence in used_sentences:
+            continue
+        used_sentences.add(sentence)
+        used_lemmas.add(str(item.get("lemma")))
+        used_preps[str(item.get("prep"))] += 1
         out.append(item)
+    if rejected:
+        logging.error("wofrage: отбраковано заданий при сборке набора: %d", rejected)
     return out
 
 
