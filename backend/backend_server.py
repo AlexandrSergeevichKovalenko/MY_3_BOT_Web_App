@@ -36912,6 +36912,9 @@ _QUICK_TRANSLATE_PROVIDER_EXECUTOR = ThreadPoolExecutor(
 )
 
 
+_LEADING_GERMAN_ARTICLE_RE = re.compile(r"^(?:der|die|das)\s+", re.IGNORECASE)
+
+
 def _quick_translate_german_noun_candidate(result, text, source_lang, target_lang):
     """Return the single German noun in a quick-translate result whose article we
     could resolve (der/die/das), or "" when the result isn't a lone German noun.
@@ -36925,6 +36928,11 @@ def _quick_translate_german_noun_candidate(result, text, source_lang, target_lan
         german = str(text or "").strip()
     else:
         return ""
+    # Переводчик нередко отдаёт существительное УЖЕ с артиклем («Das Problem»), и до
+    # этой строки такой ответ считался «не одиночным словом» — то есть его артикль
+    # не проверял никто, он просто попадал на экран и в общий пул. Снимаем артикль и
+    # дальше разбираемся с голым словом; артикль поставит опознание.
+    german = _LEADING_GERMAN_ARTICLE_RE.sub("", german).strip()
     if not german or " " in german or not german[:1].isupper():
         return ""
     return german.strip(".,!?;:")
@@ -36968,12 +36976,29 @@ def _attach_quick_translate_article(result, text, source_lang, target_lang):
             result["article"] = article
             result["part_of_speech"] = "noun"
             result["article_source"] = source
+            # Переводчик мог сам приписать артикль («Das Problem», и он же способен
+            # ошибиться). Наш ответ главнее: приводим видимый текст к нему, иначе
+            # в карточку и в общий пул уедет чужая догадка.
+            translated = str(result.get("translation") or "").strip()
+            if str(target_lang or "").strip().lower() == "de" and translated:
+                bare = _LEADING_GERMAN_ARTICLE_RE.sub("", translated).strip()
+                if bare and " " not in bare:
+                    result["translation"] = f"{article} {bare}"
         if number == PL:
             # Форму нельзя выдавать за слово: заголовок подписывается «мн. ч. от …»,
             # а таблица склонения строится от леммы, а не от этой поверхности.
             result["grammatical_number"] = PL
             if verdict["lemma"] and verdict["lemma"].casefold() != clean.casefold():
                 result["lemma_de"] = verdict["lemma"]
+        if not article:
+            # Промолчали намеренно: не знаем, слово это или форма. Считаем такие случаи —
+            # если их много, значит индекс форм надо прогревать шире, а не возвращаться
+            # к угадыванию артикля. Пустое честнее выдуманного, но не бесплатно.
+            _log_flow_observation(
+                "quick_translate", "article_withheld",
+                word=clean[:64], surface_number=number or "unknown",
+                surface_source=verdict["source"], confidence=verdict["confidence"],
+            )
     except Exception:
         logging.debug("quick-translate article enrichment failed", exc_info=True)
     return result
