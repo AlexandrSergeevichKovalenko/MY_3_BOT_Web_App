@@ -32,10 +32,45 @@ generated questions are always grammatical.
 """
 from __future__ import annotations
 
+import logging
 import random
 
 # ── Rules ───────────────────────────────────────────────────────────────────
 _VOWELS = "aeiouäöü"
+
+
+# ── Одушевлённость ──────────────────────────────────────────────────────────
+# О ЧЕЛОВЕКЕ спрашивают «Auf wen», о ВЕЩИ — «Worauf». Перепутать эти две вещи —
+# значит выдать задание, которое противоречит собственному пояснению («о человеке
+# было бы Auf wen»), и наказать человека за правильный ответ. Так и случилось:
+# в списках вещей лежали das Kind, der Chef, die Kollegin, der Lehrer — девять
+# готовых заданий спрашивали «Worauf … ребёнок».
+#
+# Список ниже — не единственная защита: даже если завтра сюда впишут человека,
+# которого здесь нет, _build_one НЕ выдаст о нём вопрос о вещи (см. страж там).
+_PERSON_NOUNS = {
+    "kind", "kinder", "mann", "frau", "freund", "freundin", "bruder", "schwester",
+    "lehrer", "lehrerin", "chef", "chefin", "vater", "mutter", "eltern", "sohn",
+    "tochter", "oma", "opa", "großmutter", "großvater", "onkel", "tante", "cousin",
+    "cousine", "kollege", "kollegin", "kollegen", "nachbar", "nachbarin", "nachbarn",
+    "arzt", "ärztin", "gast", "gäste", "kunde", "kundin", "partner", "partnerin",
+    "leute", "mensch", "menschen", "junge", "mädchen", "schüler", "schülerin",
+    "student", "studentin", "trainer", "trainerin", "verkäufer", "verkäuferin",
+    "kellner", "kellnerin", "polizist", "anwalt", "professor", "mitarbeiter",
+    "vorgesetzte", "vorgesetzter", "geschwister",
+    # Собирательные (Team, Gruppe, Familie, Firma) сюда НЕ входят: по-немецки о них
+    # спрашивают как о вещах — «woran arbeitet ihr», «worauf achtet das Team».
+}
+
+
+def _is_person_noun(phrase: str) -> bool:
+    """Человек ли это. Артикль отбрасываем, сравниваем по основному слову."""
+    head = str(phrase or "").strip()
+    for article in ("der ", "die ", "das ", "den ", "dem ", "des "):
+        if head.lower().startswith(article):
+            head = head[len(article):]
+            break
+    return head.strip().lower() in _PERSON_NOUNS
 
 
 def _wo_form(prep: str) -> str:
@@ -637,7 +672,38 @@ def _build_one(entry: dict) -> dict:
         obj_display, obj_ru = name, ""
     else:
         correct = woword
-        obj_phrase, obj_ru = random.choice(entry["obj"])
+        # СТРАЖ: вопрос о вещи не должен достаться человеку. Список объектов заполняют
+        # руками, и туда уже попадали люди — тогда карточка спрашивала «Worauf … ребёнок»
+        # и считала ошибкой верный ответ «Auf wen». Сначала пробуем взять из списка
+        # настоящую вещь; если весь список — люди, переключаемся на вопрос о человеке
+        # (глагол это позволяет) и громко пишем в лог, чтобы данные починили.
+        things = [pair for pair in entry["obj"] if not _is_person_noun(pair[0])]
+        if not things:
+            logging.warning(
+                "wofrage: в списке вещей для «%s» одни люди (%s) — выдаю вопрос о человеке",
+                entry.get("lemma"), [o for o, _ in entry["obj"]],
+            )
+            target = "person"
+            correct = personword
+            name, _ = random.choice(_PERSON_NAMES)
+            clue = f"{name}."
+            obj_display, obj_ru = name, ""
+            return {
+                "s": f"___ {frame}",
+                "clue": f"— {clue}",
+                "a": correct,
+                "opts": _options(correct, target, prep, case),
+                "target": target,
+                "prep": prep,
+                "case": case,
+                "lemma": entry["lemma"],
+                "verb_ru": entry["ru"],
+                "obj": obj_display,
+                "obj_ru": obj_ru,
+                "erklaerung": _erklaerung(entry, target, woword, personword),
+                "tip": _tip(entry, target, woword),
+            }
+        obj_phrase, obj_ru = random.choice(things)
         # Clue = Russian gloss of the THING → signals "вещь" but hides the German
         # preposition, so the learner must recall the verb government themselves.
         clue = (obj_ru[:1].upper() + obj_ru[1:] + ".") if obj_ru else (_decline_clue(prep, case, obj_phrase) + ".")
