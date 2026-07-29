@@ -29632,7 +29632,11 @@ def _wofrage_slim(items: list) -> list:
     answer (client local-grades; the server re-grades on submit). Explanations stay
     server-side and come back with the result."""
     return [{"s": it.get("s", ""), "clue": it.get("clue", ""),
-             "opts": it.get("opts", []), "a": it.get("a", "")} for it in (items or [])]
+             "opts": it.get("opts", []), "a": it.get("a", ""),
+             # Где формы взаимозаменяемы («Woran/Worunter leidest du?»), верны обе.
+             # Клиент подсвечивает ответ мгновенно, поэтому список нужен и ему —
+             # иначе он скажет «неверно», а сервер потом засчитает.
+             "also_ok": it.get("also_ok", [])} for it in (items or [])]
 
 
 @app.route("/api/webapp/wofrage/today", methods=["POST"])
@@ -29699,27 +29703,55 @@ def wofrage_submit():
     items = []
     correct = 0
     answered = 0
+    from backend.wofrage_generator import accepted_answers, item_key as _wofrage_item_key
+    telemetry = []
     for i, it in enumerate(set_items):
         ans = answers[i] if i < len(answers) else None
         chosen = str((ans or {}).get("chosen") or "").strip()
         corr = str(it.get("a") or "").strip()
-        ok = bool(chosen) and chosen == corr
+        # Засчитываем ЛЮБОЙ верный ответ: «Woran» и «Worunter leidest du?» — оба
+        # немецкий. Наказывать за верную форму нельзя, а разницу объясняем в разборе.
+        ok_answers = accepted_answers(it)
+        ok = bool(chosen) and chosen in ok_answers
         if chosen:
             answered += 1
             if ok:
                 correct += 1
-        items.append({
+        item_view = {
             "s": it.get("s", ""), "clue": it.get("clue", ""), "opts": it.get("opts", []),
             "a": corr, "chosen": chosen, "ok": ok, "target": it.get("target", ""),
             "erklaerung": it.get("erklaerung", ""), "tip": it.get("tip", ""),
             "lemma": it.get("lemma", ""), "verb_ru": it.get("verb_ru", ""),
             "obj": it.get("obj", ""), "obj_ru": it.get("obj_ru", ""),
+        }
+        # Ответил другой верной формой — покажем это как удачу, а не как «повезло»
+        if ok and chosen != corr:
+            item_view["also_ok_used"] = True
+            item_view["unterschied"] = str(it.get("unterschied") or "")
+        elif len(ok_answers) > 1:
+            item_view["unterschied"] = str(it.get("unterschied") or "")
+        items.append(item_view)
+        telemetry.append({
+            "item_key": str(it.get("key") or "") or _wofrage_item_key(it),
+            "set_id": set_id, "user_id": int(user_id), "chosen": chosen, "correct": ok,
+            "answer": corr, "lemma": it.get("lemma", ""), "prep": it.get("prep", ""),
+            "target": it.get("target", ""), "obj": it.get("obj", ""), "sentence": it.get("s", ""),
         })
     total = len(set_items)
     recorded = record_wofrage_sprint_result(
         set_id=set_id, user_id=int(user_id), user_name=user_name or "",
         correct=correct, answered=answered, total=total, time_ms=time_ms,
     )
+    if recorded and telemetry:
+        # Ответы по каждому заданию — в фоне, игра ждать этого не должна. Без них
+        # банк слепой: сломанное задание видно только по жалобе живого человека.
+        def _log_wofrage_items(rows=telemetry):
+            try:
+                from backend.database import record_wofrage_item_answers
+                record_wofrage_item_answers(rows)
+            except Exception:
+                logging.warning("wofrage item telemetry failed set=%s", set_id, exc_info=True)
+        threading.Thread(target=_log_wofrage_items, daemon=True).start()
     _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
     _flip_battle_ctas_done_async(int(user_id), set_id)  # flip play buttons → «✅ Сыграно»
     if recorded:
@@ -29808,17 +29840,20 @@ def wofrage_learn():
     user_id, _user_name, err = _answer_auth_user_id()
     if user_id is None:
         return err
-    from backend.database import pick_wofrage_payloads
+    from backend.database import pick_wofrage_payloads_for_user
     payload = request.get_json(silent=True) or {}
     try:
         n = max(5, min(20, int(payload.get("count") or 12)))
     except (TypeError, ValueError):
         n = 12
     out = []
-    for p in pick_wofrage_payloads(n):
+    # Личная тренировка подстраивается: предлоги, на которых человек валится, идут
+    # чаще. Дневной набор так подбирать нельзя — он общий, по нему сравнивают всех.
+    for p in pick_wofrage_payloads_for_user(int(user_id), n):
         out.append({
             "s": str(p.get("s") or ""), "clue": str(p.get("clue") or ""),
             "opts": p.get("opts") or [], "a": str(p.get("a") or ""),
+            "also_ok": p.get("also_ok") or [], "unterschied": str(p.get("unterschied") or ""),
             "target": str(p.get("target") or ""),
             "erklaerung": str(p.get("erklaerung") or ""), "tip": str(p.get("tip") or ""),
             "lemma": str(p.get("lemma") or ""), "verb_ru": str(p.get("verb_ru") or ""),

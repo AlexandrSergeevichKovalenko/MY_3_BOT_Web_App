@@ -1513,3 +1513,19 @@ html[data-scheme="light"] .tr-opt.wrong { color: #b91c1c; }
 html[data-scheme="light"] .tr-fb-swap, html[data-scheme="light"] .tr-fb-right b { color: #15803d; }
 html[data-scheme="light"] .tr-chip { background: rgba(217,119,6,.14); color: #b45309; }
 html[data-scheme="light"] .tr-chip.saved { background: rgba(37,99,235,.14); color: #1d4ed8; }
+
+/* «Оба ответа верны»: Woran / Worunter leidest du? — обе формы немецкие, поэтому
+   засчитываем любую, а разницу объясняем прямо в разборе, а не прячем задание. */
+.wo-both {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.10);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  font-size: 13px;
+  line-height: 1.45;
+  color: #92400e;
+}
+@media (prefers-color-scheme: dark) {
+  .wo-both { background: rgba(245, 158, 11, 0.14); color: #fcd34d; border-color: rgba(245,158,11,0.32); }
+}

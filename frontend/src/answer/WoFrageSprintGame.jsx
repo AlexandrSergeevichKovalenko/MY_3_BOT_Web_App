@@ -135,7 +135,10 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
     if (phase !== 'playing') return;
     const it = itemsRef.current[idxRef.current];
     if (!it) return;
-    const ok = String(opt) === String(it.a);
+    // Верных ответов может быть два: «Woran» и «Worunter leidest du?» — оба немецкий.
+    // Считаем так же, как сервер, иначе подсветка скажет «неверно», а зачтётся верно.
+    const accepted = [String(it.a), ...(Array.isArray(it.also_ok) ? it.also_ok.map(String) : [])];
+    const ok = accepted.includes(String(opt));
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
     setFlash({ ok });
     setTimeout(() => advance({ chosen: opt, ok }), 420);
@@ -249,8 +252,9 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
             return (
               <div key={i} className={`wo-rev ${it.ok ? 'ok' : 'bad'}`}>
                 <div className="wo-rev-phrase">
-                  {it.ok ? '✅' : '❌'} {pre}<b>{it.a}</b>{post}
+                  {it.ok ? '✅' : '❌'} {pre}<b>{it.also_ok_used ? it.chosen : it.a}</b>{post}
                   {!it.ok ? <span className="as-mine"> (ты: {it.chosen || '—'})</span> : null}
+                  {it.unterschied ? <div className="wo-both">Здесь верны обе формы. {it.unterschied}</div> : null}
                 </div>
                 {it.clue ? <div className="wo-rev-clue">{it.clue}</div> : null}
                 {it.erklaerung ? <div className="wo-rev-rule">📐 {it.erklaerung}</div> : null}

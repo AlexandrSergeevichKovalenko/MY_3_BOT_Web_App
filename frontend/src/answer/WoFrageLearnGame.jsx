@@ -43,7 +43,9 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
   const answer = useCallback((o) => {
     if (pick || !card) return;
     setPick(o);
-    const ok = o === card.a;
+    // Верных форм может быть две — засчитываем любую (разницу поясняем ниже).
+    const accepted = [String(card.a), ...(Array.isArray(card.also_ok) ? card.also_ok.map(String) : [])];
+    const ok = accepted.includes(String(o));
     setStreak((s) => (ok ? s + 1 : 0));
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
   }, [pick, card, haptic]);
@@ -64,13 +66,15 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
   } else {
     const answered = !!pick;
     const correct = card.a;
+  const accepted = [String(card.a), ...(Array.isArray(card.also_ok) ? card.also_ok.map(String) : [])];
+  const picked_ok = answered && accepted.includes(String(pick));
     const [pre, post] = splitBlank(card.s);
     body = (<>
       <div className="as-top">
         <span className="al-progress">📚 Wo-Fragen</span>
         {streak > 1 ? <span className="al-streak">🔥 {streak}</span> : <span />}
       </div>
-      <div className={`as-word wo-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
+      <div className={`as-word wo-word${answered ? (picked_ok ? ' ok' : ' bad') : ''}`}>
         <span className="fit-line wo-line" ref={phraseFit}>
           <span>{pre}</span>
           <span className="wo-slot">{answered ? correct : '?'}</span>
@@ -80,7 +84,7 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
       {card.clue ? <div className="wo-clue">{card.clue}</div> : null}
       <div className="as-buttons wo-buttons">
         {(card.opts || []).map((o) => {
-          const state = answered ? (o === correct ? ' on' : (o === pick ? ' wrong' : '')) : '';
+          const state = answered ? (accepted.includes(String(o)) ? ' on' : (o === pick ? ' wrong' : '')) : '';
           return (
             <button key={o} type="button" className={`as-btn-art wo-opt${state}`}
               onClick={() => answer(o)} disabled={answered}>{o}</button>
@@ -88,8 +92,9 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
         })}
       </div>
       {answered ? (
-        <div className={`wo-rev ${pick === correct ? 'ok' : 'bad'}`} style={{ marginTop: 14 }}>
-          <div className="wo-rev-phrase">{pick === correct ? '✅ Richtig!' : '❌'} <b>{pre}{correct}{post}</b></div>
+        <div className={`wo-rev ${picked_ok ? 'ok' : 'bad'}`} style={{ marginTop: 14 }}>
+          <div className="wo-rev-phrase">{picked_ok ? '✅ Richtig!' : '❌'} <b>{pre}{picked_ok ? pick : correct}{post}</b></div>
+          {card.unterschied ? <div className="wo-both">Здесь верны обе формы. {card.unterschied}</div> : null}
           {card.erklaerung ? <div className="wo-rev-rule">📐 {card.erklaerung}</div> : null}
           {card.tip ? <div className="wo-rev-tip">💡 {card.tip}</div> : null}
           {card.lemma ? <div className="wo-rev-rule">📝 {card.lemma}{card.verb_ru ? ` — ${card.verb_ru}` : ''}</div> : null}

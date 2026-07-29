@@ -32,6 +32,7 @@ generated questions are always grammatical.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 from collections import Counter
@@ -611,6 +612,7 @@ _BANK: list[dict] = [
      "q": ["zweifelst du?", "zweifelt ihr?"],
      "obj": [("der Plan", "план"), ("der Erfolg", "успех")]},
     {"lemma": "leiden an", "prep": "an", "case": "dat", "ru": "страдать (болезнью)", "person": False,
+     "also_ok": [{"prep": "unter", "mode": "thing", "note": "«an» — о болезни как диагнозе («an der Grippe leiden»), «unter» — о том, что тяготит. Когда речь о болезни, немцы говорят и так, и так — засчитываем оба."}],
      "q": ["leidest du?", "leidet ihr?"],
      "obj": [("die Grippe", "грипп"), ("die Allergie", "аллергия")]},
     # ── AUF + Akkusativ ──
@@ -621,6 +623,7 @@ _BANK: list[dict] = [
      "q": ["hoffst du?", "hofft ihr insgeheim?"],
      "obj": [("der Erfolg", "успех"), ("das Wunder", "чудо")]},
     {"lemma": "sich freuen auf", "prep": "auf", "case": "akk", "ru": "радоваться (предстоящему)", "person": False,
+     "also_ok": [{"prep": "über", "mode": "thing", "note": "«auf» — радуешься тому, что ВПЕРЕДИ, «über» — тому, что УЖЕ случилось. По одной подсказке не различить — засчитываем оба."}],
      "q": ["freust du dich am meisten?", "freut ihr euch so?"],
      "obj": [("der Urlaub", "отпуск"), ("das Wochenende", "выходные")]},
     {"lemma": "achten auf", "prep": "auf", "case": "akk", "ru": "обращать внимание", "person": True,
@@ -712,6 +715,7 @@ _BANK: list[dict] = [
      "q": ["engagierst du dich?", "engagiert ihr euch?"],
      "obj": [("die Umwelt", "экология"), ("das Projekt", "проект")]},
     {"lemma": "kämpfen für", "prep": "für", "case": "akk", "ru": "бороться (за)", "person": False,
+     "also_ok": [{"prep": "um", "mode": "thing", "note": "«für» — за что борешься, «um» — за что борешься, рискуя это потерять («um den Sieg kämpfen»). Для свободы и победы верны оба."}],
      "q": ["kämpfst du?", "kämpft ihr?"],
      "obj": [("die Freiheit", "свобода"), ("das Recht", "право")]},
     {"lemma": "sich schämen für", "prep": "für", "case": "akk", "ru": "стыдиться", "person": True,
@@ -726,7 +730,7 @@ _BANK: list[dict] = [
     # ── GEGEN + Akkusativ ──
     {"lemma": "kämpfen gegen", "prep": "gegen", "case": "akk", "ru": "бороться (против)", "person": True,
      "q": ["kämpfst du?", "kämpft ihr?"],
-     "obj": [("die Ungerechtigkeit", "несправедливость"), ("die Korruption", "коррупция"), ("die Korruption", "коррупция")]},
+     "obj": [("die Ungerechtigkeit", "несправедливость"), ("die Korruption", "коррупция")]},
     {"lemma": "sich wehren gegen", "prep": "gegen", "case": "akk", "ru": "защищаться", "person": True,
      "q": ["wehrst du dich?", "wehrt ihr euch?"],
      "obj": [("der Vorwurf", "упрёк"), ("die Kritik", "критика")]},
@@ -823,12 +827,15 @@ _BANK: list[dict] = [
      "obj": [("der Ärger", "проблемы"), ("die Ausrede", "отговорка")]},
     # ── ÜBER + Akkusativ ──
     {"lemma": "sprechen über", "prep": "über", "case": "akk", "ru": "говорить (о)", "person": True,
+     "also_ok": [{"prep": "mit", "mode": "person", "note": "«mit» — С КЕМ говоришь, «über» — О КОМ говоришь. По одному имени не понять, что имелось в виду, — засчитываем оба."}],
      "q": ["sprichst du?", "sprecht ihr?"],
      "obj": [("die Politik", "политика"), ("der Film", "фильм")]},
     {"lemma": "reden über", "prep": "über", "case": "akk", "ru": "говорить (о)", "person": True,
+     "also_ok": [{"prep": "mit", "mode": "person", "note": "«mit» — С КЕМ говоришь, «über» — О КОМ говоришь. По одному имени не понять, что имелось в виду, — засчитываем оба."}],
      "q": ["redest du?", "redet ihr?"],
      "obj": [("das Problem", "проблема"), ("die Arbeit", "работа")]},
     {"lemma": "sich freuen über", "prep": "über", "case": "akk", "ru": "радоваться (случившемуся)", "person": True,
+     "also_ok": [{"prep": "auf", "mode": "thing", "note": "«auf» — радуешься тому, что ВПЕРЕДИ, «über» — тому, что УЖЕ случилось. По одной подсказке не различить — засчитываем оба."}],
      "q": ["freust du dich?", "freut ihr euch so sehr?"],
      "obj": [("das Geschenk", "подарок"), ("die Nachricht", "новость")]},
     {"lemma": "sich ärgern über", "prep": "über", "case": "akk", "ru": "злиться", "person": True,
@@ -878,6 +885,7 @@ _BANK: list[dict] = [
      "q": ["machst du dir Sorgen?", "macht ihr euch Sorgen?"],
      "obj": [("die Zukunft", "будущее"), ("die Gesundheit", "здоровье")]},
     {"lemma": "kämpfen um", "prep": "um", "case": "akk", "ru": "бороться (за)", "person": False,
+     "also_ok": [{"prep": "für", "mode": "thing", "note": "«für» — за что борешься, «um» — за что борешься, рискуя это потерять («um den Sieg kämpfen»). Для свободы и победы верны оба."}],
      "q": ["kämpfst du?", "kämpft ihr?"],
      "obj": [("der Sieg", "победа"), ("das Überleben", "выживание")]},
     {"lemma": "es geht um", "prep": "um", "case": "akk", "ru": "речь идёт (о)", "person": False,
@@ -1105,7 +1113,8 @@ def _rival_forms(entry: dict, frame: str) -> set[str]:
     return out
 
 
-def _options(correct: str, target: str, prep: str, case: str, banned: set[str] | None = None) -> list[str]:
+def _options(correct: str, target: str, prep: str, case: str,
+             banned: set[str] | None = None, extra: list[str] | None = None) -> list[str]:
     """4 варианта: верный + противоположная форма (вещь↔человек) + 2 похожих.
 
     `banned` — формы второго верного ответа: их в вариантах быть не должно,
@@ -1113,6 +1122,9 @@ def _options(correct: str, target: str, prep: str, case: str, banned: set[str] |
     """
     banned = set(banned or ())
     opts = {correct}
+    # Объявленные «тоже верные» показываем осознанно: человек выбирает любой,
+    # а в разборе читает, чем они отличаются.
+    opts.update(a for a in (extra or []) if a)
     trap = _person_form(prep, case) if target == "thing" else _wo_form(prep).capitalize()
     opts.add(trap)
     pool = [d for d in (_WO_DISTRACTORS + _PERSON_DISTRACTORS) if d not in banned]
@@ -1149,6 +1161,41 @@ def _tip(entry: dict, target: str, woword: str) -> str:
     return f"Про людей Wo-наречия не образуются: только «{prep}» + {wq}."
 
 
+def item_key(item: dict) -> str:
+    """Устойчивое имя задания: одно и то же задание из разных наборов — один ключ.
+
+    Нужно, чтобы копить статистику ответов по КОНКРЕТНОМУ заданию: без этого
+    сломанное задание не видно, пока на него не пожалуются вручную.
+    """
+    raw = "|".join(str(item.get(k) or "") for k in ("lemma", "prep", "case", "target", "s", "obj"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _alternatives(entry: dict, target: str) -> tuple[list[str], str]:
+    """Ответы, которые тоже верны, и объяснение разницы.
+
+    Прятать второй верный ответ —полумера: человек всё равно знает, что «Worunter
+    leidest du?» — нормальный немецкий. Честнее показать оба, засчитать любой и
+    объяснить оттенок. Взаимозаменяемость объявляется в банке РУКАМИ (поле also_ok),
+    потому что она зависит от смысла: «unter der Grippe» — норма, а «an der Hitze» — нет.
+    """
+    forms: list[str] = []
+    notes: list[str] = []
+    for alt in entry.get("also_ok") or []:
+        mode = str(alt.get("mode") or "both")
+        if mode not in ("both", target):
+            continue
+        prep = str(alt.get("prep") or "")
+        if not prep:
+            continue
+        case = str(alt.get("case") or entry.get("case") or "akk")
+        forms.append(_wo_form(prep).capitalize() if target == "thing" else _person_form(prep, case))
+        note = str(alt.get("note") or "").strip()
+        if note and note not in notes:
+            notes.append(note)
+    return forms, " ".join(notes)
+
+
 def _build_one(entry: dict) -> dict:
     prep, case = entry["prep"], entry["case"]
     woword = _wo_form(prep).capitalize()
@@ -1165,59 +1212,43 @@ def _build_one(entry: dict) -> dict:
         target = "thing"
 
     frame = random.choice(entry["q"])
-    # Формы ВТОРОГО верного ответа для этой фразы — в варианты они не попадут.
-    banned = _rival_forms(entry, frame)
-    if target == "person":
-        correct = personword
-        name, _ = random.choice(_PERSON_NAMES)
-        # Clue in RU-context: a bare NAME signals a PERSON, without leaking the
-        # German preposition (which is the exact string on the correct button).
-        clue = f"{name}."
-        obj_display, obj_ru = name, ""
-    else:
-        correct = woword
+    if target == "thing":
         # СТРАЖ: вопрос о вещи не должен достаться человеку. Список объектов заполняют
         # руками, и туда уже попадали люди — тогда карточка спрашивала «Worauf … ребёнок»
-        # и считала ошибкой верный ответ «Auf wen». Сначала пробуем взять из списка
-        # настоящую вещь; если весь список — люди, переключаемся на вопрос о человеке
-        # (глагол это позволяет) и громко пишем в лог, чтобы данные починили.
+        # и считала ошибкой верный ответ «Auf wen».
         things = [pair for pair in entry["obj"] if not _is_person_noun(pair[0])]
         if not things:
-            logging.warning(
+            logging.error(
                 "wofrage: в списке вещей для «%s» одни люди (%s) — выдаю вопрос о человеке",
                 entry.get("lemma"), [o for o, _ in entry["obj"]],
             )
             target = "person"
-            correct = personword
-            name, _ = random.choice(_PERSON_NAMES)
-            clue = f"{name}."
-            obj_display, obj_ru = name, ""
-            return {
-                "s": f"___ {frame}",
-                "clue": f"— {clue}",
-                "a": correct,
-                "opts": _options(correct, target, prep, case, banned),
-                "target": target,
-                "prep": prep,
-                "case": case,
-                "lemma": entry["lemma"],
-                "verb_ru": entry["ru"],
-                "obj": obj_display,
-                "obj_ru": obj_ru,
-                "erklaerung": _erklaerung(entry, target, woword, personword),
-                "tip": _tip(entry, target, woword),
-            }
-        obj_phrase, obj_ru = random.choice(things)
-        # Clue = Russian gloss of the THING → signals "вещь" but hides the German
-        # preposition, so the learner must recall the verb government themselves.
-        clue = (obj_ru[:1].upper() + obj_ru[1:] + ".") if obj_ru else (_decline_clue(prep, case, obj_phrase) + ".")
-        obj_display = obj_phrase
 
-    return {
+    if target == "person":
+        correct = personword
+        name, _ = random.choice(_PERSON_NAMES)
+        # Подсказка — голое ИМЯ: сразу видно, что речь о человеке, и при этом
+        # немецкий предлог (он же текст верной кнопки) не подсказан.
+        clue, obj_display, obj_ru = f"{name}.", name, ""
+    else:
+        correct = woword
+        obj_display, obj_ru = random.choice(things)
+        # Подсказка — русское слово: видно, что речь о вещи, но управление
+        # глаголом человек должен вспомнить сам.
+        clue = (obj_ru[:1].upper() + obj_ru[1:] + ".") if obj_ru else (_decline_clue(prep, case, obj_display) + ".")
+
+    # Второй верный ответ: объявленный в банке — показываем и засчитываем,
+    # необъявленный — прячем из вариантов (иначе накажем за верный ответ).
+    also_ok, unterschied = _alternatives(entry, target)
+    banned = _rival_forms(entry, frame) - set(also_ok)
+
+    item = {
         "s": f"___ {frame}",
         "clue": f"— {clue}",
         "a": correct,
-        "opts": _options(correct, target, prep, case, banned),
+        "also_ok": also_ok,
+        "unterschied": unterschied,
+        "opts": _options(correct, target, prep, case, banned, extra=also_ok),
         "target": target,
         "prep": prep,
         "case": case,
@@ -1228,6 +1259,15 @@ def _build_one(entry: dict) -> dict:
         "erklaerung": _erklaerung(entry, target, woword, personword),
         "tip": _tip(entry, target, woword),
     }
+    item["key"] = item_key(item)
+    return item
+
+
+def accepted_answers(item: dict) -> set[str]:
+    """Все ответы, которые засчитываются. Одна точка правды для сервера и клиента."""
+    out = {str(item.get("a") or "").strip()}
+    out.update(str(a).strip() for a in (item.get("also_ok") or []) if str(a).strip())
+    return {a for a in out if a}
 
 
 def check_item(item: dict) -> list[str]:
@@ -1260,7 +1300,10 @@ def check_item(item: dict) -> list[str]:
         {"lemma": item.get("lemma"), "prep": prep, "case": case},
         str(item.get("s") or "").replace("___", "").strip(),
     )
-    also_right = sorted(rivals & set(opts))
+    declared = accepted_answers(item)
+    if len(declared) > 1 and not str(item.get("unterschied") or "").strip():
+        problems.append("несколько верных ответов без объяснения разницы")
+    also_right = sorted((rivals & set(opts)) - declared)
     if also_right:
         problems.append(f"в вариантах лежит второй верный ответ: {also_right}")
     if target == "thing" and _is_person_noun(str(item.get("obj") or "")):

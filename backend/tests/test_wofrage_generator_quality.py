@@ -77,7 +77,8 @@ class SingleCorrectAnswerTests(unittest.TestCase):
             item = wg._build_one(entry)
             frame = item["s"].replace("___", "").strip()
             rivals = wg._rival_forms(entry, frame)
-            clash = rivals & set(item["opts"])
+            # Объявленные «оба верны» показывать МОЖНО — они засчитываются.
+            clash = rivals & set(item["opts"]) - wg.accepted_answers(item)
             self.assertFalse(clash, f"второй верный ответ в вариантах: {clash} — {item['s']}")
 
     def test_known_rival_pairs_are_registered(self):
@@ -125,6 +126,47 @@ class GeneratedItemTests(unittest.TestCase):
         for _ in range(300):
             item = wg._build_one(random.choice(wg._BANK))
             self.assertNotIn(item["a"].lower(), item["clue"].lower())
+
+
+class BothAnswersAcceptedTests(unittest.TestCase):
+    """Прятать второй верный ответ — полумера. Где формы взаимозаменяемы, показываем
+    обе, засчитываем любую и объясняем разницу."""
+
+    def test_declared_pairs_are_accepted_and_explained(self):
+        random.seed(2)
+        seen = set()
+        for _ in range(2000):
+            entry = random.choice(wg._BANK)
+            if not entry.get("also_ok"):
+                continue
+            item = wg._build_one(entry)
+            ok = wg.accepted_answers(item)
+            if len(ok) < 2:
+                continue
+            seen.add(entry["lemma"])
+            self.assertTrue(ok <= set(item["opts"]), "верный ответ не показан среди вариантов")
+            self.assertTrue(item["unterschied"].strip(), "не объяснили разницу между формами")
+            self.assertEqual(wg.check_item(item), [])
+        self.assertGreaterEqual(len(seen), 5, f"мало пар проверено: {sorted(seen)}")
+
+    def test_items_without_declaration_accept_exactly_one_answer(self):
+        random.seed(6)
+        for _ in range(400):
+            entry = random.choice(wg._BANK)
+            if entry.get("also_ok"):
+                continue
+            item = wg._build_one(entry)
+            self.assertEqual(wg.accepted_answers(item), {item["a"]})
+
+    def test_item_key_is_stable_and_distinguishes_items(self):
+        random.seed(8)
+        keys = {}
+        for _ in range(600):
+            item = wg._build_one(random.choice(wg._BANK))
+            same = (item["s"], item["a"], item["obj"])
+            self.assertEqual(wg.item_key(item), item["key"])
+            keys.setdefault(item["key"], same)
+            self.assertEqual(keys[item["key"]], same, "разные задания получили один ключ")
 
 
 class SetLevelTests(unittest.TestCase):

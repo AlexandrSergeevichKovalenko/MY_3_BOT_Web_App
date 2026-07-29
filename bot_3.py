@@ -14570,6 +14570,81 @@ async def _daily_access_digest_job(context: CallbackContext) -> None:
         logging.exception("daily_access_digest failed")
 
 
+# ── Здоровье банка Wo-Fragen ────────────────────────────────────────────────
+# Проверки в коде ловят то, что автор СУМЕЛ предвидеть. Следующую ошибку он не
+# предвидит — поэтому за банком следят цифры живых ответов, как за банками
+# экзаменационных вопросов: доля верных ответов и поведение неверных вариантов.
+# Правило, которое поймало бы пару Woran/Worunter само: если какой-то неверный
+# вариант выбирают ЧАЩЕ верного, задание сломано.
+WOFRAGE_HEALTH_MIN_ATTEMPTS = 12
+WOFRAGE_HEALTH_MIN_RATE = 0.35
+
+
+def _wofrage_health_verdict(row: dict) -> str | None:
+    """Претензия к заданию или None, если оно здорово."""
+    if row.get("wrong_beats_key"):
+        return (f"неверный вариант «{row.get('top_wrong')}» выбирают чаще верного "
+                f"«{row.get('answer')}» — похоже, верных ответов два")
+    if float(row.get("correct_rate") or 0) < WOFRAGE_HEALTH_MIN_RATE:
+        return (f"верно отвечают лишь {round(100 * float(row.get('correct_rate') or 0))}% "
+                f"из {row.get('attempts')} — задание либо непосильное, либо кривое")
+    return None
+
+
+def _format_wofrage_health_text(rows: list[dict], quarantined: list[dict]) -> str:
+    if not rows:
+        return ("🩺 Банк Wo-Fragen: ответов пока мало, судить не о чем.\n"
+                f"Задание попадает под разбор с {WOFRAGE_HEALTH_MIN_ATTEMPTS} ответов.")
+    lines = [f"🩺 <b>Банк Wo-Fragen</b> — заданий под наблюдением: {len(rows)}"]
+    if quarantined:
+        lines.append(f"\n🚫 <b>Убрано из выдачи ({len(quarantined)}):</b>")
+        for r in quarantined[:10]:
+            lines.append(f"• <code>{r['sentence']}</code> → {r['answer']}\n   {r['verdict']}")
+    healthy = [r for r in rows if not r.get("verdict")]
+    if healthy:
+        worst = sorted(healthy, key=lambda r: r["correct_rate"])[:5]
+        lines.append("\n📉 <b>Самые трудные (но рабочие):</b>")
+        for r in worst:
+            lines.append(f"• {round(100 * r['correct_rate'])}% — <code>{r['sentence']}</code> → {r['answer']}")
+    return "\n".join(lines)
+
+
+async def _wofrage_bank_health_job(context: CallbackContext) -> None:
+    """Ночной осмотр банка: подозрительные задания — в карантин, отчёт админу."""
+    try:
+        from backend.database import get_wofrage_item_health, quarantine_wofrage_item
+        rows = await asyncio.to_thread(get_wofrage_item_health,
+                                       min_attempts=WOFRAGE_HEALTH_MIN_ATTEMPTS)
+        if not rows:
+            return
+        quarantined = []
+        for row in rows:
+            verdict = _wofrage_health_verdict(row)
+            row["verdict"] = verdict
+            if not verdict:
+                continue
+            ok = await asyncio.to_thread(
+                quarantine_wofrage_item, item_key=row["item_key"], reason=verdict,
+                sentence=row.get("sentence", ""), lemma=row.get("lemma", ""),
+                attempts=row.get("attempts", 0), correct_rate=row.get("correct_rate"),
+            )
+            if ok:
+                quarantined.append(row)
+        if not quarantined:
+            return
+        for admin_id in get_admin_telegram_ids():
+            try:
+                await context.bot.send_message(
+                    chat_id=int(admin_id),
+                    text=_format_wofrage_health_text(rows, quarantined),
+                    parse_mode="HTML",
+                )
+            except Exception as exc:
+                logging.warning("wofrage_bank_health: не доставлено админу %s: %s", admin_id, exc)
+    except Exception:
+        logging.exception("wofrage_bank_health failed")
+
+
 _CACHE_INVALIDATION_FEED_SEEN_UNTIL = {"ts": 0.0}
 _CACHE_INVALIDATION_FEED_LOOKBACK_SEC = 30
 
@@ -35112,6 +35187,39 @@ async def admin_wofrage_test_command(update: Update, context: CallbackContext) -
             logging.debug("wofragetest: inbox record failed", exc_info=True)
 
 
+async def admin_wofrage_health_command(update: Update, context: CallbackContext) -> None:
+    """Осмотр банка Wo-Fragen руками: что показывают ответы живых людей.
+
+    /wofrage_health          — отчёт и список убранных из выдачи
+    /wofrage_health release <ключ> — вернуть задание в выдачу после разбора
+    """
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.database import (
+        get_wofrage_item_health, list_wofrage_quarantine, release_wofrage_item,
+    )
+    args = context.args or []
+    if args and args[0].lower() == "release" and len(args) > 1:
+        ok = await asyncio.to_thread(release_wofrage_item, args[1].strip())
+        await message.reply_text("✅ Задание снова в выдаче." if ok else "Не вышло, смотри логи.")
+        return
+    rows = await asyncio.to_thread(get_wofrage_item_health, min_attempts=WOFRAGE_HEALTH_MIN_ATTEMPTS)
+    for row in rows:
+        row["verdict"] = _wofrage_health_verdict(row)
+    jailed = await asyncio.to_thread(list_wofrage_quarantine, 20)
+    text = _format_wofrage_health_text(rows, [r for r in rows if r.get("verdict")])
+    if jailed:
+        text += "\n\n🔑 <b>Вернуть в выдачу:</b>\n" + "\n".join(
+            f"<code>/wofrage_health release {r['item_key']}</code> — {r['sentence']}" for r in jailed[:8]
+        )
+    await message.reply_text(text, parse_mode="HTML")
+
+
 async def wofrage_learn_command(update: Update, context: CallbackContext) -> None:
     """Open the Wo-Frage Trainer (self-paced deck). /wofragelearn"""
     message = update.effective_message
@@ -40229,6 +40337,7 @@ def main():
     application.add_handler(CallbackQueryHandler(adjektiv_battle_remind_callback, pattern=r"^adb_rem:\d+:[a-z0-9]+$"))
     application.add_handler(CommandHandler("wofragesprint", admin_wofrage_sprint_command))
     application.add_handler(CommandHandler("wofragetest", admin_wofrage_test_command))
+    application.add_handler(CommandHandler("wofrage_health", admin_wofrage_health_command))
     application.add_handler(CommandHandler("wofragebattle", wofrage_battle_command))
     application.add_handler(CommandHandler("wofragelearn", wofrage_learn_command))
     application.add_handler(CallbackQueryHandler(wofrage_battle_join_callback, pattern=r"^wfb_join:\d+$"))
@@ -40363,6 +40472,15 @@ def main():
             logging.info("scheduled daily_access_digest at 09:05 Europe/Vienna")
         except Exception:
             logging.warning("failed to schedule daily_access_digest", exc_info=True)
+        try:
+            application.job_queue.run_daily(
+                _wofrage_bank_health_job,
+                time=time(hour=4, minute=10, tzinfo=ZoneInfo("Europe/Vienna")),
+                name="wofrage_bank_health",
+            )
+            logging.info("scheduled wofrage_bank_health at 04:10 Europe/Vienna")
+        except Exception:
+            logging.warning("failed to schedule wofrage_bank_health", exc_info=True)
         try:
             application.job_queue.run_daily(
                 _nightly_frequency_backfill_job,

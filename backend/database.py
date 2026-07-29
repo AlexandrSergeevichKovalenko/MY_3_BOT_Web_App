@@ -2730,8 +2730,246 @@ def ensure_wofrage_sprint_schema() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_wofrage_sprint_results_rank "
                 "ON bt_3_wofrage_sprint_results (set_id, correct DESC, time_ms ASC);"
             )
+            # Ответ по КАЖДОМУ заданию. Раньше хранился только итог по набору
+            # («7 из 10»), поэтому сломанное задание было невидимо: понять, что
+            # люди массово спотыкаются именно на нём, было не из чего.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_wofrage_item_answers (
+                    id BIGSERIAL PRIMARY KEY,
+                    item_key TEXT NOT NULL,
+                    set_id TEXT,
+                    user_id BIGINT NOT NULL,
+                    chosen TEXT NOT NULL DEFAULT '',
+                    correct BOOLEAN NOT NULL DEFAULT FALSE,
+                    -- поля задания дублируем сюда: отчёт по здоровью банка не должен
+                    -- зависеть от того, жив ли ещё тот набор
+                    answer TEXT, lemma TEXT, prep TEXT, target TEXT, obj TEXT,
+                    sentence TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wofrage_item_answers_key "
+                "ON bt_3_wofrage_item_answers (item_key, created_at DESC);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wofrage_item_answers_user "
+                "ON bt_3_wofrage_item_answers (user_id, created_at DESC);"
+            )
+            # Карантин: задание, на которое жалуются цифры, перестаёт выдаваться
+            # СРАЗУ, не дожидаясь, пока до него дойдут руки.
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_wofrage_item_quarantine (
+                    item_key TEXT PRIMARY KEY,
+                    reason TEXT NOT NULL DEFAULT '',
+                    sentence TEXT,
+                    lemma TEXT,
+                    attempts INT NOT NULL DEFAULT 0,
+                    correct_rate NUMERIC,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    released_at TIMESTAMPTZ
+                );"""
+            )
         conn.commit()
     _WOFRAGE_SPRINT_SCHEMA_DONE = True
+
+
+def record_wofrage_item_answers(rows: list[dict]) -> int:
+    """Ответы по каждому заданию. Пишется в фоне: на скорость игры влиять не должно."""
+    rows = [r for r in (rows or []) if str(r.get("item_key") or "").strip()]
+    if not rows:
+        return 0
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """INSERT INTO bt_3_wofrage_item_answers
+                       (item_key, set_id, user_id, chosen, correct, answer, lemma, prep,
+                        target, obj, sentence)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);""",
+                    [(
+                        str(r.get("item_key")), str(r.get("set_id") or ""), int(r.get("user_id") or 0),
+                        str(r.get("chosen") or ""), bool(r.get("correct")),
+                        str(r.get("answer") or ""), str(r.get("lemma") or ""), str(r.get("prep") or ""),
+                        str(r.get("target") or ""), str(r.get("obj") or ""), str(r.get("sentence") or ""),
+                    ) for r in rows],
+                )
+            conn.commit()
+        return len(rows)
+    except Exception:
+        logging.warning("record_wofrage_item_answers failed", exc_info=True)
+        return 0
+
+
+def get_wofrage_item_health(*, min_attempts: int = 12, days: int = 120) -> list[dict]:
+    """Здоровье банка заданий по живым ответам.
+
+    Так устроен надзор за банками вопросов в тестологии: у каждого задания смотрят
+    долю верных ответов и поведение неверных вариантов. Правило простое —
+    ЕСЛИ КАКОЙ-ТО НЕВЕРНЫЙ ВАРИАНТ ВЫБИРАЮТ ЧАЩЕ ВЕРНОГО, задание почти наверняка
+    сломано: либо ключ не тот, либо у него на самом деле два верных ответа.
+    Именно так нашлась бы пара Woran/Worunter — без моей догадливости.
+    """
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """WITH a AS (
+                           SELECT * FROM bt_3_wofrage_item_answers
+                           WHERE created_at > NOW() - (%s || ' days')::interval
+                             AND chosen <> ''
+                       ),
+                       tot AS (
+                           SELECT item_key,
+                                  COUNT(*) AS attempts,
+                                  SUM(CASE WHEN correct THEN 1 ELSE 0 END) AS correct,
+                                  MIN(sentence) AS sentence, MIN(lemma) AS lemma,
+                                  MIN(answer) AS answer, MIN(obj) AS obj
+                           FROM a GROUP BY item_key
+                       ),
+                       wrong AS (
+                           SELECT DISTINCT ON (item_key) item_key, chosen, cnt
+                           FROM (SELECT item_key, chosen, COUNT(*) AS cnt
+                                 FROM a WHERE NOT correct GROUP BY item_key, chosen) w
+                           ORDER BY item_key, cnt DESC
+                       )
+                       SELECT t.item_key, t.attempts, t.correct, t.sentence, t.lemma,
+                              t.answer, t.obj, w.chosen, COALESCE(w.cnt, 0)
+                       FROM tot t LEFT JOIN wrong w ON w.item_key = t.item_key
+                       WHERE t.attempts >= %s
+                       ORDER BY (t.correct::float / NULLIF(t.attempts,0)) ASC;""",
+                    (int(days), int(min_attempts)),
+                )
+                rows = cur.fetchall()
+        out = []
+        for key, attempts, correct, sentence, lemma, answer, obj, top_wrong, wrong_cnt in rows:
+            attempts = int(attempts or 0)
+            correct = int(correct or 0)
+            rate = (correct / attempts) if attempts else 0.0
+            out.append({
+                "item_key": key, "attempts": attempts, "correct": correct,
+                "correct_rate": round(rate, 3), "sentence": sentence or "", "lemma": lemma or "",
+                "answer": answer or "", "obj": obj or "",
+                "top_wrong": top_wrong or "", "top_wrong_count": int(wrong_cnt or 0),
+                # Неверный вариант популярнее верного — красный флаг
+                "wrong_beats_key": int(wrong_cnt or 0) > correct,
+            })
+        return out
+    except Exception:
+        logging.warning("get_wofrage_item_health failed", exc_info=True)
+        return []
+
+
+def quarantine_wofrage_item(*, item_key: str, reason: str, sentence: str = "",
+                            lemma: str = "", attempts: int = 0, correct_rate: float | None = None) -> bool:
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO bt_3_wofrage_item_quarantine
+                       (item_key, reason, sentence, lemma, attempts, correct_rate)
+                       VALUES (%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (item_key) DO UPDATE
+                       SET reason=EXCLUDED.reason, attempts=EXCLUDED.attempts,
+                           correct_rate=EXCLUDED.correct_rate, released_at=NULL;""",
+                    (str(item_key), str(reason)[:500], str(sentence)[:300], str(lemma)[:120],
+                     int(attempts or 0), correct_rate),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("quarantine_wofrage_item failed key=%s", item_key, exc_info=True)
+        return False
+
+
+def get_quarantined_wofrage_keys() -> set:
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT item_key FROM bt_3_wofrage_item_quarantine WHERE released_at IS NULL;"
+                )
+                return {str(r[0]) for r in cur.fetchall()}
+    except Exception:
+        logging.warning("get_quarantined_wofrage_keys failed", exc_info=True)
+        return set()
+
+
+def list_wofrage_quarantine(limit: int = 30) -> list[dict]:
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT item_key, reason, sentence, lemma, attempts, correct_rate, created_at "
+                    "FROM bt_3_wofrage_item_quarantine WHERE released_at IS NULL "
+                    "ORDER BY created_at DESC LIMIT %s;", (int(limit),),
+                )
+                return [{"item_key": r[0], "reason": r[1], "sentence": r[2], "lemma": r[3],
+                         "attempts": int(r[4] or 0), "correct_rate": float(r[5] or 0),
+                         "created_at": r[6]} for r in cur.fetchall()]
+    except Exception:
+        logging.warning("list_wofrage_quarantine failed", exc_info=True)
+        return []
+
+
+def release_wofrage_item(item_key: str) -> bool:
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_wofrage_item_quarantine SET released_at=NOW() WHERE item_key=%s;",
+                    (str(item_key),),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("release_wofrage_item failed key=%s", item_key, exc_info=True)
+        return False
+
+
+def get_user_wofrage_weakness(user_id: int, *, days: int = 90) -> dict:
+    """Где ИМЕННО этот человек спотыкается: доля ошибок по предлогам и по типу вопроса.
+
+    Дневной набор один на всех (иначе рушится общий зачёт), а вот личная тренировка
+    может подбираться под человека: слабые предлоги — чаще, освоенные — реже.
+    """
+    try:
+        ensure_wofrage_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT prep, target, COUNT(*),
+                              SUM(CASE WHEN correct THEN 1 ELSE 0 END)
+                       FROM bt_3_wofrage_item_answers
+                       WHERE user_id=%s AND chosen <> ''
+                         AND created_at > NOW() - (%s || ' days')::interval
+                       GROUP BY prep, target;""",
+                    (int(user_id), int(days)),
+                )
+                rows = cur.fetchall()
+        preps: dict = {}
+        targets: dict = {}
+        total = correct_total = 0
+        for prep, target, cnt, corr in rows:
+            cnt, corr = int(cnt or 0), int(corr or 0)
+            total += cnt
+            correct_total += corr
+            p = preps.setdefault(str(prep or ""), {"attempts": 0, "correct": 0})
+            p["attempts"] += cnt
+            p["correct"] += corr
+            t = targets.setdefault(str(target or ""), {"attempts": 0, "correct": 0})
+            t["attempts"] += cnt
+            t["correct"] += corr
+        return {"attempts": total, "correct": correct_total, "preps": preps, "targets": targets}
+    except Exception:
+        logging.warning("get_user_wofrage_weakness failed user=%s", user_id, exc_info=True)
+        return {"attempts": 0, "correct": 0, "preps": {}, "targets": {}}
 
 
 def pick_wofrage_payloads(n: int = 10) -> list[dict]:
@@ -2740,12 +2978,49 @@ def pick_wofrage_payloads(n: int = 10) -> list[dict]:
     the engine ships with its own bank)."""
     try:
         from backend.wofrage_generator import build_wofrage_items
-        items = build_wofrage_items(int(n))
+        want = max(1, int(n))
+        banned = get_quarantined_wofrage_keys()
+        # Собираем с запасом и выбрасываем задания, отправленные в карантин цифрами.
+        items = [it for it in build_wofrage_items(want * 2 if banned else want)
+                 if str(it.get("key") or "") not in banned]
         if items:
-            return items
+            return items[:want]
     except Exception:
         logging.warning("pick_wofrage_payloads: deterministic gen failed", exc_info=True)
     return []
+
+
+def pick_wofrage_payloads_for_user(user_id: int, n: int = 12) -> list[dict]:
+    """То же, но с оглядкой на этого человека: где он ошибается — того больше.
+
+    Дневной набор общий (общий зачёт), а личная тренировка подстраивается: предлог,
+    на котором человек валится, встречается чаще; освоенное — реже. Пока ответов
+    мало, работает обычная случайная выдача.
+    """
+    want = max(1, int(n))
+    try:
+        pool = pick_wofrage_payloads(want * 4)
+        if not pool:
+            return []
+        weak = get_user_wofrage_weakness(int(user_id))
+        if int(weak.get("attempts") or 0) < 20:
+            return pool[:want]
+        import random as _random
+
+        def score(item: dict) -> float:
+            prep = str(item.get("prep") or "")
+            stat = (weak.get("preps") or {}).get(prep) or {}
+            attempts = int(stat.get("attempts") or 0)
+            if attempts < 3:
+                return 0.5 + _random.random() * 0.3          # незнакомое — умеренно интересно
+            error_rate = 1.0 - (int(stat.get("correct") or 0) / attempts)
+            return error_rate + _random.random() * 0.25       # шум, чтобы не выдавать одно и то же
+
+        pool.sort(key=score, reverse=True)
+        return pool[:want]
+    except Exception:
+        logging.warning("pick_wofrage_payloads_for_user failed user=%s", user_id, exc_info=True)
+        return pick_wofrage_payloads(want)
 
 
 def _wofrage_item_for_game(p: dict) -> dict:
