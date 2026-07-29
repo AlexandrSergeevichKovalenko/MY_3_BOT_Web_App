@@ -1,0 +1,58 @@
+#!/bin/sh
+# Гоняет набор тестов перед каждым git push. Красное — пуш не уходит.
+#
+# Зачем: тесты не запускались автоматически нигде, поэтому за месяцы накопилось
+# 40 красных, и настоящая поломка (счётчики повторений FSRS) тонула среди них.
+#
+# Срочно нужно запушить, несмотря на красное:  git push --no-verify
+#
+# Переустановить хук после клонирования репозитория:
+#   ./scripts/git-hooks/install.sh
+
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
+cd "$REPO_ROOT" || exit 0
+
+# Тесты не должны трогать боевую базу: без этого импорт приложения делает DDL
+# в проде (в окружении разработчика лежат боевые креденшелы).
+export SKIP_STARTUP_SCHEMA_BOOTSTRAP=1
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "⚠️  pre-push: python3 не найден — тесты пропущены, пуш продолжается."
+    exit 0
+fi
+
+if ! python3 -c "import pytest" >/dev/null 2>&1; then
+    echo "⚠️  pre-push: pytest не установлен — тесты пропущены, пуш продолжается."
+    exit 0
+fi
+
+echo "▶️  Прогоняю тесты перед пушем (около минуты)…"
+OUTPUT=$(python3 -m pytest backend/tests -q 2>&1)
+STATUS=$?
+
+if [ $STATUS -eq 0 ]; then
+    echo "$OUTPUT" | tail -n 1
+    echo "✅ Тесты зелёные — пушу."
+    exit 0
+fi
+
+FAILURES=$(echo "$OUTPUT" | grep -E "^FAILED|^ERROR")
+
+# Прогон мог не состояться вовсе — например, оборвалась сеть или база не ответила.
+# Это НЕ красные тесты, и блокировать из-за этого пуш нечестно: человек потратит
+# время на поиск несуществующей поломки. Предупреждаем и пропускаем.
+if [ -z "$FAILURES" ] && echo "$OUTPUT" | grep -qiE "OperationalError|could not connect|Operation timed out|Connection refused"; then
+    echo ""
+    echo "⚠️  pre-push: прогон не состоялся — не достучались до внешнего сервиса."
+    echo "   Это не поломка кода. Пуш продолжается; прогоните тесты вручную, когда будет связь."
+    exit 0
+fi
+
+echo ""
+echo "$FAILURES" | head -n 20
+echo "$OUTPUT" | tail -n 1
+echo ""
+echo "⛔️ Пуш остановлен: тесты красные."
+echo "   Посмотреть подробно:  python3 -m pytest backend/tests -q"
+echo "   Запушить всё равно:   git push --no-verify"
+exit 1
