@@ -13,14 +13,22 @@
 Редкий, но настоящий композит так не срабатывает: у него нет документированного
 двойника на одну букву длиннее.
 
-Только отчёт. Автоматически переименовывать заголовки в личных карточках нельзя:
-это чужие данные, решение принимает владелец.
+ПРИЧИНА НАЙДЕНА (29.07.2026): заголовок прогонялся через spaCy de_core_news_sm
+(`_normalize_german_text`), а маленькая модель откусывает существительным окончание:
+Felge→Felg, Gefriertruhe→Gefriertruh, Abflughalle→Abflughall, Gepäckwagen→Gepäckwag,
+Wassertropfen→Wassertropfe, Scheibe→Scheib. Ответ модели при этом был правильным —
+и в примерах, и в склонении. Лемматизатор от существительных отключён; здесь чиним
+то, что уже записано.
 
-Запуск:  python3 scripts/broken_headword_audit.py [--examples 40]
+Запуск:  python3 scripts/broken_headword_audit.py [--examples 40] [--apply]
+         --apply чинит ТОЛЬКО обрезанные заголовки (корзина «✂»), где восстановленное
+         слово подтверждено справочником. «Часть речи потеряна» не трогается: там
+         нужен человек.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -52,8 +60,14 @@ SOURCES = {
 }
 
 
+def split_article(text: str) -> tuple[str, str]:
+    compact = re.sub(r"\s+", " ", str(text or "").strip())
+    match = ARTICLE_RE.match(compact)
+    return (match.group(1).lower(), compact[match.end():].strip()) if match else ("", compact)
+
+
 def bare(text: str) -> str:
-    return ARTICLE_RE.sub("", re.sub(r"\s+", " ", str(text or "").strip())).strip()
+    return split_article(text)[1]
 
 
 def load_pageless(conn) -> set[str]:
@@ -97,9 +111,70 @@ def lowercase_words(surfaces: list[str]) -> set[str]:
     return found
 
 
+TEXT_COLUMNS = {
+    "общий пул": ("bt_3_dictionary_entries", ("source_text", "target_text", "word_de")),
+    "карточки людей": ("bt_3_webapp_dictionary_queries", ("word_ru", "translation_de", "word_de")),
+}
+
+
+def repair(conn, label: str, rows: list[tuple]) -> int:
+    """Дописать откушенное окончание: «die Abflughall» → «die Abflughalle».
+
+    Чиним и текст, и поля разбора, и нормализованные ключи поиска — иначе запись
+    перестанет находиться. Меняем ТОЛЬКО те поля, где стоит ровно обрезанное слово."""
+    from backend.database import (
+        _normalize_dictionary_headword_key, _normalize_dictionary_text_key,
+    )
+    table, columns = TEXT_COLUMNS[label]
+    norm_columns = {"source_text": ("source_text_norm", "source_headword_norm"),
+                    "target_text": ("target_text_norm", "target_headword_norm")}
+    fixed = 0
+    for row_id, surface, original, _origin in rows:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT {', '.join(columns)}, response_json FROM {table} WHERE id = %s",
+                        (row_id,))
+            fetched = cur.fetchone()
+        if not fetched:
+            continue
+        *texts, payload = fetched
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        sets, params = [], []
+        for name, value in zip(columns, texts):
+            article, value_bare = split_article(value)
+            if value_bare.casefold() != surface.casefold():
+                continue
+            fixed_text = f"{article} {original}".strip() if article else original
+            sets.append(f"{name} = %s")
+            params.append(fixed_text)
+            for norm_col, head_col in [norm_columns.get(name, ("", ""))]:
+                if norm_col:
+                    sets += [f"{norm_col} = %s", f"{head_col} = %s"]
+                    params += [_normalize_dictionary_text_key(fixed_text),
+                               _normalize_dictionary_headword_key(fixed_text)]
+        for key in ("word_de", "translation_de", "source_text", "target_text"):
+            article, value_bare = split_article(payload.get(key) or "")
+            if value_bare.casefold() == surface.casefold():
+                payload[key] = f"{article} {original}".strip() if article else original
+        if not sets:
+            continue
+        sets.append("response_json = %s")
+        params.append(json.dumps(payload, ensure_ascii=False))
+        params.append(row_id)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE {table} SET {', '.join(sets)} WHERE id = %s", params)
+            conn.commit()
+            fixed += 1
+        except Exception as exc:
+            conn.rollback()
+            print(f"  ⚠ id={row_id} не починен: {str(exc)[:100]}")
+    return fixed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--examples", type=int, default=40)
+    parser.add_argument("--apply", action="store_true", help="дописать откушенное окончание")
     args = parser.parse_args()
     dsn = (os.getenv("DATABASE_URL_PGBOUNCER_RAILWAY") or os.getenv("DATABASE_URL") or "").strip()
     if not dsn:
@@ -143,6 +218,8 @@ def main() -> int:
         for row_id, surface, original, origin in case[:args.examples]:
             print(f"  Aa id={row_id} «{surface}» — это «{surface[:1].lower() + surface[1:]}», "
                   f"не существительное{f' (источник: {origin})' if origin else ''}")
+        if args.apply and cut:
+            print(f"  → починено записей: {repair(conn, label, cut)}")
     print(f"\nвсего: обрезано {total_cut}, часть речи потеряна {total_case}")
     print("⚠ деление приблизительное: «Scheib» попадает во вторую корзину, потому что у "
           "«scheib» есть страница (повелительное наклонение). Правки — глазами, не скопом.")
