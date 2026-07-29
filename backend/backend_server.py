@@ -659,6 +659,8 @@ from backend.database import (
     count_admin_subscription_available_words,
     has_admin_subscription_available,
     materialize_subscription_card,
+    get_next_new_srs_candidate_with_subscription,
+    invalidate_subscription_peek_cache,
     _trained_german_word_keys,
     count_dictionary_entries_for_language_pair,
     count_starter_dictionary_entries_for_language_pair,
@@ -11027,7 +11029,7 @@ def _list_srs_queue_cards(
                     f"""
                     SELECT
                         q.id, q.word_ru, q.translation_de, q.word_de,
-                        q.translation_ru, q.response_json, q.source_lang, q.target_lang
+                        q.translation_ru, q.response_json, q.source_lang, q.target_lang, q.frequency_rank
                     FROM bt_3_webapp_dictionary_queries q
                     LEFT JOIN bt_3_card_srs_state s
                       ON s.user_id = q.user_id AND s.card_id = q.id
@@ -11053,13 +11055,14 @@ def _list_srs_queue_cards(
                 new_rows.extend(aged_rows)
                 new_selected_ids.update(int(row[0]) for row in aged_rows)
 
+            freq_stage_ids: set[int] = set()
             freq_limit = new_limit - len(new_rows)
             if freq_limit > 0:
                 cur.execute(
                     f"""
                     SELECT
                         q.id, q.word_ru, q.translation_de, q.word_de,
-                        q.translation_ru, q.response_json, q.source_lang, q.target_lang
+                        q.translation_ru, q.response_json, q.source_lang, q.target_lang, q.frequency_rank
                     FROM bt_3_webapp_dictionary_queries q
                     LEFT JOIN bt_3_card_srs_state s
                       ON s.user_id = q.user_id AND s.card_id = q.id
@@ -11086,6 +11089,10 @@ def _list_srs_queue_cards(
                 freq_rows = list(cur.fetchall() or [])
                 new_rows.extend(freq_rows)
                 new_selected_ids.update(int(row[0]) for row in freq_rows)
+                # Эти строки отобраны по частотности — именно они соревнуются со словами
+                # подписки. Резерв «самое старое» (aged) в соревновании не участвует: он
+                # существует ровно для того, чтобы неранжированные слова не голодали.
+                freq_stage_ids.update(int(row[0]) for row in freq_rows)
 
             if exclude_recent_seen and len(new_rows) < new_limit:
                 cur.execute(
@@ -11098,7 +11105,8 @@ def _list_srs_queue_cards(
                         q.translation_ru,
                         q.response_json,
                         q.source_lang,
-                        q.target_lang
+                        q.target_lang,
+                        q.frequency_rank
                     FROM bt_3_webapp_dictionary_queries q
                     LEFT JOIN bt_3_card_srs_state s
                       ON s.user_id = q.user_id
@@ -11126,16 +11134,44 @@ def _list_srs_queue_cards(
                 new_selected_ids.update(int(row[0]) for row in fallback_new_rows)
                 new_fallback_added = len(fallback_new_rows)
 
-        # Live subscription top-up: once the user's OWN new words can't fill the daily new-card
-        # slots, lazily materialize the admin's next words (by frequency) into the buffer. Same
-        # fail-safe/non-manual guards as the single-card path. Materialized rows have no SRS row
-        # yet, so they're served as normal new cards ("srs": None).
-        if (new_limit > 0 and len(new_rows) < new_limit
-                and not normalized_allowed_ids and not allowed_card_ids):
+        # ЕДИНАЯ очередь в буфере: слово из подписки соревнуется со своими по нужности.
+        # Раньше подписка добирала только свободные места — а они не пустовали никогда,
+        # потому что у каждого лежала тысяча своих слов. Итог: ноль выданных слов за всё
+        # время существования подписки. Теперь она (а) занимает свободные места и
+        # (б) вытесняет своё слово, если её слово нужнее. Вытесненное никуда не пропадает —
+        # оно остаётся в словаре человека и придёт в следующий раз. Резерв «самое старое»
+        # и ручной отбор не трогаем: там выбор осознанный.
+        if new_limit > 0 and not normalized_allowed_ids and not allowed_card_ids:
             try:
                 _sub_state = get_starter_dictionary_state(user_id, cursor=cur)
                 if _sub_state.get("live_subscription"):
-                    while len(new_rows) < new_limit:
+                    def _rank_of(row):
+                        value = row[8] if len(row) > 8 else None
+                        return float(value) if value is not None else float("inf")
+
+                    while True:
+                        _free_slot = len(new_rows) < new_limit
+                        _worst_own = None
+                        if not _free_slot:
+                            _own_in_play = [r for r in new_rows if int(r[0]) in freq_stage_ids]
+                            if _own_in_play:
+                                _worst_own = max(_own_in_play, key=_rank_of)
+                            if _worst_own is None:
+                                break
+                        _peek = list_admin_subscription_new_candidates(
+                            user_id=user_id,
+                            source_user_id=STARTER_DICTIONARY_SOURCE_USER_ID,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            limit=1,
+                            cursor=cur,
+                        )
+                        if not _peek:
+                            break
+                        _sub_rank_raw = _peek[0].get("frequency_rank")
+                        _sub_rank = float(_sub_rank_raw) if _sub_rank_raw is not None else float("inf")
+                        if not _free_slot and _sub_rank >= _rank_of(_worst_own):
+                            break
                         _mid = materialize_subscription_card(
                             user_id=user_id,
                             source_user_id=STARTER_DICTIONARY_SOURCE_USER_ID,
@@ -11145,10 +11181,12 @@ def _list_srs_queue_cards(
                         )
                         if not _mid:
                             break
+                        invalidate_subscription_peek_cache(user_id)
                         cur.execute(
                             """
                             SELECT q.id, q.word_ru, q.translation_de, q.word_de,
-                                   q.translation_ru, q.response_json, q.source_lang, q.target_lang
+                                   q.translation_ru, q.response_json, q.source_lang, q.target_lang,
+                                   q.frequency_rank
                             FROM bt_3_webapp_dictionary_queries q
                             WHERE q.id = %s AND q.user_id = %s
                             LIMIT 1;
@@ -11158,10 +11196,14 @@ def _list_srs_queue_cards(
                         _r = cur.fetchone()
                         if not _r or int(_r[0]) in new_selected_ids:
                             break
+                        if not _free_slot and _worst_own is not None:
+                            new_rows.remove(_worst_own)
+                            new_selected_ids.discard(int(_worst_own[0]))
+                            freq_stage_ids.discard(int(_worst_own[0]))
                         new_rows.append(_r)
                         new_selected_ids.add(int(_r[0]))
             except Exception as _sub_e:
-                logging.warning("subscription materialize (prefetch) skipped: %s", _sub_e)
+                logging.warning("subscription queue merge (prefetch) skipped: %s", _sub_e)
 
         # One card per German word: drop NEW rows whose German is already being trained in the
         # other direction, and collapse within-batch twins. Post-filtered in Python (the buffer is
@@ -11321,39 +11363,24 @@ def _build_next_srs_payload(
             prefer_oldest = bool(SRS_NEW_AGED_RESERVE_EVERY) and (
                 (int(introduced_today or 0) + 1) % SRS_NEW_AGED_RESERVE_EVERY == 0
             )
-            candidate = get_next_new_srs_candidate(
+            # Единая очередь: своё слово и слово из подписки соревнуются по нужности, а не
+            # «подписка включается, когда свои кончились» (при таком порядке она не отдала
+            # ни одного слова за всё время — у каждого лежала тысяча своих).
+            try:
+                _sub_state = get_starter_dictionary_state(user_id, cursor=cursor)
+                _live_sub = bool(_sub_state.get("live_subscription"))
+            except Exception:
+                _live_sub = False
+            candidate = get_next_new_srs_candidate_with_subscription(
                 user_id=user_id,
+                source_user_id=STARTER_DICTIONARY_SOURCE_USER_ID,
                 source_lang=source_lang,
                 target_lang=target_lang,
                 allowed_card_ids=allowed_card_ids,
                 cursor=cursor,
                 prefer_oldest=prefer_oldest,
+                live_subscription=_live_sub,
             )
-            if not candidate and not allowed_card_ids:
-                # Live subscription: the user has no own new words left → lazily pull the next
-                # word from the admin's dictionary and re-select it as a normal new candidate
-                # (it now exists in the user's dict with no SRS row yet). Fail-safe.
-                try:
-                    _sub_state = get_starter_dictionary_state(user_id, cursor=cursor)
-                    if _sub_state.get("live_subscription"):
-                        _mat_id = materialize_subscription_card(
-                            user_id=user_id,
-                            source_user_id=STARTER_DICTIONARY_SOURCE_USER_ID,
-                            source_lang=source_lang,
-                            target_lang=target_lang,
-                            cursor=cursor,
-                        )
-                        if _mat_id:
-                            candidate = get_next_new_srs_candidate(
-                                user_id=user_id,
-                                source_lang=source_lang,
-                                target_lang=target_lang,
-                                allowed_card_ids=allowed_card_ids,
-                                cursor=cursor,
-                                prefer_oldest=prefer_oldest,
-                            )
-                except Exception as _sub_e:
-                    logging.warning("subscription materialize (next-card) skipped: %s", _sub_e)
             if candidate:
                 state = ensure_new_srs_state(
                     user_id=user_id,

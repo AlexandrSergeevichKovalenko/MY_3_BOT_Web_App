@@ -13408,6 +13408,9 @@ function AppInner() {
       decided_at: String(stateRaw.decided_at || '').trim() || null,
       last_imported_at: String(stateRaw.last_imported_at || '').trim() || null,
       import_status: String(stateRaw.import_status || 'idle').trim().toLowerCase() || 'idle',
+      // Без этого поля строка «весь словарь подключён» ниже не могла отрисоваться никогда:
+      // сервер его отдаёт, а нормализация выбрасывала.
+      live_subscription: Boolean(stateRaw.live_subscription),
       active_job_id: String(stateRaw.active_job_id || '').trim() || null,
       last_error: String(stateRaw.last_error || '').trim() || null,
       import_started_at: String(stateRaw.import_started_at || '').trim() || null,
@@ -37498,6 +37501,18 @@ function AppInner() {
                               {sortLabels[vocabSort]}
                             </button>
                           </div>
+                          {/* Подключён весь словарь — но слова открываются по ходу занятий,
+                              поэтому «Всего» растёт постепенно. Без этой строки неизменное
+                              число читается как «подключение не сработало». */}
+                          {starterDictionaryOffer?.state?.live_subscription
+                            && starterDictionaryOffer?.template_total > 0 ? (
+                            <div className="vocab-full-dict-note">
+                              🔓 {tr(
+                                `Весь словарь подключён: ${starterDictionaryOffer.template_total.toLocaleString('ru-RU')} слов и выражений — открываются по мере занятий.`,
+                                `Volles Wörterbuch verbunden: ${starterDictionaryOffer.template_total.toLocaleString('de-DE')} Wörter und Ausdrücke — sie werden nach und nach freigeschaltet.`,
+                              )}
+                            </div>
+                          ) : null}
 
                           <div className={`vocab-selection-toolbar ${manualTrainingSelectionCount > 0 ? 'is-visible' : ''}`}>
                             <div className="vocab-selection-toolbar-main">

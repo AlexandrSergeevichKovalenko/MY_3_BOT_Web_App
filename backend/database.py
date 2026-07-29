@@ -16782,11 +16782,37 @@ def set_starter_dictionary_subscription(user_id: int, enabled: bool) -> None:
             )
 
 
-def _subscription_lang_filter_sql(alias: str) -> str:
-    """ONE direction (source_lang=%s AND target_lang=%s) — must match the training queue's
-    direction, so a materialized card is picked up by get_next_new_srs_candidate. Caller passes
-    (source_lang, target_lang) in that order."""
-    return f"(LOWER({alias}.source_lang)=%s AND LOWER({alias}.target_lang)=%s)"
+# Порядок очереди подписки: сначала самые частотные, где ранг известен (это ~четверть
+# пула), потом — те, что чаще берут себе другие пользователи, и лишь затем по дате.
+# «Популярность» — честный сигнал полезности из наших же данных, и он крепнет с ростом
+# базы. Раньше вторым ключом стояла дата, из-за чего три четверти слов выстраивались
+# в произвольном порядке.
+_SUBSCRIPTION_POPULARITY_JOIN_SQL = """
+        LEFT JOIN (
+            SELECT canonical_entry_id, COUNT(DISTINCT user_id) AS holders
+            FROM bt_3_webapp_dictionary_queries
+            WHERE canonical_entry_id IS NOT NULL
+            GROUP BY canonical_entry_id
+        ) p ON p.canonical_entry_id = a.canonical_entry_id
+"""
+_SUBSCRIPTION_ORDER_BY_SQL = (
+    "e.frequency_rank ASC NULLS LAST, COALESCE(p.holders, 0) DESC, a.created_at ASC"
+)
+
+
+def _subscription_lang_filter(alias: str, source_lang: str | None, target_lang: str | None) -> tuple[str, list]:
+    """ОБЕ стороны пары (ru→de И de→ru).
+
+    Раньше фильтр брал одно направление, и это отсекало 8238 из 13951 слов словаря-донора
+    — причём именно то направление, в котором он сейчас пишет: девять из десяти новых слов
+    не доходили до подписчиков вообще. Очередь тренировки двунаправленная
+    (_build_language_pair_filter_both в get_next_new_srs_candidate), поэтому
+    материализованная карточка подхватывается в любом направлении.
+    """
+    clause, params = _build_language_pair_filter_both(source_lang, target_lang, table_alias=alias)
+    if not clause:
+        return "", []
+    return clause.lstrip().removeprefix("AND ").strip(), params
 
 
 def count_admin_subscription_available_words(
@@ -16795,9 +16821,10 @@ def count_admin_subscription_available_words(
     """How many of the admin's dictionary words this user does NOT yet have (matched by shared
     canonical entry). This is the live pool a subscriber's «new cards» still draw from — it
     grows automatically as the admin adds words, with no copying. (Stage 2 wiring uses this.)"""
-    s = _normalize_lang_code(source_lang) or "de"
-    t = _normalize_lang_code(target_lang) or "ru"
-    lang_sql = _subscription_lang_filter_sql("a")
+    s = _normalize_lang_code(source_lang) or "ru"
+    t = _normalize_lang_code(target_lang) or "de"
+    lang_sql, lang_params = _subscription_lang_filter("a", s, t)
+    lang_clause = f"AND {lang_sql}" if lang_sql else ""
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -16806,13 +16833,13 @@ def count_admin_subscription_available_words(
                 FROM bt_3_webapp_dictionary_queries a
                 WHERE a.user_id = %s
                   AND a.canonical_entry_id IS NOT NULL
-                  AND {lang_sql}
+                  {lang_clause}
                   AND NOT EXISTS (
                       SELECT 1 FROM bt_3_webapp_dictionary_queries u
                       WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
                   );
                 """,
-                (int(source_user_id), s, t, int(user_id)),
+                (int(source_user_id), *lang_params, int(user_id)),
             )
             row = cur.fetchone()
     return int(row[0]) if row and row[0] is not None else 0
@@ -16823,16 +16850,17 @@ def has_admin_subscription_available(
 ) -> bool:
     """Cheap EXISTS check (no ordering): does the subscriber still have ANY un-materialized admin
     word? Used on the hot queue path to keep the daily new-card budget non-zero for subscribers."""
-    s = _normalize_lang_code(source_lang) or "de"
-    t = _normalize_lang_code(target_lang) or "ru"
-    lang_sql = _subscription_lang_filter_sql("a")
+    s = _normalize_lang_code(source_lang) or "ru"
+    t = _normalize_lang_code(target_lang) or "de"
+    lang_sql, lang_params = _subscription_lang_filter("a", s, t)
+    lang_clause = f"AND {lang_sql}" if lang_sql else ""
     sql = f"""
         SELECT EXISTS (
             SELECT 1
             FROM bt_3_webapp_dictionary_queries a
             WHERE a.user_id = %s
               AND a.canonical_entry_id IS NOT NULL
-              AND {lang_sql}
+              {lang_clause}
               AND NOT EXISTS (
                   SELECT 1 FROM bt_3_webapp_dictionary_queries u
                   WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
@@ -16840,7 +16868,7 @@ def has_admin_subscription_available(
             LIMIT 1
         );
     """
-    params = (int(source_user_id), s, t, int(user_id))
+    params = (int(source_user_id), *lang_params, int(user_id))
 
     def _run(cur) -> bool:
         cur.execute(sql, params)
@@ -16861,25 +16889,27 @@ def list_admin_subscription_new_candidates(
     subscription drips in useful words before rare ones). Returns light rows for the new-card
     queue; the per-user copy + SRS state is created lazily on first study (Stage 3). Pass `cursor`
     so a materialize LOOP sees its own just-created rows (else it keeps returning the same word)."""
-    s = _normalize_lang_code(source_lang) or "de"
-    t = _normalize_lang_code(target_lang) or "ru"
-    lang_sql = _subscription_lang_filter_sql("a")
+    s = _normalize_lang_code(source_lang) or "ru"
+    t = _normalize_lang_code(target_lang) or "de"
+    lang_sql, lang_params = _subscription_lang_filter("a", s, t)
+    lang_clause = f"AND {lang_sql}" if lang_sql else ""
     capped = max(1, min(int(limit or 20), 200))
     sql = f"""
                 SELECT a.id, a.canonical_entry_id, a.word_de, e.frequency_rank
                 FROM bt_3_webapp_dictionary_queries a
                 JOIN bt_3_dictionary_entries e ON e.id = a.canonical_entry_id
+                {_SUBSCRIPTION_POPULARITY_JOIN_SQL}
                 WHERE a.user_id = %s
                   AND a.canonical_entry_id IS NOT NULL
-                  AND {lang_sql}
+                  {lang_clause}
                   AND NOT EXISTS (
                       SELECT 1 FROM bt_3_webapp_dictionary_queries u
                       WHERE u.user_id = %s AND u.canonical_entry_id = a.canonical_entry_id
                   )
-                ORDER BY e.frequency_rank ASC NULLS LAST, a.created_at ASC
+                ORDER BY {_SUBSCRIPTION_ORDER_BY_SQL}
                 LIMIT %s;
     """
-    params = (int(source_user_id), s, t, int(user_id), capped)
+    params = (int(source_user_id), *lang_params, int(user_id), capped)
 
     def _run(cur) -> list:
         cur.execute(sql, params)
@@ -17336,28 +17366,36 @@ def import_starter_dictionary_snapshot(
                 }
 
             # Both directions: a ru↔de learner wants ALL the vocab, not just native→learning.
-            language_filter_sql, language_params = _build_language_pair_filter_both(pair_source, pair_target)
-            source_where = "WHERE user_id = %s"
+            language_filter_sql, language_params = _build_language_pair_filter_both(
+                pair_source, pair_target, table_alias="q"
+            )
+            source_where = "WHERE q.user_id = %s"
             source_params: list = [source_user]
             if language_filter_sql:
                 source_where += language_filter_sql
                 source_params.extend(language_params)
             source_params.append(safe_limit)
+            # Отбор по ЧАСТОТНОСТИ, а не по дате добавления. Раньше стояло
+            # «ORDER BY created_at» — новичку доставалась тысяча самых старых слов автора,
+            # то есть просто те, что были заведены первыми. Объяснить такой выбор нечем.
+            # Живая подписка уже отдаёт слова «самые частотные вперёд» — теперь копия
+            # работает по тому же правилу. Слова без ранга частотности идут последними.
             cursor.execute(
                 f"""
                 SELECT
-                    id,
-                    word_ru,
-                    translation_de,
-                    word_de,
-                    translation_ru,
-                    source_lang,
-                    target_lang,
-                    response_json,
-                    semantic_tag
-                FROM bt_3_webapp_dictionary_queries
+                    q.id,
+                    q.word_ru,
+                    q.translation_de,
+                    q.word_de,
+                    q.translation_ru,
+                    q.source_lang,
+                    q.target_lang,
+                    q.response_json,
+                    q.semantic_tag
+                FROM bt_3_webapp_dictionary_queries q
+                LEFT JOIN bt_3_dictionary_entries e ON e.id = q.canonical_entry_id
                 {source_where}
-                ORDER BY created_at ASC, id ASC
+                ORDER BY e.frequency_rank ASC NULLS LAST, q.created_at ASC, q.id ASC
                 LIMIT %s;
                 """,
                 source_params,
@@ -25106,7 +25144,8 @@ def get_next_new_srs_candidate(
         )
         cur.execute(
             f"""
-            SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json
+            SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json,
+                   q.frequency_rank
             FROM bt_3_webapp_dictionary_queries q
             LEFT JOIN bt_3_card_srs_state s
               ON s.user_id = q.user_id AND s.card_id = q.id
@@ -25131,12 +25170,130 @@ def get_next_new_srs_candidate(
             "word_de": row[3],
             "translation_ru": row[4],
             "response_json": row[5],
+            # Нужен, чтобы сравнить своё слово со словом из подписки в единой очереди.
+            "frequency_rank": int(row[6]) if row[6] is not None else None,
         }
     if cursor is not None:
         return _fetch(cursor)
     with get_db_connection_context() as conn:
         with conn.cursor() as own_cursor:
             return _fetch(own_cursor)
+
+
+# Загляд в подписку стоит ~63 мс (замер на проде), поэтому держим лучший кандидат в
+# памяти процесса: пул подписки меняется редко — когда автор добавил слово или когда
+# подписчик забрал одно себе. Второй случай сбрасываем сразу, первый догоняем по TTL.
+_SUBSCRIPTION_PEEK_CACHE: dict[int, tuple[float, dict | None]] = {}
+_SUBSCRIPTION_PEEK_TTL_SEC = max(
+    30, min(3600, int(os.getenv("SUBSCRIPTION_PEEK_TTL_SEC", "300") or "300"))
+)
+_SUBSCRIPTION_PEEK_LOCK = threading.Lock()
+
+
+def invalidate_subscription_peek_cache(user_id: int | None = None) -> None:
+    with _SUBSCRIPTION_PEEK_LOCK:
+        if user_id is None:
+            _SUBSCRIPTION_PEEK_CACHE.clear()
+        else:
+            _SUBSCRIPTION_PEEK_CACHE.pop(int(user_id), None)
+
+
+def _peek_subscription_candidate(
+    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None, cursor=None
+) -> dict | None:
+    uid = int(user_id)
+    now_ts = time.monotonic()
+    with _SUBSCRIPTION_PEEK_LOCK:
+        hit = _SUBSCRIPTION_PEEK_CACHE.get(uid)
+        if hit and hit[0] > now_ts:
+            return hit[1]
+    candidates = list_admin_subscription_new_candidates(
+        user_id=uid,
+        source_user_id=int(source_user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        limit=1,
+        cursor=cursor,
+    )
+    best = candidates[0] if candidates else None
+    with _SUBSCRIPTION_PEEK_LOCK:
+        _SUBSCRIPTION_PEEK_CACHE[uid] = (now_ts + _SUBSCRIPTION_PEEK_TTL_SEC, best)
+    return best
+
+
+def _rank_or_worst(value) -> float:
+    """Меньше — нужнее. Слово без ранга частотности проигрывает любому слову с рангом."""
+    return float(value) if value is not None else float("inf")
+
+
+def get_next_new_srs_candidate_with_subscription(
+    *,
+    user_id: int,
+    source_user_id: int,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    allowed_card_ids: list[int] | None = None,
+    cursor=None,
+    prefer_oldest: bool = False,
+    live_subscription: bool = False,
+) -> dict | None:
+    """ЕДИНАЯ очередь: своё слово и слово из подписки соревнуются по нужности.
+
+    Раньше подписка была запасным вариантом «когда свои слова кончились». У каждого
+    подписчика лежала тысяча нетронутых своих слов, поэтому подписка не отдала НИ ОДНОГО
+    слова за всё время и не отдала бы ещё месяцами. Теперь источник не важен: впереди идёт
+    то слово, которое нужнее.
+
+    Ручной отбор пользователя и резерв «самое старое» подписку не трогают — там человек
+    сам решил, что учить.
+    """
+    own = get_next_new_srs_candidate(
+        user_id=user_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        allowed_card_ids=allowed_card_ids,
+        cursor=cursor,
+        prefer_oldest=prefer_oldest,
+    )
+    if not live_subscription or allowed_card_ids or prefer_oldest:
+        return own
+    try:
+        best_sub = _peek_subscription_candidate(
+            user_id=user_id,
+            source_user_id=source_user_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            cursor=cursor,
+        )
+        if not best_sub:
+            return own
+        if own is not None and _rank_or_worst(own.get("frequency_rank")) <= _rank_or_worst(
+            best_sub.get("frequency_rank")
+        ):
+            return own
+        materialized_id = materialize_subscription_card(
+            user_id=user_id,
+            source_user_id=source_user_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            cursor=cursor,
+        )
+        if not materialized_id:
+            return own
+        invalidate_subscription_peek_cache(user_id)
+        refreshed = get_next_new_srs_candidate(
+            user_id=user_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            allowed_card_ids=allowed_card_ids,
+            cursor=cursor,
+            prefer_oldest=prefer_oldest,
+        )
+        return refreshed or own
+    except Exception:
+        # Подписка никогда не должна ломать выдачу карточки: не получилось — отдаём своё.
+        logging.warning("subscription queue merge skipped user_id=%s", user_id, exc_info=True)
+        return own
 
 
 def backfill_frequency_ranks(
