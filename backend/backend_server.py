@@ -659,6 +659,8 @@ from backend.database import (
     count_admin_subscription_available_words,
     has_admin_subscription_available,
     materialize_subscription_card,
+    count_subscription_delivered,
+    remove_untouched_subscription_words,
     get_next_new_srs_candidate_with_subscription,
     invalidate_subscription_peek_cache,
     _trained_german_word_keys,
@@ -4249,6 +4251,12 @@ def webapp_starter_dictionary_apply():
 
     if action == "declined":
         try:
+            # Выключение обязано выключать. Раньше «отказ» только записывал решение: слова
+            # оставались, подписка продолжала работать, а переключатель «весь словарь» при
+            # следующем открытии экрана возвращался обратно. Текст при этом обещал
+            # «останутся только твои слова».
+            set_starter_dictionary_subscription(int(user_id), False)
+            _removed = remove_untouched_subscription_words(int(user_id))
             state = upsert_starter_dictionary_state(
                 user_id=int(user_id),
                 decision_status="declined",
@@ -4279,6 +4287,7 @@ def webapp_starter_dictionary_apply():
                 "action": "declined",
                 "state": state,
                 "offer": offer,
+                "removed_count": int(_removed),
                 "template_total": int(template_total),
             }
         )
@@ -4288,11 +4297,13 @@ def webapp_starter_dictionary_apply():
             # Disconnecting the starter dictionary also cancels the live subscription — no more
             # of the admin's new words drip in. Words the user already studied stay their own.
             set_starter_dictionary_subscription(int(user_id), False)
-            disconnect_result = delete_starter_dictionary_snapshot(
-                user_id=int(user_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
+            # Удаляем только НЕТРОНУТОЕ: слова от автора, которые человек не учил и не
+            # трогал. Всё, что он проходил, правил, помечал или раскладывал по папкам,
+            # остаётся — это его словарь и его история, на ней держится аналитика.
+            # Прежняя чистка искала только строки старого копирования, поэтому у
+            # подписчика не находила НИЧЕГО и сообщала «удалять нечего».
+            _untouched_removed = remove_untouched_subscription_words(int(user_id))
+            disconnect_result = {"deleted_count": int(_untouched_removed)}
             state = upsert_starter_dictionary_state(
                 user_id=int(user_id),
                 decision_status="declined",
@@ -4404,11 +4415,16 @@ def webapp_starter_dictionary_apply():
             profile=profile,
         )
         _want_full = bool(payload.get("full"))
-        if _want_full:
-            # «Весь словарь» = LIVE subscription to the admin's dictionary — NOT a bulk copy of
-            # ~14k rows. Words drip into training lazily (materialized on first study) and keep
-            # growing as the admin adds new ones. Nothing to import now, so mark the job done.
-            set_starter_dictionary_subscription(int(user_id), True)
+        if True:
+            # ОБА варианта — подписка, копирования больше нет. Разница только в потолке:
+            # «весь словарь» без потолка, «быстрый старт» — не больше STARTER_DICTIONARY_IMPORT_LIMIT
+            # слов. Слова в любом случае идут из одной очереди по нужности и появляются в
+            # библиотеке по мере занятий, а не сваливаются пачкой.
+            set_starter_dictionary_subscription(
+                int(user_id),
+                True,
+                subscription_limit=None if _want_full else int(STARTER_DICTIONARY_IMPORT_LIMIT),
+            )
             state = upsert_starter_dictionary_state(
                 user_id=int(user_id),
                 decision_status="accepted",
@@ -4425,18 +4441,9 @@ def webapp_starter_dictionary_apply():
                 import_started_at=decided_at,
                 import_finished_at=datetime.now(timezone.utc),
             )
-        else:
-            # «Быстрый старт» → curated ~1000-word snapshot copy (unchanged).
-            _start_starter_dictionary_import_runner(
-                job_id=job_id,
-                user_id=int(user_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
-                decided_at=decided_at,
-                previous_imported_count=previous_imported_count,
-                previous_imported_at=previous_imported_at,
-                import_limit=int(STARTER_DICTIONARY_IMPORT_LIMIT),
-            )
+        # Копирования здесь больше нет. Оно стоило человеку 11 минут ожидания, теряло всю
+        # работу при обрыве (одна транзакция на тысячу слов) и умело залипать навсегда:
+        # один пользователь просидел в статусе «идёт импорт» с 11 июня и не получил ничего.
     except Exception as exc:
         return jsonify({"error": f"Ошибка импорта базового словаря: {exc}"}), 500
 
@@ -6695,6 +6702,11 @@ def _build_starter_dictionary_offer(
             both_directions=True,
         )
 
+    try:
+        subscription_delivered = count_subscription_delivered(safe_user_id)
+    except Exception:
+        logging.debug("не удалось посчитать выданное по подписке uid=%s", safe_user_id, exc_info=True)
+        subscription_delivered = 0
     decision_status = str(state.get("decision_status") or "pending").strip().lower() or "pending"
     suggested_count = min(max(0, int(template_total)), int(STARTER_DICTIONARY_IMPORT_LIMIT))
     should_prompt = bool(
@@ -6721,7 +6733,20 @@ def _build_starter_dictionary_offer(
         "suggested_count": int(suggested_count),
         "should_prompt": should_prompt,
         "can_reconnect": bool(STARTER_DICTIONARY_ENABLED and template_total > 0 and has_profile),
-        "can_disconnect": bool(int(starter_pair_total) > 0),
+        # Отключить можно всегда, когда подписка включена. Раньше кнопка зависела от числа
+        # СКОПИРОВАННЫХ строк, а подписка не копирует ничего — поэтому у подписчиков она
+        # была вечно серой, то есть заблокирована ровно у тех, кому нужна.
+        "can_disconnect": bool(int(starter_pair_total) > 0 or state.get("live_subscription")),
+        # Сколько слов автора человек уже получил и сколько ему положено. По этим числам
+        # интерфейс показывает «урезанный выбран до конца — включить весь?», иначе выдача
+        # просто молча останавливается и читается как поломка.
+        "subscription_limit": state.get("subscription_limit"),
+        "subscription_delivered": int(subscription_delivered),
+        "subscription_exhausted": bool(
+            state.get("live_subscription")
+            and state.get("subscription_limit")
+            and subscription_delivered >= int(state.get("subscription_limit") or 0)
+        ),
     }
 
 
@@ -11143,13 +11168,22 @@ def _list_srs_queue_cards(
         # и ручной отбор не трогаем: там выбор осознанный.
         if new_limit > 0 and not normalized_allowed_ids and not allowed_card_ids:
             try:
-                _sub_state = get_starter_dictionary_state(user_id, cursor=cur)
-                if _sub_state.get("live_subscription"):
+                _sub_state = get_starter_dictionary_state(user_id, cursor=cur) or {}
+                _sub_cap = _sub_state.get("subscription_limit")
+                _sub_delivered = (
+                    count_subscription_delivered(user_id, cursor=cur)
+                    if (_sub_state.get("live_subscription") and _sub_cap) else 0
+                )
+                _cap_left = (max(0, int(_sub_cap) - _sub_delivered) if _sub_cap else None)
+                if _sub_state.get("live_subscription") and _cap_left != 0:
                     def _rank_of(row):
                         value = row[8] if len(row) > 8 else None
                         return float(value) if value is not None else float("inf")
 
+                    _taken_now = 0
                     while True:
+                        if _cap_left is not None and _taken_now >= _cap_left:
+                            break
                         _free_slot = len(new_rows) < new_limit
                         _worst_own = None
                         if not _free_slot:
@@ -11202,6 +11236,7 @@ def _list_srs_queue_cards(
                             freq_stage_ids.discard(int(_worst_own[0]))
                         new_rows.append(_r)
                         new_selected_ids.add(int(_r[0]))
+                        _taken_now += 1
             except Exception as _sub_e:
                 logging.warning("subscription queue merge (prefetch) skipped: %s", _sub_e)
 
@@ -11366,8 +11401,9 @@ def _build_next_srs_payload(
             # Единая очередь: своё слово и слово из подписки соревнуются по нужности, а не
             # «подписка включается, когда свои кончились» (при таком порядке она не отдала
             # ни одного слова за всё время — у каждого лежала тысяча своих).
+            _sub_state: dict = {}
             try:
-                _sub_state = get_starter_dictionary_state(user_id, cursor=cursor)
+                _sub_state = get_starter_dictionary_state(user_id, cursor=cursor) or {}
                 _live_sub = bool(_sub_state.get("live_subscription"))
             except Exception:
                 _live_sub = False
@@ -11380,6 +11416,7 @@ def _build_next_srs_payload(
                 cursor=cursor,
                 prefer_oldest=prefer_oldest,
                 live_subscription=_live_sub,
+                subscription_limit=_sub_state.get("subscription_limit") if _live_sub else None,
             )
             if candidate:
                 state = ensure_new_srs_state(
@@ -47816,6 +47853,18 @@ def webapp_settings_state():
                 dict_tier = "base"
     except Exception:
         logging.debug("settings: не удалось прочитать состояние словаря uid=%s", user_id, exc_info=True)
+    # Сколько слов автора человек уже забрал и выбран ли потолок «урезанного» —
+    # чтобы экран мог предложить включить весь словарь, а не молча остановиться.
+    dict_delivered = 0
+    dict_exhausted = False
+    try:
+        _st = get_starter_dictionary_state(int(user_id)) or {}
+        _cap = _st.get("subscription_limit")
+        if _st.get("live_subscription") and _cap:
+            dict_delivered = count_subscription_delivered(int(user_id))
+            dict_exhausted = dict_delivered >= int(_cap)
+    except Exception:
+        logging.debug("settings: не удалось посчитать выданное по подписке uid=%s", user_id, exc_info=True)
     # Сколько слов стоит за «полным» — чтобы подпись на переключателе называла число,
     # а не оставляла человека гадать, на что он подписался.
     try:
@@ -47838,6 +47887,8 @@ def webapp_settings_state():
         "dict_tier": dict_tier,
         "dict_base_total": int(dict_base_total),
         "dict_full_total": int(dict_full_total),
+        "subscription_delivered": int(dict_delivered),
+        "subscription_exhausted": bool(dict_exhausted),
         "is_pro": is_pro,
         "is_admin": is_admin,
     })

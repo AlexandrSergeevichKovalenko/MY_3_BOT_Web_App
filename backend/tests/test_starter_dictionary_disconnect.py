@@ -24,7 +24,8 @@ class StarterDictionaryDisconnectTests(unittest.TestCase):
              patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {"has_profile": True})), \
              patch.object(server, "get_starter_dictionary_state", return_value={"last_imported_count": 25, "last_imported_at": None}), \
              patch.object(server, "count_dictionary_entries_for_language_pair", return_value=1000), \
-             patch.object(server, "delete_starter_dictionary_snapshot", return_value={"deleted_count": 25}) as delete_mock, \
+             patch.object(server, "remove_untouched_subscription_words", return_value=25) as delete_mock, \
+             patch.object(server, "set_starter_dictionary_subscription") as unsubscribe_mock, \
              patch.object(server, "upsert_starter_dictionary_state", return_value={"decision_status": "declined", "import_status": "idle"}) as upsert_mock, \
              patch.object(server, "_build_starter_dictionary_offer", return_value=offer), \
              patch.object(server, "STARTER_DICTIONARY_ENABLED", True), \
@@ -46,7 +47,11 @@ class StarterDictionaryDisconnectTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["action"], "disconnected")
         self.assertEqual(payload["disconnect_result"]["deleted_count"], 25)
-        delete_mock.assert_called_once_with(user_id=117649764, source_lang="ru", target_lang="de")
+        # Удаляем НЕТРОНУТОЕ у пользователя, а не «строки старого копирования по паре»:
+        # у подписчика таких строк нет вообще, и прежняя чистка не находила ничего.
+        delete_mock.assert_called_once_with(117649764)
+        # Отключение обязано снимать подписку, иначе слова автора продолжат приходить.
+        unsubscribe_mock.assert_called_once_with(117649764, False)
         self.assertTrue(upsert_mock.called)
 
 

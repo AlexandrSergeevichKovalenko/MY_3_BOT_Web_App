@@ -220,6 +220,12 @@ export default function SettingsScreen() {
             </div>
             <Toggle on={state.dict_tier === 'full'} onChange={(v) => setDictTier(v ? 'full' : 'none')} disabled={dictBusy} />
           </div>
+          {state.dict_tier === 'base' && state.subscription_exhausted ? (
+            <p className="st-dict-note">
+              🔓 Урезанный набор выбран до конца: {formatCount(state.subscription_delivered)} слов.
+              Включи «Весь словарь» — и слова снова пойдут.
+            </p>
+          ) : null}
           {state.dict_tier === 'full' && state.dict_full_total ? (
             <p className="st-dict-note">
               ✅ Подключён весь словарь: {formatCount(state.dict_full_total)} слов и выражений.

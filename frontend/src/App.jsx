@@ -13433,6 +13433,9 @@ function AppInner() {
       should_prompt: Boolean(payload.should_prompt),
       can_reconnect: Boolean(payload.can_reconnect),
       can_disconnect: Boolean(payload.can_disconnect),
+      subscription_limit: Number(payload.subscription_limit || 0) || null,
+      subscription_delivered: Math.max(0, Number(payload.subscription_delivered || 0) || 0),
+      subscription_exhausted: Boolean(payload.subscription_exhausted),
       state,
     };
   }, []);
@@ -37504,7 +37507,16 @@ function AppInner() {
                           {/* Подключён весь словарь — но слова открываются по ходу занятий,
                               поэтому «Всего» растёт постепенно. Без этой строки неизменное
                               число читается как «подключение не сработало». */}
-                          {starterDictionaryOffer?.state?.live_subscription
+                          {/* Урезанный набор выбран до конца. Молчать нельзя: человек решит,
+                              что сломалось, — ровно так и вышло с числом 1124. */}
+                          {starterDictionaryOffer?.subscription_exhausted ? (
+                            <div className="vocab-full-dict-note">
+                              🔓 {tr(
+                                `Из словаря автора ты взял всё, что входит в урезанный набор (${(starterDictionaryOffer.subscription_delivered || 0).toLocaleString('ru-RU')}). Включи «Весь словарь» в ⚙️ Настройках — и слова снова пойдут.`,
+                                `Du hast alles erhalten, was das kleine Set enthält (${(starterDictionaryOffer.subscription_delivered || 0).toLocaleString('de-DE')}). Aktiviere «Volles Wörterbuch» in ⚙️ Einstellungen — dann geht es weiter.`,
+                              )}
+                            </div>
+                          ) : starterDictionaryOffer?.state?.live_subscription
                             && starterDictionaryOffer?.template_total > 0 ? (
                             <div className="vocab-full-dict-note">
                               🔓 {tr(

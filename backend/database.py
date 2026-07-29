@@ -6896,6 +6896,13 @@ def ensure_webapp_tables() -> None:
             """)
             cursor.execute("""
                 ALTER TABLE bt_3_starter_dictionary_state
+                -- Потолок подписки: сколько слов автора человек согласился получить.
+                -- NULL = без потолка («весь словарь»). Число = «урезанный»: слова идут из
+                -- той же очереди по нужности, просто их не больше указанного количества.
+                ADD COLUMN IF NOT EXISTS subscription_limit INTEGER;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_starter_dictionary_state
                 ADD COLUMN IF NOT EXISTS import_finished_at TIMESTAMPTZ;
             """)
             cursor.execute("""
@@ -16708,6 +16715,8 @@ def _map_starter_dictionary_state_row(row, *, user_id: int) -> dict:
             "import_finished_at": None,
             "updated_at": None,
             "live_subscription": False,
+            "subscription_limit": None,
+            "subscription_delivered": 0,
         }
     return {
         "user_id": int(user_id),
@@ -16726,6 +16735,9 @@ def _map_starter_dictionary_state_row(row, *, user_id: int) -> dict:
         "import_finished_at": row[12].isoformat() if row[12] else None,
         "updated_at": row[13].isoformat() if row[13] else None,
         "live_subscription": bool(row[14]) if len(row) > 14 else False,
+        # Потолок «урезанного»: сколько слов автора человек согласился получить.
+        # None = без потолка, то есть «весь словарь».
+        "subscription_limit": int(row[15]) if len(row) > 15 and row[15] is not None else None,
     }
 
 
@@ -16748,7 +16760,8 @@ def get_starter_dictionary_state(user_id: int, cursor=None) -> dict:
                 import_started_at,
                 import_finished_at,
                 updated_at,
-                live_subscription
+                live_subscription,
+                subscription_limit
             FROM bt_3_starter_dictionary_state
             WHERE user_id = %s
             LIMIT 1;
@@ -16765,21 +16778,102 @@ def get_starter_dictionary_state(user_id: int, cursor=None) -> dict:
             return _get(own_cursor)
 
 
-def set_starter_dictionary_subscription(user_id: int, enabled: bool) -> None:
-    """Toggle the live subscription to the admin's dictionary. Kept separate from
-    upsert_starter_dictionary_state so its many import-state callers stay untouched (and the
-    big upsert's ON CONFLICT never lists live_subscription, so it can't clobber this flag)."""
+def set_starter_dictionary_subscription(
+    user_id: int, enabled: bool, *, subscription_limit: int | None = None
+) -> None:
+    """Включить/выключить подписку на словарь автора и задать её потолок.
+
+    `subscription_limit=None` — без потолка («весь словарь»); число — «урезанный»:
+    слова идут из той же очереди по нужности, просто их не больше указанного.
+    Держится отдельно от upsert_starter_dictionary_state, чтобы десятки его вызовов
+    из импорта не затирали выбор человека.
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO bt_3_starter_dictionary_state (user_id, live_subscription, updated_at)
-                VALUES (%s, %s, NOW())
+                INSERT INTO bt_3_starter_dictionary_state
+                    (user_id, live_subscription, subscription_limit, updated_at)
+                VALUES (%s, %s, %s, NOW())
                 ON CONFLICT (user_id) DO UPDATE
-                SET live_subscription = EXCLUDED.live_subscription, updated_at = NOW();
+                SET live_subscription = EXCLUDED.live_subscription,
+                    subscription_limit = EXCLUDED.subscription_limit,
+                    updated_at = NOW();
                 """,
-                (int(user_id), bool(enabled)),
+                (int(user_id), bool(enabled), int(subscription_limit) if subscription_limit else None),
             )
+    invalidate_subscription_peek_cache(int(user_id))
+
+
+def remove_untouched_subscription_words(user_id: int, cursor=None) -> int:
+    """Удаляет слова, пришедшие ОТ АВТОРА, которых человек так и не коснулся.
+
+    Правило владельца: «не учил — значит не нужно», но «трогал — значит его». Поэтому
+    «нетронутое» — это не только отсутствие прогресса тренировки. Человек мог не отправить
+    слово в тренировку, но переложить его в свою папку, поправить перевод или пометить
+    выученным — это тоже след интереса, и такое остаётся.
+
+    Удаляем строку, только если ВСЁ сразу: пришла от автора (подписка или старое
+    копирование), нет состояния тренировки, нет ни одного ответа в журнале, не помечена
+    выученной, не лежит в папке, не редактировалась после создания.
+
+    Свои слова человека не трогаются вообще — под условие происхождения они не попадают.
+    """
+    def _run(cur) -> int:
+        cur.execute(
+            """
+            DELETE FROM bt_3_webapp_dictionary_queries q
+            WHERE q.user_id = %s
+              AND (
+                    q.origin_process = 'subscription'
+                 OR (q.origin_process = 'import'
+                     AND q.origin_meta->>'import_kind' = 'starter_dictionary_snapshot')
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM bt_3_card_srs_state s
+                    WHERE s.user_id = q.user_id AND s.card_id = q.id
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM bt_3_card_review_log r
+                    WHERE r.user_id = q.user_id AND r.card_id = q.id
+              )
+              AND COALESCE(q.is_learned, FALSE) = FALSE
+              AND q.folder_id IS NULL
+              AND (q.updated_at IS NULL OR q.updated_at <= q.created_at + INTERVAL '5 seconds');
+            """,
+            (int(user_id),),
+        )
+        return int(cur.rowcount or 0)
+
+    if cursor is not None:
+        removed = _run(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                removed = _run(cur)
+    invalidate_subscription_peek_cache(int(user_id))
+    return removed
+
+
+def count_subscription_delivered(user_id: int, cursor=None) -> int:
+    """Сколько слов человек уже получил ПО ПОДПИСКЕ (не считая своих и не считая
+    скопированных когда-то «Быстрым стартом»). По этому числу считается потолок."""
+    def _run(cur) -> int:
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries
+            WHERE user_id = %s AND origin_process = 'subscription';
+            """,
+            (int(user_id),),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    if cursor is not None:
+        return _run(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            return _run(cur)
 
 
 # Порядок очереди подписки: сначала самые частотные, где ранг известен (это ~четверть
@@ -25236,6 +25330,7 @@ def get_next_new_srs_candidate_with_subscription(
     cursor=None,
     prefer_oldest: bool = False,
     live_subscription: bool = False,
+    subscription_limit: int | None = None,
 ) -> dict | None:
     """ЕДИНАЯ очередь: своё слово и слово из подписки соревнуются по нужности.
 
@@ -25257,6 +25352,12 @@ def get_next_new_srs_candidate_with_subscription(
     )
     if not live_subscription or allowed_card_ids or prefer_oldest:
         return own
+    if subscription_limit is not None and subscription_limit > 0:
+        delivered = count_subscription_delivered(user_id, cursor=cursor)
+        if delivered >= int(subscription_limit):
+            # «Урезанный» выбран до конца. Молча останавливаться нельзя — человек решит,
+            # что сломалось; предложение включить весь словарь показывает интерфейс.
+            return own
     try:
         best_sub = _peek_subscription_candidate(
             user_id=user_id,
