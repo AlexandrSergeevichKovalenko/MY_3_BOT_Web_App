@@ -8096,22 +8096,34 @@ def stream_dictionary_breakdown_sections(
 _QUICK_ARTICLE_ALLOWED = {"der", "die", "das"}
 
 
-def run_quick_article(*, word: str, meaning_ru: str = "") -> str:
-    """Fast single chat.completions call → the definite article (der/die/das) for ONE
-    German noun. Used by the quick dictionary when the local Wiktionary table misses, so
-    the compact card still shows the article without waiting for the full GPT breakdown.
-    Returns "" on any failure / ambiguity (caller degrades to the breakdown's article).
-    Sets _LAST_LLM_USAGE so the caller can log billing."""
+def run_quick_article_facts(*, word: str, meaning_ru: str = "") -> dict:
+    """Fast single chat.completions call → {"article", "number", "lemma"} for ONE
+    German surface. Last resort of the quick dictionary: зовётся, только когда о слове
+    молчит и справочник родов, и de.wiktionary.
+
+    Почему спрашиваем про ЧИСЛО, а не просто про артикль. Прежний промпт просил
+    «единственный стандартный определённый артикль этого существительного», и на форме
+    множественного модель честно отвечала про лемму: Probleme→das, Bücher→das,
+    Häuser→das, Tische→der. Замер на проде 29.07.2026 — 10 ошибок из 20. Артикль леммы
+    рядом с формой и давал пользователю «das Probleme». Теперь модель обязана сказать,
+    что перед ней, и вызывающий сам решает, что печатать: у множественного — «die».
+
+    Returns {"article":"", ...} on any failure / ambiguity (caller degrades to the
+    breakdown's article). Sets _LAST_LLM_USAGE so the caller can log billing."""
     from backend.synthetic_load import build_sync_openai_client
+    empty = {"article": "", "number": "", "lemma": ""}
     api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
     w = str(word or "").strip()
     if not api_key or not w or " " in w:
-        return ""
+        return empty
     system = (
-        "You are a German lexicon. For the given German noun return its single standard "
-        "definite article. Respond with STRICT JSON ONLY: {\"article\":\"der\"|\"die\"|\"das\"}. "
-        "If it is not a German noun, or the article is genuinely ambiguous / two-gender, "
-        "return {\"article\":\"\"}."
+        "You are a German lexicon. For the given German surface form decide: is it a "
+        "dictionary word (singular) or an inflected form, and which definite article "
+        "belongs to THAT surface in the nominative. A nominative plural ALWAYS takes "
+        "\"die\", whatever the gender of its singular. Respond with STRICT JSON ONLY: "
+        "{\"article\":\"der\"|\"die\"|\"das\"|\"\",\"number\":\"sg\"|\"pl\"|\"\","
+        "\"lemma\":\"<dictionary form without article>\"}. If it is not a German noun, "
+        "or the gender is genuinely ambiguous / two-gender, return empty strings."
     )
     user_payload = {"word": w}
     if str(meaning_ru or "").strip():
@@ -8129,7 +8141,7 @@ def run_quick_article(*, word: str, meaning_ru: str = "") -> str:
         )
     except Exception:
         logging.warning("run_quick_article failed word=%s", w, exc_info=True)
-        return ""
+        return empty
     try:
         u = getattr(resp, "usage", None)
         if u:
@@ -8142,10 +8154,26 @@ def run_quick_article(*, word: str, meaning_ru: str = "") -> str:
     except Exception:
         pass
     try:
-        article = str((json.loads(resp.choices[0].message.content or "{}") or {}).get("article") or "").strip().lower()
+        data = json.loads(resp.choices[0].message.content or "{}") or {}
     except Exception:
+        return empty
+    article = str(data.get("article") or "").strip().lower()
+    number = str(data.get("number") or "").strip().lower()
+    lemma = str(data.get("lemma") or "").strip()
+    if article not in _QUICK_ARTICLE_ALLOWED:
         article = ""
-    return article if article in _QUICK_ARTICLE_ALLOWED else ""
+    # Страховка на случай, если модель опять ответит про лемму: у именительного
+    # множественного артикль может быть только «die», и спорить тут не о чем.
+    if number == "pl":
+        article = "die"
+    if number not in ("sg", "pl"):
+        number = ""
+    return {"article": article, "number": number, "lemma": lemma}
+
+
+def run_quick_article(*, word: str, meaning_ru: str = "") -> str:
+    """Совместимая обёртка: только артикль, разрешённый для САМОЙ поверхности."""
+    return run_quick_article_facts(word=word, meaning_ru=meaning_ru)["article"]
 
 
 _QUICK_CORRECT_MAX_CHARS = 120

@@ -78,9 +78,17 @@ def build_candidates(limit: int) -> list[str]:
             cursor.execute("SELECT surface_key FROM bt_3_german_form_index")
             known = {str(r[0]) for r in cursor.fetchall() or []}
 
-    out = [word for key, word in sorted(surfaces.items())
-           if key not in documented and key not in known]
-    return out[:max(1, int(limit))]
+    pending = [word for key, word in sorted(surfaces.items())
+               if key not in documented and key not in known]
+    # Сначала те, на кого правило окончания уже показывает пальцем: именно там ответ
+    # справочника меняет поведение (либо подтверждает форму, либо снимает ложное
+    # подозрение с настоящего слова). Остальные — следующей ночью. Алфавитный порядок
+    # тратил бы ночную порцию на редкие композиты из начала алфавита.
+    from backend.german_surface import PL, german_surface
+    suspicious, rest = [], []
+    for word in pending:
+        (suspicious if german_surface(word)["number"] == PL else rest).append(word)
+    return (suspicious + rest)[:max(1, int(limit))]
 
 
 def _rows_from_facts(surface: str, facts: dict) -> list[dict]:
@@ -120,13 +128,20 @@ def run_warm(*, limit: int | None = None, words: list[str] | None = None) -> dic
     for i in range(0, len(titles), BATCH):
         batch = titles[i:i + BATCH]
         stats["requested"] += len(batch)
-        try:
-            facts = form_facts_for_titles(batch)
-        except Exception:
-            facts = {}
-            logging.warning("form warm: пачка упала", exc_info=True)
+        facts: dict = {}
+        for attempt in range(3):
+            try:
+                facts = form_facts_for_titles(batch)
+            except Exception:
+                facts = {}
+                logging.warning("form warm: пачка упала", exc_info=True)
+            if facts:
+                break
+            # Пустой ответ = сеть или 429. Ждём дольше и пробуем ещё раз: лимит у
+            # Wiktionary скользящий, пауза его отпускает. Три пустых подряд — значит
+            # сегодня хватит, остаток спросим завтра.
+            time.sleep(PAUSE_SEC * (attempt + 1) * 3)
         if not facts:
-            # Пустой ответ = сеть или 429. Отступаем: лучше меньше, чем злить API.
             stats["batches_failed"] += 1
             stats["status"] = "rate_limited"
             break

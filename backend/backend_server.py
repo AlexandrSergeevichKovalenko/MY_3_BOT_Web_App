@@ -399,6 +399,7 @@ from backend.openai_manager import (
     run_language_learning_private_question_detailed,
     run_quick_ask,
     run_quick_article,
+    run_quick_article_facts,
     run_quick_correct,
     stream_dictionary_breakdown_sections,
     run_tts_chunk_de,
@@ -7384,6 +7385,14 @@ def _store_quick_translate_in_pool(
         article = str(result.get("article") or "").strip()
         if article:
             payload["article"] = article
+        # Число и лемма едут в пул вместе с записью: без них следующий читатель снова
+        # примет форму за слово и построит склонение от «Probleme», а не от «Problem».
+        number = str(result.get("grammatical_number") or "").strip()
+        if number:
+            payload["grammatical_number"] = number
+        lemma_de = str(result.get("lemma_de") or "").strip()
+        if lemma_de:
+            payload["lemma_de"] = lemma_de
         if resolved_source_lang == "de":
             payload["word_de"], payload["translation_de"] = source, source
         if resolved_target_lang == "ru":
@@ -9490,9 +9499,14 @@ def _apply_german_headword_normalization(
     # Authoritative der/die/das backstop: for a single-word noun, prefer the genus
     # de.wiktionary documents over the model's article (the mini soft spot). Only
     # on an unambiguous single gender, and NEVER singularise a plural: skip a plural
-    # surface (word_de == its own plural), and only OVERRIDE a clean article when the
-    # entry is a confirmed singular (plural exists and differs) — else just fill a
-    # missing one. This mirrors the offline backfill's safety.
+    # surface, and only OVERRIDE a clean article when the entry is a confirmed
+    # singular — else just fill a missing one. This mirrors the offline backfill's safety.
+    #
+    # «Это форма множественного» теперь спрашивается у справочника, а не у самой
+    # модели: раньше признаком служило её же поле forms.plural, то есть показания
+    # того, кто и ошибается. У формы множественного артикль может быть только «die»
+    # («die Probleme»), поэтому подтверждённая форма его и получает, а лемма пишется
+    # рядом отдельным полем — из неё потом строится склонение.
     # The part-of-speech gate also accepts an UNKNOWN pos on a capitalized single word: a
     # model shrug ("other") or a parse failure must not disable the article machinery — that
     # is exactly how «Eltern» was saved bare. If the genus lookup then confirms a noun, the
@@ -9503,11 +9517,25 @@ def _apply_german_headword_normalization(
         _bare = _strip_german_leading_article(current_german)[1] or current_german
         _forms = normalized.get("forms") if isinstance(normalized.get("forms"), dict) else {}
         _plural_bare = _strip_german_leading_article(str(_forms.get("plural") or ""))[1]
-        _is_plural_surface = bool(_plural_bare) and _plural_bare.casefold() == _bare.casefold()
-        _singular_confirmed = bool(_plural_bare) and _plural_bare.casefold() != _bare.casefold()
+        from backend.german_surface import PL, SG, german_surface
+        _verdict = german_surface(_bare)
+        _confirmed_plural = _verdict["number"] == PL and _verdict["confidence"] == "high"
+        _is_plural_surface = (
+            _verdict["number"] == PL
+            or (bool(_plural_bare) and _plural_bare.casefold() == _bare.casefold())
+        )
+        _singular_confirmed = (
+            _verdict["number"] == SG
+            or (bool(_plural_bare) and _plural_bare.casefold() != _bare.casefold())
+        )
         _clean_existing = _normalize_german_article(article)
         _resolved = ""
-        if not _is_plural_surface:
+        if _confirmed_plural:
+            _resolved = "die"
+            normalized["grammatical_number"] = PL
+            if _verdict["lemma"] and _verdict["lemma"].casefold() != _bare.casefold():
+                normalized["lemma_de"] = _verdict["lemma"]
+        elif not _is_plural_surface:
             _auth = _authoritative_german_article(_bare)
             if _auth and _auth != _clean_existing and (not _clean_existing or _singular_confirmed):
                 _resolved = _auth
@@ -36903,31 +36931,82 @@ def _quick_translate_german_noun_candidate(result, text, source_lang, target_lan
 
 
 def _attach_quick_translate_article(result, text, source_lang, target_lang):
-    """For a single German noun, attach its definite article (der/die/das) from the
-    local Wiktionary table (free, instant) so the compact card shows "die
-    Wortverbindung" right away. INSTANT ONLY — no LLM on the hot path; a Wiktionary
-    miss is filled asynchronously by `_schedule_quick_translate_article_fill` and the
-    full breakdown a moment later. Returns the (possibly enriched) result dict."""
+    """For a single German noun, attach the article we are ALLOWED to print (free,
+    instant) so the compact card shows "die Wortverbindung" right away.
+
+    Опознание («слово или форма») идёт ПЕРВЫМ и решает всё: у формы множественного
+    числа артикль может быть только «die», у слова — по его роду, а когда число
+    неизвестно — не печатаем ничего. Так «Проблемы» больше не могут стать «das
+    Probleme»: «das» — артикль леммы «das Problem», и рядом с формой ему не место.
+
+    Раньше здесь спрашивалась только таблица bt_wiktionary_dictionary: она покрывает
+    0,6 % наших существительных (24 слова из 3991), поэтому фактическим источником
+    артикля становилась модель в фоне — а она на множественном ошибается в половине
+    случаев. Теперь сначала спрашивается справочник родов (41 % покрытия) через общее
+    опознание, и только его молчание отправляет слово в фоновый добор.
+
+    INSTANT ONLY — никакого LLM на горячем пути. Возвращает обогащённый result.
+    """
     if not isinstance(result, dict):
         return result
     try:
         clean = _quick_translate_german_noun_candidate(result, text, source_lang, target_lang)
         if not clean:
             return result
-        entry = lookup_wiktionary_entry(clean, "de")
-        if entry and str(entry.get("article") or "").strip():
-            result["article"] = str(entry["article"]).strip()
+        from backend.german_surface import PL, SG, german_surface
+        verdict = german_surface(clean)
+        number, article, source = verdict["number"], verdict["article"], verdict["source"]
+        if not article and number != PL:
+            # Таблица разобранных статей — словарь ЛЕММ: попадание само по себе значит
+            # «это слово», поэтому её артикль здесь допустим. Для формы множественного
+            # она молчать не обязана, но и спрашивать её мы не станем.
+            entry = lookup_wiktionary_entry(clean, "de")
+            table_article = str((entry or {}).get("article") or "").strip()
+            if table_article:
+                article, number, source = table_article, SG, "таблица статей"
+        if article:
+            result["article"] = article
             result["part_of_speech"] = "noun"
+            result["article_source"] = source
+        if number == PL:
+            # Форму нельзя выдавать за слово: заголовок подписывается «мн. ч. от …»,
+            # а таблица склонения строится от леммы, а не от этой поверхности.
+            result["grammatical_number"] = PL
+            if verdict["lemma"] and verdict["lemma"].casefold() != clean.casefold():
+                result["lemma_de"] = verdict["lemma"]
     except Exception:
         logging.debug("quick-translate article enrichment failed", exc_info=True)
     return result
 
 
+def _patch_quick_translate_article(cache_key, result, article, source, *, number="", lemma=""):
+    """Дописать артикль (и, если это форма, её число и лемму) в кэш быстрого перевода,
+    чтобы клиент забрал готовый ответ опросом и человеку не пришлось жать «Перевести»
+    второй раз."""
+    cached = _get_cached_quick_translate(cache_key)
+    base = dict(cached) if isinstance(cached, dict) else dict(result)
+    if article:
+        base["article"] = article
+        base["part_of_speech"] = "noun"
+        base["article_source"] = source or ""
+    if number:
+        base["grammatical_number"] = number
+        if lemma:
+            base["lemma_de"] = lemma
+    _set_cached_quick_translate(cache_key, base)
+
+
 def _schedule_quick_translate_article_fill(cache_key, result, text, source_lang, target_lang, *, user_id_for_billing=None):
     """Off the hot path: if a lone German noun still lacks its article after the
-    instant Wiktionary lookup, resolve it with ONE fast LLM call in the background and
-    patch the cached quick-translate entry, so the next identical lookup shows der/die/
-    das without anyone ever waiting on GPT. No-op when the article is already known."""
+    instant lookup, resolve it in the background and patch the cached quick-translate
+    entry, so the next identical lookup shows der/die/das without anyone waiting.
+
+    Сначала — БЕСПЛАТНЫЙ добор: спрашиваем de.wiktionary про саму поверхность (это
+    же наполняет индекс форм и справочник родов, то есть работает на всех будущих
+    пользователей). Модель зовётся только если справочник промолчал, и её ответ
+    принимается ТОЛЬКО для слова: на форме множественного числа она отвечает про
+    лемму и ошибается в половине случаев (Probleme→das, Bücher→das, Tische→der).
+    No-op when the article is already known."""
     if not isinstance(result, dict) or str(result.get("article") or "").strip():
         return
     clean = _quick_translate_german_noun_candidate(result, text, source_lang, target_lang)
@@ -36936,15 +37015,33 @@ def _schedule_quick_translate_article_fill(cache_key, result, text, source_lang,
 
     def _job():
         try:
-            article = run_quick_article(word=clean)
+            from backend.german_surface import PL, german_surface
+            article = ""
+            source = "llm"
+            try:
+                from backend.german_form_warm import run_warm
+                run_warm(words=[clean])
+                verdict = german_surface(clean, allow_network=True)
+                article, source = verdict["article"], verdict["source"]
+                if verdict["number"] == PL:
+                    # Справочник сказал «это форма» — модель больше не спрашиваем:
+                    # артикль множественного уже известен и без неё.
+                    _patch_quick_translate_article(cache_key, result, article, source,
+                                                   number=PL, lemma=verdict["lemma"])
+                    return
+            except Exception:
+                logging.debug("quick-article: справочник не ответил про %s", clean, exc_info=True)
+            llm_number = ""
+            llm_lemma = ""
+            if not article:
+                facts = run_quick_article_facts(word=clean)
+                article, source = facts["article"], "llm"
+                llm_number = PL if facts["number"] == PL else ""
+                llm_lemma = facts["lemma"] if llm_number else ""
             if not article:
                 return
-            cached = _get_cached_quick_translate(cache_key)
-            base = dict(cached) if isinstance(cached, dict) else dict(result)
-            base["article"] = article
-            base["part_of_speech"] = "noun"
-            base["article_source"] = "llm"
-            _set_cached_quick_translate(cache_key, base)
+            _patch_quick_translate_article(cache_key, result, article, source,
+                                           number=llm_number, lemma=llm_lemma)
             if user_id_for_billing is not None:
                 try:
                     _billing_log_openai_usage(
@@ -37298,8 +37395,15 @@ def translate_quick_article():
         return jsonify({"article": ""})
     cache_key = _build_quick_translate_cache_key(text=text, source_lang=source_lang, target_lang=target_lang)
     cached = _get_cached_quick_translate(cache_key)
-    article = str((cached or {}).get("article") or "").strip() if isinstance(cached, dict) else ""
-    return jsonify({"article": article})
+    if not isinstance(cached, dict):
+        return jsonify({"article": ""})
+    # Вместе с артиклем отдаём ЧИСЛО и лемму: без них клиент не сможет подписать
+    # «мн. ч. от das Problem» и построит склонение от формы, а не от слова.
+    return jsonify({
+        "article": str(cached.get("article") or "").strip(),
+        "number": str(cached.get("grammatical_number") or "").strip(),
+        "lemma": str(cached.get("lemma_de") or "").strip(),
+    })
 
 
 @app.route("/api/translate/quick/correct", methods=["POST"])
