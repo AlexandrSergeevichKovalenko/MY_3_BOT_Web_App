@@ -96,9 +96,30 @@ def is_nominalized_person_adjective(word: str) -> bool:
     return any(w == t or w.endswith(t) for t in _PERSON_ADJ_NOUN_TAILS)
 
 
+def is_inflected_form_of_another_word(word: str) -> bool:
+    """True для формы ЧУЖОГО слова: «Bänder» — множественное от «das Band», и вопрос
+    «der/die/das?» на ней бессмыслен, спрашивать надо про само слово.
+
+    Слова, которые живут ТОЛЬКО во множественном («die Eltern», «die Masern»,
+    «die Kosten»), сюда не попадают: у них множественное и есть словарная форма,
+    ответ «die» верен и учить его правильно."""
+    try:
+        from backend.german_surface import PL, german_surface
+    except Exception:
+        return False
+    bare = str(word or "").strip()
+    verdict = german_surface(bare)
+    if verdict["number"] != PL or verdict["confidence"] != "high":
+        return False
+    lemma = str(verdict.get("lemma") or "")
+    return bool(lemma) and lemma.casefold() != bare.casefold()
+
+
 def is_ambiguous_noun(word: str) -> bool:
     w = str(word or "").strip().lower()
-    return w in _AMBIGUOUS_NOUNS or is_nominalized_person_adjective(w)
+    if w in _AMBIGUOUS_NOUNS or is_nominalized_person_adjective(w):
+        return True
+    return is_inflected_form_of_another_word(word)
 
 
 def strong_gender(word: str) -> str | None:
@@ -146,8 +167,19 @@ def resolve_article(word: str, stored: str) -> str:
     «die Börsenwert» (der Wert → der Börsenwert) — is corrected on the fly without a
     migration. `strong_gender` is conservative (never fires on ambiguous/exception
     roots), so this only flips genuine, near-certain mistakes; otherwise the stored
-    article is trusted. Returns lowercased der/die/das (or the best available)."""
+    article is trusted. Returns lowercased der/die/das (or the best available).
+
+    У формы множественного числа артикль может быть только «die», поэтому род леммы
+    ей не навязывается: «die Bänder» — правильно, «das Bänder» (род от «das Band») —
+    нет. Ровно из-за такой подстановки в словаре и появилось «das Probleme»."""
     st = str(stored or "").strip().lower()
+    try:
+        from backend.german_surface import PL, german_surface
+        _v = german_surface(word)
+        if _v["number"] == PL and _v["confidence"] == "high":
+            return "die"
+    except Exception:
+        logging.debug("resolve_article: опознание числа недоступно для %s", word, exc_info=True)
     sg = strong_gender(word)
     if sg and st in ("der", "die", "das") and sg != st:
         return sg
