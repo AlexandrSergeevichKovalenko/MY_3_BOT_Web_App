@@ -22442,6 +22442,32 @@ def set_user_bot_blocked(user_id: int, blocked: bool) -> None:
         logging.warning("set_user_bot_blocked failed user_id=%s", user_id, exc_info=True)
 
 
+def get_user_bot_block_state(user_id: int) -> dict | None:
+    """When this user left the bot and when they came back (or None if never recorded).
+
+    Read BEFORE marking a return, so the admin notification can say how long they were
+    away — the row keeps blocked_at, but reading first keeps that independent of the write.
+    """
+    try:
+        ensure_bot_blocked_table()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT is_blocked, blocked_at, unblocked_at
+                    FROM bt_3_bot_blocked_users WHERE user_id = %s;
+                    """,
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {"is_blocked": bool(row[0]), "blocked_at": row[1], "unblocked_at": row[2]}
+    except Exception:
+        logging.debug("get_user_bot_block_state failed user_id=%s", user_id, exc_info=True)
+        return None
+
+
 def is_user_bot_blocked(user_id: int) -> bool:
     """True only when we hold a positive record that the user blocked/deleted the bot.
     Fails OPEN (returns False) on any error — we never wrongly lock out a paying user

@@ -6957,6 +6957,58 @@ async def _notify_admins_new_user(context: CallbackContext, user, *, source: str
             logging.warning("не удалось отправить админу %s уведомление о новом пользователе: %s", admin_id, exc)
 
 
+def _format_absence_duration(blocked_at) -> str:
+    """«отсутствовал 3 дня» / «12 минут». Без даты — честное «неизвестно сколько»."""
+    if not blocked_at:
+        return "неизвестно сколько"
+    try:
+        reference = datetime.now(blocked_at.tzinfo) if blocked_at.tzinfo else datetime.now()
+        seconds = max(0, int((reference - blocked_at).total_seconds()))
+    except Exception:
+        return "неизвестно сколько"
+    if seconds < 3600:
+        minutes = max(1, seconds // 60)
+        return f"{minutes} мин."
+    if seconds < 86400:
+        return f"{seconds // 3600} ч."
+    days = seconds // 86400
+    if days % 10 == 1 and days % 100 != 11:
+        return f"{days} день"
+    if days % 10 in (2, 3, 4) and days % 100 not in (12, 13, 14):
+        return f"{days} дня"
+    return f"{days} дней"
+
+
+async def _notify_admins_user_returned(
+    context: CallbackContext,
+    *,
+    user,
+    user_id: int,
+    blocked_at=None,
+) -> None:
+    """«↩️ Вернулся» DM to admins.
+
+    Deliberately a DIFFERENT event from the «🆕 Новый пользователь» notice: a return is not
+    a new connection, and mixing the two would make the count of new people meaningless —
+    every reinstall would read as growth.
+    """
+    admin_ids = get_admin_telegram_ids()
+    if not admin_ids:
+        return
+    name = _display_user_name(user) if user else f"user_{int(user_id)}"
+    text = (
+        "↩️ Пользователь вернулся\n\n"
+        f"User: {name}\n"
+        f"User ID: {int(user_id)}\n"
+        f"Отсутствовал: {_format_absence_duration(blocked_at)}"
+    )
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text)
+        except Exception as exc:
+            logging.warning("не удалось отправить админу %s уведомление о возврате: %s", admin_id, exc)
+
+
 async def _send_access_closed_reply(update: Update, context: CallbackContext) -> None:
     """Reply for the only people who still hit a closed door: those an admin denied."""
     message = update.effective_message
@@ -7417,8 +7469,18 @@ async def handle_private_bot_block_status(update: Update, context: CallbackConte
         await asyncio.to_thread(_mark_user_bot_blocked, int(uid), True)
         logging.info("🚫 user_id=%s заблокировал/удалил бота", int(uid))
     elif new_status == "member" and old_status == "kicked":
+        # Read the departure BEFORE recording the return, so the admin note can say how long
+        # the person was gone (the write keeps blocked_at, but this keeps the two independent).
+        from backend.database import get_user_bot_block_state
+        previous_state = await asyncio.to_thread(get_user_bot_block_state, int(uid))
         await asyncio.to_thread(_mark_user_bot_blocked, int(uid), False)
         logging.info("✅ user_id=%s вернулся в бота", int(uid))
+        await _notify_admins_user_returned(
+            context,
+            user=getattr(membership_update, "from_user", None),
+            user_id=int(uid),
+            blocked_at=(previous_state or {}).get("blocked_at"),
+        )
 
 
 async def track_group_member_context(update: Update, context: CallbackContext) -> None:
@@ -14506,6 +14568,49 @@ async def _daily_access_digest_job(context: CallbackContext) -> None:
                 logging.warning("daily_access_digest: не доставлено админу %s: %s", admin_id, exc)
     except Exception:
         logging.exception("daily_access_digest failed")
+
+
+_CACHE_INVALIDATION_FEED_SEEN_UNTIL = {"ts": 0.0}
+_CACHE_INVALIDATION_FEED_LOOKBACK_SEC = 30
+
+
+async def _cache_invalidation_feed_job(context: CallbackContext) -> None:
+    """Подхватывает изменения доступа, сделанные ВНЕ процесса бота.
+
+    Решение «допущен ли пользователь» кэшируется здесь на сутки, поэтому выдача или
+    отзыв доступа из веб-части (или руками в базе) до сих пор доходили до бота только
+    после истечения этого кэша. Веб-часть читает тот же общий фид; теперь и бот.
+    Одно обращение к Redis раз в интервал, независимо от нагрузки.
+    """
+    try:
+        from backend.job_queue import get_redis_client
+        from backend.database import (
+            CACHE_INVALIDATION_FEED_KEY,
+            invalidate_telegram_user_allowed_cache,
+        )
+        client = get_redis_client()
+        if client is None:
+            return
+        now_ts = pytime.time()
+        since = _CACHE_INVALIDATION_FEED_SEEN_UNTIL["ts"] or (now_ts - _CACHE_INVALIDATION_FEED_LOOKBACK_SEC)
+        members = await asyncio.to_thread(
+            client.zrangebyscore, CACHE_INVALIDATION_FEED_KEY, since, "+inf"
+        )
+        applied = 0
+        for member in members or []:
+            parts = str(member).split(":")
+            if len(parts) < 2 or parts[0] != "allowlist":
+                continue
+            try:
+                invalidate_telegram_user_allowed_cache(int(parts[1]))
+                applied += 1
+            except Exception:
+                logging.debug("cache feed: не удалось сбросить кэш для %r", member, exc_info=True)
+        if applied:
+            logging.info("cache feed: сброшен кэш доступа для %d пользователей", applied)
+        _CACHE_INVALIDATION_FEED_SEEN_UNTIL["ts"] = now_ts - _CACHE_INVALIDATION_FEED_LOOKBACK_SEC
+    except Exception:
+        logging.debug("cache invalidation feed job failed", exc_info=True)
 
 
 async def _nightly_pending_cleanup_job(context: CallbackContext) -> None:
@@ -40222,6 +40327,12 @@ def main():
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
                 application.job_queue.run_repeating(_app_spend_ceiling_tick_job, interval=int(os.getenv("APP_SPEND_CEILING_TICK_SECONDS", "3600") or 3600), first=180),
+                # Изменения доступа, сделанные вне процесса бота, иначе ждут суточного кэша.
+                application.job_queue.run_repeating(
+                    _cache_invalidation_feed_job,
+                    interval=int(os.getenv("CACHE_INVALIDATION_FEED_POLL_SEC", "30") or 30),
+                    first=25,
+                ),
                 # «Finde im Bild» scene studio: render admin-requested scene images + backfill
                 # target language extras. Bounded per tick; cheap when there's nothing to do.
                 application.job_queue.run_repeating(_pin_scene_studio_tick, interval=int(os.getenv("PIN_STUDIO_TICK_SECONDS", "90") or 90), first=45),
