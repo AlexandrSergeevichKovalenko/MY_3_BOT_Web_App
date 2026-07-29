@@ -47929,7 +47929,11 @@ def webapp_settings_state():
         decision = str(st.get("decision_status") or "").strip().lower()
         if decision == "accepted":
             if bool(st.get("live_subscription")):
-                dict_tier = "full"
+                # Оба варианта — подписка, поэтому по одному флагу их не различить:
+                # разница в ПОТОЛКЕ. Есть потолок — «Быстрый старт», нет — «Весь словарь».
+                # Без этого экран показывал «Весь словарь» даже сразу после переключения
+                # на урезанный: человек выходил, возвращался — и видел свой выбор отменённым.
+                dict_tier = "base" if st.get("subscription_limit") else "full"
             elif int(st.get("last_imported_count") or 0) > 0:
                 dict_tier = "base"
     except Exception:

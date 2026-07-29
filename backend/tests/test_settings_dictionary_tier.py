@@ -43,6 +43,27 @@ class SettingsDictionaryTierTests(unittest.TestCase):
         # И число называется, а не остаётся загадкой.
         self.assertEqual(payload["dict_full_total"], 14222)
 
+    def test_capped_subscription_shows_as_quick_start(self):
+        """Оба варианта — подписка, различает их ПОТОЛОК. Пока экран смотрел только на
+        флаг подписки, он показывал «Весь словарь» даже после переключения на урезанный:
+        человек выходил из настроек, возвращался — и видел свой выбор отменённым."""
+        payload = self._tier({
+            "decision_status": "accepted",
+            "live_subscription": True,
+            "subscription_limit": 1000,
+            "last_imported_count": 1000,
+        })
+        self.assertEqual(payload["dict_tier"], "base")
+
+    def test_uncapped_subscription_shows_as_full(self):
+        payload = self._tier({
+            "decision_status": "accepted",
+            "live_subscription": True,
+            "subscription_limit": None,
+            "last_imported_count": 0,
+        })
+        self.assertEqual(payload["dict_tier"], "full")
+
     def test_quick_start_shows_as_base(self):
         payload = self._tier({
             "decision_status": "accepted",
