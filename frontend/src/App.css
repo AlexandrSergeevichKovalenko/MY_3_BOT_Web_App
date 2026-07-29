@@ -8088,18 +8088,8 @@ body:has(.webapp-page.is-theme-light),
   align-items: center;
   margin: 12px 0 10px;
 }
-/* Подтверждение подключённого полного словаря над списком слов: спокойная янтарная
-   строка, не тревожная плашка — это статус, а не проблема. */
-.vocab-full-dict-note {
-  margin: -4px 0 12px;
-  padding: 8px 12px;
-  border-radius: 12px;
-  background: rgba(245, 158, 11, 0.10);
-  border: 1px solid rgba(245, 158, 11, 0.28);
-  font-size: 13px;
-  line-height: 1.45;
-  color: #7a5300;
-}
+/* «Всего: 1 124 из 15 115» — вторая цифра приглушена: это фон, а не главное число. */
+.vocab-stats-of { color: #8a8f98; font-weight: 500; }
 .vocab-selection-toolbar {
   margin: 0 0 18px;
   padding: 15px 16px;

@@ -235,5 +235,68 @@ class PhraseProportionTests(unittest.TestCase):
         self.assertLessEqual(longest_run, 4)
 
 
+class SubscriptionQueriesRunTests(unittest.TestCase):
+    """Запросы подписки должны СОБИРАТЬСЯ и выполняться, а не падать на подстановке.
+
+    Дважды подряд фильтр фраз оказывался вставлен не в ту функцию: код компилировался,
+    тесты на логику проходили, а запрос падал с NameError уже в бою. Здесь запросы
+    прогоняются через поддельный курсор — сборка строки проверяется по-настоящему.
+    """
+
+    class _Cursor:
+        def __init__(self):
+            self.sql = None
+            self.params = None
+
+        def execute(self, sql, params=None):
+            self.sql, self.params = sql, params
+
+        def fetchone(self):
+            # Достаточно широкая строка: вызывающий код читает поля по индексам.
+            return (0,) * 10
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def test_candidates_query_builds_for_both_modes(self):
+        for phrases_only in (False, True):
+            with self.subTest(phrases_only=phrases_only):
+                cur = self._Cursor()
+                db.list_admin_subscription_new_candidates(
+                    user_id=77, source_user_id=1, source_lang="ru", target_lang="de",
+                    limit=5, cursor=cur, phrases_only=phrases_only,
+                )
+                self.assertIn("FROM bt_3_webapp_dictionary_queries a", cur.sql)
+                self.assertEqual("is_phrase IS TRUE" in cur.sql, phrases_only)
+
+    def test_own_candidate_query_builds_for_both_modes(self):
+        for phrases_only in (False, True):
+            with self.subTest(phrases_only=phrases_only):
+                cur = self._Cursor()
+                with patch.object(db, "_trained_german_word_keys", Mock(return_value=[])):
+                    db.get_next_new_srs_candidate(
+                        user_id=77, source_lang="ru", target_lang="de",
+                        cursor=cur, phrases_only=phrases_only,
+                    )
+                self.assertEqual("q.is_phrase IS TRUE" in cur.sql, phrases_only)
+
+    def test_available_counter_query_builds(self):
+        """Счётчик доступного НЕ должен требовать фильтра фраз — он считает всё."""
+        cur = self._Cursor()
+        with patch.object(db, "get_db_connection_context") as ctx:
+            ctx.return_value.__enter__.return_value.cursor.return_value = cur
+            db.count_admin_subscription_available_words(
+                user_id=77, source_user_id=1, source_lang="ru", target_lang="de",
+            )
+        self.assertIn("SELECT COUNT(*)", cur.sql)
+        self.assertNotIn("is_phrase", cur.sql)
+
+
 if __name__ == "__main__":
     unittest.main()

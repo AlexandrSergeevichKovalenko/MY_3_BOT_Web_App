@@ -13436,6 +13436,7 @@ function AppInner() {
       subscription_limit: Number(payload.subscription_limit || 0) || null,
       subscription_delivered: Math.max(0, Number(payload.subscription_delivered || 0) || 0),
       subscription_exhausted: Boolean(payload.subscription_exhausted),
+      subscription_available: Math.max(0, Number(payload.subscription_available || 0) || 0),
       state,
     };
   }, []);
@@ -37492,6 +37493,10 @@ function AppInner() {
                           <div className="vocab-stats-bar">
                             <span className="vocab-stats-total">
                               {tr('Всего:', 'Gesamt:')} <strong>{vocabFoldersMeta?.total_count ?? vocabTotal}</strong>
+                              {/* Здесь ровно одно число — сколько слов в ЕГО библиотеке, столько
+                                  же строк в списке ниже. Состояние подписки живёт в ⚙️ Настройках,
+                                  где человек её и выбирал: два разных «всего» на одном экране
+                                  путают сильнее, чем помогают. */}
                             </span>
                             <button
                               type="button"
@@ -37507,24 +37512,6 @@ function AppInner() {
                           {/* Подключён весь словарь — но слова открываются по ходу занятий,
                               поэтому «Всего» растёт постепенно. Без этой строки неизменное
                               число читается как «подключение не сработало». */}
-                          {/* Урезанный набор выбран до конца. Молчать нельзя: человек решит,
-                              что сломалось, — ровно так и вышло с числом 1124. */}
-                          {starterDictionaryOffer?.subscription_exhausted ? (
-                            <div className="vocab-full-dict-note">
-                              🔓 {tr(
-                                `Из словаря автора ты взял всё, что входит в урезанный набор (${(starterDictionaryOffer.subscription_delivered || 0).toLocaleString('ru-RU')}). Включи «Весь словарь» в ⚙️ Настройках — и слова снова пойдут.`,
-                                `Du hast alles erhalten, was das kleine Set enthält (${(starterDictionaryOffer.subscription_delivered || 0).toLocaleString('de-DE')}). Aktiviere «Volles Wörterbuch» in ⚙️ Einstellungen — dann geht es weiter.`,
-                              )}
-                            </div>
-                          ) : starterDictionaryOffer?.state?.live_subscription
-                            && starterDictionaryOffer?.template_total > 0 ? (
-                            <div className="vocab-full-dict-note">
-                              🔓 {tr(
-                                `Весь словарь подключён: ${starterDictionaryOffer.template_total.toLocaleString('ru-RU')} слов и выражений — открываются по мере занятий.`,
-                                `Volles Wörterbuch verbunden: ${starterDictionaryOffer.template_total.toLocaleString('de-DE')} Wörter und Ausdrücke — sie werden nach und nach freigeschaltet.`,
-                              )}
-                            </div>
-                          ) : null}
 
                           <div className={`vocab-selection-toolbar ${manualTrainingSelectionCount > 0 ? 'is-visible' : ''}`}>
                             <div className="vocab-selection-toolbar-main">

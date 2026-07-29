@@ -1014,6 +1014,46 @@ def _dedupe_webapp_dictionary_entry_after_insert(
             )
 
         if duplicate_ids:
+            # История обучения не должна пропадать вместе с дубликатом. Раньше строки
+            # удалялись напрямую, а прогресс и журнал ответов оставались висеть в воздухе
+            # (18 таких записей нашлось в проде) — то есть человек проходил слово, а после
+            # схлопывания дублей это исчезало из его истории и из аналитики.
+            cursor.execute(
+                """
+                UPDATE bt_3_card_review_log
+                SET card_id = %s
+                WHERE user_id = %s AND card_id = ANY(%s);
+                """,
+                (int(keep_entry_id), int(user_id), duplicate_ids),
+            )
+            # Прогресс переносим на выжившую карточку — но только если у неё своего ещё нет
+            # (ключ user_id+card_id уникален). Берём самый продвинутый из дублей.
+            cursor.execute(
+                """
+                WITH best AS (
+                    SELECT id FROM bt_3_card_srs_state
+                    WHERE user_id = %s AND card_id = ANY(%s)
+                    ORDER BY reps DESC NULLS LAST, due_at DESC NULLS LAST
+                    LIMIT 1
+                )
+                UPDATE bt_3_card_srs_state s
+                SET card_id = %s
+                FROM best
+                WHERE s.id = best.id
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bt_3_card_srs_state k
+                      WHERE k.user_id = %s AND k.card_id = %s
+                  );
+                """,
+                (int(user_id), duplicate_ids, int(keep_entry_id), int(user_id), int(keep_entry_id)),
+            )
+            cursor.execute(
+                """
+                DELETE FROM bt_3_card_srs_state
+                WHERE user_id = %s AND card_id = ANY(%s);
+                """,
+                (int(user_id), duplicate_ids),
+            )
             cursor.execute(
                 """
                 DELETE FROM bt_3_webapp_dictionary_queries
@@ -16955,7 +16995,6 @@ def count_admin_subscription_available_words(
                 FROM bt_3_webapp_dictionary_queries a
                 WHERE a.user_id = %s
                   AND a.canonical_entry_id IS NOT NULL
-                  {phrase_clause}
                   {lang_clause}
                   AND NOT EXISTS (
                       SELECT 1 FROM bt_3_webapp_dictionary_queries u
@@ -17026,6 +17065,7 @@ def list_admin_subscription_new_candidates(
                 {_SUBSCRIPTION_POPULARITY_JOIN_SQL}
                 WHERE a.user_id = %s
                   AND a.canonical_entry_id IS NOT NULL
+                  {phrase_clause}
                   {lang_clause}
                   AND NOT EXISTS (
                       SELECT 1 FROM bt_3_webapp_dictionary_queries u
