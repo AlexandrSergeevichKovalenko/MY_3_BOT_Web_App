@@ -59,7 +59,7 @@ Every block is explained with the same skeleton, so you get used to it:
 | 00b | **HTTP + backend foundations** — request anatomy, GET vs POST, status codes, Flask (read second) | [00b_http_and_backend_foundations.md](00b_http_and_backend_foundations.md) | ✅ |
 | 01 | **Sentence translation** (frontend ↔ Flask ↔ OpenAI ↔ DB) | [01_sentence_translation.md](01_sentence_translation.md) | ✅ |
 | 02 | **Telegram authentication (`initData`)** — the security foundation | [02_telegram_auth_initdata.md](02_telegram_auth_initdata.md) | ✅ |
-| 03 | **Payments: Stripe + Telegram Stars** — webhooks, payment forgery | _(planned)_ | ⚪ |
+| 03 | **Payments: Stripe + Telegram Stars** — invoice→pre-checkout→fulfil, forgery, refund clawback, webhooks | [03_payments.md](03_payments.md) | ✅ |
 | 04 | **Shared, reusable word cache** (dictionary lookups & breakdowns; cache poisoning + Prompt Injection) | [04_shared_word_cache.md](04_shared_word_cache.md) | ✅ |
 | 04b | **Word cards ↔ the "units layer"** (the "matrix of ones": card→word pointer, senses, saved-vs-unsaved, nightly demand) | [04b_word_units_layer.md](04b_word_units_layer.md) | ✅ |
 | 05 | **Interactive exercises** — tap→grade→result pipeline; deep dive on image tap hit-testing | [05_interactive_exercises.md](05_interactive_exercises.md) | ✅ |
