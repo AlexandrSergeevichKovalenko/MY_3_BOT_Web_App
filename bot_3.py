@@ -14599,7 +14599,14 @@ def _format_wofrage_health_text(rows: list[dict], quarantined: list[dict]) -> st
     if quarantined:
         lines.append(f"\n🚫 <b>Убрано из выдачи ({len(quarantined)}):</b>")
         for r in quarantined[:10]:
-            lines.append(f"• <code>{r['sentence']}</code> → {r['answer']}\n   {r['verdict']}")
+            # Команду возврата кладём ПРЯМО СЮДА: искать её в другом месте не нужно —
+            # тапнул по строке, она скопировалась, отправил.
+            lines.append(
+                f"• <code>{r['sentence']}</code> → {r['answer']}\n"
+                f"   {r['verdict']}\n"
+                f"   Вернуть: <code>/wofrage_health release {r['item_key']}</code>"
+            )
+        lines.append("\nЗадание останется убранным, пока не вернёшь его этой командой.")
     healthy = [r for r in rows if not r.get("verdict")]
     if healthy:
         worst = sorted(healthy, key=lambda r: r["correct_rate"])[:5]
@@ -35212,10 +35219,16 @@ async def admin_wofrage_health_command(update: Update, context: CallbackContext)
     for row in rows:
         row["verdict"] = _wofrage_health_verdict(row)
     jailed = await asyncio.to_thread(list_wofrage_quarantine, 20)
-    text = _format_wofrage_health_text(rows, [r for r in rows if r.get("verdict")])
-    if jailed:
-        text += "\n\n🔑 <b>Вернуть в выдачу:</b>\n" + "\n".join(
-            f"<code>/wofrage_health release {r['item_key']}</code> — {r['sentence']}" for r in jailed[:8]
+    flagged = [r for r in rows if r.get("verdict")]
+    text = _format_wofrage_health_text(rows, flagged)
+    # Убранные РАНЬШЕ (в прошлые ночи) — их уже нет среди сегодняшних претензий,
+    # но вернуть их можно тут же, не разыскивая ключ.
+    fresh_keys = {r["item_key"] for r in flagged}
+    older = [r for r in jailed if r["item_key"] not in fresh_keys]
+    if older:
+        text += "\n\n🔑 <b>Убраны ранее:</b>\n" + "\n".join(
+            f"• <code>{r['sentence']}</code>\n   Вернуть: <code>/wofrage_health release {r['item_key']}</code>"
+            for r in older[:8]
         )
     await message.reply_text(text, parse_mode="HTML")
 

@@ -105,6 +105,16 @@ class NightlyWatchdogTests(unittest.TestCase):
         self.assertIsNone(bot_3._wofrage_health_verdict(healthy),
                           "здоровое задание не должно попадать в карантин")
 
+    def test_report_carries_the_release_command(self):
+        """Владелец не должен разыскивать команду: она стоит рядом с заданием."""
+        import bot_3
+        row = {"item_key": "abc123", "sentence": "___ leidest du?", "answer": "Woran",
+               "lemma": "leiden an", "attempts": 40, "correct_rate": 0.22,
+               "verdict": "неверный вариант выбирают чаще верного"}
+        text = bot_3._format_wofrage_health_text([row], [row])
+        self.assertIn("/wofrage_health release abc123", text)
+        self.assertIn("___ leidest du?", text)
+
     def test_threshold_is_not_quietly_loosened(self):
         import bot_3
         self.assertLessEqual(bot_3.WOFRAGE_HEALTH_MIN_ATTEMPTS, 20,
