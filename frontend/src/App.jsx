@@ -37497,12 +37497,21 @@ function AppInner() {
                                       остальное пришло из словаря автора. «Уже у меня» — честно про
                                       состав и понятно без пояснений. */}
                               {tr('Уже у меня:', 'Schon bei mir:')} <strong>{vocabFoldersMeta?.total_count ?? vocabTotal}</strong>
-                              {starterDictionaryOffer?.state?.live_subscription
-                                && starterDictionaryOffer?.template_total > 0 ? (
-                                <span className="vocab-stats-of">
-                                  {' · '}{tr('Весь словарь:', 'Ganzes Wörterbuch:')}{' '}
-                                  {(starterDictionaryOffer.template_total || 0).toLocaleString('ru-RU')}
-                                </span>
+                              {/* Подпись обязана совпадать с тем, что реально включено:
+                                  урезанный набор — «Быстрый старт» и его потолок, полный —
+                                  «Весь словарь» и весь размер. Отключено — строки нет вовсе. */}
+                              {starterDictionaryOffer?.state?.live_subscription ? (
+                                starterDictionaryOffer?.subscription_limit ? (
+                                  <span className="vocab-stats-of">
+                                    {' · '}{tr('Быстрый старт:', 'Schnellstart:')}{' '}
+                                    {(starterDictionaryOffer.subscription_limit || 0).toLocaleString('ru-RU')}
+                                  </span>
+                                ) : starterDictionaryOffer?.template_total > 0 ? (
+                                  <span className="vocab-stats-of">
+                                    {' · '}{tr('Весь словарь:', 'Ganzes Wörterbuch:')}{' '}
+                                    {(starterDictionaryOffer.template_total || 0).toLocaleString('ru-RU')}
+                                  </span>
+                                ) : null
                               ) : null}
                             </span>
                             <button
