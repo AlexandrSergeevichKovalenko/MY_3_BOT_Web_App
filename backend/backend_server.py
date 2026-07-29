@@ -660,6 +660,9 @@ from backend.database import (
     has_admin_subscription_available,
     materialize_subscription_card,
     count_subscription_delivered,
+    count_remaining_new_stock,
+    is_phrase_turn,
+    invalidate_new_stock_cache,
     remove_untouched_subscription_words,
     get_next_new_srs_candidate_with_subscription,
     invalidate_subscription_peek_cache,
@@ -1052,10 +1055,8 @@ SRS_DUE_PER_DAY = int(os.getenv("SRS_DUE_PER_DAY", "30"))
 # frequency_rank, so un-ranked / rare words never starve behind the
 # frequency-ordered queue. 4 → ~25% of daily new cards are age-first. 0 disables.
 SRS_NEW_AGED_RESERVE_EVERY = max(0, int(os.getenv("SRS_NEW_AGED_RESERVE_EVERY", "4")))
-# Каждая третья новая карточка — фраза или предложение. Решение владельца: частотный ранг
-# есть только у одиночных слов, поэтому без квоты фразы не всплывают вообще, сколько бы их
-# ни было (у автора их втрое больше, чем слов: 10 363 против 3 629).
-SRS_NEW_PHRASE_EVERY = max(0, int(os.getenv("SRS_NEW_PHRASE_EVERY", "3")))
+# Доля фраз в выдаче не назначается числом: она равна доле фраз в ОСТАТКЕ у человека
+# (см. count_remaining_new_stock / is_phrase_turn). Добавит больше слов — сдвинется сама.
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 # Mirror the bot-side referral knobs so the shared PDF card promises match reality.
 REFERRAL_REWARD_DAYS = max(1, int((os.getenv("REFERRAL_REWARD_DAYS") or "7").strip() or "7"))
@@ -6706,6 +6707,17 @@ def _build_starter_dictionary_offer(
             both_directions=True,
         )
 
+    subscription_available = 0
+    try:
+        if state.get("live_subscription") and STARTER_DICTIONARY_SOURCE_USER_ID > 0:
+            subscription_available = count_admin_subscription_available_words(
+                user_id=safe_user_id,
+                source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+                source_lang=pair_source,
+                target_lang=pair_target,
+            )
+    except Exception:
+        logging.debug("не удалось посчитать доступное по подписке uid=%s", safe_user_id, exc_info=True)
     try:
         subscription_delivered = count_subscription_delivered(safe_user_id)
     except Exception:
@@ -6746,6 +6758,10 @@ def _build_starter_dictionary_offer(
         # просто молча останавливается и читается как поломка.
         "subscription_limit": state.get("subscription_limit"),
         "subscription_delivered": int(subscription_delivered),
+        # Сколько слов автора человеку ещё доступно. Функция была написана, но НИ РАЗУ не
+        # вызывалась — и именно из неё однажды взяли число, которое показали как факт.
+        # Теперь она питает интерфейс, а не лежит мёртвым грузом.
+        "subscription_available": int(subscription_available),
         "subscription_exhausted": bool(
             state.get("live_subscription")
             and state.get("subscription_limit")
@@ -11057,10 +11073,15 @@ def _list_srs_queue_cards(
             # владельца). Без неё фразы лежат мёртвым грузом: частотный ранг есть только у
             # одиночных слов, поэтому фразы всегда проигрывают в сортировке по нужности.
             # Признак посчитан при сохранении — здесь это обычный отбор по колонке.
-            phrase_quota = (
-                (new_limit // SRS_NEW_PHRASE_EVERY)
-                if SRS_NEW_PHRASE_EVERY and new_limit >= SRS_NEW_PHRASE_EVERY else 0
-            )
+            try:
+                _w_left, _p_left = count_remaining_new_stock(
+                    user_id=user_id, source_lang=source_lang, target_lang=target_lang, cursor=cur,
+                )
+                _phrase_share = (_p_left / float(_w_left + _p_left)) if (_w_left + _p_left) else 0.0
+            except Exception:
+                logging.debug("не удалось посчитать состав остатка uid=%s", user_id, exc_info=True)
+                _phrase_share = 0.0
+            phrase_quota = int(new_limit * _phrase_share) if new_limit > 0 else 0
             if phrase_quota > 0:
                 cur.execute(
                     f"""
@@ -11441,13 +11462,22 @@ def _build_next_srs_payload(
             prefer_oldest = bool(SRS_NEW_AGED_RESERVE_EVERY) and (
                 (int(introduced_today or 0) + 1) % SRS_NEW_AGED_RESERVE_EVERY == 0
             )
-            # Каждая третья новая карточка — фраза (если она вообще есть). Иначе фразы не
-            # всплывают: ранг частотности существует только для одиночных слов.
-            _phrase_turn = (
-                bool(SRS_NEW_PHRASE_EVERY)
-                and not prefer_oldest
-                and (int(introduced_today or 0) + 1) % SRS_NEW_PHRASE_EVERY == 0
-            )
+            # Состав выдачи повторяет состав ОСТАТКА: сколько у человека фраз — столько же
+            # и в выдаче. Без этого фразы не всплывают вообще: частотный ранг есть только у
+            # одиночных слов, а фраз в словарях вдвое больше.
+            _phrase_turn = False
+            if not prefer_oldest:
+                try:
+                    _words_left, _phrases_left = count_remaining_new_stock(
+                        user_id=user_id, source_lang=source_lang, target_lang=target_lang, cursor=cursor,
+                    )
+                    _phrase_turn = is_phrase_turn(
+                        introduced_today=int(introduced_today or 0),
+                        words_left=_words_left,
+                        phrases_left=_phrases_left,
+                    )
+                except Exception:
+                    logging.debug("не удалось посчитать состав остатка uid=%s", user_id, exc_info=True)
             # Единая очередь: своё слово и слово из подписки соревнуются по нужности, а не
             # «подписка включается, когда свои кончились» (при таком порядке она не отдала
             # ни одного слова за всё время — у каждого лежала тысяча своих).

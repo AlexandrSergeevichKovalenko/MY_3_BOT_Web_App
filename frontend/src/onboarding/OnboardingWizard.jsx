@@ -563,7 +563,7 @@ function StepBody(props) {
             <div className="ob-actions ob-actions-col">
               <span className="ob-lock ob-ok">{t('✅ Базовый словарь подключён', '✅ Basis-Wörterbuch verbunden')}</span>
               {dictChoice === 'full' ? (
-                <span className="ob-lock ob-ok">{t('✅ Догружаю весь словарь — это займёт пару минут, можно идти дальше', '✅ Lade das ganze Wörterbuch — ein paar Minuten, du kannst weitergehen')}</span>
+                <span className="ob-lock ob-ok">{t('✅ Весь словарь подключён — слова будут открываться по мере занятий', '✅ Volles Wörterbuch verbunden — die Wörter werden nach und nach freigeschaltet')}</span>
               ) : (
                 <>
                   {total > have ? (
@@ -573,7 +573,7 @@ function StepBody(props) {
                       onClick={() => onDictAction('accept', true)}
                       disabled={busy}
                     >
-                      {dictBusy === 'full' ? t('⏳ Догружаю…', '⏳ Lade…') : `${t('🔓 Догрузить весь словарь', '🔓 Ganzes Wörterbuch laden')} — ~${total} ${t('слов', 'Wörter')}`}
+                      {dictBusy === 'full' ? t('⏳ Подключаю…', '⏳ Verbinde…') : `${t('🔓 Подключить весь словарь', '🔓 Ganzes Wörterbuch verbinden')} — ${total} ${t('слов', 'Wörter')}`}
                     </button>
                   ) : null}
                   <button
@@ -619,7 +619,7 @@ function StepBody(props) {
               </button>
             </div>
           )}
-          <p className="ob-muted-note">{t('📚 Быстрый старт — компактный набор базовых слов, чтобы не потеряться в начале. 🔓 Весь словарь — сразу весь набор. Оба — это только СТАРТ. Главное в приложении — слова, которые ты сам добавишь из видео, текстов и переводов: именно их бот будет давать тебе в повторениях. Стартовый набор можно в любой момент отключить в ⚙️ Настройках и учить только свои слова.', '📚 Schnellstart — ein kompaktes Set an Grundwörtern, um am Anfang nicht den Überblick zu verlieren. 🔓 Ganzes Wörterbuch — gleich der volle Satz. Beides ist nur der START. Das Wichtigste sind die Wörter, die du selbst aus Videos, Texten und Übersetzungen hinzufügst — die gibt dir der Bot in den Wiederholungen. Das Starter-Set kannst du jederzeit in ⚙️ Einstellungen abschalten und nur deine eigenen Wörter lernen.')}</p>
+          <p className="ob-muted-note">{t('📚 Быстрый старт — первая тысяча слов и выражений, чтобы не потеряться в начале. 🔓 Весь словарь — без ограничения. В обоих случаях слова не сваливаются пачкой, а открываются по мере занятий. Оба — это только СТАРТ. Главное в приложении — слова, которые ты сам добавишь из видео, текстов и переводов: именно их бот будет давать тебе в повторениях. Стартовый набор можно в любой момент отключить в ⚙️ Настройках и учить только свои слова.', '📚 Schnellstart — die ersten tausend Wörter und Ausdrücke, um am Anfang nicht den Überblick zu verlieren. 🔓 Ganzes Wörterbuch — ohne Begrenzung. In beiden Fällen kommen die Wörter nach und nach beim Lernen, nicht auf einen Schlag. Beides ist nur der START. Das Wichtigste sind die Wörter, die du selbst aus Videos, Texten und Übersetzungen hinzufügst — die gibt dir der Bot in den Wiederholungen. Das Starter-Set kannst du jederzeit in ⚙️ Einstellungen abschalten und nur deine eigenen Wörter lernen.')}</p>
           {!HAS_ACCOUNT ? (
             <p className="ob-muted-note">
               {IS_GUEST_TOUR

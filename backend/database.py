@@ -6709,6 +6709,13 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_webapp_dictionary_queries (user_id, is_phrase, frequency_rank);
             """)
             cursor.execute("""
+                -- Этот индекс жил в проде, но отсутствовал в коде: создан когда-то руками.
+                -- При пересоздании базы с нуля он бы просто не появился, а на нём держится
+                -- защита от повторов в очереди тренировки (одно немецкое слово — одна карточка).
+                CREATE INDEX IF NOT EXISTS idx_wdq_user_lower_word_de
+                ON bt_3_webapp_dictionary_queries (user_id, lower(btrim(word_de)));
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_freq
                 ON bt_3_webapp_dictionary_queries (user_id, frequency_rank);
             """)
@@ -25351,6 +25358,88 @@ def _peek_subscription_candidate(
 def _rank_or_worst(value) -> float:
     """Меньше — нужнее. Слово без ранга частотности проигрывает любому слову с рангом."""
     return float(value) if value is not None else float("inf")
+
+
+_NEW_STOCK_CACHE: dict[int, tuple[float, tuple[int, int]]] = {}
+_NEW_STOCK_TTL_SEC = max(30, min(3600, int(os.getenv("NEW_STOCK_MIX_TTL_SEC", "300") or "300")))
+_NEW_STOCK_LOCK = threading.Lock()
+
+
+def invalidate_new_stock_cache(user_id: int | None = None) -> None:
+    with _NEW_STOCK_LOCK:
+        if user_id is None:
+            _NEW_STOCK_CACHE.clear()
+        else:
+            _NEW_STOCK_CACHE.pop(int(user_id), None)
+
+
+def count_remaining_new_stock(
+    *, user_id: int, source_lang: str | None = None, target_lang: str | None = None, cursor=None
+) -> tuple[int, int]:
+    """Сколько у человека осталось НЕ НАЧАТЫХ слов и фраз: (слов, фраз).
+
+    По этой пропорции решается состав выдачи. Запрос стоит ~7 мс (замер на проде) и
+    кэшируется на пять минут — состав словаря так быстро не меняется.
+    """
+    uid = int(user_id)
+    now_ts = time.monotonic()
+    with _NEW_STOCK_LOCK:
+        hit = _NEW_STOCK_CACHE.get(uid)
+        if hit and hit[0] > now_ts:
+            return hit[1]
+
+    def _run(cur) -> tuple[int, int]:
+        lang_sql, lang_params = _build_language_pair_filter_both(source_lang, target_lang, table_alias="q")
+        cur.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (WHERE COALESCE(q.is_phrase, FALSE) IS FALSE),
+                COUNT(*) FILTER (WHERE q.is_phrase IS TRUE)
+            FROM bt_3_webapp_dictionary_queries q
+            LEFT JOIN bt_3_card_srs_state s
+              ON s.user_id = q.user_id AND s.card_id = q.id
+            WHERE q.user_id = %s
+              AND s.id IS NULL
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+              {lang_sql}
+            ;
+            """,
+            [uid, *lang_params],
+        )
+        row = cur.fetchone() or (0, 0)
+        return int(row[0] or 0), int(row[1] or 0)
+
+    if cursor is not None:
+        stock = _run(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                stock = _run(cur)
+    with _NEW_STOCK_LOCK:
+        _NEW_STOCK_CACHE[uid] = (now_ts + _NEW_STOCK_TTL_SEC, stock)
+    return stock
+
+
+def is_phrase_turn(*, introduced_today: int, words_left: int, phrases_left: int) -> bool:
+    """Пора ли выдать фразу.
+
+    Состав выдачи повторяет состав ОСТАТКА: если у человека 30 % слов и 70 % фраз, то
+    и приходить будет 30 на 70. Никакого назначенного числа вроде «каждая третья» —
+    добавит человек больше слов, пропорция сдвинется сама.
+
+    Раньше фразы вообще не всплывали: частотный ранг есть только у одиночных слов,
+    поэтому фраза проигрывала любому слову, а фраз в словарях вдвое больше.
+    """
+    words = max(0, int(words_left or 0))
+    phrases = max(0, int(phrases_left or 0))
+    if phrases <= 0:
+        return False
+    if words <= 0:
+        return True
+    share = phrases / float(words + phrases)
+    n = max(0, int(introduced_today or 0))
+    # Ходы распределяются ровно по доле: floor((n+1)*share) > floor(n*share).
+    return int((n + 1) * share) > int(n * share)
 
 
 def get_next_new_srs_candidate_with_subscription(

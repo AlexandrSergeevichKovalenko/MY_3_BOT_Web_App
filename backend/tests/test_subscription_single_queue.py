@@ -196,5 +196,44 @@ class PhraseTurnTests(unittest.TestCase):
         self.assertEqual(normalize_frequency_lemma("aus dem Ruder laufen"), "")
 
 
+class PhraseProportionTests(unittest.TestCase):
+    """Доля фраз в выдаче равна доле фраз в остатке — без назначенного числа.
+
+    Раньше здесь стояло «каждая третья», но состав словарей другой: у людей примерно
+    30 % слов и 70 % фраз. Фиксированное число пришлось бы подкручивать руками каждый
+    раз, когда состав меняется.
+    """
+
+    def _pattern(self, words, phrases, turns=100):
+        return [db.is_phrase_turn(introduced_today=i, words_left=words, phrases_left=phrases)
+                for i in range(turns)]
+
+    def test_share_matches_the_stock(self):
+        for words, phrases in ((327, 730), (5191, 9071), (900, 100), (1, 9)):
+            with self.subTest(words=words, phrases=phrases):
+                served = self._pattern(words, phrases)
+                expected = phrases / (words + phrases)
+                self.assertAlmostEqual(sum(served) / len(served), expected, delta=0.02)
+
+    def test_no_phrases_means_never_a_phrase_turn(self):
+        self.assertEqual(self._pattern(500, 0), [False] * 100)
+
+    def test_no_words_means_always_a_phrase_turn(self):
+        self.assertEqual(self._pattern(0, 500), [True] * 100)
+
+    def test_empty_stock_is_survivable(self):
+        self.assertFalse(db.is_phrase_turn(introduced_today=0, words_left=0, phrases_left=0))
+
+    def test_turns_are_spread_not_clumped(self):
+        """Фразы должны идти вперемешку, а не блоком в конце дня."""
+        served = self._pattern(327, 730, turns=20)
+        longest_run = 0
+        run = 0
+        for flag in served:
+            run = run + 1 if flag else 0
+            longest_run = max(longest_run, run)
+        self.assertLessEqual(longest_run, 4)
+
+
 if __name__ == "__main__":
     unittest.main()
