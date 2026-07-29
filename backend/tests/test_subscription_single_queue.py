@@ -137,5 +137,64 @@ class SubscriptionPeekCacheTests(unittest.TestCase):
         self.assertEqual(probe.call_count, 2)
 
 
+class PhraseTurnTests(unittest.TestCase):
+    """Каждая третья новая карточка — фраза.
+
+    Частотный ранг существует только у одиночных немецких слов, поэтому в сортировке
+    «по нужности» фразы проигрывают всегда. У автора их вдвое больше, чем слов
+    (16 523 против 8 153 по всей базе) — без квоты они лежали бы мёртвым грузом.
+    Признак «фраза» считается ОДИН РАЗ при сохранении, чтобы выдача карточки не
+    разбирала текст на каждом запросе.
+    """
+
+    def setUp(self):
+        db.invalidate_subscription_peek_cache()
+
+    def test_phrase_turn_asks_for_phrases(self):
+        phrase = {"id": 3, "word_de": "etwas einräumen", "frequency_rank": 1500500}
+        picker = Mock(return_value=phrase)
+        with patch.object(db, "get_next_new_srs_candidate", picker):
+            result = db.get_next_new_srs_candidate_with_subscription(
+                user_id=77, source_user_id=1, source_lang="ru", target_lang="de",
+                live_subscription=False, phrases_only=True,
+            )
+        self.assertEqual(result["word_de"], "etwas einräumen")
+        self.assertTrue(picker.call_args.kwargs["phrases_only"])
+
+    def test_phrase_turn_never_leaves_the_user_without_a_card(self):
+        """Фраз у человека нет — ход не должен пропасть, отдаём обычное слово."""
+        word = {"id": 4, "word_de": "brauchen", "frequency_rank": 287}
+        picker = Mock(side_effect=[None, word])
+        with patch.object(db, "get_next_new_srs_candidate", picker):
+            result = db.get_next_new_srs_candidate_with_subscription(
+                user_id=77, source_user_id=1, source_lang="ru", target_lang="de",
+                live_subscription=False, phrases_only=True,
+            )
+        self.assertEqual(result["word_de"], "brauchen")
+        self.assertFalse(picker.call_args.kwargs.get("phrases_only", False))
+
+    def test_phrase_turn_also_applies_to_the_subscription(self):
+        sub_phrase = [{"admin_card_id": 9, "canonical_entry_id": 5,
+                       "word_de": "aus dem Ruder laufen", "frequency_rank": 1200000}]
+        probe = Mock(return_value=sub_phrase)
+        with patch.object(db, "get_next_new_srs_candidate", Mock(side_effect=[None, {"id": 7, "word_de": "aus dem Ruder laufen", "frequency_rank": 1200000}])), \
+             patch.object(db, "list_admin_subscription_new_candidates", probe), \
+             patch.object(db, "materialize_subscription_card", Mock(return_value=7)):
+            result = db.get_next_new_srs_candidate_with_subscription(
+                user_id=77, source_user_id=1, source_lang="ru", target_lang="de",
+                live_subscription=True, phrases_only=True,
+            )
+        self.assertEqual(result["word_de"], "aus dem Ruder laufen")
+        self.assertTrue(probe.call_args.kwargs["phrases_only"])
+
+    def test_phrase_flag_is_computed_once_not_on_every_serve(self):
+        """Признак живёт в колонке; выдача — обычный фильтр, а не разбор текста."""
+        from backend.dictionary_frequency import normalize_frequency_lemma
+        self.assertEqual(normalize_frequency_lemma("das Haus"), "haus")      # слово с артиклем
+        self.assertEqual(normalize_frequency_lemma("brauchen"), "brauchen")  # слово
+        self.assertEqual(normalize_frequency_lemma("etwas einräumen"), "")   # фраза
+        self.assertEqual(normalize_frequency_lemma("aus dem Ruder laufen"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1052,6 +1052,10 @@ SRS_DUE_PER_DAY = int(os.getenv("SRS_DUE_PER_DAY", "30"))
 # frequency_rank, so un-ranked / rare words never starve behind the
 # frequency-ordered queue. 4 → ~25% of daily new cards are age-first. 0 disables.
 SRS_NEW_AGED_RESERVE_EVERY = max(0, int(os.getenv("SRS_NEW_AGED_RESERVE_EVERY", "4")))
+# Каждая третья новая карточка — фраза или предложение. Решение владельца: частотный ранг
+# есть только у одиночных слов, поэтому без квоты фразы не всплывают вообще, сколько бы их
+# ни было (у автора их втрое больше, чем слов: 10 363 против 3 629).
+SRS_NEW_PHRASE_EVERY = max(0, int(os.getenv("SRS_NEW_PHRASE_EVERY", "3")))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 # Mirror the bot-side referral knobs so the shared PDF card promises match reality.
 REFERRAL_REWARD_DAYS = max(1, int((os.getenv("REFERRAL_REWARD_DAYS") or "7").strip() or "7"))
@@ -11049,6 +11053,45 @@ def _list_srs_queue_cards(
             # words regardless of frequency_rank (#6): otherwise un-ranked / rare
             # words sit permanently behind the frequency queue and never surface.
             aged_quota = (new_limit // SRS_NEW_AGED_RESERVE_EVERY) if SRS_NEW_AGED_RESERVE_EVERY and new_limit >= SRS_NEW_AGED_RESERVE_EVERY else 0
+            # Квота фраз: каждая третья новая карточка — выражение или предложение (решение
+            # владельца). Без неё фразы лежат мёртвым грузом: частотный ранг есть только у
+            # одиночных слов, поэтому фразы всегда проигрывают в сортировке по нужности.
+            # Признак посчитан при сохранении — здесь это обычный отбор по колонке.
+            phrase_quota = (
+                (new_limit // SRS_NEW_PHRASE_EVERY)
+                if SRS_NEW_PHRASE_EVERY and new_limit >= SRS_NEW_PHRASE_EVERY else 0
+            )
+            if phrase_quota > 0:
+                cur.execute(
+                    f"""
+                    SELECT
+                        q.id, q.word_ru, q.translation_de, q.word_de,
+                        q.translation_ru, q.response_json, q.source_lang, q.target_lang, q.frequency_rank
+                    FROM bt_3_webapp_dictionary_queries q
+                    LEFT JOIN bt_3_card_srs_state s
+                      ON s.user_id = q.user_id AND s.card_id = q.id
+                    WHERE q.user_id = %s
+                      {lang_filter_sql}
+                      AND s.id IS NULL
+                      AND q.is_phrase IS TRUE
+                      AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                      {recent_seen_sql if exclude_recent_seen else ""}
+                      {folder_filter_sql}
+                      {allowed_filter_sql}
+                    ORDER BY q.frequency_rank ASC NULLS LAST, q.created_at ASC
+                    LIMIT %s;
+                    """,
+                    [
+                        *base_params,
+                        *(recent_seen_params if exclude_recent_seen else []),
+                        *folder_params,
+                        *allowed_filter_params,
+                        int(phrase_quota),
+                    ],
+                )
+                phrase_rows = list(cur.fetchall() or [])
+                new_rows.extend(phrase_rows)
+                new_selected_ids.update(int(row[0]) for row in phrase_rows)
             if aged_quota > 0:
                 cur.execute(
                     f"""
@@ -11398,6 +11441,13 @@ def _build_next_srs_payload(
             prefer_oldest = bool(SRS_NEW_AGED_RESERVE_EVERY) and (
                 (int(introduced_today or 0) + 1) % SRS_NEW_AGED_RESERVE_EVERY == 0
             )
+            # Каждая третья новая карточка — фраза (если она вообще есть). Иначе фразы не
+            # всплывают: ранг частотности существует только для одиночных слов.
+            _phrase_turn = (
+                bool(SRS_NEW_PHRASE_EVERY)
+                and not prefer_oldest
+                and (int(introduced_today or 0) + 1) % SRS_NEW_PHRASE_EVERY == 0
+            )
             # Единая очередь: своё слово и слово из подписки соревнуются по нужности, а не
             # «подписка включается, когда свои кончились» (при таком порядке она не отдала
             # ни одного слова за всё время — у каждого лежала тысяча своих).
@@ -11417,6 +11467,7 @@ def _build_next_srs_payload(
                 prefer_oldest=prefer_oldest,
                 live_subscription=_live_sub,
                 subscription_limit=_sub_state.get("subscription_limit") if _live_sub else None,
+                phrases_only=_phrase_turn,
             )
             if candidate:
                 state = ensure_new_srs_state(

@@ -8,6 +8,7 @@ from psycopg2.pool import ThreadedConnectionPool, PoolError
 import os
 from backend.r2_storage import r2_get_bytes, r2_put_bytes, r2_public_url
 from backend.word_frequency import compute_frequency_rank
+from backend.dictionary_frequency import normalize_frequency_lemma
 import hashlib
 import atexit
 import math
@@ -3561,6 +3562,11 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
     normalized_target_lang = _normalize_lang_code(target_lang)
     normalized_semantic_tag = normalize_dictionary_semantic_tag(semantic_tag)
     freq_rank = compute_frequency_rank(word_de, normalized_response_json)
+    # Фраза — это всё, что не сводится к одному немецкому слову (артикль не в счёт).
+    # То же правило, по которому слову ищется частотный ранг: если ранга нет, потому что
+    # это не одиночная лемма — значит фраза. Считаем ЗДЕСЬ, при сохранении, чтобы выдача
+    # карточек не разбирала текст на каждом запросе.
+    is_phrase_value = not bool(normalize_frequency_lemma(word_de))
     if canonical_entry_id:
         cursor.execute(
             """
@@ -3578,12 +3584,14 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 origin_meta,
                 semantic_tag,
                 response_json,
-                frequency_rank
+                frequency_rank,
+                is_phrase
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id, canonical_entry_id) WHERE canonical_entry_id IS NOT NULL
             DO UPDATE SET
                 frequency_rank = COALESCE(EXCLUDED.frequency_rank, bt_3_webapp_dictionary_queries.frequency_rank),
+                is_phrase = COALESCE(EXCLUDED.is_phrase, bt_3_webapp_dictionary_queries.is_phrase),
                 folder_id = COALESCE(EXCLUDED.folder_id, bt_3_webapp_dictionary_queries.folder_id),
                 origin_process = EXCLUDED.origin_process,
                 origin_meta = COALESCE(EXCLUDED.origin_meta, bt_3_webapp_dictionary_queries.origin_meta),
@@ -3615,6 +3623,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 normalized_semantic_tag or None,
                 Json(normalized_response_json),
                 freq_rank,
+                is_phrase_value,
             ),
         )
         row = cursor.fetchone()
@@ -3658,6 +3667,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
             normalized_semantic_tag or None,
             Json(normalized_response_json),
             freq_rank,
+            is_phrase_value,
         ),
     )
     row = cursor.fetchone()
@@ -6686,6 +6696,17 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
                 ADD COLUMN IF NOT EXISTS frequency_rank INTEGER;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                -- Фраза/выражение или одиночное слово. Считается ОДИН РАЗ при сохранении,
+                -- чтобы выдача карточки не делала лишней работы: правило «каждая третья
+                -- карточка — фраза» иначе требовало бы разбирать текст на каждом запросе.
+                ADD COLUMN IF NOT EXISTS is_phrase BOOLEAN;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_wdq_user_phrase_freq
+                ON bt_3_webapp_dictionary_queries (user_id, is_phrase, frequency_rank);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_freq
@@ -16927,6 +16948,7 @@ def count_admin_subscription_available_words(
                 FROM bt_3_webapp_dictionary_queries a
                 WHERE a.user_id = %s
                   AND a.canonical_entry_id IS NOT NULL
+                  {phrase_clause}
                   {lang_clause}
                   AND NOT EXISTS (
                       SELECT 1 FROM bt_3_webapp_dictionary_queries u
@@ -16977,7 +16999,8 @@ def has_admin_subscription_available(
 
 
 def list_admin_subscription_new_candidates(
-    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None, limit: int = 20, cursor=None
+    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None,
+    limit: int = 20, cursor=None, phrases_only: bool = False,
 ) -> list[dict]:
     """The next admin words a subscriber hasn't materialized yet, most-frequent first (so the
     subscription drips in useful words before rare ones). Returns light rows for the new-card
@@ -16987,6 +17010,7 @@ def list_admin_subscription_new_candidates(
     t = _normalize_lang_code(target_lang) or "de"
     lang_sql, lang_params = _subscription_lang_filter("a", s, t)
     lang_clause = f"AND {lang_sql}" if lang_sql else ""
+    phrase_clause = "AND a.is_phrase IS TRUE" if phrases_only else ""
     capped = max(1, min(int(limit or 20), 200))
     sql = f"""
                 SELECT a.id, a.canonical_entry_id, a.word_de, e.frequency_rank
@@ -25216,6 +25240,7 @@ def get_next_new_srs_candidate(
     allowed_card_ids: list[int] | None = None,
     cursor=None,
     prefer_oldest: bool = False,
+    phrases_only: bool = False,
 ) -> dict | None:
     normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
     if allowed_card_ids is not None and not normalized_allowed_ids:
@@ -25228,6 +25253,9 @@ def get_next_new_srs_candidate(
                 source_lang, target_lang, table_alias="q",
             )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
+        # Ход фразы: берём только выражения и предложения. Признак посчитан при сохранении,
+        # поэтому здесь это обычный фильтр по колонке, а не разбор текста на лету.
+        phrase_sql = " AND q.is_phrase IS TRUE" if (phrases_only and not normalized_allowed_ids) else ""
         dedup_keys = [] if normalized_allowed_ids else _trained_german_word_keys(cur, user_id)
         # prefer_oldest: pick the oldest saved word regardless of rank (the #6
         # anti-starvation reserve); otherwise frequency-first.
@@ -25249,6 +25277,7 @@ def get_next_new_srs_candidate(
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
               {allowed_sql}
+              {phrase_sql}
             ORDER BY {order_by}
             LIMIT 1;
             """,
@@ -25289,16 +25318,19 @@ def invalidate_subscription_peek_cache(user_id: int | None = None) -> None:
         if user_id is None:
             _SUBSCRIPTION_PEEK_CACHE.clear()
         else:
-            _SUBSCRIPTION_PEEK_CACHE.pop(int(user_id), None)
+            _SUBSCRIPTION_PEEK_CACHE.pop((int(user_id), False), None)
+            _SUBSCRIPTION_PEEK_CACHE.pop((int(user_id), True), None)
 
 
 def _peek_subscription_candidate(
-    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None, cursor=None
+    *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None,
+    cursor=None, phrases_only: bool = False,
 ) -> dict | None:
     uid = int(user_id)
     now_ts = time.monotonic()
+    cache_key = (uid, bool(phrases_only))
     with _SUBSCRIPTION_PEEK_LOCK:
-        hit = _SUBSCRIPTION_PEEK_CACHE.get(uid)
+        hit = _SUBSCRIPTION_PEEK_CACHE.get(cache_key)
         if hit and hit[0] > now_ts:
             return hit[1]
     candidates = list_admin_subscription_new_candidates(
@@ -25308,10 +25340,11 @@ def _peek_subscription_candidate(
         target_lang=target_lang,
         limit=1,
         cursor=cursor,
+        phrases_only=phrases_only,
     )
     best = candidates[0] if candidates else None
     with _SUBSCRIPTION_PEEK_LOCK:
-        _SUBSCRIPTION_PEEK_CACHE[uid] = (now_ts + _SUBSCRIPTION_PEEK_TTL_SEC, best)
+        _SUBSCRIPTION_PEEK_CACHE[cache_key] = (now_ts + _SUBSCRIPTION_PEEK_TTL_SEC, best)
     return best
 
 
@@ -25331,6 +25364,7 @@ def get_next_new_srs_candidate_with_subscription(
     prefer_oldest: bool = False,
     live_subscription: bool = False,
     subscription_limit: int | None = None,
+    phrases_only: bool = False,
 ) -> dict | None:
     """ЕДИНАЯ очередь: своё слово и слово из подписки соревнуются по нужности.
 
@@ -25349,8 +25383,15 @@ def get_next_new_srs_candidate_with_subscription(
         allowed_card_ids=allowed_card_ids,
         cursor=cursor,
         prefer_oldest=prefer_oldest,
+        phrases_only=phrases_only,
     )
     if not live_subscription or allowed_card_ids or prefer_oldest:
+        # Ход фразы, а фраз у человека нет — не оставляем его без карточки: отдаём обычную.
+        if phrases_only and own is None:
+            return get_next_new_srs_candidate(
+                user_id=user_id, source_lang=source_lang, target_lang=target_lang,
+                allowed_card_ids=allowed_card_ids, cursor=cursor, prefer_oldest=prefer_oldest,
+            )
         return own
     if subscription_limit is not None and subscription_limit > 0:
         delivered = count_subscription_delivered(user_id, cursor=cursor)
@@ -25365,8 +25406,17 @@ def get_next_new_srs_candidate_with_subscription(
             source_lang=source_lang,
             target_lang=target_lang,
             cursor=cursor,
+            phrases_only=phrases_only,
         )
         if not best_sub:
+            # Ни своей фразы, ни фразы в подписке — ход пропадать не должен.
+            if phrases_only and own is None:
+                return get_next_new_srs_candidate_with_subscription(
+                    user_id=user_id, source_user_id=source_user_id,
+                    source_lang=source_lang, target_lang=target_lang,
+                    cursor=cursor, live_subscription=live_subscription,
+                    subscription_limit=subscription_limit, phrases_only=False,
+                )
             return own
         if own is not None and _rank_or_worst(own.get("frequency_rank")) <= _rank_or_worst(
             best_sub.get("frequency_rank")
@@ -25389,6 +25439,7 @@ def get_next_new_srs_candidate_with_subscription(
             allowed_card_ids=allowed_card_ids,
             cursor=cursor,
             prefer_oldest=prefer_oldest,
+            phrases_only=phrases_only,
         )
         return refreshed or own
     except Exception:
