@@ -60,6 +60,24 @@ class QuickPathArticleGateTests(unittest.TestCase):
         out = self._attach("Quastelbrumm", _verdict(gs.UNKNOWN, ""))
         self.assertEqual(out.get("article", ""), "")
 
+    def test_article_typed_by_the_translator_is_checked_not_trusted(self):
+        """Переводчик отдаёт «Das Problem» — с артиклем внутри текста. Раньше такой
+        ответ считался «не одиночным словом», и его артикль не проверял НИКТО: он
+        просто попадал на экран и в общий пул. Теперь он снимается и заменяется нашим."""
+        result = {"translation": "Das Problem", "detected_source_lang": "ru"}
+        with patch.object(gs, "german_surface", return_value=_verdict(gs.SG, "das")), \
+             patch.object(self.bs, "lookup_wiktionary_entry", return_value=None):
+            out = self.bs._attach_quick_translate_article(result, "Проблема", "ru", "de")
+        self.assertEqual(out["article"], "das")
+        self.assertEqual(out["translation"], "das Problem")
+
+    def test_wrong_article_from_the_translator_is_corrected(self):
+        result = {"translation": "Das Probleme", "detected_source_lang": "ru"}
+        with patch.object(gs, "german_surface", return_value=_verdict(gs.PL, "die", "Problem")), \
+             patch.object(self.bs, "lookup_wiktionary_entry", return_value=None):
+            out = self.bs._attach_quick_translate_article(result, "Проблемы", "ru", "de")
+        self.assertEqual(out["translation"], "die Probleme")
+
     def test_table_of_lemmas_still_helps_a_word(self):
         """Попадание в словарь ЛЕММ само по себе значит «это слово», поэтому его
         артикль допустим — покрытие быстрого пути от заслона не страдает."""
