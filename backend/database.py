@@ -48420,6 +48420,77 @@ def list_article_sprint_themes() -> list[dict]:
     ]
 
 
+def create_article_sprint_theme(
+    *,
+    theme_key: str,
+    label_ru: str,
+    label_de: str = "",
+    subtopics: list[str] | None = None,
+    target_count: int = 150,
+    active: bool = True,
+) -> dict:
+    """Создать тему тренажёра артиклей (или обновить название/цель существующей).
+
+    Раньше тему можно было завести только руками в базе: команда добавления слов
+    работала лишь с готовыми темами. Цель по умолчанию 150, а не 280: погоня за
+    большим числом и породила «сорок восемь домов» — производные одного корня,
+    которыми добивали план.
+
+    Подтемы нужны генератору: он просит у модели слова по каждой подтеме отдельно,
+    иначе получает сотню синонимов одного смысла."""
+    key = re.sub(r"[^a-z0-9_]+", "_", str(theme_key or "").strip().lower()).strip("_")
+    if not key:
+        raise ValueError("нужен ключ темы латиницей")
+    if not str(label_ru or "").strip():
+        raise ValueError("нужно русское название темы")
+    safe_target = max(20, min(int(target_count or 150), 300))
+    subtopic_list = [str(x).strip() for x in (subtopics or []) if str(x).strip()]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_sprint_themes
+                    (theme_key, label_de, label_ru, subtopics_json, target_count, active)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (theme_key) DO UPDATE SET
+                    label_de = CASE WHEN EXCLUDED.label_de <> '' THEN EXCLUDED.label_de
+                                    ELSE bt_3_article_sprint_themes.label_de END,
+                    label_ru = EXCLUDED.label_ru,
+                    subtopics_json = CASE WHEN EXCLUDED.subtopics_json <> '[]'::jsonb
+                                          THEN EXCLUDED.subtopics_json
+                                          ELSE bt_3_article_sprint_themes.subtopics_json END,
+                    target_count = EXCLUDED.target_count,
+                    active = EXCLUDED.active,
+                    updated_at = NOW()
+                RETURNING theme_key, label_ru, label_de, target_count, active,
+                          (SELECT COUNT(*) FROM bt_3_article_sprint_themes) AS total;
+                """,
+                (key, str(label_de or "").strip(), str(label_ru).strip(),
+                 json.dumps(subtopic_list, ensure_ascii=False), safe_target, bool(active)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return {
+        "theme_key": row[0], "label_ru": row[1], "label_de": row[2],
+        "target_count": int(row[3]), "active": bool(row[4]), "themes_total": int(row[5]),
+        "subtopics": subtopic_list,
+    }
+
+
+def set_article_sprint_theme_active(theme_key: str, active: bool) -> bool:
+    """Выключить тему, не удаляя её: слова остаются, раздача прекращается."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_themes SET active=%s, updated_at=NOW() "
+                "WHERE theme_key=%s;",
+                (bool(active), str(theme_key or "").strip().lower()),
+            )
+            changed = cursor.rowcount > 0
+        conn.commit()
+    return changed
+
+
 def get_article_sprint_theme(theme_key: str) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

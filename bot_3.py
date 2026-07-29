@@ -192,6 +192,8 @@ from backend.database import (
     create_flashcard_feel_feedback_token,
     get_dictionary_cache,
     upsert_dictionary_cache,
+    create_article_sprint_theme,
+    set_article_sprint_theme_active,
     save_webapp_dictionary_query,
     save_webapp_dictionary_query_returning_id,
     save_webapp_dictionary_query_returning_id_with_inserted,
@@ -28331,6 +28333,92 @@ def _parse_addword_line(line: str) -> dict | None:
     return {"word": word, "article": article, "meaning_ru": meaning}
 
 
+async def admin_artikel_theme_add_command(update: Update, context: CallbackContext) -> None:
+    """Создать новую тему тренажёра артиклей.
+
+    /artikel_theme_add <ключ> | <название по-русски> | [название по-немецки] |
+                       [подтемы через запятую] | [сколько слов]
+
+    Подтемы нужны генератору: он просит слова по каждой подтеме отдельно, иначе
+    получает сотню синонимов одного смысла. Цель по умолчанию 150 — намеренно меньше
+    прежних 280: погоня за большим числом и наплодила производные одного корня."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    raw = str(message.text or "")
+    body = raw.split(None, 1)[1].strip() if len(raw.split(None, 1)) > 1 else ""
+    if not body:
+        await message.reply_text(
+            "Создать тему:\n"
+            "<code>/artikel_theme_add auto_fahren | Автомобиль и вождение | "
+            "Auto &amp; Fahren | двигатель, салон, дорога, ремонт | 150</code>\n\n"
+            "Обязательны только ключ и русское название. Ключ — латиницей.",
+            parse_mode="HTML")
+        return
+    parts = [p.strip() for p in body.split("|")]
+    theme_key = parts[0] if parts else ""
+    label_ru = parts[1] if len(parts) > 1 else ""
+    label_de = parts[2] if len(parts) > 2 else ""
+    subtopics = [x.strip() for x in (parts[3].split(",") if len(parts) > 3 else []) if x.strip()]
+    try:
+        target = int(parts[4]) if len(parts) > 4 and parts[4] else 150
+    except ValueError:
+        target = 150
+    if not label_ru:
+        await message.reply_text("Нужно русское название темы после ключа: <code>ключ | Название</code>",
+                                 parse_mode="HTML")
+        return
+    try:
+        result = await asyncio.to_thread(
+            create_article_sprint_theme,
+            theme_key=theme_key, label_ru=label_ru, label_de=label_de,
+            subtopics=subtopics, target_count=target,
+        )
+    except Exception as exc:
+        logging.exception("artikel_theme_add failed")
+        await message.reply_text("Не получилось создать тему: %s" % str(exc)[:200])
+        return
+    await message.reply_text(
+        "✅ Тема готова: <code>%s</code> — %s\n"
+        "Цель: %d слов · подтем: %d · всего тем: %d\n\n"
+        "Дальше: <code>/artikel_fill %s</code> — наполнить словами, "
+        "или <code>/artikel_addwords %s</code> — добавить свои." % (
+            result["theme_key"], result["label_ru"], result["target_count"],
+            len(result["subtopics"]), result["themes_total"],
+            result["theme_key"], result["theme_key"]),
+        parse_mode="HTML")
+
+
+async def admin_artikel_theme_off_command(update: Update, context: CallbackContext) -> None:
+    """Выключить или включить тему, не удаляя её. /artikel_theme_off <ключ> [on]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = str(message.text or "").split()
+    if len(args) < 2:
+        await message.reply_text("Использование: <code>/artikel_theme_off &lt;ключ&gt; [on]</code>",
+                                 parse_mode="HTML")
+        return
+    theme_key = args[1]
+    turn_on = len(args) > 2 and args[2].lower() in {"on", "вкл", "1", "true"}
+    changed = await asyncio.to_thread(set_article_sprint_theme_active, theme_key, turn_on)
+    if not changed:
+        await message.reply_text("Темы <code>%s</code> нет." % theme_key, parse_mode="HTML")
+        return
+    await message.reply_text(
+        "Тема <code>%s</code> %s. Слова остались на месте." % (
+            theme_key, "включена" if turn_on else "выключена"),
+        parse_mode="HTML")
+
+
 async def admin_artikel_addwords_command(update: Update, context: CallbackContext) -> None:
     """Add YOUR OWN nouns to a theme (verified + auto-translated, same bank as the
     generator). /artikel_addwords <theme_key> then each word on its own line
@@ -40316,6 +40404,8 @@ def main():
     application.add_handler(CommandHandler("admin_battle_images", admin_battle_images_command))
     application.add_handler(CommandHandler("admin_battle_digest", admin_battle_digest_command))
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
+    application.add_handler(CommandHandler("artikel_theme_add", admin_artikel_theme_add_command))
+    application.add_handler(CommandHandler("artikel_theme_off", admin_artikel_theme_off_command))
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
     application.add_handler(CommandHandler("artikelreport", admin_artikel_report_command))
     application.add_handler(CommandHandler("artikel_reset", admin_artikel_reset_command))
