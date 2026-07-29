@@ -17272,7 +17272,15 @@ def import_starter_dictionary_snapshot(
     target_user = int(target_user_id)
     pair_source = _normalize_lang_code(source_lang) or DEFAULT_NATIVE_LANGUAGE
     pair_target = _normalize_lang_code(target_lang) or DEFAULT_LEARNING_LANGUAGE
-    safe_limit = max(1, min(int(import_limit or 1000), 50000))
+    # Аварийный предел: строки вставляются ПО ОДНОЙ в одной транзакции под блокировкой,
+    # так что абсурдный лимит держал бы её недопустимо долго. Молча не срезаем — пишем в лог.
+    requested_limit = max(1, int(import_limit or 1000))
+    safe_limit = min(requested_limit, 50000)
+    if safe_limit != requested_limit:
+        logging.warning(
+            "starter import: запрошено %s записей, беру %s (построчная вставка в одной транзакции)",
+            requested_limit, safe_limit,
+        )
     resolved_folder_name = str(folder_name or "Базовый словарь").strip() or "Базовый словарь"
     resolved_folder_color = str(folder_color or "#5ddcff").strip() or "#5ddcff"
     resolved_folder_icon = str(folder_icon or "book").strip() or "book"

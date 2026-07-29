@@ -35,6 +35,12 @@ const WINDOWS = [
   ['morneve', 'Утро+вечер', '06–09 · 18–22:30'],
 ];
 
+/** 14222 → «14 222»: длинные числа читаются глазами, а не по цифрам. */
+function formatCount(value) {
+  const n = Math.max(0, Number(value) || 0);
+  return n.toLocaleString('ru-RU').replace(/ /g, ' ');
+}
+
 function Toggle({ on, onChange, disabled }) {
   return (
     <button
@@ -199,14 +205,27 @@ export default function SettingsScreen() {
             <div className="st-row-title">📚 Базовый словарь</div>
             <div className="st-row-desc">Стартовые слова из общего словаря. Выключишь — останутся только твои слова.</div>
           </div>
+          {/* Числа приходят с сервера: сколько слов даёт каждый вариант. Раньше здесь
+              стояло «~1000» текстом, а полный вариант вообще не называл число — человек
+              выбирал вслепую и не понимал, на что подписался. */}
           <div className="st-dict-row">
-            <div className="st-row-title">📚 Быстрый старт (~1000)</div>
+            <div className="st-row-title">
+              📚 Быстрый старт{state.dict_base_total ? ` (${formatCount(state.dict_base_total)})` : ''}
+            </div>
             <Toggle on={state.dict_tier === 'base'} onChange={(v) => setDictTier(v ? 'base' : 'none')} disabled={dictBusy} />
           </div>
           <div className="st-dict-row">
-            <div className="st-row-title">🔓 Весь словарь (полный)</div>
+            <div className="st-row-title">
+              🔓 Весь словарь{state.dict_full_total ? ` (${formatCount(state.dict_full_total)})` : ''}
+            </div>
             <Toggle on={state.dict_tier === 'full'} onChange={(v) => setDictTier(v ? 'full' : 'none')} disabled={dictBusy} />
           </div>
+          {state.dict_tier === 'full' && state.dict_full_total ? (
+            <p className="st-dict-note">
+              ✅ Подключён весь словарь: {formatCount(state.dict_full_total)} слов и выражений.
+              Они открываются по ходу занятий, поэтому в «Библиотеке» число растёт постепенно.
+            </p>
+          ) : null}
           <p className="st-lock-note">{dictBusy ? 'Применяю… (обновится через пару секунд)' : 'Включён только один. Выключишь оба — базовые слова удалятся, твои сохранятся.'}</p>
         </section>
 

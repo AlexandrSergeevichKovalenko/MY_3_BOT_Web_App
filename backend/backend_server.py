@@ -1395,6 +1395,16 @@ try:
     STARTER_DICTIONARY_IMPORT_LIMIT = int((os.getenv("STARTER_DICTIONARY_IMPORT_LIMIT") or "1000").strip() or "1000")
 except Exception:
     STARTER_DICTIONARY_IMPORT_LIMIT = 1000
+# Верхняя граница нужна: копирование идёт ПОСТРОЧНО внутри одной транзакции под
+# блокировкой на пользователя, поэтому большой лимит = одна очень долгая транзакция.
+# Дефект был не в самой границе, а в её молчании — значение выше просто исчезало.
+# Теперь превышение видно в логе, а не проглатывается.
+if STARTER_DICTIONARY_IMPORT_LIMIT > 5000:
+    logging.warning(
+        "STARTER_DICTIONARY_IMPORT_LIMIT=%s превышает безопасный предел 5000 — копирование "
+        "идёт построчно в одной транзакции. Использую 5000.",
+        STARTER_DICTIONARY_IMPORT_LIMIT,
+    )
 STARTER_DICTIONARY_IMPORT_LIMIT = max(1, min(5000, STARTER_DICTIONARY_IMPORT_LIMIT))
 STARTER_DICTIONARY_TEMPLATE_VERSION = str(os.getenv("STARTER_DICTIONARY_TEMPLATE_VERSION") or "v1").strip() or "v1"
 STARTER_DICTIONARY_FOLDER_NAME = str(os.getenv("STARTER_DICTIONARY_FOLDER_NAME") or "Базовый словарь").strip() or "Базовый словарь"
@@ -47762,17 +47772,36 @@ def webapp_settings_state():
         is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
     except Exception:
         is_admin = False
-    # Starter-dictionary tier (none/base/full) so the settings toggles reflect reality.
+    # Какой словарь подключён: ничего / базовый / полный. Читаем ИМЕННО то, что человек
+    # выбрал, а не догадываемся по числу слов: раньше «полный» показывался только при
+    # больше чем двух лимитах скопированных слов, а полный ничего не копирует — значит
+    # «полный» не показывался НИКОГДА, и переключатель всегда отскакивал на «базовый».
+    dict_tier = "none"
+    dict_base_total = int(STARTER_DICTIONARY_IMPORT_LIMIT)
+    dict_full_total = 0
     try:
         st = get_starter_dictionary_state(int(user_id)) or {}
-        dec = str(st.get("decision_status") or "").strip().lower()
-        cnt = int(st.get("last_imported_count") or 0)
-        if dec == "accepted" and cnt > 0:
-            dict_tier = "full" if cnt > int(STARTER_DICTIONARY_IMPORT_LIMIT) * 2 else "base"
-        else:
-            dict_tier = "none"
+        decision = str(st.get("decision_status") or "").strip().lower()
+        if decision == "accepted":
+            if bool(st.get("live_subscription")):
+                dict_tier = "full"
+            elif int(st.get("last_imported_count") or 0) > 0:
+                dict_tier = "base"
     except Exception:
-        dict_tier = "none"
+        logging.debug("settings: не удалось прочитать состояние словаря uid=%s", user_id, exc_info=True)
+    # Сколько слов стоит за «полным» — чтобы подпись на переключателе называла число,
+    # а не оставляла человека гадать, на что он подписался.
+    try:
+        if STARTER_DICTIONARY_ENABLED and STARTER_DICTIONARY_SOURCE_USER_ID > 0:
+            _src_lang, _tgt_lang, _ = _get_user_language_pair(int(user_id))
+            dict_full_total = int(count_dictionary_entries_for_language_pair(
+                int(STARTER_DICTIONARY_SOURCE_USER_ID),
+                _src_lang,
+                _tgt_lang,
+                both_directions=True,
+            ) or 0)
+    except Exception:
+        logging.debug("settings: не удалось посчитать полный словарь uid=%s", user_id, exc_info=True)
     return jsonify({
         "ok": True,
         "autosave": bool(get_shortcut_autosave_enabled(int(user_id))),
@@ -47780,6 +47809,8 @@ def webapp_settings_state():
         "preset": str(prefs.get("preset") or "normal"),
         "window": _settings_current_window_key(prefs),
         "dict_tier": dict_tier,
+        "dict_base_total": int(dict_base_total),
+        "dict_full_total": int(dict_full_total),
         "is_pro": is_pro,
         "is_admin": is_admin,
     })

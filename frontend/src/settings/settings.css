@@ -135,6 +135,9 @@ html[data-scheme="light"] body { background: #eef3fb; }
 .st-seg-sub { font-size: 10.5px; color: var(--st-muted); white-space: nowrap; }
 
 .st-lock-note { margin: 6px 0 0; font-size: 12.5px; color: #8a5a00; }
+/* Подтверждение подключённого полного словаря — спокойное, не тревожное. */
+.st-dict-note { margin: 8px 0 0; font-size: 12.5px; line-height: 1.45; color: #4b5563; }
+
 
 /* Dictionary tier rows (inside the block) */
 .st-dict-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; }
