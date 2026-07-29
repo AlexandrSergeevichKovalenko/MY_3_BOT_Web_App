@@ -37492,10 +37492,11 @@ function AppInner() {
                           {/* Stats + Sort */}
                           <div className="vocab-stats-bar">
                             <span className="vocab-stats-total">
-                              {/* «Всего» без пояснения читалось как «всего в словаре» и рождало
-                                  вопрос «а где то, на что я подписался». Поэтому подписи прямые:
-                                  сколько слов У МЕНЯ и на сколько я подписан. */}
-                              {tr('Мои слова:', 'Meine Wörter:')} <strong>{vocabFoldersMeta?.total_count ?? vocabTotal}</strong>
+                              {/* Подписи говорят ровно то, что показывают. «Мои слова» было бы
+                                      неправдой: из этого числа человек добавил сам лишь малую часть,
+                                      остальное пришло из словаря автора. «Уже у меня» — честно про
+                                      состав и понятно без пояснений. */}
+                              {tr('Уже у меня:', 'Schon bei mir:')} <strong>{vocabFoldersMeta?.total_count ?? vocabTotal}</strong>
                               {starterDictionaryOffer?.state?.live_subscription
                                 && starterDictionaryOffer?.template_total > 0 ? (
                                 <span className="vocab-stats-of">
