@@ -37492,11 +37492,17 @@ function AppInner() {
                           {/* Stats + Sort */}
                           <div className="vocab-stats-bar">
                             <span className="vocab-stats-total">
-                              {tr('Всего:', 'Gesamt:')} <strong>{vocabFoldersMeta?.total_count ?? vocabTotal}</strong>
-                              {/* Здесь ровно одно число — сколько слов в ЕГО библиотеке, столько
-                                  же строк в списке ниже. Состояние подписки живёт в ⚙️ Настройках,
-                                  где человек её и выбирал: два разных «всего» на одном экране
-                                  путают сильнее, чем помогают. */}
+                              {/* «Всего» без пояснения читалось как «всего в словаре» и рождало
+                                  вопрос «а где то, на что я подписался». Поэтому подписи прямые:
+                                  сколько слов У МЕНЯ и на сколько я подписан. */}
+                              {tr('Мои слова:', 'Meine Wörter:')} <strong>{vocabFoldersMeta?.total_count ?? vocabTotal}</strong>
+                              {starterDictionaryOffer?.state?.live_subscription
+                                && starterDictionaryOffer?.template_total > 0 ? (
+                                <span className="vocab-stats-of">
+                                  {' · '}{tr('Весь словарь:', 'Ganzes Wörterbuch:')}{' '}
+                                  {(starterDictionaryOffer.template_total || 0).toLocaleString('ru-RU')}
+                                </span>
+                              ) : null}
                             </span>
                             <button
                               type="button"
