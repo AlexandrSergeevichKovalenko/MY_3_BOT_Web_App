@@ -47444,21 +47444,47 @@ def get_due_wofrage_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
         return []
 
 
-def get_article_noun_images(words: list[str]) -> dict:
-    """Map lower(word) → image_object_key for words that have an image (deck lookup)."""
-    cleaned = [str(w).strip() for w in (words or []) if str(w).strip()]
+def get_article_noun_images(pairs) -> dict:
+    """Карта (слово, артикль) → image_object_key.
+
+    Ключ ОБЯЗАН включать артикль. Раньше ключом было только слово, и у омонимов
+    вроде Band (der Band — том, die Band — группа, das Band — лента) три записи
+    схлопывались в одну: карточка «der Band» могла получить картинку от «die Band».
+    Таких слов 26, задетых карточек 58.
+
+    Принимает список пар (слово, артикль); ради совместимости — и просто список
+    слов, тогда берётся любая запись этого слова (для однородных слов это то же самое).
+    """
+    cleaned: list[tuple[str, str]] = []
+    for item in pairs or []:
+        if isinstance(item, (tuple, list)) and len(item) >= 2:
+            word, article = str(item[0] or "").strip(), str(item[1] or "").strip().lower()
+        else:
+            word, article = str(item or "").strip(), ""
+        if word:
+            cleaned.append((word, article))
     if not cleaned:
         return {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT lower(word), image_object_key FROM bt_3_article_sprint_nouns "
+                "SELECT lower(word), article, image_object_key FROM bt_3_article_sprint_nouns "
                 "WHERE lower(word) = ANY(%s) AND COALESCE(image_object_key, '') <> '';",
-                ([w.lower() for w in cleaned],),
+                ([w.lower() for w, _ in cleaned],),
             )
             rows = cursor.fetchall() or []
-    return {str(r[0]): str(r[1] or "") for r in rows}
-
+    by_pair = {(str(r[0]), str(r[1] or "").lower()): str(r[2] or "") for r in rows}
+    result: dict = {}
+    for word, article in cleaned:
+        key = word.lower()
+        value = by_pair.get((key, article))
+        if value is None and not article:
+            # Совместимость: артикль не передали — берём любую запись слова.
+            value = next((v for (w, _a), v in by_pair.items() if w == key), None)
+        if value:
+            result[(key, article)] = value
+            result.setdefault(key, value)  # старые вызовы по одному слову
+    return result
 
 def get_article_nouns_without_audio(theme_key: str, limit: int = 50) -> list[dict]:
     """Verified, non-retired nouns of a theme that have no cached TTS clip yet."""
@@ -47491,40 +47517,89 @@ def store_article_noun_audio(*, word: str, article: str, audio_object_key: str) 
     return updated > 0
 
 
-def get_article_noun_audio(words: list[str]) -> dict:
-    """Map lower(word) → audio_object_key for a list of words (deck lookup)."""
-    cleaned = [str(w).strip() for w in (words or []) if str(w).strip()]
+def get_article_noun_audio(pairs) -> dict:
+    """Карта (слово, артикль) → audio_object_key.
+
+    Ключ ОБЯЗАН включать артикль. Раньше ключом было только слово, и у омонимов
+    вроде Band (der Band — том, die Band — группа, das Band — лента) три записи
+    схлопывались в одну: карточка «der Band» могла получить озвучку от «die Band».
+    Таких слов 26, задетых карточек 58.
+
+    Принимает список пар (слово, артикль); ради совместимости — и просто список
+    слов, тогда берётся любая запись этого слова (для однородных слов это то же самое).
+    """
+    cleaned: list[tuple[str, str]] = []
+    for item in pairs or []:
+        if isinstance(item, (tuple, list)) and len(item) >= 2:
+            word, article = str(item[0] or "").strip(), str(item[1] or "").strip().lower()
+        else:
+            word, article = str(item or "").strip(), ""
+        if word:
+            cleaned.append((word, article))
     if not cleaned:
         return {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT lower(word), audio_object_key FROM bt_3_article_sprint_nouns "
+                "SELECT lower(word), article, audio_object_key FROM bt_3_article_sprint_nouns "
                 "WHERE lower(word) = ANY(%s) AND COALESCE(audio_object_key, '') <> '';",
-                ([w.lower() for w in cleaned],),
+                ([w.lower() for w, _ in cleaned],),
             )
             rows = cursor.fetchall() or []
-    return {str(r[0]): str(r[1] or "") for r in rows}
+    by_pair = {(str(r[0]), str(r[1] or "").lower()): str(r[2] or "") for r in rows}
+    result: dict = {}
+    for word, article in cleaned:
+        key = word.lower()
+        value = by_pair.get((key, article))
+        if value is None and not article:
+            # Совместимость: артикль не передали — берём любую запись слова.
+            value = next((v for (w, _a), v in by_pair.items() if w == key), None)
+        if value:
+            result[(key, article)] = value
+            result.setdefault(key, value)  # старые вызовы по одному слову
+    return result
 
+def get_article_noun_mnemonics(pairs) -> dict:
+    """Карта (слово, артикль) → mnemonic_ru.
 
-def get_article_noun_mnemonics(words: list[str]) -> dict:
-    """Map lower(word) → mnemonic_ru for a list of words (deck lookup)."""
-    cleaned = [str(w).strip() for w in (words or []) if str(w).strip()]
+    Ключ ОБЯЗАН включать артикль. Раньше ключом было только слово, и у омонимов
+    вроде Band (der Band — том, die Band — группа, das Band — лента) три записи
+    схлопывались в одну: карточка «der Band» могла получить подсказку от «die Band».
+    Таких слов 26, задетых карточек 58.
+
+    Принимает список пар (слово, артикль); ради совместимости — и просто список
+    слов, тогда берётся любая запись этого слова (для однородных слов это то же самое).
+    """
+    cleaned: list[tuple[str, str]] = []
+    for item in pairs or []:
+        if isinstance(item, (tuple, list)) and len(item) >= 2:
+            word, article = str(item[0] or "").strip(), str(item[1] or "").strip().lower()
+        else:
+            word, article = str(item or "").strip(), ""
+        if word:
+            cleaned.append((word, article))
     if not cleaned:
         return {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
-                SELECT lower(word), mnemonic_ru
-                FROM bt_3_article_sprint_nouns
-                WHERE lower(word) = ANY(%s) AND COALESCE(mnemonic_ru, '') <> ''
-                """,
-                ([w.lower() for w in cleaned],),
+                "SELECT lower(word), article, mnemonic_ru FROM bt_3_article_sprint_nouns "
+                "WHERE lower(word) = ANY(%s) AND COALESCE(mnemonic_ru, '') <> '';",
+                ([w.lower() for w, _ in cleaned],),
             )
             rows = cursor.fetchall() or []
-    return {str(r[0]): str(r[1] or "") for r in rows}
-
+    by_pair = {(str(r[0]), str(r[1] or "").lower()): str(r[2] or "") for r in rows}
+    result: dict = {}
+    for word, article in cleaned:
+        key = word.lower()
+        value = by_pair.get((key, article))
+        if value is None and not article:
+            # Совместимость: артикль не передали — берём любую запись слова.
+            value = next((v for (w, _a), v in by_pair.items() if w == key), None)
+        if value:
+            result[(key, article)] = value
+            result.setdefault(key, value)  # старые вызовы по одному слову
+    return result
 
 def ensure_article_learn_schema() -> None:
     """Artikel Trainer (learning deck) — per-answer log driving the review pile

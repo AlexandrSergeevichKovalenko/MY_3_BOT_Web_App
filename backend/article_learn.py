@@ -307,7 +307,10 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
             review_raw = []
 
     # Cached LLM mnemonics (preferred); deterministic gender_tip is the fallback.
-    all_words = [str(w.get("w") or "") for w in (new_words + review_raw)]
+    # Пары (слово, артикль): у омонимов вроде Band род решает, какая озвучка и подсказка
+    # относятся к карточке. По одному слову они схлопывались, и «der Band» мог зазвучать
+    # как «die Band».
+    all_words = [(str(w.get("w") or ""), str(w.get("a") or "").lower()) for w in (new_words + review_raw)]
     try:
         mnem = get_article_noun_mnemonics(all_words)
     except Exception:
@@ -334,9 +337,12 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
         word = str(w.get("w") or "")
         # Correct a bad bank article (die Börsenwert → der) before teaching it.
         art = resolve_article(word, w.get("a"))
-        tip = mnem.get(word.lower()) or gender_tip(word, art)
-        akey = audio_keys.get(word.lower())
-        ikey = image_keys.get(word.lower())
+        # Берём по паре «слово + род»: у омонимов (der/die/das Band) это разные карточки
+        # с разной озвучкой и подсказкой. Ключ по одному слову давал случайную из трёх.
+        pair = (word.lower(), str(art or "").lower())
+        tip = mnem.get(pair) or gender_tip(word, art)
+        akey = audio_keys.get(pair)
+        ikey = image_keys.get(pair)
         return {
             "w": word, "a": art, "ru": str(w.get("ru") or ""),
             "tip": tip,

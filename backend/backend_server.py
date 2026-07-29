@@ -23025,18 +23025,23 @@ def _ensure_artikel_mnemonics_async(cards: list[dict]) -> None:
         from backend.database import get_article_noun_mnemonics
         from backend.article_learn import _generate_and_cache_mnemonics
         try:
-            cached = get_article_noun_mnemonics([it["w"] for it in items])
+            # По паре «слово + род»: у омонимов подсказка своя для каждого рода, и по
+            # одному слову догенерация считала бы её уже готовой для всех трёх.
+            cached = get_article_noun_mnemonics(
+                [(it.get("w"), str(it.get("a") or "").lower()) for it in items]
+            )
         except Exception:
             cached = {}
         todo = []
         for it in items[:30]:
             low = it["w"].lower()
-            if low in cached:
+            pair = (low, str(it.get("a") or "").lower())
+            if pair in cached:
                 continue
             with _artikel_mnem_inflight_lock:
-                if low in _artikel_mnem_inflight:
+                if pair in _artikel_mnem_inflight:
                     continue
-                _artikel_mnem_inflight.add(low)
+                _artikel_mnem_inflight.add(pair)
             todo.append(it)
         if not todo:
             return
@@ -23047,7 +23052,7 @@ def _ensure_artikel_mnemonics_async(cards: list[dict]) -> None:
         finally:
             with _artikel_mnem_inflight_lock:
                 for it in todo:
-                    _artikel_mnem_inflight.discard(it["w"].lower())
+                    _artikel_mnem_inflight.discard((it["w"].lower(), str(it.get("a") or "").lower()))
 
     try:
         threading.Thread(target=_run, daemon=True).start()
