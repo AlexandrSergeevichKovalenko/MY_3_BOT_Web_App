@@ -117,7 +117,14 @@ _GRAM_LINE = re.compile(
     re.MULTILINE,
 )
 _GRUNDFORM = re.compile(r"\{\{Grundformverweis(?:\s+Dekl)?\|([^}|]+)")
-_UEBERSICHT_FIELD = re.compile(r"\|\s*(Nominativ (?:Singular|Plural))\s*=\s*([^\n|}]*)")
+# Поля шапки. У двуродовых слов Wiktionary НУМЕРУЕТ их («Nominativ Singular 1=Spind»,
+# «Nominativ Singular 2=Spind»), поэтому номер обязателен в шаблоне: без него разбор
+# не находил единственного числа и объявлял «der Spind», «das Versäumnis», «das Zubehör»
+# словами, живущими только во множественном.
+_UEBERSICHT_FIELD = re.compile(
+    r"\|\s*Nominativ\s+(Singular|Plural)\s*\d*\*?\s*=\s*([^\n|}]*)"
+)
+_EMPTY_FIELD_VALUES = {"", "—", "-", "–", "?"}
 
 
 def _german_section(wikitext: str) -> str:
@@ -142,13 +149,16 @@ def form_facts_from_wikitext(wikitext: str) -> dict:
     facts: dict = {"is_lemma": is_lemma, "number": "", "lemma": "", "plural_surface": ""}
 
     if is_lemma:
-        fields = {k: v.strip() for k, v in _UEBERSICHT_FIELD.findall(block)}
-        singular = fields.get("Nominativ Singular", "")
-        plural = fields.get("Nominativ Plural", "")
-        if plural and plural not in ("—", "-", "?"):
+        singulars, plurals = [], []
+        for kind, value in _UEBERSICHT_FIELD.findall(block):
+            (singulars if kind == "Singular" else plurals).append(value.strip())
+        plural = next((p for p in plurals if p not in _EMPTY_FIELD_VALUES), "")
+        if plural:
             facts["plural_surface"] = plural
-        # Genus=0 + пустое единственное = слово живёт только во множественном (Eltern).
-        if plural and singular in ("—", "-", ""):
+        # «Живёт только во множественном» (Eltern, Magenbeschwerden) — это когда графа
+        # единственного ЕСТЬ и в ней прочерк. Отсутствие графы ничего не доказывает:
+        # у двуродовых слов она называется иначе, и молчать здесь безопаснее.
+        if plural and singulars and all(s in _EMPTY_FIELD_VALUES for s in singulars):
             facts["number"] = "pl"
         return facts
 

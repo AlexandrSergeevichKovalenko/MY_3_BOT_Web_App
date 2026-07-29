@@ -75,6 +75,35 @@ ELTERN = """
 }}
 """
 
+# Двуродовое слово: Wiktionary НУМЕРУЕТ графы. Разбор, искавший ровно «Nominativ
+# Singular», не находил их и объявлял «der Spind» живущим только во множественном —
+# а следом аудит требовал чинить настоящие слова.
+SPIND = """
+== Spind ({{Sprache|Deutsch}}) ==
+=== {{Wortart|Substantiv|Deutsch}}, {{m}}, {{n}} ===
+
+{{Deutsch Substantiv Übersicht
+|Genus 1=m
+|Genus 2=n
+|Nominativ Singular 1=Spind
+|Nominativ Singular 2=Spind
+|Nominativ Plural=Spinde
+|Dativ Singular 1*=Spinde
+}}
+"""
+
+# Живёт только во множественном: графа единственного ЕСТЬ и в ней прочерк.
+MAGENBESCHWERDEN = """
+== Magenbeschwerden ({{Sprache|Deutsch}}) ==
+=== {{Wortart|Substantiv|Deutsch}} ===
+
+{{Deutsch Substantiv Übersicht
+|Genus=0
+|Nominativ Singular=—
+|Nominativ Plural=Magenbeschwerden
+}}
+"""
+
 # Английская секция на той же странице не должна попасть в разбор немецкой.
 NUR_ENGLISCH = """
 == Rat ({{Sprache|Englisch}}) ==
@@ -110,6 +139,19 @@ class WikitextFormParsingTests(unittest.TestCase):
     def test_plurale_tantum_page_is_marked_plural(self):
         facts = form_facts_from_wikitext(ELTERN)
         self.assertTrue(facts["is_lemma"])
+        self.assertEqual(facts["number"], PL)
+
+    def test_two_gender_word_with_numbered_fields_is_not_taken_for_plural(self):
+        """«der/das Spind» — обычное слово, просто с двумя родами, поэтому графы
+        пронумерованы. Отсутствие графы «Nominativ Singular» без номера ничего не
+        доказывает, и объявлять слово формой множественного нельзя."""
+        facts = form_facts_from_wikitext(SPIND)
+        self.assertTrue(facts["is_lemma"])
+        self.assertEqual(facts["number"], "")
+        self.assertEqual(facts["plural_surface"], "Spinde")
+
+    def test_dash_in_the_singular_field_still_means_plural_only(self):
+        facts = form_facts_from_wikitext(MAGENBESCHWERDEN)
         self.assertEqual(facts["number"], PL)
 
     def test_foreign_section_alone_yields_nothing(self):
