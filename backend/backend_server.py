@@ -20580,9 +20580,12 @@ def _ensure_save_worthy_options(item: dict | None) -> dict:
     for example in (item.get("usage_examples") or [])[:2]:
         if not isinstance(example, dict):
             continue
-        src = str(example.get("target") or example.get("source") or "").strip()
-        tgt = str(example.get("source") or "").strip()
-        if src and src != base_source:
+        # Пример берём как есть, половинки не переставляем: source к source,
+        # target к target. Иначе вариант выходит зеркальным к базовому — слева
+        # перевод, справа фраза, — и человек видит «перевод не соответствует».
+        src = str(example.get("source") or "").strip()
+        tgt = str(example.get("target") or "").strip()
+        if src and tgt and src != base_source:
             options.append({"kind": "phrase", "source": src, "target": tgt})
     if options:
         fixed = dict(item)

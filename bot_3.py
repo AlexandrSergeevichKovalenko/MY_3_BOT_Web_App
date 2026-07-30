@@ -26,6 +26,7 @@ import hashlib
 import hmac
 import base64
 import re
+import difflib
 import html
 import random
 import requests
@@ -15258,6 +15259,31 @@ def _normalize_dictionary_lookup_input(text: str) -> str:
     return cleaned
 
 
+def _is_dictionary_typo_correction(original: str, candidate: str) -> bool:
+    """Модель вернула ИСПРАВЛЕННУЮ ту же фразу — или вообще другую конструкцию?
+
+    Исправление опечатки/регистра/падежа («Er übt eine Erwerbstätigket aus» →
+    «Er übt eine Erwerbstätigkeit aus») — это по-прежнему запрос пользователя,
+    его и сохраняем. А словарная форма вместо фразы («Er übt eine
+    Erwerbstätigkeit als Lehrer aus» → «eine Erwerbstätigkeit ausüben») —
+    НЕ исправление: это отдельный вариант для сохранения. Если считать её
+    исправлением, первый вариант получает чужой перевод: слева лемма, справа
+    перевод исходного предложения.
+    """
+    left = _normalize_dictionary_compare_key(original)
+    right = _normalize_dictionary_compare_key(candidate)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    left_tokens = re.findall(r"\S+", left)
+    right_tokens = re.findall(r"\S+", right)
+    # Слова выкинули или добавили — это уже другая конструкция, а не опечатка.
+    if abs(len(left_tokens) - len(right_tokens)) > 1:
+        return False
+    return difflib.SequenceMatcher(None, left, right).ratio() >= 0.82
+
+
 def _looks_like_noisy_dictionary_construction(text: str) -> bool:
     cleaned = str(text or "").strip()
     if not cleaned:
@@ -15384,7 +15410,10 @@ async def _coerce_sentence_lookup_payload(
     correction_applied = bool(incoming_payload.get("correction_applied"))
     corrected_form = str(incoming_payload.get("corrected_form") or "").strip()
     if not corrected_form and model_source_text:
-        if _normalize_dictionary_compare_key(model_source_text) != _normalize_dictionary_compare_key(normalized_input):
+        if (
+            _normalize_dictionary_compare_key(model_source_text) != _normalize_dictionary_compare_key(normalized_input)
+            and _is_dictionary_typo_correction(normalized_input, model_source_text)
+        ):
             corrected_form = model_source_text
             correction_applied = True
 
@@ -15404,7 +15433,10 @@ async def _coerce_sentence_lookup_payload(
         return payload if isinstance(payload, dict) else {}
 
     result = dict(incoming_payload or {})
-    effective_source = corrected_form or model_source_text or normalized_input
+    # forced_target — перевод именно того, что попросили (normalized_input), поэтому
+    # слева должно стоять оно же. Словарную форму от модели сюда подставлять нельзя:
+    # получится пара «лемма → перевод другой фразы».
+    effective_source = corrected_form or normalized_input
     result["word_source"] = effective_source
     result["word_target"] = forced_target
     result["part_of_speech"] = "phrase"
@@ -16376,9 +16408,10 @@ def _resolve_default_dictionary_option(payload: dict) -> dict:
         if preferred and isinstance(preferred[0], dict):
             preferred_source = str(preferred[0].get("source") or "").strip()
             preferred_target = str(preferred[0].get("target") or "").strip()
-            if preferred_source:
+            # Меняем ПАРУ целиком. Половинки из разных мест давали карточку, где
+            # перевод не соответствует фразе слева.
+            if preferred_source and preferred_target:
                 source = preferred_source
-            if preferred_target:
                 target = preferred_target
     return {"source": source, "target": target}
 
