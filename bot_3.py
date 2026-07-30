@@ -28334,6 +28334,20 @@ async def admin_artikel_settheme_command(update: Update, context: CallbackContex
     )
 
 
+def _artikel_enqueue_failure_text(outcome: dict, what: str) -> str:
+    """Человеческий ответ, когда задача не встала в очередь. Сырое имя причины наружу
+    не выносим — админу нужно понять, что делать, а не читать внутренний код."""
+    reason = str((outcome or {}).get("reason") or "").strip()
+    if reason == "already_running":
+        return f"⏳ {what} уже идёт — дождись отчёта. Второй прогон не запускаю: это была бы двойная работа GPT."
+    if reason == "background_jobs_unavailable":
+        return (
+            f"Очередь задач недоступна (нет Redis), {what.lower()} НЕ запущено.\n"
+            "Прямо в боте больше не гоняю — это вешало бота на всё время прогона."
+        )
+    return f"Не смог поставить {what.lower()} в очередь, ничего не тронуто. Причина в логах."
+
+
 async def admin_artikel_fill_command(update: Update, context: CallbackContext) -> None:
     """Наполнить тему словами. /artikel_fill <theme_key> [count]
     (count ограничивает, сколько НОВЫХ слов добавить за прогон; без него — до target).
@@ -28574,8 +28588,11 @@ async def admin_artikel_addwords_command(update: Update, context: CallbackContex
 
 
 async def admin_artikel_autofill_command(update: Update, context: CallbackContext) -> None:
-    """Manually run the auto-grow (top up themes below target via GPT). Same job that
-    runs nightly. /artikel_autofill [total_cap]"""
+    """Догенерировать слова во всех темах ниже target. /artikel_autofill [total_cap]
+
+    Считает BACKGROUND_JOBS — тот же перенос, что у /artikel_fill, и по той же причине:
+    прогон обходит ВСЕ темы, так что блокирующий хендлер морозил бота ещё дольше, а
+    деплой посреди работы терял её молча. Отчёт придёт отдельным сообщением."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -28588,27 +28605,29 @@ async def admin_artikel_autofill_command(update: Update, context: CallbackContex
         total = max(1, min(500, int(args[0]))) if args else None
     except ValueError:
         total = None
-    status_msg = await message.reply_text(
-        "⏳ Догенерирую слова в темах ниже target (GPT + верификация, это займёт время)…")
 
-    def _go() -> dict:
-        from backend.article_sprint_generator import autofill_themes_below_target
-        kw = {"per_theme_cap": ARTIKEL_AUTOFILL_PER_THEME, "total_cap": ARTIKEL_AUTOFILL_TOTAL}
-        if total:
-            kw["total_cap"] = total
-        return autofill_themes_below_target(**kw)
+    def _enqueue() -> dict:
+        from backend.job_queue import enqueue_artikel_autofill_job
+        return enqueue_artikel_autofill_job(
+            per_theme_cap=ARTIKEL_AUTOFILL_PER_THEME,
+            total_cap=total or ARTIKEL_AUTOFILL_TOTAL,
+            chat_id=int(message.chat_id),
+        )
 
     try:
-        res = await asyncio.to_thread(_go)
-    except Exception as exc:
-        await status_msg.edit_text(f"Error: {exc}")
+        outcome = await asyncio.to_thread(_enqueue)
+    except Exception:
+        logging.exception("artikel_autofill: enqueue failed")
+        outcome = {"queued": False, "reason": "broker_error"}
+
+    if outcome.get("queued"):
+        await message.reply_text(
+            f"📥 Авто-наполнение встало в очередь (до {total or ARTIKEL_AUTOFILL_TOTAL} слов за прогон).\n"
+            "Считает отдельный воркер — бот работает как обычно, деплой прогон не потеряет.\n"
+            "Отчёт пришлю сюда, когда закончит."
+        )
         return
-    out = [f"✅ Авто-наполнение: добавлено {res.get('total_added')} слов(а)."]
-    for t in (res.get("themes") or [])[:25]:
-        out.append(f"• {t['theme']}: +{t.get('added')} → {t.get('final_verified')}/{t.get('target')}")
-    if len(out) == 1:
-        out.append("Все темы уже на target 🎉")
-    await status_msg.edit_text("\n".join(out)[:4000])
+    await message.reply_text(_artikel_enqueue_failure_text(outcome, "Авто-наполнение"))
 
 
 async def admin_artikel_sample_command(update: Update, context: CallbackContext) -> None:
@@ -28941,8 +28960,11 @@ async def admin_artikel_images_command(update: Update, context: CallbackContext)
 
 
 async def admin_artikel_fillmedia_command(update: Update, context: CallbackContext) -> None:
-    """Fill mnemonics + audio + images for a whole theme now (bounded per run; rerun
-    to finish a big theme). /artikel_fillmedia <theme_key> [cap]"""
+    """Подготовить мнемоники, озвучку и картинки темы. /artikel_fillmedia <theme_key> [cap]
+
+    Считает BACKGROUND_JOBS: генерация мнемоник, синтез речи и поход за картинками — это
+    минуты, и держать на них бота нельзя. Прогон ограничен cap и идёт только по незакрытым
+    словам, так что повтор продолжает тему, а не переделывает сделанное."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -28963,13 +28985,28 @@ async def admin_artikel_fillmedia_command(update: Update, context: CallbackConte
     if not theme:
         await message.reply_text(f"Нет темы <code>{html.escape(theme_key)}</code>.", parse_mode="HTML")
         return
-    status = await message.reply_text(
-        f"⏳ Готовлю медиа темы «{html.escape(theme['label_de'])}» (до {cap} слов на тип)… это займёт время.")
-    res = await _fill_artikel_theme_media(theme_key, cap=cap)
-    await status.edit_text(
-        f"✅ «{html.escape(theme['label_de'])}» — этот прогон: "
-        f"мнемоники +{res.get('mnemonics')} · аудио +{res.get('audio')} · картинки +{res.get('images')}.\n"
-        f"Повтори команду, пока числа не станут 0 (тема дочистится).")
+
+    def _enqueue() -> dict:
+        from backend.job_queue import enqueue_artikel_fillmedia_job
+        return enqueue_artikel_fillmedia_job(
+            theme_key=theme_key, cap=cap, include_audio=True, chat_id=int(message.chat_id),
+        )
+
+    try:
+        outcome = await asyncio.to_thread(_enqueue)
+    except Exception:
+        logging.exception("artikel_fillmedia: enqueue failed theme=%s", theme_key)
+        outcome = {"queued": False, "reason": "broker_error"}
+
+    if outcome.get("queued"):
+        await message.reply_text(
+            f"📥 Медиа темы «{html.escape(theme['label_de'])}» встали в очередь "
+            f"(до {cap} слов на тип).\n"
+            "Считает отдельный воркер — бот работает как обычно, деплой прогон не потеряет.\n"
+            "Отчёт пришлю сюда, когда закончит."
+        )
+        return
+    await message.reply_text(_artikel_enqueue_failure_text(outcome, "Подготовка медиа"))
 
 
 async def admin_artikel_pixtest_command(update: Update, context: CallbackContext) -> None:
@@ -34069,23 +34106,32 @@ async def _rotate_listening_domain(context: CallbackContext, *, min_answerers: i
 
 async def _rotate_article_words_domain(context: CallbackContext, *, min_answerers: int) -> tuple[int, int]:
     """Retire der/die/das nouns the crowd mastered (across sprint/trainer/battles) and
-    regenerate fresh via the nightly auto-grow. Returns (retired, added)."""
+    regenerate fresh via the nightly auto-grow. Returns (retired, added).
+
+    Доливку считает BACKGROUND_JOBS, поэтому `added` здесь всегда 0: на момент возврата
+    слова ещё не добавлены. Их число запишет сам актор — отдельной строкой ротации с
+    retired=0. Сводка суммирует строки по домену, так что недельный итог сходится, а
+    выдуманного числа в отчёте не появляется."""
     from backend.database import mastered_article_sprint_words, retire_article_sprint_nouns_by_words
     words = await asyncio.to_thread(mastered_article_sprint_words,
                                     min_answerers=min_answerers, ratio=MASTERY_CORRECT_RATIO)
     retired = await asyncio.to_thread(retire_article_sprint_nouns_by_words, words)
-    added = 0
     if retired:
-        try:
-            from backend.article_sprint_generator import autofill_themes_below_target
-            res = await asyncio.to_thread(
-                autofill_themes_below_target,
+        def _enqueue() -> dict:
+            from backend.job_queue import enqueue_artikel_autofill_job
+            return enqueue_artikel_autofill_job(
                 per_theme_cap=ARTIKEL_AUTOFILL_PER_THEME,
-                total_cap=max(ARTIKEL_AUTOFILL_TOTAL, retired))
-            added = int(res.get("total_added") or 0)
+                total_cap=max(ARTIKEL_AUTOFILL_TOTAL, retired),
+                rotation_domain="article_words",
+            )
+
+        try:
+            outcome = await asyncio.to_thread(_enqueue)
+            if not outcome.get("queued"):
+                logging.warning("rotation: article-words regen NOT enqueued: %s", outcome.get("reason"))
         except Exception:
-            logging.warning("rotation: article-words regen failed", exc_info=True)
-    return retired, added
+            logging.warning("rotation: article-words regen enqueue failed", exc_info=True)
+    return retired, 0
 
 
 async def _mastery_rotation_job(context: CallbackContext) -> list[tuple[str, int, int]]:
@@ -35889,25 +35935,12 @@ async def _fill_artikel_theme_media(theme_key: str, *, cap: int = ARTIKEL_NIGHTL
     ones, so nights walk through the whole theme without reprocessing). One-time per word —
     cached. The nightly prewarm passes include_audio=False and lets the global, budget-aware
     _nightly_artikel_audio_sweep voice audio evenly across ALL themes; the /artikel_fillmedia
-    admin command keeps audio on so it still finishes one theme end-to-end."""
-    from backend.article_learn import _generate_and_cache_mnemonics
-    made = {"mnemonics": 0, "audio": 0, "images": 0}
-    # Mnemonics (chunked LLM calls).
-    todo_m = await asyncio.to_thread(get_article_nouns_without_mnemonic, theme_key, cap)
-    mitems = [{"w": t["word"], "a": t["article"], "ru": t.get("meaning_ru", "")} for t in todo_m]
-    for i in range(0, len(mitems), 20):
-        try:
-            made["mnemonics"] += len(await asyncio.to_thread(_generate_and_cache_mnemonics, mitems[i:i + 20]))
-        except Exception:
-            logging.warning("artikel_media: mnemonic chunk failed theme=%s", theme_key, exc_info=True)
-    # Audio (TTS per word, cheap Standard bucket) — skipped in the nightly path.
-    if include_audio:
-        todo_a = await asyncio.to_thread(get_article_nouns_without_audio, theme_key, cap)
-        made["audio"] = int((await _backfill_artikel_audio(todo_a, limit=cap)).get("made") or 0)
-    # Images (LLM meta chunked inside + Pixabay).
-    todo_i = await asyncio.to_thread(get_article_nouns_for_image, theme_key, cap)
-    made["images"] = int((await _backfill_artikel_images(todo_i, limit=cap)).get("made") or 0)
-    return made
+    admin command keeps audio on so it still finishes one theme end-to-end.
+
+    Реализация — в backend.article_media_fill: её же зовёт фоновый воркер, а в его образ
+    bot_3.py не попадает, так что общий код обязан жить в backend/."""
+    from backend.article_media_fill import fill_theme_media
+    return await asyncio.to_thread(fill_theme_media, theme_key, cap=cap, include_audio=include_audio)
 
 
 async def _nightly_artikel_audio_sweep(priority_themes: list[str], *, cap: int = ARTIKEL_NIGHTLY_AUDIO_CAP) -> dict:
@@ -36050,27 +36083,30 @@ _ARTIKEL_ONPICK_FILLS_INFLIGHT: set[str] = set()
 async def _artikel_autofill_nightly_job(context: CallbackContext) -> None:
     """Overnight: top up themes below target via GPT (generate+verify+insert),
     bounded by ARTIKEL_AUTOFILL_PER_THEME / _TOTAL. Runs BEFORE the media prewarm so
-    today's/tomorrow's active themes get media for the fresh words the same night."""
+    today's/tomorrow's active themes get media for the fresh words the same night.
+
+    Работу делает BACKGROUND_JOBS. В процессе бота она бота не морозила (уходила в
+    поток), но деплой посреди ночного прогона терял её целиком. Ночные метрики пишет
+    сам актор — иначе они бы потерялись вместе с переносом."""
     if not _artikel_sprint_enabled() or not ARTIKEL_AUTOFILL_ENABLED:
         return
+
+    def _enqueue() -> dict:
+        from backend.job_queue import enqueue_artikel_autofill_job
+        return enqueue_artikel_autofill_job(
+            per_theme_cap=ARTIKEL_AUTOFILL_PER_THEME,
+            total_cap=ARTIKEL_AUTOFILL_TOTAL,
+            nightly_metrics_run_date=_get_quiz_schedule_now().date().isoformat(),
+        )
+
     try:
-        from backend.article_sprint_generator import autofill_themes_below_target
-        res = await asyncio.to_thread(
-            autofill_themes_below_target,
-            per_theme_cap=ARTIKEL_AUTOFILL_PER_THEME, total_cap=ARTIKEL_AUTOFILL_TOTAL)
-        logging.info("artikel autofill nightly: %s", res)
-        try:
-            from backend.database import record_artikel_nightly_metrics
-            wa = {str(t.get("theme")): int(t.get("added") or 0)
-                  for t in (res.get("themes") or []) if int(t.get("added") or 0) > 0}
-            await asyncio.to_thread(
-                record_artikel_nightly_metrics,
-                run_date=_get_quiz_schedule_now().date(),
-                words_added=wa, words_total=int(res.get("total_added") or 0))
-        except Exception:
-            logging.warning("artikel autofill: metrics record failed", exc_info=True)
+        outcome = await asyncio.to_thread(_enqueue)
+        if outcome.get("queued"):
+            logging.info("artikel autofill nightly: enqueued %s", outcome.get("message_id"))
+        else:
+            logging.warning("artikel autofill nightly NOT enqueued: %s", outcome.get("reason"))
     except Exception:
-        logging.warning("artikel autofill nightly failed", exc_info=True)
+        logging.warning("artikel autofill nightly enqueue failed", exc_info=True)
 
 
 # Daily admin nudge to pick TOMORROW's Artikel Sprint theme (default 16:00 Vienna).
@@ -38610,31 +38646,10 @@ def _artikel_audio_key(word: str, article: str) -> str:
 
 
 async def _backfill_artikel_audio(items: list[dict], limit: int = 30) -> dict:
-    """Synthesize '<article> <word>' → MP3 → R2 for nouns missing a clip, and cache
-    the key on the noun bank. Off the hot path (morning pre-warm / admin). Uses the cheap
-    Standard voice on the google_tts_standard bucket (see synthesize_and_store_artikel_audio)
-    so it never competes with Reader/SRS for the premium tier. Stops early — returns
-    stopped='blocked' — the moment the Standard bucket is exhausted."""
-    from backend.backend_server import synthesize_and_store_artikel_audio
-    from backend.tts_generation import GoogleTTSBudgetBlockedError
-    made = 0
-    stopped: str | None = None
-    for it in (items or [])[:limit]:
-        word = str(it.get("word") or "").strip()
-        article = str(it.get("article") or "").strip().lower()
-        if not word or article not in ("der", "die", "das"):
-            continue
-        try:
-            key = await asyncio.to_thread(synthesize_and_store_artikel_audio, word=word, article=article)
-            if key:
-                made += 1
-        except GoogleTTSBudgetBlockedError:
-            logging.info("artikel_audio backfill: standard bucket blocked at made=%s — stopping", made)
-            stopped = "blocked"
-            break
-        except Exception:
-            logging.warning("artikel_audio backfill failed word=%s", word, exc_info=True)
-    return {"requested": len(items or []), "made": made, "stopped": stopped}
+    """Обёртка над backend.article_media_fill: сама работа живёт там, потому что её
+    делает и фоновый воркер, а в его образ bot_3.py не попадает."""
+    from backend.article_media_fill import backfill_artikel_audio
+    return await asyncio.to_thread(backfill_artikel_audio, items, limit)
 
 
 async def _backfill_artikel_audio_for_set(set_id: str, limit: int = 25) -> int:
@@ -38656,57 +38671,14 @@ async def _backfill_artikel_audio_for_set(set_id: str, limit: int = 25) -> int:
 
 
 def _artikel_image_key(word: str) -> str:
-    base = str(word).translate(_ARTIKEL_UMLAUT).lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:48] or "w"
-    return f"artikel/img/{slug}.jpg"
+    from backend.article_media_fill import artikel_image_key
+    return artikel_image_key(word)
 
 
 async def _backfill_artikel_images(items: list[dict], limit: int = 15) -> dict:
-    """For nouns not yet evaluated: LLM decides concrete + English query → fetch a
-    free stock photo → R2; abstract/none just marks checked. Off the hot path.
-    No-op (and DOESN'T mark checked) if no PIXABAY_API_KEY, so it processes later."""
-    from backend.stock_image import fetch_stock_image_bytes, stock_image_enabled
-    if not stock_image_enabled():
-        logging.info("artikel_images: PIXABAY_API_KEY not set — skipping image backfill")
-        return {"requested": 0, "made": 0, "skipped": "no_key"}
-    from backend.openai_manager import run_article_image_meta
-    from backend.r2_storage import r2_put_bytes
-    batch = (items or [])[:limit]
-    if not batch:
-        return {"requested": 0, "made": 0}
-    # LLM image-meta in sub-batches of 20 so a large `limit` doesn't make one huge
-    # (truncation-prone) prompt.
-    metas: list = []
-    for i in range(0, len(batch), 20):
-        chunk = batch[i:i + 20]
-        metas.extend(await run_article_image_meta(items=[
-            {"word": x.get("word"), "article": x.get("article"), "ru": x.get("meaning_ru", "")}
-            for x in chunk]) or [])
-    meta_by_word = {str(m.get("word") or "").lower(): m for m in (metas or [])}
-    made = concrete = 0
-    for it in batch:
-        word = str(it.get("word") or "").strip()
-        article = str(it.get("article") or "").strip().lower()
-        if not word:
-            continue
-        m = meta_by_word.get(word.lower()) or {}
-        query = str(m.get("image_query") or "").strip()
-        key = ""
-        if bool(m.get("is_concrete")) and query:
-            concrete += 1
-            img = await asyncio.to_thread(fetch_stock_image_bytes, query)
-            if img:
-                k = _artikel_image_key(word)
-                try:
-                    await asyncio.to_thread(r2_put_bytes, k, img, content_type="image/jpeg")
-                    key = k
-                    made += 1
-                except Exception:
-                    logging.warning("artikel_images: R2 put failed word=%s", word, exc_info=True)
-        await asyncio.to_thread(mark_article_noun_image, word=word, article=article, image_object_key=key)
-    logging.info("artikel_images: requested=%s meta=%s concrete=%s made=%s",
-                 len(batch), len(metas or []), concrete, made)
-    return {"requested": len(batch), "meta": len(metas or []), "concrete": concrete, "made": made}
+    """Обёртка над backend.article_media_fill — см. _backfill_artikel_audio."""
+    from backend.article_media_fill import backfill_artikel_images
+    return await asyncio.to_thread(backfill_artikel_images, items, limit)
 
 
 async def _backfill_listening_audio(limit: int = 10) -> dict:

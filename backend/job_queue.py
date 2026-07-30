@@ -506,6 +506,125 @@ def release_artikel_fill_lock(theme_key: str) -> None:
         logging.warning("release_artikel_fill_lock failed theme=%s", theme_key, exc_info=True)
 
 
+_ARTIKEL_AUTOFILL_LOCK_KEY = "artikel_autofill:running"
+
+
+def _artikel_fillmedia_lock_key(theme_key: str) -> str:
+    return f"artikel_fillmedia:running:{str(theme_key or '').strip()}"
+
+
+def release_artikel_autofill_lock() -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(_ARTIKEL_AUTOFILL_LOCK_KEY)
+    except Exception:
+        logging.warning("release_artikel_autofill_lock failed", exc_info=True)
+
+
+def release_artikel_fillmedia_lock(theme_key: str) -> None:
+    client = get_redis_client()
+    if client is None or not str(theme_key or "").strip():
+        return
+    try:
+        client.delete(_artikel_fillmedia_lock_key(theme_key))
+    except Exception:
+        logging.warning("release_artikel_fillmedia_lock failed theme=%s", theme_key, exc_info=True)
+
+
+def _claim_artikel_lock(lock_key: str) -> bool:
+    """True — замок наш (или Redis не ответил и мы не мешаем работать)."""
+    client = get_redis_client()
+    if client is None:
+        return True
+    try:
+        return bool(client.set(
+            lock_key, str(int(time.time() * 1000)), nx=True, ex=int(_ARTIKEL_FILL_LOCK_TTL_SEC),
+        ))
+    except Exception:
+        logging.warning("artikel lock claim failed key=%s", lock_key, exc_info=True)
+        return True
+
+
+def enqueue_artikel_autofill_job(
+    *,
+    per_theme_cap: int | None = None,
+    total_cap: int | None = None,
+    chat_id: int | None = None,
+    request_id: str | None = None,
+    nightly_metrics_run_date: str | None = None,
+    rotation_domain: str | None = None,
+) -> dict:
+    """Поставить догенерацию слов во всех темах ниже target в очередь BACKGROUND_JOBS.
+
+    Замок общий, не по темам: прогон и так обходит все темы, два параллельных означали
+    бы двойную работу GPT по одному и тому же банку."""
+    if not can_enqueue_background_jobs():
+        return {"queued": False, "reason": "background_jobs_unavailable"}
+    if not _claim_artikel_lock(_ARTIKEL_AUTOFILL_LOCK_KEY):
+        return {"queued": False, "reason": "already_running"}
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_artikel_autofill_job
+
+        message = run_artikel_autofill_job.send(
+            per_theme_cap=int(per_theme_cap) if per_theme_cap else None,
+            total_cap=int(total_cap) if total_cap else None,
+            chat_id=int(chat_id or 0),
+            request_id=str(request_id or "").strip() or None,
+            nightly_metrics_run_date=str(nightly_metrics_run_date or "").strip() or None,
+            rotation_domain=str(rotation_domain or "").strip() or None,
+        )
+        return {
+            "queued": True,
+            "reason": "queued",
+            "message_id": str(getattr(message, "message_id", None) or "").strip() or None,
+        }
+    except Exception:
+        release_artikel_autofill_lock()
+        logging.exception("enqueue_artikel_autofill_job failed")
+        return {"queued": False, "reason": "broker_error"}
+
+
+def enqueue_artikel_fillmedia_job(
+    *,
+    theme_key: str,
+    cap: int | None = None,
+    include_audio: bool = True,
+    chat_id: int | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """Поставить подготовку медиа темы (мнемоники/озвучка/картинки) в очередь."""
+    safe_theme_key = str(theme_key or "").strip()
+    if not safe_theme_key:
+        return {"queued": False, "reason": "missing_theme_key"}
+    if not can_enqueue_background_jobs():
+        return {"queued": False, "reason": "background_jobs_unavailable"}
+    if not _claim_artikel_lock(_artikel_fillmedia_lock_key(safe_theme_key)):
+        return {"queued": False, "reason": "already_running"}
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_artikel_fillmedia_job
+
+        message = run_artikel_fillmedia_job.send(
+            theme_key=safe_theme_key,
+            cap=int(cap) if cap else None,
+            include_audio=bool(include_audio),
+            chat_id=int(chat_id or 0),
+            request_id=str(request_id or "").strip() or None,
+        )
+        return {
+            "queued": True,
+            "reason": "queued",
+            "message_id": str(getattr(message, "message_id", None) or "").strip() or None,
+        }
+    except Exception:
+        release_artikel_fillmedia_lock(safe_theme_key)
+        logging.exception("enqueue_artikel_fillmedia_job failed theme=%s", safe_theme_key)
+        return {"queued": False, "reason": "broker_error"}
+
+
 def enqueue_artikel_fill_job(
     *,
     theme_key: str,
