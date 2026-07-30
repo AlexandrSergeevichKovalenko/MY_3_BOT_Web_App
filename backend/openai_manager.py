@@ -3947,8 +3947,10 @@ Regeln:
   eine in jedem der 4 Sätze, nie zwei Lücken im selben Satz.
 - "correct" = exakt die gesprochenen Wörter in gesprochener Reihenfolge (2–5 Wörter, im
   Regelfall 3–4). Nie ein Wort, nie ein ganzer Nebensatz.
-- "aliases" = nur echte gleichwertige Schreibungen desselben Gehörten (z. B. "in dem Park"
-  neben "im Park"). KEINE inhaltlichen Alternativen — gehört ist gehört.
+- "aliases" = normalerweise LEER. Es zählt genau das, was der Sprecher sagt: NIE eine andere
+  Formulierung als die gesprochene (also KEIN "in dem Park" für gesprochenes "im Park", kein
+  Synonym, keine andere Wortstellung). Reine Schreibvarianten (ß/ss, ae/oe/ue, Groß-/
+  Kleinschreibung) sind schon durch die Bewertung abgedeckt und gehören NICHT hierher.
 - Sprich klar und flüssig, aber ohne Kunstpausen: die Wortgruppen müssen beim Hören
   vollständig rekonstruierbar sein.
 - "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): welche Grammatik die
