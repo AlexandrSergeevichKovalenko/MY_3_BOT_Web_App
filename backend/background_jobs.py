@@ -1741,6 +1741,89 @@ def _artikel_theme_label(theme_key: str) -> str:
         return theme_key
 
 
+def _ru_plural(count: int, one: str, few: str, many: str) -> str:
+    """«1 слово», «2 слова», «5 слов». Отчёт читает человек, и «61 слов» в нём —
+    та же неряшливость, что и невнятная цифра."""
+    n = abs(int(count))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not (12 <= n % 100 <= 14):
+        return few
+    return many
+
+
+def _words_ru(count: int) -> str:
+    return f"{int(count)} {_ru_plural(count, 'слово', 'слова', 'слов')}"
+
+
+def _human_minutes(total_seconds: int) -> str:
+    total = max(0, int(total_seconds))
+    if total < 60:
+        return f"{total} с"
+    return f"{total // 60} мин {total % 60} с"
+
+
+def _artikel_fill_report_text(*, label: str, result: dict, duration_s: int) -> str:
+    """Отчёт о наполнении темы — ДЛЯ ЧЕЛОВЕКА.
+
+    Прошлый вид («Добавлено: 26 · забраковано: 46 · Всего проверенных: 150/150») владелец
+    прочитать не смог, и справедливо: к чему 26, если в теме 150? что за дробь 150/150?
+    Правило, по которому переписано: первая строка — СОСТОЯНИЕ темы, а не событие прогона;
+    у каждого числа сказано, к чему оно и за какой период; слова из кода («забраковано»,
+    «verified», «target») наружу не идут; в конце — надо ли что-то делать."""
+    added = int((result or {}).get("added") or 0)
+    rejected = int((result or {}).get("rejected") or 0)
+    have_now = int((result or {}).get("final_verified") or 0)
+    target = int((result or {}).get("target") or 0)
+    had = (result or {}).get("had")
+    missing = max(0, target - have_now)
+
+    if missing == 0 and have_now > target:
+        head = (f"✅ Тема «{label}» набрана с запасом: {_words_ru(have_now)} "
+                f"при цели {target}.")
+    elif missing == 0:
+        head = f"✅ Тема «{label}» набрана полностью: {_words_ru(have_now)} из {target} нужных."
+    else:
+        head = (f"🟡 Тема «{label}»: {_words_ru(have_now)} из {target} нужных — "
+                f"не хватает ещё {missing}.")
+    lines = [head, ""]
+
+    if added:
+        was = f" (было {int(had)})" if had is not None else ""
+        lines.append(f"За этот прогон добавлено {_words_ru(added)}{was}. Занял {_human_minutes(duration_s)}.")
+    else:
+        lines.append(f"За этот прогон новых слов не добавилось. Занял {_human_minutes(duration_s)}.")
+
+    by_sub = (result or {}).get("by_subtopic") or {}
+    if by_sub and added:
+        parts = " · ".join(f"{k} {v}" for k, v in list(by_sub.items())[:20])
+        lines.append(f"Из них по подтемам: {parts}.")
+
+    if rejected:
+        lines.append("")
+        lines.append(f"Модель предложила ещё {_words_ru(rejected)} — не взяли:")
+        reasons = (result or {}).get("rejected_by_reason") or {}
+        if reasons:
+            for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
+                lines.append(f"• {reason} — {count}")
+        else:
+            lines.append("• причины на этот раз не записались")
+
+    failures = (result or {}).get("gen_failures") or []
+    if failures:
+        lines.append("")
+        lines.append("⚠️ Не ответила модель по подтемам: " + ", ".join(failures)
+                     + ". Эти слова просто не собрались — повтор их доберёт.")
+
+    lines.append("")
+    if missing == 0:
+        lines.append("Делать ничего не нужно.")
+    else:
+        lines.append(f"Чтобы добрать недостающие {missing} — повтори "
+                     f"/artikel_fill {result.get('theme') or ''}".rstrip())
+    return "\n".join(lines)
+
+
 def _notify_artikel_fill_result(
     *,
     chat_id: int,
@@ -1755,27 +1838,10 @@ def _notify_artikel_fill_result(
     label = _artikel_theme_label(theme_key)
     error = str((result or {}).get("error") or "").strip()
     if error:
-        text = f"❌ «{label}» — наполнение не пошло: {error}"
+        text = (f"❌ Тема «{label}» не наполнилась — не удалось начать.\n"
+                f"Слова не тронуты. Причина: {error}")
     else:
-        added = int((result or {}).get("added") or 0)
-        rejected = int((result or {}).get("rejected") or 0)
-        final_verified = (result or {}).get("final_verified")
-        target = (result or {}).get("target")
-        note = str((result or {}).get("note") or "").strip()
-        lines = [
-            f"✅ «{label}» наполнена",
-            f"Добавлено: {added} · забраковано: {rejected}",
-            f"Всего проверенных: {final_verified}/{target}",
-            f"Заняло: {duration_s // 60} мин {duration_s % 60} с",
-        ]
-        if note:
-            lines.append(note)
-        by_sub = (result or {}).get("by_subtopic") or {}
-        if by_sub:
-            lines.append("")
-            lines.append("По подтемам:")
-            lines.extend(f"• {k}: {v}" for k, v in list(by_sub.items())[:20])
-        text = "\n".join(lines)
+        text = _artikel_fill_report_text(label=label, result=result, duration_s=duration_s)
     try:
         from backend.telegram_notify import _send_private_message
 

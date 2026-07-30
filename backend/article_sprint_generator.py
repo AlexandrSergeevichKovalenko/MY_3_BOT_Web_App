@@ -254,6 +254,56 @@ def recheck_theme(theme_key: str) -> dict:
     return {"checked": len(rows), "fixed": fixed, "retired": retired, "examples": examples}
 
 
+_AVOID_EXISTING_CAP = 250
+_AVOID_RETIRED_CAP = 150
+
+# Через фильтр проходит примерно каждое третье слово, поэтому просим втрое больше, чем
+# осталось добрать. Меньше — отсев съест заказ, подтема не закроет нехватку, и придётся
+# идти в следующую: лишний вызов, а вместе с ним ЗАНОВО весь постоянный кусок запроса.
+_ASK_OVERSHOOT = 3
+_ASK_MIN = 10
+
+
+def _ask_count(remaining: int, ceiling: int) -> int:
+    """Сколько слов просить у модели на одну подтему.
+
+    Считаем от ВСЕЙ нехватки, а не от «нехватка, делённая на оставшиеся подтемы».
+    Делить было ошибкой: заказ размазывался тонко, подтем требовалось больше, и на
+    каждый лишний вызов заново уходил постоянный кусок запроса — а он тяжёлый, в нём
+    список «не предлагай» на несколько сотен слов. Слов на выходе столько же, вызовов
+    вдвое больше: чистый проигрыш.
+
+    Здесь заказ НИКОГДА не превышает прежний потолок и уменьшается только тогда, когда
+    полная пачка заведомо перелетит нехватку: при трёх недостающих словах платить за
+    тридцать (и за их проверку) незачем. Число вызовов при этом не растёт."""
+    if remaining <= 0:
+        return 0
+    return max(_ASK_MIN, min(int(ceiling), int(remaining) * _ASK_OVERSHOOT))
+
+
+# Причины из фильтра — внутренние формулировки; наружу идёт человеческий ярлык.
+# Правило простое: читатель отчёта должен понять, ЧТО не так со словом, не заглядывая в код.
+_REASON_LABELS = (
+    ("уже есть в теме", "это слово в теме уже есть"),
+    ("такой смысл в теме уже есть", "такой же смысл в теме уже есть"),
+    ("нужно второе мнение", "редкое, не для повседневной речи"),
+    ("третье производное", "третье слово от того же корня"),
+    ("снято с показа", "снимали раньше — не возвращаем"),
+    ("двуродовое", "два рода у одного слова — артикль не определить"),
+    ("артикль не подтверждён", "артикль не подтвердился при проверке"),
+    ("второе мнение не получено", "модель не ответила — отложили до следующего раза"),
+    ("пустое слово", "модель вернула пустое слово"),
+)
+
+
+def _reason_bucket(reason: str) -> str:
+    low = str(reason or "").strip().lower()
+    for needle, label in _REASON_LABELS:
+        if needle in low:
+            return label
+    return "прочее"
+
+
 def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: int = 30) -> dict:
     """Generate+verify+insert nouns for `theme_key`.
     max_to_add: cap how many NEW words to add this run (None → up to target).
@@ -265,6 +315,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
         insert_article_sprint_nouns, list_article_sprint_words,
         list_article_sprint_meanings, list_retired_article_words,
         list_article_word_blacklist, blacklist_article_words,
+        list_retired_article_words_for_prompt,
     )
     from backend.article_word_gate import (
         check_word, head_word, judge_everyday_words, EverydayJudgeUnavailable,
@@ -289,6 +340,12 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
     # дорогу нормальному слову.
     banned = list_retired_article_words() | list_article_word_blacklist()
     to_blacklist: list[tuple[str, str, str]] = []  # (слово, причина, тема)
+    # Отсечь мусор бесплатно — хорошо, но за его ПОРОЖДЕНИЕ мы платим всё равно.
+    # Поэтому горячую часть отказов показываем модели заранее: сначала снятое в этой
+    # теме, потом недавно снятое в соседних. Весь список (тысячи слов) в подсказку не лезет.
+    avoid_words = list(existing)[:_AVOID_EXISTING_CAP]
+    avoid_words += [w for w in list_retired_article_words_for_prompt(theme_key)
+                    if w.lower() not in existing][:_AVOID_RETIRED_CAP]
     known_meanings = set(list_article_sprint_meanings(theme_key))
     family_counts: dict[str, int] = {}
     for word in existing:
@@ -297,7 +354,15 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             family_counts[head] = family_counts.get(head, 0) + 1
     added = 0
     rejected = 0
+    rejected_by_reason: dict[str, int] = {}
+    gen_failures: list[str] = []
     by_subtopic: dict[str, int] = {}
+
+    def _reject(reason: str) -> None:
+        nonlocal rejected
+        rejected += 1
+        bucket = _reason_bucket(reason)
+        rejected_by_reason[bucket] = rejected_by_reason.get(bucket, 0) + 1
 
     for subtopic in theme["subtopics"]:
         if added >= cap:
@@ -305,9 +370,11 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
         try:
             gen = _run(run_article_noun_gen(
                 theme=theme["label_de"], subtopic=subtopic,
-                count=per_subtopic, avoid=list(existing)[:200],
+                count=_ask_count(cap - added, per_subtopic),
+                avoid=avoid_words,
             ))
         except Exception:
+            gen_failures.append(subtopic)
             logging.warning("fill_theme: gen failed theme=%s subtopic=%s", theme_key, subtopic, exc_info=True)
             continue
 
@@ -327,7 +394,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             if w.lower() in banned:
                 # Слово уже снимали. Отсекаем ДО фильтра, чтобы не платить за «второе
                 # мнение» модели по тому, что и так решено.
-                rejected += 1
+                _reject("снято с показа")
                 logging.info("артикли: %s мимо — слово уже снято с показа", w)
                 continue
             ok, why = check_word(
@@ -340,7 +407,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             elif why == "нужно второе мнение":
                 maybe.append(n)
             else:
-                rejected += 1
+                _reject(why)
                 logging.info("артикли: %s мимо — %s", w, why)
         if maybe:
             try:
@@ -348,7 +415,8 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             except EverydayJudgeUnavailable:
                 # Ответа не было. Сомнительное не берём, но и в стоп-лист не пишем:
                 # один обрыв сети иначе похоронил бы пачку нормальных слов навсегда.
-                rejected += len(maybe)
+                for _ in maybe:
+                    _reject("второе мнение не получено")
                 logging.warning("артикли: второе мнение недоступно, пачка отложена (%s слов)", len(maybe))
                 maybe = []
                 verdicts_everyday = {}
@@ -365,11 +433,12 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                         candidates.append(n)
                         continue
                     logging.info("артикли: %s мимо — %s", w, why)
+                    _reject(why)
                 else:
                     # Модель ответила «в быту не встречается» — это про само слово,
                     # значит запоминаем навсегда: второй раз платить за него не будем.
                     to_blacklist.append((w, "не нужно в быту", theme_key))
-                rejected += 1
+                    _reject("нужно второе мнение")
         if not candidates:
             continue
 
@@ -384,7 +453,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
         rows: list[dict] = []
         for n, v in zip(candidates, verdicts):
             if not isinstance(v, dict) or not v.get("ok"):
-                rejected += 1
+                _reject("артикль не подтверждён")
                 if isinstance(v, dict):  # ответ был, и он отрицательный — запоминаем
                     to_blacklist.append((str(n.get("word") or "").strip(),
                                          "не существительное / не годится", theme_key))
@@ -393,7 +462,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             w = str(n.get("word") or "").strip()
             # Reject two-gender / meaning-dependent nouns — their article isn't decidable.
             if is_ambiguous_noun(w):
-                rejected += 1
+                _reject("двуродовое")
                 to_blacklist.append((w, "двуродовое — артикль не определить", theme_key))
                 continue
             # СПРАВОЧНИК ГЛАВНЕЕ МОДЕЛИ. Сначала спрашиваем Wiktionary про само слово —
@@ -428,7 +497,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             except Exception:
                 logging.warning("article intake: справочник недоступен для %s", w, exc_info=True)
             if art not in ("der", "die", "das") or not w or w.lower() in existing:
-                rejected += 1
+                _reject("уже есть в теме" if w.lower() in existing else "артикль не подтверждён")
                 continue
             rows.append({
                 "word": w, "article": art,
@@ -457,6 +526,11 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
         "theme": theme_key, "added": added, "rejected": rejected,
         "blacklisted": blacklisted,
         "final_verified": final, "target": target, "by_subtopic": by_subtopic,
+        # had — сколько слов лежало в теме ДО прогона. Без него «добавлено 26» повисает
+        # в воздухе: непонятно, к чему эти 26, если в теме 150.
+        "had": have,
+        "rejected_by_reason": rejected_by_reason,
+        "gen_failures": gen_failures,
     }
 
 

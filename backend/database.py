@@ -49005,6 +49005,44 @@ def list_retired_article_words() -> set[str]:
         return set()
 
 
+def list_retired_article_words_for_prompt(theme_key: str, *, global_limit: int = 120) -> list[str]:
+    """Снятые слова, которые стоит показать модели как «не предлагай»: сначала снятые
+    в ЭТОЙ теме, потом недавно снятые в любой другой.
+
+    Полный список снятых — почти три тысячи слов, в подсказку он не влезет и не нужен.
+    Порядок здесь не косметика: слова, снятые в этой же теме, модель предложит снова
+    вероятнее всего — у неё те же подтемы. Дальше идут недавно снятые где угодно:
+    ротация снимает пачками, и свежая пачка «горячая» — соседняя тема легко подсунет
+    то же слово. Отказ и так дешёвый (отсекаем до платных вызовов), но токены на
+    порождение мусора платятся всё равно, и вот их это и экономит."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT DISTINCT word FROM bt_3_article_sprint_nouns "
+                    "WHERE retired AND theme_key = %s;",
+                    (str(theme_key),),
+                )
+                own = [str(r[0]) for r in (cursor.fetchall() or []) if r and r[0]]
+                cursor.execute(
+                    "SELECT word FROM bt_3_article_sprint_nouns WHERE retired AND theme_key <> %s "
+                    "ORDER BY updated_at DESC NULLS LAST LIMIT %s;",
+                    (str(theme_key), max(0, int(global_limit))),
+                )
+                recent = [str(r[0]) for r in (cursor.fetchall() or []) if r and r[0]]
+    except Exception:
+        logging.warning("list_retired_article_words_for_prompt failed theme=%s", theme_key, exc_info=True)
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for word in own + recent:
+        key = word.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(word)
+    return out
+
+
 def list_article_sprint_meanings(theme_key: str) -> list[str]:
     """Переводы, уже занятые в теме, — чтобы не добавлять второе слово с тем же смыслом.
 
