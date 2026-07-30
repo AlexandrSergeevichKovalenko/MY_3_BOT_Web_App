@@ -225,7 +225,9 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
     from backend.database import (
         ensure_article_sprint_schema, count_article_sprint_nouns,
         insert_article_sprint_nouns, list_article_sprint_words,
+        list_article_sprint_meanings,
     )
+    from backend.article_word_gate import check_word, head_word, judge_everyday_words
 
     theme = next((t for t in article_sprint_themes() if t["key"] == theme_key), None)
     if not theme:
@@ -240,6 +242,12 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 "final_verified": have, "target": target, "note": "already at target"}
 
     existing = {w.lower() for w in list_article_sprint_words(theme_key)}
+    known_meanings = set(list_article_sprint_meanings(theme_key))
+    family_counts: dict[str, int] = {}
+    for word in existing:
+        head = head_word(word, existing)
+        if head:
+            family_counts[head] = family_counts.get(head, 0) + 1
     added = 0
     rejected = 0
     by_subtopic: dict[str, int] = {}
@@ -256,13 +264,47 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             logging.warning("fill_theme: gen failed theme=%s subtopic=%s", theme_key, subtopic, exc_info=True)
             continue
 
+        # ── фильтр полезности ─────────────────────────────────────────────────
+        # До него банк набивался чем угодно: 48% слов не входили даже в 50 000 самых
+        # частых, а 37% были производными от другого слова той же темы. Причина —
+        # цель в 280 слов на тему: ходовых столько нет, и генератор добивал план.
+        # Теперь слово проходит по частотности, а спорное уходит на второе мнение к
+        # модели: частотный список занижает предметы («die Spülmaschine» — 33 467).
         candidates: list[dict] = []
+        maybe: list[dict] = []
         for n in gen:
             w = str(n.get("word") or "").strip()
             art = str(n.get("article") or "").strip().lower()
             if not w or art not in ("der", "die", "das") or w.lower() in existing:
                 continue
-            candidates.append(n)
+            ok, why = check_word(
+                w, meaning_ru=str(n.get("meaning_ru") or ""),
+                known_words=existing, known_meanings=known_meanings,
+                family_counts=family_counts,
+            )
+            if ok:
+                candidates.append(n)
+            elif why == "нужно второе мнение":
+                maybe.append(n)
+            else:
+                rejected += 1
+                logging.info("артикли: %s мимо — %s", w, why)
+        if maybe:
+            verdicts_everyday = judge_everyday_words([str(n["word"]).strip() for n in maybe])
+            for n in maybe:
+                w = str(n["word"]).strip()
+                if verdicts_everyday.get(w):
+                    # слово обиходное, хоть и редкое в текстах — проверяем на семью и дубль
+                    ok, why = check_word(
+                        w, meaning_ru=str(n.get("meaning_ru") or ""),
+                        known_words=existing, known_meanings=known_meanings,
+                        family_counts=family_counts, max_rank=10 ** 9,
+                    )
+                    if ok:
+                        candidates.append(n)
+                        continue
+                    logging.info("артикли: %s мимо — %s", w, why)
+                rejected += 1
         if not candidates:
             continue
 
@@ -327,6 +369,9 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 "subtopic": subtopic, "source": source, "verified": True,
             })
             existing.add(w.lower())
+            meaning_added = str(n.get("meaning_ru") or "").strip().lower()
+            if meaning_added:
+                known_meanings.add(meaning_added)
 
         if added + len(rows) > cap:
             rows = rows[: max(0, cap - added)]
