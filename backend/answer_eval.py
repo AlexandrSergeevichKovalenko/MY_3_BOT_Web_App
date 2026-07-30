@@ -442,13 +442,17 @@ def check_anagram(*, correct_word: str, assembled: str) -> bool:
     return bool(a) and a == w
 
 
-def _anagram_result_payload(*, card: dict, is_correct: bool, already_answered: bool) -> dict:
+def _anagram_result_payload(*, card: dict, is_correct: bool, already_answered: bool,
+                            assembled: str = "") -> dict:
     word = str(card.get("word") or "")
     hint_ru = str(card.get("hint_ru") or "")
     return {
         "kind": "anagram",
         "is_correct": bool(is_correct),
         "correct_word": word,
+        # The word the learner actually built. Without it "Falsch" is a riddle:
+        # on a 13-letter word nobody can tell WHICH two letters they swapped.
+        "user_answer": str(assembled or ""),
         "hint_ru": hint_ru,
         "explanation": str(card.get("explanation") or ""),
         "already_answered": bool(already_answered),
@@ -482,6 +486,7 @@ def load_anagram_task(*, dispatch_id: int, user_id: int) -> dict | None:
     if existing:
         meta["result"] = _anagram_result_payload(
             card=card, is_correct=bool(existing.get("is_correct")), already_answered=True,
+            assembled=str(existing.get("assembled") or ""),
         )
     return meta
 
@@ -499,6 +504,7 @@ def evaluate_anagram(*, dispatch_id: int, user_id: int, assembled: str) -> dict 
     if existing:
         return _anagram_result_payload(
             card=card, is_correct=bool(existing.get("is_correct")), already_answered=True,
+            assembled=str(existing.get("assembled") or ""),
         )
 
     is_correct = check_anagram(correct_word=card.get("word"), assembled=assembled)
@@ -508,7 +514,10 @@ def evaluate_anagram(*, dispatch_id: int, user_id: int, assembled: str) -> dict 
         assembled=str(assembled or ""),
         is_correct=bool(is_correct),
     )
-    return _anagram_result_payload(card=card, is_correct=is_correct, already_answered=False)
+    return _anagram_result_payload(
+        card=card, is_correct=is_correct, already_answered=False,
+        assembled=str(assembled or ""),
+    )
 
 
 # ── Multiple-choice quiz (kind="mc") — the Mini-App replacement for polls ────
