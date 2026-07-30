@@ -150,6 +150,7 @@ async function playWordTts(text) {
 
 function RebusResult({ result }) {
   const good = !!result.is_correct;
+  const mine = String(result.user_answer || '').trim();
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
@@ -158,6 +159,10 @@ function RebusResult({ result }) {
         <b>{result.full_word}</b>
         {result.meaning_ru ? <span className="ans-meaning"> · {result.meaning_ru}</span> : null}
       </div>
+      {/* Ohne die eigene Antwort daneben kann man den Fehler nicht vergleichen. */}
+      {!good && mine ? (
+        <div className="ans-meaning" style={{ marginTop: 4 }}>Deine Antwort: {mine}</div>
+      ) : null}
       {!good && result.word_correct && !result.article_correct ? (
         <div className="ans-meaning" style={{ marginTop: 6 }}>Nur der Artikel war falsch.</div>
       ) : null}

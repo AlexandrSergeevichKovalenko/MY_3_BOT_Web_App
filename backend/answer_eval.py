@@ -207,12 +207,14 @@ def load_rebus_task(*, dispatch_id: int, user_id: int) -> dict | None:
             entry=entry,
             is_correct=bool(existing.get("is_correct")),
             already_answered=True,
+            user_answer=str(existing.get("selected_option") or ""),
         )
     return meta
 
 
 def _rebus_result_payload(*, entry: dict, is_correct: bool, already_answered: bool,
-                          article_correct: bool = True, word_correct: bool = True) -> dict:
+                          article_correct: bool = True, word_correct: bool = True,
+                          user_answer: str = "") -> dict:
     correct_word = str(entry.get("compound_word") or "")
     article = str(entry.get("article") or "")
     meaning_ru = str(entry.get("meaning_ru") or "")
@@ -225,6 +227,9 @@ def _rebus_result_payload(*, entry: dict, is_correct: bool, already_answered: bo
         "correct_word": correct_word,
         "article": article,
         "full_word": full_word,
+        # Without it the wrong-answer screen shows only the right answer — the
+        # learner can't see what they actually wrote to compare against it.
+        "user_answer": str(user_answer or "").strip(),
         "meaning_ru": meaning_ru,
         "explanation_ru": str(entry.get("explanation_ru") or ""),
         "already_answered": bool(already_answered),
@@ -253,6 +258,7 @@ def evaluate_rebus(*, dispatch_id: int, user_id: int, raw_input: str) -> dict | 
     if existing:
         return _rebus_result_payload(
             entry=entry, is_correct=bool(existing.get("is_correct")), already_answered=True,
+            user_answer=str(existing.get("selected_option") or ""),
         )
 
     verdict = check_rebus(correct_word=correct_word, article=article, raw_input=raw_input)
@@ -273,6 +279,7 @@ def evaluate_rebus(*, dispatch_id: int, user_id: int, raw_input: str) -> dict | 
         already_answered=False,
         article_correct=bool(verdict["article_correct"]),
         word_correct=bool(verdict["word_correct"]),
+        user_answer=str(raw_input or "").strip()[:50],
     )
 
 
