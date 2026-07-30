@@ -74,6 +74,13 @@ _AMBIGUOUS_NOUNS = {
     "flur", "see", "band", "steuer", "tor", "leiter", "kiefer", "bauer", "heide",
     "mast", "otter", "golf", "erbe", "gehalt", "kunde", "hut", "bund", "verdienst",
     "schild", "moment", "teil",
+    # das Pik — карточная масть, der Pik — тайная неприязнь («einen Pik auf jemanden
+    # haben»). У масти на странице справочника нет блока с родом, поэтому аудит видел
+    # только der и предлагал «исправить» верное das.
+    "pik",
+    # der Service — обслуживание, das Service — сервиз (посуда). Справочник знает оба
+    # рода для первого смысла, но выбор зависит от того, о чём слово.
+    "service",
 }
 
 # Nominalized adjectives / participles that denote a PERSON — their article follows

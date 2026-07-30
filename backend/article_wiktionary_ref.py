@@ -19,12 +19,19 @@ import json
 import logging
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 _API = "https://de.wiktionary.org/w/api.php"
 _UA = "DeutschBot/1.0 (Artikel Sprint article audit; contact via Telegram bot)"
 _BATCH = 45  # MediaWiki allows 50 titles/query; keep margin.
+# 429 — «слишком часто», 503 — «сейчас занято»: и то и другое проходит само, надо лишь
+# подождать. Отступ растёт с попыткой (8, 16, 24 с), потолок держим низким: аудит
+# админский и не должен висеть минутами.
+_RETRY_CODES = (429, 503)
+_FETCH_RETRIES = 4
+_FETCH_BACKOFF_SECONDS = 8
 
 _GENUS_TO_ARTICLE = {"m": "der", "f": "die", "n": "das"}
 
@@ -73,11 +80,28 @@ def _fetch_wikitext(titles: list[str]) -> dict[str, str | None]:
     }
     url = _API + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-    except Exception:
-        logging.warning("wiktionary fetch failed (%d titles)", len(titles), exc_info=True)
+    # Справочник отбивает частые запросы кодом 429, а аудит идёт по тысячам слов —
+    # значит, упирается в лимит почти наверняка. Без повтора это выглядит не как
+    # авария, а как «Wiktionary не знает рода»: пустой ответ доходит до аудита, слова
+    # уезжают в корзину «рода не знает никто», и отчёт бодро врёт. Ждём и повторяем.
+    data = None
+    for attempt in range(1, _FETCH_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _RETRY_CODES or attempt == _FETCH_RETRIES:
+                logging.warning("wiktionary fetch failed HTTP %s (%d titles)", exc.code, len(titles))
+                return {}
+            wait = _FETCH_BACKOFF_SECONDS * attempt
+            logging.warning("wiktionary HTTP %s, ждём %d сек (попытка %d из %d)",
+                            exc.code, wait, attempt, _FETCH_RETRIES)
+            time.sleep(wait)
+        except Exception:
+            logging.warning("wiktionary fetch failed (%d titles)", len(titles), exc_info=True)
+            return {}
+    if data is None:
         return {}
 
     out: dict[str, str | None] = {}

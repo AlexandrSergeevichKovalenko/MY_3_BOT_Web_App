@@ -97,7 +97,46 @@ def _classify(rows: list[dict], progress_cb=None) -> dict:
                 progress_cb(done, len(rows))
             except Exception:
                 pass
+    _excuse_plural_die(report)
     return report
+
+
+def _excuse_plural_die(report: dict) -> None:
+    """Снять обвинение с «die», когда написание — форма множественного числа.
+
+    Артикль принадлежит ФОРМЕ, а у множественного он всегда die. Справочник же
+    судит лемму: у «Geschwister» это das Geschwister (единственное), у «Pumps» —
+    der Pumps (одна туфля). Аудит из-за этого предлагал «исправить» правильные
+    die Geschwister и die Pumps, то есть внести ошибку в то единственное, чему
+    тренажёр учит.
+
+    Проверяем узко: только для строк с «die», только если страница САМА называет это
+    же написание своей формой множественного числа. Сеть дёргается один раз и лишь по
+    подозреваемым (их единицы), а не по всему банку.
+    """
+    suspects = [m for m in report["mismatch"] if m["stored"] == "die"]
+    if not suspects:
+        return
+    from backend.article_wiktionary_ref import form_facts_for_titles
+    try:
+        facts = form_facts_for_titles(sorted({m["word"] for m in suspects}))
+    except Exception:
+        logging.warning("audit: разбор форм не удался, оставляем как есть", exc_info=True)
+        return
+    excused = []
+    for m in suspects:
+        f = facts.get(m["word"]) or {}
+        surface = str(f.get("plural_surface") or "").strip().lower()
+        if surface and surface == m["word"].strip().lower():
+            excused.append(m)
+    if not excused:
+        return
+    for m in excused:
+        report["mismatch"].remove(m)
+        # в «ambiguous», а не в «ok»: строка правильная, но помечена — игра показывает
+        # для таких значение. Счётчики остаются сходящимися: checked = ok + mismatch +
+        # review + ambiguous + unknown.
+        report["ambiguous"].append({**m, "why": "plural-die"})
 
 
 def audit_all(theme_keys: list[str] | None = None, progress_cb=None) -> dict:
