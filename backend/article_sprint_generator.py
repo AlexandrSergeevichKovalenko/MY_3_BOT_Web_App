@@ -450,20 +450,45 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             logging.warning("fill_theme: verify failed theme=%s subtopic=%s", theme_key, subtopic, exc_info=True)
             continue
 
+        # Ответы сопоставляем ПО СЛОВУ, а не по позиции. Порядок гарантирован только
+        # фразой в промпте, а цена сдвига теперь вечная: чужой вердикт «не годится»
+        # занёс бы нормальное слово в стоп-лист навсегда. Слово без ответа — это «ответа
+        # не было»: пропускаем молча, следующий прогон спросит снова.
+        by_word = {}
+        for v in verdicts or []:
+            if isinstance(v, dict) and str(v.get("word") or "").strip():
+                by_word[str(v["word"]).strip().lower()] = v
+        positional = None
+        if not by_word and len(verdicts or []) == len(candidates):
+            positional = list(verdicts)  # старый ответ без слова — но длина сошлась
+        elif not by_word:
+            logging.warning("fill_theme: верификатор ответил %s на %s слов — пропускаю пачку",
+                            len(verdicts or []), len(candidates))
+
         rows: list[dict] = []
-        for n, v in zip(candidates, verdicts):
-            if not isinstance(v, dict) or not v.get("ok"):
+        for i, n in enumerate(candidates):
+            w = str(n.get("word") or "").strip()
+            v = by_word.get(w.lower()) if by_word else (positional[i] if positional else None)
+            if not isinstance(v, dict):
+                _reject("ответа по слову не было")
+                continue
+            if not v.get("ok"):
                 _reject("артикль не подтверждён")
-                if isinstance(v, dict):  # ответ был, и он отрицательный — запоминаем
-                    to_blacklist.append((str(n.get("word") or "").strip(),
-                                         "не существительное / не годится", theme_key))
+                reason = str(v.get("reason") or "").strip().lower()
+                if reason in ("ambiguous", "person_adjective"):
+                    # Слово не мусор: у него артикль зависит от смысла. Такие живут в
+                    # игре отдельной строкой на каждый смысл и с переводом на экране —
+                    # в стоп-лист им нельзя, иначе дорога туда закрыта навсегда.
+                    logging.info("артикли: %s — артикль зависит от смысла (%s), стоп-лист не трогаем",
+                                 w, reason)
+                else:
+                    to_blacklist.append((w, "не существительное / не годится", theme_key))
                 continue
             art = str(v.get("article") or n.get("article") or "").strip().lower()
-            w = str(n.get("word") or "").strip()
-            # Reject two-gender / meaning-dependent nouns — their article isn't decidable.
             if is_ambiguous_noun(w):
+                # Двуродовое: сюда оно попадать не должно, но и хоронить его нельзя —
+                # место такому слову есть, через курируемые смыслы (article_two_gender).
                 _reject("двуродовое")
-                to_blacklist.append((w, "двуродовое — артикль не определить", theme_key))
                 continue
             # СПРАВОЧНИК ГЛАВНЕЕ МОДЕЛИ. Сначала спрашиваем Wiktionary про само слово —
             # здесь МОЖНО ходить в сеть (заливка идёт фоном, а ответ оседает в кэше и
@@ -587,6 +612,13 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
     except Exception:
         trmap = {}
 
+    # Как и в автозаливке: ответ ищем ПО СЛОВУ, позиция — только запасной путь и только
+    # когда длина сошлась. Иначе вердикт про одно слово приедет на другое.
+    verdicts_by_word = {}
+    for v in verdicts or []:
+        if isinstance(v, dict) and str(v.get("word") or "").strip():
+            verdicts_by_word[str(v["word"]).strip().lower()] = v
+
     rows: list[dict] = []
     rejected = 0
     skipped_dup = 0
@@ -598,7 +630,10 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
         if is_ambiguous_noun(w):
             rejected += 1
             continue
-        v = verdicts[i] if i < len(verdicts) else None
+        if verdicts_by_word:
+            v = verdicts_by_word.get(w.lower())
+        else:
+            v = verdicts[i] if len(verdicts or []) == len(cleaned) else None
         art = c["article"]
         if isinstance(v, dict):
             if not v.get("ok"):

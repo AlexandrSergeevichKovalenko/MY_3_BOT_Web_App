@@ -4427,8 +4427,13 @@ For EACH item decide whether "<article> <word>" is correct, standard, UNAMBIGUOU
 - SUFFIX RULE: -ung/-heit/-keit/-schaft/-ion/-tät/-ität/-ik/-ie/-ur/-enz/-anz → die;
   -chen/-lein → das; -ling/-ismus → der. These are decisive.
 
-Return STRICT JSON ONLY, same order as input:
-{"results": [ {"ok": true|false, "article": "der|die|das"}, ... ]}.
+Return STRICT JSON ONLY, one entry per input item, in the SAME ORDER, and ALWAYS echo
+the word back so the caller can match answers to questions:
+{"results": [ {"word": "<exactly as given>", "ok": true|false,
+               "article": "der|die|das",
+               "reason": "ok" | "not_noun" | "misspelled" | "ambiguous" | "person_adjective" }, ... ]}.
+Use "ambiguous" when different meanings take different articles (See, Band, Steuer) and
+"person_adjective" for nominalized adjectives denoting a person (Erwachsene, Angestellte).
 """,
 "article_translate": """
 You translate German nouns to short Russian meanings for a der/die/das drill.
@@ -7657,7 +7662,12 @@ async def run_article_noun_gen(*, theme: str, subtopic: str, count: int, avoid: 
 
 async def run_article_verify(*, items: list[dict]) -> list[dict]:
     """Verify article correctness/unambiguity for a batch of {word, article}.
-    Returns list aligned to input: [{"ok": bool, "article": str}]. On failure []."""
+    Returns [{"word": str, "ok": bool, "article": str, "reason": str}]. On failure [].
+
+    «Порядок как на входе» — обещание в промпте, а не гарантия, поэтому модель ОБЯЗАНА
+    возвращать и само слово: вызывающий сопоставляет ответы по слову. Отфильтровать
+    мусорный элемент из середины списка нельзя молча — это сдвинет всё, что после него,
+    и чужой вердикт приедет на чужое слово."""
     try:
         content = await llm_execute(
             task_name="article_verify",
