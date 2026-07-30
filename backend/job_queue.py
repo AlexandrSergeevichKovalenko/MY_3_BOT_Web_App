@@ -486,6 +486,80 @@ def can_enqueue_background_jobs() -> bool:
     return bool(get_redis_url())
 
 
+_ARTIKEL_FILL_LOCK_TTL_SEC = max(
+    600,
+    int((os.getenv("ARTIKEL_FILL_LOCK_TTL_SEC") or "4200").strip() or "4200"),
+)
+
+
+def _artikel_fill_lock_key(theme_key: str) -> str:
+    return f"artikel_fill:running:{str(theme_key or '').strip()}"
+
+
+def release_artikel_fill_lock(theme_key: str) -> None:
+    client = get_redis_client()
+    if client is None or not str(theme_key or "").strip():
+        return
+    try:
+        client.delete(_artikel_fill_lock_key(theme_key))
+    except Exception:
+        logging.warning("release_artikel_fill_lock failed theme=%s", theme_key, exc_info=True)
+
+
+def enqueue_artikel_fill_job(
+    *,
+    theme_key: str,
+    max_to_add: int | None = None,
+    chat_id: int | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """Поставить наполнение темы артиклей в очередь BACKGROUND_JOBS.
+
+    Замок на теме — не украшение: наполнение идёт десятки минут, и второй запуск
+    той же темы означал бы два параллельных прогона GPT на один банк слов. Замок
+    снимает сама задача (в finally), а TTL страхует от смерти воркера."""
+    safe_theme_key = str(theme_key or "").strip()
+    if not safe_theme_key:
+        return {"queued": False, "reason": "missing_theme_key"}
+    if not can_enqueue_background_jobs():
+        return {"queued": False, "reason": "background_jobs_unavailable"}
+
+    client = get_redis_client()
+    if client is not None:
+        try:
+            claimed = client.set(
+                _artikel_fill_lock_key(safe_theme_key),
+                str(int(time.time() * 1000)),
+                nx=True,
+                ex=int(_ARTIKEL_FILL_LOCK_TTL_SEC),
+            )
+        except Exception:
+            logging.warning("enqueue_artikel_fill_job: lock claim failed theme=%s", safe_theme_key, exc_info=True)
+            claimed = True
+        if not claimed:
+            return {"queued": False, "reason": "already_running"}
+
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_artikel_fill_job
+
+        message = run_artikel_fill_job.send(
+            theme_key=safe_theme_key,
+            max_to_add=int(max_to_add) if max_to_add else None,
+            chat_id=int(chat_id or 0),
+            request_id=str(request_id or "").strip() or None,
+        )
+        return {
+            "queued": True,
+            "reason": "queued",
+            "message_id": str(getattr(message, "message_id", None) or "").strip() or None,
+        }
+    except Exception:
+        release_artikel_fill_lock(safe_theme_key)
+        logging.exception("enqueue_artikel_fill_job failed theme=%s", safe_theme_key)
+        return {"queued": False, "reason": "broker_error"}
+
+
 def enqueue_projection_materialization_job(
     *,
     job_id: int,
