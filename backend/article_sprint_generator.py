@@ -264,8 +264,11 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
         ensure_article_sprint_schema, count_article_sprint_nouns,
         insert_article_sprint_nouns, list_article_sprint_words,
         list_article_sprint_meanings, list_retired_article_words,
+        list_article_word_blacklist, blacklist_article_words,
     )
-    from backend.article_word_gate import check_word, head_word, judge_everyday_words
+    from backend.article_word_gate import (
+        check_word, head_word, judge_everyday_words, EverydayJudgeUnavailable,
+    )
 
     theme = next((t for t in article_sprint_themes() if t["key"] == theme_key), None)
     if not theme:
@@ -280,10 +283,12 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 "final_verified": have, "target": target, "note": "already at target"}
 
     existing = {w.lower() for w in list_article_sprint_words(theme_key)}
-    # Уже выброшенное не берём заново — ни в эту тему, ни в соседнюю. Держим отдельно от
-    # existing: в счёт «производных одного корня» снятые слова идти не должны, иначе
-    # выброшенный хлам закрывал бы дорогу нормальному слову.
-    banned = list_retired_article_words()
+    # Уже выброшенное не берём заново — ни в эту тему, ни в соседнюю: снятые с показа
+    # слова плюс стоп-лист прошлых отказов. Держим отдельно от existing: в счёт
+    # «производных одного корня» они идти не должны, иначе выброшенный хлам закрывал бы
+    # дорогу нормальному слову.
+    banned = list_retired_article_words() | list_article_word_blacklist()
+    to_blacklist: list[tuple[str, str, str]] = []  # (слово, причина, тема)
     known_meanings = set(list_article_sprint_meanings(theme_key))
     family_counts: dict[str, int] = {}
     for word in existing:
@@ -338,7 +343,15 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 rejected += 1
                 logging.info("артикли: %s мимо — %s", w, why)
         if maybe:
-            verdicts_everyday = judge_everyday_words([str(n["word"]).strip() for n in maybe])
+            try:
+                verdicts_everyday = judge_everyday_words([str(n["word"]).strip() for n in maybe])
+            except EverydayJudgeUnavailable:
+                # Ответа не было. Сомнительное не берём, но и в стоп-лист не пишем:
+                # один обрыв сети иначе похоронил бы пачку нормальных слов навсегда.
+                rejected += len(maybe)
+                logging.warning("артикли: второе мнение недоступно, пачка отложена (%s слов)", len(maybe))
+                maybe = []
+                verdicts_everyday = {}
             for n in maybe:
                 w = str(n["word"]).strip()
                 if verdicts_everyday.get(w):
@@ -352,6 +365,10 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                         candidates.append(n)
                         continue
                     logging.info("артикли: %s мимо — %s", w, why)
+                else:
+                    # Модель ответила «в быту не встречается» — это про само слово,
+                    # значит запоминаем навсегда: второй раз платить за него не будем.
+                    to_blacklist.append((w, "не нужно в быту", theme_key))
                 rejected += 1
         if not candidates:
             continue
@@ -368,12 +385,16 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
         for n, v in zip(candidates, verdicts):
             if not isinstance(v, dict) or not v.get("ok"):
                 rejected += 1
+                if isinstance(v, dict):  # ответ был, и он отрицательный — запоминаем
+                    to_blacklist.append((str(n.get("word") or "").strip(),
+                                         "не существительное / не годится", theme_key))
                 continue
             art = str(v.get("article") or n.get("article") or "").strip().lower()
             w = str(n.get("word") or "").strip()
             # Reject two-gender / meaning-dependent nouns — their article isn't decidable.
             if is_ambiguous_noun(w):
                 rejected += 1
+                to_blacklist.append((w, "двуродовое — артикль не определить", theme_key))
                 continue
             # СПРАВОЧНИК ГЛАВНЕЕ МОДЕЛИ. Сначала спрашиваем Wiktionary про само слово —
             # здесь МОЖНО ходить в сеть (заливка идёт фоном, а ответ оседает в кэше и
@@ -429,9 +450,12 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             added += int(res.get("inserted") or 0)
             by_subtopic[subtopic] = int(res.get("inserted") or 0)
 
+    # Отказы запоминаем одним заходом в конце: следующий набор отсечёт их бесплатно.
+    blacklisted = blacklist_article_words(to_blacklist)
     final = count_article_sprint_nouns(theme_key, verified_only=True)
     return {
         "theme": theme_key, "added": added, "rejected": rejected,
+        "blacklisted": blacklisted,
         "final_verified": final, "target": target, "by_subtopic": by_subtopic,
     }
 
@@ -451,6 +475,7 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
     from backend.database import (
         ensure_article_sprint_schema, count_article_sprint_nouns,
         insert_article_sprint_nouns, list_article_sprint_words,
+        unblacklist_article_words,
     )
 
     theme = next((t for t in article_sprint_themes() if t["key"] == theme_key), None)
@@ -544,6 +569,8 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
     if rows:
         res = insert_article_sprint_nouns(theme_key, rows)
         inserted = int(res.get("inserted") or 0)
+        # Админ добавил слово руками — его решение главнее прошлого автоотказа.
+        unblacklist_article_words([r["word"] for r in rows])
     final = count_article_sprint_nouns(theme_key, verified_only=True)
     return {"theme": theme_key, "added": inserted, "rejected": rejected,
             "skipped_dup": skipped_dup, "final_verified": final,

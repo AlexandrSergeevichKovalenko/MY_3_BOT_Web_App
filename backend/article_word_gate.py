@@ -93,12 +93,20 @@ def needs_second_opinion(word: str, *, max_rank: int = DEFAULT_MAX_RANK) -> bool
     return rank is None or rank > max_rank
 
 
+class EverydayJudgeUnavailable(Exception):
+    """Ответа от модели не было (сеть, ключ, таймаут).
+
+    «Модель сказала нет» и «ответа не было» — разные вещи. Для приёмки оба означают
+    «не берём», но запомнить отказ навечно можно только в первом случае: иначе один
+    обрыв сети занёс бы в стоп-лист целую пачку нормальных слов."""
+
+
 def judge_everyday_words(words: list[str]) -> dict[str, bool]:
     """Спросить модель, нужны ли эти слова человеку в быту.
 
     Второе мнение нужно там, где частотность подводит: предметы, техника, инструменты,
-    геометрия. Одним запросом на всю пачку — дёшево. При любой ошибке отвечаем «нет»:
-    лучше не взять сомнительное слово, чем набить банк хламом заново."""
+    геометрия. Одним запросом на всю пачку — дёшево. Сбой запроса — не «нет», а
+    EverydayJudgeUnavailable: вызывающий сам решит, что делать (в наборе — не берём)."""
     clean = [str(w).strip() for w in words if str(w or "").strip()]
     if not clean:
         return {}
@@ -123,10 +131,10 @@ def judge_everyday_words(words: list[str]) -> dict[str, bool]:
             messages=[{"role": "user", "content": prompt}],
         )
         data = json.loads(resp.choices[0].message.content or "{}")
-    except Exception:
+    except Exception as exc:
         import logging
         logging.warning("второе мнение по словам не получено", exc_info=True)
-        return {w: False for w in clean}
+        raise EverydayJudgeUnavailable(str(exc)) from exc
     return {w: bool(data.get(w, False)) for w in clean}
 
 

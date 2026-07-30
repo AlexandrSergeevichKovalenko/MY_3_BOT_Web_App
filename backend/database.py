@@ -47692,6 +47692,25 @@ def ensure_article_sprint_schema() -> None:
                 ON bt_3_article_sprint_nouns (theme_key, verified, retired);
                 """
             )
+            # Стоп-лист: слова, которые набор УЖЕ отверг. Раньше отказ жил только в
+            # логе, поэтому каждую ночь модель предлагала тот же «der Föhnsturm», и мы
+            # заново платили за вопрос «нужно ли это слово в быту». Теперь отказ
+            # запоминается, и повтор отсекается бесплатно, ещё до всякого GPT.
+            # Копим только ВЕЧНЫЕ причины (слово не годится нигде). Причины уровня темы
+            # («уже есть», «третье производное от Haus») сюда не попадают: в другой теме
+            # то же слово может быть нужно.
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_word_blacklist (
+                    word       TEXT PRIMARY KEY,
+                    reason     TEXT NOT NULL DEFAULT '',
+                    theme_key  TEXT NOT NULL DEFAULT '',
+                    hits       INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
             # Artikel Trainer: cached Russian gender-memory hint per noun (generated
             # off the hot path by the LLM; the deck just reads it).
             cursor.execute(
@@ -48867,6 +48886,103 @@ def list_article_sprint_words(theme_key: str) -> list[str]:
             )
             rows = cursor.fetchall() or []
     return [str(r[0]) for r in rows if r and r[0]]
+
+
+def blacklist_article_words(items) -> int:
+    """Запомнить отказы набора: [(слово, причина, тема)] → стоп-лист.
+
+    Пишем только вечные причины (слово не годится нигде): не нужно в быту, не
+    существительное, двуродовое. «Уже есть в теме» и «третье производное» — про тему, а
+    не про слово, и сюда не идут. Повтор увеличивает счётчик: по нему видно, сколько раз
+    модель предлагала один и тот же хлам."""
+    rows = []
+    for item in items or []:
+        try:
+            word, reason, theme_key = (list(item) + ["", ""])[:3]
+        except Exception:
+            continue
+        w = str(word or "").strip().lower()
+        if w:
+            rows.append((w, str(reason or "")[:200], str(theme_key or "")[:80]))
+    if not rows:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                for w, reason, theme_key in rows:
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_article_word_blacklist (word, reason, theme_key)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (word) DO UPDATE
+                          SET hits = bt_3_article_word_blacklist.hits + 1, updated_at = NOW();
+                        """,
+                        (w, reason, theme_key),
+                    )
+            conn.commit()
+        return len(rows)
+    except Exception:
+        logging.warning("blacklist_article_words failed", exc_info=True)
+        return 0
+
+
+def list_article_word_blacklist() -> set[str]:
+    """Слова из стоп-листа (в нижнем регистре) — бесплатная отсечка до всякого GPT."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT word FROM bt_3_article_word_blacklist;")
+                rows = cursor.fetchall() or []
+        return {str(r[0]) for r in rows if r and r[0]}
+    except Exception:
+        logging.warning("list_article_word_blacklist failed", exc_info=True)
+        return set()
+
+
+def unblacklist_article_words(words) -> int:
+    """Снять слова со стоп-листа — когда админ добавляет слово руками, его решение
+    главнее прошлого автоматического отказа."""
+    norm = [str(w).strip().lower() for w in (words or []) if str(w or "").strip()]
+    if not norm:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM bt_3_article_word_blacklist WHERE word = ANY(%s);", (norm,)
+                )
+                n = int(cursor.rowcount or 0)
+            conn.commit()
+        return n
+    except Exception:
+        logging.warning("unblacklist_article_words failed", exc_info=True)
+        return 0
+
+
+def article_word_blacklist_report(limit: int = 20) -> dict:
+    """Сколько слов в стоп-листе, по каким причинам и что предлагали чаще всего."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*), COALESCE(SUM(hits), 0) FROM bt_3_article_word_blacklist;")
+                total, hits = cursor.fetchone() or (0, 0)
+                cursor.execute(
+                    "SELECT reason, COUNT(*) FROM bt_3_article_word_blacklist "
+                    "GROUP BY reason ORDER BY 2 DESC;"
+                )
+                by_reason = [(str(r[0] or ""), int(r[1])) for r in (cursor.fetchall() or [])]
+                cursor.execute(
+                    "SELECT word, reason, hits FROM bt_3_article_word_blacklist "
+                    "ORDER BY hits DESC, updated_at DESC LIMIT %s;",
+                    (int(limit),),
+                )
+                top = [{"word": str(r[0]), "reason": str(r[1] or ""), "hits": int(r[2])}
+                       for r in (cursor.fetchall() or [])]
+        return {"total": int(total or 0), "hits": int(hits or 0),
+                "by_reason": by_reason, "top": top}
+    except Exception:
+        logging.warning("article_word_blacklist_report failed", exc_info=True)
+        return {"total": 0, "hits": 0, "by_reason": [], "top": []}
 
 
 def list_retired_article_words() -> set[str]:

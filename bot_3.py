@@ -29153,6 +29153,51 @@ def _artikel_audit_document(report: dict) -> bytes:
     return ("\n".join(lines)).encode("utf-8")
 
 
+async def admin_artikel_blacklist_command(update: Update, context: CallbackContext) -> None:
+    """Стоп-лист слов, отвергнутых набором артиклей: сколько накопилось, по каким
+    причинам, что модель предлагает чаще всего. Аргумент `вернуть <слово> …` снимает
+    слова со стоп-листа. /artikel_blacklist [вернуть слово ...]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    if args and str(args[0]).strip().lower() in ("вернуть", "unban", "restore"):
+        words = [str(a).strip() for a in args[1:] if str(a).strip()]
+        if not words:
+            await message.reply_text("Какие слова вернуть? /artikel_blacklist вернуть Sanddorn Mispel")
+            return
+        from backend.database import unblacklist_article_words
+        n = await asyncio.to_thread(unblacklist_article_words, words)
+        await message.reply_text(
+            f"↩️ Снял со стоп-листа: {n} из {len(words)}.\n"
+            "Слово снова может попасть в набор, если пройдёт фильтр полезности."
+        )
+        return
+
+    from backend.database import article_word_blacklist_report
+    rep = await asyncio.to_thread(article_word_blacklist_report, 15)
+    if not rep["total"]:
+        await message.reply_text(
+            "Стоп-лист пуст. Он наполняется сам: слово, которое набор отверг "
+            "(«не нужно в быту», «не существительное», «двуродовое»), больше "
+            "не проверяется платно — отсекается сразу."
+        )
+        return
+    lines = [f"🚫 <b>Стоп-лист артиклей</b> · слов: {rep['total']} · "
+             f"предложено моделью раз: {rep['hits']}"]
+    for reason, n in rep["by_reason"]:
+        lines.append(f"• {reason or 'без причины'} — {n}")
+    lines.append("\n<b>Чаще всего предлагают:</b>")
+    for row in rep["top"]:
+        lines.append(f"  {row['word']} ×{row['hits']} — {row['reason']}")
+    lines.append("\nВернуть слово: /artikel_blacklist вернуть &lt;слово&gt;")
+    await message.reply_text("\n".join(lines)[:4000], parse_mode="HTML")
+
+
 async def admin_artikel_audit_command(update: Update, context: CallbackContext) -> None:
     """Audit stored der/die/das against Wiktionary (+ deterministic guard). READ-ONLY —
     reports mismatches; apply with /artikel_fixarticles. /artikel_audit [all|theme_key]"""
@@ -40577,6 +40622,7 @@ def main():
     application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
     application.add_handler(CommandHandler("artikel_audit", admin_artikel_audit_command))
+    application.add_handler(CommandHandler("artikel_blacklist", admin_artikel_blacklist_command))
     application.add_handler(CommandHandler("artikel_fixarticles", admin_artikel_fixarticles_command))
     application.add_handler(CommandHandler("artikel_seed_twogender", admin_artikel_seed_twogender_command))
     application.add_handler(CommandHandler("artikel_play", admin_artikel_play_command))
