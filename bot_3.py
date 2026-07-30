@@ -15284,6 +15284,27 @@ def _is_dictionary_typo_correction(original: str, candidate: str) -> bool:
     return difflib.SequenceMatcher(None, left, right).ratio() >= 0.82
 
 
+_SAVE_OPTION_ARTICLES = {
+    "der", "die", "das", "den", "dem", "des",
+    "ein", "eine", "einen", "einem", "einer", "eines",
+}
+
+
+def _looks_like_save_phrase(text: str) -> bool:
+    """Это фраза (несколько значимых слов), а не одинокое слово с артиклем?
+
+    «die Erwerbstätigkeit» — слово. «eine Erwerbstätigkeit ausüben» — фраза.
+    Нужно для быстрого перевода: второй вариант должен показывать слово в живой
+    речи, иначе он ничего не добавляет к первому.
+    """
+    tokens = re.findall(r"\S+", str(text or "").strip())
+    meaningful = [
+        token for token in tokens
+        if token.strip(".,;:!?»«\"'()").casefold() not in _SAVE_OPTION_ARTICLES
+    ]
+    return len(meaningful) >= 2
+
+
 def _looks_like_noisy_dictionary_construction(text: str) -> bool:
     cleaned = str(text or "").strip()
     if not cleaned:
@@ -17023,45 +17044,58 @@ def _build_fast_dictionary_save_options(payload: dict, max_options: int = 2) -> 
         is_original=True,
     )
 
+    # Остальные варианты собираем в один список и сначала берём ФРАЗЫ. Модель
+    # первым в save_worthy_options часто отдаёт базовую лемму («die
+    # Erwerbstätigkeit»), а для быстрого перевода это пустая карточка: слово уже
+    # стоит в первом варианте. Одиночные слова берём только если фраз не нашлось.
+    candidates: list[tuple[str, str]] = []
+
+    def _collect(source_value, target_value) -> None:
+        source = str(source_value or "").strip()
+        target = str(target_value or "").strip()
+        if source and target:
+            candidates.append((source, target))
+
     predefined = lookup.get("save_worthy_options")
     if isinstance(predefined, list):
         for item in predefined:
             if not isinstance(item, dict):
                 continue
-            _add_option(
-                item.get("source") or item.get("word_source") or "",
-                item.get("target") or item.get("word_target") or "",
+            _collect(
+                item.get("source") or item.get("word_source"),
+                item.get("target") or item.get("word_target"),
             )
-            if len(options) >= max(1, int(max_options or 1)):
-                return options[:max_options]
 
     usage_examples = lookup.get("usage_examples")
     if isinstance(usage_examples, list):
         for item in usage_examples:
             if not isinstance(item, dict):
                 continue
-            _add_option(
-                item.get("source") or item.get("example_source") or "",
-                item.get("target") or item.get("example_target") or "",
+            _collect(
+                item.get("source") or item.get("example_source"),
+                item.get("target") or item.get("example_target"),
             )
-            if len(options) >= max(1, int(max_options or 1)):
-                return options[:max_options]
 
     meanings = lookup.get("meanings")
     if isinstance(meanings, dict):
         primary = meanings.get("primary") if isinstance(meanings.get("primary"), dict) else {}
-        _add_option(primary.get("example_source") or "", primary.get("example_target") or "")
-        if len(options) >= max(1, int(max_options or 1)):
-            return options[:max_options]
+        _collect(primary.get("example_source"), primary.get("example_target"))
         secondary = meanings.get("secondary") if isinstance(meanings.get("secondary"), list) else []
         for item in secondary:
             if not isinstance(item, dict):
                 continue
-            _add_option(item.get("example_source") or "", item.get("example_target") or "")
-            if len(options) >= max(1, int(max_options or 1)):
-                return options[:max_options]
+            _collect(item.get("example_source"), item.get("example_target"))
 
-    return options[:max(1, int(max_options or 1))]
+    limit = max(1, int(max_options or 1))
+    for phrases_first in (True, False):
+        for source, target in candidates:
+            if len(options) >= limit:
+                return options[:limit]
+            if _looks_like_save_phrase(source) is not phrases_first:
+                continue
+            _add_option(source, target)
+
+    return options[:limit]
 
 
 async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, target_lang: str) -> dict:

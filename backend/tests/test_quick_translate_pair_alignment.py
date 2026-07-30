@@ -118,6 +118,56 @@ class QuickTranslateFirstVariantTests(unittest.TestCase):
         self.assertEqual(options[1]["target"], "работать учителем")
 
 
+class SecondVariantIsAPhraseTests(unittest.TestCase):
+    """Второй вариант — слово в живой речи, а не та же лемма отдельной карточкой.
+
+    Живой вызов модели 30.07.2026 на «Er übt eine Erwerbstätigkeit als Lehrer aus»
+    вернул save_worthy_options в таком порядке:
+        1) die Erwerbstätigkeit            (kind: base)      ← одинокое слово
+        2) eine Erwerbstätigkeit ausüben   (kind: collocation)
+        3) eine Erwerbstätigkeit als Lehrer ausüben (kind: phrase)
+    Мы брали строго по порядку — и вторым вариантом показывали «die
+    Erwerbstätigkeit / трудовая деятельность». Рядом с запросом это пустая карточка.
+    """
+
+    QUERY = "Er übt eine Erwerbstätigkeit als Lehrer aus"
+
+    def _options(self, save_worthy, max_options=2):
+        lookup = {
+            "word_source": self.QUERY,
+            "word_target": "Он работает учителем.",
+            "save_worthy_options": save_worthy,
+        }
+        return bot_3._build_fast_dictionary_save_options(
+            {"source_lang": "de", "target_lang": "ru",
+             "source_text": self.QUERY, "lookup": lookup, "original_query": self.QUERY},
+            max_options=max_options,
+        )
+
+    def test_bare_lemma_loses_to_a_collocation(self):
+        options = self._options([
+            {"source": "die Erwerbstätigkeit", "target": "трудовая деятельность", "kind": "base"},
+            {"source": "eine Erwerbstätigkeit ausüben", "target": "заниматься трудовой деятельностью"},
+            {"source": "eine Erwerbstätigkeit als Lehrer ausüben", "target": "работать учителем"},
+        ])
+        self.assertEqual(options[0]["source"], self.QUERY)
+        self.assertEqual(options[1]["source"], "eine Erwerbstätigkeit ausüben")
+
+    def test_single_word_is_still_offered_when_there_is_no_phrase(self):
+        """Фраз нет — лучше слово, чем один вариант на весь экран."""
+        options = self._options([
+            {"source": "die Erwerbstätigkeit", "target": "трудовая деятельность", "kind": "base"},
+        ])
+        self.assertEqual(len(options), 2)
+        self.assertEqual(options[1]["source"], "die Erwerbstätigkeit")
+
+    def test_phrase_detection(self):
+        self.assertFalse(bot_3._looks_like_save_phrase("die Erwerbstätigkeit"))
+        self.assertFalse(bot_3._looks_like_save_phrase("Erwerbstätigkeit"))
+        self.assertTrue(bot_3._looks_like_save_phrase("eine Erwerbstätigkeit ausüben"))
+        self.assertTrue(bot_3._looks_like_save_phrase("in Rente gehen"))
+
+
 class DefaultOptionPairTests(unittest.TestCase):
     """Подмена «шумной» конструкции меняет пару целиком, а не одну половинку."""
 
