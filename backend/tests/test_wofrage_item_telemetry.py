@@ -8,6 +8,7 @@
 без чьей-либо догадливости.
 """
 
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -45,6 +46,109 @@ class AcceptAnyCorrectAnswerTests(unittest.TestCase):
         entry = next(e for e in wg._BANK if e["lemma"] == "warten auf")
         item = wg._build_one(entry)
         self.assertEqual(len(wg.accepted_answers(item)), 1)
+
+
+class SubmitEndpointTests(unittest.TestCase):
+    """Связка «человек отправил ответы → засчитали → записали» целиком.
+
+    Раньше эта часть проверялась только живой игрой: пропажу телеметрии заметили бы
+    лишь по подозрительно пустой таблице.
+    """
+
+    def setUp(self):
+        import backend.backend_server as server
+        self.server = server
+        self.client = server.app.test_client()
+
+    def _patches(self, item, record):
+        """Соседние фоновые помощники глушим: они лезут в базу и в Telegram, а нас
+        интересует только цепочка «ответ → зачёт → запись». Сами потоки НЕ подменяем:
+        подменишь — и эти помощники побегут в этом же потоке, в реальную базу."""
+        server = self.server
+        return [
+            # Привратник /api/webapp/* проверяет подпись initData ДО эндпоинта —
+            # подписываем «понарошку», иначе до проверяемой логики не дойти.
+            patch.object(server, "_telegram_hash_is_valid", lambda *_a, **_k: True),
+            patch.object(server, "_parse_telegram_init_data",
+                         lambda *_a, **_k: {"user": {"id": 4242, "first_name": "Тест"}}),
+            patch.object(server, "_resolve_webapp_user_allowed", lambda *_a, **_k: (True, "test")),
+            patch.object(server, "_maybe_persist_display_name", lambda *_a, **_k: None),
+            patch.object(server, "_answer_auth_user_id", return_value=(4242, "Тест", None)),
+            patch.object(server, "_unpin_battle_invite_async", lambda *a, **k: None),
+            patch.object(server, "_flip_battle_ctas_done_async", lambda *a, **k: None),
+            patch("backend.database.get_wofrage_sprint_set", return_value={"items": [item]}),
+            patch("backend.database.record_wofrage_sprint_result", return_value=True),
+            patch("backend.database.get_wofrage_sprint_result", return_value=None),
+            patch("backend.database.compute_wofrage_sprint_ranking", return_value={}),
+            patch("backend.database.record_wofrage_item_answers", record),
+            patch("backend.database.record_aufgabe_mistake", return_value=None),
+        ]
+
+    def _submit(self, item, chosen):
+        from contextlib import ExitStack
+        self.recorded = {}
+        record = lambda rows: self.recorded.setdefault("rows", rows) and len(rows)
+        with ExitStack() as stack:
+            for p in self._patches(item, record):
+                stack.enter_context(p)
+            resp = self.client.post("/api/webapp/wofrage/submit", json={
+                # initData обязателен: его наличие проверяет привратник ДО эндпоинта,
+                # а сам разбор подписи подменён в _patches.
+                "initData": "signed",
+                "set_id": "s1", "answers": [{"chosen": chosen}], "time_ms": 5000,
+            })
+            # Запись идёт фоном — ждём её, но недолго и без sleep-наугад.
+            deadline = time.monotonic() + 5
+            while "rows" not in self.recorded and time.monotonic() < deadline:
+                time.sleep(0.02)
+            return resp
+
+    def _item_with_two_answers(self, lemma):
+        entry = next(e for e in wg._BANK if e["lemma"] == lemma)
+        for _ in range(300):
+            item = wg._build_one(entry)
+            if len(wg.accepted_answers(item)) > 1:
+                return item
+        self.fail("нет задания с двумя верными формами")
+
+    def test_alternative_answer_is_counted_and_logged(self):
+        item = self._item_with_two_answers("leiden an")
+        other = sorted(wg.accepted_answers(item) - {item["a"]})[0]
+        resp = self._submit(item, other)
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data.get("correct"), 1, "вторая верная форма должна засчитаться")
+        review = (data.get("items") or [{}])[0]
+        self.assertTrue(review.get("ok"))
+        self.assertTrue(review.get("unterschied"), "в разборе нет объяснения разницы")
+
+        rows = self.recorded.get("rows") or []
+        self.assertEqual(len(rows), 1, "ответ по заданию не записан")
+        self.assertEqual(rows[0]["item_key"], item["key"])
+        self.assertTrue(rows[0]["correct"])
+        self.assertEqual(rows[0]["chosen"], other)
+
+    def test_wrong_answer_is_logged_as_wrong(self):
+        item = wg._build_one(next(e for e in wg._BANK if e["lemma"] == "warten auf"))
+        wrong = next(o for o in item["opts"] if o not in wg.accepted_answers(item))
+        resp = self._submit(item, wrong)
+
+        self.assertEqual(resp.get_json().get("correct"), 0)
+        rows = self.recorded.get("rows") or []
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["correct"])
+        self.assertEqual(rows[0]["chosen"], wrong)
+
+    def test_legacy_sets_without_a_key_still_get_logged(self):
+        """Наборы, собранные ДО этой правки, ключа не содержат — считаем его на лету,
+        иначе 640 уже лежащих заданий остались бы вне статистики."""
+        item = dict(wg._build_one(wg._BANK[0]))
+        item.pop("key", None)
+        self._submit(item, item["a"])
+        rows = self.recorded.get("rows") or []
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["item_key"], wg.item_key(item))
 
 
 class ItemHealthRuleTests(unittest.TestCase):
