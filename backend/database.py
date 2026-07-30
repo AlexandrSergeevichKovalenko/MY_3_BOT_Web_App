@@ -48900,8 +48900,13 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
     Частотность считаем на месте: колонка freq_rank в банке пустая (0 из 2 929), а
     частотный список лежит рядом с кодом и стоит один проход по памяти. Слова, которых
     в списке нет вовсе (2 784 из 2 929), не спрашиваем совсем — это и есть тот хлам,
-    ради которого чистку затевали."""
+    ради которого чистку затевали.
+
+    Двуродовые и субстантивированные прилагательные (die/der Erwachsene, Bekannte,
+    Verlobte) выкидываем сразу: у них артикль зависит от смысла, в игре «der/die/das»
+    им делать нечего, и сняли их по делу."""
     from backend.article_word_gate import word_rank
+    from backend.article_sprint_generator import is_ambiguous_noun
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -48920,6 +48925,8 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
         key = word.lower()
         if key in seen:  # одно и то же слово в нескольких темах — спрашиваем один раз
             continue
+        if is_ambiguous_noun(word):
+            continue
         seen.add(key)
         out.append({"id": int(r[0]), "word": word, "article": str(r[2] or ""),
                     "meaning_ru": str(r[3] or ""), "theme_key": str(r[4] or ""), "rank": int(rank)})
@@ -48928,16 +48935,42 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
 
 
 def list_retired_review_candidates(*, limit: int = 10, max_rank: int = 60000) -> list[dict]:
-    """Порция спорных снятых слов для разбора в личке."""
+    """Порция спорных снятых слов для разбора в личке — с ПРОВЕРЕННЫМ артиклем.
+
+    Артикль в снятой строке нельзя показывать как есть: в банке лежала «die Flur», хотя
+    правильно «der Flur» — часто именно кривой артикль и был причиной снятия. Поэтому
+    каждый кандидат сверяется со справочником (Wiktionary → правило композита), и в
+    карточку идёт его вердикт. Слово, рода которого справочник не знает, в разбор не
+    попадает вовсе: вернуть его в игру — значит учить человека догадке."""
+    from backend.article_authority import authoritative_article
     try:
-        return _retired_review_rows(int(max_rank))[: max(1, int(limit))]
+        rows = _retired_review_rows(int(max_rank))
     except Exception:
         logging.warning("list_retired_review_candidates failed", exc_info=True)
         return []
+    want = max(1, int(limit))
+    out: list[dict] = []
+    for row in rows[: want * 5]:  # с запасом: часть отсеется на справочнике
+        try:
+            verdict, source = authoritative_article(row["word"], allow_network=True)
+        except Exception:
+            logging.warning("retire review: справочник недоступен для %s", row["word"], exc_info=True)
+            continue
+        if not verdict:
+            logging.info("retire review: %s — род не подтверждён (%s), не спрашиваем", row["word"], source)
+            continue
+        row = dict(row)
+        row["stored_article"] = row.get("article") or ""
+        row["article"] = verdict
+        row["article_source"] = source
+        out.append(row)
+        if len(out) >= want:
+            break
+    return out
 
 
 def count_retired_review_candidates(*, max_rank: int = 60000) -> int:
-    """Сколько спорных снятых слов ещё ждут решения."""
+    """Сколько снятых слов ещё ждут решения (до сверки со справочником — верхняя оценка)."""
     try:
         return len(_retired_review_rows(int(max_rank)))
     except Exception:
@@ -48946,10 +48979,16 @@ def count_retired_review_candidates(*, max_rank: int = 60000) -> int:
 
 
 def restore_retired_article_noun(row_id: int) -> dict | None:
-    """Вернуть слово в игру: снимаем retired, помечаем разобранным и убираем из стоп-листа.
+    """Вернуть слово в игру — с артиклем из справочника, а не из снятой строки.
 
-    Возвращаем ВСЕ строки этого слова (оно могло быть снято в нескольких темах) — иначе
-    человек нажал «вернуть», а слово вернулось только в одной теме."""
+    Кривой артикль часто и был причиной снятия («die Flur» вместо «der Flur»), поэтому
+    возвращать строку как есть нельзя: это вернуло бы в игру ту самую ошибку. Спрашиваем
+    справочник (Wiktionary → правило композита) и пишем его вердикт. Не знает — не
+    возвращаем вовсе: {"blocked": ...}.
+
+    Правим ВСЕ строки этого слова (оно могло быть снято в нескольких темах) — иначе
+    человек нажал «вернуть», а слово вернулось только в одной."""
+    from backend.article_authority import authoritative_article
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -48959,18 +48998,24 @@ def restore_retired_article_noun(row_id: int) -> dict | None:
                 row = cursor.fetchone()
                 if not row:
                     return None
-                word, article = str(row[0]), str(row[1] or "")
+                word, stored = str(row[0]), str(row[1] or "")
+        verdict, source = authoritative_article(word, allow_network=True)
+        if not verdict:
+            return {"blocked": True, "word": word, "reason": source}
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
                 cursor.execute(
                     "UPDATE bt_3_article_sprint_nouns "
-                    "SET retired = FALSE, retire_reviewed = TRUE, updated_at = NOW() "
+                    "SET retired = FALSE, retire_reviewed = TRUE, article = %s, "
+                    "    verified = TRUE, source = %s, updated_at = NOW() "
                     "WHERE lower(word) = lower(%s) AND retired;",
-                    (word,),
+                    (verdict, str(source or "")[:40], word),
                 )
                 cursor.execute(
                     "DELETE FROM bt_3_article_word_blacklist WHERE word = lower(%s);", (word,)
                 )
             conn.commit()
-        return {"word": word, "article": article}
+        return {"word": word, "article": verdict, "stored_article": stored, "source": source}
     except Exception:
         logging.warning("restore_retired_article_noun failed id=%s", row_id, exc_info=True)
         return None

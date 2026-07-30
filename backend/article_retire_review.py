@@ -43,6 +43,7 @@ def _keyboard(row_id: int) -> dict[str, Any]:
 def _word_text(item: dict, *, index: int, total: int, left: int) -> str:
     word = str(item.get("word") or "")
     article = str(item.get("article") or "")
+    stored = str(item.get("stored_article") or "")
     meaning = str(item.get("meaning_ru") or "").strip()
     rank = item.get("rank")
     lines = [f"<b>{article} {word}</b>".strip()]
@@ -52,8 +53,13 @@ def _word_text(item: dict, *, index: int, total: int, left: int) -> str:
     lines.append("Слово убрано из игры при чистке словника.")
     if rank:
         lines.append(f"Но по частоте оно на {int(rank)}-м месте в немецком — похоже на ходовое.")
+    if stored and stored.lower() != article.lower():
+        # Кривой артикль часто и был причиной снятия. Показываем ПРОВЕРЕННЫЙ и говорим
+        # прямо, что вернём именно его — иначе человек вернёт в игру старую ошибку.
+        lines.append(f"⚠️ В базе стояло «{stored} {word}» — справочник говорит «{article}». "
+                     f"Вернём с «{article}».")
     lines.append("")
-    lines.append(f"<i>{index} из {total} · ещё спорных: {left}</i>")
+    lines.append(f"<i>{index} из {total} · ещё в очереди: {left}</i>")
     return "\n".join(lines)
 
 
@@ -136,7 +142,13 @@ def apply_retire_review(action: str, row_id: int) -> str:
         res = restore_retired_article_noun(int(row_id))
         if not res:
             return "Слово уже разобрано."
+        if res.get("blocked"):
+            return (f"⚠️ <b>{res['word']}</b> не вернул: род не подтверждён ({res.get('reason')}).\n"
+                    "Вернуть слово с догадкой вместо артикля — значит учить человека ошибке.")
         head = f"✅ <b>{res['article']} {res['word']}</b> — снова в игре."
+        stored = str(res.get("stored_article") or "")
+        if stored and stored.lower() != str(res["article"]).lower():
+            head += f"\nАртикль поправлен: в базе стояло «{stored}», записал «{res['article']}» ({res.get('source')})."
     elif act == "keep":
         res = keep_retired_article_noun(int(row_id))
         if not res:

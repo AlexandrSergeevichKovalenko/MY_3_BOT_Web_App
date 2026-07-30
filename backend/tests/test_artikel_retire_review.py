@@ -45,29 +45,59 @@ class _FakeConn:
 
 class RetireReviewQueueTests(unittest.TestCase):
     ROWS = [
-        (1, "Flur", "der", "коридор", "haus_wohnen"),              # ранг ~4 000 — спорное
-        (2, "Schmetterlings-Tramete", "der", "губка", "pflanzen"),  # в списке нет — хлам
-        (3, "Erwachsene", "die", "взрослая", "menschen"),           # ранг ~3 800 — спорное
+        (1, "Kühler", "die", "радиатор", "auto_fahren"),            # ходовое, но артикль в базе кривой
+        (2, "Schmetterlings-Tramete", "der", "губка", "pflanzen"),  # в частотном списке нет — хлам
+        (3, "Erwachsene", "die", "взрослая", "menschen"),           # субстантивированное прилагательное
+        (4, "Flur", "die", "коридор", "haus_wohnen"),               # двуродовое: der Flur / die Flur
+        (5, "Segelboot", "das", "парусник", "verkehr_reisen"),      # ходовое, но справочник смолчит
     ]
 
-    def _rows(self, rows=None):
+    def _rows(self, rows=None, *, authority=None):
         cur = _FakeCursor(self.ROWS if rows is None else rows)
 
         @contextmanager
         def _fake_ctx(*a, **k):
             yield _FakeConn(cur)
 
-        with patch.object(db, "get_db_connection_context", _fake_ctx):
+        def _authority(word, *, allow_network=False):
+            table = authority if authority is not None else {"Kühler": "der"}
+            verdict = table.get(word)
+            return (verdict, "wiktionary") if verdict else (None, "нет данных")
+
+        with patch.object(db, "get_db_connection_context", _fake_ctx), \
+                patch("backend.article_authority.authoritative_article", _authority):
             out = db.list_retired_review_candidates(limit=10, max_rank=60000)
         return out, cur
 
     def test_only_words_that_look_common_are_asked_about(self):
         out, _ = self._rows()
         words = [r["word"] for r in out]
-        self.assertIn("Flur", words)
-        self.assertIn("Erwachsene", words)
+        self.assertIn("Kühler", words)
         self.assertNotIn("Schmetterlings-Tramete", words,
                          "слова, которого нет в частотном списке, спрашивать незачем")
+
+    def test_adjectival_nouns_never_reach_the_queue(self):
+        # die/der Erwachsene — артикль зависит от смысла; в игре der/die/das им не место,
+        # и сняли их по делу. Спрашивать про них — гонять человека впустую.
+        out, _ = self._rows()
+        self.assertNotIn("Erwachsene", [r["word"] for r in out])
+
+    def test_card_shows_the_checked_article_not_the_stored_one(self):
+        # В банке лежала «die Kühler» — из-за такого слова и снимали. Показать надо «der».
+        out, _ = self._rows()
+        row = next(r for r in out if r["word"] == "Kühler")
+        self.assertEqual(row["article"], "der")
+        self.assertEqual(row["stored_article"], "die")
+
+    def test_two_gender_words_never_reach_the_queue(self):
+        # der Flur (коридор) / die Flur (нива) — артикль зависит от смысла.
+        out, _ = self._rows()
+        self.assertNotIn("Flur", [r["word"] for r in out])
+
+    def test_word_with_unknown_gender_is_not_offered(self):
+        # Вернуть слово с догадкой вместо артикля — значит учить человека ошибке.
+        out, _ = self._rows()
+        self.assertNotIn("Segelboot", [r["word"] for r in out])
 
     def test_most_common_word_comes_first(self):
         out, _ = self._rows()
@@ -79,26 +109,40 @@ class RetireReviewQueueTests(unittest.TestCase):
 
     def test_the_same_word_in_two_themes_is_asked_once(self):
         out, _ = self._rows([
-            (1, "Flur", "der", "коридор", "haus_wohnen"),
-            (2, "Flur", "der", "коридор", "stadt_gebaeude"),
+            (1, "Kühler", "der", "радиатор", "auto_fahren"),
+            (2, "Kühler", "der", "радиатор", "technik_computer"),
         ])
         self.assertEqual(len(out), 1)
 
-    def test_restore_brings_the_word_back_in_every_theme(self):
-        cur = _FakeCursor([("Flur", "der")])
+    def _restore(self, verdict):
+        cur = _FakeCursor([("Kühler", "die")])
 
         @contextmanager
         def _fake_ctx(*a, **k):
             yield _FakeConn(cur)
 
-        with patch.object(db, "get_db_connection_context", _fake_ctx):
+        with patch.object(db, "get_db_connection_context", _fake_ctx), \
+                patch("backend.article_authority.authoritative_article",
+                      lambda w, **k: (verdict, "wiktionary" if verdict else "нет данных")):
             res = db.restore_retired_article_noun(1)
-        self.assertEqual(res, {"word": "Flur", "article": "der"})
+        return res, cur
+
+    def test_restore_writes_the_checked_article_in_every_theme(self):
+        res, cur = self._restore("der")
+        self.assertEqual(res["article"], "der")
+        self.assertEqual(res["stored_article"], "die")
         update = [s for s in cur.sql_log if s.startswith("UPDATE")][0]
         self.assertIn("lower(word) = lower(%s)", update, "вернуть надо во всех темах, не одну строку")
         self.assertIn("retired = FALSE", update)
+        self.assertIn("article = %s", update, "в игру должен уйти проверенный артикль")
         self.assertTrue([s for s in cur.sql_log if s.startswith("DELETE FROM bt_3_article_word_blacklist")],
                         "возвращённое слово надо снять со стоп-листа")
+
+    def test_restore_refuses_when_the_gender_is_not_confirmed(self):
+        res, cur = self._restore(None)
+        self.assertTrue(res.get("blocked"))
+        self.assertFalse([s for s in cur.sql_log if s.startswith("UPDATE")],
+                         "без подтверждённого рода в игру ничего не возвращаем")
 
     def test_keep_puts_the_word_on_the_stop_list(self):
         cur = _FakeCursor([("Schmetterlings-Tramete",)])
@@ -117,13 +161,19 @@ class RetireReviewQueueTests(unittest.TestCase):
 
 class RetireReviewCardTests(unittest.TestCase):
     def test_card_says_what_happened_and_why_it_is_being_asked(self):
-        text = _word_text({"word": "Flur", "article": "der", "meaning_ru": "коридор", "rank": 4081},
+        text = _word_text({"word": "Kühler", "article": "der", "meaning_ru": "радиатор", "rank": 13465},
                           index=1, total=10, left=145)
-        self.assertIn("der Flur", text)
-        self.assertIn("коридор", text)
+        self.assertIn("der Kühler", text)
+        self.assertIn("радиатор", text)
         self.assertIn("убрано из игры", text)
-        self.assertIn("4081", text)
+        self.assertIn("13465", text)
         self.assertIn("1 из 10", text)
+
+    def test_card_warns_when_the_stored_article_was_wrong(self):
+        text = _word_text({"word": "Kühler", "article": "der", "stored_article": "die",
+                           "meaning_ru": "радиатор", "rank": 13465}, index=1, total=10, left=145)
+        self.assertIn("die Kühler", text, "надо честно показать, что лежало в базе")
+        self.assertIn("Вернём с «der»", text)
 
     def test_buttons_are_restore_and_junk(self):
         kb = _keyboard(7)["inline_keyboard"][0]
