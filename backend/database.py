@@ -2010,14 +2010,67 @@ def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
 # Grouping of review formats into user-facing "families" (sections of работа над ошибками).
 # `artikel` gets its own section (der/die/das); everything else is grammar drills.
 def _mistake_family_clause(family: str | None) -> str:
+    """Условие семьи для запросов, где таблица ошибок идёт под алиасом `m`."""
     fam = str(family or "").strip().lower()
     if fam == "artikel":
-        return "AND format = 'artikel'"
+        return "AND m.format = 'artikel'"
     if fam == "wofrage":
-        return "AND format = 'wofrage'"
+        return "AND m.format = 'wofrage'"
     if fam == "grammar":
-        return "AND format NOT IN ('artikel', 'wofrage')"
+        return "AND m.format NOT IN ('artikel', 'wofrage')"
     return ""  # all families
+
+
+# Очередь ошибок хранит СВОЮ копию карточки и про уборку словника не знает: слово,
+# снятое с показа в банке артиклей («Ranvier-Schnürring», «Schmetterlings-Tramete»),
+# продолжало приходить в «работу над ошибками» ещё месяцами. Условие пускает только
+# слова, у которых в банке ЕСТЬ живая строка. Осторожно: срабатывает лишь тогда, когда
+# слово в банке есть и оно ретайрнуто; «в банке вообще нет» — не наш случай, не трогаем.
+_ARTIKEL_LIVE_WORD_SQL = """
+AND NOT (
+    m.format = 'artikel'
+    AND EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns rn
+                WHERE lower(rn.word) = lower(m.payload->>'wort')
+                  AND COALESCE(rn.retired, FALSE) = TRUE)
+    AND NOT EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns an
+                    WHERE lower(an.word) = lower(m.payload->>'wort')
+                      AND COALESCE(an.retired, FALSE) = FALSE)
+)"""
+
+
+def purge_retired_artikel_mistakes(user_id: int | None = None) -> int:
+    """Убрать из очереди ошибок карточки слов, снятых с показа в банке артиклей.
+
+    Зеркалит самолечение в get_next_due_mistake: строка, которой в игре больше нет,
+    удаляется, а не остаётся ждать. Без user_id — по всем пользователям (разовая уборка
+    после чистки словника)."""
+    try:
+        ensure_aufgabe_mistakes_schema()
+        where = "WHERE m.format = 'artikel'"
+        params: tuple = ()
+        if user_id is not None:
+            where += " AND m.user_id = %s"
+            params = (int(user_id),)
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM bt_3_aufgabe_mistakes m " + where
+                    + " AND EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns rn"
+                      "             WHERE lower(rn.word) = lower(m.payload->>'wort')"
+                      "               AND COALESCE(rn.retired, FALSE) = TRUE)"
+                      " AND NOT EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns an"
+                      "                 WHERE lower(an.word) = lower(m.payload->>'wort')"
+                      "                   AND COALESCE(an.retired, FALSE) = FALSE);",
+                    params,
+                )
+                n = int(cur.rowcount or 0)
+            conn.commit()
+        if n:
+            logging.info("purge_retired_artikel_mistakes: снято %s карточек user_id=%s", n, user_id)
+        return n
+    except Exception:
+        logging.warning("purge_retired_artikel_mistakes failed user_id=%s", user_id, exc_info=True)
+        return 0
 
 
 def count_due_mistakes(user_id: int, *, family: str | None = None) -> int:
@@ -2026,9 +2079,9 @@ def count_due_mistakes(user_id: int, *, family: str | None = None) -> int:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT COUNT(*) FROM bt_3_aufgabe_mistakes "
-                    "WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() "
-                    f"{_mistake_family_clause(family)};",
+                    "SELECT COUNT(*) FROM bt_3_aufgabe_mistakes m "
+                    "WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW() "
+                    f"{_mistake_family_clause(family)}{_ARTIKEL_LIVE_WORD_SQL};",
                     (int(user_id),),
                 )
                 return int((cur.fetchone() or [0])[0])
@@ -2046,12 +2099,13 @@ def count_due_mistakes_by_family(user_id: int) -> dict:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT "
-                    "  COUNT(*) FILTER (WHERE format = 'artikel'), "
-                    "  COUNT(*) FILTER (WHERE format = 'wofrage'), "
-                    "  COUNT(*) FILTER (WHERE format NOT IN ('artikel', 'wofrage')), "
+                    "  COUNT(*) FILTER (WHERE m.format = 'artikel'), "
+                    "  COUNT(*) FILTER (WHERE m.format = 'wofrage'), "
+                    "  COUNT(*) FILTER (WHERE m.format NOT IN ('artikel', 'wofrage')), "
                     "  COUNT(*) "
-                    "FROM bt_3_aufgabe_mistakes "
-                    "WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW();",
+                    "FROM bt_3_aufgabe_mistakes m "
+                    "WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW()"
+                    + _ARTIKEL_LIVE_WORD_SQL + ";",
                     (int(user_id),),
                 )
                 row = cur.fetchone() or [0, 0, 0, 0]
@@ -2095,11 +2149,11 @@ def get_next_due_mistake(user_id: int, *, family: str | None = None) -> dict | N
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT id, format, payload, correct_answer
-                       FROM bt_3_aufgabe_mistakes
-                       WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW() """
-                    + _mistake_family_clause(family) +
-                    """ ORDER BY due_at ASC, id ASC LIMIT 12;""",
+                    """SELECT m.id, m.format, m.payload, m.correct_answer
+                       FROM bt_3_aufgabe_mistakes m
+                       WHERE m.user_id=%s AND m.mastered=FALSE AND m.due_at<=NOW() """
+                    + _mistake_family_clause(family) + _ARTIKEL_LIVE_WORD_SQL +
+                    """ ORDER BY m.due_at ASC, m.id ASC LIMIT 12;""",
                     (int(user_id),),
                 )
                 rows = cur.fetchall() or []
@@ -47858,9 +47912,14 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
     """A whole PAGE of due `artikel` review mistakes in ONE query, each joined to its
     noun-bank row for the precomputed image/audio/mnemonic — so работа над ошибками can
     prefetch the batch and grade locally (no per-card round-trip). Returns dicts with
-    id, word, ru, correct(stored article), image_object_key, audio_object_key, mnemonic_ru."""
+    id, word, ru, correct(stored article), image_object_key, audio_object_key, mnemonic_ru.
+
+    Слова, снятые с показа в банке (чистка словника), сюда не попадают и заодно
+    удаляются из очереди — очередь хранит свою копию карточки и сама об уборке не
+    узнаёт."""
     try:
         ensure_aufgabe_mistakes_schema()
+        purge_retired_artikel_mistakes(int(user_id))
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -47878,6 +47937,7 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
                           AND COALESCE(n.retired, FALSE) = FALSE
                     WHERE m.user_id = %s AND m.format = 'artikel'
                       AND m.mastered = FALSE AND m.due_at <= NOW()
+                    """ + _ARTIKEL_LIVE_WORD_SQL + """
                     ORDER BY m.due_at ASC, m.id ASC
                     LIMIT %s;
                     """,
@@ -48375,7 +48435,10 @@ _ARTIKEL_MASTERY_CORRECT = max(1, int((os.getenv("ARTIKEL_MASTERY_CORRECT") or "
 
 def get_article_learn_review_words(user_id: int, limit: int = 8) -> list[dict]:
     """Words the user has seen but NOT yet mastered (latest wrong, or fewer than
-    _ARTIKEL_MASTERY_CORRECT corrects) — wrong-latest first. [{w, a, ru}]."""
+    _ARTIKEL_MASTERY_CORRECT corrects) — wrong-latest first. [{w, a, ru}].
+
+    Берём только слова с живой строкой в банке: снятые с показа (чистка словника)
+    возвращаться в колоду не должны."""
     ensure_article_learn_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -48391,8 +48454,11 @@ def get_article_learn_review_words(user_id: int, limit: int = 8) -> list[dict]:
                     GROUP BY word
                 )
                 SELECT word, article, theme_key
-                FROM per_word
+                FROM per_word p
                 WHERE NOT (latest_ok AND corrects >= %s)
+                  AND EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns n
+                              WHERE lower(n.word) = lower(p.word)
+                                AND COALESCE(n.retired, FALSE) = FALSE)
                 ORDER BY latest_ok ASC, last_at DESC
                 LIMIT %s;
                 """,
