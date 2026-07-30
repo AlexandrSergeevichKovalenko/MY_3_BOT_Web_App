@@ -38,6 +38,13 @@ _READER_INGEST_QUEUE_NAME = str(
 ).strip() or "reader_ingest"
 _IMAGE_QUIZ_PREP_QUEUE_NAME = "image_quiz_prepare"
 _IMAGE_QUIZ_RENDER_QUEUE_NAME = "image_quiz_render"
+# Наполнение темы артиклей идёт десятки минут: подтема за подтемой, на каждой —
+# генерация, фильтр частотности, верификация и поход в Wiktionary. Дефолтный лимит
+# dramatiq (10 минут) убил бы прогон на середине, поэтому задаём свой.
+_ARTIKEL_FILL_TIME_LIMIT_MS = max(
+    600_000,
+    int((os.getenv("ARTIKEL_FILL_JOB_TIME_LIMIT_MS") or "3600000").strip() or "3600000"),
+)
 _IMAGE_QUIZ_R2_PREFIX = str(
     os.getenv("IMAGE_QUIZ_R2_PREFIX") or "image_quizzes"
 ).strip().strip("/") or "image_quizzes"
@@ -1658,6 +1665,139 @@ def run_weekly_global_ranking_report_actor(
             correlation_id,
         )
         raise
+
+
+@dramatiq.actor(
+    max_retries=0,
+    queue_name="scheduler_jobs",
+    time_limit=_ARTIKEL_FILL_TIME_LIMIT_MS,
+)
+def run_artikel_fill_job(
+    theme_key: str,
+    max_to_add: int | None = None,
+    chat_id: int | None = None,
+    request_id: str | None = None,
+) -> None:
+    """Наполнение темы артиклей словами — ВНЕ бота.
+
+    Раньше это делал сам хендлер `/artikel_fill`: PTB собран без concurrent_updates,
+    так что пока шли GPT и верификация (на 150 слов — минуты), бот не обрабатывал
+    вообще ничьи сообщения. А любой деплой в это время убивал прогон целиком и молча:
+    контейнер поднимается с drop_pending_updates=True, и от команды не остаётся следа.
+
+    Здесь прогон переживает рестарт: `fill_theme` пишет слова в базу пачками по
+    подтемам и на входе считает уже накопленное, поэтому перезапущенная задача
+    продолжает с того места, где оборвалась, а не начинает сначала.
+    """
+    from backend.job_queue import release_artikel_fill_lock
+
+    safe_theme_key = str(theme_key or "").strip()
+    safe_chat_id = int(chat_id or 0)
+    safe_max_to_add = int(max_to_add) if max_to_add else None
+    if not safe_theme_key:
+        logging.warning("artikel_fill_job skipped: empty theme_key request_id=%s", request_id)
+        return
+
+    started_at = time.perf_counter()
+    logging.info(
+        "artikel_fill_job start theme=%s max_to_add=%s chat_id=%s request_id=%s",
+        safe_theme_key, safe_max_to_add, safe_chat_id, request_id,
+    )
+    try:
+        from backend.article_sprint_generator import fill_theme
+
+        result = fill_theme(safe_theme_key, max_to_add=safe_max_to_add) or {}
+        duration_s = int(time.perf_counter() - started_at)
+        logging.info(
+            "artikel_fill_job done theme=%s request_id=%s total_s=%s result=%s",
+            safe_theme_key, request_id, duration_s, result,
+        )
+        _notify_artikel_fill_result(
+            chat_id=safe_chat_id,
+            theme_key=safe_theme_key,
+            result=result,
+            duration_s=duration_s,
+        )
+    except Exception as exc:
+        logging.exception("artikel_fill_job failed theme=%s request_id=%s", safe_theme_key, request_id)
+        _notify_artikel_fill_failure(chat_id=safe_chat_id, theme_key=safe_theme_key, error=exc)
+        raise
+    finally:
+        try:
+            release_artikel_fill_lock(safe_theme_key)
+        except Exception:
+            logging.warning("artikel_fill_job: lock release failed theme=%s", safe_theme_key, exc_info=True)
+
+
+def _artikel_theme_label(theme_key: str) -> str:
+    """Человеческое имя темы для отчёта; ключ — только если база не ответила."""
+    try:
+        from backend.database import get_article_sprint_theme
+
+        theme = get_article_sprint_theme(theme_key) or {}
+        return str(theme.get("label_de") or theme.get("label_ru") or "").strip() or theme_key
+    except Exception:
+        logging.warning("artikel_fill_job: label lookup failed theme=%s", theme_key, exc_info=True)
+        return theme_key
+
+
+def _notify_artikel_fill_result(
+    *,
+    chat_id: int,
+    theme_key: str,
+    result: dict,
+    duration_s: int,
+) -> None:
+    """Отчёт в тот же чат, откуда пришла команда. Молчаливое завершение здесь
+    недопустимо: админ уже увидел «поставил в очередь» и ждёт именно ответа."""
+    if chat_id <= 0:
+        return
+    label = _artikel_theme_label(theme_key)
+    error = str((result or {}).get("error") or "").strip()
+    if error:
+        text = f"❌ «{label}» — наполнение не пошло: {error}"
+    else:
+        added = int((result or {}).get("added") or 0)
+        rejected = int((result or {}).get("rejected") or 0)
+        final_verified = (result or {}).get("final_verified")
+        target = (result or {}).get("target")
+        note = str((result or {}).get("note") or "").strip()
+        lines = [
+            f"✅ «{label}» наполнена",
+            f"Добавлено: {added} · забраковано: {rejected}",
+            f"Всего проверенных: {final_verified}/{target}",
+            f"Заняло: {duration_s // 60} мин {duration_s % 60} с",
+        ]
+        if note:
+            lines.append(note)
+        by_sub = (result or {}).get("by_subtopic") or {}
+        if by_sub:
+            lines.append("")
+            lines.append("По подтемам:")
+            lines.extend(f"• {k}: {v}" for k, v in list(by_sub.items())[:20])
+        text = "\n".join(lines)
+    try:
+        from backend.telegram_notify import _send_private_message
+
+        _send_private_message(chat_id, text[:4000])
+    except Exception:
+        logging.warning("artikel_fill_job: report send failed theme=%s", theme_key, exc_info=True)
+
+
+def _notify_artikel_fill_failure(*, chat_id: int, theme_key: str, error: Exception) -> None:
+    if chat_id <= 0:
+        return
+    try:
+        from backend.telegram_notify import _send_private_message
+
+        _send_private_message(
+            chat_id,
+            f"❌ «{_artikel_theme_label(theme_key)}» — наполнение оборвалось.\n"
+            f"Уже добавленные слова остались в теме, повторный запуск продолжит с этого места.\n"
+            f"Причина: {str(error)[:300]}",
+        )
+    except Exception:
+        logging.warning("artikel_fill_job: failure report send failed theme=%s", theme_key, exc_info=True)
 
 
 @dramatiq.actor(max_retries=0, queue_name=_READER_INGEST_QUEUE_NAME)

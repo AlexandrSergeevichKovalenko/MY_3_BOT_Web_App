@@ -28330,8 +28330,15 @@ async def admin_artikel_settheme_command(update: Update, context: CallbackContex
 
 
 async def admin_artikel_fill_command(update: Update, context: CallbackContext) -> None:
-    """Generate+verify+store nouns for a theme. /artikel_fill <theme_key> [count]
-    (count caps how many NEW words to add this run; omit → up to target)."""
+    """Наполнить тему словами. /artikel_fill <theme_key> [count]
+    (count ограничивает, сколько НОВЫХ слов добавить за прогон; без него — до target).
+
+    Работу делает BACKGROUND_JOBS, бот только ставит задачу в очередь и отвечает
+    сразу. Раньше наполнение крутилось прямо в хендлере, и это стоило двух бед:
+    PTB собран без concurrent_updates, поэтому на все минуты прогона бот переставал
+    отвечать вообще всем; а деплой в это время убивал прогон молча — контейнер
+    поднимается с drop_pending_updates=True, и от команды не оставалось следа.
+    Результат прогона придёт отдельным сообщением, когда воркер закончит."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -28352,32 +28359,49 @@ async def admin_artikel_fill_command(update: Update, context: CallbackContext) -
     if not theme:
         await message.reply_text(f"Нет темы <code>{html.escape(theme_key)}</code>. Список: /artikel_themes", parse_mode="HTML")
         return
-    status_msg = await message.reply_text(
-        f"⏳ Наполняю «{html.escape(theme['label_de'])}»"
-        + (f" (+{count})" if count else " (до target)") + "… (GPT + верификация, это займёт время)"
-    )
 
-    def _fill() -> dict:
-        from backend.article_sprint_generator import fill_theme
-        return fill_theme(theme_key, max_to_add=count)
+    def _enqueue() -> dict:
+        from backend.job_queue import enqueue_artikel_fill_job
+        return enqueue_artikel_fill_job(
+            theme_key=theme_key,
+            max_to_add=count,
+            chat_id=int(message.chat_id),
+        )
 
     try:
-        result = await asyncio.to_thread(_fill)
-    except Exception as exc:
-        await status_msg.edit_text(f"Error: {exc}")
+        outcome = await asyncio.to_thread(_enqueue)
+    except Exception:
+        logging.exception("artikel_fill: enqueue failed theme=%s", theme_key)
+        outcome = {"queued": False, "reason": "broker_error"}
+
+    if outcome.get("queued"):
+        await message.reply_text(
+            f"📥 «{html.escape(theme['label_de'])}» встала в очередь на наполнение"
+            + (f" (+{count})" if count else " (до target)") + ".\n"
+            "Считает отдельный воркер — бот в это время работает как обычно, а "
+            "деплой прогон не убьёт: он продолжится с того места, где прервался.\n"
+            "Отчёт пришлю сюда, когда закончит."
+        )
         return
-    if result.get("error"):
-        await status_msg.edit_text(f"❌ {result['error']}")
+
+    reason = str(outcome.get("reason") or "").strip()
+    if reason == "already_running":
+        await message.reply_text(
+            f"⏳ «{html.escape(theme['label_de'])}» уже наполняется — дождись отчёта.\n"
+            "Два прогона на одну тему не запускаю: они дублировали бы работу GPT."
+        )
         return
-    text = (
-        f"✅ «{html.escape(theme['label_de'])}»\n"
-        f"Добавлено: {result.get('added')} · забраковано: {result.get('rejected')}\n"
-        f"Всего verified: {result.get('final_verified')}/{result.get('target')}"
+    if reason == "background_jobs_unavailable":
+        await message.reply_text(
+            "Очередь задач недоступна (нет Redis), наполнение НЕ запущено.\n"
+            "Прямо в боте его больше не гоняю — это вешало бота на всё время прогона."
+        )
+        return
+    await message.reply_text(
+        "Не смог поставить наполнение в очередь, слова не тронуты. Причина в логах "
+        f"(<code>{html.escape(reason or 'unknown')}</code>).",
+        parse_mode="HTML",
     )
-    by_sub = result.get("by_subtopic") or {}
-    if by_sub:
-        text += "\n\nПо подтемам:\n" + "\n".join(f"• {k}: {v}" for k, v in list(by_sub.items())[:20])
-    await status_msg.edit_text(text[:4000])
 
 
 def _parse_addword_line(line: str) -> dict | None:
