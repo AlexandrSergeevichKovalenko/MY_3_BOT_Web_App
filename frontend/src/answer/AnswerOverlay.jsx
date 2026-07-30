@@ -249,8 +249,34 @@ function CrosswordResult({ result }) {
   );
 }
 
+function ruLetters(n) {
+  const tail = n % 100;
+  if (tail >= 12 && tail <= 14) return 'букв';
+  const last = n % 10;
+  if (last === 1) return 'буква';
+  if (last >= 2 && last <= 4) return 'буквы';
+  return 'букв';
+}
+
+// Anagram diff: the tile bank is always the exact letters of the word, so a wrong
+// answer is a permutation — compare position by position and mark the letters that
+// stand in the wrong place. Returns null when there is nothing to line up.
+function letterDiff(userText, correctText) {
+  const a = Array.from(String(userText || ''));
+  const b = Array.from(String(correctText || ''));
+  if (!a.length || !b.length || a.length !== b.length) return null;
+  const bad = new Set();
+  for (let i = 0; i < b.length; i++) {
+    if ((a[i] || '').toLowerCase() !== b[i].toLowerCase()) bad.add(i);
+  }
+  return bad.size ? { a, b, bad } : null;
+}
+
 function AnagramResult({ result }) {
   const good = !!result.is_correct;
+  const mine = result.user_answer || '';
+  const diff = good ? null : letterDiff(mine, result.correct_word);
+  const swapped = diff ? diff.bad.size : 0;
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
@@ -259,6 +285,36 @@ function AnagramResult({ result }) {
         <b>{result.correct_word}</b>
         {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
       </div>
+      {diff ? (
+        <div className="ag-diff">
+          <div className="au-diff-label">✅ Richtig</div>
+          <div className="ag-diff-row">
+            {diff.b.map((ch, i) => (
+              <span key={i} className={`ag-diff-cell${diff.bad.has(i) ? ' fix' : ''}`}>{ch}</span>
+            ))}
+          </div>
+          <div className="au-diff-label dim">✍️ Dein Wort</div>
+          <div className="ag-diff-row">
+            {diff.a.map((ch, i) => (
+              <span key={i} className={`ag-diff-cell mine${diff.bad.has(i) ? ' bad' : ''}`}>{ch}</span>
+            ))}
+          </div>
+          <div className="ag-diff-note">
+            {swapped === 1
+              ? 'Одна буква стоит не на своём месте — остальное верно.'
+              : `Не на своём месте ${swapped} ${ruLetters(swapped)} — остальное верно.`}
+          </div>
+        </div>
+      ) : (!good && mine) ? (
+        <div className="ag-diff">
+          <div className="au-diff-label dim">✍️ Dein Wort</div>
+          <div className="ag-diff-row">
+            {Array.from(mine).map((ch, i) => (
+              <span key={i} className="ag-diff-cell mine bad">{ch}</span>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
       {result.tip ? <div className="ans-tip">💡 {result.tip}</div> : null}
     </div>

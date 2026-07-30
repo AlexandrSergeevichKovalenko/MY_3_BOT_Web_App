@@ -310,6 +310,31 @@ html[data-scheme="light"] .ans-dm-hint-text { color: #5c4708; }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* Anagram diff on the result screen: correct word over the learner's word, the
+   letters that stand in the wrong place marked on both rows. */
+.ag-diff { margin-top: 10px; }
+.ag-diff-row {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  font-size: 19px; font-weight: 700; line-height: 1.2;
+}
+.ag-diff-cell {
+  min-width: 22px; padding: 2px 3px; border-radius: 6px;
+  text-align: center; color: #22c55e;
+}
+.ag-diff-cell.mine { color: var(--dmps-text-secondary, #CBD5E1); font-weight: 600; }
+.ag-diff-cell.fix { background: rgba(34, 197, 94, 0.20); font-weight: 900; }
+.ag-diff-cell.bad {
+  color: #f05252; background: rgba(240, 82, 82, 0.16); font-weight: 900;
+}
+.ag-diff-note {
+  margin-top: 8px; font-size: 13.5px; font-weight: 500;
+  color: var(--dmps-text-muted, #94A3B8);
+}
+html[data-scheme="light"] .ag-diff-cell { color: #15803d; }
+html[data-scheme="light"] .ag-diff-cell.mine { color: #475569; }
+html[data-scheme="light"] .ag-diff-cell.fix { background: rgba(21, 128, 61, 0.14); }
+html[data-scheme="light"] .ag-diff-cell.bad { color: #dc2626; background: rgba(220, 38, 38, 0.12); }
+
 .ag-pool {
   display: flex; flex-wrap: wrap; justify-content: center; gap: 9px;
   min-height: 52px; align-items: center;
