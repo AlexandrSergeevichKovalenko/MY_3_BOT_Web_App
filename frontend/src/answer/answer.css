@@ -597,7 +597,9 @@ html[data-scheme="light"] .rank-row.me { background: #e1ebfd; }
 html[data-scheme="light"] .au-syn { background: #f4f6fa; }
 .au-cloze { line-height: 2.1; }
 .au-gap-input {
-  display: inline-block; width: 92px; margin: 0 2px; padding: 2px 8px;
+  /* width comes from the input's `size` (a gap hides a 2–5 word group now) — clamped so a long
+     group never pushes the sentence out of the viewport. */
+  display: inline-block; min-width: 92px; max-width: 100%; margin: 0 2px; padding: 2px 8px;
   font-family: inherit; font-size: 16px; font-weight: 600; text-align: center;
   color: var(--dmps-text-primary, #F8FAFC);
   background: var(--dmps-card-alt, #0B1220);

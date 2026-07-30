@@ -1513,6 +1513,133 @@ def wortbildung_gap_is_grammatical(correct) -> bool:
     return all(_norm_degenerate_token(t) in _WORTBILDUNG_GLUE for t in toks[1:])
 
 
+# ── Hörlücke difficulty ──────────────────────────────────────────────────────
+# A blank that hides ONE unstressed function word ("_____ das Wochenende" → "auf")
+# is no exercise: the learner guesses the preposition from the printed rest without
+# hearing anything. So a gap must swallow a whole WORTGRUPPE — verb + governed
+# preposition ("kümmert sich um"), preposition + article + noun ("mit den Kollegen"),
+# da-compound + participle ("darüber gesprochen"). Deterministic rule: 2–4 tokens,
+# at least one of them carrying content (noun/verb/participle/adjective), i.e. NOT a
+# chunk built purely of articles, prepositions, pronouns, particles and auxiliaries.
+_HOER_PRONOUNS = {
+    "ich", "du", "er", "sie", "es", "wir", "ihr", "man", "mich", "dich", "sich",
+    "uns", "euch", "mir", "dir", "ihm", "ihn", "ihnen", "wer", "wen", "wem",
+    "mein", "meine", "meinem", "meinen", "meiner", "meines",
+    "dein", "deine", "deinem", "deinen", "deiner", "deines",
+    "sein", "seine", "seinem", "seinen", "seiner", "seines",
+    "ihre", "ihrem", "ihren", "ihrer", "ihres",
+    "unser", "unsere", "unserem", "unseren", "unserer", "unseres",
+    "euer", "eure", "eurem", "euren", "eurer", "eures",
+}
+_HOER_DA_WO_COMPOUNDS = {
+    "dabei", "dadurch", "dafür", "dagegen", "damit", "danach", "daran", "darauf",
+    "daraus", "darin", "darüber", "darum", "darunter", "davon", "davor", "dazu",
+    "hierfür", "hiermit", "wobei", "wodurch", "wofür", "womit", "wonach", "woran",
+    "worauf", "woraus", "worin", "worüber", "worum", "wovon", "wovor", "wozu",
+}
+_HOER_PARTICLES = {
+    "auch", "denn", "doch", "eben", "etwa", "ja", "mal", "nicht", "noch", "nur",
+    "schon", "sehr", "so", "wohl", "zwar", "dann", "da",
+}
+_HOER_AUXILIARIES = {
+    "habe", "hast", "hat", "haben", "habt", "hatte", "hattest", "hatten", "hattet",
+    "bin", "bist", "ist", "sind", "seid", "war", "warst", "waren", "wart",
+    "werde", "wirst", "wird", "werden", "werdet", "wurde", "wurdest", "wurden", "wurdet",
+}
+_HOER_FUNCTION_WORDS = (
+    _WORTBILDUNG_GLUE | _HOER_PRONOUNS | _HOER_DA_WO_COMPOUNDS
+    | _HOER_PARTICLES | _HOER_AUXILIARIES
+)
+_HOER_GAP_MIN_WORDS, _HOER_GAP_MAX_WORDS = 2, 5   # 6+ words is a whole clause, not a group
+_HOER_MIN_GAPS = 3
+# ≥7 words hidden across ≥3 gaps ⇒ they can't ALL be minimal two-word chunks: at least
+# one gap is a real construction (verb + preposition + object, prep + article + noun).
+_HOER_MIN_HIDDEN_WORDS = 7
+
+
+def _hoer_gap_correct(gap) -> str:
+    return str((gap.get("correct") if isinstance(gap, dict) else gap) or "")
+
+
+def hoerluecke_gap_is_hard(correct) -> bool:
+    """True when ONE Hörlücke gap is a real Wortgruppe (2–5 words, at least one
+    content word) instead of a single word / a pure function-word chunk."""
+    toks = [t for t in (_norm_degenerate_token(t) for t in str(correct or "").split()) if t]
+    if not (_HOER_GAP_MIN_WORDS <= len(toks) <= _HOER_GAP_MAX_WORDS):
+        return False
+    return any(t not in _HOER_FUNCTION_WORDS for t in toks)
+
+
+def hoerluecke_gaps_are_hard(gaps) -> bool:
+    """True when a Hörlücke item is worth serving: ≥3 gaps (as many blanks as before —
+    only the SIZE of each blank grows), EVERY gap a Wortgruppe, and ≥7 words hidden in
+    total so the item can't be three minimal chunks either. The learner has to hear a
+    whole construction and write it out — hearing plus writing, twice the memory hook.
+
+    ONE rule shared by the build-time gate in bot_3._aufgabe_payload_from_item, the ingest
+    guard and is_degenerate_aufgabe — if these ever diverge the pool either drains
+    (generate → instantly purge) or serves one-word blanks again."""
+    if not (isinstance(gaps, list) and len(gaps) >= _HOER_MIN_GAPS):
+        return False
+    if not all(hoerluecke_gap_is_hard(_hoer_gap_correct(g)) for g in gaps):
+        return False
+    return sum(len(_hoer_gap_correct(g).split()) for g in gaps) >= _HOER_MIN_HIDDEN_WORDS
+
+
+def hoerluecke_transcript_matches_audio(transcript, gaps, satz_voll) -> bool:
+    """True when the printed text with every gap filled by its own solution is word for
+    word the text that gets read aloud. The model sometimes rewrites a detail between
+    "satz_voll" and "transcript" — then the learner hears one sentence and reads another,
+    and the "correct" answer is not what was spoken. Punctuation/case are ignored (TTS
+    doesn't pronounce commas); a differing WORD is a broken item."""
+    transcript = str(transcript or "")
+    gaps = gaps if isinstance(gaps, list) else []
+    if transcript.count("_____") != len(gaps) or not gaps:
+        return False
+    filled = transcript
+    for gap in gaps:
+        filled = filled.replace("_____", _hoer_gap_correct(gap).strip(), 1)
+
+    def _words(text):
+        return [w for w in (_norm_degenerate_token(t) for t in str(text or "").split()) if w]
+
+    return _words(filled) == _words(satz_voll)
+
+
+def hoerluecke_payload_is_hard(payload) -> bool:
+    """The whole serve-time contract for a Hörlücke item: gaps are real Wortgruppen AND
+    the printed text matches the audio. Shared by the build gate, the ingest guard and
+    is_degenerate_aufgabe."""
+    p = payload if isinstance(payload, dict) else {}
+    return (hoerluecke_gaps_are_hard(p.get("gaps"))
+            and hoerluecke_transcript_matches_audio(
+                p.get("transcript"), p.get("gaps"), p.get("satz_voll")))
+
+
+def hoerluecke_repair_item(transcript, gaps):
+    """Drop the gaps that aren't real Wortgruppen and give their words BACK to the
+    printed transcript, instead of throwing away an otherwise good 4-gap item because
+    one blank came out as "haben wir" or as a whole 7-word clause. Returns
+    (transcript, kept_gaps); the caller still validates with `hoerluecke_gaps_are_hard`.
+
+    Safe by construction: a gap's "correct" is exactly the spoken words, so splicing it
+    into its own "_____" slot reproduces the audio text verbatim."""
+    transcript = str(transcript or "")
+    gaps = gaps if isinstance(gaps, list) else []
+    segments = transcript.split("_____")
+    if len(segments) != len(gaps) + 1:   # structurally broken item — leave it to the gate
+        return transcript, gaps
+    kept, out = [], [segments[0]]
+    for gap, seg in zip(gaps, segments[1:]):
+        if hoerluecke_gap_is_hard(_hoer_gap_correct(gap)):
+            kept.append(gap)
+            out.append("_____")
+        else:
+            out.append(_hoer_gap_correct(gap).strip())
+        out.append(seg)
+    return "".join(out), kept
+
+
 def _word_after_gap(satz) -> str:
     """The first word right AFTER the "_____" gap in a sentence ('' if none)."""
     m = re.search(r"_{2,}", str(satz or ""))
@@ -1621,6 +1748,13 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
             if _norm_degenerate_token(woerter[idx]) == _norm_degenerate_token(e["correct_word"]):
                 return True
         return False
+    if fmt == "hoerluecke":
+        # Too easy to be an exercise: a legacy item with ONE single-word blank, or a
+        # multi-gap item whose gaps are single words / pure function-word chunks (a bare
+        # preposition is guessable from the printed sentence without hearing anything).
+        # Same rule as the build gate, so pre-hardening pool rows are retired on pick.
+        # Also drops items whose printed text drifted away from the spoken one.
+        return not hoerluecke_payload_is_hard(payload)
     if fmt == "wortgruppe":
         # Unanswerable without the base-form lemmas shown to the learner → it
         # becomes synonym-guessing (only the RU meaning is given). Old pre-change
@@ -1633,8 +1767,9 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
 def _purge_degenerate_aufgabe(
     table: str, *, id_col: str = "id", retire_col: str | None = None
 ) -> int:
-    """Shared: remove degenerate wortbildung/error rows from an aufgabe table
-    (bank or mistakes) by checking each candidate in Python. Returns count removed.
+    """Shared: remove degenerate wortbildung/error/wortgruppe/hoerluecke rows from an
+    aufgabe table (bank or mistakes) by checking each candidate in Python. Returns
+    count removed.
 
     When ``retire_col`` is given the rows are soft-retired (UPDATE SET <col>=TRUE)
     instead of hard-deleted: the bank is referenced by bt_3_aufgabe_dispatches via
@@ -1647,7 +1782,7 @@ def _purge_degenerate_aufgabe(
             with conn.cursor() as cur:
                 cur.execute(
                     f"SELECT {id_col}, format, payload FROM {table} "
-                    f"WHERE format IN ('wortbildung', 'error', 'wortgruppe');"
+                    f"WHERE format IN ('wortbildung', 'error', 'wortgruppe', 'hoerluecke');"
                 )
                 rows = cur.fetchall() or []
                 bad_ids = []

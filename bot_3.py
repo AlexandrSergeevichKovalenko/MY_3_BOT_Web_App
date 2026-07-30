@@ -33074,7 +33074,7 @@ def _build_aufgabe_caption(entry: dict) -> str:
     if fmt == "hoerluecke":
         return (
             "🎧 <b>Hörlücke</b> — B2+\n\n"
-            "Höre den Satz in der Mini-App und ergänze das fehlende Wort 👇"
+            "Höre den Text in der Mini-App und ergänze die fehlenden Wortgruppen 👇"
         )
     if fmt == "pin":
         return (
@@ -33439,7 +33439,8 @@ def _aufgabe_payload_from_item(fmt: str, it: dict, *, admin_chosen: bool = False
         return {"wort": wort, "accepted": pairs, **common}
     if fmt == "hoerluecke":
         # New multi-gap format: 3+ sentence text + ordered gaps. The audio (full text)
-        # is synthesized in the pool job.
+        # is synthesized in the pool job. Each gap must be a WORTGRUPPE (see the gate
+        # below) — a one-word blank is guessed from the printed rest, not heard.
         satz_voll = str(it.get("satz_voll") or "").strip()
         transcript = str(it.get("transcript") or "").strip()
         raw_gaps = it.get("gaps") or []
@@ -33453,7 +33454,20 @@ def _aufgabe_payload_from_item(fmt: str, it: dict, *, admin_chosen: bool = False
             gaps.append({"correct": gc, "aliases": [str(a) for a in (g.get("aliases") or []) if str(a).strip()]})
         if not satz_voll or not gaps or transcript.count("_____") != len(gaps):
             return None
-        return {"satz_voll": satz_voll, "transcript": transcript, "gaps": gaps, **common}
+        # Repair, then gate. The model reliably slips ONE weak blank into an otherwise
+        # good item ("haben wir", or a whole 7-word clause) — give those words back to
+        # the printed text and keep the rest, instead of burning the item. What survives
+        # must pass the SAME rule as is_degenerate_aufgabe (≥2 groups, 2–5 words each with
+        # a content word, ≥6 words hidden in total), so nothing is generated only to be
+        # purged at serve time.
+        from backend.database import hoerluecke_payload_is_hard, hoerluecke_repair_item
+        transcript, gaps = hoerluecke_repair_item(transcript, gaps)
+        payload = {"satz_voll": satz_voll, "transcript": transcript, "gaps": gaps, **common}
+        if not hoerluecke_payload_is_hard(payload):
+            logging.info("aufgabe_pool: hoerluecke item rejected (gaps too easy or text "
+                         "≠ audio), skipping (%s)", [g["correct"] for g in gaps])
+            return None
+        return payload
     if fmt == "pin":
         # image_object_key + bbox are filled in the pool job (DALL-E + vision).
         question_de = str(it.get("question_de") or "").strip()
@@ -33687,7 +33701,11 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
         return await _pin_pool_maybe_remind(level)
     from backend.openai_manager import run_generate_aufgabe
     from backend.r2_storage import r2_put_bytes
-    items = await run_generate_aufgabe(fmt, count=min(8, want + 2), level=level)
+    # hoerluecke asks for more per call: its gate is the strictest of all formats (4 word
+    # groups, ≥7 words hidden, printed text == audio), so ~half the batch is dropped and a
+    # batch of 8 wouldn't refill the pool. One extra call's worth of tokens per night.
+    batch = min(12, want + 4) if fmt == "hoerluecke" else min(8, want + 2)
+    items = await run_generate_aufgabe(fmt, count=batch, level=level)
     made = 0
     for it in items:
         payload = _aufgabe_payload_from_item(fmt, it)

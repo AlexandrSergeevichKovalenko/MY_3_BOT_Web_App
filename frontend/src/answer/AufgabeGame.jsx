@@ -199,6 +199,7 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
   const isMulti = !!transcript;
   const segments = isMulti ? transcript.split('_____') : null;
   const gapN = isMulti ? Math.max(1, segments.length - 1) : 1;
+  const gapWords = Array.isArray(task.gap_words) ? task.gap_words : [];
   const [vals, setVals] = useState(() => Array(gapN).fill(''));
   const setVal = (i, v) => setVals((prev) => { const n = [...prev]; n[i] = v; return n; });
   const allFilled = vals.every((v) => v.trim());
@@ -255,10 +256,17 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
           {segments.flatMap((seg, i) => {
             const nodes = [<span key={`s${i}`}>{seg}</span>];
             if (i < segments.length - 1) {
+              // Gaps hide word GROUPS (2–4 words), so the field grows with the text and
+              // says up front how many words are missing — otherwise the learner has to
+              // guess the shape of the task instead of listening.
+              const need = gapWords[i] || 0;
+              const typed = vals[i] || '';
               nodes.push(
-                <input key={`g${i}`} className="au-gap-input" value={vals[i] || ''}
+                <input key={`g${i}`} className="au-gap-input" value={typed}
                   onChange={(e) => setVal(i, e.target.value)}
-                  autoCapitalize="off" autoCorrect="off" placeholder="…" />
+                  size={Math.min(24, Math.max(need ? need * 7 : 10, typed.length + 2))}
+                  autoCapitalize="off" autoCorrect="off"
+                  placeholder={need > 1 ? `${need} Wörter …` : '…'} />
               );
             }
             return nodes;

@@ -1654,6 +1654,14 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
         if isinstance(gaps, list) and gaps:  # new multi-gap format
             meta["transcript"] = str(payload.get("transcript") or "")
             meta["gap_count"] = len(gaps)
+            # How MANY words each gap swallows (not which ones): gaps are word GROUPS
+            # now, so without this the learner can't tell whether one or four words are
+            # missing — that's guesswork about the task, not about German. No spoiler:
+            # the count says nothing about the words themselves.
+            meta["gap_words"] = [
+                len(str(g.get("correct") or "").split()) if isinstance(g, dict) else 0
+                for g in gaps
+            ]
         else:  # backward-compat single gap
             meta["satz_luecke"] = str(payload.get("satz_luecke") or "")
             meta["gap_count"] = 1

@@ -3912,29 +3912,61 @@ vollständig korrekt macht oder unnatürlich ist.
 Gib NUR STRICT JSON: {"valid": true, "reason": "…"}
 """,
 "aufgabe_hoerluecke": """
-Du erstellst deutsche Hörlücken-Aufgaben (Audio + mehrere fehlende Wörter) für B2–C1.
+Du erstellst deutsche Hörlücken-Aufgaben (Audio + fehlende WORTGRUPPEN) für B2–C1.
 
 Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
 
-Jede Aufgabe: ein kurzer, zusammenhängender, gut hörbarer Text aus GENAU 5 Sätzen.
-In mindestens 4 dieser Sätze wird GENAU EIN grammatisch tragendes Wort zur Lücke —
-bevorzugt eine Präposition, ein Verb mit Präposition (sich freuen ___ ), ein
-Kasus-/Artikelwort oder ein Konnektor. Es geht um HÖRVERSTEHEN + GRAMMATIK, nicht
-um Inhaltsvokabeln.
-Der/die Lernende HÖRT den ganzen Text und tippt die fehlenden Wörter der Reihe nach.
+Jede Aufgabe: ein kurzer, zusammenhängender, gut hörbarer Text aus GENAU 4 Sätzen, und in
+JEDEM dieser 4 Sätze steht GENAU EINE Lücke — also immer 4 Lücken, eine pro Satz.
+Der/die Lernende HÖRT den ganzen Text (2× maximal) und tippt die fehlenden
+Wortgruppen der Reihe nach. Es geht um HÖRVERSTEHEN + GRAMMATIK.
+
+WICHTIGSTE REGEL — eine Lücke ist NIE ein einzelnes Wort, sondern immer eine ganze
+grammatische KONSTRUKTION aus 3–4 Wörtern (mindestens 2), die man als Einheit lernt.
+Der/die Lernende soll die Konstruktion HÖREN und SCHREIBEN — zweimal eingeprägt.
+Erlaubte Lückentypen:
+  • Verb + (Reflexivpronomen +) regierte Präposition + Objekt: "kümmert sich um die Kinder",
+    "freue mich auf das Wochenende", "hängt von deiner Antwort ab"
+  • Präposition + Artikel (+ Adjektiv) + Nomen: "mit den neuen Kollegen",
+    "trotz der schlechten Nachrichten", "seit dem letzten Treffen"
+  • Nomen mit kasusmarkiertem Artikel (+ Adjektiv): "des laufenden Projekts", "den ganzen Tag"
+  • da-Wort / Konnektor + Anschluss: "darüber gesprochen", "obwohl wir müde waren"
+  • Partizip-/Infinitiv-Klammer: "rechtzeitig abgesagt worden", "früher einreichen müssen"
+VERBOTEN (zu leicht — man errät es aus dem gedruckten Restsatz, ohne zu hören):
+  • eine Lücke aus EINEM Wort (also NIE nur "auf", "im", "darüber", "Trotzdem")
+  • eine Gruppe NUR aus Funktionswörtern (Artikel/Präposition/Pronomen/Hilfsverb/Partikel):
+    NIE "auf das", "mit dem", "sich damit", "hat sich". Jede Lücke MUSS mindestens ein
+    inhaltstragendes Wort enthalten (Nomen, Vollverb, Partizip oder Adjektiv).
+  • Lücken, die zusammen weniger als 8 Wörter verstecken — dann ist der Text zu leicht.
 
 Regeln:
-- "satz_voll" = der vollständige Text (5 Sätze), wird als Audio vorgelesen — OHNE Lücken.
-- "transcript" = derselbe Text, jede Lücke als "_____" (in derselben Reihenfolge wie "gaps").
-- "gaps" = Liste IN REIHENFOLGE; je Lücke {"correct": "...", "aliases": [...]}. MINDESTENS 4 (4–5) Lücken.
-- Jede Lücke hat GENAU EINE richtige Lösung, aus dem Hören eindeutig erkennbar.
+- "satz_voll" = der vollständige Text (4 Sätze), wird als Audio vorgelesen — OHNE Lücken.
+- "transcript" = derselbe Text, jede Wortgruppe als GENAU EIN "_____" (Satzzeichen bleiben
+  stehen, in derselben Reihenfolge wie "gaps").
+- "gaps" = Liste IN REIHENFOLGE; je Lücke {"correct": "…", "aliases": [...]}. GENAU 4 Lücken —
+  eine in jedem der 4 Sätze, nie zwei Lücken im selben Satz.
+- "correct" = exakt die gesprochenen Wörter in gesprochener Reihenfolge (2–5 Wörter, im
+  Regelfall 3–4). Nie ein Wort, nie ein ganzer Nebensatz.
+- "aliases" = nur echte gleichwertige Schreibungen desselben Gehörten (z. B. "in dem Park"
+  neben "im Park"). KEINE inhaltlichen Alternativen — gehört ist gehört.
+- Sprich klar und flüssig, aber ohne Kunstpausen: die Wortgruppen müssen beim Hören
+  vollständig rekonstruierbar sein.
 - "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): welche Grammatik die
   Lücken prüfen (z. B. Verb+Präposition, Kasus) und warum. Verständlich, nicht trocken.
 - "tip" = EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Faustregel). Ohne Emoji.
 - "hint_ru" = sehr kurzer russischer Hinweis.
 
+SELBSTKONTROLLE vor der Ausgabe — für JEDE Aufgabe:
+1) 4 Sätze, "gaps" mit genau 4 Einträgen, "transcript" mit genau 4× "_____"? Sonst korrigieren.
+2) Zähle die Wörter jeder Lücke: 2–5 (Ziel 3–4)? Enthält sie mindestens ein Nomen, Vollverb,
+   Partizip oder Adjektiv? Wenn nicht, ERWEITERE die Lücke, statt sie zu kürzen:
+   "darüber" → "darüber gesprochen", "einreichen" → "früher einreichen müssen",
+   "auf" → "auf die Zusage", "mit dem" → "mit dem neuen Chef".
+3) Zähle alle versteckten Wörter zusammen: mindestens 8? Sonst Lücken vergrößern.
+4) Ergibt "transcript" mit den eingesetzten "correct"-Werten Wort für Wort wieder "satz_voll"?
+
 Gib NUR STRICT JSON:
-{"items":[{"satz_voll":"Ich freue mich sehr auf das Wochenende. Am Samstag treffe ich mich mit Freunden im Park. Wir haben schon lange darüber gesprochen. Trotzdem müssen wir noch entscheiden, wohin wir danach gehen. Vielleicht warten wir einfach auf gutes Wetter.","transcript":"Ich freue mich sehr _____ das Wochenende. Am Samstag treffe ich mich mit Freunden _____ Park. Wir haben schon lange _____ gesprochen. _____ müssen wir noch entscheiden, wohin wir danach gehen. Vielleicht warten wir einfach _____ gutes Wetter.","gaps":[{"correct":"auf","aliases":[]},{"correct":"im","aliases":[]},{"correct":"darüber","aliases":[]},{"correct":"Trotzdem","aliases":[]},{"correct":"auf","aliases":[]}],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
+{"items":[{"satz_voll":"Ich freue mich schon lange auf das lange Wochenende. Am Samstag treffe ich mich mit den neuen Kollegen im Park. Wir haben gestern Abend ausführlich darüber gesprochen, wohin wir danach gehen. Am Abend kümmert sich Jan um das Essen für alle.","transcript":"Ich freue mich schon lange _____. Am Samstag treffe ich mich _____ im Park. Wir haben gestern Abend ausführlich _____, wohin wir danach gehen. Am Abend kümmert sich Jan _____.","gaps":[{"correct":"auf das lange Wochenende","aliases":[]},{"correct":"mit den neuen Kollegen","aliases":[]},{"correct":"darüber gesprochen","aliases":[]},{"correct":"um das Essen für alle","aliases":[]}],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_satzbau": """
@@ -7201,13 +7233,26 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
     #  - wortbildung: derived noun == stem (e.g. "krise" → "Krise");
     #  - error: the tapped token already equals the correction (no real error,
     #    e.g. "zumachen?" → "zumachen");
-    #  - wortgruppe: missing base-form "lemmas" → unanswerable synonym-guessing.
+    #  - wortgruppe: missing base-form "lemmas" → unanswerable synonym-guessing;
+    #  - hoerluecke: a gap that is one word / only function words ("auf", "auf das") —
+    #    dropping it HERE also saves the TTS+R2 spend of the pool job. Weak blanks are
+    #    first given back to the printed text (same repair as the build gate), so one
+    #    sloppy gap doesn't cost the whole item.
     fmt = str(format or "").strip().lower()
-    if fmt in ("wortbildung", "error", "wortgruppe"):
+    if fmt in ("wortbildung", "error", "wortgruppe", "hoerluecke"):
         try:
             from backend.database import is_degenerate_aufgabe
         except Exception:
             is_degenerate_aufgabe = None
+        if fmt == "hoerluecke":
+            try:
+                from backend.database import hoerluecke_repair_item
+                for it in items:
+                    if isinstance(it, dict):
+                        it["transcript"], it["gaps"] = hoerluecke_repair_item(
+                            it.get("transcript"), it.get("gaps"))
+            except Exception:
+                logging.warning("aufgabe hoerluecke: gap repair failed", exc_info=True)
         if is_degenerate_aufgabe is not None:
             kept = []
             for it in items:
