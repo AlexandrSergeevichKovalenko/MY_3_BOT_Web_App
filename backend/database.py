@@ -17793,14 +17793,42 @@ def fetch_random_pool_words(
         if str(x or "").strip()
     }
 
+    # В пуле лежит не только словарь: люди сохраняют оттуда фразы и целые предложения
+    # из читалки и новостей. Замер 30.07.2026 по паре ru/de: из 14 339 разных значений
+    # word_de одиночных слов только 26.7%, каждое пятое — предложение с точкой, 17%
+    # длиннее 40 символов. Без фильтра такое прилетало в варианты ответа: рядом со
+    # словом стояло «1972 erkannte die USA China an.» — и правильный ответ был очевиден,
+    # а экран выглядел сломанным. Берём только то, что похоже на словарную единицу.
+    alphabet_guard = (
+        f" AND TRIM({word_col}) !~ '[А-Яа-яЁё]' " if word_col == "word_de"
+        else f" AND TRIM({word_col}) ~ '[А-Яа-яЁё]' "
+    )
+    word_shaped_guard = (
+        f" AND TRIM({word_col}) !~ '[.!?…]' "
+        f" AND length(TRIM({word_col})) <= 32 "
+        # Не больше двух значимых слов: одиночное слово или короткая связка
+        # («eine Auffassung vertreten»), но не фраза и не предложение.
+        f" AND COALESCE(array_length(regexp_split_to_array("
+        f"     regexp_replace(TRIM({word_col}), "
+        f"     '^(der|die|das|ein|eine|einen|einem|einer|eines)\\s+', '', 'i'), '\\s+'), 1), 1) <= 2 "
+    ) + alphabet_guard
+
     def _fetch(cur) -> list[str]:
+        # DISTINCT + ORDER BY RANDOM() в одном запросе Postgres не принимает
+        # («for SELECT DISTINCT, ORDER BY expressions must appear in select list»),
+        # поэтому раньше запрос падал ВСЕГДА, а доливка вариантов молча не работала:
+        # в сессии с одним словом квиз оставался с одним вариантом. Сначала берём
+        # уникальные значения, случайный порядок применяем снаружи.
         cur.execute(
             f"""
-            SELECT DISTINCT NULLIF(TRIM({word_col}), '') AS w
-            FROM bt_3_dictionary_entries
-            WHERE ((source_lang = %s AND target_lang = %s)
-                OR (source_lang = %s AND target_lang = %s))
-              AND NULLIF(TRIM({word_col}), '') IS NOT NULL
+            SELECT w FROM (
+                SELECT DISTINCT NULLIF(TRIM({word_col}), '') AS w
+                FROM bt_3_dictionary_entries
+                WHERE ((source_lang = %s AND target_lang = %s)
+                    OR (source_lang = %s AND target_lang = %s))
+                  AND NULLIF(TRIM({word_col}), '') IS NOT NULL
+                  {word_shaped_guard}
+            ) AS candidates
             ORDER BY RANDOM()
             LIMIT %s;
             """,
