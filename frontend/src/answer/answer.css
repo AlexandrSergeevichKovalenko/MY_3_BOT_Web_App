@@ -806,6 +806,32 @@ html[data-scheme="light"] .au-fix-word { color: #475569; }
 .au-err-hint { margin-top: 4px; font-size: 13px; color: var(--dmps-text-muted, #94A3B8); }
 html[data-scheme="light"] .au-err-correct { color: #0f172a; }
 html[data-scheme="light"] .au-err-explain { color: #334155; }
+
+/* Hörlücke review: one row per gap — the spoken group over what the learner typed. */
+.au-gap-list { display: flex; flex-direction: column; gap: 8px; }
+.au-gap-row {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 12px;
+  background: rgba(148,163,184,0.08); border: 1px solid var(--dmps-border, #334155);
+  border-left: 3px solid var(--dmps-border, #334155);
+}
+.au-gap-row.ok { border-left-color: #22c55e; }
+.au-gap-row.bad { border-left-color: #ef4444; }
+.au-gap-n {
+  flex: 0 0 auto; min-width: 20px; height: 20px; margin-top: 2px; border-radius: 6px;
+  font-size: 12px; font-weight: 800; line-height: 20px; text-align: center;
+  color: var(--dmps-text-muted, #94A3B8); background: rgba(148,163,184,0.16);
+}
+.au-gap-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.au-gap-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.au-gap-tag {
+  flex: 0 0 auto; font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+  text-transform: uppercase; color: var(--dmps-text-muted, #94A3B8);
+}
+.au-gap-tag.dim { opacity: 0.8; }
+.au-gap-correct { font-size: 15px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
+.au-gap-mine { font-size: 15px; font-weight: 600; color: #ef4444; }
+.au-gap-icon { flex: 0 0 auto; margin-top: 1px; }
+html[data-scheme="light"] .au-gap-correct { color: #0f172a; }
 .au-question { font-size: 16px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); margin: 0; }
 .pin-wrap {
   position: relative; width: 100%; border-radius: var(--dmps-radius-inner, 20px);

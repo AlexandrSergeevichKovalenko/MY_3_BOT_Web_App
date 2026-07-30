@@ -401,6 +401,9 @@ function AufgabeResult({ result }) {
   const correct = result.correct_word || '';
   const mine = result.user_answer || '';
   const isErr = result.format === 'error' && Array.isArray(result.errors);
+  // Hörlücke: gap by gap — what was spoken vs. what the learner typed. The joined
+  // "Richtige Antwort" line alone hides WHICH group went wrong and what they wrote.
+  const hoerGaps = result.format === 'hoerluecke' && Array.isArray(result.gaps) ? result.gaps : null;
   const showDiff = !good && result.is_sentence && !!mine && !!correct;
   const diff = showDiff ? wordDiff(mine, correct) : null;
   const saveable = result.saveable || [];
@@ -443,6 +446,27 @@ function AufgabeResult({ result }) {
             );
           })}
         </div>
+      ) : hoerGaps ? (
+        <div className="au-gap-list">
+          {hoerGaps.map((g) => (
+            <div className={`au-gap-row ${g.ok ? 'ok' : 'bad'}`} key={g.n}>
+              <span className="au-gap-n">{g.n}</span>
+              <div className="au-gap-body">
+                <div className="au-gap-line">
+                  <span className="au-gap-tag">Richtig</span>
+                  <b className="au-gap-correct">{g.correct}</b>
+                </div>
+                {g.ok ? null : (
+                  <div className="au-gap-line">
+                    <span className="au-gap-tag dim">Du</span>
+                    <span className="au-gap-mine">{g.user || '—'}</span>
+                  </div>
+                )}
+              </div>
+              <span className="au-gap-icon">{g.ok ? '✅' : '❌'}</span>
+            </div>
+          ))}
+        </div>
       ) : good ? (
         <div className="ans-answer"><b>{correct}</b></div>
       ) : showDiff ? (
@@ -466,7 +490,8 @@ function AufgabeResult({ result }) {
           {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
         </div>
       )}
-      {!isErr && good && result.hint_ru ? <div className="ans-meaning">{result.hint_ru}</div> : null}
+      {(!isErr && good && result.hint_ru) || (hoerGaps && result.hint_ru)
+        ? <div className="ans-meaning">{result.hint_ru}</div> : null}
       {result.format === 'pin' && !good && result.image_url ? (
         <div className="pin-result">
           <div className="pin-result-wrap">

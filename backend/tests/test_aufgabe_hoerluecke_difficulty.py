@@ -10,7 +10,7 @@ drains (generate → instantly purge) or serves one-word blanks again.
 import unittest
 
 import bot_3
-from backend.answer_eval import _check_aufgabe, aufgabe_client_meta
+from backend.answer_eval import _aufgabe_result_payload, _check_aufgabe, aufgabe_client_meta
 from backend.database import (
     hoerluecke_gap_is_hard, hoerluecke_gaps_are_hard, hoerluecke_repair_item,
     hoerluecke_transcript_matches_audio, is_degenerate_aufgabe,
@@ -201,6 +201,37 @@ class HoerlueckeAnswerTests(unittest.TestCase):
         self.assertFalse(_check_aufgabe(  # wrong order inside the group
             "hoerluecke", self.payload,
             "auf das Wochenende|mit den neuen Kollegen|gesprochen darüber"))
+
+    def test_result_compares_every_gap_with_what_was_typed(self) -> None:
+        # The review must answer "where exactly did I go wrong": each gap shows the
+        # spoken group AND the learner's own text, not one joined correct-answer line.
+        dispatch = {"format": "hoerluecke", "payload": self.payload}
+        typed = "auf das Wochenende|mit den Kollegen|darüber geschrieben"
+        res = _aufgabe_result_payload(dispatch, is_correct=False, already_answered=False,
+                                      user_answer=typed)
+        self.assertEqual([(g["n"], g["ok"]) for g in res["gaps"]],
+                         [(1, True), (2, False), (3, False)])
+        self.assertEqual([g["user"] for g in res["gaps"]],
+                         ["auf das Wochenende", "mit den Kollegen", "darüber geschrieben"])
+        self.assertEqual([g["correct"] for g in res["gaps"]],
+                         [g["correct"] for g in self.payload["gaps"]])
+
+    def test_result_never_marks_an_accepted_answer_wrong(self) -> None:
+        # Row verdicts use the grader's own matcher: an alias / umlaut-free spelling that
+        # the grader accepts must not show up as ❌ in the review.
+        dispatch = {"format": "hoerluecke", "payload": self.payload}
+        typed = "AUF DAS WOCHENENDE|mit den neuen Kollegen|darueber gesprochen"
+        self.assertTrue(_check_aufgabe("hoerluecke", self.payload, typed))
+        res = _aufgabe_result_payload(dispatch, is_correct=True, already_answered=False,
+                                      user_answer=typed)
+        self.assertTrue(all(g["ok"] for g in res["gaps"]))
+
+    def test_result_marks_an_unanswered_gap(self) -> None:
+        dispatch = {"format": "hoerluecke", "payload": self.payload}
+        res = _aufgabe_result_payload(dispatch, is_correct=False, already_answered=False,
+                                      user_answer="auf das Wochenende")
+        self.assertEqual([g["user"] for g in res["gaps"]], ["auf das Wochenende", "", ""])
+        self.assertEqual([g["ok"] for g in res["gaps"]], [True, False, False])
 
     def test_client_meta_reveals_only_the_word_count(self) -> None:
         meta = aufgabe_client_meta("hoerluecke", self.payload)

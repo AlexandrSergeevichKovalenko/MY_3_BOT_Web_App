@@ -1553,6 +1553,27 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
                 result["image_url"] = ""
         tap, _article = _parse_pin_answer(user_answer)
         result["tap"] = {"x": tap[0], "y": tap[1]} if tap else None
+    if fmt == "hoerluecke":
+        gaps = payload.get("gaps")
+        if isinstance(gaps, list) and gaps:
+            # Per-gap comparison. A single joined "Richtige Antwort: …" line leaves the
+            # learner unable to see WHICH group they got wrong and what they actually
+            # typed there — the one thing the review is for. Same matcher as the grader,
+            # so a row can never say ❌ for an answer the grader accepted.
+            typed = [p.strip() for p in str(user_answer or "").split("|")]
+            review = []
+            for i, g in enumerate(gaps):
+                correct = str(g.get("correct") or "")
+                mine = typed[i] if i < len(typed) else ""
+                cands = [correct] + [str(a) for a in (g.get("aliases") or [])]
+                review.append({
+                    "n": i + 1,
+                    "correct": correct,
+                    "user": mine,
+                    "ok": any(check_quiz_freeform_deterministic(user_text=mine, correct_text=c)
+                              for c in cands if str(c).strip()),
+                })
+            result["gaps"] = review
     return result
 
 
