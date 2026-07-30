@@ -55,10 +55,15 @@ learning, **the tests are the practical way to run backend code** — see §3.
 
 ## 3. The tests: how to run them and why they're the best learning tool
 
-Our tests use **pytest**. They live in `backend/tests/` (there are ~100 files, one per feature, e.g.
+Our tests use **pytest**. They live in `backend/tests/` (82 files, one per feature, e.g.
 `test_dictionary_lookup_free_limit.py`, `test_fsrs_scheduler.py`). A test is a small Python function
 that calls our real code with fixed inputs and asserts the output — so **it's a runnable, correct
 example of how a function is meant to be used**.
+
+> 🧪 **The full deep-dive is [tests_and_pre_push_hook.md](tests_and_pre_push_hook.md):** the pre-push
+> git hook that runs the whole suite before every `git push` (and blocks red), how the tests are
+> built (pytest/unittest, `conftest.py`, hermetic no-DB rule), two tests dissected line-by-line, and
+> a map of all 82 files by area. Read it when you want to *understand the whole test process*.
 
 ### Running them
 

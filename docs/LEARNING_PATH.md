@@ -141,6 +141,7 @@
 справочники «с нуля», с синтаксисом и примерами на нашем репо:
 - 🧰 [toolbox/cli_commands.md](toolbox/cli_commands.md) — команды терминала для чтения/поиска кода.
 - 🧰 [toolbox/running_and_testing.md](toolbox/running_and_testing.md) — как запускать фронт/бэк и тесты.
+- 🧪 [toolbox/tests_and_pre_push_hook.md](toolbox/tests_and_pre_push_hook.md) — pre-push хук (тесты перед каждым push) + разбор всех 82 тестов: методики, библиотеки, 2 теста построчно.
 - 🧰 [toolbox/backend_interaction.md](toolbox/backend_interaction.md) — `curl` к нашим эндпоинтам, деплой, логи, БД.
 - 🧰 [toolbox/stack_explained.md](toolbox/stack_explained.md) — **глоссарий всех технологий**: JS, JSX, Node, npm, Vite, React, Flask, gunicorn, Postgres, Redis, Dramatiq, Docker, Railway… — что это, зачем, где у нас, ссылки.
 
