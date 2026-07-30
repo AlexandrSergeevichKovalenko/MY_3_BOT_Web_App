@@ -48626,19 +48626,37 @@ def set_article_sprint_theme_active(theme_key: str, active: bool) -> bool:
     return changed
 
 
+def _coerce_json_list(value) -> list:
+    """JSONB-массив из базы: иногда приходит строкой, иногда уже списком."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            import json as _json
+            parsed = _json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
 def get_article_sprint_theme(theme_key: str) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT theme_key, label_de, label_ru, target_count, active "
+                "SELECT theme_key, label_de, label_ru, target_count, active, subtopics_json "
                 "FROM bt_3_article_sprint_themes WHERE theme_key = %s;",
                 (str(theme_key),),
             )
             r = cursor.fetchone()
     if not r:
         return None
+    # Подтемы отдаём вместе с темой: по ним генератор просит слова порциями, иначе
+    # набирает сотню синонимов одного смысла.
+    subtopics = r[5] if isinstance(r[5], list) else _coerce_json_list(r[5])
     return {"theme_key": r[0], "label_de": r[1], "label_ru": r[2],
-            "target_count": int(r[3] or 0), "active": bool(r[4])}
+            "target_count": int(r[3] or 0), "active": bool(r[4]),
+            "subtopics": [str(x).strip() for x in (subtopics or []) if str(x).strip()]}
 
 
 def count_article_sprint_nouns(theme_key: str, *, verified_only: bool = True) -> int:
