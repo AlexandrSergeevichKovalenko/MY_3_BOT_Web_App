@@ -129,6 +129,37 @@ def is_ambiguous_noun(word: str) -> bool:
     return is_inflected_form_of_another_word(word)
 
 
+def apply_reference_plurals(rows: list[dict]) -> int:
+    """Поставить строкам множественное из справочника — ДЛЯ ИХ АРТИКЛЯ. → сколько заменено.
+
+    Форма множественного принадлежит паре «слово + артикль», а не написанию: у der Band
+    это Bände, у das Band — Bänder, у die Band — Bands. Модель этого не различает: она
+    не знает, какой смысл взяли, и выдаёт одну форму на написание — на двуродовых словах
+    промах гарантирован. Поэтому справочник главнее, модель остаётся подстраховкой.
+
+    Пачкой, а не по слову: иначе на раунд заливки уходит полторы сотни запросов.
+    Справочник молчит (сеть, 429) — оставляем что было; это «нет ответа», а не «нет формы».
+    """
+    words = sorted({str(r.get("word") or "").strip() for r in rows if r.get("word")})
+    if not words:
+        return 0
+    try:
+        from backend.article_wiktionary_ref import plurals_by_article_for_titles
+        by_title = plurals_by_article_for_titles(words) or {}
+    except Exception:
+        logging.warning("plural: справочник недоступен, оставляем формы от модели", exc_info=True)
+        return 0
+    fixed = 0
+    for r in rows:
+        word = str(r.get("word") or "").strip()
+        article = str(r.get("article") or "").strip().lower()
+        plural = ((by_title.get(word) or {}).get(article) or "").strip()
+        if plural and plural != str(r.get("plural") or "").strip():
+            r["plural"] = plural
+            fixed += 1
+    return fixed
+
+
 def strong_gender(word: str) -> str | None:
     """Return der/die/das if a HIGH-confidence rule decides it, else None.
     Conservative: compound-head map first, then only low-exception suffixes with a
@@ -382,6 +413,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
 
         if added + len(rows) > cap:
             rows = rows[: max(0, cap - added)]
+        apply_reference_plurals(rows)
         if rows:
             res = insert_article_sprint_nouns(theme_key, rows)
             added += int(res.get("inserted") or 0)

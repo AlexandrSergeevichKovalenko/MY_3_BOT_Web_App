@@ -210,6 +210,41 @@ def form_facts_for_titles(titles: list[str]) -> dict[str, dict]:
             for title, text in pages.items() if text}
 
 
+def plurals_by_article_from_wikitext(wikitext: str) -> dict:
+    """{'der': 'Bände', 'das': 'Bänder', 'die': 'Bands'} — множественное ДЛЯ КАЖДОГО РОДА.
+
+    Форма множественного принадлежит паре «слово + артикль», а не написанию: у der Band
+    это Bände, у das Band — Bänder, у die Band — Bands. Кто берёт одну форму на всё
+    написание, врёт двум смыслам из трёх, а у двуродовых слов таких смыслов всегда
+    больше одного.
+
+    Пары «род → форма» читаются из ОДНОГО блока-обзора: в нём и Genus, и Nominativ
+    Plural, так что связь однозначная и догадываться не нужно. Из нескольких форм одного
+    рода берём первую — в справочнике она основная (Bänder перед Bande). Прочерк значит
+    «множественного нет» (das Pik), и такой род просто не попадает в ответ.
+    """
+    block = _german_section(wikitext)
+    out: dict = {}
+    for tmpl in _OVERVIEW.findall(block):
+        plurals = [v.strip() for kind, v in _UEBERSICHT_FIELD.findall(tmpl)
+                   if kind == "Plural" and v.strip() not in _EMPTY_FIELD_VALUES]
+        if not plurals:
+            continue
+        for letter in _GENUS.findall(tmpl):
+            article = _GENUS_TO_ARTICLE.get(letter)
+            if article and article not in out:
+                out[article] = plurals[0]
+    return out
+
+
+def plurals_by_article_for_titles(titles: list[str]) -> dict[str, dict]:
+    """Сетевой разбор пачки → {title: {article: plural}}. Пустой ответ на пачку
+    (сеть или 429) — это {} : вызывающий отступает, а не считает формы отсутствующими."""
+    pages = _fetch_wikitext([str(t).strip() for t in titles if str(t).strip()])
+    return {title: plurals_by_article_from_wikitext(text)
+            for title, text in pages.items() if text}
+
+
 def genus_for_titles(titles: list[str]) -> dict[str, str]:
     """Cache-aware genus lookup for a set of exact page titles.
     Returns {title: genus-code} — sorted genus letters ('m','fm',…) or '-' — for
