@@ -91,6 +91,7 @@ from backend.background_jobs import (  # noqa: E402
     run_admin_economics_report_actor,
     run_cap_health_report_actor,
     run_article_review_dm_actor,
+    run_retire_review_dm_actor,
     run_wiktionary_warm_actor,
     run_monthly_budget_policy_actor,
     run_german_form_index_warm_actor,
@@ -414,6 +415,10 @@ def _dispatch_german_form_index_warm() -> None:
 
 def _dispatch_article_review_dm() -> None:
     run_article_review_dm_actor.send()
+
+
+def _dispatch_retire_review_dm() -> None:
+    run_retire_review_dm_actor.send()
 
 
 def _dispatch_weekly_global_ranking_report() -> None:
@@ -809,6 +814,21 @@ def _build_scheduler():
             hour=_int_env("ARTICLE_REVIEW_HOUR", 11),
             minute=_int_env("ARTICLE_REVIEW_MINUTE", 30),
             timezone=_tz(os.getenv("ARTICLE_REVIEW_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
+    # -- Снятые слова на проверку: чистка словника убрала 2 929 слов, и владелец их не
+    # видит. Раз в день шлём порцию тех, что по частотности выглядят ходовыми, с кнопками
+    # «вернуть / мусор». Очередь конечная (145 слов), кончится — рассылка сама замолчит.
+    if _enabled("RETIRE_REVIEW_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_retire_review_dm,
+            "cron",
+            hour=_int_env("RETIRE_REVIEW_HOUR", 12),
+            minute=_int_env("RETIRE_REVIEW_MINUTE", 30),
+            timezone=_tz(os.getenv("RETIRE_REVIEW_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,

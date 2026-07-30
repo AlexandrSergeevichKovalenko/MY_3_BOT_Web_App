@@ -2421,6 +2421,13 @@ def run_article_review_dm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_retire_review_dm_actor() -> None:
+    """Личка со снятыми словами, которые по частотности выглядят ходовыми."""
+    from backend.article_retire_review import send_retire_review_dm
+    send_retire_review_dm()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_tts_prewarm_scheduler_actor() -> None:
     from backend.tts_scheduler import run_tts_prewarm_scheduler_job
     run_tts_prewarm_scheduler_job()

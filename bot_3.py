@@ -12107,6 +12107,60 @@ async def handle_artikel_review_command(update: Update, context: CallbackContext
         await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
 
 
+async def handle_artikel_retired_command(update: Update, context: CallbackContext) -> None:
+    """/artikel_retired — позвать разбор снятых слов сейчас, не дожидаясь расписания."""
+    user = update.effective_user
+    if not user or not _is_admin_user(user.id):
+        return
+    await update.message.reply_text("Собираю снятые слова, которые выглядят ходовыми…")
+    try:
+        from backend.article_retire_review import send_retire_review_dm
+        res = await asyncio.to_thread(send_retire_review_dm, force=True)
+    except Exception:
+        logging.warning("artikel_retired failed", exc_info=True)
+        await update.message.reply_text("Не получилось. Подробности в логах.")
+        return
+    if res.get("reason") == "nothing_to_review":
+        await update.message.reply_text("Спорных снятых слов нет — разбирать нечего 🎉")
+    elif not res.get("ok"):
+        await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
+
+
+async def handle_retire_review_callback(update: Update, context: CallbackContext) -> None:
+    """Тап «вернуть в игру» / «мусор» по снятому слову в личке."""
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")   # artret:<back|keep>:<row_id>
+    action = parts[1] if len(parts) > 1 else ""
+    row_id = parts[2] if len(parts) > 2 else ""
+    if not action or not str(row_id).isdigit():
+        await query.answer("Не понял кнопку.", show_alert=True)
+        return
+    await query.answer("Записываю…", show_alert=False)
+    try:
+        from backend.article_retire_review import apply_retire_review
+        text = await asyncio.to_thread(apply_retire_review, action, int(row_id))
+    except Exception:
+        logging.warning("retire review action failed", exc_info=True)
+        try:
+            await query.message.reply_text("Не получилось записать. Подробности в логах.")
+        except Exception:
+            pass
+        return
+    try:
+        await query.edit_message_text(text, parse_mode="HTML")
+    except Exception:
+        try:
+            await query.message.reply_text(text, parse_mode="HTML")
+        except Exception:
+            logging.warning("retire review reply failed", exc_info=True)
+
+
 async def handle_article_review_callback(update: Update, context: CallbackContext) -> None:
     """Тап по der/die/das в личке: артикль записан → слово сразу уходит в тренировку.
 
@@ -40534,6 +40588,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
     application.add_handler(CallbackQueryHandler(handle_article_review_callback, pattern=r"^artrev:"))
+    application.add_handler(CallbackQueryHandler(handle_retire_review_callback, pattern=r"^artret:"))
     application.add_handler(CommandHandler("artikel_review", handle_artikel_review_command))
     application.add_handler(CommandHandler("wiktionary_warm", handle_wiktionary_warm_command))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
@@ -40623,6 +40678,7 @@ def main():
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
     application.add_handler(CommandHandler("artikel_audit", admin_artikel_audit_command))
     application.add_handler(CommandHandler("artikel_blacklist", admin_artikel_blacklist_command))
+    application.add_handler(CommandHandler("artikel_retired", handle_artikel_retired_command))
     application.add_handler(CommandHandler("artikel_fixarticles", admin_artikel_fixarticles_command))
     application.add_handler(CommandHandler("artikel_seed_twogender", admin_artikel_seed_twogender_command))
     application.add_handler(CommandHandler("artikel_play", admin_artikel_play_command))

@@ -47692,6 +47692,12 @@ def ensure_article_sprint_schema() -> None:
                 ON bt_3_article_sprint_nouns (theme_key, verified, retired);
                 """
             )
+            # Снятое слово, которое уже показывали владельцу на разбор («вернуть/мусор»).
+            # Без этой пометки одна и та же порция приходила бы в личку каждый день.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS retire_reviewed BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
             # Стоп-лист: слова, которые набор УЖЕ отверг. Раньше отказ жил только в
             # логе, поэтому каждую ночь модель предлагала тот же «der Föhnsturm», и мы
             # заново платили за вопрос «нужно ли это слово в быту». Теперь отказ
@@ -48886,6 +48892,113 @@ def list_article_sprint_words(theme_key: str) -> list[str]:
             )
             rows = cursor.fetchall() or []
     return [str(r[0]) for r in rows if r and r[0]]
+
+
+def _retired_review_rows(max_rank: int) -> list[dict]:
+    """Снятые слова, которые ещё не разбирали, отсортированные «сначала самое ходовое».
+
+    Частотность считаем на месте: колонка freq_rank в банке пустая (0 из 2 929), а
+    частотный список лежит рядом с кодом и стоит один проход по памяти. Слова, которых
+    в списке нет вовсе (2 784 из 2 929), не спрашиваем совсем — это и есть тот хлам,
+    ради которого чистку затевали."""
+    from backend.article_word_gate import word_rank
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, word, article, meaning_ru, theme_key "
+                "FROM bt_3_article_sprint_nouns "
+                "WHERE retired AND NOT COALESCE(retire_reviewed, FALSE);"
+            )
+            rows = cursor.fetchall() or []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for r in rows:
+        word = str(r[1] or "")
+        rank = word_rank(word)
+        if not rank or rank > int(max_rank):
+            continue
+        key = word.lower()
+        if key in seen:  # одно и то же слово в нескольких темах — спрашиваем один раз
+            continue
+        seen.add(key)
+        out.append({"id": int(r[0]), "word": word, "article": str(r[2] or ""),
+                    "meaning_ru": str(r[3] or ""), "theme_key": str(r[4] or ""), "rank": int(rank)})
+    out.sort(key=lambda x: x["rank"])
+    return out
+
+
+def list_retired_review_candidates(*, limit: int = 10, max_rank: int = 60000) -> list[dict]:
+    """Порция спорных снятых слов для разбора в личке."""
+    try:
+        return _retired_review_rows(int(max_rank))[: max(1, int(limit))]
+    except Exception:
+        logging.warning("list_retired_review_candidates failed", exc_info=True)
+        return []
+
+
+def count_retired_review_candidates(*, max_rank: int = 60000) -> int:
+    """Сколько спорных снятых слов ещё ждут решения."""
+    try:
+        return len(_retired_review_rows(int(max_rank)))
+    except Exception:
+        logging.warning("count_retired_review_candidates failed", exc_info=True)
+        return 0
+
+
+def restore_retired_article_noun(row_id: int) -> dict | None:
+    """Вернуть слово в игру: снимаем retired, помечаем разобранным и убираем из стоп-листа.
+
+    Возвращаем ВСЕ строки этого слова (оно могло быть снято в нескольких темах) — иначе
+    человек нажал «вернуть», а слово вернулось только в одной теме."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT word, article FROM bt_3_article_sprint_nouns WHERE id = %s;", (int(row_id),)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                word, article = str(row[0]), str(row[1] or "")
+                cursor.execute(
+                    "UPDATE bt_3_article_sprint_nouns "
+                    "SET retired = FALSE, retire_reviewed = TRUE, updated_at = NOW() "
+                    "WHERE lower(word) = lower(%s) AND retired;",
+                    (word,),
+                )
+                cursor.execute(
+                    "DELETE FROM bt_3_article_word_blacklist WHERE word = lower(%s);", (word,)
+                )
+            conn.commit()
+        return {"word": word, "article": article}
+    except Exception:
+        logging.warning("restore_retired_article_noun failed id=%s", row_id, exc_info=True)
+        return None
+
+
+def keep_retired_article_noun(row_id: int) -> dict | None:
+    """Оставить слово снятым: помечаем разобранным и заносим в стоп-лист навсегда."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT word FROM bt_3_article_sprint_nouns WHERE id = %s;", (int(row_id),)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                word = str(row[0])
+                cursor.execute(
+                    "UPDATE bt_3_article_sprint_nouns SET retire_reviewed = TRUE, updated_at = NOW() "
+                    "WHERE lower(word) = lower(%s);",
+                    (word,),
+                )
+            conn.commit()
+        blacklist_article_words([(word, "владелец: мусор", "")])
+        return {"word": word}
+    except Exception:
+        logging.warning("keep_retired_article_noun failed id=%s", row_id, exc_info=True)
+        return None
 
 
 def blacklist_article_words(items) -> int:
