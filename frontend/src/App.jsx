@@ -6475,6 +6475,9 @@ function AppInner() {
   const [selectionInlineLookup, setSelectionInlineLookup] = useState({ loading: false, word: '', translation: '', direction: '', provider: '' });
   const [selectionLookupLoading, setSelectionLookupLoading] = useState(false);
   const [selectionGptOpen, setSelectionGptOpen] = useState(false);
+  // Слово, по которому открыт GPT-разбор. Живое выделение (selectionText) гаснет от
+  // первого касания внутри шита, поэтому слово фиксируем один раз при открытии.
+  const [selectionGptWord, setSelectionGptWord] = useState('');
   const [selectionGptLoading, setSelectionGptLoading] = useState(false);
   const [selectionGptError, setSelectionGptError] = useState('');
   // Lightweight app toast: a soft, self-dismissing message (7s) in our style —
@@ -23329,6 +23332,10 @@ function AppInner() {
     };
   };
 
+  // Слово для сохранения берём из зафиксированного при открытии шита, а не из живого
+  // выделения: выделение снимается, как только палец касается шита.
+  const getSelectionGptWordText = () => normalizeSelectionText(selectionGptWord || selectionText);
+
   const resetSelectionGptSaveState = () => {
     setSelectionGptSaveOriginalChecked(true);
     setSelectionGptSaveExamplesChecked({});
@@ -23569,7 +23576,7 @@ function AppInner() {
       },
       originMeta: {
         source_kind: 'gpt_example',
-        source_word: normalizeSelectionText(selectionText),
+        source_word: getSelectionGptWordText(),
         example_index: exampleIndex + 1,
       },
     });
@@ -23584,7 +23591,8 @@ function AppInner() {
     const selectedExamples = (Array.isArray(selectionGptData.examples) ? selectionGptData.examples : [])
       .map((item, index) => ({ text: String(item || '').trim(), index }))
       .filter((item) => Boolean(selectionGptSaveExamplesChecked[item.index]) && Boolean(item.text));
-    const shouldSaveOriginal = Boolean(selectionGptSaveOriginalChecked && normalizeSelectionText(selectionText));
+    const originalWord = getSelectionGptWordText();
+    const shouldSaveOriginal = Boolean(selectionGptSaveOriginalChecked && originalWord);
     if (!shouldSaveOriginal && selectedExamples.length === 0) {
       setSelectionGptSaveError(tr('Выберите слово или минимум один пример.', 'Wähle ein Wort oder mindestens ein Beispiel.'));
       setSelectionGptSaveMessage('');
@@ -23603,7 +23611,7 @@ function AppInner() {
       const failedItems = [];
       if (shouldSaveOriginal) {
         try {
-          const saved = await saveSelectionGptOriginalWord(selectionText);
+          const saved = await saveSelectionGptOriginalWord(originalWord);
           if (saved) savedCount += 1;
         } catch (error) {
           failedItems.push(tr(
@@ -23647,6 +23655,7 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    setSelectionGptWord(cleaned);
     setSelectionGptOpen(true);
     setSelectionGptLoading(true);
     setSelectionGptError('');
@@ -23681,6 +23690,7 @@ function AppInner() {
       // show on error, so close the sheet and float a friendly self-dismissing message.
       const msg = String(error?.message || tr('Не удалось получить объяснение. Попробуй ещё раз.', 'Erklärung fehlgeschlagen. Bitte nochmal versuchen.'));
       setSelectionGptOpen(false);
+      setSelectionGptWord('');
       resetSelectionGptSaveState();
       showAppToast(msg);
     } finally {
@@ -23690,6 +23700,7 @@ function AppInner() {
 
   const closeSelectionGptSheet = () => {
     setSelectionGptOpen(false);
+    setSelectionGptWord('');
     setSelectionGptLoading(false);
     setSelectionGptError('');
     resetSelectionGptSaveState();
@@ -42456,7 +42467,7 @@ function AppInner() {
                     </button>
                   </div>
                   <div className="webapp-muted" style={{ fontSize: 13, fontStyle: 'italic' }}>
-                    {selectionText}
+                    {getSelectionGptWordText()}
                   </div>
                   {selectionGptLoading && <div className="webapp-muted" style={{ fontSize: 14 }}>{tr('Готовим объяснение...', 'Erklärung wird vorbereitet...')}</div>}
                   {selectionGptError && <div className="webapp-error">{selectionGptError}</div>}
@@ -42513,7 +42524,12 @@ function AppInner() {
                             }}
                           />
                           <span>
-                            {tr('Оригинальное слово (с артиклем, если это существительное)', 'Originalwort (mit Artikel, falls es ein Nomen ist)')}
+                            {getSelectionGptWordText()
+                              ? tr(
+                                `Слово «${getSelectionGptWordText()}» — с артиклем, если существительное`,
+                                `Wort „${getSelectionGptWordText()}“ — mit Artikel, falls Nomen`
+                              )
+                              : tr('Оригинальное слово (с артиклем, если это существительное)', 'Originalwort (mit Artikel, falls es ein Nomen ist)')}
                           </span>
                         </label>
                         <div className="webapp-gpt-save-actions">
@@ -42528,7 +42544,7 @@ function AppInner() {
                               : tr('Сохранить в словарь', 'Ins Wörterbuch speichern')}
                           </button>
                           <span className="webapp-muted" style={{ fontSize: 11 }}>
-                            {tr('Можно выбрать одно или несколько значений', 'Du kannst einen oder mehrere Einträge wählen')}
+                            {tr('Примеры — по желанию: можно сохранить только слово', 'Beispiele sind optional: du kannst nur das Wort speichern')}
                           </span>
                         </div>
                         {selectionGptSaveMessage && (
