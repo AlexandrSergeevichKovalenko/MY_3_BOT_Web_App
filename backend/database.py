@@ -33044,14 +33044,23 @@ def archive_reader_library_document(
     return _reader_library_row_to_dict(row, include_content=False)
 
 
-def reclaim_retired_pool_r2_orphans(*, dry_run: bool = True, crossword_idle_days: int = 30) -> dict:
+def reclaim_retired_pool_r2_orphans(
+    *, dry_run: bool = True, crossword_idle_days: int = 30, artikel_idle_days: int = 30,
+) -> dict:
     """The crowd-mastery rotation retires game-pool items (rebus/article_quiz/crossword) but
     NEVER deletes their R2 image → orphan forever (unlike image_quiz/visual_riddle which have
     idle cleaners). Reclaim them. SAFE: rebus/article_quiz 'retired' = permanent mastery (no
     revive); crossword 'retired' is overloaded with a revivable send-failure state, so only
     crossword items retired AND idle > crossword_idle_days are touched (a stale one won't be
     revived). dry_run=True only counts. Nulls the DB image ref after deleting so re-runs don't
-    re-report the same rows. Fail-open."""
+    re-report the same rows. Fail-open.
+
+    Банк артиклей — тот же случай: слово снимают с показа, а его картинка и озвучка
+    остаются в R2 навсегда (163 картинки + 2 858 клипов = 43 МБ на 30.07.2026). Снятие
+    там ОБРАТИМО (после разбора словника вернули 123 слова), поэтому трогаем только то,
+    что лежит снятым дольше artikel_idle_days, и никогда — ключ, которым пользуется живая
+    строка (у 11 клипов озвучка общая с живым словом). Мнемонику не трогаем: это текст,
+    места он не занимает, а заново его писать — деньги на GPT."""
     targets: list[tuple[str, str, str, str, str]] = []  # (table, id_col, key_col, id_value, object_key)
     per_pool: dict[str, int] = {}
     # (pool, table, PK column, image-key column, needs crossword idle guard)
@@ -33074,17 +33083,46 @@ def reclaim_retired_pool_r2_orphans(*, dry_run: bool = True, crossword_idle_days
                 per_pool[pool] = len(rows)
                 for rid, key in rows:
                     targets.append((table, id_col, key_col, str(rid), str(key)))
+            # Банк артиклей: картинка и озвучка снятого слова. Два условия — отлежалось
+            # дольше artikel_idle_days И этим же файлом не пользуется ни одно живое слово.
+            for pool, key_col in (("artikel_img", "image_object_key"),
+                                  ("artikel_audio", "audio_object_key")):
+                cursor.execute(
+                    f"""
+                    SELECT r.id, r.{key_col}
+                    FROM bt_3_article_sprint_nouns r
+                    WHERE COALESCE(r.retired, FALSE) = TRUE
+                      AND COALESCE(r.{key_col}, '') <> ''
+                      AND r.updated_at < NOW() - (%s || ' days')::interval
+                      AND NOT EXISTS (
+                            SELECT 1 FROM bt_3_article_sprint_nouns a
+                            WHERE COALESCE(a.retired, FALSE) = FALSE
+                              AND a.{key_col} = r.{key_col});
+                    """,
+                    (int(artikel_idle_days),),
+                )
+                rows = cursor.fetchall() or []
+                per_pool[pool] = len(rows)
+                for rid, key in rows:
+                    targets.append(("bt_3_article_sprint_nouns", "id", key_col, str(rid), str(key)))
     deleted = 0
     if not dry_run and targets:
         try:
             from backend.r2_storage import r2_delete_keys
-            deleted = r2_delete_keys([t[4] for t in targets])
+            deleted = r2_delete_keys(sorted({t[4] for t in targets}))
         except Exception:
             logging.warning("reclaim_retired_pool_r2_orphans: R2 delete failed", exc_info=True)
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 for table, id_col, key_col, id_value, _key in targets:
-                    cursor.execute(f"UPDATE {table} SET {key_col} = NULL WHERE {id_col} = %s;", (id_value,))
+                    # image_checked снимаем вместе с картинкой: иначе вернувшееся слово
+                    # осталось бы навсегда без картинки — «уже проверяли, не нашли».
+                    extra = (", image_checked = FALSE"
+                             if table == "bt_3_article_sprint_nouns" and key_col == "image_object_key"
+                             else "")
+                    cursor.execute(
+                        f"UPDATE {table} SET {key_col} = NULL{extra} WHERE {id_col} = %s;", (id_value,)
+                    )
             conn.commit()
     return {"dry_run": bool(dry_run), "per_pool": per_pool, "total": len(targets), "deleted": deleted}
 

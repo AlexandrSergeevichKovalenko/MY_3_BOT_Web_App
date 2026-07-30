@@ -11957,6 +11957,10 @@ async def _weekly_r2_cleanup_job(context: CallbackContext) -> None:
         f"🧩 Интерактивы (ретайрнутые): rebus {int(per_pool.get('rebus', 0))} · "
         f"article_quiz {int(per_pool.get('article_quiz', 0))} · crossword {int(per_pool.get('crossword', 0))}"
     )
+    lines.append(
+        f"🔤 Артикли (снятые слова): картинки {int(per_pool.get('artikel_img', 0))} · "
+        f"озвучка {int(per_pool.get('artikel_audio', 0))}"
+    )
     text = "\n".join(lines)
     logging.info("weekly R2 cleanup done: freed_mb=%.1f reader=%s pools=%s", freed_mb, reader_del, per_pool)
     try:
@@ -11974,17 +11978,18 @@ async def _weekly_r2_cleanup_job(context: CallbackContext) -> None:
 
 
 async def pool_r2_orphans_command(update: Update, context: CallbackContext) -> None:
-    """Admin: reclaim R2 images of RETIRED game-pool items (rebus/article_quiz/crossword) that
-    the crowd-mastery rotation left orphaned. '/pool_r2_orphans' = dry-run; add 'delete' to write.
-    Crossword is age-guarded so the revive path isn't broken."""
+    """Admin: reclaim R2 images of RETIRED game-pool items (rebus/article_quiz/crossword) plus
+    the картинки/озвучка of words retired from the article bank, all left orphaned by the
+    rotation/cleanup. '/pool_r2_orphans' = dry-run; add 'delete' to write. Crossword and the
+    article bank are age-guarded so the revive path isn't broken."""
     user = update.effective_user
     if not user or not _is_admin_user(int(user.id)):
         return
     args = context.args or []
     do_delete = bool(args) and str(args[0]).strip().lower() in ("delete", "del", "run", "yes", "go")
     await update.message.reply_text(
-        "🧹 Удаляю осиротевшие картинки игровых пулов…" if do_delete
-        else "🔎 Считаю осиротевшие картинки игровых пулов (dry-run)…"
+        "🧹 Удаляю осиротевшие файлы игровых пулов…" if do_delete
+        else "🔎 Считаю осиротевшие файлы игровых пулов (dry-run)…"
     )
     try:
         from backend.database import reclaim_retired_pool_r2_orphans
@@ -11993,7 +11998,7 @@ async def pool_r2_orphans_command(update: Update, context: CallbackContext) -> N
         await update.message.reply_text(f"❌ Ошибка (ничего не изменено): {exc}")
         return
     head = "🗑 Удалено" if not res["dry_run"] else "🔎 Найдено (dry-run)"
-    lines = [f"{head}: {res['total']} осиротевших картинок ретайрнутых заданий."]
+    lines = [f"{head}: {res['total']} осиротевших файлов снятых заданий и слов."]
     for pool, n in (res.get("per_pool") or {}).items():
         lines.append(f"• {pool} — {n}")
     if res["dry_run"] and res["total"]:

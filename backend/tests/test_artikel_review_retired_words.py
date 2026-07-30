@@ -112,5 +112,38 @@ class ArtikelReviewSkipsRetiredWordsTests(unittest.TestCase):
         self.assertIn("AND NOT EXISTS", sql)
 
 
+class RetiredWordMediaReclaimTests(unittest.TestCase):
+    """Картинка и озвучка снятого слова — тоже мусор, но убирать его надо осторожно."""
+
+    def _sweep(self, **kw):
+        cur = _FakeCursor(rows=[], one=(0,))
+
+        @contextmanager
+        def _fake_ctx(*a, **k):
+            yield _FakeConn(cur)
+
+        with patch.object(db, "get_db_connection_context", _fake_ctx):
+            res = db.reclaim_retired_pool_r2_orphans(**kw)
+        return res, cur
+
+    def test_sweep_covers_the_article_word_bank(self):
+        res, cur = self._sweep(dry_run=True)
+        self.assertIn("artikel_img", res["per_pool"])
+        self.assertIn("artikel_audio", res["per_pool"])
+        artikel = [s for s in cur.sql_log if "bt_3_article_sprint_nouns" in s]
+        self.assertEqual(len(artikel), 2, "ждём по одному запросу на картинки и на озвучку")
+
+    def test_sweep_waits_out_the_grace_period_and_spares_shared_files(self):
+        _, cur = self._sweep(dry_run=True)
+        for sql in [s for s in cur.sql_log if "bt_3_article_sprint_nouns" in s]:
+            self.assertIn("r.updated_at < NOW() -", sql, "снятое слово должно отлежаться")
+            self.assertIn("NOT EXISTS", sql, "файл живого слова трогать нельзя")
+
+    def test_mnemonics_are_never_deleted(self):
+        _, cur = self._sweep(dry_run=True)
+        self.assertFalse([s for s in cur.sql_log if "mnemonic" in s],
+                         "мнемонику не трогаем: текст бесплатен, а переписывать — деньги")
+
+
 if __name__ == "__main__":
     unittest.main()
