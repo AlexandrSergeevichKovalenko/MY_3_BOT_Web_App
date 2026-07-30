@@ -291,7 +291,14 @@ def article_sprint_themes() -> list[dict]:
     Список в коде — это исходный набор, залитый при запуске. Но темы теперь может
     заводить админ командой, и они живут только в базе; если читать один код,
     генератор новой темы просто не увидит и ответит «unknown_theme» — на этом и
-    попались при первом наполнении «Автомобиля»."""
+    попались при первом наполнении «Автомобиля».
+
+    ПУСТО и НЕ ОТВЕТИЛА — разные вещи. Пустая таблица бывает один раз, на первом
+    запуске: тогда список из кода — правильный ответ. А вот если база недоступна,
+    подмена кодовым списком превращает аварию в тихое вранье: темы, которые живут
+    только в базе, «исчезают», и наполнение отвечает «unknown_theme» вместо
+    «база недоступна». Так и потеряли ночной прогон на 13 темах — он бодро
+    отчитался нулями. Поэтому ошибка чтения летит наружу."""
     from_db = _themes_from_db()
     if from_db:
         return from_db
@@ -299,24 +306,17 @@ def article_sprint_themes() -> list[dict]:
 
 
 def _themes_from_db() -> list[dict]:
-    try:
-        from backend.database import list_article_sprint_themes, get_article_sprint_theme
-    except Exception:
-        return []
-    try:
-        rows = list_article_sprint_themes() or []
-    except Exception:
-        return []
+    from backend.database import list_article_sprint_themes, get_article_sprint_theme
+
+    rows = list_article_sprint_themes() or []
     out: list[dict] = []
     for row in rows:
         key = str(row.get("theme_key") or "").strip()
         if not key or not row.get("active", True):
             continue
-        full = None
-        try:
-            full = get_article_sprint_theme(key)
-        except Exception:
-            full = None
+        # Тоже без глушителя: без подтем наполнять нечего, и «тема без подтем»
+        # неотличима от «база не ответила».
+        full = get_article_sprint_theme(key)
         subtopics = [str(s).strip() for s in ((full or {}).get("subtopics") or []) if str(s).strip()]
         if not subtopics:
             # у темы из кода подтемы подробные — берём их, если в базе пусто
