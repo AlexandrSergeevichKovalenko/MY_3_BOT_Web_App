@@ -286,6 +286,53 @@ ARTICLE_SPRINT_THEMES: list[dict] = [
 
 
 def article_sprint_themes() -> list[dict]:
+    """Темы для наполнения: сначала БАЗА, потом список из кода.
+
+    Список в коде — это исходный набор, залитый при запуске. Но темы теперь может
+    заводить админ командой, и они живут только в базе; если читать один код,
+    генератор новой темы просто не увидит и ответит «unknown_theme» — на этом и
+    попались при первом наполнении «Автомобиля»."""
+    from_db = _themes_from_db()
+    if from_db:
+        return from_db
+    return _themes_from_code()
+
+
+def _themes_from_db() -> list[dict]:
+    try:
+        from backend.database import list_article_sprint_themes, get_article_sprint_theme
+    except Exception:
+        return []
+    try:
+        rows = list_article_sprint_themes() or []
+    except Exception:
+        return []
+    out: list[dict] = []
+    for row in rows:
+        key = str(row.get("theme_key") or "").strip()
+        if not key or not row.get("active", True):
+            continue
+        full = None
+        try:
+            full = get_article_sprint_theme(key)
+        except Exception:
+            full = None
+        subtopics = [str(s).strip() for s in ((full or {}).get("subtopics") or []) if str(s).strip()]
+        if not subtopics:
+            # у темы из кода подтемы подробные — берём их, если в базе пусто
+            code_theme = next((t for t in _themes_from_code() if t["key"] == key), None)
+            subtopics = (code_theme or {}).get("subtopics") or []
+        out.append({
+            "key": key,
+            "label_de": str(row.get("label_de") or "").strip(),
+            "label_ru": str(row.get("label_ru") or "").strip(),
+            "target_count": int(row.get("target_count") or _DEFAULT_TARGET),
+            "subtopics": subtopics,
+        })
+    return out
+
+
+def _themes_from_code() -> list[dict]:
     """Normalized theme rows for syncing (key, label_de, label_ru, target_count, subtopics)."""
     out: list[dict] = []
     for t in ARTICLE_SPRINT_THEMES:
