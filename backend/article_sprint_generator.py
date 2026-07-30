@@ -263,7 +263,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
     from backend.database import (
         ensure_article_sprint_schema, count_article_sprint_nouns,
         insert_article_sprint_nouns, list_article_sprint_words,
-        list_article_sprint_meanings,
+        list_article_sprint_meanings, list_retired_article_words,
     )
     from backend.article_word_gate import check_word, head_word, judge_everyday_words
 
@@ -280,6 +280,10 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 "final_verified": have, "target": target, "note": "already at target"}
 
     existing = {w.lower() for w in list_article_sprint_words(theme_key)}
+    # Уже выброшенное не берём заново — ни в эту тему, ни в соседнюю. Держим отдельно от
+    # existing: в счёт «производных одного корня» снятые слова идти не должны, иначе
+    # выброшенный хлам закрывал бы дорогу нормальному слову.
+    banned = list_retired_article_words()
     known_meanings = set(list_article_sprint_meanings(theme_key))
     family_counts: dict[str, int] = {}
     for word in existing:
@@ -314,6 +318,12 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             w = str(n.get("word") or "").strip()
             art = str(n.get("article") or "").strip().lower()
             if not w or art not in ("der", "die", "das") or w.lower() in existing:
+                continue
+            if w.lower() in banned:
+                # Слово уже снимали. Отсекаем ДО фильтра, чтобы не платить за «второе
+                # мнение» модели по тому, что и так решено.
+                rejected += 1
+                logging.info("артикли: %s мимо — слово уже снято с показа", w)
                 continue
             ok, why = check_word(
                 w, meaning_ru=str(n.get("meaning_ru") or ""),

@@ -48869,6 +48869,26 @@ def list_article_sprint_words(theme_key: str) -> list[str]:
     return [str(r[0]) for r in rows if r and r[0]]
 
 
+def list_retired_article_words() -> set[str]:
+    """Слова, снятые с показа в ЛЮБОЙ теме (в нижнем регистре) — чёрный список набора.
+
+    Мусорность — свойство слова, а не темы: «der Föhnsturm» не нужен ни в погоде, ни в
+    природе. Строка снятого слова и держится ради этого — она замок, который не даёт
+    вернуть уже выброшенное. Замок в базе (ON CONFLICT по теме+слову+артиклю) работает
+    только внутри темы, поэтому наполнение сверяется ещё и с этим списком."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT DISTINCT lower(word) FROM bt_3_article_sprint_nouns WHERE retired;"
+                )
+                rows = cursor.fetchall() or []
+        return {str(r[0]) for r in rows if r and r[0]}
+    except Exception:
+        logging.warning("list_retired_article_words failed", exc_info=True)
+        return set()
+
+
 def list_article_sprint_meanings(theme_key: str) -> list[str]:
     """Переводы, уже занятые в теме, — чтобы не добавлять второе слово с тем же смыслом.
 
