@@ -70,6 +70,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   const [picked, setPicked] = useState(null);   // the option the user tapped this round
   const [score, setScore] = useState(0);
   const [saved, setSaved] = useState(() => new Set());
+  const [known, setKnown] = useState(() => new Set());  // already in the dictionary
   const [saveError, setSaveError] = useState('');
 
   // word(normalised) → substitution example {sentence_de, sentence_ru}
@@ -122,9 +123,14 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
     setSaveError('');
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
     Promise.resolve(saveGermanWordViaLookup({ api, word: de, fallbackTranslation: ru || '', origin: 'trainer_save' }))
+      .then((res) => {
+        // The word was already in the dictionary — the save refreshed that old entry, so
+        // it stays where it was in the list. Say it, or the user hunts for it at the top.
+        if (res && res.inserted === false) setKnown((k) => new Set(k).add(de));
+      })
       .catch(() => {
         setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
-        setSaveError('Не удалось сохранить слово. Нажми ещё раз.');
+        setSaveError('Не удалось сохранить слово. Нажми на него ещё раз.');
         try { haptic?.('bad'); } catch (_e2) { /* noop */ }
       });
   }, [api, saved, haptic]);
@@ -242,16 +248,24 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
           <div className="tr-all-head">Все {rel.ask}ы <span className="tr-all-dim">· 👆 нажми, чтобы сохранить в словарь</span>:</div>
           <div className="tr-chips">
             {allCorrect.map((c, i) => {
-              const de = deOf(c); const isSaved = saved.has(de);
+              const de = deOf(c); const isSaved = saved.has(de); const isKnown = known.has(de);
               return (
-                <button key={i} type="button" className={`tr-chip${isSaved ? ' saved' : ''}`} disabled={isSaved}
+                <button key={i} type="button"
+                        className={`tr-chip${isSaved ? ' saved' : ''}${isKnown ? ' known' : ''}`}
+                        disabled={isSaved}
                         onClick={() => saveChip(de, c?.ru || '')}>
-                  {isSaved ? '💾 ' : ''}{de}
+                  {isSaved && !isKnown ? '💾 ' : ''}{de}{isKnown ? ' · уже есть' : ''}
                 </button>
               );
             })}
           </div>
-          {saveError ? <div className="as-save-error">{saveError}</div> : null}
+          {known.size ? (
+            <div className="tr-known-note">
+              «Уже есть» — это слово давно лежит в твоём словаре. Мы освежили его карточку,
+              но в списке оно осталось на своём старом месте, а не поднялось наверх.
+            </div>
+          ) : null}
+          {saveError ? <div className="as-save-alert">⚠️ {saveError}</div> : null}
         </div>
       ) : null}
       <button className="ans-btn" onClick={onClose}>Schließen</button>

@@ -19,6 +19,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
   const [flash, setFlash] = useState(null); // {ok:bool} transient
   const [result, setResult] = useState(null);
   const [savedWords, setSavedWords] = useState(() => new Set());
+  const [knownWords, setKnownWords] = useState(() => new Set());  // already in the dictionary
   const [saveError, setSaveError] = useState('');
   const answersRef = useRef([]);
   const wordsRef = useRef([]);
@@ -135,11 +136,15 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
         api, word: key, fallbackTranslation: String(ru || '').trim(),
         origin: 'artikel_sprint_save',
       }),
-    ).catch(() => {
+    ).then((res) => {
+      // Already in the dictionary: the save refreshed that old entry, so it keeps its old
+      // place in the list instead of appearing on top. Say so, don't leave them hunting.
+      if (res && res.inserted === false) setKnownWords((k) => new Set(k).add(key));
+    }).catch(() => {
       // A failed save used to be signalled by an error vibration alone — the 💾 just
       // flipped back and the word was gone without a word of explanation.
       setSavedWords((s) => { const n = new Set(s); n.delete(key); return n; });
-      setSaveError('Не удалось сохранить слово. Нажми ещё раз.');
+      setSaveError('Не удалось сохранить слово. Нажми на него ещё раз.');
       haptic?.('bad');
     });
   }, [api, haptic, savedWords]);
@@ -272,11 +277,18 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       {items.length ? (
         <>
           <div className="as-save-hint">👆 нажми на слово, чтобы сохранить в словарь (с артиклем)</div>
-          {saveError ? <div className="as-save-error">{saveError}</div> : null}
+          {saveError ? <div className="as-save-alert">⚠️ {saveError}</div> : null}
+          {knownWords.size ? (
+            <div className="tr-known-note">
+              «Уже есть» — это слово давно лежит в твоём словаре. Мы освежили его карточку,
+              но в списке оно осталось на своём старом месте, а не поднялось наверх.
+            </div>
+          ) : null}
           <div className="as-result-list">
             {items.map((it, i) => {
               const de = `${it.a} ${it.w}`.trim();
               const isSaved = savedWords.has(de);
+              const isKnown = knownWords.has(de);
               return (
                 <button
                   type="button"
@@ -287,6 +299,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
                 >
                   <span className="as-row-mark">{isSaved ? '💾' : (it.ok ? '✅' : '❌')}</span>
                   {' '}<b className={it.ok ? '' : 'as-correct-article'}>{it.a}</b> {it.w}
+                  {isKnown ? <span className="as-mine"> · уже есть</span> : null}
                   {!it.ok ? <span className="as-mine"> (ты: {it.chosen || '—'})</span> : null}
                   {it.ru ? <span className="as-ru"> · {it.ru}</span> : null}
                 </button>

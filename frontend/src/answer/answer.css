@@ -1169,6 +1169,16 @@ html[data-scheme="light"] .adj-wordpop-ru { color: #334155; }
 .as-ru { opacity: .65; }
 .as-save-hint { font-size: 12.5px; color: var(--dmps-text-muted, #94A3B8); margin-bottom: 8px; }
 .as-save-error { font-size: 12.5px; color: #F0A03C; margin: -4px 0 8px; }
+/* A failed save used to be a 12.5px line the user scrolled past — they walked away sure
+   the word was in the dictionary. Same message, but as a block that cannot be missed. */
+.as-save-alert {
+  font-size: 14px; font-weight: 600; line-height: 1.35; color: #FBBF24;
+  background: rgba(245,158,11,.16); border: 1px solid rgba(245,158,11,.40);
+  border-radius: 12px; padding: 10px 12px; margin: 4px 0 2px;
+}
+html[data-scheme="light"] .as-save-alert {
+  color: #92400E; background: rgba(217,119,6,.12); border-color: rgba(217,119,6,.35);
+}
 .as-row-tap {
   width: 100%; text-align: left; cursor: pointer; font-family: inherit;
   color: var(--dmps-text-primary, #F8FAFC);
@@ -1531,6 +1541,13 @@ html[data-scheme="light"] .tr-fb-nuance { color: #b45309; }
 }
 .tr-chip:active { transform: scale(0.94); }
 .tr-chip.saved { background: rgba(37,99,235,.22); color: #60a5fa; }
+/* Already in the dictionary: the save refreshed an OLD entry, so the word keeps its old
+   place in the list. Green ✓ + the note below, or the user hunts for it at the top. */
+.tr-chip.known { background: rgba(34,197,94,.18); color: #4ade80; }
+.tr-known-note {
+  font-size: 12.5px; line-height: 1.4; color: var(--dmps-text-secondary, #CBD5E1);
+  background: rgba(34,197,94,.10); border-radius: 10px; padding: 8px 10px;
+}
 
 html[data-scheme="light"] .tr-hero-word, html[data-scheme="light"] .tr-anchor-word {
   background: linear-gradient(180deg, #d97706, #b45309); -webkit-background-clip: text; background-clip: text;
@@ -1541,6 +1558,8 @@ html[data-scheme="light"] .tr-opt.wrong { color: #b91c1c; }
 html[data-scheme="light"] .tr-fb-swap, html[data-scheme="light"] .tr-fb-right b { color: #15803d; }
 html[data-scheme="light"] .tr-chip { background: rgba(217,119,6,.14); color: #b45309; }
 html[data-scheme="light"] .tr-chip.saved { background: rgba(37,99,235,.14); color: #1d4ed8; }
+html[data-scheme="light"] .tr-chip.known { background: rgba(22,163,74,.14); color: #15803d; }
+html[data-scheme="light"] .tr-known-note { color: #475569; background: rgba(22,163,74,.10); }
 
 /* «Оба ответа верны»: Woran / Worunter leidest du? — обе формы немецкие, поэтому
    засчитываем любую, а разницу объясняем прямо в разборе, а не прячем задание. */

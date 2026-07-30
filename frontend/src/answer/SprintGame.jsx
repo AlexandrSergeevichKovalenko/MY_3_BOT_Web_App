@@ -49,6 +49,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const [input, setInput] = useState('');
   const [result, setResult] = useState(null);
   const [saved, setSaved] = useState(() => new Set());
+  const [known, setKnown] = useState(() => new Set());  // already in the dictionary
   const [saveError, setSaveError] = useState('');
   const startRef = useRef(0);
   const wordsRef = useRef([]);
@@ -131,10 +132,14 @@ export default function SprintGame({ id, api, haptic, onClose }) {
       saveGermanWordViaLookup({
         api, word: de, fallbackTranslation: ru || '', origin: 'synonym_save',
       }),
-    ).catch(() => {
+    ).then((res) => {
+      // Already in the dictionary: the save refreshed that old entry, so it keeps its
+      // old place in the list. Say so — otherwise the user looks for it at the top.
+      if (res && res.inserted === false) setKnown((k) => new Set(k).add(de));
+    }).catch(() => {
       // Say it out loud — an error vibration alone left the user thinking it saved.
       setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
-      setSaveError('Не удалось сохранить слово. Нажми ещё раз.');
+      setSaveError('Не удалось сохранить слово. Нажми на него ещё раз.');
       try { haptic?.('bad'); } catch (_e2) { /* noop */ }
     });
   }, [api, saved, haptic]);
@@ -235,6 +240,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
               const de = deOf(a);
               const ru = (a && typeof a === 'object' ? a.ru : '') || '';
               const isSaved = saved.has(de);
+              const isKnown = known.has(de);
               const cls = isSaved ? 'saved' : (foundSet.has(normalizeCore(de)) ? 'hit' : 'missed');
               return (
                 <button
@@ -244,12 +250,18 @@ export default function SprintGame({ id, api, haptic, onClose }) {
                   disabled={isSaved}
                   onClick={() => saveChip(de, ru)}
                 >
-                  {isSaved ? '💾 ' : ''}{de}
+                  {isSaved && !isKnown ? '💾 ' : ''}{de}{isKnown ? ' · уже есть' : ''}
                 </button>
               );
             })}
           </div>
-          {saveError ? <div className="as-save-error">{saveError}</div> : null}
+          {known.size ? (
+            <div className="tr-known-note">
+              «Уже есть» — это слово давно лежит в твоём словаре. Мы освежили его карточку,
+              но в списке оно осталось на своём старом месте, а не поднялось наверх.
+            </div>
+          ) : null}
+          {saveError ? <div className="as-save-alert">⚠️ {saveError}</div> : null}
         </div>
       ) : null}
       {r.erklaerung ? <div className="ans-explain">{r.erklaerung}</div> : null}

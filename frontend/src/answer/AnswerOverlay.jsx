@@ -111,7 +111,14 @@ async function api(path, body) {
     body: JSON.stringify({ initData: getInitData(), ...body }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.error || 'Fehler');
+  if (!response.ok) {
+    // Carry the HTTP status on the error so callers can tell a transient failure
+    // (server restarting mid-deploy, 5xx) from a definitive one (limit reached) and
+    // decide whether retrying makes sense — see saveUtils.postDictionarySave.
+    const err = new Error(data?.error || 'Fehler');
+    err.status = response.status;
+    throw err;
+  }
   return data;
 }
 

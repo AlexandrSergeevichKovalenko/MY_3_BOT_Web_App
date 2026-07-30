@@ -53,6 +53,28 @@ export function pickTargetTranslation(targetLang, candidates) {
   return list[0];
 }
 
+// POST one dictionary save with ONE automatic retry.
+//
+// A tap is a one-shot gesture: the user has already moved on, so a single dropped
+// request (server restarting during a deploy, a flaky mobile connection) used to cost
+// them the word with nothing but a reverted chip. Retry once after a short pause, then
+// give up and let the caller show the failure.
+//
+// Only transient failures are retried — a 4xx (429 daily limit reached, 401, bad
+// payload) fails identically the second time, so it is surfaced immediately. An error
+// with no status came from fetch itself (offline / connection reset) → retryable.
+async function postDictionarySave(api, payload) {
+  try {
+    return await api('/api/webapp/dictionary/save', payload);
+  } catch (err) {
+    const status = Number(err?.status || 0);
+    const transient = !status || status >= 500 || status === 408;
+    if (!transient) throw err;
+    await new Promise((r) => setTimeout(r, 900));
+    return api('/api/webapp/dictionary/save', payload);
+  }
+}
+
 // Save a GERMAN word/phrase tapped inside a game or trainer.
 //
 // The word is persisted FIRST with the gloss the game already knows — one cheap call,
@@ -89,7 +111,7 @@ export async function saveGermanWordViaLookup({ api, word, fallbackTranslation =
     }
     return saveDictionaryCard({ api, word: text, item, direction, fallbackRu: '', origin });
   }
-  await api('/api/webapp/dictionary/save', {
+  const res = await postDictionarySave(api, {
     source_text: text,
     target_text: knownRu,
     translation_ru: knownRu,
@@ -101,7 +123,9 @@ export async function saveGermanWordViaLookup({ api, word, fallbackTranslation =
   // Background enrichment — best effort, never surfaced. A capped/offline user keeps the
   // word; the card fills in later.
   void enrichSavedGermanWord({ api, word: text, knownRu, origin });
-  return { sourceText: text, targetText: knownRu };
+  // `inserted === false` → the word was already in the dictionary and this updated that
+  // entry (which keeps its old position in the list). Callers say so instead of 💾.
+  return { sourceText: text, targetText: knownRu, inserted: res?.inserted !== false };
 }
 
 // Persist a card built from a breakdown `item` (which may be null — then only the bare
@@ -125,7 +149,7 @@ async function saveDictionaryCard({
     isDeRu ? card.word_ru : card.word_de,
     fallbackRu,
   ]);
-  await api('/api/webapp/dictionary/save', {
+  const res = await postDictionarySave(api, {
     source_text: sourceText,
     target_text: targetText,
     translation_ru: String(isDeRu ? targetText : (card.translation_ru || '')).trim(),
@@ -136,7 +160,7 @@ async function saveDictionaryCard({
     response_json: item || undefined,
     origin_process: origin,
   });
-  return { sourceText, targetText };
+  return { sourceText, targetText, inserted: res?.inserted !== false };
 }
 
 // Fetch the full breakdown for an ALREADY-SAVED German word and re-save the complete card

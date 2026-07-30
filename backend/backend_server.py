@@ -45555,6 +45555,11 @@ def save_webapp_dictionary_entry():
         {
             "ok": True,
             "entry_id": int(entry_id or 0),
+            # False = the word was ALREADY in this user's dictionary and the save updated
+            # that entry. The UI needs this: an updated old entry keeps its created_at, so
+            # it does NOT appear at the top of the list and the user thinks the save was
+            # lost. Say «уже в словаре» instead of a silent 💾.
+            "inserted": bool(inserted),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )

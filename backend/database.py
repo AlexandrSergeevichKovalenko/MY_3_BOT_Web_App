@@ -284,6 +284,21 @@ DICTIONARY_ORIGIN_ALLOWED = {
     "worldnews_phrase_save",
     "ask_overlay",
     "synonym_save",
+    # Saves tapped inside the games/overlays. Every origin the frontend actually sends
+    # must be listed here — an unlisted one is normalised to "unknown", which both loses
+    # the surface for analytics AND overwrites the origin of an entry the user already
+    # had (the save UPDATEs that row). That is how trainer/artikel/adjektiv saves were
+    # silently filed as "unknown" until 2026-07-30.
+    "trainer_save",
+    "artikel_sprint_save",
+    "adjektiv_trainer",
+    "webapp_quick_dictionary",
+    "webapp_quick_dictionary_related",
+    "webapp_quick_dictionary_example",
+    "webapp_related",
+    "webapp_example",
+    "webapp_deep_analysis_related",
+    "webapp_deep_analysis_example",
     "webapp_deep_analysis_option",
     "reader",
     "assistant",
