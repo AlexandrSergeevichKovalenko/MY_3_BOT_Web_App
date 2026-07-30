@@ -3192,6 +3192,15 @@ def _wofrage_item_for_game(p: dict) -> dict:
         "obj_ru": str(p.get("obj_ru") or ""),
         "erklaerung": str(p.get("erklaerung") or ""),
         "tip": str(p.get("tip") or ""),
+        # Перевод вопроса: в разборе человек должен видеть, что фраза значит.
+        "frage_ru": str(p.get("frage_ru") or ""),
+        # Второй верный ответ и объяснение разницы. Раньше здесь терялись, и сет,
+        # где верны обе формы («Woran/Worunter leidest du?»), засчитывал только одну —
+        # хотя и сервер, и клиент готовы принять обе.
+        "also_ok": [str(a) for a in (p.get("also_ok") or []) if str(a).strip()],
+        "unterschied": str(p.get("unterschied") or ""),
+        # Ключ задания — по нему копится статистика ответов по КОНКРЕТНОМУ заданию.
+        "key": str(p.get("key") or ""),
     }
 
 

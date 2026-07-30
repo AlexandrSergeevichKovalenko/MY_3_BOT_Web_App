@@ -37,6 +37,13 @@ import logging
 import random
 from collections import Counter
 
+# Перевод вопроса лежит рядом отдельным файлом: это данные, заполненные руками,
+# и в банке им не место — там управление, а здесь смысл фразы.
+try:
+    from backend.wofrage_question_ru import QUESTION_RU, question_ru
+except ImportError:  # запуск из каталога backend
+    from wofrage_question_ru import QUESTION_RU, question_ru
+
 # ── Rules ───────────────────────────────────────────────────────────────────
 _VOWELS = "aeiouäöü"
 
@@ -1047,6 +1054,35 @@ def check_bank() -> list[str]:
     return problems
 
 
+def missing_translations() -> list[str]:
+    """Фразы без русского перевода. Пусто — переведено всё, что банк может выдать.
+
+    Отдельно от check_bank НАМЕРЕННО: пропущенный перевод — это дырка в объяснении,
+    но задание от него не становится неверным. Выкидывать из-за него живой глагол
+    (как делает _healthy_bank с ошибками данных) значит молча урезать игру. Поэтому
+    претензии копим здесь, а ловят их тесты — до того, как это увидят люди.
+    """
+    problems: list[str] = []
+    for entry in _BANK:
+        lemma = str(entry.get("lemma") or "?")
+        targets = ["person"] if entry.get("person_only") else (
+            ["thing", "person"] if entry.get("person") else ["thing"]
+        )
+        for frame in entry.get("q") or []:
+            frame = str(frame)
+            if (lemma, frame) not in QUESTION_RU:
+                problems.append(f"{lemma}: у фразы «{frame}» нет перевода")
+                continue
+            for target in targets:
+                if not question_ru(lemma, frame, target):
+                    mode = "о вещи" if target == "thing" else "о человеке"
+                    problems.append(f"{lemma}: у фразы «{frame}» нет перевода вопроса {mode}")
+    extra = {key[0] for key in QUESTION_RU} - {str(e.get("lemma")) for e in _BANK}
+    for lemma in sorted(extra):
+        problems.append(f"{lemma}: перевод есть, а управления в банке нет — опечатка в ключе?")
+    return problems
+
+
 def _healthy_bank() -> list[dict]:
     """Банк без записей, к которым есть претензии. Бот не падает, но и мусор не выдаёт."""
     problems = check_bank()
@@ -1258,9 +1294,28 @@ def _build_one(entry: dict) -> dict:
         "obj_ru": obj_ru,
         "erklaerung": _erklaerung(entry, target, woword, personword),
         "tip": _tip(entry, target, woword),
+        # Что фраза значит по-русски. Без этого разбор — ребус: видно верную форму
+        # и правило, но не видно, о чём вообще был вопрос.
+        "frage_ru": question_ru(entry["lemma"], frame, target),
     }
     item["key"] = item_key(item)
     return item
+
+
+def frage_ru_for_item(item: dict) -> str:
+    """Перевод вопроса для УЖЕ собранного задания.
+
+    Наборы живут в базе (дневной сет — сутки, ошибки в «работе над ошибками» — недели),
+    и собранные до появления переводов лежат там без них. Ждать, пока они истекут,
+    незачем: фраза, управление и режим (вещь/человек) в задании есть, а перевод —
+    те же данные, что и при сборке. Поэтому достаём его по фразе.
+    """
+    ready = str(item.get("frage_ru") or "").strip()
+    if ready:
+        return ready
+    frame = str(item.get("s") or "").replace("___", "").strip()
+    target = str(item.get("target") or "thing")
+    return question_ru(str(item.get("lemma") or ""), frame, target)
 
 
 def accepted_answers(item: dict) -> set[str]:

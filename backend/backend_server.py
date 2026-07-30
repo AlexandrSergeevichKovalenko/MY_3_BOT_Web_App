@@ -29742,7 +29742,9 @@ def wofrage_submit():
     items = []
     correct = 0
     answered = 0
-    from backend.wofrage_generator import accepted_answers, item_key as _wofrage_item_key
+    from backend.wofrage_generator import (
+        accepted_answers, frage_ru_for_item, item_key as _wofrage_item_key,
+    )
     telemetry = []
     for i, it in enumerate(set_items):
         ans = answers[i] if i < len(answers) else None
@@ -29762,6 +29764,10 @@ def wofrage_submit():
             "erklaerung": it.get("erklaerung", ""), "tip": it.get("tip", ""),
             "lemma": it.get("lemma", ""), "verb_ru": it.get("verb_ru", ""),
             "obj": it.get("obj", ""), "obj_ru": it.get("obj_ru", ""),
+            # Перевод самой фразы: без него разбор объясняет правило к вопросу,
+            # смысл которого человек не понял. У сетов, собранных до появления
+            # переводов, достаём его по фразе — иначе сутки без перевода.
+            "frage_ru": frage_ru_for_item(it),
         }
         # Ответил другой верной формой — покажем это как удачу, а не как «повезло»
         if ok and chosen != corr:
@@ -29812,6 +29818,7 @@ def wofrage_submit():
                                     "erklaerung": it["erklaerung"], "tip": it["tip"],
                                     "lemma": it["lemma"], "verb_ru": it["verb_ru"],
                                     "obj": it["obj"], "obj_ru": it["obj_ru"],
+                                    "frage_ru": it.get("frage_ru", ""),
                                     "hint_ru": it["verb_ru"] or it["clue"],
                                 },
                                 correct_answer=it["a"], wrong_answer=it["chosen"],
@@ -29897,6 +29904,7 @@ def wofrage_learn():
             "erklaerung": str(p.get("erklaerung") or ""), "tip": str(p.get("tip") or ""),
             "lemma": str(p.get("lemma") or ""), "verb_ru": str(p.get("verb_ru") or ""),
             "obj": str(p.get("obj") or ""), "obj_ru": str(p.get("obj_ru") or ""),
+            "frage_ru": str(p.get("frage_ru") or ""),
         })
     if not out:
         return jsonify({"ok": False, "error": "Колода пока готовится. Загляни чуть позже."}), 200

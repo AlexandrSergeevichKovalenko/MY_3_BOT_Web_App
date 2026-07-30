@@ -1123,6 +1123,9 @@ html[data-scheme="light"] .adj-wordpop-ru { color: #334155; }
 .wo-rev.ok { border-left: 3px solid #22c55e; }
 .wo-rev.bad { border-left: 3px solid #ef4444; }
 .wo-rev-phrase { font-size: 15px; font-weight: 600; }
+/* Перевод самой фразы. Правило («о вещи → Wovor») бессмысленно, если непонятно,
+   о чём был вопрос, поэтому перевод идёт первым и заметнее пояснений. */
+.wo-rev-ru { margin-top: 5px; font-size: 14px; font-weight: 600; color: var(--dmps-text-secondary, #CBD5E1); }
 .wo-rev-clue { margin-top: 3px; font-size: 13px; color: var(--dmps-text-muted, #94A3B8); }
 .wo-rev-rule { margin-top: 4px; font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); line-height: 1.4; }
 .wo-rev-tip { margin-top: 3px; font-size: 13px; color: #eab308; }

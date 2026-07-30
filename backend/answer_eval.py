@@ -1848,6 +1848,7 @@ def load_wofrage_review_batch(*, user_id: int, limit: int = 20) -> dict:
     spaced-repetition fire-and-forget. `a` is sent because review is personal study, not a
     scored test."""
     from backend.database import get_due_wofrage_mistakes_batch, count_due_mistakes
+    from backend.wofrage_generator import frage_ru_for_item
     rows = get_due_wofrage_mistakes_batch(int(user_id), int(limit))
     cards = []
     for r in rows:
@@ -1864,6 +1865,9 @@ def load_wofrage_review_batch(*, user_id: int, limit: int = 20) -> dict:
             "tip": str(p.get("tip") or ""),
             "lemma": str(p.get("lemma") or ""),
             "verb_ru": str(p.get("verb_ru") or ""),
+            # Ошибки живут в очереди повторений неделями: у карточек, попавших туда
+            # до появления переводов, достаём перевод по фразе.
+            "frage_ru": frage_ru_for_item(p),
         })
     return {"kind": "wofrage_review", "cards": cards,
             "remaining": count_due_mistakes(int(user_id), family="wofrage")}

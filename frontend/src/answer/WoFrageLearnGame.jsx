@@ -94,6 +94,7 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
       {answered ? (
         <div className={`wo-rev ${picked_ok ? 'ok' : 'bad'}`} style={{ marginTop: 14 }}>
           <div className="wo-rev-phrase">{picked_ok ? '✅ Richtig!' : '❌'} <b>{pre}{picked_ok ? pick : correct}{post}</b></div>
+          {card.frage_ru ? <div className="wo-rev-ru">{card.frage_ru}</div> : null}
           {card.unterschied ? <div className="wo-both">Здесь верны обе формы. {card.unterschied}</div> : null}
           {card.erklaerung ? <div className="wo-rev-rule">📐 {card.erklaerung}</div> : null}
           {card.tip ? <div className="wo-rev-tip">💡 {card.tip}</div> : null}

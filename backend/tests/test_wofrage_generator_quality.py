@@ -203,5 +203,47 @@ class FrameGrammarTests(unittest.TestCase):
         self.assertEqual(offenders, [], f"в рамке уже есть вопросительное слово: {offenders}")
 
 
+class QuestionTranslationTests(unittest.TestCase):
+    """Перевод вопроса. Разбор без него — ребус: правило есть, смысла фразы нет.
+
+    Перевод пишется руками для каждой пары (управление, фраза) и отдельно для вопроса
+    о вещи и о человеке — «Чего ты ждёшь?» и «Кого ты ждёшь?» это разные вопросы.
+    Поэтому проверяем не только наличие, но и что переводы не перепутаны местами.
+    """
+
+    THING_WORDS = re.compile(r"\b(что|чего|чему|чем|чём)\b", re.IGNORECASE)
+    PERSON_WORDS = re.compile(r"\b(кто|кого|кому|ком|кем)\b", re.IGNORECASE)
+
+    def test_every_producible_question_is_translated(self):
+        self.assertEqual(wg.missing_translations(), [], "есть фразы без перевода")
+
+    def test_thing_and_person_translations_are_not_swapped(self):
+        for (lemma, frame), (thing, person) in wg.QUESTION_RU.items():
+            if thing:
+                self.assertTrue(self.THING_WORDS.search(thing),
+                                f"{lemma} «{frame}»: перевод о вещи без «что/чего/чем»: {thing}")
+                self.assertFalse(self.PERSON_WORDS.search(thing),
+                                 f"{lemma} «{frame}»: в переводе о вещи спрашивают о человеке: {thing}")
+            if person:
+                self.assertTrue(self.PERSON_WORDS.search(person),
+                                f"{lemma} «{frame}»: перевод о человеке без «кто/кого/кем»: {person}")
+                self.assertFalse(self.THING_WORDS.search(person),
+                                 f"{lemma} «{frame}»: в переводе о человеке спрашивают о вещи: {person}")
+
+    def test_translations_are_questions(self):
+        for (lemma, frame), pair in wg.QUESTION_RU.items():
+            for text in pair:
+                if text:
+                    self.assertTrue(text.strip().endswith("?"), f"{lemma} «{frame}»: «{text}» не вопрос")
+                    self.assertTrue(text[:1].isupper(), f"{lemma} «{frame}»: «{text}» с маленькой буквы")
+
+    def test_generated_items_carry_the_translation(self):
+        random.seed(11)
+        for _ in range(30):
+            for item in wg.build_wofrage_items(10):
+                self.assertTrue(str(item.get("frage_ru") or "").strip(),
+                                f"задание без перевода: {item['lemma']} / {item['s']} / {item['target']}")
+
+
 if __name__ == "__main__":
     unittest.main()

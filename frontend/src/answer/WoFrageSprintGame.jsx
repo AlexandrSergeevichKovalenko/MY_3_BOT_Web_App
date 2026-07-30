@@ -256,6 +256,7 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
                   {!it.ok ? <span className="as-mine"> (ты: {it.chosen || '—'})</span> : null}
                   {it.unterschied ? <div className="wo-both">Здесь верны обе формы. {it.unterschied}</div> : null}
                 </div>
+                {it.frage_ru ? <div className="wo-rev-ru">{it.frage_ru}</div> : null}
                 {it.clue ? <div className="wo-rev-clue">{it.clue}</div> : null}
                 {it.erklaerung ? <div className="wo-rev-rule">📐 {it.erklaerung}</div> : null}
                 {it.tip ? <div className="wo-rev-tip">💡 {it.tip}</div> : null}
