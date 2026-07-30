@@ -30,8 +30,23 @@ BATCH = max(1, int((os.getenv("RETIRE_REVIEW_BATCH") or "10").strip() or "10"))
 MAX_RANK = max(1, int((os.getenv("RETIRE_REVIEW_MAX_RANK") or "60000").strip() or "60000"))
 
 
-def _keyboard(row_id: int) -> dict[str, Any]:
-    """Вернуть / оставить снятым. callback_data: artret:<действие>:<id>."""
+def _keyboard(row_id: int, *, mode: str = "sure") -> dict[str, Any]:
+    """Вернуть / оставить снятым. callback_data: artret:<действие>:<id>.
+
+    У двуродовых слов (der/die Flur) артикль решает смысл, а не написание, поэтому
+    кнопка «вернуть» там бессмысленна: владелец ставит артикль ДЛЯ ПОКАЗАННОГО перевода,
+    и в игре этот перевод тоже будет виден."""
+    if str(mode) == "sense":
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "der", "callback_data": f"artret:der:{row_id}"},
+                    {"text": "die", "callback_data": f"artret:die:{row_id}"},
+                    {"text": "das", "callback_data": f"artret:das:{row_id}"},
+                ],
+                [{"text": "🚫 мусор", "callback_data": f"artret:keep:{row_id}"}],
+            ]
+        }
     return {
         "inline_keyboard": [[
             {"text": "✅ вернуть в игру", "callback_data": f"artret:back:{row_id}"},
@@ -46,6 +61,25 @@ def _word_text(item: dict, *, index: int, total: int, left: int) -> str:
     stored = str(item.get("stored_article") or "")
     meaning = str(item.get("meaning_ru") or "").strip()
     rank = item.get("rank")
+    mode = str(item.get("mode") or "sure")
+    if mode == "sense":
+        # Артикль зависит от смысла — показывать его как факт нельзя, спрашиваем.
+        lines = [f"<b>{word}</b>"]
+        if meaning:
+            lines.append(f"<i>{meaning}</i>")
+        lines.append("")
+        lines.append("Слово убрано из игры при чистке словника.")
+        if rank:
+            lines.append(f"По частоте оно на {int(rank)}-м месте — слово ходовое.")
+        lines.append("")
+        lines.append("У него артикль зависит от значения, поэтому в игре рядом со словом "
+                     f"будет виден перевод «{meaning}» — вопрос честный.")
+        lines.append(f"Какой артикль верен именно для «{meaning}»?")
+        if stored:
+            lines.append(f"<i>В базе стояло «{stored}».</i>")
+        lines.append("")
+        lines.append(f"<i>{index} из {total} · ещё в очереди: {left}</i>")
+        return "\n".join(lines)
     lines = [f"<b>{article} {word}</b>".strip()]
     if meaning:
         lines.append(f"<i>{meaning}</i>")
@@ -109,7 +143,8 @@ def send_retire_review_dm(*, force: bool = False) -> dict[str, Any]:
                         json={"chat_id": uid,
                               "text": _word_text(item, index=i, total=len(items), left=left),
                               "parse_mode": "HTML",
-                              "reply_markup": _keyboard(int(item["id"]))},
+                              "reply_markup": _keyboard(int(item["id"]),
+                                                        mode=str(item.get("mode") or "sure"))},
                         timeout=_HTTP_TIMEOUT,
                     )
                     if resp.status_code >= 400:
@@ -138,14 +173,23 @@ def apply_retire_review(action: str, row_id: int) -> str:
         count_retired_review_candidates,
     )
     act = str(action or "").strip().lower()
-    if act == "back":
-        res = restore_retired_article_noun(int(row_id))
+    if act in ("back", "der", "die", "das"):
+        res = restore_retired_article_noun(int(row_id), article="" if act == "back" else act)
         if not res:
             return "Слово уже разобрано."
         if res.get("blocked"):
-            return (f"⚠️ <b>{res['word']}</b> не вернул: род не подтверждён ({res.get('reason')}).\n"
-                    "Вернуть слово с догадкой вместо артикля — значит учить человека ошибке.")
+            return (f"⚠️ <b>{res['word']}</b> не вернул: {res.get('reason')}.\n"
+                    "Без перевода игрок не поймёт, о каком значении вопрос.")
+        if res.get("needs_sense"):
+            meaning = str(res.get("meaning_ru") or "").strip()
+            return (f"🔀 <b>{res['word']}</b> — артикль зависит от значения ({res.get('reason')}).\n"
+                    + (f"Значение этой строки: «{meaning}». " if meaning else "")
+                    + "Поставь артикль кнопкой der/die/das — в игре рядом со словом будет "
+                      "виден перевод, так что вопрос останется честным.")
         head = f"✅ <b>{res['article']} {res['word']}</b> — снова в игре."
+        if res.get("two_gender"):
+            head += (f"\nСлово двуродовое: в игре к нему покажем перевод "
+                     f"«{res.get('meaning_ru')}», чтобы было понятно, о чём вопрос.")
         stored = str(res.get("stored_article") or "")
         if stored and stored.lower() != str(res["article"]).lower():
             head += f"\nАртикль поправлен: в базе стояло «{stored}», записал «{res['article']}» ({res.get('source')})."

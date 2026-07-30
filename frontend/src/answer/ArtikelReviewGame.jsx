@@ -128,6 +128,9 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
       <div className={`as-word ${chosen ? c.a : ''}`}>
         <span className="al-word-text" ref={wordRef}>{c ? c.w : '…'}</span>
       </div>
+      {/* Двуродовые (der/die Flur): артикль решает смысл, поэтому перевод показываем
+          ВМЕСТЕ с вопросом — и только у них. Иначе вопрос неотвечаем. */}
+      {c && c.tg && c.ru ? <div className="as-sense">({c.ru})</div> : null}
       <div className="as-buttons">
         {ARTICLES.map((a) => {
           let cls = `as-btn-art ${ART_CLASS[a]}`;

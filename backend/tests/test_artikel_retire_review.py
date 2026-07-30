@@ -76,11 +76,16 @@ class RetireReviewQueueTests(unittest.TestCase):
         self.assertNotIn("Schmetterlings-Tramete", words,
                          "слова, которого нет в частотном списке, спрашивать незачем")
 
-    def test_adjectival_nouns_never_reach_the_queue(self):
-        # die/der Erwachsene — артикль зависит от смысла; в игре der/die/das им не место,
-        # и сняли их по делу. Спрашивать про них — гонять человека впустую.
+    def test_two_gender_words_stay_in_the_game(self):
+        # Игра учит ПОНИМАТЬ артикли, поэтому двуродовые из неё не выбрасываются.
+        # Справочник их намеренно не решает — значит артикль ставит владелец, а игроку
+        # показывается перевод, и вопрос становится честным.
         out, _ = self._rows()
-        self.assertNotIn("Erwachsene", [r["word"] for r in out])
+        flur = next(r for r in out if r["word"] == "Flur")
+        self.assertEqual(flur["mode"], "sense")
+        self.assertEqual(flur["meaning_ru"], "коридор")
+        erwachsene = next(r for r in out if r["word"] == "Erwachsene")
+        self.assertEqual(erwachsene["mode"], "sense")
 
     def test_card_shows_the_checked_article_not_the_stored_one(self):
         # В банке лежала «die Kühler» — из-за такого слова и снимали. Показать надо «der».
@@ -89,15 +94,11 @@ class RetireReviewQueueTests(unittest.TestCase):
         self.assertEqual(row["article"], "der")
         self.assertEqual(row["stored_article"], "die")
 
-    def test_two_gender_words_never_reach_the_queue(self):
-        # der Flur (коридор) / die Flur (нива) — артикль зависит от смысла.
-        out, _ = self._rows()
-        self.assertNotIn("Flur", [r["word"] for r in out])
-
-    def test_word_with_unknown_gender_is_not_offered(self):
-        # Вернуть слово с догадкой вместо артикля — значит учить человека ошибке.
-        out, _ = self._rows()
-        self.assertNotIn("Segelboot", [r["word"] for r in out])
+    def test_word_without_a_translation_is_not_offered(self):
+        # Артикль решает смысл, а смысла не видно — спрашивать не о чем ни владельца,
+        # ни потом игрока.
+        out, _ = self._rows([(9, "Segelboot", "das", "", "verkehr_reisen")])
+        self.assertEqual(out, [])
 
     def test_most_common_word_comes_first(self):
         out, _ = self._rows()
@@ -115,7 +116,7 @@ class RetireReviewQueueTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
 
     def _restore(self, verdict):
-        cur = _FakeCursor([("Kühler", "die")])
+        cur = _FakeCursor([("Kühler", "die", "радиатор")])
 
         @contextmanager
         def _fake_ctx(*a, **k):
@@ -138,11 +139,26 @@ class RetireReviewQueueTests(unittest.TestCase):
         self.assertTrue([s for s in cur.sql_log if s.startswith("DELETE FROM bt_3_article_word_blacklist")],
                         "возвращённое слово надо снять со стоп-листа")
 
-    def test_restore_refuses_when_the_gender_is_not_confirmed(self):
+    def test_restore_asks_for_the_sense_when_the_gender_depends_on_it(self):
         res, cur = self._restore(None)
-        self.assertTrue(res.get("blocked"))
+        self.assertTrue(res.get("needs_sense"), "не тупик: артикль поставит владелец")
         self.assertFalse([s for s in cur.sql_log if s.startswith("UPDATE")],
-                         "без подтверждённого рода в игру ничего не возвращаем")
+                         "пока артикль не выбран, в игру ничего не пишем")
+
+    def test_owner_tap_returns_a_two_gender_word_with_its_sense(self):
+        cur = _FakeCursor([("Flur", "die", "коридор")])
+
+        @contextmanager
+        def _fake_ctx(*a, **k):
+            yield _FakeConn(cur)
+
+        with patch.object(db, "get_db_connection_context", _fake_ctx):
+            res = db.restore_retired_article_noun(1, article="der")
+        self.assertEqual(res["article"], "der")
+        self.assertTrue(res["two_gender"])
+        update = [s for s in cur.sql_log if s.startswith("UPDATE")][0]
+        self.assertIn("two_gender = TRUE", update, "игра должна показать перевод к такому слову")
+        self.assertIn("WHERE id = %s", update, "у каждого смысла своя строка — соседний не трогаем")
 
     def test_keep_puts_the_word_on_the_stop_list(self):
         cur = _FakeCursor([("Schmetterlings-Tramete",)])

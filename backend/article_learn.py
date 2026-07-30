@@ -346,6 +346,9 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
         return {
             "w": word, "a": art, "ru": str(w.get("ru") or ""),
             "tip": tip,
+            # Двуродовое (der/die Flur): артикль решает смысл, поэтому перевод виден
+            # ВМЕСТЕ с вопросом. Без этого вопрос «der/die/das?» неотвечаем.
+            "tg": bool(w.get("tg")),
             "color": GENDER_COLOR.get(art, "blue"),
             "review": review,
             "audio": r2_public_url(akey) if akey else "",

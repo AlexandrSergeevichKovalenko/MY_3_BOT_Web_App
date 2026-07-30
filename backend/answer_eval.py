@@ -1831,6 +1831,9 @@ def load_artikel_review_batch(*, user_id: int, limit: int = 20) -> dict:
             "image": r2_public_url(ikey) if ikey else "",
             "audio": r2_public_url(akey) if akey else "",
             "tip": tip,
+            # Двуродовое: артикль решает смысл, поэтому перевод показывается ВМЕСТЕ
+            # с вопросом, а не после ответа — иначе вопрос без ответа.
+            "tg": bool(r.get("two_gender")),
         })
     # Mistakes span every theme the user ever played, so many words were never reached by
     # the nightly theme-of-day warm-up and arrive here silent. Lazily voice the missing

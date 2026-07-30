@@ -47993,7 +47993,8 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
                            m.payload->>'correct' AS correct,
                            n.image_object_key,
                            n.audio_object_key,
-                           n.mnemonic_ru
+                           n.mnemonic_ru,
+                           COALESCE(n.two_gender, FALSE)
                     FROM bt_3_aufgabe_mistakes m
                     LEFT JOIN bt_3_article_sprint_nouns n
                            ON lower(n.word) = lower(m.payload->>'wort')
@@ -48016,6 +48017,7 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
                 "id": mid, "word": str(r[1] or ""), "ru": str(r[2] or ""),
                 "correct": str(r[3] or ""), "image_object_key": str(r[4] or ""),
                 "audio_object_key": str(r[5] or ""), "mnemonic_ru": str(r[6] or ""),
+                "two_gender": bool(r[7]),
             }
             if cur_row is None:
                 best[mid] = cand
@@ -48023,6 +48025,8 @@ def get_due_artikel_mistakes_batch(user_id: int, limit: int = 20) -> list[dict]:
                 for k in ("image_object_key", "audio_object_key", "mnemonic_ru"):
                     if not cur_row.get(k) and cand.get(k):
                         cur_row[k] = cand[k]
+                if cand.get("two_gender"):
+                    cur_row["two_gender"] = True
         # Preserve due order (dict of Python 3.7+ keeps insertion order).
         return list(best.values())
     except Exception:
@@ -48516,7 +48520,11 @@ def get_article_learn_review_words(user_id: int, limit: int = 8) -> list[dict]:
                     WHERE user_id = %s
                     GROUP BY word
                 )
-                SELECT word, article, theme_key
+                SELECT word, article, theme_key, (
+                           SELECT COALESCE(bool_or(n.two_gender), FALSE)
+                           FROM bt_3_article_sprint_nouns n
+                           WHERE lower(n.word) = lower(p.word)
+                             AND COALESCE(n.retired, FALSE) = FALSE) AS two_gender
                 FROM per_word p
                 WHERE NOT (latest_ok AND corrects >= %s)
                   AND EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns n
@@ -48531,6 +48539,7 @@ def get_article_learn_review_words(user_id: int, limit: int = 8) -> list[dict]:
     out: list[dict] = []
     for r in rows:
         word, article = str(r[0]), str(r[1] or "")
+        two_gender = bool(r[3]) if len(r) > 3 else False
         ru = ""
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -48542,7 +48551,7 @@ def get_article_learn_review_words(user_id: int, limit: int = 8) -> list[dict]:
                 rr = cursor.fetchone()
                 if rr:
                     ru = str(rr[0] or "")
-        out.append({"w": word, "a": article, "ru": ru})
+        out.append({"w": word, "a": article, "ru": ru, "tg": two_gender})
     return out
 
 
@@ -48902,11 +48911,12 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
     в списке нет вовсе (2 784 из 2 929), не спрашиваем совсем — это и есть тот хлам,
     ради которого чистку затевали.
 
-    Двуродовые и субстантивированные прилагательные (die/der Erwachsene, Bekannte,
-    Verlobte) выкидываем сразу: у них артикль зависит от смысла, в игре «der/die/das»
-    им делать нечего, и сняли их по делу."""
+    Двуродовые (der/die Flur, das/der Service) и субстантивированные прилагательные
+    (die Erwachsene) из очереди НЕ выкидываем: игра учит понимать артикли, и такие слова
+    в ней нужны. Для них ответ решает не написание, а смысл — поэтому в игре у них
+    показывается русский перевод, и вопрос становится честным."""
     from backend.article_word_gate import word_rank
-    from backend.article_sprint_generator import is_ambiguous_noun
+    from backend.article_sprint_generator import is_ambiguous_noun  # noqa: F401  (пометка, не фильтр)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -48925,8 +48935,6 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
         key = word.lower()
         if key in seen:  # одно и то же слово в нескольких темах — спрашиваем один раз
             continue
-        if is_ambiguous_noun(word):
-            continue
         seen.add(key)
         out.append({"id": int(r[0]), "word": word, "article": str(r[2] or ""),
                     "meaning_ru": str(r[3] or ""), "theme_key": str(r[4] or ""), "rank": int(rank)})
@@ -48940,8 +48948,15 @@ def list_retired_review_candidates(*, limit: int = 10, max_rank: int = 60000) ->
     Артикль в снятой строке нельзя показывать как есть: в банке лежала «die Flur», хотя
     правильно «der Flur» — часто именно кривой артикль и был причиной снятия. Поэтому
     каждый кандидат сверяется со справочником (Wiktionary → правило композита), и в
-    карточку идёт его вердикт. Слово, рода которого справочник не знает, в разбор не
-    попадает вовсе: вернуть его в игру — значит учить человека догадке."""
+    карточку идёт его вердикт.
+
+    Двуродовые слова справочник не решает намеренно («артикль зависит от значения») — и
+    это НЕ повод их выбрасывать: игра учит понимать артикли, такие слова в ней нужны.
+    Они помечаются mode='sense': в карточке владелец видит перевод и сам ставит артикль
+    для этого смысла, а в игре у слова показывается тот же перевод — вопрос честный.
+
+    Слово без перевода в разбор не идёт: без него ни владелец, ни игрок не поймут, о
+    каком смысле речь."""
     from backend.article_authority import authoritative_article
     try:
         rows = _retired_review_rows(int(max_rank))
@@ -48956,13 +48971,17 @@ def list_retired_review_candidates(*, limit: int = 10, max_rank: int = 60000) ->
         except Exception:
             logging.warning("retire review: справочник недоступен для %s", row["word"], exc_info=True)
             continue
-        if not verdict:
-            logging.info("retire review: %s — род не подтверждён (%s), не спрашиваем", row["word"], source)
-            continue
         row = dict(row)
         row["stored_article"] = row.get("article") or ""
-        row["article"] = verdict
         row["article_source"] = source
+        if verdict:
+            row["article"] = verdict
+            row["mode"] = "sure"
+        else:
+            if not str(row.get("meaning_ru") or "").strip():
+                logging.info("retire review: %s — нет перевода, спрашивать не о чем", row["word"])
+                continue
+            row["mode"] = "sense"  # артикль решает смысл — ставит владелец, игра покажет перевод
         out.append(row)
         if len(out) >= want:
             break
@@ -48978,30 +48997,56 @@ def count_retired_review_candidates(*, max_rank: int = 60000) -> int:
         return 0
 
 
-def restore_retired_article_noun(row_id: int) -> dict | None:
-    """Вернуть слово в игру — с артиклем из справочника, а не из снятой строки.
+def restore_retired_article_noun(row_id: int, *, article: str = "") -> dict | None:
+    """Вернуть слово в игру с ПРОВЕРЕННЫМ артиклем, а не с тем, что лежал в снятой строке.
 
-    Кривой артикль часто и был причиной снятия («die Flur» вместо «der Flur»), поэтому
-    возвращать строку как есть нельзя: это вернуло бы в игру ту самую ошибку. Спрашиваем
-    справочник (Wiktionary → правило композита) и пишем его вердикт. Не знает — не
-    возвращаем вовсе: {"blocked": ...}.
+    Два пути:
+      • справочник знает род (Wiktionary → правило композита) — пишем его вердикт;
+      • артикль решает смысл (der/die Flur, die Erwachsene) — его ставит владелец
+        тапом, строка помечается two_gender=TRUE, и в игре у слова показывается
+        русский перевод, чтобы вопрос «der/die/das?» был честным.
 
-    Правим ВСЕ строки этого слова (оно могло быть снято в нескольких темах) — иначе
-    человек нажал «вернуть», а слово вернулось только в одной."""
+    Правим только ЭТУ строку, когда артикль пришёл от владельца: у двуродового слова
+    у каждого смысла своя строка со своим артиклем, и трогать соседний смысл нельзя.
+    Когда род однозначен — правим все строки слова разом (оно могло быть снято в
+    нескольких темах)."""
     from backend.article_authority import authoritative_article
+    picked = str(article or "").strip().lower()
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT word, article FROM bt_3_article_sprint_nouns WHERE id = %s;", (int(row_id),)
+                    "SELECT word, article, meaning_ru FROM bt_3_article_sprint_nouns WHERE id = %s;",
+                    (int(row_id),),
                 )
                 row = cursor.fetchone()
                 if not row:
                     return None
-                word, stored = str(row[0]), str(row[1] or "")
+                word, stored, meaning = str(row[0]), str(row[1] or ""), str(row[2] or "")
+        if picked in ("der", "die", "das"):
+            if not meaning.strip():
+                return {"blocked": True, "word": word, "reason": "нет перевода"}
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE bt_3_article_sprint_nouns "
+                        "SET retired = FALSE, retire_reviewed = TRUE, article = %s, "
+                        "    two_gender = TRUE, verified = TRUE, source = 'owner', updated_at = NOW() "
+                        "WHERE id = %s;",
+                        (picked, int(row_id)),
+                    )
+                    cursor.execute(
+                        "DELETE FROM bt_3_article_word_blacklist WHERE word = lower(%s);", (word,)
+                    )
+                conn.commit()
+            return {"word": word, "article": picked, "stored_article": stored,
+                    "meaning_ru": meaning, "source": "решение владельца", "two_gender": True}
+
         verdict, source = authoritative_article(word, allow_network=True)
         if not verdict:
-            return {"blocked": True, "word": word, "reason": source}
+            # Не тупик: род зависит от смысла — пусть владелец поставит артикль сам.
+            return {"needs_sense": True, "word": word, "stored_article": stored,
+                    "meaning_ru": meaning, "reason": source}
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -49511,12 +49556,13 @@ def get_article_sprint_verified_sample(theme_key: str | None, n: int, *, exclude
 def get_article_theme_words_slice(theme_key: str, offset: int, limit: int) -> list[dict]:
     """Deterministic ordered slice of a theme's verified nouns (by freq_rank, id) —
     stable per offset, so a focus deck is the same all day and is prewarmable.
-    Returns [{"w","a","ru"}]."""
+    Returns [{"w","a","ru","tg"}] — «tg» (двуродовое) обязателен: у таких слов артикль
+    решает смысл, и колода ОБЯЗАНА показать перевод вместе с вопросом."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT word, article, meaning_ru
+                SELECT word, article, meaning_ru, two_gender
                 FROM bt_3_article_sprint_nouns
                 WHERE theme_key = %s AND verified = TRUE AND retired = FALSE
                 ORDER BY freq_rank NULLS LAST, id
@@ -49525,7 +49571,7 @@ def get_article_theme_words_slice(theme_key: str, offset: int, limit: int) -> li
                 (str(theme_key), int(max(0, offset)), int(max(0, limit))),
             )
             rows = cursor.fetchall() or []
-    return [{"w": r[0], "a": str(r[1]).lower(), "ru": r[2] or ""} for r in rows]
+    return [{"w": r[0], "a": str(r[1]).lower(), "ru": r[2] or "", "tg": bool(r[3])} for r in rows]
 
 
 def upsert_article_sprint_set(*, set_id: str, kind: str, play_date, theme_key: str,

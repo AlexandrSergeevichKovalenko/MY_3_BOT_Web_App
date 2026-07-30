@@ -70,6 +70,13 @@ class ArtikelReviewSkipsRetiredWordsTests(unittest.TestCase):
         self.assertIn("bt_3_article_sprint_nouns", sql, where)
         self.assertIn("COALESCE(an.retired, FALSE) = FALSE", sql, where)
 
+    def test_two_gender_flag_reaches_the_card(self):
+        # Двуродовое слово отвечаемо только с переводом, значит признак должен доехать
+        # до карточки разбора — иначе игрок видит «Flur» и гадает.
+        _, cur = self._run(lambda: db.get_due_artikel_mistakes_batch(1, 20))
+        card_sql = [s for s in cur.sql_log if "m.format = 'artikel'" in s and s.startswith("SELECT")][0]
+        self.assertIn("two_gender", card_sql)
+
     def test_batch_query_requires_a_live_bank_row(self):
         _, cur = self._run(lambda: db.get_due_artikel_mistakes_batch(1, 20))
         card_sql = [s for s in cur.sql_log if "m.format = 'artikel'" in s and s.startswith("SELECT")]
