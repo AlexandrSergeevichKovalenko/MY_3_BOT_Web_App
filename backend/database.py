@@ -45942,18 +45942,47 @@ def get_crossword_answers(*, dispatch_id: int, user_id: int) -> list[dict]:
 # ─── Anagram (assemble-the-word) DB functions ─────────────────────────────────
 
 def create_anagram_card(*, card_id: str, word: str, hint_ru: str,
-                        scrambled: str, explanation: str = "") -> None:
+                        scrambled: str, explanation: str = "") -> bool:
+    """Add one anagram card. One word = one card: the same word twice in the bank
+    means the learner solves it again a few weeks later.
+
+    Returns True when the card with THIS card_id is in the bank afterwards (freshly
+    inserted, or already there — the re-send path calls this for pooled cards), and
+    False when the insert was refused because another card already owns the word.
+    """
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO bt_3_anagram_cards (card_id, word, hint_ru, scrambled, explanation)
-                VALUES (%s, %s, %s, %s, %s)
+                SELECT %s, %s, %s, %s, %s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM bt_3_anagram_cards
+                    WHERE LOWER(word) = LOWER(%s) AND card_id <> %s
+                )
                 ON CONFLICT (card_id) DO NOTHING
+                RETURNING card_id
                 """,
-                (str(card_id), str(word), str(hint_ru or ""), str(scrambled), str(explanation or "")),
+                (str(card_id), str(word), str(hint_ru or ""), str(scrambled), str(explanation or ""),
+                 str(word), str(card_id)),
             )
+            inserted = cursor.fetchone() is not None
+            if not inserted:
+                cursor.execute(
+                    "SELECT 1 FROM bt_3_anagram_cards WHERE card_id = %s", (str(card_id),)
+                )
+                inserted = cursor.fetchone() is not None
         conn.commit()
+    return bool(inserted)
+
+
+def list_anagram_words() -> set[str]:
+    """Lowercased words already in the anagram bank — so the generator can skip
+    them before spending a dictionary pick on a word we already have."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT LOWER(word) FROM bt_3_anagram_cards")
+            return {str(row[0]) for row in (cursor.fetchall() or []) if row and row[0]}
 
 
 def record_anagram_dispatch(*, slot_date, slot_hour: int, card_id: str,
@@ -50538,16 +50567,25 @@ def count_anagram_cards() -> int:
             return int((cursor.fetchone() or [0])[0])
 
 
+# The generator only accepts words of 8+ letters (`_is_valid_anagram_target`), but
+# the bank still holds legacy short ones (`Mohn` = 4 letters = 2 middle tiles, not a
+# game). Gate them out where cards are CHOSEN, not where an already delivered card
+# is opened — old links must keep working.
+ANAGRAM_MIN_LETTERS = 8
+_ANAGRAM_LETTERS_LEN = "LENGTH(REGEXP_REPLACE(word, '[^A-Za-zÄÖÜäöüß]', '', 'g'))"
+
+
 def count_available_anagram_cards(*, cooldown_days: int = 14) -> int:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM bt_3_anagram_cards
                 WHERE retired = FALSE
+                  AND {_ANAGRAM_LETTERS_LEN} >= %s
                   AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
                 """,
-                (int(cooldown_days),),
+                (int(ANAGRAM_MIN_LETTERS), int(cooldown_days)),
             )
             return int((cursor.fetchone() or [0])[0])
 
@@ -50557,15 +50595,16 @@ def pick_next_anagram(*, cooldown_days: int = 14) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT card_id, word, hint_ru, scrambled, explanation
                 FROM bt_3_anagram_cards
                 WHERE retired = FALSE
+                  AND {_ANAGRAM_LETTERS_LEN} >= %s
                   AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
                 ORDER BY last_sent_at NULLS FIRST, created_at
                 LIMIT 1
                 """,
-                (int(cooldown_days),),
+                (int(ANAGRAM_MIN_LETTERS), int(cooldown_days)),
             )
             row = cursor.fetchone()
     if not row:

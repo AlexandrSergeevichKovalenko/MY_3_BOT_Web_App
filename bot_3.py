@@ -31560,6 +31560,15 @@ def _build_anagram_card_payload(entry: dict) -> dict | None:
 
 
 async def _generate_anagram_card_payload() -> dict | None:
+    # One word = one card. Without this the bank drifts into repeats (Einwanderer
+    # landed there three times), and the learner solves the same word again.
+    try:
+        from backend.database import list_anagram_words
+        known_words = await asyncio.to_thread(list_anagram_words)
+    except Exception:
+        logging.warning("ag_gen: list_anagram_words failed", exc_info=True)
+        known_words = set()
+
     for _ in range(40):  # 8+ letter words are rarer, so try more dictionary entries
         try:
             entry = await asyncio.to_thread(get_random_dictionary_entry, cooldown_days=0)
@@ -31569,7 +31578,7 @@ async def _generate_anagram_card_payload() -> dict | None:
         if not entry:
             continue
         payload = _build_anagram_card_payload(entry)
-        if payload:
+        if payload and str(payload["word"]).lower() not in known_words:
             return payload
     return None
 
@@ -31604,13 +31613,18 @@ async def send_anagram_to_chat(
 ) -> bool:
     """Send one anagram card to a chat. Returns True on success."""
     try:
-        await asyncio.to_thread(
+        created = await asyncio.to_thread(
             create_anagram_card,
             card_id=card_id, word=payload["word"], hint_ru=payload["hint_ru"],
             scrambled=payload["scrambled"],
         )
     except Exception:
         logging.warning("ag_send: create_card failed card_id=%s", card_id, exc_info=True)
+        return False
+    if not created:
+        # Another card already owns this word (pooled cards keep their own card_id
+        # and pass). Nothing to send: the word would be a repeat.
+        logging.info("ag_send: duplicate word suppressed card_id=%s word=%s", card_id, payload["word"])
         return False
 
     try:
@@ -31690,12 +31704,15 @@ async def _ensure_anagram_card() -> dict | None:
         return None
     card_id = str(__import__("uuid").uuid4())
     try:
-        await asyncio.to_thread(
+        created = await asyncio.to_thread(
             create_anagram_card, card_id=card_id, word=payload["word"],
             hint_ru=payload["hint_ru"], scrambled=payload["scrambled"],
         )
     except Exception:
         logging.warning("ag_pool: create_card failed", exc_info=True)
+        return None
+    if not created:  # word already in the bank — the caller just tries another one
+        logging.info("ag_pool: duplicate word skipped word=%s", payload["word"])
         return None
     return {"card_id": card_id, "word": payload["word"], "hint_ru": payload["hint_ru"],
             "scrambled": payload["scrambled"], "explanation": ""}
