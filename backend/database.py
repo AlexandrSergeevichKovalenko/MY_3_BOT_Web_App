@@ -48531,6 +48531,22 @@ def list_article_sprint_words(theme_key: str) -> list[str]:
     return [str(r[0]) for r in rows if r and r[0]]
 
 
+def list_article_sprint_meanings(theme_key: str) -> list[str]:
+    """Переводы, уже занятые в теме, — чтобы не добавлять второе слово с тем же смыслом.
+
+    В прежнем словнике так и вышло: «die Maximaltemperatur» и «die Höchsttemperatur»
+    стояли рядом с одинаковым переводом «максимальная температура»."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT lower(btrim(meaning_ru)) FROM bt_3_article_sprint_nouns "
+                "WHERE theme_key = %s AND NOT retired AND COALESCE(meaning_ru,'') <> '';",
+                (str(theme_key),),
+            )
+            rows = cursor.fetchall() or []
+    return [str(r[0]) for r in rows if r and r[0]]
+
+
 def list_article_sprint_rows(theme_key: str) -> list[dict]:
     """All non-retired rows of a theme as {id, word, article} (for recheck)."""
     with get_db_connection_context() as conn:
