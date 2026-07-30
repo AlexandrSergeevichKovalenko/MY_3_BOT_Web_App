@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
 import AskOverlay from './AskOverlay.jsx';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
@@ -56,6 +56,8 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
   // word-level translation; the phrase itself is auto-generated and may be unreal).
   const [wordPop, setWordPop] = useState(null); // null | {kind, de, ru, saving, saved}
   const [askOpen, setAskOpen] = useState(false);
+  const [toast, setToast] = useState(null);     // null | {text, kind: 'bad'|'info'}
+  const toastTimer = useRef(null);
   const openWord = useCallback((kind) => {
     if (!card) return;
     try { haptic?.('tap'); } catch (_e) { /* noop */ }
@@ -67,6 +69,17 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
         save_de: `${art}${card.noun}`.trim(), saving: false, saved: false });
     }
   }, [card, haptic]);
+
+  // Toast over the game. The save popup auto-dismisses after 650 ms, long before a slow
+  // request fails — so a failure has nowhere to be shown and used to be swallowed while
+  // the user had already seen a ✓. This is that missing channel: 3 seconds, floating,
+  // doesn't interrupt the round.
+  const showToast = useCallback((text, kind = 'bad') => {
+    setToast({ text, kind });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }, []);
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const saveWord = useCallback(() => {
     // Optimistic save: confirm instantly and release the learner. The network call
@@ -88,11 +101,18 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
         fallbackTranslation: fallbackRu,
         origin: 'adjektiv_trainer',
       }),
-    ).catch(() => { /* best-effort background save */ });
+    ).then((res) => {
+      // Already in the dictionary: the save refreshed that entry, so it keeps its old
+      // place in the list — say so, or the user looks for it at the top and doesn't find it.
+      if (res && res.inserted === false) showToast(`«${word_de}» уже был в словаре`, 'info');
+    }).catch(() => {
+      showToast('Слово не сохранилось. Открой его и нажми ещё раз.');
+      try { haptic?.('bad'); } catch (_e) { /* noop */ }
+    });
     // Auto-close shortly after the ✓ shows; guard so we don't close a different
     // word the user may have opened in the meantime.
     setTimeout(() => setWordPop((w) => (w && w.save_de === word_de ? null : w)), 650);
-  }, [wordPop, api, haptic]);
+  }, [wordPop, api, haptic, showToast]);
 
   let cls = 'al-card';
   let body = null;
@@ -199,5 +219,10 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
     </>);
   }
 
-  return <div className="ans-root"><div className={`ans-card as-card ${cls}`}>{body}</div></div>;
+  return (
+    <div className="ans-root">
+      <div className={`ans-card as-card ${cls}`}>{body}</div>
+      {toast ? <div className={`al-toast ${toast.kind}`} role="status">{toast.text}</div> : null}
+    </div>
+  );
 }
