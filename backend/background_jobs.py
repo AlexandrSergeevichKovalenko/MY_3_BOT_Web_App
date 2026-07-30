@@ -1800,6 +1800,212 @@ def _notify_artikel_fill_failure(*, chat_id: int, theme_key: str, error: Excepti
         logging.warning("artikel_fill_job: failure report send failed theme=%s", theme_key, exc_info=True)
 
 
+@dramatiq.actor(
+    max_retries=0,
+    queue_name="scheduler_jobs",
+    time_limit=_ARTIKEL_FILL_TIME_LIMIT_MS,
+)
+def run_artikel_autofill_job(
+    per_theme_cap: int | None = None,
+    total_cap: int | None = None,
+    chat_id: int | None = None,
+    request_id: str | None = None,
+    nightly_metrics_run_date: str | None = None,
+    rotation_domain: str | None = None,
+) -> None:
+    """Догенерация слов во всех темах ниже target — ВНЕ бота.
+
+    Та же беда, что была у /artikel_fill, только шире: команда обходит все темы, так что
+    бот молчал ещё дольше, а деплой посреди прогона терял его целиком. Ночные вызовы бота
+    не морозили (работа уходила в поток), но деплой убивал и их.
+
+    nightly_metrics_run_date — ISO-дата: если задана, актор пишет ночные метрики сам,
+    иначе они бы потерялись вместе с переносом.
+    rotation_domain — домен ротации: доливка записывается ОТДЕЛЬНОЙ строкой с retired=0.
+    Сводка ротации суммирует строки по домену, поэтому итог сходится, а число добавленного
+    остаётся честным, хоть и приходит позже списанного."""
+    from backend.job_queue import release_artikel_autofill_lock
+
+    started_at = time.perf_counter()
+    logging.info(
+        "artikel_autofill_job start per_theme_cap=%s total_cap=%s chat_id=%s request_id=%s",
+        per_theme_cap, total_cap, chat_id, request_id,
+    )
+    try:
+        from backend.article_sprint_generator import autofill_themes_below_target
+
+        kwargs: dict = {}
+        if per_theme_cap:
+            kwargs["per_theme_cap"] = int(per_theme_cap)
+        if total_cap:
+            kwargs["total_cap"] = int(total_cap)
+        result = autofill_themes_below_target(**kwargs) or {}
+        total_added = int(result.get("total_added") or 0)
+        logging.info(
+            "artikel_autofill_job done request_id=%s total_s=%s result=%s",
+            request_id, int(time.perf_counter() - started_at), result,
+        )
+        if nightly_metrics_run_date:
+            _record_artikel_autofill_nightly_metrics(nightly_metrics_run_date, result)
+        if rotation_domain:
+            _record_artikel_autofill_rotation(str(rotation_domain), total_added)
+        _notify_artikel_autofill_result(chat_id=int(chat_id or 0), result=result)
+    except Exception as exc:
+        logging.exception("artikel_autofill_job failed request_id=%s", request_id)
+        if int(chat_id or 0) > 0:
+            try:
+                from backend.telegram_notify import _send_private_message
+
+                _send_private_message(
+                    int(chat_id),
+                    "❌ Авто-наполнение оборвалось. Уже добавленные слова остались в темах, "
+                    f"повторный запуск продолжит с этого места.\nПричина: {str(exc)[:300]}",
+                )
+            except Exception:
+                logging.warning("artikel_autofill_job: failure report send failed", exc_info=True)
+        raise
+    finally:
+        try:
+            release_artikel_autofill_lock()
+        except Exception:
+            logging.warning("artikel_autofill_job: lock release failed", exc_info=True)
+
+
+def _record_artikel_autofill_nightly_metrics(run_date_iso: str, result: dict) -> None:
+    try:
+        from datetime import date
+
+        from backend.database import record_artikel_nightly_metrics
+
+        words_added = {
+            str(t.get("theme")): int(t.get("added") or 0)
+            for t in ((result or {}).get("themes") or [])
+            if int(t.get("added") or 0) > 0
+        }
+        record_artikel_nightly_metrics(
+            run_date=date.fromisoformat(str(run_date_iso).strip()),
+            words_added=words_added,
+            words_total=int((result or {}).get("total_added") or 0),
+        )
+    except Exception:
+        logging.warning("artikel_autofill_job: metrics record failed", exc_info=True)
+
+
+def _record_artikel_autofill_rotation(domain: str, total_added: int) -> None:
+    try:
+        from backend.database import record_rotation_run
+
+        record_rotation_run(domain, 0, int(total_added))
+    except Exception:
+        logging.warning("artikel_autofill_job: rotation record failed domain=%s", domain, exc_info=True)
+
+
+def _notify_artikel_autofill_result(*, chat_id: int, result: dict) -> None:
+    if chat_id <= 0:
+        return
+    lines = [f"✅ Авто-наполнение: добавлено {int((result or {}).get('total_added') or 0)} слов(а)."]
+    for t in ((result or {}).get("themes") or [])[:25]:
+        lines.append(f"• {t.get('theme')}: +{t.get('added')} → {t.get('final_verified')}/{t.get('target')}")
+    if len(lines) == 1:
+        lines.append("Все темы уже на target 🎉")
+    try:
+        from backend.telegram_notify import _send_private_message
+
+        _send_private_message(chat_id, "\n".join(lines)[:4000])
+    except Exception:
+        logging.warning("artikel_autofill_job: report send failed", exc_info=True)
+
+
+@dramatiq.actor(
+    max_retries=0,
+    queue_name="scheduler_jobs",
+    time_limit=_ARTIKEL_FILL_TIME_LIMIT_MS,
+)
+def run_artikel_fillmedia_job(
+    theme_key: str,
+    cap: int | None = None,
+    include_audio: bool = True,
+    chat_id: int | None = None,
+    request_id: str | None = None,
+) -> None:
+    """Мнемоники, озвучка и картинки для темы — ВНЕ бота (см. run_artikel_fill_job).
+    Прогон ограничен cap и идёт только по незакрытым словам, поэтому повтор продолжает
+    тему, а обрыв на деплое стоит максимум одного незавершённого куска."""
+    from backend.job_queue import release_artikel_fillmedia_lock
+
+    safe_theme_key = str(theme_key or "").strip()
+    safe_chat_id = int(chat_id or 0)
+    if not safe_theme_key:
+        logging.warning("artikel_fillmedia_job skipped: empty theme_key request_id=%s", request_id)
+        return
+
+    started_at = time.perf_counter()
+    logging.info(
+        "artikel_fillmedia_job start theme=%s cap=%s include_audio=%s request_id=%s",
+        safe_theme_key, cap, include_audio, request_id,
+    )
+    try:
+        from backend.article_media_fill import fill_theme_media
+
+        result = fill_theme_media(
+            safe_theme_key,
+            cap=int(cap) if cap else 60,
+            include_audio=bool(include_audio),
+        ) or {}
+        logging.info(
+            "artikel_fillmedia_job done theme=%s request_id=%s total_s=%s result=%s",
+            safe_theme_key, request_id, int(time.perf_counter() - started_at), result,
+        )
+        _notify_artikel_fillmedia_result(
+            chat_id=safe_chat_id, theme_key=safe_theme_key, result=result,
+        )
+    except Exception as exc:
+        logging.exception("artikel_fillmedia_job failed theme=%s request_id=%s", safe_theme_key, request_id)
+        if safe_chat_id > 0:
+            try:
+                from backend.telegram_notify import _send_private_message
+
+                _send_private_message(
+                    safe_chat_id,
+                    f"❌ «{_artikel_theme_label(safe_theme_key)}» — медиа не доделались.\n"
+                    f"Готовое сохранено, повтор продолжит с этого места.\nПричина: {str(exc)[:300]}",
+                )
+            except Exception:
+                logging.warning("artikel_fillmedia_job: failure report send failed", exc_info=True)
+        raise
+    finally:
+        try:
+            release_artikel_fillmedia_lock(safe_theme_key)
+        except Exception:
+            logging.warning(
+                "artikel_fillmedia_job: lock release failed theme=%s", safe_theme_key, exc_info=True,
+            )
+
+
+def _notify_artikel_fillmedia_result(*, chat_id: int, theme_key: str, result: dict) -> None:
+    if chat_id <= 0:
+        return
+    lines = [
+        f"✅ «{_artikel_theme_label(theme_key)}» — этот прогон: "
+        f"мнемоники +{result.get('mnemonics')} · аудио +{result.get('audio')} · "
+        f"картинки +{result.get('images')}.",
+    ]
+    if result.get("images_skipped") == "no_key":
+        lines.append(
+            "⚠️ Картинки пропущены: воркер не видит PIXABAY_API_KEY. Слова не помечены "
+            "проверенными, так что после появления ключа они доберутся."
+        )
+    if result.get("audio_stopped") == "blocked":
+        lines.append("⚠️ Озвучка остановлена: месячный бюджет Standard-голоса исчерпан.")
+    lines.append("Повтори команду, пока числа не станут 0 — тема дочистится.")
+    try:
+        from backend.telegram_notify import _send_private_message
+
+        _send_private_message(chat_id, "\n".join(lines)[:4000])
+    except Exception:
+        logging.warning("artikel_fillmedia_job: report send failed theme=%s", theme_key, exc_info=True)
+
+
 @dramatiq.actor(max_retries=0, queue_name=_READER_INGEST_QUEUE_NAME)
 def run_reader_library_ingest_job(**payload) -> None:
     safe_payload = dict(payload or {})
