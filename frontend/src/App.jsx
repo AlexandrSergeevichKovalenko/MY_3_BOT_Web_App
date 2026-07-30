@@ -7407,6 +7407,7 @@ function AppInner() {
   const readerPageNavLockRef = useRef(false);
   const readerDragSelectionMetaRef = useRef(null);
   const readerPhraseGestureRef = useRef({
+    armed: false,
     active: false,
     sentenceId: '',
     anchorIndex: -1,
@@ -23798,8 +23799,26 @@ function AppInner() {
     setReaderCurrentPage(pageNumber);
   }, [readerUsesOriginalEpubLayout]);
 
+  // ── Выделение фразы: придержи слово и веди пальцем ───────────────────────────
+  // Короткое движение по тексту листает страницу, поэтому «протянуть по словам»
+  // включается только после удержания: палец стоит на слове ~340 мс → слово
+  // подсвечивается и даёт вибрацию, и с этого момента жест принадлежит выделению,
+  // а не листалке. Одинаково в книгах и в статьях/новостях.
+  const READER_PHRASE_HOLD_MS = 340;
+  // Пока удержание не сработало, палец вправо/влево — это ещё свайп страницы.
+  const READER_PHRASE_HOLD_SLOP_PX = 10;
+
+  const clearReaderPhraseHoldTimer = () => {
+    if (readerWordLongPressTimerRef.current) {
+      clearTimeout(readerWordLongPressTimerRef.current);
+      readerWordLongPressTimerRef.current = null;
+    }
+  };
+
   const resetReaderPhraseGesture = () => {
+    clearReaderPhraseHoldTimer();
     readerPhraseGestureRef.current = {
+      armed: false,
       active: false,
       sentenceId: '',
       anchorIndex: -1,
@@ -23852,6 +23871,126 @@ function AppInner() {
     const target = document.elementFromPoint(clientX, clientY);
     if (!(target instanceof Element)) return null;
     return target.closest('[data-wid][data-sid]');
+  };
+
+  // Палец лёг на слово: заводим таймер удержания. Пока он не выстрелил, жест ничем
+  // не отличается от обычного — тап переводит слово, движение листает страницу.
+  const beginReaderPhraseDrag = (point) => {
+    resetReaderPhraseGesture();
+    // Режим «нажми слово, чтобы аудио пошло с него» — жест целиком его, не наш.
+    if (readerAudioAwaitingWordTapRef.current || readerAudioAwaitingWordTap) return false;
+    const target = point?.target;
+    const wordEl = target instanceof Element ? target.closest('[data-wid][data-sid]') : null;
+    if (!wordEl) return false;
+    const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+    const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+    const anchorIndex = getReaderWordIndexInSentence(sid, wid);
+    if (!sid || anchorIndex < 0) return false;
+    readerPhraseGestureRef.current = {
+      armed: true,
+      active: false,
+      sentenceId: sid,
+      anchorIndex,
+      currentIndex: anchorIndex,
+      moved: false,
+      startX: Number(point?.clientX || 0),
+      startY: Number(point?.clientY || 0),
+    };
+    readerWordLongPressTimerRef.current = setTimeout(() => {
+      readerWordLongPressTimerRef.current = null;
+      const gesture = readerPhraseGestureRef.current;
+      if (!gesture?.armed) return;
+      // Удержание сработало. Подсвечиваем слово-якорь и даём вибрацию — видно и
+      // понятно без объяснений: дальше палец ведёт выделение, страница стоит.
+      readerPhraseGestureRef.current = { ...gesture, armed: false, active: true };
+      const anchorMeta = buildReaderPhraseSelection(gesture.sentenceId, gesture.anchorIndex, gesture.anchorIndex);
+      readerDragSelectionMetaRef.current = anchorMeta;
+      setReaderDragSelectionMeta(anchorMeta);
+      trTextHaptic();
+    }, READER_PHRASE_HOLD_MS);
+    return true;
+  };
+
+  // true — жест принадлежит выделению, листалка его не трогает.
+  const moveReaderPhraseDrag = (point) => {
+    const gesture = readerPhraseGestureRef.current;
+    if (!gesture?.armed && !gesture?.active) return false;
+    const clientX = Number(point?.clientX || 0);
+    const clientY = Number(point?.clientY || 0);
+    if (!gesture.active) {
+      // Палец уехал раньше, чем сработало удержание → это свайп, отдаём листалке.
+      const dx = clientX - Number(gesture.startX || 0);
+      const dy = clientY - Number(gesture.startY || 0);
+      if (Math.abs(dx) > READER_PHRASE_HOLD_SLOP_PX || Math.abs(dy) > READER_PHRASE_HOLD_SLOP_PX) {
+        clearReaderPhraseHoldTimer();
+        readerPhraseGestureRef.current = { ...gesture, armed: false };
+      }
+      return false;
+    }
+    const wordEl = getReaderWordElementByPoint(clientX, clientY);
+    if (!wordEl) return true;
+    const sid = String(wordEl.getAttribute('data-sid') || '').trim();
+    const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+    // Тянем внутри одного предложения: перевод куска из двух разных предложений
+    // смысла не имеет, поэтому на границе выделение просто перестаёт расти.
+    if (!sid || sid !== gesture.sentenceId) return true;
+    const currentIndex = getReaderWordIndexInSentence(sid, wid);
+    if (currentIndex < 0 || currentIndex === gesture.currentIndex) return true;
+    const nextMeta = buildReaderPhraseSelection(sid, gesture.anchorIndex, currentIndex);
+    readerPhraseGestureRef.current = {
+      ...gesture,
+      currentIndex,
+      moved: currentIndex !== gesture.anchorIndex,
+    };
+    readerDragSelectionMetaRef.current = nextMeta;
+    setReaderDragSelectionMeta(nextMeta);
+    if (nextMeta) trTextHaptic();
+    return true;
+  };
+
+  // Палец отпущен. true — выделение забрало жест (страницу листать не нужно).
+  const endReaderPhraseDrag = (point) => {
+    const gesture = readerPhraseGestureRef.current;
+    const previewMeta = readerDragSelectionMetaRef.current;
+    const wasActive = Boolean(gesture?.active);
+    if (!wasActive) {
+      resetReaderPhraseGesture();
+      return false;
+    }
+    const text = String(previewMeta?.text || '').trim();
+    if (!text) {
+      resetReaderPhraseGesture();
+      return true;
+    }
+    const wids = Array.isArray(previewMeta.wids) ? previewMeta.wids : [];
+    if (wids[0]) setReaderAudioStartWid(wids[0]);
+    const releaseX = Number(point?.clientX || 0);
+    const releaseY = Number(point?.clientY || 0);
+    handleSelection(
+      // changedTouches — чтобы плашка встала НАД пальцем, а не под ним (палец её закроет).
+      { clientX: releaseX, clientY: releaseY, changedTouches: [{ clientX: releaseX, clientY: releaseY }] },
+      text,
+      {
+        compact: true,
+        inlineLookup: true,
+        lookupLang: getNormalizeLookupLang(),
+        selectionType: wids.length > 1 ? 'phrase' : 'word',
+        selectedMeta: {
+          sids: Array.isArray(previewMeta.sids) ? previewMeta.sids : [],
+          wids,
+          start: Number(previewMeta.start || 0),
+          end: Number(previewMeta.end || 0),
+        },
+      }
+    );
+    // Гасим тап/клик, который прилетает следом за отпусканием пальца.
+    readerSuppressStructuredClickRef.current = Date.now();
+    resetReaderPhraseGesture();
+    return true;
+  };
+
+  const cancelReaderPhraseDrag = () => {
+    resetReaderPhraseGesture();
   };
 
   // Map a WINDOW char offset (from a rendered word's data-start) to its server
@@ -24156,67 +24295,21 @@ function AppInner() {
 
   const handleReaderWordTouchStart = (event) => {
     const touch = event?.touches?.[0];
-    const target = event?.target;
-    if (!touch || !(target instanceof Element)) {
+    if (!touch) {
       resetReaderPhraseGesture();
       return;
     }
-    const wordEl = target.closest('[data-wid][data-sid]');
-    if (!wordEl) {
-      resetReaderPhraseGesture();
-      return;
-    }
-    const sid = String(wordEl.getAttribute('data-sid') || '').trim();
-    const wid = String(wordEl.getAttribute('data-wid') || '').trim();
-    const anchorIndex = getReaderWordIndexInSentence(sid, wid);
-    if (!sid || anchorIndex < 0) {
-      resetReaderPhraseGesture();
-      return;
-    }
-    readerPhraseGestureRef.current = {
-      active: true,
-      sentenceId: sid,
-      anchorIndex,
-      currentIndex: anchorIndex,
-      moved: false,
-      startX: touch.clientX,
-      startY: touch.clientY,
-    };
-    readerDragSelectionMetaRef.current = null;
-    setReaderDragSelectionMeta(null);
-
-    // Long press is now only used for phrase drag-selection, not audio start.
-    if (readerWordLongPressTimerRef.current) clearTimeout(readerWordLongPressTimerRef.current);
+    beginReaderPhraseDrag({
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      target: event?.target,
+    });
   };
 
   const handleReaderArticleTouchMove = (event) => {
-    const gesture = readerPhraseGestureRef.current;
-    if (!gesture?.active) return;
     const touch = event?.touches?.[0];
     if (!touch) return;
-    const dx = touch.clientX - Number(gesture.startX || 0);
-    const dy = touch.clientY - Number(gesture.startY || 0);
-    // Cancel long press if finger moves more than 8px
-    if ((Math.abs(dx) > 8 || Math.abs(dy) > 8) && readerWordLongPressTimerRef.current) {
-      clearTimeout(readerWordLongPressTimerRef.current);
-      readerWordLongPressTimerRef.current = null;
-    }
-    if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
-    const wordEl = getReaderWordElementByPoint(touch.clientX, touch.clientY);
-    if (!wordEl) return;
-    const sid = String(wordEl.getAttribute('data-sid') || '').trim();
-    const wid = String(wordEl.getAttribute('data-wid') || '').trim();
-    if (!sid || sid !== gesture.sentenceId) return;
-    const currentIndex = getReaderWordIndexInSentence(sid, wid);
-    if (currentIndex < 0 || currentIndex === gesture.currentIndex) return;
-    const nextMeta = buildReaderPhraseSelection(sid, gesture.anchorIndex, currentIndex);
-    readerPhraseGestureRef.current = {
-      ...gesture,
-      currentIndex,
-      moved: Math.abs(currentIndex - gesture.anchorIndex) >= 1,
-    };
-    readerDragSelectionMetaRef.current = nextMeta;
-    setReaderDragSelectionMeta(nextMeta);
+    moveReaderPhraseDrag({ clientX: touch.clientX, clientY: touch.clientY });
   };
 
   const handleReaderArticleMouseUp = (event) => {
@@ -24225,36 +24318,9 @@ function AppInner() {
   };
 
   const handleReaderArticleTouchEnd = (event) => {
-    if (readerWordLongPressTimerRef.current) {
-      clearTimeout(readerWordLongPressTimerRef.current);
-      readerWordLongPressTimerRef.current = null;
-    }
     markReaderInteraction();
-    const gesture = readerPhraseGestureRef.current;
-    const previewMeta = readerDragSelectionMetaRef.current;
     const touch = event?.changedTouches?.[0];
-    if (gesture?.active && gesture.moved && previewMeta?.wids?.length >= 2) {
-      const selectionEvent = touch
-        ? { clientX: touch.clientX, clientY: touch.clientY }
-        : event;
-      if (Array.isArray(previewMeta.wids) && previewMeta.wids[0]) setReaderAudioStartWid(previewMeta.wids[0]);
-      handleSelection(selectionEvent, previewMeta.text, {
-        compact: true,
-        inlineLookup: true,
-        lookupLang: getNormalizeLookupLang(),
-        selectionType: 'phrase',
-        selectedMeta: {
-          sids: Array.isArray(previewMeta.sids) ? previewMeta.sids : [],
-          wids: Array.isArray(previewMeta.wids) ? previewMeta.wids : [],
-          start: Number(previewMeta.start || 0),
-          end: Number(previewMeta.end || 0),
-        },
-      });
-      readerSuppressStructuredClickRef.current = Date.now();
-      resetReaderPhraseGesture();
-      return;
-    }
-    resetReaderPhraseGesture();
+    if (endReaderPhraseDrag({ clientX: touch?.clientX, clientY: touch?.clientY })) return;
 
     // ── Audio awaiting word tap — handle in touchend (more reliable than click on iOS) ──
     if (readerAudioAwaitingWordTapRef.current && touch) {
@@ -24282,11 +24348,7 @@ function AppInner() {
   };
 
   const handleReaderArticleTouchCancel = () => {
-    if (readerWordLongPressTimerRef.current) {
-      clearTimeout(readerWordLongPressTimerRef.current);
-      readerWordLongPressTimerRef.current = null;
-    }
-    resetReaderPhraseGesture();
+    cancelReaderPhraseDrag();
   };
 
   const renderReaderStructuredText = () => (
@@ -32362,6 +32424,11 @@ function AppInner() {
       clearTimeout(inlineToastTimeoutRef.current);
       inlineToastTimeoutRef.current = null;
     }
+    // Таймер удержания слова: палец мог лежать на слове в момент выхода из читалки.
+    if (readerWordLongPressTimerRef.current) {
+      clearTimeout(readerWordLongPressTimerRef.current);
+      readerWordLongPressTimerRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -39097,6 +39164,10 @@ function AppInner() {
                   handleReaderArticleTouchMove={handleReaderArticleTouchMove}
                   handleReaderArticleTouchEnd={handleReaderArticleTouchEnd}
                   handleReaderArticleTouchCancel={handleReaderArticleTouchCancel}
+                  beginReaderPhraseDrag={beginReaderPhraseDrag}
+                  moveReaderPhraseDrag={moveReaderPhraseDrag}
+                  endReaderPhraseDrag={endReaderPhraseDrag}
+                  cancelReaderPhraseDrag={cancelReaderPhraseDrag}
                   renderReaderStructuredText={renderReaderStructuredText}
 
                   readerTimerPaused={readerTimerPaused}

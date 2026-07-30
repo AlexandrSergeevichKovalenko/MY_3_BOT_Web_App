@@ -17,8 +17,8 @@ export default function ReaderGuideModal({ isOpen, onClose, tr }) {
       accent: 'read', emoji: '📖',
       title: tr('Читай на немецком', 'Auf Deutsch lesen'),
       body: tr(
-        'Открой книгу или статью. Нажми на любое слово — сразу увидишь перевод.',
-        'Öffne ein Buch oder einen Artikel. Tippe auf ein Wort — die Übersetzung erscheint sofort.',
+        'Открой книгу или статью. Нажми на любое слово — сразу увидишь перевод. Нужно несколько слов? Придержи слово пальцем и, не отпуская, проведи по соседним — переведём всю фразу.',
+        'Öffne ein Buch oder einen Artikel. Tippe auf ein Wort — die Übersetzung erscheint sofort. Mehrere Wörter? Halte ein Wort gedrückt und zieh den Finger über die Nachbarwörter — wir übersetzen die ganze Wortgruppe.',
       ),
     },
     {

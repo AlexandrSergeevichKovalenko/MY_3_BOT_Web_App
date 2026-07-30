@@ -117,6 +117,12 @@ export default function ReaderSection(props) {
     handleReaderArticleTouchMove,
     handleReaderArticleTouchEnd,
     handleReaderArticleTouchCancel,
+    // Выделение фразы удержанием (long-press → тянем по словам). Живёт в App.jsx,
+    // сюда приходит как готовый жест: begin/move/end + отмена.
+    beginReaderPhraseDrag = () => false,
+    moveReaderPhraseDrag = () => false,
+    endReaderPhraseDrag = () => false,
+    cancelReaderPhraseDrag = () => {},
     renderReaderStructuredText,
 
     // ── timer ────────────────────────────────────────────────────
@@ -707,10 +713,18 @@ export default function ReaderSection(props) {
     g.base = -readerColIndexRef.current * readerColStep();
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_err) { /* ignore */ }
     applyReaderColTransform(g.base, false);
+    // Палец на слове — заводим удержание. Пока оно не сработало, жест обычный:
+    // тап переводит слово, движение листает страницу.
+    beginReaderPhraseDrag({ clientX: e.clientX, clientY: e.clientY, target: e.target });
   };
   const onReaderColPointerMove = (e) => {
     const g = readerGestureRef.current;
     if (!g.down) return;
+    // Слово придержали → палец тянет выделение по словам, страница стоит на месте.
+    if (moveReaderPhraseDrag({ clientX: e.clientX, clientY: e.clientY })) {
+      applyReaderColTransform(g.base, false);
+      return;
+    }
     const dx = e.clientX - g.x, dy = e.clientY - g.y;
     // Only real drags count as a swipe; small finger jitter (esp. the 2nd tap of a
     // double-tap) stays a TAP so the sentence-translation isn't lost.
@@ -727,6 +741,17 @@ export default function ReaderSection(props) {
     const g = readerGestureRef.current;
     if (!g.down) return;
     g.down = false;
+    // Прерванный системой жест (звонок, шторка) выделение не подтверждает.
+    if (e?.type === 'pointercancel') {
+      cancelReaderPhraseDrag();
+      applyReaderColTransform(-readerColIndexRef.current * readerColStep(), true);
+      return;
+    }
+    // Отпустили после удержания → открываем перевод выделенного, страницу не листаем.
+    if (endReaderPhraseDrag({ clientX: e.clientX, clientY: e.clientY })) {
+      applyReaderColTransform(-readerColIndexRef.current * readerColStep(), true);
+      return;
+    }
     const dx = e.clientX - g.x, dy = e.clientY - g.y;
     if (!g.moved) { handleReaderColTap(e); return; }
     // Turn on either a committed DRAG (>40px) OR a quick FLICK (high velocity, even
