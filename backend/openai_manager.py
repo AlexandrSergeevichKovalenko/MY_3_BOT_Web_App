@@ -2282,6 +2282,15 @@ Output rules:
   FORBIDDEN (never emit anything like this):
     {"value": "I don't want to get up for work like that in the morning",
      "context": "literal translation of the Russian sentence"}
+- ⚠️ NO HALF-TRANSLATED SIDE: each side must be FULLY in its own language. The Russian side
+  must not keep German words inside it, and the German side must not keep Russian words —
+  in usage_examples, save_worthy_options, government_patterns and meaning examples alike.
+  FORBIDDEN (real observed failure):
+    {"source": "Я тоже работаю в Teilzeit.", "target": "Ich arbeite auch in Teilzeit."}
+  CORRECT:
+    {"source": "Я тоже работаю на полставки.", "target": "Ich arbeite auch in Teilzeit."}
+  If a German term has no single Russian word, translate it descriptively — never leave the
+  German word standing inside the Russian sentence.
 - Explanatory notes must be in Russian.
 - German examples must be natural, frequent, realistic, and learner-useful.
 - meanings.primary.value should reflect the main useful German equivalent(s).
@@ -2425,6 +2434,15 @@ Output rules:
   FORBIDDEN (never emit anything like this):
     {"value": "I don't want to get up for work like that in the morning",
      "context": "literal translation of the Russian sentence"}
+- ⚠️ NO HALF-TRANSLATED SIDE: each side must be FULLY in its own language. The Russian side
+  must not keep German words inside it, and the German side must not keep Russian words —
+  in usage_examples, save_worthy_options, government_patterns and meaning examples alike.
+  FORBIDDEN (real observed failure):
+    {"source": "Ich arbeite in Teilzeit.", "target": "Я работаю в Teilzeit."}
+  CORRECT:
+    {"source": "Ich arbeite in Teilzeit.", "target": "Я работаю на полставки."}
+  If a German term has no single Russian word, translate it descriptively — never leave the
+  German word standing inside the Russian sentence.
 - Explanatory notes must be in Russian.
 - meanings.primary.value should contain the 1–3 most useful/common Russian meaning(s).
 - meanings.secondary must contain only relevant/common secondary meanings.
