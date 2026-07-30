@@ -49399,18 +49399,50 @@ def pick_next_trainer(*, relation: str, cooldown_days: int = 21) -> dict | None:
     return _trainer_row_to_dict(row) if row else None
 
 
-def mark_trainer_sent(sprint_id: str, *, sent_date) -> None:
+def mark_trainer_sent(sprint_id: str, *, sent_date=None) -> None:
     """Record a trainer send (rotation + rail): stamps trainer_last_sent_at/date and
-    bumps the counter so pick_next_trainer rotates and the sprint can pick it +3 days."""
+    bumps the counter so pick_next_trainer rotates and the sprint can pick it +3 days.
+
+    `sent_date=None` = the NEXT-DAY REPEAT of the same word: count + last_sent_at move,
+    but trainer_sent_date (the rail anchor) stays on the FIRST send — otherwise the
+    repeat would push the sprint from day+3 to day+4."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if sent_date is None:
+                cursor.execute(
+                    "UPDATE bt_3_sprint_bank SET trainer_last_sent_at = NOW(), "
+                    "trainer_send_count = trainer_send_count + 1 WHERE sprint_id = %s",
+                    (str(sprint_id),),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE bt_3_sprint_bank SET trainer_last_sent_at = NOW(), "
+                    "trainer_sent_date = %s, trainer_send_count = trainer_send_count + 1 "
+                    "WHERE sprint_id = %s",
+                    (sent_date, str(sprint_id)),
+                )
+        conn.commit()
+
+
+def pick_repeat_trainer(*, relation: str, sent_date) -> dict | None:
+    """The word that went out as a TRAINER on `sent_date` (i.e. yesterday) — the second,
+    optional pass of the SAME training. No new generation, no rail change; the sprint
+    still fires trainer_sent_date + 3 days. None → nothing was trained that day."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "UPDATE bt_3_sprint_bank SET trainer_last_sent_at = NOW(), "
-                "trainer_sent_date = %s, trainer_send_count = trainer_send_count + 1 "
-                "WHERE sprint_id = %s",
-                (sent_date, str(sprint_id)),
+                """
+                SELECT sprint_id, relation, wort, accepted, hint_ru
+                FROM bt_3_sprint_bank
+                WHERE relation = %s AND retired = FALSE AND trainer_ready = TRUE
+                  AND trainer_sent_date = %s
+                ORDER BY trainer_last_sent_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                (str(relation), sent_date),
             )
-        conn.commit()
+            row = cursor.fetchone()
+    return _trainer_row_to_dict(row) if row else None
 
 
 def pick_rail_sprint(*, relation: str, target_date, lag_days: int = 3) -> dict | None:

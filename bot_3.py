@@ -439,6 +439,7 @@ from backend.database import (
     create_trainer_dispatch,
     update_trainer_dispatch_message_id,
     pick_next_trainer,
+    pick_repeat_trainer,
     mark_trainer_sent,
     pick_rail_sprint,
     get_trainer_recipient_ids,
@@ -36395,6 +36396,11 @@ async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation
 
 # ── Synonym/Antonym recognition TRAINER delivery (the rail: trainer today → sprint +3d)
 TRAINER_SLOT_TIMES = {(11, 0): "synonym", (16, 0): "antonym"}  # 1×/day each
+# Second pass of the SAME training the NEXT day (spaced repetition): free to send (the
+# game is already built), optional for the learner, and a BONUS — it never eats one of
+# the daily N. The rail is untouched: the sprint still comes trainer_sent_date + 3 days,
+# and it only requires the FIRST training, never this one.
+TRAINER_REPEAT_SLOT_TIMES = {(13, 0): "synonym", (18, 0): "antonym"}
 TRAINER_COOLDOWN_DAYS = max(7, int((os.getenv("TRAINER_COOLDOWN_DAYS") or "21").strip() or "21"))
 
 
@@ -36404,7 +36410,8 @@ def _trainer_enabled() -> bool:
 
 
 async def send_trainer_to_chat(context: CallbackContext, *, entry: dict, relation: str,
-                               slot_date, slot_hour: int, chat_id: int, target_user_id: int) -> bool:
+                               slot_date, slot_hour: int, chat_id: int, target_user_id: int,
+                               repeat: bool = False) -> bool:
     try:
         dispatch_id = await asyncio.to_thread(
             create_trainer_dispatch, sprint_id=str(entry["sprint_id"]),
@@ -36419,14 +36426,24 @@ async def send_trainer_to_chat(context: CallbackContext, *, entry: dict, relatio
     rel_ru = "синонимов" if relation == "synonym" else "антонимов"
     emoji = "🟢" if relation == "synonym" else "🔴"
     hint = f" _{entry.get('hint_ru')}_" if entry.get("hint_ru") else ""
-    caption = (
-        f"{emoji} *Тренировка {rel_ru}*\n\n"
-        f"Слово: *{entry.get('wort')}*{hint}\n\n"
-        f"Выбирай верный вариант из карточек — а через 3 дня это слово вернётся в спринте 🔥"
-    )
+    if repeat:
+        caption = (
+            f"🔁 *Повтор: тренировка {rel_ru}*\n\n"
+            f"Слово: *{entry.get('wort')}*{hint}\n\n"
+            f"Вчера ты его уже разбирал — второй заход на следующий день закрепляет лучше всего.\n"
+            f"Это подарок сверх дневного плана: хочешь — играй, не хочешь — пропусти. "
+            f"Послезавтра слово вернётся в спринте 🔥"
+        )
+    else:
+        caption = (
+            f"{emoji} *Тренировка {rel_ru}*\n\n"
+            f"Слово: *{entry.get('wort')}*{hint}\n\n"
+            f"Выбирай верный вариант из карточек — а через 3 дня это слово вернётся в спринте 🔥"
+        )
     caption = _append_free_pro_teaser(caption, chat_id)
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🎯 Открыть тренажёр", url=get_webapp_deeplink(f"ans_tr_{dispatch_id}"))]])
+        "🔁 Пройти ещё раз" if repeat else "🎯 Открыть тренажёр",
+        url=get_webapp_deeplink(f"ans_tr_{dispatch_id}"))]])
     poster = None
     try:
         from backend.interactive_card import render_trainer_relation_card
@@ -36451,7 +36468,12 @@ async def send_trainer_to_chat(context: CallbackContext, *, entry: dict, relatio
     return True
 
 
-async def _send_scheduled_trainer(context: CallbackContext, relation: str) -> None:
+async def _send_scheduled_trainer(context: CallbackContext, relation: str,
+                                  repeat: bool = False) -> None:
+    """Daily trainer. `repeat=False` = the fresh word (counted rotation slot, stamps the
+    rail). `repeat=True` = the SAME word one day later — a bonus second pass: already
+    built, so it costs nothing, it doesn't move the rail, and the sprint never requires
+    it. It goes only to the people who actually got yesterday's first pass."""
     if _is_quiet_hours_now():
         logging.info("quiet_hours: skip trainer")
         return
@@ -36460,40 +36482,62 @@ async def _send_scheduled_trainer(context: CallbackContext, relation: str) -> No
     slot_now = _get_quiz_schedule_now()
     slot_date = slot_now.date()
     slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
-    entry = await asyncio.to_thread(pick_next_trainer, relation=relation, cooldown_days=TRAINER_COOLDOWN_DAYS)
-    if not entry:
-        logging.info("trainer_sched: no trainer-ready word relation=%s", relation)
-        return
+    if repeat:
+        entry = await asyncio.to_thread(
+            pick_repeat_trainer, relation=relation, sent_date=slot_date - timedelta(days=1))
+        if not entry:
+            logging.info("trainer_repeat: nothing was trained yesterday relation=%s", relation)
+            return
+    else:
+        entry = await asyncio.to_thread(pick_next_trainer, relation=relation, cooldown_days=TRAINER_COOLDOWN_DAYS)
+        if not entry:
+            logging.info("trainer_sched: no trainer-ready word relation=%s", relation)
+            return
     targets = await _collect_quiz_delivery_user_targets(context)
     if not targets:
         return
+    # The repeat is a REPEAT: only for DM users who received the first pass (groups have
+    # no per-user tracking → exempt, same as the sprint rail gate).
+    first_pass_recipients = (await asyncio.to_thread(
+        get_trainer_recipient_ids, str(entry["sprint_id"]), since_days=2)) if repeat else set()
     sent = 0
+    skipped = 0
     for t in targets:
         cid = int(t.get("chat_id") or 0)
         if cid == 0:
             continue
+        if repeat and cid > 0 and cid not in first_pass_recipients:
+            skipped += 1
+            continue
         if await send_trainer_to_chat(context, entry=entry, relation=relation, slot_date=slot_date,
-                                      slot_hour=slot_hour, chat_id=cid, target_user_id=cid):
+                                      slot_hour=slot_hour, chat_id=cid, target_user_id=cid,
+                                      repeat=repeat):
             sent += 1
     if sent > 0:
         # Stamp the rail: the sprint picks this word `trainer_sent_date` + 3 days later.
-        await asyncio.to_thread(mark_trainer_sent, str(entry["sprint_id"]), sent_date=slot_date)
-    logging.info("trainer_sent relation=%s sent=%s word=%s", relation, sent, entry.get("wort"))
+        # The repeat passes sent_date=None → the anchor stays on the first pass.
+        await asyncio.to_thread(mark_trainer_sent, str(entry["sprint_id"]),
+                                sent_date=None if repeat else slot_date)
+    logging.info("trainer_sent relation=%s repeat=%s sent=%s skipped=%s word=%s",
+                 relation, repeat, sent, skipped, entry.get("wort"))
 
 
 async def _admin_send_trainer_command(update: Update, context: CallbackContext) -> None:
-    """/admin_send_trainer [synonym|antonym] — preview the DAILY trainer message: auto-
-    picks the next trainer-ready word and sends the card ONLY to you (no broadcast, no
-    rail stamp). For the real broadcast, set TRAINER_ENABLED=1 (nightly cron)."""
+    """/admin_send_trainer [synonym|antonym] [repeat] — preview the DAILY trainer message:
+    auto-picks the next trainer-ready word and sends the card ONLY to you (no broadcast,
+    no rail stamp). `repeat` previews the next-day second pass (bonus, optional copy).
+    For the real broadcast, set TRAINER_ENABLED=1 (nightly cron)."""
     user = update.effective_user; message = update.effective_message
     if not user or not message:
         return
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only."); return
-    args = context.args or []
-    relation = (args[0].strip().lower() if args else "synonym")
+    args = [a.strip().lower() for a in (context.args or [])]
+    repeat = "repeat" in args
+    rel_args = [a for a in args if a != "repeat"]
+    relation = (rel_args[0] if rel_args else "synonym")
     if relation not in ("synonym", "antonym"):
-        await message.reply_text("Использование: /admin_send_trainer [synonym|antonym]"); return
+        await message.reply_text("Использование: /admin_send_trainer [synonym|antonym] [repeat]"); return
     await asyncio.to_thread(ensure_sprint_schema)
     await asyncio.to_thread(ensure_trainer_schema)
     entry = await asyncio.to_thread(pick_next_trainer, relation=relation, cooldown_days=0)
@@ -36503,10 +36547,12 @@ async def _admin_send_trainer_command(update: Update, context: CallbackContext) 
     now = _get_quiz_schedule_now()
     slot_hour = int(now.hour) * 10000 + int(now.minute) * 100 + int(now.second)  # unique-ish preview
     ok = await send_trainer_to_chat(context, entry=entry, relation=relation, slot_date=now.date(),
-                                    slot_hour=slot_hour, chat_id=int(message.chat_id), target_user_id=int(user.id))
+                                    slot_hour=slot_hour, chat_id=int(message.chat_id),
+                                    target_user_id=int(user.id), repeat=repeat)
     await message.reply_text(
         f"{'✅ Отправил превью' if ok else '❌ Не отправил'}: <b>{_html_escape(str(entry.get('wort')))}</b> "
-        f"(без рассылки и без отметки рельса).", parse_mode="HTML")
+        f"({'повтор' if repeat else 'первый заход'}, без рассылки и без отметки рельса).",
+        parse_mode="HTML")
 
 
 async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> None:
@@ -41410,6 +41456,18 @@ def main():
                 "cron",
                 hour=_tr_hour,
                 minute=_tr_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- TRAINER repeat (next day, same word): BONUS — the game is already built, so
+        #    it costs nothing and rides on top of the daily N (make_bonus_gated). Silence
+        #    and window gates still hold; the sprint never depends on this pass. --
+        for (_trr_hour, _trr_minute), _trr_rel in sorted(TRAINER_REPEAT_SLOT_TIMES.items()):
+            scheduler.add_job(
+                make_bonus_gated("trainer", _trr_hour, _trr_minute,
+                                 _send_scheduled_trainer, _trr_rel, True),
+                "cron",
+                hour=_trr_hour,
+                minute=_trr_minute,
                 timezone=QUIZ_SCHEDULE_TZ_NAME,
             )
         # -- Sprint pool nightly top-up (03:20) --
