@@ -363,6 +363,11 @@ def _place_words(word_entries: list[dict]) -> tuple[dict, list[dict]]:
     grid: dict[tuple[int, int], str] = {}
     placed: list[dict] = []
 
+    # Первое слово ложится в сетку всегда, поэтому предел не может быть меньше его
+    # длины: WASCHMASCHINE (13 букв) при пределе 12 сама себя выводила за границу,
+    # и после неё сетка не принимала ни одного слова — кроссворд уходил в брак.
+    limit = max(_MAX_SPAN, len(words[0]["word"]))
+
     # First word: horizontal, centered
     first = words[0]
     w0 = first["word"]
@@ -380,7 +385,7 @@ def _place_words(word_entries: list[dict]) -> tuple[dict, list[dict]]:
         dr, dc = (0, 1) if direction == "across" else (1, 0)
         cells = {(row + dr * i, col + dc * i): ch for i, ch in enumerate(entry["word"])}
         rows_span, cols_span = _span({**grid, **cells})
-        if rows_span > _MAX_SPAN or cols_span > _MAX_SPAN:
+        if rows_span > limit or cols_span > limit:
             continue  # слово раздувает сетку за пределы экрана — берём следующее
         grid.update(cells)
         placed.append({**entry, "direction": direction, "row": row, "col": col})

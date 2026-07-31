@@ -93,6 +93,18 @@ def test_hidden_words_are_the_ones_people_actually_say():
         assert is_everyday(word), f"загадали неходовое слово {word}"
 
 
+def test_a_long_first_word_does_not_block_the_whole_grid():
+    """Сетка держится в 12 клеток по стороне, но самое длинное слово ложится всегда.
+
+    Пока предел был жёстким, WASCHMASCHINE (13 букв) сама выходила за границу и
+    после неё в сетку не вставало НИ ОДНО слово — кроссворд уходил в брак ещё до
+    отправки (в проде 2 из 6 генераций так и падали)."""
+    from backend.crossword_generator import _place_words
+    words = ["WASCHMASCHINE", "WOHNUNG", "KÜCHE", "MIETE", "TISCH", "SCHRANK", "LAMPE"]
+    _grid, placed = _place_words([{"word": w, "clue_de": "x", "clue_ru": "x"} for w in words])
+    assert len(placed) >= 5, [p["word"] for p in placed]
+
+
 def test_saved_word_gets_the_translation_and_falls_back_to_the_clue():
     summary = _summarize_crossword([
         {"number": 1, "direction": "across", "correct": "KÜHLSCHRANK", "user_answer": "",
