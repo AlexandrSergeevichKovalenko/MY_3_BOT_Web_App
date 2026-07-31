@@ -3,6 +3,7 @@ import useFitText from './useFitText.js';
 import AskOverlay from './AskOverlay.jsx';
 import AdjHint from './AdjHint.jsx';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import { saveErrorToast } from './saveNotice.js';
 
 // Adjektiv Trainer — self-paced learning deck for adjective endings (companion to
 // the Adjektiv Sprint, same look). Each card: a phrase with a blanked ending +
@@ -78,7 +79,7 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
   const showToast = useCallback((text, kind = 'bad') => {
     setToast({ text, kind });
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
+    toastTimer.current = setTimeout(() => setToast(null), 5000);
   }, []);
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
@@ -106,8 +107,11 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
       // Already in the dictionary: the save refreshed that entry, so it keeps its old
       // place in the list — say so, or the user looks for it at the top and doesn't find it.
       if (res && res.inserted === false) showToast(`«${word_de}» уже был в словаре`, 'info');
-    }).catch(() => {
-      showToast('Слово не сохранилось. Открой его и нажми ещё раз.');
+    }).catch((err) => {
+      // Причину называем вслух: чаще всего это дневной лимит бесплатного тарифа, а не сбой,
+      // и «нажми ещё раз» в этом случае — враньё.
+      const note = saveErrorToast(err);
+      showToast(note.hint ? `${note.text} ${note.hint}` : note.text, note.kind === 'limit' ? 'info' : 'bad');
       try { haptic?.('bad'); } catch (_e) { /* noop */ }
     });
     // Auto-close shortly after the ✓ shows; guard so we don't close a different

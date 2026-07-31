@@ -1,3 +1,4 @@
+import { saveErrorToast } from './saveNotice.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { renderRich } from './richText.jsx';
 
@@ -12,6 +13,7 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [saveState, setSaveState] = useState('idle'); // 'idle'|'saving'|'saved'|'error'
+  const [saveErrorText, setSaveErrorText] = useState('');
   const [savedRu, setSavedRu] = useState('');
   const [savedWord, setSavedWord] = useState(''); // the text actually saved (for the ✓ label)
   const [pos, setPos] = useState(null); // {x, y} top-left; null until measured
@@ -135,8 +137,11 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
           origin_process: 'ask_overlay',
         });
         setSavedRu(isDeRu ? targetText : sourceText);
-      } catch (_e) {
+      } catch (err) {
+        // Причина важнее факта: чаще всего это дневной лимит бесплатного тарифа, и
+        // «повторить» тут не поможет — человек должен это понимать.
         setSaveState('error');
+        setSaveErrorText(saveErrorToast(err).text);
       }
     })();
   }, [saveState, saveText, saveTranslation, api, input]);
@@ -201,7 +206,7 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
         {saveState === 'saving' ? '⏳ Сохраняю…'
           : saveState === 'saved'
             ? (savedRu ? `✓ «${savedWord}» — ${savedRu}` : `✓ «${savedWord}» в словаре`)
-            : saveState === 'error' ? '⚠️ Не вышло — повторить'
+            : saveState === 'error' ? (saveErrorText || '⚠️ Не вышло — повторить')
               : saveCandidate ? `💾 Сохранить «${saveLabelWord}»` : '💾 Сохранить'}
       </button>
     </div>

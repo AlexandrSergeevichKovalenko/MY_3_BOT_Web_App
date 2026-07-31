@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import Toast, { useToast } from './Toast.jsx';
+import { saveErrorToast } from './saveNotice.js';
 
 // Recognition TRAINER: for a fixed anchor word, each round shows one CORRECT answer
 // plus up to four verified DISTRACTORS; tap the right one. It prepares the learner for
@@ -71,7 +73,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   const [score, setScore] = useState(0);
   const [saved, setSaved] = useState(() => new Set());
   const [known, setKnown] = useState(() => new Set());  // already in the dictionary
-  const [saveError, setSaveError] = useState('');
+  const toast = useToast();
 
   // word(normalised) → substitution example {sentence_de, sentence_ru}
   const exampleByWord = useMemo(() => {
@@ -120,7 +122,6 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   const saveChip = useCallback((de, ru) => {
     if (!de || saved.has(de)) return;
     setSaved((s) => new Set(s).add(de));
-    setSaveError('');
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
     Promise.resolve(saveGermanWordViaLookup({ api, word: de, fallbackTranslation: ru || '', origin: 'trainer_save' }))
       .then((res) => {
@@ -128,15 +129,18 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         // it stays where it was in the list. Say it, or the user hunts for it at the top.
         if (res && res.inserted === false) setKnown((k) => new Set(k).add(de));
       })
-      .catch(() => {
+      .catch((err) => {
         setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
-        setSaveError('Не удалось сохранить слово. Нажми на него ещё раз.');
+        toast.show(saveErrorToast(err));
         try { haptic?.('bad'); } catch (_e2) { /* noop */ }
       });
   }, [api, saved, haptic]);
 
   const shell = (body, cls = '') => (
-    <div className="ans-root"><div className={`ans-card ${cls}`}>{body}</div></div>
+    <div className="ans-root">
+      <div className={`ans-card ${cls}`}>{body}</div>
+      <Toast state={toast.state} onClose={toast.hide} />
+    </div>
   );
 
   if (phase === 'loading') return shell(<><div className="ans-skel" /><div className="ans-skel sm" /></>);
@@ -264,7 +268,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
               «Уже есть» — это слово давно лежит в твоём словаре.
             </div>
           ) : null}
-          {saveError ? <div className="as-save-alert">⚠️ {saveError}</div> : null}
+
         </div>
       ) : null}
       <button className="ans-btn" onClick={onClose}>Schließen</button>

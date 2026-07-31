@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import Toast, { useToast } from './Toast.jsx';
+import { saveErrorToast } from './saveNotice.js';
 
 // 2-minute der/die/das speed game. The whole word set is preloaded, so each tap
 // is graded LOCALLY (instant green/red flash + auto-advance, zero round-trip).
@@ -20,7 +22,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
   const [result, setResult] = useState(null);
   const [savedWords, setSavedWords] = useState(() => new Set());
   const [knownWords, setKnownWords] = useState(() => new Set());  // already in the dictionary
-  const [saveError, setSaveError] = useState('');
+  const toast = useToast();
   const answersRef = useRef([]);
   const wordsRef = useRef([]);
   const startRef = useRef(0);
@@ -129,7 +131,6 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
     // Optimistic: mark the row 💾 saved instantly and release the user; the network
     // save runs in the background. Revert only if it genuinely fails.
     setSavedWords((s) => new Set(s).add(key));
-    setSaveError('');
     haptic?.('ok');
     Promise.resolve(
       saveGermanWordViaLookup({
@@ -140,14 +141,15 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       // Already in the dictionary: the save refreshed that old entry, so it keeps its old
       // place in the list instead of appearing on top. Say so, don't leave them hunting.
       if (res && res.inserted === false) setKnownWords((k) => new Set(k).add(key));
-    }).catch(() => {
+    }).catch((err) => {
       // A failed save used to be signalled by an error vibration alone — the 💾 just
-      // flipped back and the word was gone without a word of explanation.
+      // flipped back and the word was gone without a word of explanation. Теперь причина
+      // говорится вслух всплывающей плашкой (чаще всего это дневной лимит, а не сбой).
       setSavedWords((s) => { const n = new Set(s); n.delete(key); return n; });
-      setSaveError('Не удалось сохранить слово. Нажми на него ещё раз.');
+      toast.show(saveErrorToast(err));
       haptic?.('bad');
     });
-  }, [api, haptic, savedWords]);
+  }, [api, haptic, savedWords, toast]);
 
   const answer = useCallback((article) => {
     if (phase !== 'playing') return;
@@ -277,7 +279,6 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       {items.length ? (
         <>
           <div className="as-save-hint">👆 нажми на слово, чтобы сохранить в словарь (с артиклем)</div>
-          {saveError ? <div className="as-save-alert">⚠️ {saveError}</div> : null}
           {knownWords.size ? (
             <div className="tr-known-note">
               «Уже есть» — это слово давно лежит в твоём словаре.
@@ -311,5 +312,10 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
     </>);
   }
 
-  return <div className="ans-root"><div className={`ans-card as-card ${cls}`}>{body}</div></div>;
+  return (
+    <div className="ans-root">
+      <div className={`ans-card as-card ${cls}`}>{body}</div>
+      <Toast state={toast.state} onClose={toast.hide} />
+    </div>
+  );
 }

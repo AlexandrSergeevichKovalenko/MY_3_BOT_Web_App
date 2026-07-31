@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import Toast, { useToast } from './Toast.jsx';
+import { saveErrorToast } from './saveNotice.js';
 
 // 60-second "name as many synonyms/antonyms as you can" game. Winner = most
 // correct. The hot path (typing for 60s) makes ZERO server calls: the server
@@ -50,7 +52,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const [result, setResult] = useState(null);
   const [saved, setSaved] = useState(() => new Set());
   const [known, setKnown] = useState(() => new Set());  // already in the dictionary
-  const [saveError, setSaveError] = useState('');
+  const toast = useToast();
   const startRef = useRef(0);
   const wordsRef = useRef([]);
   const timerRef = useRef(null);
@@ -126,7 +128,6 @@ export default function SprintGame({ id, api, haptic, onClose }) {
     // Optimistic: flip the chip to 💾 saved instantly and release the user; the
     // network save runs in the background. Revert only if it genuinely fails.
     setSaved((s) => new Set(s).add(de));
-    setSaveError('');
     try { haptic?.('ok'); } catch (_e) { /* noop */ }
     Promise.resolve(
       saveGermanWordViaLookup({
@@ -136,10 +137,10 @@ export default function SprintGame({ id, api, haptic, onClose }) {
       // Already in the dictionary: the save refreshed that old entry, so it keeps its
       // old place in the list. Say so — otherwise the user looks for it at the top.
       if (res && res.inserted === false) setKnown((k) => new Set(k).add(de));
-    }).catch(() => {
+    }).catch((err) => {
       // Say it out loud — an error vibration alone left the user thinking it saved.
       setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
-      setSaveError('Не удалось сохранить слово. Нажми на него ещё раз.');
+      toast.show(saveErrorToast(err));
       try { haptic?.('bad'); } catch (_e2) { /* noop */ }
     });
   }, [api, saved, haptic]);
@@ -149,7 +150,10 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const dur = meta?.duration_s || 60;
 
   const shell = (body, cls = '') => (
-    <div className="ans-root"><div className={`ans-card ${cls}`}>{body}</div></div>
+    <div className="ans-root">
+      <div className={`ans-card ${cls}`}>{body}</div>
+      <Toast state={toast.state} onClose={toast.hide} />
+    </div>
   );
 
   if (phase === 'loading') return shell(<><div className="ans-skel" /><div className="ans-skel sm" /></>);
@@ -260,7 +264,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
               «Уже есть» — это слово давно лежит в твоём словаре.
             </div>
           ) : null}
-          {saveError ? <div className="as-save-alert">⚠️ {saveError}</div> : null}
+
         </div>
       ) : null}
       {r.erklaerung ? <div className="ans-explain">{r.erklaerung}</div> : null}

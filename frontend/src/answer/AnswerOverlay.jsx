@@ -20,6 +20,8 @@ import WoFrageLearnGame from './WoFrageLearnGame.jsx';
 import AdjektivLearnGame from './AdjektivLearnGame.jsx';
 import BattleHistory from './BattleHistory.jsx';
 import AskOverlay from './AskOverlay.jsx';
+import Toast, { useToast } from './Toast.jsx';
+import { saveErrorToast } from './saveNotice.js';
 import installCardAutoFit from './fitCard.js';
 import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
@@ -118,6 +120,7 @@ async function api(path, body) {
     // decide whether retrying makes sense — see saveUtils.postDictionarySave.
     const err = new Error(data?.error || 'Fehler');
     err.status = response.status;
+    err.payload = data;   // лимит/счётчик/дата сброса — чтобы сказать человеку правду
     throw err;
   }
   return data;
@@ -154,6 +157,7 @@ function RebusResult({ result }) {
   const mine = String(result.user_answer || '').trim();
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+      <Toast state={chipToast.state} onClose={chipToast.hide} />
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       <div className="ans-answer">
         {good ? '' : 'Richtige Antwort: '}
@@ -186,6 +190,8 @@ function SaveWrongWords({ items, originProcess = 'crossword_save',
   const [checked, setChecked] = useState(() => new Set(words.map((_, i) => i)));
   const [phase, setPhase] = useState('idle'); // idle|saving|done
   const [okCount, setOkCount] = useState(0);
+  const [failed, setFailed] = useState(0);
+  const toast = useToast();
   if (!words.length) return null;
   const toggle = (i) => setChecked((s) => {
     const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n;
@@ -195,7 +201,10 @@ function SaveWrongWords({ items, originProcess = 'crossword_save',
     // Optimistic: confirm instantly ("✅ Сохранено: N") and release the user; the
     // saves fire in the background (best-effort, in parallel) — no "Сохраняю…" wait.
     const toSave = words.filter((_, i) => checked.has(i));
-    setOkCount(toSave.length); setPhase('done'); haptic('ok');
+    setOkCount(toSave.length); setFailed(0); setPhase('done'); haptic('ok');
+    // Раньше ошибки здесь глотались молча: человек видел «✅ Сохранено: N», а слова не
+    // сохранялись (например, кончился дневной лимит). Теперь счётчик честный, а причину
+    // говорит всплывающая плашка.
     toSave.forEach((w) => {
       Promise.resolve(
         api('/api/webapp/dictionary/save', {
@@ -203,7 +212,11 @@ function SaveWrongWords({ items, originProcess = 'crossword_save',
           source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
           origin_process: originProcess,
         }),
-      ).catch(() => { /* best-effort background save */ });
+      ).catch((err) => {
+        setFailed((n) => n + 1);
+        setOkCount((n) => Math.max(0, n - 1));
+        toast.show(saveErrorToast(err));
+      });
     });
   };
   return (
@@ -220,13 +233,17 @@ function SaveWrongWords({ items, originProcess = 'crossword_save',
         ))}
       </div>
       {phase === 'done' ? (
-        <div className="sv-save-done">✅ Сохранено: {okCount}</div>
+        <div className={`sv-save-done${failed && !okCount ? ' none' : ''}`}>
+          {okCount ? `✅ Сохранено: ${okCount}` : 'Не сохранилось'}
+          {failed && okCount ? ` · не вышло: ${failed}` : ''}
+        </div>
       ) : (
         <button type="button" className="sv-save-btn" disabled={phase === 'saving' || !checked.size}
           onClick={save}>
           {phase === 'saving' ? 'Сохраняю …' : `Сохранить${checked.size ? ` · ${checked.size}` : ''}`}
         </button>
       )}
+      <Toast state={toast.state} onClose={toast.hide} />
     </div>
   );
 }
@@ -457,6 +474,7 @@ function wordDiff(userText, correctText) {
 
 function AufgabeResult({ result }) {
   const [saved, setSaved] = useState(() => new Set());
+  const chipToast = useToast();
   const saveChip = useCallback((de, ru) => {
     if (!de || saved.has(de)) return;
     // Optimistic: flip the chip to 💾 saved instantly and release the user; the
@@ -469,11 +487,12 @@ function AufgabeResult({ result }) {
         source_lang: 'de', target_lang: 'ru', direction: 'de-ru',
         origin_process: 'synonym_save',
       }),
-    ).catch(() => {
+    ).catch((err) => {
       setSaved((s) => { const n = new Set(s); n.delete(de); return n; });
+      chipToast.show(saveErrorToast(err));
       haptic('bad');
     });
-  }, [saved]);
+  }, [saved, chipToast]);
   const good = !!result.is_correct;
   const correct = result.correct_word || '';
   const mine = result.user_answer || '';
