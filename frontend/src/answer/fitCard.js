@@ -8,7 +8,9 @@
 //
 // Что делает этот модуль (всё — в одном синхронном проходе, см. ниже):
 //   1. РАСТЯГИВАЕТ: если внутри есть блок со своей прокруткой, он забирает всё свободное
-//      место — карточка занимает экран целиком, читать видно максимум;
+//      место — карточка занимает экран целиком, читать видно максимум; если прокручивать
+//      нечего, а место осталось — карточка УВЕЛИЧИВАЕТСЯ (до MAX_ZOOM), чтобы занять экран
+//      и дать более крупный текст;
 //   2. ПОДЖИМАЕТ ОТСТУПЫ: `.ans-root.is-tight` (answer.css) — бесплатно, читаемость не
 //      страдает;
 //   3. УЖИМАЕТ пропорционально (`zoom`) — пока это не бьёт по читаемости (до MILD_ZOOM);
@@ -29,10 +31,11 @@
 // Один контроллер на весь роут вместо хука в ~20 файлах игр: покрыты все экраны всех игр,
 // включая те, что появятся позже.
 
+const MAX_ZOOM = 1.18;   // на большом экране карточку не только можно, но и НУЖНО увеличить
 const MILD_ZOOM = 0.82;  // до этого масштаба просто ужимаем карточку целиком
 const MIN_ZOOM = 0.72;   // ниже не опускаемся никогда — дальше текст не читается
 const PANEL_MIN = 96;    // сколько px экрана минимум оставляем прокручиваемому блоку
-const EPS = 1.5;         // допуск в px, чтобы не дёргаться из-за долей пикселя
+const EPS = 6;           // допуск в px: мелкие расхождения не должны запускать пересчёт
 
 const cards = new WeakMap(); // card → { k, avail, vis, stretched }
 const observedCards = new WeakSet();
@@ -69,7 +72,8 @@ function stateOf(card) {
 }
 
 function setZoom(card, k) {
-  card.style.zoom = k >= 0.999 ? '' : String(Math.round(k * 1000) / 1000);
+  // ровно 1 — снимаем свойство совсем; и уменьшение, и УВЕЛИЧЕНИЕ пишем как есть
+  card.style.zoom = (k > 0.999 && k < 1.001) ? '' : String(Math.round(k * 1000) / 1000);
 }
 
 // Блок внутри карточки со СВОЕЙ прокруткой (список разборов, список слов). Именно ему
@@ -148,7 +152,9 @@ function fitOne(root) {
     st.vis = card.getBoundingClientRect().height;
   };
 
-  // Отдать внутреннему прокручиваемому блоку всю оставшуюся высоту экрана.
+  // Отдать внутреннему прокручиваемому блоку всю оставшуюся высоту экрана. Цикл — внутри
+  // ОДНОГО прохода: блок может упереться в собственный контент, и остаток надо добрать
+  // сразу, а не по кадру за проход (иначе карточка на глазах подрастает несколько раз).
   const stretch = (k) => {
     const sc = findScroller(card);
     if (!sc) return;
@@ -158,18 +164,23 @@ function fitOne(root) {
       root.classList.add('is-tight');
       avail = availHeight(root);
     }
-    const slack = avail - card.getBoundingClientRect().height;
-    if (slack < 6) return;
-    const cur = sc.getBoundingClientRect().height;
-    // sc живёт внутри карточки: её px масштабируются zoom'ом, поэтому делим на k
-    let target = cur + slack - 1;
-    sc.style.maxHeight = `${Math.round(target / k)}px`;
     st.stretched = sc;
+    let prev = -1;
+    for (let i = 0; i < 8; i += 1) {
+      const cardH = card.getBoundingClientRect().height;
+      const slack = avail - cardH;
+      if (slack < 6) break;
+      if (prev > 0 && cardH - prev < 2) break;            // перестал расти — упёрся в контент
+      if (sc.scrollHeight - sc.clientHeight < 2) break;   // прокручивать уже нечего
+      prev = cardH;
+      const cur = sc.getBoundingClientRect().height;
+      sc.style.maxHeight = `${Math.round((cur + slack - 1) / k)}px`;
+    }
     for (let i = 0; i < 2; i += 1) {
       const over = card.getBoundingClientRect().height - avail;
       if (over <= 0) break;
-      target -= over + 1;
-      sc.style.maxHeight = `${Math.round(target / k)}px`;
+      const cur = sc.getBoundingClientRect().height;
+      sc.style.maxHeight = `${Math.round((cur - over - 1) / k)}px`;
     }
   };
 
@@ -198,29 +209,57 @@ function fitOne(root) {
     remember(k);
   };
 
-  if (h <= avail) { settle(1); return; }        // помещается как есть (и растянется, если есть куда)
+  // Помещается ли карточка при масштабе kk (замер, а не расчёт: текст переносится иначе).
+  const fitsAt = (kk) => { setZoom(card, kk); return card.getBoundingClientRect().height <= avail; };
+  // Максимальный масштаб, при котором ещё помещается: lo помещается, hi — уже нет.
+  const bisect = (lo, hi) => {
+    let best = lo;
+    for (let i = 0; i < 5; i += 1) {
+      const mid = (lo + hi) / 2;
+      if (fitsAt(mid)) { best = mid; lo = mid; } else hi = mid;
+    }
+    setZoom(card, best);
+    return best;
+  };
+
+  if (h <= avail) {
+    // Есть запас. Сначала отдаём его внутреннему прокручиваемому блоку.
+    stretch(1);
+    const left = avail - card.getBoundingClientRect().height;
+    // Место всё равно осталось (прокручивать нечего) — увеличиваем карточку, пока она не
+    // упрётся в края: экран должен быть занят, а текст крупным. Короткие экраны (заставка,
+    // обратный отсчёт) не раздуваем — им воздух идёт на пользу.
+    if (left >= 10 && h >= avail * 0.6) {
+      const kUp = fitsAt(MAX_ZOOM) ? MAX_ZOOM : bisect(1, MAX_ZOOM);
+      settle(kUp);
+      return;
+    }
+    settle(1);
+    return;
+  }
 
   // 2. Отдаём отступы — это бесплатно.
   root.classList.add('is-tight');
   avail = availHeight(root);
   h = card.getBoundingClientRect().height;
-  if (h <= avail) { settle(1); return; }
-
-  // 3. Ужимаем карточку целиком — пока это не бьёт по читаемости.
-  const k = (avail - 2) / h;
-  if (k >= MILD_ZOOM) {
-    setZoom(card, k);
-    // Поправка: при меньшем шрифте текст переносится иначе, высота уходит от расчётной.
-    const h2 = card.getBoundingClientRect().height;
-    if (h2 > avail) { const k2 = Math.max(MIN_ZOOM, (k * (avail - 2)) / h2); setZoom(card, k2); settle(k2); return; }
-    if (h2 < avail - 16) {
-      const k2 = Math.min(1, (k * (avail - 4)) / h2);
-      setZoom(card, k2);
-      if (card.getBoundingClientRect().height > avail) setZoom(card, k); // откат, если перебрали
-      else { settle(k2); return; }
+  if (h <= avail) {
+    stretch(1);
+    const left = avail - card.getBoundingClientRect().height;
+    if (left >= 10 && h >= avail * 0.6) {
+      const kUp = fitsAt(MAX_ZOOM) ? MAX_ZOOM : bisect(1, MAX_ZOOM);
+      settle(kUp);
+      return;
     }
-    settle(k);
+    settle(1);
     return;
+  }
+
+  // 3. Ужимаем карточку целиком — пока это не бьёт по читаемости. Масштаб подбираем
+  //    замером, а не формулой: при другом кегле текст переносится иначе.
+  const k0 = (avail - 2) / h;
+  if (k0 >= MILD_ZOOM) {
+    const k = fitsAt(k0) ? bisect(k0, Math.min(1, k0 * 1.35)) : bisect(Math.max(MIN_ZOOM, k0 * 0.85), k0);
+    if (card.getBoundingClientRect().height <= avail) { settle(k); return; }
   }
 
   // 4. Ужимать сильнее нельзя — текст станет нечитаемым. Тогда экран собирается иначе:
