@@ -257,8 +257,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
           </div>
           {known.size ? (
             <div className="tr-known-note">
-              «Уже есть» — это слово давно лежит в твоём словаре. Мы освежили его карточку,
-              но в списке оно осталось на своём старом месте, а не поднялось наверх.
+              «Уже есть» — это слово давно лежит в твоём словаре.
             </div>
           ) : null}
           {saveError ? <div className="as-save-alert">⚠️ {saveError}</div> : null}
