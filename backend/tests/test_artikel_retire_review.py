@@ -51,12 +51,13 @@ class _FakeConn:
 
 
 class RetireReviewQueueTests(unittest.TestCase):
+    # Последняя колонка — source: «карантин» значит «в игре не было, не пропустила проверка».
     ROWS = [
-        (1, "Kühler", "die", "радиатор", "auto_fahren"),            # ходовое, но артикль в базе кривой
-        (2, "Schmetterlings-Tramete", "der", "губка", "pflanzen"),  # в частотном списке нет — хлам
-        (3, "Erwachsene", "die", "взрослая", "menschen"),           # субстантивированное прилагательное
-        (4, "Flur", "die", "коридор", "haus_wohnen"),               # двуродовое: der Flur / die Flur
-        (5, "Segelboot", "das", "парусник", "verkehr_reisen"),      # ходовое, но справочник смолчит
+        (1, "Kühler", "die", "радиатор", "auto_fahren", "gpt"),            # ходовое, артикль кривой
+        (2, "Schmetterlings-Tramete", "der", "губка", "pflanzen", "gpt"),  # в частотном списке нет
+        (3, "Erwachsene", "die", "взрослая", "menschen", "gpt"),           # субстантивированное
+        (4, "Flur", "die", "коридор", "haus_wohnen", "gpt"),               # двуродовое
+        (5, "Segelboot", "das", "парусник", "verkehr_reisen", "gpt"),      # справочник смолчит
     ]
 
     def _rows(self, rows=None, *, authority=None):
@@ -104,7 +105,7 @@ class RetireReviewQueueTests(unittest.TestCase):
     def test_word_without_a_translation_is_not_offered(self):
         # Артикль решает смысл, а смысла не видно — спрашивать не о чем ни владельца,
         # ни потом игрока.
-        out, _ = self._rows([(9, "Segelboot", "das", "", "verkehr_reisen")])
+        out, _ = self._rows([(9, "Segelboot", "das", "", "verkehr_reisen", "gpt")])
         self.assertEqual(out, [])
 
     def test_most_common_word_comes_first(self):
@@ -115,10 +116,20 @@ class RetireReviewQueueTests(unittest.TestCase):
         _, cur = self._rows()
         self.assertIn("NOT COALESCE(retire_reviewed, FALSE)", cur.sql_log[0])
 
+    def test_a_quarantined_word_is_marked_as_such(self):
+        # Слово из карантина в игре не было ни дня — рассылка должна написать про него
+        # иначе, а для этого ей нужен признак.
+        out, _ = self._rows([(7, "Föhn", "der", "фен", "wetter_jahreszeiten", "карантин")])
+        self.assertEqual([r["quarantined"] for r in out], [True])
+
+    def test_a_cleaned_word_is_not_marked_as_quarantined(self):
+        out, _ = self._rows([(8, "Kühler", "die", "радиатор", "auto_fahren", "gpt")])
+        self.assertEqual([r["quarantined"] for r in out], [False])
+
     def test_the_same_word_in_two_themes_is_asked_once(self):
         out, _ = self._rows([
-            (1, "Kühler", "der", "радиатор", "auto_fahren"),
-            (2, "Kühler", "der", "радиатор", "technik_computer"),
+            (1, "Kühler", "der", "радиатор", "auto_fahren", "gpt"),
+            (2, "Kühler", "der", "радиатор", "technik_computer", "gpt"),
         ])
         self.assertEqual(len(out), 1)
 

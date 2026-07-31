@@ -49153,7 +49153,7 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT id, word, article, meaning_ru, theme_key "
+                "SELECT id, word, article, meaning_ru, theme_key, COALESCE(source, '') "
                 "FROM bt_3_article_sprint_nouns "
                 "WHERE retired AND NOT COALESCE(retire_reviewed, FALSE);"
             )
@@ -49170,7 +49170,10 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
             continue
         seen.add(key)
         out.append({"id": int(r[0]), "word": word, "article": str(r[2] or ""),
-                    "meaning_ru": str(r[3] or ""), "theme_key": str(r[4] or ""), "rank": int(rank)})
+                    "meaning_ru": str(r[3] or ""), "theme_key": str(r[4] or ""), "rank": int(rank),
+                    # Карантинное слово в игре никогда не было — про него нельзя писать
+                    # «убрано при чистке», иначе владелец ищет в памяти то, чего не видел.
+                    "quarantined": str(r[5] or "") == QUARANTINE_SOURCE})
     out.sort(key=lambda x: x["rank"])
     return out
 
@@ -49738,6 +49741,50 @@ def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
                     skipped += 1
         conn.commit()
     return {"inserted": inserted, "skipped": skipped}
+
+
+QUARANTINE_SOURCE = "карантин"
+
+
+def quarantine_article_sprint_nouns(theme_key: str, rows: list[dict]) -> int:
+    """Слова, которые страж на приёмке не пропустил, но которые похожи на ходовые.
+
+    Раньше у стража было два ответа: «беру» и «в стоп-лист навсегда». Второй молчаливый:
+    слово в банк не попадало, владелец его не видел никогда — только счётчик в
+    /artikel_blacklist. Так в стоп-лист ушли и настоящие ошибки стража.
+
+    Появился третий ответ — карантин. Слово кладётся в банк СНЯТЫМ и неразобранным,
+    поэтому его подхватывает та же дневная рассылка, что и снятые: 10 штук в личку с
+    кнопками «вернуть / мусор». «Вернуть» проверит артикль по справочнику и пустит слово
+    в игру, «мусор» занесёт в стоп-лист навсегда.
+
+    В стоп-лист карантинное слово НЕ пишем: снятая строка и так отсекает повторное
+    предложение бесплатно, а стоп-лист — это про «решено окончательно».
+    """
+    ensure_article_sprint_schema()
+    n = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for row in rows or []:
+                word = str(row.get("word") or "").strip()
+                article = str(row.get("article") or "").strip().lower()
+                if not word or article not in ("der", "die", "das"):
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_article_sprint_nouns
+                        (theme_key, word, article, meaning_ru, subtopic, source,
+                         verified, retired, retire_reviewed)
+                    VALUES (%s, %s, %s, %s, %s, %s, FALSE, TRUE, FALSE)
+                    ON CONFLICT (theme_key, lower(word), article) DO NOTHING;
+                    """,
+                    (str(theme_key), word, article, str(row.get("meaning_ru") or ""),
+                     str(row.get("subtopic") or ""), QUARANTINE_SOURCE),
+                )
+                if cursor.rowcount and cursor.rowcount > 0:
+                    n += 1
+        conn.commit()
+    return n
 
 
 def seed_two_gender_senses(entries: list[dict]) -> dict:

@@ -1809,6 +1809,13 @@ def _artikel_fill_report_text(*, label: str, result: dict, duration_s: int) -> s
         else:
             lines.append("• причины на этот раз не записались")
 
+    quarantined = int((result or {}).get("quarantined") or 0)
+    if quarantined:
+        lines.append("")
+        lines.append(f"Из них {_words_ru(quarantined)} проверка забраковала, но по частоте "
+                     "они выглядят ходовыми — придут тебе в личку на разбор с кнопками "
+                     "«вернуть / мусор». Сам решишь, перестраховалась она или нет.")
+
     failures = (result or {}).get("gen_failures") or []
     if failures:
         lines.append("")

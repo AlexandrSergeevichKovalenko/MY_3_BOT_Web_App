@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 
 def _run(coro):
@@ -256,6 +257,10 @@ def recheck_theme(theme_key: str) -> dict:
 
 _AVOID_EXISTING_CAP = 250
 _AVOID_RETIRED_CAP = 150
+# Докуда отказ стража считается спорным и уезжает владельцу в разбор, а не в стоп-лист.
+# Порог тот же, что у дневной рассылки (RETIRE_REVIEW_MAX_RANK): иначе карантин копил бы
+# слова, которые рассылка не показывает, и они лежали бы там мёртвым грузом.
+QUARANTINE_MAX_RANK = max(1, int((os.getenv("RETIRE_REVIEW_MAX_RANK") or "60000").strip() or "60000"))
 
 # Через фильтр проходит примерно каждое третье слово, поэтому просим втрое больше, чем
 # осталось добрать. Меньше — отсев съест заказ, подтема не закроет нехватку, и придётся
@@ -284,6 +289,7 @@ def _ask_count(remaining: int, ceiling: int) -> int:
 # Причины из фильтра — внутренние формулировки; наружу идёт человеческий ярлык.
 # Правило простое: читатель отчёта должен понять, ЧТО не так со словом, не заглядывая в код.
 _REASON_LABELS = (
+    ("страж сомневается", "спорные — придут тебе на разбор"),
     ("уже есть в другой теме", "это слово уже стоит в другой теме"),
     ("уже есть в теме", "это слово в теме уже есть"),
     ("такой смысл в теме уже есть", "такой же смысл в теме уже есть"),
@@ -317,10 +323,10 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
         list_article_sprint_words_all_themes,
         list_article_sprint_meanings, list_retired_article_words,
         list_article_word_blacklist, blacklist_article_words,
-        list_retired_article_words_for_prompt,
+        list_retired_article_words_for_prompt, quarantine_article_sprint_nouns,
     )
     from backend.article_word_gate import (
-        check_word, head_word, judge_everyday_words, EverydayJudgeUnavailable,
+        check_word, head_word, judge_everyday_words, EverydayJudgeUnavailable, word_rank,
     )
 
     theme = next((t for t in article_sprint_themes() if t["key"] == theme_key), None)
@@ -347,6 +353,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
     # дорогу нормальному слову.
     banned = list_retired_article_words() | list_article_word_blacklist()
     to_blacklist: list[tuple[str, str, str]] = []  # (слово, причина, тема)
+    to_quarantine: list[dict] = []  # спорные отказы стража — уедут владельцу в разбор
     # Отсечь мусор бесплатно — хорошо, но за его ПОРОЖДЕНИЕ мы платим всё равно.
     # Поэтому горячую часть отказов показываем модели заранее: сначала снятое в этой
     # теме, потом недавно снятое в соседних. Весь список (тысячи слов) в подсказку не лезет.
@@ -446,9 +453,18 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                         continue
                     logging.info("артикли: %s мимо — %s", w, why)
                     _reject(why)
+                elif word_rank(w) and int(word_rank(w)) <= QUARANTINE_MAX_RANK:
+                    # Страж сказал «не нужно», но по частотности слово выглядит ходовым —
+                    # значит он мог и ошибиться. Молчаливый стоп-лист такие ошибки хоронил
+                    # навсегда: владелец о них не узнавал. Кладём слово в карантин, и оно
+                    # приедет к нему в дневной разбор с кнопками «вернуть / мусор».
+                    to_quarantine.append({"word": w, "article": str(n.get("article") or "").lower(),
+                                          "meaning_ru": str(n.get("meaning_ru") or ""),
+                                          "subtopic": subtopic})
+                    _reject("страж сомневается — в карантин")
                 else:
-                    # Модель ответила «в быту не встречается» — это про само слово,
-                    # значит запоминаем навсегда: второй раз платить за него не будем.
+                    # Модель ответила «в быту не встречается», и по частоте слово тоже
+                    # хлам. Запоминаем навсегда: второй раз платить за него не будем.
                     to_blacklist.append((w, "не нужно в быту", theme_key))
                     _reject("нужно второе мнение")
         if not candidates:
@@ -558,10 +574,11 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
 
     # Отказы запоминаем одним заходом в конце: следующий набор отсечёт их бесплатно.
     blacklisted = blacklist_article_words(to_blacklist)
+    quarantined = quarantine_article_sprint_nouns(theme_key, to_quarantine)
     final = count_article_sprint_nouns(theme_key, verified_only=True)
     return {
         "theme": theme_key, "added": added, "rejected": rejected,
-        "blacklisted": blacklisted,
+        "blacklisted": blacklisted, "quarantined": quarantined,
         "final_verified": final, "target": target, "by_subtopic": by_subtopic,
         # had — сколько слов лежало в теме ДО прогона. Без него «добавлено 26» повисает
         # в воздухе: непонятно, к чему эти 26, если в теме 150.
