@@ -19,71 +19,148 @@ import uuid
 from typing import Optional
 
 # ─── Topic pool ───────────────────────────────────────────────────────────────
+#
+# Темы — только те, из которых слово получается ходовым. Прежний список был
+# наполовину университетским («Philosophie und Ethik», «Sprache und Linguistik»),
+# и из такой темы бытовое слово взять неоткуда: банк набивался словами вроде
+# TUGENDHAFTIG и NORMENSYSTEM, которые человек не произносит никогда.
+#
+# У каждой темы — набор УГЛОВ. Угол выбирается случайно и подставляется в запрос,
+# чтобы «Кухня» не сводилась каждый раз к одним и тем же пяти словам: в старом
+# банке 48 % мест занимали повторы (UMWELTSCHUTZ — 10 раз, KLIMAWANDEL — 9).
 
-_TOPICS: list[tuple[str, str]] = [
-    # B1 — standard intermediate
-    ("Gesundheit und Medizin", "B1"),
-    ("Beruf und Arbeitsalltag", "B1"),
-    ("Stadt und Verkehr", "B1"),
-    ("Natur und Umwelt", "B1"),
-    ("Reisen und Urlaub", "B1"),
-    ("Sport und Freizeit", "B1"),
-    ("Medien und Kommunikation", "B1"),
-    ("Wirtschaft und Finanzen", "B1"),
-    ("Politik und Gesellschaft", "B1"),
-    ("Wissenschaft und Forschung", "B1"),
-    # B2 — upper intermediate / advanced
-    ("Recht und Verwaltung", "B2"),
-    ("Psychologie und Emotionen", "B2"),
-    ("Philosophie und Ethik", "B2"),
-    ("Technologie und Innovation", "B2"),
-    ("Kunst und Literatur", "B2"),
-    ("Architektur und Design", "B2"),
-    ("Geschichte und Kultur", "B2"),
-    ("Umwelt und Nachhaltigkeit", "B2"),
-    ("Sprache und Linguistik", "B2"),
-    ("Globalisierung und Wirtschaft", "B2"),
+_TOPICS: list[tuple[str, str, tuple[str, ...]]] = [
+    ("Wohnung und Haushalt", "A2", (
+        "Möbel und Einrichtung", "Küche und Geschirr", "Putzen und Ordnung",
+        "Bad und Waschen", "Reparaturen und Werkzeug")),
+    ("Essen und Trinken", "A2", (
+        "Frühstück und Abendessen", "Obst und Gemüse", "Kochen und Backen",
+        "im Restaurant bestellen", "Getränke und Süßes")),
+    ("Einkaufen", "A2", (
+        "im Supermarkt", "Kleidung kaufen", "Preise, Kasse und Kassenbon",
+        "Umtausch und Reklamation", "Markt und Bäckerei")),
+    ("Kleidung und Aussehen", "A2", (
+        "Winterkleidung", "Sommerkleidung", "Schuhe und Accessoires",
+        "Größen und Anprobe", "Haare und Pflege")),
+    ("Familie und Freunde", "A2", (
+        "Verwandtschaft", "Freundschaft und Treffen", "Kinder und Erziehung",
+        "Streit und Versöhnung", "Feiern zu Hause")),
+    ("Gesundheit und Arzt", "B1", (
+        "beim Hausarzt", "Erkältung und Grippe", "Apotheke und Medikamente",
+        "Zähne und Zahnarzt", "Schmerzen beschreiben")),
+    ("Arbeit und Kollegen", "B1", (
+        "Bewerbung und Vorstellungsgespräch", "Büroalltag", "Gehalt und Urlaub",
+        "Team und Chef", "Kündigung und Vertrag")),
+    ("Ämter und Papiere", "B1", (
+        "Anmeldung und Ausweis", "Versicherung", "Steuern und Formulare",
+        "Bank und Konto", "Post und Briefe")),
+    ("Verkehr und unterwegs", "A2", (
+        "Bus, Bahn und Fahrkarte", "Auto und Tanken", "Fahrrad und Fußweg",
+        "Stau und Verspätung", "Wege und Richtungen")),
+    ("Reise und Urlaub", "A2", (
+        "Flughafen und Flug", "Hotel und Zimmer", "Koffer packen",
+        "Strand und Sonne", "Stadtbesichtigung")),
+    ("Wetter und Jahreszeiten", "A2", (
+        "Regen und Sturm", "Winter und Schnee", "Sommer und Hitze",
+        "Frühling und Herbst", "Wettervorhersage")),
+    ("Stadt und Nachbarschaft", "A2", (
+        "Straßen und Plätze", "Geschäfte in der Nähe", "Nachbarn und Haus",
+        "Park und Spielplatz", "Müll und Ordnung")),
+    ("Wohnungssuche und Miete", "B1", (
+        "Wohnung besichtigen", "Miete und Nebenkosten", "Umzug",
+        "Vermieter und Vertrag", "Renovieren")),
+    ("Telefon, Internet und Technik", "B1", (
+        "Handy und Apps", "Internet zu Hause", "Computer und Drucker",
+        "Fotos und Musik", "Probleme und Support")),
+    ("Sport und Bewegung", "A2", (
+        "Fitnessstudio", "Ballsport", "Schwimmen und Wasser",
+        "Laufen und Radfahren", "Winter- und Bergsport")),
+    ("Freizeit und Hobbys", "A2", (
+        "Kino und Fernsehen", "Bücher und Lesen", "Musik und Konzerte",
+        "Garten und Pflanzen", "Basteln und Sammeln")),
+    ("Schule und Lernen", "B1", (
+        "Unterricht und Fächer", "Prüfungen und Noten", "Hausaufgaben",
+        "Universität und Studium", "Sprachkurs")),
+    ("Tiere und Natur", "A2", (
+        "Haustiere", "Wald und Wiese", "Vögel und Insekten",
+        "Bauernhof", "Meer und Fluss")),
+    ("Feste und Geschenke", "A2", (
+        "Geburtstag", "Weihnachten und Silvester", "Hochzeit",
+        "Einladung und Gäste", "Geschenke und Karten")),
+    ("Gefühle und Charakter", "B1", (
+        "Freude und Ärger", "Angst und Mut", "gute Eigenschaften",
+        "schlechte Eigenschaften", "Stress und Ruhe")),
+    ("Zeit und Termine", "A2", (
+        "Uhrzeit und Tagesablauf", "Kalender und Termine", "Verabredungen",
+        "Pünktlichkeit und Verspätung", "Pläne machen")),
+    ("Körper und Aussehen", "A2", (
+        "Körperteile", "Gesicht", "Hände und Füße",
+        "Körperpflege", "Schlaf und Erholung")),
+    ("Geld und Rechnungen", "B1", (
+        "bezahlen und sparen", "Rechnungen und Mahnungen", "Kredit und Rate",
+        "Preise und Rabatte", "Haushaltskasse")),
+    ("Kochen und Küche", "A2", (
+        "Küchengeräte", "Zutaten und Gewürze", "Rezept Schritt für Schritt",
+        "Tisch decken", "Reste und Kühlschrank")),
 ]
 
 # ─── GPT prompts ──────────────────────────────────────────────────────────────
 
 _GPT_SYSTEM = """\
-Du bist Experte für Deutsch als Fremdsprache (B1-B2) und erstellst anspruchsvolle Kreuzwortraetsel.
+Du schreibst Kreuzworträtsel für erwachsene Deutschlerner (Niveau A2-B1), die die
+Sprache zum LEBEN brauchen: Wohnung, Arbeit, Arzt, Ämter, Einkaufen, Reisen.
 
-Regeln fuer jedes Wort:
-- Nur GROSSBUCHSTABEN, keine Leerzeichen, keine Bindestriche, kein Artikel
-- Umlaute als einzelne Zeichen: Ae Oe Ue (NICHT AE OE UE) — nein: AEZRZTE → AERZTE, OeL → OEL
-- Wortlaenge: 4-12 Zeichen
-- NIVEAU: Woerter auf dem angegebenen Niveau — KEINE Grundwoerter (Mutter, Bruder, Hund usw.)
-  B1: wichtige Vokabeln die ein B1-Lernender kennen sollte, aber nicht trivial sind
-  B2: Fachvokabular, abstrakte Begriffe, seltener aber wichtig
-- Bevorzuge laengere Woerter (6-12 Zeichen) — kurze Woerter (3-4 Zeichen) vermeiden
-- Hinweise: 1 Satz, beschreibt das Wort praezise ohne es zu nennen
-- Russischer Hinweis: natuerliche Uebersetzung
+Die eine Regel, die über allen steht: JEDES Wort muss ein Wort sein, das ein
+Mensch in einer normalen Woche wirklich benutzt oder hört. Wenn du zögerst, ob
+jemand das Wort je gesagt hat — nimm es nicht.
 
-Antworte NUR mit validem JSON, ohne Erklaerungen."""
+Regeln für jedes Wort:
+- Ein einzelnes Wort, normale deutsche Rechtschreibung mit echten Umlauten
+  (KÜHLSCHRANK, nicht KUEHLSCHRANK), ohne Artikel, ohne Bindestrich, ohne Leerzeichen
+- Grundform: Nominativ Singular oder Plural beim Nomen, Infinitiv beim Verb,
+  Grundform beim Adjektiv. Keine Genitive (PARKPLATZES), keine gebeugten Formen
+- Länge 4-13 Buchstaben
+- Mische Wortarten: etwa die Hälfte Nomen, dazu Verben und Adjektive
+- VERBOTEN: Fachbegriffe, Wissenschafts- und Verwaltungssprache, abstrakte
+  Substantive auf -ismus, -ität, -ologie, -theorie; Wörter, die man nur in
+  Zeitungen oder Lehrbüchern liest; erfundene oder zusammengebastelte Komposita
+- Zusammengesetzte Wörter nur, wenn sie im Alltag wirklich vorkommen
+  (WASCHMASCHINE ja, UMWELTFAKTOR nein)
+- clue_de: EIN einfacher Satz auf A2-Niveau, der das Wort beschreibt, ohne es zu
+  nennen. Wo es hilft, ein Alltagsbeispiel statt einer Definition
+- clue_ru: derselbe Hinweis auf natürlichem Russisch
+- translation_ru: die reine Übersetzung des Wortes, 1-3 Wörter, ohne Erklärung
+
+Antworte NUR mit validem JSON, ohne Erklärungen."""
 
 _GPT_USER_TMPL = """\
 Thema: {topic}
-Schwierigkeitsgrad: {difficulty}
+Schwerpunkt: {angle}
+Niveau: {difficulty}
 
-Erstelle exakt 12 ANSPRUCHSVOLLE deutsche Woerter (Niveau {difficulty}) mit Kreuzwortraetsel-Hinweisen.
-WICHTIG: Keine Grundvokabeln (A1/A2)! Waehle Woerter die einen Lernenden wirklich fordern.
+Erstelle exakt 14 deutsche Alltagswörter zu diesem Schwerpunkt für ein Kreuzworträtsel.
 
+Prüfe jedes Wort selbst: Würde ein Erwachsener dieses Wort diese Woche in einem
+Gespräch, im Laden, beim Arzt oder bei der Arbeit benutzen? Nein — streiche es und
+nimm ein anderes.
+{avoid}
 Ausgabe:
 {{
   "words": [
     {{
-      "word": "BEHANDLUNG",
-      "clue_de": "Medizinische Massnahme zur Heilung einer Erkrankung",
-      "clue_ru": "Медицинская процедура для лечения болезни"
+      "word": "KÜHLSCHRANK",
+      "clue_de": "Hier bleiben Milch und Butter kalt",
+      "clue_ru": "Здесь молоко и масло остаются холодными",
+      "translation_ru": "холодильник"
     }}
   ]
 }}"""
 
 # ─── GPT call ─────────────────────────────────────────────────────────────────
 
-def _call_gpt_for_words(topic: str, difficulty: str) -> list[dict]:
+def _call_gpt_for_words(
+    topic: str, difficulty: str, *, angle: str = "", avoid: list[str] | None = None,
+) -> list[dict]:
     import requests as _requests
 
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -91,13 +168,22 @@ def _call_gpt_for_words(topic: str, difficulty: str) -> list[dict]:
         raise RuntimeError("OPENAI_API_KEY not set")
     model = (os.getenv("OPENAI_QUIZ_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini").strip()
 
+    avoid_block = ""
+    if avoid:
+        avoid_block = (
+            "\nDiese Wörter kamen zuletzt schon dran — nimm andere:\n"
+            + ", ".join(avoid) + "\n"
+        )
+    user = _GPT_USER_TMPL.format(
+        topic=topic, difficulty=difficulty, angle=angle or topic, avoid=avoid_block,
+    )
     payload = {
         "model": model,
         "temperature": 0.75,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _GPT_SYSTEM},
-            {"role": "user", "content": _GPT_USER_TMPL.format(topic=topic, difficulty=difficulty)},
+            {"role": "user", "content": user},
         ],
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -129,19 +215,36 @@ def _call_gpt_for_words(topic: str, difficulty: str) -> list[dict]:
     return words
 
 
-def _validate_word_entry(entry: dict) -> Optional[str]:
-    word = str(entry.get("word") or "").strip().upper()
+def _accept_word_entry(entry: dict) -> tuple[Optional[dict], str]:
+    """Приёмка одного слова от модели → (готовая запись, причина отказа).
+
+    Прежняя проверка смотрела только длину и что символы буквенные — этого хватало,
+    чтобы в прод уезжали MIVVERKEHR, DEONTOLIGIE и обрубок VERSUCHSAN. Теперь
+    написание приводится к подтверждённому словарём виду, а слово, которого в живом
+    немецком нет, дальше не проходит (backend/crossword_word_gate.py).
+    """
+    from backend.crossword_word_gate import check_word, normalize_word
+
+    word = normalize_word(entry.get("word"))
     if not word:
-        return "empty word"
-    if len(word) < 3 or len(word) > 12:
-        return f"bad length {len(word)}: {word}"
-    if not all(c.isalpha() or c in "ÄÖÜ" for c in word):
-        return f"invalid chars in: {word}"
-    if not str(entry.get("clue_de") or "").strip():
-        return "empty clue_de"
-    if not str(entry.get("clue_ru") or "").strip():
-        return "empty clue_ru"
-    return None
+        return None, "пустое слово"
+    ok, reason = check_word(word)
+    if not ok:
+        return None, f"{word}: {reason}"
+    clue_de = str(entry.get("clue_de") or "").strip()
+    clue_ru = str(entry.get("clue_ru") or "").strip()
+    if not clue_de:
+        return None, f"{word}: нет немецкой подсказки"
+    if not clue_ru:
+        return None, f"{word}: нет русской подсказки"
+    return {
+        "word": word,
+        "clue_de": clue_de,
+        "clue_ru": clue_ru,
+        # Перевод отдельно от подсказки: подсказка — это фраза-описание, и когда
+        # её сохраняли в словарь как «перевод», в карточке оказывалось предложение.
+        "translation_ru": str(entry.get("translation_ru") or "").strip(),
+    }, ""
 
 
 # ─── Grid placement ────────────────────────────────────────────────────────────
@@ -315,8 +418,15 @@ def _select_hidden_words(words: list[dict], hidden_count: int = 3) -> list[dict]
     intersects (shares a cell with) at least one other hidden word. This makes
     the puzzle interdependent: solving one hidden word reveals a letter at the
     crossing of the next, so the player can chain deductions instead of solving
-    isolated, unrelated blanks. Medium-length words are preferred for richness.
+    isolated, unrelated blanks.
+
+    Загаданное слово человек набирает руками — поэтому в загаданные идут прежде
+    всего слова из обиходной речи (`is_everyday`), и только потом смотрим на длину.
+    Слово может быть редковатым и всё равно стоять в сетке как подсказка-опора,
+    но вводить с клавиатуры мы просим только то, что человек и правда употребляет.
     """
+    from backend.crossword_word_gate import is_everyday
+
     result = [{**w, "hidden": False} for w in words]
     n = len(result)
     if n <= hidden_count:
@@ -324,8 +434,12 @@ def _select_hidden_words(words: list[dict], hidden_count: int = 3) -> list[dict]
             w["hidden"] = True
         return result
 
+    everyday = [is_everyday(w["word"]) for w in result]
+
     def _length_pref(idx: int) -> float:
-        return -abs(len(result[idx]["word"]) - 5.5)  # peak at 5-6 letters
+        # обиходность важнее длины: разрыв в 10 больше любой разницы по длине
+        bonus = 10.0 if everyday[idx] else 0.0
+        return bonus - abs(len(result[idx]["word"]) - 5.5)  # peak at 5-6 letters
 
     # Build the direct-intersection graph between placed words.
     cells = [_word_cells(w) for w in result]
@@ -382,38 +496,52 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     Generate one crossword puzzle and save to bt_3_crossword_bank.
     Returns crossword_id. Raises on failure.
     """
-    from backend.database import upsert_crossword_bank_entry
+    from backend.database import recent_crossword_bank_words, upsert_crossword_bank_entry
 
+    angle = ""
     if not topic or not difficulty:
-        chosen_topic, chosen_diff = random.choice(_TOPICS)
+        chosen_topic, chosen_diff, angles = random.choice(_TOPICS)
         topic = topic or chosen_topic
         difficulty = difficulty or chosen_diff
+        angle = random.choice(angles) if angles else ""
 
-    logging.info("crossword_generator: generating topic=%r difficulty=%s", topic, difficulty)
+    # Слова из последних кроссвордов — чтобы «Кухня» не приходила каждый раз с одним
+    # и тем же холодильником: в старом банке 48 % мест занимали повторы.
+    try:
+        avoid = recent_crossword_bank_words(limit_entries=12)
+    except Exception:
+        logging.debug("crossword_generator: recent words unavailable", exc_info=True)
+        avoid = []
+
+    logging.info(
+        "crossword_generator: generating topic=%r angle=%r difficulty=%s avoid=%d",
+        topic, angle, difficulty, len(avoid),
+    )
 
     # 1. Get words from GPT
-    raw_words = _call_gpt_for_words(topic, difficulty)
+    raw_words = _call_gpt_for_words(topic, difficulty, angle=angle, avoid=avoid)
 
-    # 2. Validate entries
+    # 2. Приёмка: написание, существование слова, подсказки
     valid_words: list[dict] = []
     seen_words: set[str] = set()
+    rejected: list[str] = []
     for entry in raw_words:
-        err = _validate_word_entry(entry)
-        if err:
-            logging.debug("crossword_generator: skip word: %s", err)
+        accepted, reason = _accept_word_entry(entry)
+        if not accepted:
+            rejected.append(reason)
             continue
-        w = entry["word"].strip().upper()
-        if w in seen_words:
+        if accepted["word"] in seen_words:
             continue
-        seen_words.add(w)
-        valid_words.append({
-            "word": w,
-            "clue_de": str(entry["clue_de"]).strip(),
-            "clue_ru": str(entry["clue_ru"]).strip(),
-        })
+        seen_words.add(accepted["word"])
+        valid_words.append(accepted)
 
-    if len(valid_words) < 4:
-        raise RuntimeError(f"Too few valid words from GPT: {len(valid_words)}")
+    if rejected:
+        logging.info("crossword_generator: отклонено слов %d: %s", len(rejected), "; ".join(rejected))
+
+    if len(valid_words) < 6:
+        raise RuntimeError(
+            f"после приёмки осталось {len(valid_words)} слов из {len(raw_words)} — кроссворд не собираем"
+        )
 
     # 3. Place words in grid
     raw_grid, placed = _place_words(valid_words)
@@ -434,11 +562,21 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
         raise RuntimeError(
             f"Only {hidden_count_actual} hidden words (need {_MIN_HIDDEN}) — puzzle rejected"
         )
+
+    # Загаданное слово человек набирает руками. Одно слово «на вырост» в наборе
+    # допустимо, два и больше — это уже не кроссворд, а экзамен: такой не отправляем.
+    from backend.crossword_word_gate import is_everyday
+    rare_hidden = [w["word"] for w in words_final if w.get("hidden") and not is_everyday(w["word"])]
+    if len(rare_hidden) > 1:
+        raise RuntimeError(
+            "загаданы неходовые слова (%s) — кроссворд не отправляем" % ", ".join(rare_hidden)
+        )
+
     logging.info(
-        "crossword_generator: placed=%d hidden=%d grid=%dx%d topic=%r",
-        len(words_final), hidden_count_actual,
+        "crossword_generator: placed=%d hidden=%d rare_hidden=%d grid=%dx%d topic=%r angle=%r",
+        len(words_final), hidden_count_actual, len(rare_hidden),
         len(grid_2d), len(grid_2d[0]) if grid_2d else 0,
-        topic,
+        topic, angle,
     )
 
     # 6. Save to DB

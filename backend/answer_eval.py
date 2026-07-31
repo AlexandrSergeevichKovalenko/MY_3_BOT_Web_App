@@ -155,6 +155,7 @@ def check_crossword(*, hidden_words: list[dict], raw_input: str) -> list[dict]:
             "is_correct": user_answer == correct,
             "clue_de": str(hw.get("clue_de") or ""),
             "clue_ru": str(hw.get("clue_ru") or ""),
+            "translation_ru": str(hw.get("translation_ru") or ""),
         })
     return results
 
@@ -302,6 +303,7 @@ def _load_crossword_hidden(dispatch_id: int) -> list[dict] | None:
             "direction": w.get("direction", "across"),
             "clue_de": str(w.get("clue_de") or ""),
             "clue_ru": str(w.get("clue_ru") or ""),
+            "translation_ru": str(w.get("translation_ru") or ""),
         }
         for w in hidden
     ]
@@ -376,7 +378,8 @@ def load_crossword_task(*, dispatch_id: int, user_id: int) -> dict | None:
         hidden_for_result = [
             {"number": w.get("number"), "word": str(w.get("word") or ""),
              "direction": w.get("direction", "across"),
-             "clue_de": str(w.get("clue_de") or ""), "clue_ru": str(w.get("clue_ru") or "")}
+             "clue_de": str(w.get("clue_de") or ""), "clue_ru": str(w.get("clue_ru") or ""),
+             "translation_ru": str(w.get("translation_ru") or "")}
             for w in hidden
         ]
         meta["result"] = _crossword_result_from_stored(hidden_for_result, existing)
@@ -385,7 +388,15 @@ def load_crossword_task(*, dispatch_id: int, user_id: int) -> dict | None:
 
 def _summarize_crossword(results: list[dict], *, already_answered: bool) -> dict:
     correct_count = sum(1 for r in results if r["is_correct"])
-    wrong = [r for r in results if not r["is_correct"] and r.get("clue_ru") and r.get("correct")]
+    # В словарь идёт ПЕРЕВОД слова, а не подсказка. Раньше в карточку уезжала
+    # фраза-описание («Этическая теория, сосредоточенная на обязанностях»), и
+    # человек получал в словаре предложение вместо перевода. У старых кроссвордов
+    # перевода в банке нет — там подсказка остаётся запасным вариантом.
+    wrong = [
+        r for r in results
+        if not r["is_correct"] and r.get("correct")
+        and (r.get("translation_ru") or r.get("clue_ru"))
+    ]
     return {
         "kind": "crossword",
         "results": results,
@@ -393,7 +404,8 @@ def _summarize_crossword(results: list[dict], *, already_answered: bool) -> dict
         "total": len(results),
         "already_answered": bool(already_answered),
         "saveable_words": [
-            {"source": r["correct"], "target": r["clue_ru"]} for r in wrong
+            {"source": r["correct"], "target": (r.get("translation_ru") or r["clue_ru"])}
+            for r in wrong
         ],
     }
 
@@ -411,6 +423,7 @@ def _crossword_result_from_stored(hidden: list[dict], stored: list[dict]) -> dic
             "is_correct": bool((s or {}).get("is_correct")),
             "clue_de": hw["clue_de"],
             "clue_ru": hw["clue_ru"],
+            "translation_ru": str(hw.get("translation_ru") or ""),
         })
     return _summarize_crossword(results, already_answered=True)
 
