@@ -1911,6 +1911,23 @@ html[data-scheme="light"] .tr-known-note { color: #475569; background: rgba(22,1
   cursor: pointer;
 }
 .ans-toast-hint { margin-top: 0.25rem; font-size: 0.8125rem; font-weight: 500; opacity: 0.85; }
+/* Путь дальше прямо из плашки: экран «Подписка» в основном приложении. */
+.ans-toast-btn {
+  margin-top: 0.625rem;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0 0.875rem;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 800;
+  color: #1a1206;
+  background: linear-gradient(180deg, #FBBF24, #F59E0B);
+  border: none;
+  border-radius: 0.625rem;
+  cursor: pointer;
+}
+.ans-toast-btn:active { transform: scale(0.985); filter: brightness(0.97); }
+.ans-toast.bad .ans-toast-btn { color: #fff; background: linear-gradient(180deg, #f87171, #dc2626); }
 /* лимит — янтарная плашка (это не ошибка, а понятное ограничение тарифа) */
 .ans-toast.limit { color: #FBBF24; background: #2a2011; border: 1px solid rgba(245, 158, 11, 0.45); }
 .ans-toast.bad   { color: #FCA5A5; background: #2a1414; border: 1px solid rgba(239, 68, 68, 0.4); }

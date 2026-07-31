@@ -13,6 +13,8 @@ import React, { useEffect, useRef, useState } from 'react';
  */
 
 const LIFETIME_MS = 5000;
+// с кнопкой плашка живёт дольше: 5 секунд мало, чтобы прочитать и попасть пальцем
+const LIFETIME_WITH_ACTION_MS = 9000;
 
 export function useToast() {
   const [state, setState] = useState(null);   // null | { text, hint, kind, id }
@@ -31,7 +33,8 @@ export function useToast() {
     idRef.current += 1;
     if (timer.current) clearTimeout(timer.current);
     setState({ kind: 'bad', hint: '', ...next, id: idRef.current });
-    timer.current = setTimeout(() => { timer.current = null; setState(null); }, LIFETIME_MS);
+    const life = next.action ? LIFETIME_WITH_ACTION_MS : LIFETIME_MS;
+    timer.current = setTimeout(() => { timer.current = null; setState(null); }, life);
   };
 
   return { state, show, hide };
@@ -44,6 +47,12 @@ export default function Toast({ state, onClose }) {
          onClick={onClose}>
       <div className="ans-toast-text">{state.text}</div>
       {state.hint ? <div className="ans-toast-hint">{state.hint}</div> : null}
+      {state.action ? (
+        <button type="button" className="ans-toast-btn"
+          onClick={(e) => { e.stopPropagation(); state.action.onClick?.(); }}>
+          {state.action.label}
+        </button>
+      ) : null}
     </div>
   );
 }
