@@ -1720,6 +1720,48 @@ async def _preserve_system_message(message, message_type: str) -> None:
         logging.debug("Failed to preserve system message", exc_info=True)
 
 
+# Сообщения, которые пишет в чат сам ПОЛЬЗОВАТЕЛЬ, нажимая меню или набирая команду
+# («⚙️ Настройки», «▶️ Следующее задание», /start …). Ответы бота вычищаются ночью,
+# и без этого в чате остаётся столбик из одних только нажатий.
+USER_MENU_MESSAGE_TYPE = "user_menu"
+
+
+def _is_disposable_user_message(message) -> bool:
+    """True, если это сообщение пользователя в личке, отправленное НАЖАТИЕМ кнопки
+    меню или командой. Набранный руками текст (переводы, слова, вопросы учителю)
+    сюда не попадает никогда — он остаётся в чате."""
+    try:
+        chat = getattr(message, "chat", None)
+        if str(getattr(chat, "type", "") or "") != "private":
+            return False
+        sender = getattr(message, "from_user", None)
+        if sender is None or getattr(sender, "is_bot", False):
+            return False
+        text = str(getattr(message, "text", "") or "").strip()
+        if not text:
+            return False
+        # Команда: /start, /streak, /admin_… — только если она в самом начале.
+        for entity in (getattr(message, "entities", None) or ()):
+            if str(getattr(entity, "type", "") or "") == "bot_command" and int(getattr(entity, "offset", 0) or 0) == 0:
+                return True
+        return _is_known_reply_menu_button(text)
+    except Exception:
+        return False
+
+
+async def _track_user_menu_message(update: Update, context: CallbackContext) -> None:
+    """Регистрирует нажатия меню и команды пользователя для ночной чистки — тем же
+    механизмом, что и служебные сообщения бота. Best-effort, никогда не падает и
+    ничего не блокирует."""
+    try:
+        message = getattr(update, "effective_message", None)
+        if not _is_disposable_user_message(message):
+            return
+        await _track_telegram_message_async(message, USER_MENU_MESSAGE_TYPE)
+    except Exception:
+        logging.debug("Failed to track user menu message", exc_info=True)
+
+
 def _inbox_kb_json(markup) -> list | None:
     """Serialize an InlineKeyboardMarkup → [[{text, url|callback_data}, …], …] so
     the interactive-inbox can later restore the card's buttons + prepend a ✅ row."""
@@ -40877,6 +40919,10 @@ def main():
     application.bot.request.timeout = 60
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
+    # Нажатия меню и команды пользователя в личке — в ту же ночную чистку, что и
+    # служебные сообщения бота (группа -6: раньше гейта доступа, чтобы след в чате
+    # не оставался и у тех, кому доступ ещё не выдан).
+    application.add_handler(MessageHandler(filters.ALL, _track_user_menu_message, block=False), group=-6)
     application.add_handler(ChatMemberHandler(handle_bot_group_membership, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-4)
     # Private-chat block/return detection (separate group so both my_chat_member handlers run).
     application.add_handler(ChatMemberHandler(handle_private_bot_block_status, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-5)
