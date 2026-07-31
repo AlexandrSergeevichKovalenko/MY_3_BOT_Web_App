@@ -588,30 +588,30 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
     }
 
 
-def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
-    """Insert a user-supplied list of nouns into a theme — same bank, same quality
-    gate as the generator. Each entry: {word, article?(der/die/das), meaning_ru?}.
+def _check_manual_words(theme_key: str, entries: list[dict]):
+    """Проверить слова, ничего не записывая. → ([вердикт по каждому], тема).
 
-    The article is VERIFIED/CORRECTED via the same LLM + deterministic guard as
-    fill_theme (so a wrong/missing article is fixed, ambiguous/non-nouns rejected);
-    a missing meaning_ru is auto-translated. Rows are stored source='manual',
-    verified=True → they feed every game and pick up media (audio/images/mnemonics)
-    through the existing media jobs, exactly like generated words. No target cap —
-    you can grow a theme beyond 300 if you want."""
+    Проверка та же, что у автозаливки, и это принципиально: слово, пришедшее от владельца,
+    не привилегировано. Неверный артикль отсюда научит человека неправде ровно так же, как
+    неверный артикль из генератора.
+
+    По каждому слову возвращается ok и человеческая причина отказа — раньше наружу выходили
+    только числа («добавлено 1, не взял 2»), и владелец не мог ни проверить решение, ни
+    возразить."""
     from backend.article_sprint_themes import article_sprint_themes
     from backend.openai_manager import run_article_verify, run_article_translate
     from backend.database import (
-        ensure_article_sprint_schema, count_article_sprint_nouns,
-        insert_article_sprint_nouns, list_article_sprint_words,
-        unblacklist_article_words,
+        ensure_article_sprint_schema, list_article_sprint_words,
+        list_article_sprint_words_all_themes,
     )
 
     theme = next((t for t in article_sprint_themes() if t["key"] == theme_key), None)
     if not theme:
-        return {"error": "unknown_theme", "theme": theme_key}
+        return [], None
     ensure_article_sprint_schema()
 
     existing = {w.lower() for w in list_article_sprint_words(theme_key)}
+    elsewhere = list_article_sprint_words_all_themes() - existing
     cleaned: list[dict] = []
     seen: set[str] = set()
     for e in entries or []:
@@ -625,15 +625,13 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
             "meaning_ru": str((e or {}).get("meaning_ru") or "").strip(),
         })
     if not cleaned:
-        return {"theme": theme_key, "added": 0, "rejected": 0, "skipped_dup": 0,
-                "final_verified": count_article_sprint_nouns(theme_key, verified_only=True),
-                "target": int(theme["target_count"])}
+        return [], theme
 
     try:
         verdicts = _run(run_article_verify(
             items=[{"word": c["word"], "article": c["article"] or "der"} for c in cleaned]))
     except Exception:
-        logging.warning("add_manual_words: verify failed theme=%s", theme_key, exc_info=True)
+        logging.warning("manual words: verify failed theme=%s", theme_key, exc_info=True)
         verdicts = []
     need_tr = [c["word"] for c in cleaned if not c["meaning_ru"]]
     try:
@@ -641,40 +639,41 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
     except Exception:
         trmap = {}
 
-    # Как и в автозаливке: ответ ищем ПО СЛОВУ, позиция — только запасной путь и только
-    # когда длина сошлась. Иначе вердикт про одно слово приедет на другое.
+    # Ответ ищем ПО СЛОВУ, позиция — запасной путь и только когда длина сошлась. Иначе
+    # вердикт про одно слово приедет на другое.
     verdicts_by_word = {}
     for v in verdicts or []:
         if isinstance(v, dict) and str(v.get("word") or "").strip():
             verdicts_by_word[str(v["word"]).strip().lower()] = v
 
-    rows: list[dict] = []
-    rejected = 0
-    skipped_dup = 0
+    out: list[dict] = []
     for i, c in enumerate(cleaned):
         w = c["word"]
+        row = {"word": w, "article": c["article"],
+               "meaning_ru": c["meaning_ru"] or trmap.get(w.lower(), ""),
+               "ok": False, "reason": "", "source": "manual", "verified": True}
         if w.lower() in existing:
-            skipped_dup += 1
+            row["reason"] = "уже есть в этой теме"
+            out.append(row)
+            continue
+        if w.lower() in elsewhere:
+            row["reason"] = "уже стоит в другой теме"
+            out.append(row)
             continue
         if is_ambiguous_noun(w):
-            rejected += 1
+            row["reason"] = "у слова два рода — артикль зависит от смысла"
+            out.append(row)
             continue
-        if verdicts_by_word:
-            v = verdicts_by_word.get(w.lower())
-        else:
-            v = verdicts[i] if len(verdicts or []) == len(cleaned) else None
+        v = verdicts_by_word.get(w.lower()) if verdicts_by_word else (
+            verdicts[i] if len(verdicts or []) == len(cleaned) else None)
         art = c["article"]
         if isinstance(v, dict):
             if not v.get("ok"):
-                rejected += 1
+                row["reason"] = "не существительное"
+                out.append(row)
                 continue
             art = str(v.get("article") or art).strip().lower()
-        # СПРАВОЧНИК ГЛАВНЕЕ МОДЕЛИ — та же лестница, что и в автозаливке выше:
-        # Wiktionary (кэш → живой запрос) → правило композита → «не знаем».
-        # Ручной путь не привилегирован: неверный артикль отсюда учит человека
-        # ровно так же, как неверный артикль из генератора.
-        source = "manual"
-        verified = True
+        # СПРАВОЧНИК ГЛАВНЕЕ МОДЕЛИ: Wiktionary (кэш → живой запрос) → правило композита.
         try:
             from backend.article_authority import authoritative_article
             verdict, src = authoritative_article(w, allow_network=True)
@@ -683,35 +682,61 @@ def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
                     logging.warning(
                         "article manual: %s — заявлено «%s», справочник «%s» (%s), берём справочник",
                         w, art, verdict, src)
-                art = verdict
-                source = src
+                art, row["source"] = verdict, src
             else:
-                # Ни Wiktionary, ни правило композита не подтвердили род. В игру не пускаем:
-                # строка видна на ревью, но человеку неподтверждённый артикль не показываем.
-                logging.warning("article manual: %s — род не подтверждён (%s), кладём на ревью", w, src)
-                source, verified = "manual-unverified", False
+                # Род не подтверждён. Слово взять можно, но в игру оно пойдёт только после
+                # ревью артикля — показывать человеку недоказанный род нельзя.
+                row["source"], row["verified"] = "manual-unverified", False
+                row["reason"] = "род не подтверждён справочником"
         except Exception:
             logging.warning("article manual: справочник недоступен для %s", w, exc_info=True)
         if art not in ("der", "die", "das"):
-            rejected += 1
+            row["reason"] = row["reason"] or "артикль определить не удалось"
+            out.append(row)
             continue
-        rows.append({
-            "word": w, "article": art,
-            "meaning_ru": c["meaning_ru"] or trmap.get(w.lower(), ""),
-            "plural": "", "difficulty": "B",
-            "subtopic": "manual", "source": source, "verified": verified,
-        })
-        existing.add(w.lower())
+        row["article"] = art
+        row["ok"] = not row["reason"]
+        out.append(row)
+    return out, theme
 
+
+def review_manual_words(theme_key: str, entries: list[dict]) -> list[dict]:
+    """Проверить присланные слова и вернуть вердикт по КАЖДОМУ, ничего не записав."""
+    return _check_manual_words(theme_key, entries)[0]
+
+
+def commit_manual_words(theme_key: str, rows: list[dict]) -> dict:
+    """Записать в тему уже проверенные и одобренные владельцем слова."""
+    from backend.article_sprint_themes import article_sprint_themes
+    from backend.database import (
+        count_article_sprint_nouns, insert_article_sprint_nouns, unblacklist_article_words,
+    )
+    theme = next((t for t in article_sprint_themes() if t["key"] == theme_key), None)
+    clean = [{"word": r["word"], "article": r["article"], "meaning_ru": r.get("meaning_ru") or "",
+              "plural": "", "difficulty": "B", "subtopic": "manual",
+              "source": r.get("source") or "manual", "verified": bool(r.get("verified", True))}
+             for r in (rows or []) if str(r.get("article") or "") in ("der", "die", "das")]
     inserted = 0
-    if rows:
-        res = insert_article_sprint_nouns(theme_key, rows)
-        inserted = int(res.get("inserted") or 0)
-        # Админ добавил слово руками — его решение главнее прошлого автоотказа.
-        unblacklist_article_words([r["word"] for r in rows])
-    final = count_article_sprint_nouns(theme_key, verified_only=True)
-    return {"theme": theme_key, "added": inserted, "rejected": rejected,
-            "skipped_dup": skipped_dup, "final_verified": final,
+    if clean:
+        inserted = int((insert_article_sprint_nouns(theme_key, clean) or {}).get("inserted") or 0)
+        # Владелец добавил слово руками — его решение главнее прошлого автоотказа.
+        unblacklist_article_words([r["word"] for r in clean])
+    return {"theme": theme_key, "added": inserted,
+            "final_verified": count_article_sprint_nouns(theme_key, verified_only=True),
+            "target": int((theme or {}).get("target_count") or 0)}
+
+
+def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
+    """Проверить и сразу записать — для команды /artikel_addwords, где подтверждения нет."""
+    rows, theme = _check_manual_words(theme_key, entries)
+    if theme is None:
+        return {"error": "unknown_theme", "theme": theme_key}
+    take = [r for r in rows if r["ok"]]
+    res = commit_manual_words(theme_key, take)
+    return {"theme": theme_key, "added": int(res.get("added") or 0),
+            "rejected": sum(1 for r in rows if not r["ok"] and "уже" not in r["reason"]),
+            "skipped_dup": sum(1 for r in rows if "уже" in r["reason"]),
+            "final_verified": res.get("final_verified"),
             "target": int(theme["target_count"])}
 
 

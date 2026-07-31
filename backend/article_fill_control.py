@@ -251,44 +251,70 @@ def decision_keyboard(action: str, theme_key: str) -> dict[str, Any] | None:
     return None
 
 
-def accept_manual_words(theme_key: str, raw: str) -> str:
-    """Разобрать присланный список и положить слова в тему. → текст ответа."""
-    from backend.article_sprint_generator import add_manual_words
-    from backend.database import get_article_sprint_theme, set_theme_fill_state
-    theme = get_article_sprint_theme(theme_key) or {}
-    label = theme.get("label_ru") or theme_key
-    parts = [p.strip(" .;·-—\t") for chunk in str(raw or "").splitlines()
-             for p in chunk.split(",")]
-    entries = [{"word": p} for p in parts if p]
-    if not entries:
-        return "В сообщении не нашёл ни одного слова. Пришли их через запятую или по строкам."
-    res = add_manual_words(theme_key, entries) or {}
-    # После своих слов тема остаётся на паузе: включать автодобор за владельца нельзя —
-    # он его и остановил. Нужен добор — кнопка «продолжить» на месте.
-    set_theme_fill_state(theme_key, "paused")
-    added = int(res.get("added") or 0)
-    dup = int(res.get("skipped_dup") or 0)
-    bad = int(res.get("rejected") or 0)
-    total = res.get("final_verified")
-    lines = [f"✍️ <b>{label}</b>: принял {_words_ru(len(entries))}."]
-    lines.append(f"• добавлено: {added}")
-    if dup:
-        lines.append(f"• уже были в теме: {dup}")
-    if bad:
-        lines.append(f"• не взял: {bad} — не существительное или артикль не подтвердился")
-    lines.append("")
-    lines.append(f"Всего в теме теперь {_words_ru(total) if total is not None else '?'}. "
-                 f"Автодобор на паузе.")
-    return "\n".join(lines)
-
-
 def after_words_keyboard(theme_key: str) -> dict[str, Any]:
-    """Кнопки прямо под ответом.
+    """Кнопки прямо под ответом о записи.
 
     Текст «включить кнопкой продолжить» отсылал к сообщению, которое к этому моменту
     уехало вверх по переписке на десяток экранов. Ссылаться на кнопку, которой рядом нет,
-    — это заставлять человека искать её глазами в ленте."""
+    — значит заставлять человека искать её глазами в ленте."""
     return {"inline_keyboard": [[
         {"text": "▶️ включить добор", "callback_data": f"artfill:go:{theme_key}"},
         {"text": "✍️ ещё слова", "callback_data": f"artfill:mine:{theme_key}"},
     ]]}
+
+
+def split_words(raw: str) -> list[str]:
+    """Список слов из сообщения: через запятую, по строкам или вперемешку."""
+    parts = [p.strip(" .;·-—\t") for chunk in str(raw or "").splitlines()
+             for p in chunk.split(",")]
+    return [p for p in parts if p]
+
+
+def review_words_text(theme_key: str, rows: list[dict], selected: list[bool]) -> str:
+    """Разбор присланных слов по одному: что беру, что нет и почему.
+
+    Раньше ответ был «добавлено 1, не взял 2» — по нему нельзя ни проверить решение, ни
+    возразить. Владелец прислал три слова, два из которых глаголы, и не увидел, какие
+    именно отсеялись: а вдруг машина ошиблась и выбросила нужное."""
+    from backend.database import get_article_sprint_theme
+    theme = get_article_sprint_theme(theme_key) or {}
+    label = theme.get("label_ru") or theme_key
+    lines = [f"✍️ <b>{label}</b> — проверил {_words_ru(len(rows))}:", ""]
+    for i, r in enumerate(rows):
+        mark = "☑️" if (i < len(selected) and selected[i]) else "⬜️"
+        head = f"{mark} <b>{i + 1}. {r['article']} {r['word']}</b>".replace("  ", " ")
+        tail = f" — {r['meaning_ru']}" if r.get("meaning_ru") else ""
+        lines.append(head + tail)
+        if r.get("reason"):
+            lines.append(f"      <i>{r['reason']}</i>")
+    lines.append("")
+    lines.append("Отмеченные добавлю. Считаешь, что слово отсеяли зря, — отметь его сам, "
+                 "твоё решение главнее.")
+    return "\n".join(lines)
+
+
+def commit_selected_words(theme_key: str, rows: list[dict], selected: list[bool]) -> str:
+    """Записать отмеченные слова и отчитаться поимённо, а не числами."""
+    from backend.article_sprint_generator import commit_manual_words
+    from backend.database import set_theme_fill_state
+    take = [r for i, r in enumerate(rows) if i < len(selected) and selected[i]]
+    if not take:
+        return "Ничего не отмечено — в тему ничего не добавил."
+    res = commit_manual_words(theme_key, take) or {}
+    # После своих слов тема остаётся на паузе: включать автодобор за владельца нельзя —
+    # он его и остановил.
+    set_theme_fill_state(theme_key, "paused")
+    added = int(res.get("added") or 0)
+    names = ", ".join(f"{r['article']} {r['word']}" for r in take)
+    lines = [f"✅ Добавил в тему: {names}."]
+    if added < len(take):
+        lines.append(f"⚠️ Легло {added} из {len(take)} — остальные уже были в банке.")
+    unverified = [r for r in take if not r.get("verified", True)]
+    if unverified:
+        lines.append("У " + ", ".join(r["word"] for r in unverified)
+                     + " род не подтверждён справочником — пришлю отдельно, поставишь артикль тапом.")
+    total = res.get("final_verified")
+    lines.append("")
+    lines.append(f"Всего в теме {_words_ru(total) if total is not None else '?'}. "
+                 f"Автодобор на паузе.")
+    return "\n".join(lines)

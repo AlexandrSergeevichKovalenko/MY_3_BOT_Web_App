@@ -12241,6 +12241,129 @@ async def handle_retire_review_callback(update: Update, context: CallbackContext
             logging.warning("retire review reply failed", exc_info=True)
 
 
+def _artwords_redis_key(proposal_id: str) -> str:
+    return f"artwords_proposal:{proposal_id}"
+
+
+def _artwords_read(proposal_id: str) -> dict | None:
+    """Разбор присланных слов живёт в Redis до подтверждения: в callback_data он не влезет."""
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is None:
+        return None
+    raw = client.get(_artwords_redis_key(proposal_id))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except Exception:
+        return None
+
+
+def _artwords_write(proposal_id: str, state: dict, ttl: int = 604800) -> None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is not None:
+        client.set(_artwords_redis_key(proposal_id), json.dumps(state, ensure_ascii=False), ex=ttl)
+
+
+def _artwords_delete(proposal_id: str) -> None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is not None:
+        try:
+            client.delete(_artwords_redis_key(proposal_id))
+        except Exception:
+            pass
+
+
+def _artwords_keyboard(proposal_id: str, selected: list) -> InlineKeyboardMarkup:
+    """Номера-галочки, 5 в ряд: сами слова стоят в тексте сообщения.
+
+    Кнопка записи появляется, только когда отмечено хоть что-то, — пустой тап не должен
+    выглядеть как действие."""
+    rows, row = [], []
+    for idx, on in enumerate(selected):
+        row.append(InlineKeyboardButton(f"{'☑️' if on else '⬜️'} {idx + 1}",
+                                        callback_data=f"artwords:tog:{proposal_id}:{idx}"))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    count = sum(1 for s in selected if s)
+    if count:
+        rows.append([InlineKeyboardButton(f"✅ Добавить отмеченные ({count})",
+                                          callback_data=f"artwords:go:{proposal_id}")])
+    rows.append([InlineKeyboardButton("↩️ Отмена", callback_data=f"artwords:cancel:{proposal_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def handle_artwords_callback(update: Update, context: CallbackContext) -> None:
+    """Галочки под разбором присланных слов: отметить, записать, отменить."""
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin or not _is_admin_user(admin.id):
+        if query:
+            await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":")   # artwords:<tog|go|cancel>:<id>[:<idx>]
+    action = parts[1] if len(parts) > 1 else ""
+    pid = parts[2] if len(parts) > 2 else ""
+    state = _artwords_read(pid)
+    if not state:
+        await query.answer("Этот разбор уже закрыт.", show_alert=True)
+        return
+    rows, selected = state.get("rows") or [], state.get("selected") or []
+
+    if action == "tog":
+        idx = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else -1
+        if 0 <= idx < len(selected):
+            selected[idx] = not selected[idx]
+            state["selected"] = selected
+            _artwords_write(pid, state)
+        await query.answer()
+        from backend.article_fill_control import review_words_text
+        text = await asyncio.to_thread(review_words_text, state["theme_key"], rows, selected)
+        try:
+            await query.edit_message_text(text, parse_mode="HTML",
+                                          reply_markup=_artwords_keyboard(pid, selected))
+        except Exception:
+            pass
+        return
+
+    if action == "cancel":
+        _artwords_delete(pid)
+        await query.answer("Отменил.")
+        from backend.database import set_theme_fill_state
+        await asyncio.to_thread(set_theme_fill_state, state["theme_key"], "paused")
+        try:
+            await query.edit_message_text("↩️ Ничего не добавил, тема осталась как была.")
+        except Exception:
+            pass
+        return
+
+    if action == "go":
+        await query.answer("Записываю…")
+        from backend.article_fill_control import commit_selected_words
+        try:
+            text = await asyncio.to_thread(commit_selected_words, state["theme_key"], rows, selected)
+        except Exception:
+            logging.warning("artwords commit failed pid=%s", pid, exc_info=True)
+            await query.message.reply_text("Не получилось записать. Подробности в логах.")
+            return
+        _artwords_delete(pid)
+        from backend.article_fill_control import after_words_keyboard
+        kb = after_words_keyboard(state["theme_key"])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], callback_data=b["callback_data"])
+                                        for b in row] for row in kb["inline_keyboard"]])
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            await query.message.reply_text(text, parse_mode="HTML")
+        return
+
+
 async def handle_fill_control_callback(update: Update, context: CallbackContext) -> None:
     """Тап по кнопке «остановить / продолжить / дам свои слова» под выдохшейся темой."""
     query = update.callback_query
@@ -12327,17 +12450,31 @@ async def handle_manual_theme_words(update: Update, context: CallbackContext) ->
         return
     await message.reply_text("Проверяю слова — артикли по справочнику, перевод сам…")
     try:
-        from backend.article_fill_control import accept_manual_words
-        text = await asyncio.to_thread(accept_manual_words, theme_key, message.text or "")
-        # Кнопки прямо под ответом: сообщение с ними уехало вверх на десяток экранов,
-        # и «включить кнопкой продолжить» превращалось в поиск глазами по ленте.
-        await message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("▶️ включить добор", callback_data=f"artfill:go:{theme_key}"),
-            InlineKeyboardButton("✍️ ещё слова", callback_data=f"artfill:mine:{theme_key}"),
-        ]]))
+        # Проверяем и ПОКАЗЫВАЕМ разбор, но ничего не пишем: решение по каждому слову
+        # принимает владелец. Прежний ответ «добавлено 1, не взял 2» не давал ни проверить
+        # решение, ни возразить — какое из трёх слов отсеяли, было не видно.
+        from backend.article_sprint_generator import review_manual_words
+        from backend.article_fill_control import review_words_text, split_words
+        entries = [{"word": w} for w in split_words(message.text or "")]
+        if not entries:
+            await message.reply_text("В сообщении не нашёл ни одного слова. "
+                                     "Пришли их через запятую или по строкам.")
+            raise ApplicationHandlerStop
+        rows = await asyncio.to_thread(review_manual_words, theme_key, entries)
+        if not rows:
+            await message.reply_text("Не смог разобрать эти слова. Подробности в логах.")
+            raise ApplicationHandlerStop
+        selected = [bool(r.get("ok")) for r in rows]
+        pid = f"{int(user.id)}_{int(message.message_id)}"
+        _artwords_write(pid, {"theme_key": theme_key, "rows": rows, "selected": selected})
+        text = await asyncio.to_thread(review_words_text, theme_key, rows, selected)
+        await message.reply_text(text, parse_mode="HTML",
+                                 reply_markup=_artwords_keyboard(pid, selected))
+    except ApplicationHandlerStop:
+        raise
     except Exception:
         logging.warning("manual theme words failed theme=%s", theme_key, exc_info=True)
-        await message.reply_text("Не получилось добавить слова. Подробности в логах.")
+        await message.reply_text("Не получилось разобрать слова. Подробности в логах.")
     raise ApplicationHandlerStop
 
 
@@ -40809,6 +40946,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_article_review_callback, pattern=r"^artrev:"))
     application.add_handler(CallbackQueryHandler(handle_retire_review_callback, pattern=r"^artret:"))
     application.add_handler(CallbackQueryHandler(handle_fill_control_callback, pattern=r"^artfill:"))
+    application.add_handler(CallbackQueryHandler(handle_artwords_callback, pattern=r"^artwords:"))
     application.add_handler(CommandHandler("artikel_fill_report", handle_artikel_fill_report_command))
     application.add_handler(CommandHandler("artikel_fill_go", handle_artikel_fill_go_command))
     # Ответ владельца со списком слов для темы.

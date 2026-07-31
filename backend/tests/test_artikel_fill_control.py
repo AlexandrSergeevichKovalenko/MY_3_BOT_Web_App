@@ -83,47 +83,81 @@ class FillDecisionTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
-class ManualWordsTests(unittest.TestCase):
-    def _accept(self, raw, result=None):
-        seen = {}
+class WordReviewTests(unittest.TestCase):
+    """Владелец видит разбор по каждому слову и решает сам, а не читает «не взял 2»."""
 
-        def _add(theme_key, entries):
-            seen["entries"] = entries
-            return result or {"added": len(entries), "skipped_dup": 0, "rejected": 0,
-                              "final_verified": 60}
+    ROWS = [
+        {"word": "Kater", "article": "der", "meaning_ru": "похмелье", "ok": True,
+         "reason": "", "verified": True},
+        {"word": "Kotzen", "article": "", "meaning_ru": "", "ok": False,
+         "reason": "не существительное", "verified": True},
+        {"word": "Girlande", "article": "die", "meaning_ru": "гирлянда", "ok": False,
+         "reason": "уже есть в этой теме", "verified": True},
+    ]
 
-        def _state(theme_key, state, **kwargs):
-            seen["state"] = state
-            return True
+    def _text(self, selected):
+        with patch.object(db, "get_article_sprint_theme", lambda t: {"label_ru": "Вечеринки"}):
+            return ctl.review_words_text("party_freizeit", self.ROWS, selected)
 
-        with patch.object(db, "get_article_sprint_theme", lambda t: {"label_ru": "Уборка"}), \
-                patch.object(db, "set_theme_fill_state", _state), \
-                patch.object(gen, "add_manual_words", _add):
-            text = ctl.accept_manual_words("haushalt", raw)
-        return text, seen
+    def test_every_word_is_named_with_its_verdict(self):
+        text = self._text([True, False, False])
+        self.assertIn("der Kater", text)
+        self.assertIn("похмелье", text)
+        self.assertIn("Kotzen", text)
+        self.assertIn("не существительное", text, "причина отказа должна быть видна")
+        self.assertIn("уже есть в этой теме", text)
+
+    def test_the_good_ones_are_ticked_and_the_rest_are_not(self):
+        text = self._text([True, False, False])
+        self.assertIn("☑️ <b>1.", text)
+        self.assertIn("⬜️ <b>2.", text)
+
+    def test_the_owner_is_told_he_can_overrule(self):
+        self.assertIn("твоё решение главнее", self._text([True, False, False]))
 
     def test_words_are_split_by_commas_and_lines(self):
-        _, seen = self._accept("Besen, Eimer\nLappen\n  Schrubber  ")
-        self.assertEqual([e["word"] for e in seen["entries"]],
+        self.assertEqual(ctl.split_words("Besen, Eimer\nLappen\n  Schrubber  "),
                          ["Besen", "Eimer", "Lappen", "Schrubber"])
 
-    def test_the_theme_stays_paused_after_manual_words(self):
-        # Включать автодобор за владельца нельзя: он его сам и остановил.
-        text, seen = self._accept("Besen, Eimer")
-        self.assertEqual(seen["state"], "paused")
-        self.assertIn("на паузе", text)
+    def test_an_empty_message_yields_no_words(self):
+        self.assertEqual(ctl.split_words("   \n  "), [])
 
-    def test_an_empty_message_gets_a_human_answer_not_a_crash(self):
-        text, seen = self._accept("   \n  ")
-        self.assertNotIn("entries", seen, "пустое сообщение до банка доходить не должно")
-        self.assertIn("не нашёл ни одного слова", text)
 
-    def test_duplicates_and_rejects_are_named_in_the_answer(self):
-        text, _ = self._accept("Besen, Eimer", result={
-            "added": 1, "skipped_dup": 1, "rejected": 2, "final_verified": 61})
-        self.assertIn("добавлено: 1", text)
-        self.assertIn("уже были в теме: 1", text)
-        self.assertIn("не взял: 2", text)
+class WordCommitTests(unittest.TestCase):
+    def _commit(self, selected, added=None):
+        seen = {}
+
+        def _commit_rows(theme_key, rows):
+            seen["rows"] = rows
+            return {"added": len(rows) if added is None else added, "final_verified": 53}
+
+        with patch.object(db, "set_theme_fill_state", lambda *a, **k: True), \
+                patch.object(gen, "commit_manual_words", _commit_rows):
+            text = ctl.commit_selected_words("party_freizeit", WordReviewTests.ROWS, selected)
+        return text, seen
+
+    def test_only_ticked_words_are_written(self):
+        _, seen = self._commit([True, False, False])
+        self.assertEqual([r["word"] for r in seen["rows"]], ["Kater"])
+
+    def test_the_owner_can_overrule_a_rejection(self):
+        # Он отметил слово, которое проверка забраковала: его решение главнее.
+        _, seen = self._commit([False, True, False])
+        self.assertEqual([r["word"] for r in seen["rows"]], ["Kotzen"])
+
+    def test_the_answer_names_the_words_not_just_a_count(self):
+        text, _ = self._commit([True, False, False])
+        self.assertIn("der Kater", text)
+        self.assertIn("53 слова", text)
+
+    def test_nothing_ticked_writes_nothing(self):
+        text, seen = self._commit([False, False, False])
+        self.assertNotIn("rows", seen, "до банка пустой выбор доходить не должен")
+        self.assertIn("Ничего не отмечено", text)
+
+    def test_a_word_that_did_not_land_is_admitted(self):
+        text, _ = self._commit([True, True, False], added=1)
+        self.assertIn("Легло 1 из 2", text)
 
 
 class ExhaustionSignalTests(unittest.TestCase):
@@ -200,15 +234,13 @@ class ButtonsStayWithinReachTests(unittest.TestCase):
         self.assertIn("artfill:mine:party_freizeit", data)
 
     def test_the_answer_does_not_send_the_owner_hunting_for_a_button(self):
-        seen = {}
+        def _commit_rows(theme_key, rows):
+            return {"added": len(rows), "final_verified": 52}
 
-        def _add(theme_key, entries):
-            return {"added": 1, "skipped_dup": 0, "rejected": 0, "final_verified": 52}
-
-        with patch.object(db, "get_article_sprint_theme", lambda t: {"label_ru": "Вечеринки"}), \
-                patch.object(db, "set_theme_fill_state", lambda *a, **k: seen or True), \
-                patch.object(gen, "add_manual_words", _add):
-            text = ctl.accept_manual_words("party_freizeit", "Konfetti")
+        with patch.object(db, "set_theme_fill_state", lambda *a, **k: True), \
+                patch.object(gen, "commit_manual_words", _commit_rows):
+            text = ctl.commit_selected_words("party_freizeit", WordReviewTests.ROWS,
+                                             [True, False, False])
         self.assertNotIn("кнопкой", text, "кнопка едет вместе с сообщением, а не словами")
         self.assertIn("52 слова", text, "число слов склоняем")
 
