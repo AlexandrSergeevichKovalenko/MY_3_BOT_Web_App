@@ -14,7 +14,7 @@ html, body { margin: 0; padding: 0; }
    горизонтальный вылет так же, но контейнером прокрутки не становится. Старые браузеры
    не знают `clip` и остаются на hidden. */
 body { background: var(--dmps-bg, #0F172A); overflow-x: hidden; overflow-x: clip; }
-#root { min-height: 100vh; }
+#root { min-height: 100vh; min-height: 100dvh; }  /* dvh = реально видимая высота, без фантомной прокрутки */
 
 /* Every element on this route uses border-box so width:100% + padding + border
  * never makes a box wider than its container (which would push the card off the
@@ -58,6 +58,7 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
   --ans-bad: var(--dmps-danger, #DC2626);
   width: 100%;
   min-height: 100vh;
+  min-height: 100dvh;
   box-sizing: border-box;
   overflow-x: hidden;
   overflow-x: clip;   /* hidden сделал бы контейнер прокрутки и убил sticky-кнопку */
@@ -111,12 +112,20 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
    прокрутку. Заголовок, счёт и кнопка действия при этом видны всегда. */
 .ans-card.is-panelled { overflow: hidden; }
 .ans-card.is-panelled > * { flex: 0 0 auto; }
+.ans-card.is-panelled > .is-fit-panel > .ans-btn,
+.ans-card.is-panelled > .is-fit-panel > .ans-btn-ghost {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+}
 .ans-card.is-panelled > .is-fit-panel {
   flex: 1 1 auto;
   min-height: 72px;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  /* кнопка действия внутри прокручиваемого блока не уезжает под фолд */
+  /* (см. .is-fit-panel > .ans-btn ниже) */
   /* чтобы было видно, что блок листается, а не обрезан */
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);

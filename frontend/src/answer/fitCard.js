@@ -1,39 +1,40 @@
-// Fit every interactive card into the screen the user actually has.
+// Подгонка интерактива под экран пользователя — по высоте И по ширине, на любом телефоне.
 //
-// A game is one card (`.ans-root > .ans-card`) as tall as its content. On a big phone
-// that fits; on a small one the last option and the action button fall below the fold —
-// you scroll to press "Weiter" and lose sight of the question. So the card adapts:
+// Игра — это одна карточка (`.ans-root > .ans-card`) высотой во столько, сколько занял
+// контент. На большом телефоне это влезало, на маленьком последний вариант и кнопка
+// уезжали под сгиб. Плюс обратная беда: если внутри карточки есть свой прокручиваемый
+// список, карточка получалась НИЖЕ экрана — сверху и снизу пустота, а список зажат в
+// окошко на две строки. И то и другое — плохо использованный экран.
 //
-//   1. it first spends PADDING — `.ans-root.is-tight` (answer.css) trims the outer and
-//      inner gaps, which costs no legibility;
-//   2. if that is not enough it scales the card down with `zoom`, so the whole screen
-//      (question + options + explanation + buttons) lands above the fold;
-//   3. below MILD_ZOOM scaling alone would make the text too small, so the screen is
-//      re-laid-out instead: the card takes exactly the viewport height and its longest
-//      block (the word list, the explanation) gets its own scroll — the header, the score
-//      and the action button stay visible whatever the content length;
-//   4. only if even that fails (a giant block that is itself the whole screen) it falls
-//      back to MIN_ZOOM + normal page scroll, with the final button pinned to the bottom
-//      (`.ans-root.is-scroll`) so the way out is always in reach.
+// Что делает этот модуль (всё — в одном синхронном проходе, см. ниже):
+//   1. РАСТЯГИВАЕТ: если внутри есть блок со своей прокруткой, он забирает всё свободное
+//      место — карточка занимает экран целиком, читать видно максимум;
+//   2. ПОДЖИМАЕТ ОТСТУПЫ: `.ans-root.is-tight` (answer.css) — бесплатно, читаемость не
+//      страдает;
+//   3. УЖИМАЕТ пропорционально (`zoom`) — пока это не бьёт по читаемости (до MILD_ZOOM);
+//   4. ПЕРЕСОБИРАЕТ ЭКРАН: карточка ровно по высоте экрана, самый длинный блок внутри
+//      получает свою прокрутку. Заголовок, счёт и кнопка действия видны всегда;
+//   5. крайний случай — MIN_ZOOM и обычная прокрутка страницы, но кнопка выхода прижата
+//      к низу экрана (`.ans-root.is-scroll`), долистывать до неё не нужно.
 //
-// The whole decision is ONE SYNCHRONOUS PASS: reset → measure → apply, all before the
-// browser paints. Nothing is applied in steps and nothing is "grown back" later — an
-// earlier multi-frame version made the card visibly jump and flicker on every answer.
-// The pass always starts from the natural size, so it can never get stuck small.
+// ВСЁ РЕШЕНИЕ — ОДИН СИНХРОННЫЙ ПРОХОД: сброс → замер → применение, до отрисовки кадра.
+// Ничего не применяется «по шагам» и ничего не отыгрывается назад позже: ранняя версия
+// делала это за несколько кадров, и карточка на глазах прыгала и мигала при каждом ответе.
+// Проход всегда стартует от натурального вида, поэтому «залипнуть мелким» невозможно.
 //
-// `zoom` (not `transform: scale`) on purpose: it re-flows, so the card keeps the full
-// width of the screen and does NOT become a containing block for the `position: fixed`
-// pop-ups some games render inside it (ask-popup, word popup, toast).
+// `zoom`, а не `transform: scale`, намеренно: он делает реальный перенос текста, карточка
+// сохраняет полную ширину экрана и НЕ становится containing block для `position: fixed`
+// попапов, которые некоторые игры рисуют внутри карточки.
 //
-// One document-level controller instead of a hook in ~20 game files: every screen of
-// every game is covered, including ones added later.
+// Один контроллер на весь роут вместо хука в ~20 файлах игр: покрыты все экраны всех игр,
+// включая те, что появятся позже.
 
 const MILD_ZOOM = 0.82;  // до этого масштаба просто ужимаем карточку целиком
 const MIN_ZOOM = 0.72;   // ниже не опускаемся никогда — дальше текст не читается
 const PANEL_MIN = 96;    // сколько px экрана минимум оставляем прокручиваемому блоку
 const EPS = 1.5;         // допуск в px, чтобы не дёргаться из-за долей пикселя
 
-const cards = new WeakMap(); // card → { k, avail, vis } — состояние последнего расчёта
+const cards = new WeakMap(); // card → { k, avail, vis, stretched }
 const observedCards = new WeakSet();
 
 let installed = false;
@@ -63,7 +64,7 @@ function availHeight(root) {
 
 function stateOf(card) {
   let st = cards.get(card);
-  if (!st) { st = { k: 1, avail: 0, vis: 0 }; cards.set(card, st); }
+  if (!st) { st = { k: 1, avail: 0, vis: 0, stretched: null }; cards.set(card, st); }
   return st;
 }
 
@@ -71,9 +72,38 @@ function setZoom(card, k) {
   card.style.zoom = k >= 0.999 ? '' : String(Math.round(k * 1000) / 1000);
 }
 
+// Блок внутри карточки со СВОЕЙ прокруткой (список разборов, список слов). Именно ему
+// отдаём всё свободное место — иначе он остаётся окошком в две строки посреди пустого экрана.
+function findScroller(card) {
+  let best = null;
+  for (const el of card.querySelectorAll('*')) {
+    const cs = getComputedStyle(el);
+    if (!/auto|scroll/.test(cs.overflowY)) continue;
+    if (el.scrollHeight - el.clientHeight < 4) continue;   // прокручивать нечего
+    const h = el.getBoundingClientRect().height;
+    if (!best || h > best.h) best = { el, h };
+  }
+  return best ? best.el : null;
+}
+
+// Блок, который не жалко прокручивать, если экран пересобирается целиком: самый высокий.
+// Кнопка действия внутри такого блока не теряется — CSS прижимает её к низу блока
+// (`.is-fit-panel > .ans-btn`), так что «Дальше» видно всегда.
+function pickPanel(card) {
+  const cardH = card.getBoundingClientRect().height;
+  let best = null;
+  for (const el of Array.from(card.children)) {
+    if (el.tagName === 'BUTTON') continue;          // сама кнопка — не блок для прокрутки
+    const h = el.getBoundingClientRect().height;
+    if (h < cardH * 0.2) continue;                  // мелкие блоки прокручивать бессмысленно
+    if (!best || h > best.h) best = { el, h };
+  }
+  return best ? best.el : null;
+}
+
 // Снять всё, что подгонка применяла раньше: считаем каждый раз от натурального вида,
 // иначе карточка может «залипнуть» мелкой после длинного экрана.
-function resetCard(root, card) {
+function resetCard(root, card, st) {
   setZoom(card, 1);
   root.style.minHeight = '';
   root.classList.remove('is-tight', 'is-scroll');
@@ -81,10 +111,11 @@ function resetCard(root, card) {
   card.style.maxHeight = '';
   const panel = card.querySelector(':scope > .is-fit-panel');
   if (panel) panel.classList.remove('is-fit-panel');
+  if (st && st.stretched) { st.stretched.style.maxHeight = ''; st.stretched = null; }
 }
 
-// Один синхронный расчёт для одной карточки. Между чтениями и записями браузер не
-// рисует, поэтому пользователь видит только итоговое состояние.
+// Один синхронный расчёт для одной карточки. Между чтениями и записями браузер не рисует,
+// поэтому пользователь видит только итоговое состояние.
 function fitOne(root) {
   if (root.classList.contains('ans-root--cw')) return; // кроссворд считает свою раскладку сам
   const card = root.querySelector(':scope > .ans-card');
@@ -95,7 +126,7 @@ function fitOne(root) {
   if (typing) {
     // При zoom < 1 поле ввода мельче 16px — iOS начинает зумить страницу сам.
     // Пока печатают, отдаём полный размер и обычную прокрутку.
-    if (st.k !== 1) { resetCard(root, card); st.k = 1; st.vis = 0; }
+    if (st.k !== 1 || st.stretched) { resetCard(root, card, st); st.k = 1; st.vis = 0; }
     return;
   }
 
@@ -105,27 +136,75 @@ function fitOne(root) {
       && Math.abs(availNow - st.avail) < EPS) return;
 
   // 1. Натуральный размер: снимаем всё, что применяли раньше.
-  resetCard(root, card);
+  resetCard(root, card, st);
   let avail = availHeight(root);
   let h = card.getBoundingClientRect().height;
   if (!(avail > 160) || !(h > 0)) return;
 
-  // Подгонка сработала → фиксируем высоту экрана за корнем, иначе `min-height: 100vh`
-  // в iOS/Telegram бывает выше видимой области и остаётся паразитная прокрутка пустоты.
-  const remember = (k, fitted) => {
-    if (fitted) root.style.minHeight = `${Math.round(viewportHeight())}px`;
+  const remember = (k) => {
+    root.style.minHeight = `${Math.round(viewportHeight())}px`;
     st.k = k;
     st.avail = availHeight(root);
     st.vis = card.getBoundingClientRect().height;
   };
 
-  if (h <= avail) { remember(1, false); return; }        // помещается как есть
+  // Отдать внутреннему прокручиваемому блоку всю оставшуюся высоту экрана.
+  const stretch = (k) => {
+    const sc = findScroller(card);
+    if (!sc) return;
+    // Экран на вес золота: раз внутри есть прокрутка, значит контента больше, чем видно —
+    // отдаём отступы содержимому.
+    if (!root.classList.contains('is-tight')) {
+      root.classList.add('is-tight');
+      avail = availHeight(root);
+    }
+    const slack = avail - card.getBoundingClientRect().height;
+    if (slack < 6) return;
+    const cur = sc.getBoundingClientRect().height;
+    // sc живёт внутри карточки: её px масштабируются zoom'ом, поэтому делим на k
+    let target = cur + slack - 1;
+    sc.style.maxHeight = `${Math.round(target / k)}px`;
+    st.stretched = sc;
+    for (let i = 0; i < 2; i += 1) {
+      const over = card.getBoundingClientRect().height - avail;
+      if (over <= 0) break;
+      target -= over + 1;
+      sc.style.maxHeight = `${Math.round(target / k)}px`;
+    }
+  };
+
+  // Финальная проверка ПО ФАКТУ: страница не должна прокручиваться. Замер высоты карточки
+  // при zoom отдаёт родителю чуть другую величину, поэтому доводим по самому документу.
+  // Всё в том же синхронном проходе — промежуточных состояний пользователь не видит.
+  const settle = (k0) => {
+    let k = k0;
+    stretch(k);
+    for (let i = 0; i < 3; i += 1) {
+      const over = document.documentElement.scrollHeight - Math.round(viewportHeight());
+      if (over <= 1) break;
+      const vis = card.getBoundingClientRect().height;
+      if (!(vis > 0)) break;
+      if (st.stretched) {
+        // сначала отдаём лишнее из растянутого блока — это не стоит читаемости
+        const cur = st.stretched.getBoundingClientRect().height;
+        if (cur - over > 80) { st.stretched.style.maxHeight = `${Math.round((cur - over - 2) / k)}px`; continue; }
+      }
+      const nk = Math.max(MIN_ZOOM, k * Math.max(0.5, (vis - over - 2) / vis));
+      if (nk >= k - 0.002) break;
+      k = nk;
+      setZoom(card, k);
+      if (card.classList.contains('is-panelled')) card.style.maxHeight = `${Math.round(avail / k)}px`;
+    }
+    remember(k);
+  };
+
+  if (h <= avail) { settle(1); return; }        // помещается как есть (и растянется, если есть куда)
 
   // 2. Отдаём отступы — это бесплатно.
   root.classList.add('is-tight');
   avail = availHeight(root);
   h = card.getBoundingClientRect().height;
-  if (h <= avail) { remember(1, true); return; }
+  if (h <= avail) { settle(1); return; }
 
   // 3. Ужимаем карточку целиком — пока это не бьёт по читаемости.
   const k = (avail - 2) / h;
@@ -133,14 +212,14 @@ function fitOne(root) {
     setZoom(card, k);
     // Поправка: при меньшем шрифте текст переносится иначе, высота уходит от расчётной.
     const h2 = card.getBoundingClientRect().height;
-    if (h2 > avail) { const k2 = Math.max(MIN_ZOOM, (k * (avail - 2)) / h2); setZoom(card, k2); remember(k2, true); return; }
+    if (h2 > avail) { const k2 = Math.max(MIN_ZOOM, (k * (avail - 2)) / h2); setZoom(card, k2); settle(k2); return; }
     if (h2 < avail - 16) {
       const k2 = Math.min(1, (k * (avail - 4)) / h2);
       setZoom(card, k2);
       if (card.getBoundingClientRect().height > avail) setZoom(card, k); // откат, если перебрали
-      else { remember(k2, true); return; }
+      else { settle(k2); return; }
     }
-    remember(k, true);
+    settle(k);
     return;
   }
 
@@ -155,7 +234,7 @@ function fitOne(root) {
     card.classList.add('is-panelled');
     panel.classList.add('is-fit-panel');
     card.style.maxHeight = `${Math.round(avail / kp)}px`; // px внутри карточки — уже в её масштабе
-    if (card.getBoundingClientRect().height <= avail + EPS) { remember(kp, true); return; }
+    if (card.getBoundingClientRect().height <= avail + EPS) { settle(kp); return; }
     // не помогло — откатываем к обычной прокрутке
     card.classList.remove('is-panelled');
     panel.classList.remove('is-fit-panel');
@@ -166,23 +245,9 @@ function fitOne(root) {
   //    прижимаем к низу экрана — до неё не придётся долистывать.
   setZoom(card, MIN_ZOOM);
   root.classList.add('is-scroll');
-  remember(MIN_ZOOM, false);
-}
-
-// Блок внутри карточки, который не жалко прокручивать: самый высокий из тех, что не
-// содержат кнопку действия (иначе «Дальше» уедет под фолд собственного скролла).
-function pickPanel(card) {
-  const kids = Array.from(card.children);
-  const cardH = card.getBoundingClientRect().height;
-  let best = null;
-  for (const el of kids) {
-    // Кнопки-«фишки» (сохранить слово) прокручивать можно, кнопку действия — нет.
-    if (el.tagName === 'BUTTON' || el.querySelector('.ans-btn, .ans-btn-ghost')) continue;
-    const h = el.getBoundingClientRect().height;
-    if (h < cardH * 0.28) continue;      // мелкие блоки прокручивать бессмысленно
-    if (!best || h > best.h) best = { el, h };
-  }
-  return best ? best.el : null;
+  st.k = MIN_ZOOM;
+  st.avail = availHeight(root);
+  st.vis = card.getBoundingClientRect().height;
 }
 
 function run() {
