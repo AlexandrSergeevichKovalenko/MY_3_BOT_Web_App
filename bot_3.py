@@ -525,6 +525,19 @@ MASTERY_ACTIVE_FRACTION = max(0.05, min(1.0, float((os.getenv("MASTERY_ACTIVE_FR
 MASTERY_MIN_ANSWERERS_FLOOR = max(2, int((os.getenv("MASTERY_MIN_ANSWERERS_FLOOR") or "3").strip() or "3"))
 MASTERY_CORRECT_RATIO = max(0.1, min(1.0, float((os.getenv("MASTERY_CORRECT_RATIO") or "0.6").strip() or "0.6")))
 MASTERY_ACTIVE_WINDOW_DAYS = max(7, int((os.getenv("MASTERY_ACTIVE_WINDOW_DAYS") or "30").strip() or "30"))
+# Правило трёх кругов — второй способ снять задание, НЕ зависящий от размера толпы.
+# Обычная ротация ждёт, пока задание разберёт MASTERY_MIN_ANSWERERS_FLOOR человек; пока
+# активен один, порог не берётся никогда и он видит одно и то же (30.07.2026: записи
+# аудирования отработали по 12 кругов при одном отвечающем). Круг = день в эфире, а
+# кулдаун разносит круги минимум на неделю, так что три круга ≈ три недели жизни задания.
+# Дальше: справились ≥MASTERY_CORRECT_RATIO — снимаем насовсем, иначе (в том числе если
+# не открыл никто) — в отстой на POOL_PARK_DAYS и потом обратно с чистым счётчиком.
+POOL_MAX_ROUNDS = max(1, int((os.getenv("POOL_MAX_ROUNDS") or "3").strip() or "3"))
+POOL_PARK_DAYS  = max(7, int((os.getenv("POOL_PARK_DAYS") or "90").strip() or "90"))
+# Включено там, где банк мал и человек упирается в повторы раньше, чем набирается толпа.
+# Ребус и кроссворд пока не упираются, а артикль-квиз — словник со своей программой
+# пополнения, снятие слов по показам с ней конфликтует.
+POOL_ROUND_CAP_DOMAINS = {"listening", "anagram"}
 LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
 LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
 # Банк обязан быть БОЛЬШЕ, чем кулдаун × расход в день, иначе слот встаёт: при 7 текстах
@@ -34144,6 +34157,34 @@ async def _rotate_aufgabe_domain(context: CallbackContext, *, min_answerers: int
     return retired, added
 
 
+async def _rotate_by_round_cap(domain: str, pass_ratio: dict | None = None) -> int:
+    """Правило трёх кругов: снять задания, отработавшие POOL_MAX_ROUNDS кругов в эфире,
+    сколько бы человек на них ни ответило. Справились — снимаем насовсем; не справились
+    или не открыл никто — в отстой на POOL_PARK_DAYS, потом вернутся с чистым счётчиком.
+
+    `pass_ratio` — доля справившихся среди тех, кто отвечал; задания, которых нет в этом
+    словаре, никто не открывал. Для игр с обычной отметкой «верно/неверно» считается
+    здесь же; аудирование передаёт свой словарь — там ответ разбирается по частям, и доля
+    считается в Python. Возвращает, сколько заданий снято всего."""
+    if domain not in POOL_ROUND_CAP_DOMAINS:
+        return 0
+    from backend.database import (pool_item_rounds, pool_item_pass_ratio,
+                                  retire_pool_items_with_reason, park_pool_items)
+    rounds = await asyncio.to_thread(pool_item_rounds, domain, min_rounds=POOL_MAX_ROUNDS)
+    if not rounds:
+        return 0
+    if pass_ratio is None:
+        pass_ratio = await asyncio.to_thread(pool_item_pass_ratio, domain, list(rounds))
+    learned = [i for i in rounds if float(pass_ratio.get(i, -1.0)) >= MASTERY_CORRECT_RATIO]
+    park = [i for i in rounds if i not in set(learned)]
+    n_learned = await asyncio.to_thread(retire_pool_items_with_reason, domain, learned, "rounds_passed")
+    n_parked = await asyncio.to_thread(park_pool_items, domain, park, days=POOL_PARK_DAYS)
+    if n_learned or n_parked:
+        logging.info("round_cap[%s]: rounds>=%s → снято %s, в отстой %s",
+                     domain, POOL_MAX_ROUNDS, n_learned, n_parked)
+    return int(n_learned) + int(n_parked)
+
+
 async def _rotate_pool_domain(context: CallbackContext, domain: str, regen_job, *, min_answerers: int) -> tuple[int, int]:
     """Generic single-item-pool rotation: retire crowd-mastered bank items, then run
     the domain's existing top-up job to refill to target. `added` is measured from
@@ -34153,6 +34194,7 @@ async def _rotate_pool_domain(context: CallbackContext, domain: str, regen_job, 
                                   min_answerers=min_answerers, ratio=MASTERY_CORRECT_RATIO)
     n0 = await asyncio.to_thread(count_pool_non_retired, domain)
     retired = await asyncio.to_thread(retire_pool_item_ids, domain, ids)
+    retired += await _rotate_by_round_cap(domain)
     added = 0
     if retired:
         try:
@@ -34202,8 +34244,11 @@ async def _rotate_listening_domain(context: CallbackContext, *, min_answerers: i
             pass
     ids = [lid for lid, a in agg.items()
            if len(a["users"]) >= min_answerers and len(a["passed"]) / max(1, len(a["users"])) >= MASTERY_CORRECT_RATIO]
+    # Доля справившихся среди тех, кто вообще отвечал — для правила трёх кругов.
+    ratios = {lid: len(a["passed"]) / len(a["users"]) for lid, a in agg.items() if a["users"]}
     n0 = await asyncio.to_thread(count_pool_non_retired, "listening")
     retired = await asyncio.to_thread(retire_pool_item_ids, "listening", ids)
+    retired += await _rotate_by_round_cap("listening", ratios)
     added = 0
     if retired:
         try:
@@ -34260,6 +34305,16 @@ async def _mastery_rotation_job(context: CallbackContext) -> list[tuple[str, int
     min_answerers = _mastery_min_answerers(active)
     logging.info("mastery rotation: active=%s min_answerers=%s ratio=%s",
                  active, min_answerers, MASTERY_CORRECT_RATIO)
+    # Сначала возвращаем отстоявшееся — иначе свежие снятия посчитались бы поверх
+    # заданий, которые уже пора вернуть, и банк лишний раз попросил бы генерацию.
+    from backend.database import unpark_due_pool_items
+    for _park_domain in sorted(POOL_ROUND_CAP_DOMAINS):
+        try:
+            back = await asyncio.to_thread(unpark_due_pool_items, _park_domain)
+            if back:
+                logging.info("round_cap[%s]: вернулось из отстоя %s", _park_domain, back)
+        except Exception:
+            logging.warning("round_cap[%s]: возврат из отстоя не удался", _park_domain, exc_info=True)
     # Aufgabe (multi-format, own refill path).
     try:
         retired, added = await _rotate_aufgabe_domain(context, min_answerers=min_answerers)

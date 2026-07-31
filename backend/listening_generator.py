@@ -307,7 +307,9 @@ def prepare_listening_pool(*, target_ready: int = 7, max_attempts: int = 10) -> 
     from backend.database import count_listening_bank_entries
 
     stats = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0}
-    existing = count_listening_bank_entries()
+    # Считаем только отправляемые записи: запись без готового звука в отбор не попадёт,
+    # и если считать её запасом, банк будет выглядеть полным при пустом слоте.
+    existing = count_listening_bank_entries(ready_only=True)
     needed = max(0, target_ready - existing)
 
     if needed == 0:

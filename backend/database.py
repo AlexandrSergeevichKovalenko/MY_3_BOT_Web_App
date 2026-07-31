@@ -11622,6 +11622,18 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_listening_bank_available
                 ON bt_3_listening_bank (audio_status, retired, last_sent_at NULLS FIRST);
             """)
+            # Правило трёх кругов (см. _rotate_by_round_cap в bot_3): задание уходит из
+            # ротации, даже если толпа не набралась. resume_at — когда вернуть из отстоя,
+            # rounds_since — с какого момента считать круги после возврата (старые записи
+            # об отправках остаются в истории и не должны сразу снимать задание снова),
+            # retire_reason — чтобы в недельном отчёте было видно, за что сняли.
+            for _round_cap_bank in ("bt_3_listening_bank", "bt_3_anagram_cards"):
+                cursor.execute(
+                    f"ALTER TABLE {_round_cap_bank} "  # noqa: S608 (имена таблиц — литералы выше)
+                    "ADD COLUMN IF NOT EXISTS resume_at TIMESTAMPTZ, "
+                    "ADD COLUMN IF NOT EXISTS rounds_since TIMESTAMPTZ, "
+                    "ADD COLUMN IF NOT EXISTS retire_reason TEXT;"
+                )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_listening_dispatches (
                     id                  BIGSERIAL PRIMARY KEY,
@@ -47265,6 +47277,135 @@ def count_pool_non_retired(domain: str) -> int:
         return 0
 
 
+# ── Правило трёх кругов: снятие, не зависящее от размера толпы ────────────────
+# Обычная ротация ждёт, пока задание разберёт достаточно людей. Пока в боте один
+# активный человек, порог не берётся никогда — и он видит одно и то же задание
+# снова и снова (на проде 30.07.2026 записи аудирования отработали по 12 кругов
+# при одном отвечающем). Круг = ДЕНЬ, в который задание уходило в эфир: считать
+# по числу отправок нельзя, потому что капельная выдача пишет по строке на
+# каждого получателя, и трое человек в один день сожгли бы лимит за сутки.
+
+def pool_item_rounds(domain: str, *, min_rounds: int) -> dict[str, int]:
+    """{item_id: кругов в эфире} для активных заданий, отработавших свой лимит.
+
+    Круги считаются с `rounds_since` — момента возврата из отстоя, иначе старая
+    история отправок сняла бы вернувшееся задание в первую же ночь."""
+    spec = _MASTERY_POOL_SPECS.get(domain)
+    if not spec:
+        return {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT d.{spec['item_col']}, COUNT(DISTINCT d.slot_date) AS rounds
+                    FROM {spec['disp']} d
+                    JOIN {spec['bank']} b ON b.{spec['id_col']} = d.{spec['item_col']}
+                    WHERE b.retired = FALSE
+                      AND (b.rounds_since IS NULL OR d.sent_at >= b.rounds_since)
+                    GROUP BY d.{spec['item_col']}
+                    HAVING COUNT(DISTINCT d.slot_date) >= %s
+                    """,  # noqa: S608 (identifiers come from the whitelist above)
+                    (int(min_rounds),),
+                )
+                return {str(r[0]): int(r[1]) for r in (cur.fetchall() or [])}
+    except Exception:
+        logging.warning("pool_item_rounds failed domain=%s", domain, exc_info=True)
+        return {}
+
+
+def pool_item_pass_ratio(domain: str, ids: list[str]) -> dict[str, float]:
+    """{item_id: доля справившихся} по тем, кто вообще отвечал. Заданий без единого
+    ответа в результате нет — вызывающий трактует их отдельно."""
+    spec = _MASTERY_POOL_SPECS.get(domain)
+    if not spec or not ids:
+        return {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT d.{spec['item_col']},
+                           COUNT(DISTINCT a.user_id) FILTER (WHERE a.is_correct)::float
+                           / NULLIF(COUNT(DISTINCT a.user_id), 0)
+                    FROM {spec['ans']} a
+                    JOIN {spec['disp']} d ON d.id = a.dispatch_id
+                    WHERE d.{spec['item_col']} = ANY(%s)
+                    GROUP BY d.{spec['item_col']}
+                    """,  # noqa: S608 (identifiers come from the whitelist above)
+                    (list(ids),),
+                )
+                return {str(r[0]): float(r[1] or 0.0) for r in (cur.fetchall() or [])}
+    except Exception:
+        logging.warning("pool_item_pass_ratio failed domain=%s", domain, exc_info=True)
+        return {}
+
+
+def retire_pool_items_with_reason(domain: str, ids: list[str], reason: str) -> int:
+    """Снять насовсем — задание разобрали, возвращать незачем."""
+    spec = _MASTERY_POOL_SPECS.get(domain)
+    if not spec or not ids:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE {spec['bank']} SET retired = TRUE, retire_reason = %s, resume_at = NULL "
+                    f"WHERE {spec['id_col']} = ANY(%s) AND retired = FALSE",  # noqa: S608
+                    (str(reason), list(ids)),
+                )
+                n = cur.rowcount
+            conn.commit()
+        return int(n or 0)
+    except Exception:
+        logging.warning("retire_pool_items_with_reason failed domain=%s", domain, exc_info=True)
+        return 0
+
+
+def park_pool_items(domain: str, ids: list[str], *, days: int) -> int:
+    """Отправить в отстой: задание уходит из ротации, но вернётся через `days` дней.
+    Место в банке освобождается сразу, поэтому генератор дольёт свежее."""
+    spec = _MASTERY_POOL_SPECS.get(domain)
+    if not spec or not ids:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE {spec['bank']} SET retired = TRUE, retire_reason = 'rounds_parked', "
+                    f"resume_at = NOW() + (%s || ' days')::INTERVAL "
+                    f"WHERE {spec['id_col']} = ANY(%s) AND retired = FALSE",  # noqa: S608
+                    (int(days), list(ids)),
+                )
+                n = cur.rowcount
+            conn.commit()
+        return int(n or 0)
+    except Exception:
+        logging.warning("park_pool_items failed domain=%s", domain, exc_info=True)
+        return 0
+
+
+def unpark_due_pool_items(domain: str) -> int:
+    """Вернуть в ротацию отстоявшееся, со сброшенным счётчиком кругов."""
+    spec = _MASTERY_POOL_SPECS.get(domain)
+    if not spec:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE {spec['bank']} SET retired = FALSE, retire_reason = NULL, "
+                    f"resume_at = NULL, rounds_since = NOW(), send_count = 0, last_sent_at = NULL "
+                    f"WHERE retired = TRUE AND resume_at IS NOT NULL AND resume_at <= NOW()",  # noqa: S608
+                )
+                n = cur.rowcount
+            conn.commit()
+        return int(n or 0)
+    except Exception:
+        logging.warning("unpark_due_pool_items failed domain=%s", domain, exc_info=True)
+        return 0
+
+
 _ROTATION_LOG_DONE = False
 
 
@@ -51057,15 +51198,19 @@ def upsert_listening_bank_entry(
         conn.commit()
 
 
-def count_listening_bank_entries(*, exclude_retired: bool = True) -> int:
+def count_listening_bank_entries(*, exclude_retired: bool = True, ready_only: bool = False) -> int:
+    """ready_only — считать только то, что реально можно отправить. Наполнение банка
+    обязано мерить именно это: запись без готового звука отбирается `pick_next_listening`
+    и не годится, а в счёте выглядит как запас — банк «полон», а слот уходит пустым."""
+    where = []
+    if exclude_retired:
+        where.append("retired = FALSE")
+    if ready_only:
+        where.append("audio_status = 'ready'")
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            if exclude_retired:
-                cursor.execute(
-                    "SELECT COUNT(*) FROM bt_3_listening_bank WHERE retired = FALSE"
-                )
-            else:
-                cursor.execute("SELECT COUNT(*) FROM bt_3_listening_bank")
+            cursor.execute(f"SELECT COUNT(*) FROM bt_3_listening_bank{clause}")  # noqa: S608
             return int((cursor.fetchone() or [0])[0])
 
 
