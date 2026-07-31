@@ -243,12 +243,20 @@ function CrosswordResult({ result }) {
         {allRight ? `🎉 Alle ${total} richtig!` : `🏁 ${correct} / ${total} richtig`}
       </div>
       <div className="ans-cw-list">
-        {rows.map((r) => (
-          <div className="ans-cw-row" key={`${r.number}-${r.direction}`}>
-            {r.is_correct ? '✅' : '❌'} {r.number}{arrowOf(r.direction)}: <b>{r.correct}</b>
-            {!r.is_correct && r.user_answer ? <span className="mine"> (du: {r.user_answer})</span> : null}
-          </div>
-        ))}
+        {rows.map((r) => {
+          // «_» стоит там, где клетка осталась пустой: показывать «du: SCH_ÜS_EL»
+          // бессмысленно — человек это слово просто не писал.
+          const skipped = !r.user_answer || r.user_answer.includes('_');
+          return (
+            <div className="ans-cw-row" key={`${r.number}-${r.direction}`}>
+              {r.is_correct ? '✅' : '❌'} {r.number}{arrowOf(r.direction)}: <b>{r.correct}</b>
+              {r.translation_ru ? <span className="ans-meaning"> · {r.translation_ru}</span> : null}
+              {!r.is_correct && (skipped
+                ? <span className="mine"> (не отвечено)</span>
+                : <span className="mine"> (du: {r.user_answer})</span>)}
+            </div>
+          );
+        })}
       </div>
       <SaveWrongWords items={result.saveable_words} originProcess="crossword_save" />
     </div>
@@ -1121,7 +1129,18 @@ export default function AnswerOverlay({ startParam }) {
         {metaLoading || !meta || !meta.grid ? (
           <><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></>
         ) : (
-          <CrosswordGrid task={meta} onSubmit={(a) => submit(a)} submitting={submitting} />
+          <CrosswordGrid
+            task={meta}
+            onSubmit={(a) => submit(a)}
+            onHint={async (row, col) => {
+              try {
+                return await api('/api/answer/crossword/hint', { id: parsed?.id, row, col });
+              } catch (e) {
+                return { error: e?.message || 'Подсказка не открылась, попробуй ещё раз' };
+              }
+            }}
+            submitting={submitting}
+          />
         )}
         {error ? <p className="ans-error">{error}</p> : null}
       </div></div>

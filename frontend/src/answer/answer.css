@@ -551,6 +551,7 @@ html[data-scheme="light"] .ag-diff-cell.bad { color: #dc2626; background: rgba(2
    клавиатуры и кнопки. overflow: hidden здесь принципиален: без него блок рос бы
    под содержимое и расчёт размера клетки зациклился бы сам на себе. */
 .cw-grid-wrap {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
@@ -663,6 +664,117 @@ html[data-scheme="light"] .ag-diff-cell.bad { color: #dc2626; background: rgba(2
   flex: 0 0 auto;
   min-height: clamp(2.625rem, 6.6vh, 3.5rem);
   font-size: clamp(0.875rem, 2vh, 1.0rem);
+}
+
+/* ── Подсказка: одна буква на слово ────────────────────────────────────────────
+   Кнопка живёт в правом верхнем углу карточки: на виду, но не спорит с сеткой.
+   Цифра рядом — сколько слов ещё можно подсветить. */
+.ans-card--cw { position: relative; }
+.cw-hint-btn {
+  position: absolute;
+  top: clamp(0.5rem, 1.4vh, 1rem);
+  right: clamp(0.5rem, 2vw, 1rem);
+  z-index: 5;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0.3125rem 0.5625rem;
+  font-family: inherit; font-size: 0.8125rem; font-weight: 800;
+  color: var(--dmps-warning, #F5C518);
+  background: rgba(245, 197, 24, 0.12);
+  border: 1px solid rgba(245, 197, 24, 0.42);
+  border-radius: var(--dmps-radius-chip, 999px);
+  cursor: pointer;
+  transition: transform 0.1s ease, filter 0.12s ease;
+}
+.cw-hint-btn:active { transform: scale(0.94); }
+.cw-hint-btn:disabled { opacity: 0.4; cursor: default; }
+.cw-hint-icon { font-size: 0.9375rem; line-height: 1; }
+.cw-hint-count { min-width: 0.75rem; text-align: center; }
+
+/* Открытая подсказкой буква остаётся янтарной — видно, что её подарили. */
+.cw-cell.hinted {
+  background: rgba(245, 197, 24, 0.16);
+  border-color: rgba(245, 197, 24, 0.55);
+  color: var(--dmps-warning, #F5C518);
+}
+html[data-scheme="light"] .cw-cell.hinted { background: #fdf3d0; border-color: #e0b400; color: #8a6b00; }
+
+/* Плашка «как играть» — первые три открытия, потом исчезает навсегда. */
+.cw-intro {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 4;
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  font-size: clamp(0.6875rem, 1.7vh, 0.8125rem); font-weight: 600; line-height: 1.35;
+  color: var(--dmps-text-secondary, #CBD5E1);
+  background: rgba(245, 197, 24, 0.10);
+  border: 1px solid rgba(245, 197, 24, 0.30);
+  border-radius: 0.875rem;
+  cursor: pointer;
+  animation: cw-fade 0.25s ease;
+}
+.cw-intro-icon { flex: 0 0 auto; }
+html[data-scheme="light"] .cw-intro { background: #fdf6e0; border-color: #ecd493; color: #5c4708; }
+
+/* Короткая реплика в ответ на действие («подсказка уже открыта»). */
+.cw-note {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 4;
+  padding: 0.375rem 0.625rem;
+  text-align: center;
+  font-size: clamp(0.6875rem, 1.7vh, 0.8125rem); font-weight: 600;
+  color: var(--dmps-text-secondary, #CBD5E1);
+  background: var(--dmps-card-alt, #0B1220);
+  border: 1px solid var(--dmps-border, #334155);
+  border-radius: 0.75rem;
+  animation: cw-fade 0.2s ease;
+}
+
+@keyframes cw-fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* ── «Закончить сейчас?» ───────────────────────────────────────────────────────
+   position: fixed, а не absolute: карточка обрезает всё, что выходит за её края
+   (overflow: hidden), и плашка внутри неё оказалась бы подрезанной. */
+.cw-sheet-backdrop {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  padding: 1.25rem;
+  background: rgba(8, 12, 20, 0.62);
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+  animation: cw-fade 0.16s ease;
+}
+.cw-sheet {
+  width: 100%; max-width: 20rem;
+  padding: 1.25rem 1.25rem 1rem;
+  text-align: center;
+  background: var(--dmps-card, #1E293B);
+  border: 1px solid var(--dmps-border, #334155);
+  border-radius: var(--dmps-radius-screen, 1.75rem);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+}
+html[data-scheme="light"] .cw-sheet { background: #ffffff; }
+.cw-sheet-icon { font-size: 2rem; line-height: 1; }
+.cw-sheet-title {
+  margin-top: 0.5rem;
+  font-size: 1.125rem; font-weight: 800;
+  color: var(--dmps-text-title, #E2E8F0);
+}
+.cw-sheet-text {
+  margin: 0.5rem 0 1rem;
+  font-size: 0.875rem; font-weight: 500; line-height: 1.45;
+  color: var(--dmps-text-muted, #94A3B8);
+}
+.cw-sheet-main {
+  width: 100%; min-height: 3rem;
+  font-family: inherit; font-size: 1rem; font-weight: 800;
+  color: #1a2436;
+  background: var(--dmps-warning, #F5C518);
+  border: none; border-radius: var(--dmps-radius-button, 1rem);
+  cursor: pointer;
+}
+.cw-sheet-main:active { transform: scale(0.98); }
+.cw-sheet-ghost {
+  width: 100%; min-height: 2.75rem; margin-top: 0.375rem;
+  font-family: inherit; font-size: 0.9375rem; font-weight: 700;
+  color: var(--dmps-text-secondary, #CBD5E1);
+  background: transparent; border: none; cursor: pointer;
 }
 
 /* ── Ranking / trophy card ─────────────────────────────────────────────────── */

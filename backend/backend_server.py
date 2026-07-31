@@ -28613,6 +28613,39 @@ def get_answer_task():
     return jsonify(payload_out)
 
 
+@app.route("/api/answer/crossword/hint", methods=["POST"])
+def crossword_hint():
+    """Открыть одну букву в загаданном слове кроссворда.
+
+    Ответы никогда не уезжают на клиент, поэтому и подсказка выдаётся сервером —
+    он же держит лимит «одна буква на слово»."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        dispatch_id = int(payload.get("id"))
+        row = int(payload.get("row"))
+        col = int(payload.get("col"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Не поняли, какую клетку открыть"}), 400
+
+    from backend.answer_eval import reveal_crossword_hint
+    try:
+        result = reveal_crossword_hint(
+            dispatch_id=dispatch_id, user_id=user_id, row=row, col=col,
+        )
+    except Exception:
+        logging.exception("crossword hint failed id=%s user=%s", dispatch_id, user_id)
+        return jsonify({"error": "Подсказка не открылась, попробуй ещё раз"}), 500
+    if result is None:
+        return jsonify({"error": "Задание не найдено"}), 404
+    if result.get("error"):
+        return jsonify(result), 409
+    return jsonify(result)
+
+
 @app.route("/api/answer/submit", methods=["POST"])
 def submit_answer():
     """Evaluate a free-text answer in place. user_id comes only from initData;

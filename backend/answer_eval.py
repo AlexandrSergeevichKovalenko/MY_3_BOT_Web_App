@@ -367,11 +367,31 @@ def load_crossword_task(*, dispatch_id: int, user_id: int) -> dict | None:
     ]
 
     existing = get_crossword_answers(dispatch_id=int(dispatch_id), user_id=int(user_id))
+
+    # Буквы, открытые подсказкой раньше: без них перезагрузка страницы стирала бы
+    # подсказку, а потратить её второй раз на то же слово уже нельзя.
+    from backend.database import get_crossword_hints
+    letter_at = {}
+    for w in words_json:
+        if not w.get("hidden"):
+            continue
+        dr, dc = (0, 1) if w.get("direction") == "across" else (1, 0)
+        r0, c0 = int(w["row"]), int(w["col"])
+        for i, ch in enumerate(str(w.get("word") or "")):
+            letter_at[(r0 + dr * i, c0 + dc * i)] = ch
+    used_hints = []
+    for h in get_crossword_hints(dispatch_id=int(dispatch_id), user_id=int(user_id)):
+        pos = (int(h["cell_row"]), int(h["cell_col"]))
+        if pos in letter_at:
+            used_hints.append({"row": pos[0], "col": pos[1], "letter": letter_at[pos],
+                               "word_number": int(h["word_number"])})
+
     meta = {
         "kind": "crossword",
         "topic": str(dispatch.get("topic") or ""),
         "rows": rows, "cols": cols, "grid": grid,
         "words": words,
+        "hints": used_hints,
         "already_answered": bool(existing),
     }
     if existing:
@@ -384,6 +404,69 @@ def load_crossword_task(*, dispatch_id: int, user_id: int) -> dict | None:
         ]
         meta["result"] = _crossword_result_from_stored(hidden_for_result, existing)
     return meta
+
+
+def reveal_crossword_hint(*, dispatch_id: int, user_id: int, row: int, col: int) -> dict | None:
+    """Открыть ОДНУ букву в загаданном слове — по одной на слово за весь кроссворд.
+
+    Ответы живут только на сервере, поэтому и подсказка выдаётся здесь: клиент
+    присылает клетку, получает букву. Лимит тоже серверный — иначе слово можно было
+    бы вскрыть целиком, перезагрузив страницу.
+
+    Возвращает {row, col, letter, word_number, used, total} либо
+    {error: <человеческий текст>}.
+    """
+    from backend.database import (
+        get_crossword_answers, get_crossword_hints, record_crossword_hint,
+    )
+
+    hidden = _load_crossword_hidden(dispatch_id)
+    if not hidden:
+        return None
+    if get_crossword_answers(dispatch_id=int(dispatch_id), user_id=int(user_id)):
+        return {"error": "Этот кроссворд уже решён."}
+
+    row, col = int(row), int(col)
+
+    def _cells(word: dict) -> list[tuple[int, int]]:
+        dr, dc = (0, 1) if word.get("direction") == "across" else (1, 0)
+        r0, c0 = int(word["row"]), int(word["col"])
+        return [(r0 + dr * i, c0 + dc * i) for i in range(len(str(word.get("word") or "")))]
+
+    # _load_crossword_hidden отдаёт слова без координат — берём их из банка.
+    from backend.database import get_crossword_dispatch_by_id
+    dispatch = get_crossword_dispatch_by_id(int(dispatch_id))
+    words_json = list((dispatch or {}).get("words_json") or [])
+    placed = {int(w.get("number")): w for w in words_json if w.get("hidden") and w.get("number") is not None}
+
+    target = None
+    for number, word in placed.items():
+        cells = _cells(word)
+        if (row, col) in cells:
+            target = (number, word, cells)
+            break
+    if not target:
+        return {"error": "Здесь подсказку открыть нельзя — выбери пустую клетку в загаданном слове."}
+
+    number, word, cells = target
+    used = {int(h["word_number"]) for h in get_crossword_hints(dispatch_id=int(dispatch_id), user_id=int(user_id))}
+    if number in used:
+        return {"error": "В этом слове подсказка уже открыта — попробуй другое слово."}
+
+    from backend.crossword_renderer import _compute_revealed_cells
+    revealed = _compute_revealed_cells(words_json)
+    if (row, col) in revealed:
+        return {"error": "Эта буква и так открыта — выбери пустую клетку."}
+
+    letter = str(word.get("word") or "")[cells.index((row, col))]
+    if not record_crossword_hint(dispatch_id=int(dispatch_id), user_id=int(user_id),
+                                 word_number=number, cell_row=row, cell_col=col):
+        return {"error": "В этом слове подсказка уже открыта — попробуй другое слово."}
+
+    return {
+        "row": row, "col": col, "letter": letter, "word_number": number,
+        "used": len(used) + 1, "total": len(placed),
+    }
 
 
 def _summarize_crossword(results: list[dict], *, already_answered: bool) -> dict:

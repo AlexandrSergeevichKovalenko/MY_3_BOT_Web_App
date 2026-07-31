@@ -11517,6 +11517,20 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_crossword_answers_user_time
                 ON bt_3_crossword_answers (user_id, answered_at DESC);
             """)
+            # Открытые подсказкой буквы. Лимит — одна буква на каждое загаданное
+            # слово, и держится он здесь: в браузере его можно было бы обойти
+            # перезагрузкой страницы и вскрыть слово целиком.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_crossword_hints (
+                    dispatch_id         BIGINT NOT NULL REFERENCES bt_3_crossword_dispatches(id),
+                    user_id             BIGINT NOT NULL,
+                    word_number         INTEGER NOT NULL,
+                    cell_row            INTEGER NOT NULL,
+                    cell_col            INTEGER NOT NULL,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (dispatch_id, user_id, word_number)
+                );
+            """)
             # ── end crossword tables ──────────────────────────────────────
 
             # ── Anagram (assemble-the-word) Mini-App game tables ──────────
@@ -46432,6 +46446,47 @@ def get_crossword_answers(*, dispatch_id: int, user_id: int) -> list[dict]:
             rows = cursor.fetchall()
     cols = ["word_number", "user_answer", "is_correct", "answered_at"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def get_crossword_hints(*, dispatch_id: int, user_id: int) -> list[dict]:
+    """Буквы, которые человек уже открыл подсказкой в этом кроссворде."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word_number, cell_row, cell_col
+                FROM bt_3_crossword_hints
+                WHERE dispatch_id = %s AND user_id = %s
+                ORDER BY word_number
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            rows = cursor.fetchall() or []
+    return [dict(zip(["word_number", "cell_row", "cell_col"], r)) for r in rows]
+
+
+def record_crossword_hint(
+    *, dispatch_id: int, user_id: int, word_number: int, cell_row: int, cell_col: int,
+) -> bool:
+    """Запомнить открытую букву. False — на это слово подсказка уже потрачена.
+
+    Лимит держится вставкой с ON CONFLICT DO NOTHING: два одновременных запроса не
+    смогут открыть в одном слове две буквы."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_crossword_hints
+                    (dispatch_id, user_id, word_number, cell_row, cell_col)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id, word_number) DO NOTHING
+                """,
+                (int(dispatch_id), int(user_id), int(word_number),
+                 int(cell_row), int(cell_col)),
+            )
+            inserted = cursor.rowcount == 1
+        conn.commit()
+    return inserted
 
 
 # ─── Anagram (assemble-the-word) DB functions ─────────────────────────────────

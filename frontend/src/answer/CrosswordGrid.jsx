@@ -25,7 +25,33 @@ const k = (r, c) => `${r},${c}`;
 
 const CW_GAP = 2;  // keep in sync with .cw-grid gap in answer.css
 
-export default function CrosswordGrid({ task, onSubmit, submitting }) {
+// Плашка «как играть» показывается первые три раза — потом человек это уже знает,
+// и напоминание превращается в шум.
+function ruWords(n) {
+  const tail = n % 100;
+  if (tail >= 12 && tail <= 14) return 'слов';
+  const last = n % 10;
+  if (last === 1) return 'слово';
+  if (last >= 2 && last <= 4) return 'слова';
+  return 'слов';
+}
+
+const INTRO_KEY = 'cw_intro_seen';
+const INTRO_TIMES = 3;
+const INTRO_MS = 7000;
+
+function shouldShowIntro() {
+  try {
+    const seen = Number(window.localStorage.getItem(INTRO_KEY) || 0);
+    if (seen >= INTRO_TIMES) return false;
+    window.localStorage.setItem(INTRO_KEY, String(seen + 1));
+    return true;
+  } catch (_e) {
+    return true;   // приватный режим — лучше показать, чем промолчать
+  }
+}
+
+export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
   const grid = task.grid || [];
   const cols = task.cols || (grid[0] ? grid[0].length : 0);
   const rows = grid.length;
@@ -81,6 +107,38 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
   const [inputs, setInputs] = useState({});
   const [activeWord, setActiveWord] = useState(0);
   const [activeCell, setActiveCell] = useState(null);
+
+  // ── Подсказка: одна буква на каждое загаданное слово ────────────────────────
+  // Буквы ответов на клиент не приходят, поэтому букву открывает сервер — он же
+  // помнит, на какие слова подсказка уже потрачена (перезагрузка её не вернёт).
+  const [hintCells, setHintCells] = useState({});      // "r,c" → буква
+  const [hintWords, setHintWords] = useState(() => new Set());
+  const [hintBusy, setHintBusy] = useState(false);
+  const [note, setNote] = useState('');
+
+  useEffect(() => {
+    const known = task.hints || [];
+    if (!known.length) return;
+    setHintCells((prev) => {
+      const next = { ...prev };
+      known.forEach((h) => { next[k(h.row, h.col)] = h.letter; });
+      return next;
+    });
+    setHintWords(new Set(known.map((h) => h.word_number)));
+  }, [task]);
+
+  useEffect(() => {
+    if (!note) return undefined;
+    const t = setTimeout(() => setNote(''), 3200);
+    return () => clearTimeout(t);
+  }, [note]);
+
+  const [intro, setIntro] = useState(() => shouldShowIntro());
+  useEffect(() => {
+    if (!intro) return undefined;
+    const t = setTimeout(() => setIntro(false), INTRO_MS);
+    return () => clearTimeout(t);
+  }, [intro]);
 
   const cellAt = useCallback((r, c) => (grid[r] ? grid[r][c] : null), [grid]);
   const isEmpty = useCallback((r, c) => { const x = cellAt(r, c); return !!(x && x.e); }, [cellAt]);
@@ -150,15 +208,66 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
     }
   }, [activeCell, activeWord, inputs, words, isEmpty]);
 
-  const allFilled = emptyKeys.length > 0 && emptyKeys.every((key) => inputs[key]);
+  const hintsLeft = Math.max(0, words.length - hintWords.size);
+
+  const askHint = useCallback(async () => {
+    if (hintBusy || !onHint) return;
+    const word = words[activeWord];
+    if (!word) return;
+    if (hintWords.has(word.number)) {
+      setNote('В этом слове подсказка уже открыта — встань на другое слово');
+      return;
+    }
+    const spot = (word.cells || []).find(([r, c]) => isEmpty(r, c) && !inputs[k(r, c)] && !hintCells[k(r, c)])
+      || (word.cells || []).find(([r, c]) => isEmpty(r, c) && !hintCells[k(r, c)]);
+    if (!spot) {
+      setNote('В этом слове открывать нечего — все буквы уже на месте');
+      return;
+    }
+    tapHaptic();
+    setHintBusy(true);
+    try {
+      const res = await onHint(spot[0], spot[1]);
+      if (res && res.letter) {
+        setHintCells((prev) => ({ ...prev, [k(res.row, res.col)]: res.letter }));
+        setHintWords((prev) => new Set(prev).add(res.word_number));
+        setInputs((prev) => { const n = { ...prev }; delete n[k(res.row, res.col)]; return n; });
+        setActiveCell(advance(activeWord, [res.row, res.col]));
+      } else {
+        setNote((res && res.error) || 'Подсказка не открылась, попробуй ещё раз');
+      }
+    } finally {
+      setHintBusy(false);
+    }
+  }, [hintBusy, onHint, words, activeWord, hintWords, hintCells, inputs, isEmpty, advance]);
+
+  const emptyLeft = emptyKeys.filter((key) => !inputs[key] && !hintCells[key]).length;
+  const allFilled = emptyKeys.length > 0 && emptyLeft === 0;
+  // Человек думает словами, а не клетками: «осталось два слова» понятнее, чем
+  // «осталось девять пустых клеток».
+  const wordsLeft = words.filter((w) => (w.cells || [])
+    .some(([r, c]) => isEmpty(r, c) && !inputs[k(r, c)] && !hintCells[k(r, c)])).length;
 
   const submit = useCallback(() => {
+    // Незаполненная клетка уходит как «_», а не пустой строкой: сервер раскладывает
+    // ответ по словам через пробел, и от пустого слова весь разбор съехал бы на одну
+    // позицию — человек увидел бы чужие ответы напротив своих слов.
     const guesses = words.map((w) => (w.cells || []).map(([r, c]) => {
       const cell = cellAt(r, c);
-      return (cell && cell.l) ? cell.l : (inputs[k(r, c)] || '');
+      return (cell && cell.l) ? cell.l : (inputs[k(r, c)] || '_');
     }).join(''));
     onSubmit(guesses.join(' '));
   }, [words, cellAt, inputs, onSubmit]);
+
+  // «Prüfen» с пустыми клетками — это нормально: слово может быть незнакомым, и
+  // застревать на нём человек не обязан. Но спрашиваем, чтобы случайный тап не
+  // закрыл кроссворд раньше времени.
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const onCheck = useCallback(() => {
+    if (allFilled) { submit(); return; }
+    tapHaptic();
+    setConfirmOpen(true);
+  }, [allFilled, submit]);
 
   const activeKeySet = useMemo(() => {
     const s = new Set();
@@ -171,7 +280,33 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
 
   return (
     <>
+      {onHint ? (
+        <button
+          className="cw-hint-btn"
+          onClick={askHint}
+          disabled={hintBusy || submitting || hintsLeft === 0}
+          aria-label="Открыть одну букву"
+        >
+          <span className="cw-hint-icon">💡</span>
+          <span className="cw-hint-count">{hintsLeft}</span>
+        </button>
+      ) : null}
+
       <div className="cw-grid-wrap" ref={wrapRef}>
+        {/* Плашка и реплики висят ПОВЕРХ сетки, а не в потоке: иначе их появление
+            и исчезновение меняло бы свободную высоту, и сетка на семь секунд
+            уменьшалась бы, а потом прыгала обратно. */}
+        {intro ? (
+          <div className="cw-intro" onClick={() => setIntro(false)}>
+            <span className="cw-intro-icon">💡</span>
+            <span>
+              Не знаешь слово — открой одну букву кнопкой 💡.
+              А закончить можно в любой момент: нажми «Prüfen» и посмотри ответы.
+            </span>
+          </div>
+        ) : null}
+        {note ? <div className="cw-note">{note}</div> : null}
+
         <div
           className="cw-grid"
           style={{
@@ -183,13 +318,14 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
           {grid.map((row, r) => row.map((c0, c) => {
             if (!c0) return <div key={k(r, c)} className="cw-cell blocked" />;
             const key = k(r, c);
-            const letter = c0.l || inputs[key] || '';
+            const hinted = hintCells[key];
+            const letter = c0.l || hinted || inputs[key] || '';
             const active = activeCell && activeCell[0] === r && activeCell[1] === c;
             const inWord = activeKeySet.has(key);
             return (
               <div
                 key={key}
-                className={`cw-cell${c0.l ? ' given' : ' empty'}${inWord ? ' inword' : ''}${active ? ' active' : ''}`}
+                className={`cw-cell${c0.l ? ' given' : ' empty'}${hinted ? ' hinted' : ''}${inWord ? ' inword' : ''}${active ? ' active' : ''}`}
                 onClick={() => selectCell(r, c)}
               >
                 {c0.n ? <span className="cw-num">{c0.n}</span> : null}
@@ -218,9 +354,28 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
         ))}
       </div>
 
-      <button className="ans-btn" disabled={!allFilled || submitting} onClick={submit}>
+      <button className="ans-btn" disabled={submitting} onClick={onCheck}>
         {submitting ? 'Prüfe …' : 'Prüfen ✓'}
       </button>
+
+      {confirmOpen ? (
+        <div className="cw-sheet-backdrop" onClick={() => setConfirmOpen(false)}>
+          <div className="cw-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="cw-sheet-icon">🦊</div>
+            <div className="cw-sheet-title">Закончить сейчас?</div>
+            <p className="cw-sheet-text">
+              {wordsLeft === 1 ? 'Одно слово ещё не разгадано.' : `Не разгаданы ещё ${wordsLeft} ${ruWords(wordsLeft)}.`}
+              {' '}Покажем правильные слова с переводом — их можно сразу сохранить в словарь.
+            </p>
+            <button className="cw-sheet-main" onClick={() => { setConfirmOpen(false); submit(); }}>
+              Показать ответы
+            </button>
+            <button className="cw-sheet-ghost" onClick={() => setConfirmOpen(false)}>
+              Продолжу решать
+            </button>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
