@@ -21,7 +21,7 @@ class _Judged(Exception):
 
 
 class RetiredWordsStayOutTests(unittest.TestCase):
-    def _fill(self, generated, retired, *, blacklist=(), judge=None, verify=None):
+    def _fill(self, generated, retired, *, blacklist=(), judge=None, verify=None, elsewhere=()):
         async def _fake_gen(**kwargs):
             return list(generated)
 
@@ -52,6 +52,8 @@ class RetiredWordsStayOutTests(unittest.TestCase):
                 patch.object(db, "ensure_article_sprint_schema", lambda: None), \
                 patch.object(db, "count_article_sprint_nouns", lambda *a, **k: 10), \
                 patch.object(db, "list_article_sprint_words", lambda t: ["Regen"]), \
+                patch.object(db, "list_article_sprint_words_all_themes",
+                             lambda: {"regen"} | {str(w).lower() for w in elsewhere}), \
                 patch.object(db, "list_article_sprint_meanings", lambda t: ["дождь"]), \
                 patch.object(db, "list_retired_article_words", lambda: set(retired)), \
                 patch.object(db, "list_article_word_blacklist", lambda: set(blacklist)), \
@@ -89,6 +91,49 @@ class RetiredWordsStayOutTests(unittest.TestCase):
             retired={"sanddorn"},
         )
         self.assertEqual(inserted, [])
+
+
+class OneWordLivesInOneThemeTests(unittest.TestCase):
+    """Слово стоит в одной теме. Копия в соседней — это тот же вопрос по второму разу.
+
+    Проверка «уже есть» смотрела только свою тему, поэтому «das Sweatshirt» из «Одежды»
+    легло ещё и в «Уборку», в подтему «стирка и бельё». К 31.07 так размножились
+    1 309 слов — 2 133 лишние карточки, треть банка."""
+
+    _fill = RetiredWordsStayOutTests._fill
+
+    def test_a_word_from_another_theme_is_not_taken(self):
+        stats, inserted, _ = self._fill(
+            generated=[{"word": "Sweatshirt", "article": "das", "meaning_ru": "свитшот"}],
+            retired=set(), elsewhere={"sweatshirt"},
+        )
+        self.assertEqual(inserted, [], "слово уже стоит в другой теме — второй карточки не заводим")
+        self.assertEqual(stats["rejected"], 1)
+
+    def test_the_check_runs_before_the_paid_second_opinion(self):
+        # Sweatshirt по частотности не проходит (26 116) → без этой проверки ушёл бы
+        # к модели за деньги. Заглушка судьи бросает исключение: тест зелёный — запроса не было.
+        stats, _, _ = self._fill(
+            generated=[{"word": "Sweatshirt", "article": "das", "meaning_ru": "свитшот"}],
+            retired=set(), elsewhere={"sweatshirt"},
+        )
+        self.assertEqual(stats["rejected"], 1)
+
+    def test_a_foreign_theme_hit_is_not_remembered_as_garbage(self):
+        # Слово хорошее, просто его тема — другая. В стоп-лист такое писать нельзя:
+        # иначе, освободившись в своей теме, оно уже никогда бы не вернулось.
+        _, _, recorded = self._fill(
+            generated=[{"word": "Sweatshirt", "article": "das", "meaning_ru": "свитшот"}],
+            retired=set(), elsewhere={"sweatshirt"},
+        )
+        self.assertEqual(recorded, [])
+
+    def test_a_new_word_still_gets_in(self):
+        _, inserted, _ = self._fill(
+            generated=[{"word": "Regenbogen", "article": "der", "meaning_ru": "радуга"}],
+            retired=set(), elsewhere={"sweatshirt"},
+        )
+        self.assertEqual([n["word"] for n in inserted], ["Regenbogen"])
 
 
 class RejectionsAreRememberedTests(unittest.TestCase):

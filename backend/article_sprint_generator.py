@@ -284,6 +284,7 @@ def _ask_count(remaining: int, ceiling: int) -> int:
 # Причины из фильтра — внутренние формулировки; наружу идёт человеческий ярлык.
 # Правило простое: читатель отчёта должен понять, ЧТО не так со словом, не заглядывая в код.
 _REASON_LABELS = (
+    ("уже есть в другой теме", "это слово уже стоит в другой теме"),
     ("уже есть в теме", "это слово в теме уже есть"),
     ("такой смысл в теме уже есть", "такой же смысл в теме уже есть"),
     ("нужно второе мнение", "редкое, не для повседневной речи"),
@@ -313,6 +314,7 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
     from backend.database import (
         ensure_article_sprint_schema, count_article_sprint_nouns,
         insert_article_sprint_nouns, list_article_sprint_words,
+        list_article_sprint_words_all_themes,
         list_article_sprint_meanings, list_retired_article_words,
         list_article_word_blacklist, blacklist_article_words,
         list_retired_article_words_for_prompt,
@@ -334,6 +336,11 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 "final_verified": have, "target": target, "note": "already at target"}
 
     existing = {w.lower() for w in list_article_sprint_words(theme_key)}
+    # Слово живёт в ОДНОЙ теме. Раньше проверка «уже есть» смотрела только свою тему,
+    # и слово из «Одежды» ложилось ещё и в «Уборку»: 1 309 слов оказались размножены по
+    # темам, 2 133 карточки лишние. Держим отдельно от existing: чужая тема — не повод
+    # считать слово производным своего корня.
+    elsewhere = list_article_sprint_words_all_themes() - existing
     # Уже выброшенное не берём заново — ни в эту тему, ни в соседнюю: снятые с показа
     # слова плюс стоп-лист прошлых отказов. Держим отдельно от existing: в счёт
     # «производных одного корня» они идти не должны, иначе выброшенный хлам закрывал бы
@@ -390,6 +397,11 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
             w = str(n.get("word") or "").strip()
             art = str(n.get("article") or "").strip().lower()
             if not w or art not in ("der", "die", "das") or w.lower() in existing:
+                continue
+            if w.lower() in elsewhere:
+                # В стоп-лист НЕ пишем: слово хорошее, просто его тема — другая.
+                _reject("уже есть в другой теме")
+                logging.info("артикли: %s мимо — уже стоит в другой теме", w)
                 continue
             if w.lower() in banned:
                 # Слово уже снимали. Отсекаем ДО фильтра, чтобы не платить за «второе

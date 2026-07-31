@@ -49044,6 +49044,20 @@ def list_article_sprint_words(theme_key: str) -> list[str]:
     return [str(r[0]) for r in rows if r and r[0]]
 
 
+def list_article_sprint_words_all_themes() -> set[str]:
+    """Все слова, стоящие в игре, по ВСЕМ темам — в нижнем регистре.
+
+    Проверка «уже есть» при наполнении смотрела только свою тему, и слово, давно живущее
+    в «Одежде», спокойно ложилось ещё и в «Уборку»: на 31.07 таких слов набралось 1 309,
+    а лишних карточек 2 133. Человеку это выглядит как один и тот же вопрос по кругу, да
+    ещё и не в своей теме («das Sweatshirt» в подтеме «стирка и бельё»)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT word FROM bt_3_article_sprint_nouns WHERE NOT retired;")
+            rows = cursor.fetchall() or []
+    return {str(r[0]).strip().lower() for r in rows if r and r[0]}
+
+
 def _retired_review_rows(max_rank: int) -> list[dict]:
     """Снятые слова, которые ещё не разбирали, отсортированные «сначала самое ходовое».
 

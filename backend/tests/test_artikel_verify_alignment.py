@@ -41,6 +41,7 @@ class VerifyAlignmentTests(unittest.TestCase):
                 patch.object(db, "ensure_article_sprint_schema", lambda: None), \
                 patch.object(db, "count_article_sprint_nouns", lambda *a, **k: 10), \
                 patch.object(db, "list_article_sprint_words", lambda t: []), \
+                patch.object(db, "list_article_sprint_words_all_themes", set), \
                 patch.object(db, "list_article_sprint_meanings", lambda t: []), \
                 patch.object(db, "list_retired_article_words", lambda: set()), \
                 patch.object(db, "list_article_word_blacklist", lambda: set()), \
