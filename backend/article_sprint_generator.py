@@ -588,40 +588,52 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
     }
 
 
+_ARTICLE_PREFIX = ("der ", "die ", "das ")
+
+
+def _strip_article(raw: str) -> tuple[str, str]:
+    """«Der Kumpel» → («Kumpel», «der»). Владелец пишет слово так, как привык.
+
+    Без этого артикль приклеивался к слову: в разборе выходило «der Der Kumpel», а
+    справочник, понятно, такого слова не знал."""
+    text = str(raw or "").strip()
+    low = text.lower()
+    for pref in _ARTICLE_PREFIX:
+        if low.startswith(pref):
+            return text[len(pref):].strip(), pref.strip()
+    return text, ""
+
+
 def _check_manual_words(theme_key: str, entries: list[dict]):
-    """Проверить слова, ничего не записывая. → ([вердикт по каждому], тема).
+    """Полная рецензия на каждое присланное слово, без единой записи в банк.
 
-    Проверка та же, что у автозаливки, и это принципиально: слово, пришедшее от владельца,
-    не привилегировано. Неверный артикль отсюда научит человека неправде ровно так же, как
-    неверный артикль из генератора.
+    По каждому слову собираем ВСЁ, а не первую причину отказа: существительное ли оно,
+    какой артикль и откуда, стоит ли уже в банке и в какой теме, ходовое ли по частоте —
+    и только потом рекомендацию. Владелец не должен искать слово глазами по списку из
+    полутора тысяч, чтобы понять, дубль это или нет.
 
-    По каждому слову возвращается ok и человеческая причина отказа — раньше наружу выходили
-    только числа («добавлено 1, не взял 2»), и владелец не мог ни проверить решение, ни
-    возразить."""
+    → ([рецензия по каждому], тема)
+    """
     from backend.article_sprint_themes import article_sprint_themes
     from backend.openai_manager import run_article_verify, run_article_translate
-    from backend.database import (
-        ensure_article_sprint_schema, list_article_sprint_words,
-        list_article_sprint_words_all_themes,
-    )
+    from backend.article_word_gate import word_rank, judge_everyday_words, DEFAULT_MAX_RANK
+    from backend.database import ensure_article_sprint_schema, where_article_words_live
 
     theme = next((t for t in article_sprint_themes() if t["key"] == theme_key), None)
     if not theme:
         return [], None
     ensure_article_sprint_schema()
 
-    existing = {w.lower() for w in list_article_sprint_words(theme_key)}
-    elsewhere = list_article_sprint_words_all_themes() - existing
     cleaned: list[dict] = []
     seen: set[str] = set()
     for e in entries or []:
-        w = str((e or {}).get("word") or "").strip()
-        if not w or w.lower() in seen:
+        word, hint = _strip_article(str((e or {}).get("word") or ""))
+        if not word or word.lower() in seen:
             continue
-        seen.add(w.lower())
+        seen.add(word.lower())
         cleaned.append({
-            "word": w,
-            "article": str((e or {}).get("article") or "").strip().lower(),
+            "word": word,
+            "article": str((e or {}).get("article") or hint).strip().lower(),
             "meaning_ru": str((e or {}).get("meaning_ru") or "").strip(),
         })
     if not cleaned:
@@ -638,63 +650,84 @@ def _check_manual_words(theme_key: str, entries: list[dict]):
         trmap = _run(run_article_translate(words=need_tr)) if need_tr else {}
     except Exception:
         trmap = {}
-
-    # Ответ ищем ПО СЛОВУ, позиция — запасной путь и только когда длина сошлась. Иначе
-    # вердикт про одно слово приедет на другое.
+    # Ответ ищем ПО СЛОВУ, позиция — запасной путь и только когда длина сошлась.
     verdicts_by_word = {}
     for v in verdicts or []:
         if isinstance(v, dict) and str(v.get("word") or "").strip():
             verdicts_by_word[str(v["word"]).strip().lower()] = v
 
+    known = where_article_words_live([c["word"] for c in cleaned])
+
+    # Второе мнение спрашиваем ОДНИМ запросом и только про то, что не прошло по частоте.
+    rare = [c["word"] for c in cleaned
+            if (word_rank(c["word"]) or 10 ** 9) > DEFAULT_MAX_RANK]
+    everyday: dict[str, bool] = {}
+    if rare:
+        try:
+            everyday = judge_everyday_words(rare)
+        except Exception:
+            logging.warning("manual words: второе мнение недоступно", exc_info=True)
+
     out: list[dict] = []
     for i, c in enumerate(cleaned):
         w = c["word"]
-        row = {"word": w, "article": c["article"],
-               "meaning_ru": c["meaning_ru"] or trmap.get(w.lower(), ""),
-               "ok": False, "reason": "", "source": "manual", "verified": True}
-        if w.lower() in existing:
-            row["reason"] = "уже есть в этой теме"
-            out.append(row)
-            continue
-        if w.lower() in elsewhere:
-            row["reason"] = "уже стоит в другой теме"
-            out.append(row)
-            continue
-        if is_ambiguous_noun(w):
-            row["reason"] = "у слова два рода — артикль зависит от смысла"
-            out.append(row)
-            continue
         v = verdicts_by_word.get(w.lower()) if verdicts_by_word else (
             verdicts[i] if len(verdicts or []) == len(cleaned) else None)
-        art = c["article"]
-        if isinstance(v, dict):
-            if not v.get("ok"):
-                row["reason"] = "не существительное"
-                out.append(row)
-                continue
-            art = str(v.get("article") or art).strip().lower()
-        # СПРАВОЧНИК ГЛАВНЕЕ МОДЕЛИ: Wiktionary (кэш → живой запрос) → правило композита.
+        row = {
+            "word": w,
+            "meaning_ru": c["meaning_ru"] or trmap.get(w.lower(), ""),
+            "article": "", "article_source": "",
+            "is_noun": True, "where": None, "rank": word_rank(w),
+            "ok": False, "reason": "", "verified": True, "source": "manual",
+        }
+
+        # 1-2. Существительное ли и какой артикль. Решает СПРАВОЧНИК, а не модель:
+        # у проверки ok=false означает и «не существительное», и «род зависит от смысла»,
+        # и «артикль в запросе неверный». Мы отправляем ей der по умолчанию, поэтому die
+        # Girlande и das Feuerwerk возвращались как ok=false и объявлялись глаголами.
+        art, is_noun, verified, src_label = "", True, True, ""
         try:
             from backend.article_authority import authoritative_article
             verdict, src = authoritative_article(w, allow_network=True)
-            if verdict:
-                if verdict != art:
-                    logging.warning(
-                        "article manual: %s — заявлено «%s», справочник «%s» (%s), берём справочник",
-                        w, art, verdict, src)
-                art, row["source"] = verdict, src
-            else:
-                # Род не подтверждён. Слово взять можно, но в игру оно пойдёт только после
-                # ревью артикля — показывать человеку недоказанный род нельзя.
-                row["source"], row["verified"] = "manual-unverified", False
-                row["reason"] = "род не подтверждён справочником"
         except Exception:
             logging.warning("article manual: справочник недоступен для %s", w, exc_info=True)
-        if art not in ("der", "die", "das"):
+            verdict, src = None, "справочник недоступен"
+        if verdict:
+            art, src_label, row["source"] = verdict, src, src
+        elif "родовое" in str(src):
+            # Слово есть, но род решает смысл. Это существительное, просто спорное.
+            src_label = "два рода — зависит от смысла"
+            row["reason"] = "у слова два рода — артикль зависит от смысла"
+        else:
+            # Справочник молчит. Вот здесь мнение модели — единственное, что у нас есть.
+            if isinstance(v, dict) and v.get("ok"):
+                art = str(v.get("article") or c["article"] or "").strip().lower()
+                verified, src_label, row["source"] = False, "справочник молчит", "manual-unverified"
+            else:
+                is_noun = False
+        row["is_noun"] = is_noun
+        row["verified"] = verified
+        row["article"] = art if (is_noun and art in ("der", "die", "das")) else ""
+        row["article_source"] = src_label
+
+        # 3. Есть ли уже в банке — и где именно.
+        row["where"] = known.get(w.lower())
+
+        # 4. Рекомендация. Порядок причин — от непреодолимой к спорной.
+        if not row["is_noun"]:
+            row["reason"] = "не существительное — артикля у него нет"
+        elif row["where"] and not row["where"]["retired"]:
+            same = row["where"]["theme_key"] == theme_key
+            row["reason"] = ("уже есть в этой теме" if same
+                             else f"уже стоит в теме «{row['where']['label']}»")
+        elif not row["article"]:
             row["reason"] = row["reason"] or "артикль определить не удалось"
-            out.append(row)
-            continue
-        row["article"] = art
+        elif not row["verified"]:
+            row["reason"] = "род не подтверждён справочником — пойдёт на ревью артикля"
+        elif w in rare and everyday and not everyday.get(w, False):
+            row["reason"] = "проверка считает, что в быту такое слово не встречается"
+        elif w in rare and not everyday:
+            row["reason"] = "редкое слово, второе мнение получить не удалось"
         row["ok"] = not row["reason"]
         out.append(row)
     return out, theme

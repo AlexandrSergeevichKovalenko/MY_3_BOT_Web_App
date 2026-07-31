@@ -84,36 +84,73 @@ class FillDecisionTests(unittest.TestCase):
 
 
 class WordReviewTests(unittest.TestCase):
-    """Владелец видит разбор по каждому слову и решает сам, а не читает «не взял 2»."""
+    """По каждому слову: часть речи, артикль, есть ли в банке, брать или нет.
+
+    Раньше выводилась одна причина отказа, а по принятому слову — вообще ничего. Из такого
+    ответа нельзя понять главного: нет ли этого слова у нас уже. Искать глазами по списку
+    из полутора тысяч слов — не работа владельца, для этого и есть автоматика."""
 
     ROWS = [
-        {"word": "Kater", "article": "der", "meaning_ru": "похмелье", "ok": True,
-         "reason": "", "verified": True},
-        {"word": "Kotzen", "article": "", "meaning_ru": "", "ok": False,
-         "reason": "не существительное", "verified": True},
-        {"word": "Girlande", "article": "die", "meaning_ru": "гирлянда", "ok": False,
-         "reason": "уже есть в этой теме", "verified": True},
+        {"word": "Lampion", "article": "der", "article_source": "wiktionary",
+         "meaning_ru": "фонарик", "is_noun": True, "where": None, "rank": 12000,
+         "ok": True, "reason": "", "verified": True},
+        {"word": "kotzen", "article": "", "article_source": "", "meaning_ru": "блевать",
+         "is_noun": False, "where": None, "rank": None, "ok": False,
+         "reason": "не существительное — артикля у него нет", "verified": True},
+        {"word": "Feuerwerk", "article": "das", "article_source": "wiktionary",
+         "meaning_ru": "салют", "is_noun": True, "rank": 7111,
+         "where": {"theme_key": "feste_traditionen", "label": "Праздники и традиции",
+                   "article": "das", "retired": False},
+         "ok": False, "reason": "уже стоит в теме «Праздники и традиции»", "verified": True},
+        {"word": "Konfettikanone", "article": "die", "article_source": "справочник молчит",
+         "meaning_ru": "хлопушка", "is_noun": True, "where": None, "rank": None,
+         "ok": False, "reason": "род не подтверждён справочником — пойдёт на ревью артикля",
+         "verified": False},
     ]
 
-    def _text(self, selected):
+    def _text(self, selected=None):
+        sel = selected or [bool(r["ok"]) for r in self.ROWS]
         with patch.object(db, "get_article_sprint_theme", lambda t: {"label_ru": "Вечеринки"}):
-            return ctl.review_words_text("party_freizeit", self.ROWS, selected)
+            return ctl.review_words_text("party_freizeit", self.ROWS, sel)
 
-    def test_every_word_is_named_with_its_verdict(self):
-        text = self._text([True, False, False])
-        self.assertIn("der Kater", text)
-        self.assertIn("похмелье", text)
-        self.assertIn("Kotzen", text)
-        self.assertIn("не существительное", text, "причина отказа должна быть видна")
-        self.assertIn("уже есть в этой теме", text)
+    def test_it_says_where_the_word_already_lives(self):
+        # Главное, ради чего разбор и нужен: владелец не должен искать дубль глазами.
+        text = self._text()
+        self.assertIn("уже в банке", text)
+        self.assertIn("Праздники и традиции", text)
 
-    def test_the_good_ones_are_ticked_and_the_rest_are_not(self):
-        text = self._text([True, False, False])
+    def test_a_new_word_is_reported_as_absent(self):
+        self.assertIn("в банке нет", self._text())
+
+    def test_part_of_speech_and_article_are_stated_for_every_word(self):
+        text = self._text()
+        self.assertIn("существительное · артикль", text)
+        self.assertIn("wiktionary", text, "источник артикля должен быть виден")
+        self.assertIn("не существительное — артикля нет", text)
+
+    def test_frequency_is_translated_into_words(self):
+        text = self._text()
+        self.assertIn("ходовое", text)
+        self.assertIn("в 50 000 самых частых нет", text)
+
+    def test_a_recommendation_is_given_for_every_word(self):
+        text = self._text()
+        self.assertIn("предлагаю взять", text)
+        self.assertIn("не советую", text)
+
+    def test_an_unconfirmed_gender_is_not_called_a_rejection(self):
+        # Со словом всё в порядке, подтвердить надо только артикль.
+        text = self._text()
+        self.assertIn("взять можно", text)
+        self.assertNotIn("не советую: род не подтверждён", text)
+
+    def test_ticks_follow_the_recommendation(self):
+        text = self._text()
         self.assertIn("☑️ <b>1.", text)
         self.assertIn("⬜️ <b>2.", text)
 
     def test_the_owner_is_told_he_can_overrule(self):
-        self.assertIn("твоё решение главнее", self._text([True, False, False]))
+        self.assertIn("твоё решение главнее", self._text())
 
     def test_words_are_split_by_commas_and_lines(self):
         self.assertEqual(ctl.split_words("Besen, Eimer\nLappen\n  Schrubber  "),
@@ -137,26 +174,26 @@ class WordCommitTests(unittest.TestCase):
         return text, seen
 
     def test_only_ticked_words_are_written(self):
-        _, seen = self._commit([True, False, False])
-        self.assertEqual([r["word"] for r in seen["rows"]], ["Kater"])
+        _, seen = self._commit([True, False, False, False])
+        self.assertEqual([r["word"] for r in seen["rows"]], ["Lampion"])
 
     def test_the_owner_can_overrule_a_rejection(self):
         # Он отметил слово, которое проверка забраковала: его решение главнее.
-        _, seen = self._commit([False, True, False])
-        self.assertEqual([r["word"] for r in seen["rows"]], ["Kotzen"])
+        _, seen = self._commit([False, True, False, False])
+        self.assertEqual([r["word"] for r in seen["rows"]], ["kotzen"])
 
     def test_the_answer_names_the_words_not_just_a_count(self):
-        text, _ = self._commit([True, False, False])
-        self.assertIn("der Kater", text)
+        text, _ = self._commit([True, False, False, False])
+        self.assertIn("der Lampion", text)
         self.assertIn("53 слова", text)
 
     def test_nothing_ticked_writes_nothing(self):
-        text, seen = self._commit([False, False, False])
+        text, seen = self._commit([False, False, False, False])
         self.assertNotIn("rows", seen, "до банка пустой выбор доходить не должен")
         self.assertIn("Ничего не отмечено", text)
 
     def test_a_word_that_did_not_land_is_admitted(self):
-        text, _ = self._commit([True, True, False], added=1)
+        text, _ = self._commit([True, True, False, False], added=1)
         self.assertIn("Легло 1 из 2", text)
 
 
@@ -240,7 +277,7 @@ class ButtonsStayWithinReachTests(unittest.TestCase):
         with patch.object(db, "set_theme_fill_state", lambda *a, **k: True), \
                 patch.object(gen, "commit_manual_words", _commit_rows):
             text = ctl.commit_selected_words("party_freizeit", WordReviewTests.ROWS,
-                                             [True, False, False])
+                                             [True, False, False, False])
         self.assertNotIn("кнопкой", text, "кнопка едет вместе с сообщением, а не словами")
         self.assertIn("52 слова", text, "число слов склоняем")
 

@@ -49553,6 +49553,34 @@ def list_article_sprint_words(theme_key: str) -> list[str]:
     return [str(r[0]) for r in rows if r and r[0]]
 
 
+def where_article_words_live(words: list[str]) -> dict[str, dict]:
+    """Слово → где оно уже стоит в банке: {слово: {theme_key, label, article, retired}}.
+
+    Нужно, чтобы разбор присланных слов не говорил голое «уже есть», а называл тему.
+    Владелец не обязан искать слово глазами по списку из полутора тысяч."""
+    low = [str(w).strip().lower() for w in (words or []) if str(w).strip()]
+    if not low:
+        return {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT lower(n.word), n.theme_key, COALESCE(t.label_ru, n.theme_key), "
+                "       n.article, n.retired "
+                "FROM bt_3_article_sprint_nouns n "
+                "LEFT JOIN bt_3_article_sprint_themes t ON t.theme_key = n.theme_key "
+                "WHERE lower(n.word) = ANY(%s) "
+                # Живая карточка важнее снятой: она и мешает добавить слово заново.
+                "ORDER BY n.retired, n.id;",
+                (low,),
+            )
+            rows = cursor.fetchall() or []
+    out: dict[str, dict] = {}
+    for w, theme_key, label, article, retired in rows:
+        out.setdefault(str(w), {"theme_key": str(theme_key), "label": str(label),
+                                "article": str(article or ""), "retired": bool(retired)})
+    return out
+
+
 def list_article_sprint_words_all_themes() -> set[str]:
     """Все слова, стоящие в игре, по ВСЕМ темам — в нижнем регистре.
 

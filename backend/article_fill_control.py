@@ -270,25 +270,63 @@ def split_words(raw: str) -> list[str]:
     return [p for p in parts if p]
 
 
-def review_words_text(theme_key: str, rows: list[dict], selected: list[bool]) -> str:
-    """Разбор присланных слов по одному: что беру, что нет и почему.
+def _rank_ru(rank) -> str:
+    """Место в частотном списке — единственная объективная мера «ходовое ли слово»."""
+    if not rank:
+        return "в 50 000 самых частых нет"
+    if int(rank) <= 5000:
+        return f"{int(rank)}-е место по частоте — очень ходовое"
+    if int(rank) <= 20000:
+        return f"{int(rank)}-е место по частоте — ходовое"
+    return f"{int(rank)}-е место по частоте — редкое"
 
-    Раньше ответ был «добавлено 1, не взял 2» — по нему нельзя ни проверить решение, ни
-    возразить. Владелец прислал три слова, два из которых глаголы, и не увидел, какие
-    именно отсеялись: а вдруг машина ошиблась и выбросила нужное."""
+
+def review_words_text(theme_key: str, rows: list[dict], selected: list[bool]) -> str:
+    """Рецензия по каждому слову: часть речи, артикль, есть ли в банке, брать или нет.
+
+    Раньше выводилась одна причина отказа, а по принятому слову — вообще ничего. Владелец
+    из такого ответа не мог понять главного: нет ли этого слова у нас уже. Искать глазами
+    по полутора тысячам слов — не его работа, для этого и есть автоматика."""
     from backend.database import get_article_sprint_theme
     theme = get_article_sprint_theme(theme_key) or {}
     label = theme.get("label_ru") or theme_key
-    lines = [f"✍️ <b>{label}</b> — проверил {_words_ru(len(rows))}:", ""]
+    lines = [f"✍️ <b>{label}</b> — разобрал {_words_ru(len(rows))}:", ""]
     for i, r in enumerate(rows):
         mark = "☑️" if (i < len(selected) and selected[i]) else "⬜️"
-        head = f"{mark} <b>{i + 1}. {r['article']} {r['word']}</b>".replace("  ", " ")
-        tail = f" — {r['meaning_ru']}" if r.get("meaning_ru") else ""
-        lines.append(head + tail)
-        if r.get("reason"):
-            lines.append(f"      <i>{r['reason']}</i>")
-    lines.append("")
-    lines.append("Отмеченные добавлю. Считаешь, что слово отсеяли зря, — отметь его сам, "
+        title = f"{r['article']} {r['word']}".strip()
+        meaning = f" — {r['meaning_ru']}" if r.get("meaning_ru") else ""
+        lines.append(f"{mark} <b>{i + 1}. {title}</b>{meaning}")
+
+        # Факты по порядку: что это, какой артикль, есть ли у нас, насколько ходовое.
+        if r.get("is_noun"):
+            art = (f"артикль <b>{r['article']}</b> ({r['article_source']})"
+                   if r.get("article") else "артикль не определён")
+            facts = [f"существительное · {art}"]
+        else:
+            facts = ["не существительное — артикля нет"]
+        where = r.get("where")
+        if where and not where.get("retired"):
+            facts.append(f"⚠️ уже в банке: «{where['label']}» ({where['article']} {r['word']})")
+        elif where:
+            facts.append("было в банке, снято с показа")
+        else:
+            facts.append("в банке нет")
+        if r.get("is_noun"):
+            facts.append(_rank_ru(r.get("rank")))
+        lines.append("      <i>" + " · ".join(facts) + "</i>")
+
+        reason = str(r.get("reason") or "")
+        if r.get("ok"):
+            verdict = "👍 <b>предлагаю взять</b>"
+        elif reason.startswith("род не подтверждён"):
+            # Это не отказ: слово нормальное, просто артикль придётся подтвердить тапом.
+            # Писать тут «не советую» — врать про слово, с которым всё в порядке.
+            verdict = "⚠️ <b>взять можно</b>, но артикль придётся подтвердить тапом"
+        else:
+            verdict = f"👎 <b>не советую</b>: {reason}"
+        lines.append(f"      {verdict}")
+        lines.append("")
+    lines.append("Отмеченные добавлю. Не согласен с отказом — отметь слово сам, "
                  "твоё решение главнее.")
     return "\n".join(lines)
 
