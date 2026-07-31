@@ -87,6 +87,21 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* ── Подгонка под высоту экрана (fitCard.js) ───────────────────────────────────
+   Карточка не помещается в экран → сначала отдаём отступы (здесь), и только если
+   этого мало, fitCard.js дожимает карточку через `zoom`. На больших экранах класс
+   не ставится и всё выглядит как раньше. */
+.ans-root.is-tight {
+  padding-top: 10px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.ans-root.is-tight > .ans-card:not(.ans-card--cw) {
+  padding: 14px 14px 16px;
+  gap: 10px;
+}
+
 .ans-head { display: flex; flex-direction: column; gap: 6px; }
 .ans-eyebrow {
   display: inline-flex; align-items: center; gap: 7px;

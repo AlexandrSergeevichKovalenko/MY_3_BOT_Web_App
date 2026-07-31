@@ -20,6 +20,7 @@ import WoFrageLearnGame from './WoFrageLearnGame.jsx';
 import AdjektivLearnGame from './AdjektivLearnGame.jsx';
 import BattleHistory from './BattleHistory.jsx';
 import AskOverlay from './AskOverlay.jsx';
+import installCardAutoFit from './fitCard.js';
 import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 /**
@@ -729,6 +730,12 @@ export default function AnswerOverlay({ startParam }) {
   const [cwInputs, setCwInputs] = useState([]);
   const [grading, setGrading] = useState(false);
   const taskLoadedAt = useRef(0); // for the speed ranking (load → submit)
+
+  useEffect(() => {
+    // Любой интерактив этого роута подгоняется под высоту экрана: на маленьком
+    // телефоне карточка ужимается, чтобы кнопки не уезжали под сгиб.
+    installCardAutoFit();
+  }, []);
 
   useEffect(() => {
     try {
