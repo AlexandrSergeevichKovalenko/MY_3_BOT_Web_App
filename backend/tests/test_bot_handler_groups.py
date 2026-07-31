@@ -29,6 +29,17 @@ def _registrations() -> list[tuple[str, int]]:
 
 
 class HandlerGroupTests(unittest.TestCase):
+    def test_the_activity_mark_has_its_own_group(self):
+        # По этой отметке решается, кому рассылать задания, и сколько людей было активно
+        # за месяц. Она стояла в group=-1 за catch-all TypeHandler и не работала с 11 июня:
+        # человек, который с ботом переписывается, но заданий ещё не делал, выпадал из
+        # обоих списков.
+        regs = _registrations()
+        groups = {n: g for n, g in regs}
+        self.assertIn("log_message", groups)
+        others = [g for n, g in regs if n != "log_message" and g == groups["log_message"]]
+        self.assertEqual(others, [], "отметку активности нельзя делить группой ни с кем")
+
     def test_state_driven_text_handlers_do_not_share_a_group(self):
         # Оба ждут своего состояния и обязаны получать каждое сообщение, чтобы решить,
         # их оно или нет. В общей группе выживет только первый.
@@ -46,7 +57,7 @@ class HandlerGroupTests(unittest.TestCase):
         gate = [g for n, g in regs if n == "enforce_user_access"]
         self.assertTrue(gate, "контроль доступа должен быть зарегистрирован")
         busy = set(gate)
-        for name in ("handle_manual_theme_words", "handle_describe_custom_input"):
+        for name in ("handle_manual_theme_words", "handle_describe_custom_input", "log_message"):
             group = dict(regs).get(name)
             self.assertNotIn(group, busy, f"{name} стоит в группе с catch-all — не сработает")
 

@@ -40962,7 +40962,13 @@ def main():
     application.add_handler(CallbackQueryHandler(_schedule_window_callback, pattern=r"^pwin:"))
     application.add_handler(CallbackQueryHandler(_schedule_nav_callback, pattern=r"^sch:"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
+    # Отметка «человек писал боту» (bt_3_messages, одна строка на человека, перезаписывается).
+    # ⚠️ СВОЯ группа. В group=-1 первым стоит catch-all TypeHandler(_set_billing_user_context),
+    # а библиотека запускает в группе только ПЕРВЫЙ подошедший обработчик — поэтому отметка
+    # не ставилась с 11 июня. По ней определяется, кому рассылать задания
+    # (_collect_scheduler_candidate_user_ids) и сколько людей было активно за месяц: человек,
+    # который с ботом переписывается, но заданий ещё не делал, выпадал из обоих списков.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-5)
 
     # (DM menu keyboard now stays fresh silently via TrackingExtBot.send_message
     #  — it rides ordinary replies, so no standalone "menu" refresh message is sent.)
