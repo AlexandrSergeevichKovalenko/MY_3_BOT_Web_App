@@ -249,34 +249,29 @@ class BillingEconomicsTests(unittest.TestCase):
         _, params = cursor.executed[0]
         self.assertEqual(len(params), 12)
 
-    def test_translation_usage_counts_sentences_and_converts_to_whole_sets(self):
-        """Usage is measured in SENTENCES actually translated today, then floored into whole
-        sets. Counting finished sessions instead burned the daily quota for a set that was
-        shown but never answered, and let the quota be gamed by stopping one short."""
-        from backend.database import _TRANSLATION_SET_COMPLETE_MIN as set_size
-
-        for translated, expected_sets in (
-            (0, 0.0),                       # shown but not answered → costs nothing
-            (set_size - 1, 0.0),            # one short of a set → still nothing
-            (set_size, 1.0),
-            (set_size * 2 + 3, 2.0),        # leftovers do not round up
-        ):
-            with self.subTest(translated=translated):
-                cursor = _DummyCursor([(translated,)])
+    def test_translation_usage_counts_sets_delivered_today(self):
+        """Usage is measured in SETS actually delivered to the user today — how many of the
+        7 sentences they translated is irrelevant, stopping early does not buy a new set.
+        A set that never reached the screen leaves no delivered rows and costs nothing."""
+        for delivered_sets, expected_usage in ((0, 0.0), (1, 1.0), (3, 3.0)):
+            with self.subTest(delivered_sets=delivered_sets):
+                cursor = _DummyCursor([(delivered_sets,)])
                 with patch("backend.database.get_db_connection_context", _db_context(cursor)):
                     usage = _get_feature_usage_today(
                         user_id=77,
                         feature_code="translation_daily_sets",
                         tz="Europe/Vienna",
                     )
-                self.assertEqual(usage, expected_sets)
+                self.assertEqual(usage, expected_usage)
 
-        cursor = _DummyCursor([(set_size,)])
+        cursor = _DummyCursor([(1,)])
         with patch("backend.database.get_db_connection_context", _db_context(cursor)):
             _get_feature_usage_today(user_id=77, feature_code="translation_daily_sets", tz="Europe/Vienna")
         query, params = cursor.executed[0]
-        # Distinct sentence per session: a re-submitted sentence must not count twice.
-        self.assertIn("DISTINCT t.session_id, t.sentence_id", query)
+        # One row per session, dated by its FIRST delivered sentence: a set opened before
+        # midnight must not eat the next day's quota.
+        self.assertIn("GROUP BY ds.session_id", query)
+        self.assertIn("MIN(ds.shown_to_user_at)", query)
         self.assertEqual(params[0], 77)
 
     def test_enforce_feature_limit_blocks_second_free_translation_set(self):

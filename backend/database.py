@@ -39425,12 +39425,6 @@ def get_plan_limit(plan_code: str, feature_code: str, period: str = "day") -> di
     }
 
 
-# A free translation set counts as USED only once the user has actually translated
-# the FULL set (this many sentences) — a shown-but-unanswered, hung, or accidentally
-# "finished" session must never burn the daily quota with zero progress.
-_TRANSLATION_SET_COMPLETE_MIN = max(1, _env_int("TRANSLATION_SET_COMPLETE_MIN", 7))
-
-
 def _get_feature_usage_today(user_id: int, feature_code: str, tz: str = TRIAL_POLICY_TZ) -> float:
     feature = str(feature_code or "").strip().lower()
     tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
@@ -39503,29 +39497,36 @@ def _get_feature_usage_today(user_id: int, feature_code: str, tz: str = TRIAL_PO
         return float((row or [0])[0] or 0)
 
     if feature == "translation_daily_sets":
-        # SUM the sentences the user actually translated today (across all sessions),
-        # then convert to whole sets (// set size). With free_limit=1 a new set is
-        # blocked once the daily TOTAL reaches the set size. This:
-        #  • never burns the quota for a shown-but-unanswered / hung / accidentally
-        #    "finished" set (0 translations → 0 sets);
-        #  • can't be gamed by stopping at 6 — the per-day total accumulates
-        #    (6 then up to 7 more = ≤13, then blocked; no infinite regeneration).
+        # One set a day means one set a day: a set counts as USED as soon as its
+        # sentences were actually DELIVERED to the user, no matter how many of them
+        # they went on to translate. Stopping at 5 of 7 does not buy a fresh set.
+        # A set that never reached the screen (hung generation, empty session) leaves
+        # no delivered rows and costs nothing. A set is dated by its FIRST delivered
+        # sentence, so a set opened before midnight can't eat the next day's quota.
+        window_start = datetime.combine(
+            day_local - timedelta(days=1),
+            dt_time.min,
+            tzinfo=_resolve_timezone(tz_name),
+        )
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
                     SELECT COUNT(*) FROM (
-                        SELECT DISTINCT t.session_id, t.sentence_id
-                        FROM bt_3_translations t
-                        WHERE t.user_id = %s
-                          AND (t.timestamp AT TIME ZONE %s)::date = %s
+                        SELECT ds.session_id
+                        FROM bt_3_daily_sentences ds
+                        WHERE ds.user_id = %s
+                          AND COALESCE(ds.shown_to_user, FALSE) = TRUE
+                          AND ds.shown_to_user_at IS NOT NULL
+                          AND ds.shown_to_user_at >= %s
+                        GROUP BY ds.session_id
+                        HAVING (MIN(ds.shown_to_user_at) AT TIME ZONE %s)::date = %s
                     ) q;
                     """,
-                    (int(user_id), tz_name, day_local),
+                    (int(user_id), window_start, tz_name, day_local),
                 )
                 row = cursor.fetchone()
-        translated_today = int((row or [0])[0] or 0)
-        return float(translated_today // _TRANSLATION_SET_COMPLETE_MIN)
+        return float(int((row or [0])[0] or 0))
 
     return 0.0
 
