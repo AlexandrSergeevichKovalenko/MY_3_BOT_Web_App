@@ -147,7 +147,7 @@ function AufgabeError({ task, onSubmit, submitting }) {
         })}
       </div>
       {picks.length ? (
-        <div className="au-fixes">
+        <div className="au-fixes ans-body">
           {picks.map((i, n) => (
             <div className="au-fix-row" key={i}>
               <span className="au-fix-badge">{circled(n + 1)}</span>
@@ -252,7 +252,7 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
         ) : <span className="ls-noaudio">🔇 Audio wird vorbereitet — gleich nochmal.</span>}
       </div>
       {isMulti ? (
-        <div className="au-satz au-cloze">
+        <div className="au-satz au-cloze ans-body">
           {segments.flatMap((seg, i) => {
             const nodes = [<span key={`s${i}`}>{seg}</span>];
             if (i < segments.length - 1) {

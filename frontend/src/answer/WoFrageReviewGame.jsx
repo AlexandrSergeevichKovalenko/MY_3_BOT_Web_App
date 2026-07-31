@@ -113,7 +113,7 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
         })}
       </div>
       {answered ? (
-        <div className={`wo-rev ${pick === correct ? 'ok' : 'bad'}`} style={{ marginTop: 14 }}>
+        <div className={`wo-rev ans-body ${pick === correct ? 'ok' : 'bad'}`} style={{ marginTop: 14 }}>
           <div className="wo-rev-phrase">{pick === correct ? '✅ Richtig!' : '❌'} <b>{pre}{correct}{post}</b></div>
           {card.frage_ru ? <div className="wo-rev-ru">{card.frage_ru}</div> : null}
           {card.erklaerung ? <div className="wo-rev-rule">📐 {card.erklaerung}</div> : null}

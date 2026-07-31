@@ -259,7 +259,7 @@ function CrosswordResult({ result }) {
       <div className="ans-verdict">
         {allRight ? `🎉 Alle ${total} richtig!` : `🏁 ${correct} / ${total} richtig`}
       </div>
-      <div className="ans-cw-list">
+      <div className="ans-cw-list ans-body">
         {rows.map((r) => {
           // «_» стоит там, где клетка осталась пустой: показывать «du: SCH_ÜS_EL»
           // бессмысленно — человек это слово просто не писал.
@@ -653,7 +653,7 @@ function ListeningResult({ result }) {
     <div className={`ans-result ${tone}`}>
       <div className="ans-verdict">🏁 {pts} / {max} Punkte · {pct}%</div>
       <div className="ls-score-legend">Inhalt 50% + Grammatik 50%</div>
-      <div className="ls-result-list">
+      <div className="ls-result-list ans-body">
         {items.map((it) => (
           <div className="ls-result-item" key={it.number}>
             <div className="ls-result-q">

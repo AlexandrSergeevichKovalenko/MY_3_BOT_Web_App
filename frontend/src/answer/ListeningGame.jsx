@@ -169,7 +169,7 @@ export default function ListeningGame({ task, onSubmit, submitting }) {
         )}
       </div>
 
-      <div className="ls-questions">
+      <div className="ls-questions ans-body">
         {questions.map((q, i) => (
           <div className="ans-field" key={q.number || i}>
             <span className="ans-field-label"><span className="ans-num">{q.number || i + 1}</span> {q.question_de}</span>

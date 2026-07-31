@@ -184,7 +184,7 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
         })}
       </div>
       {answered ? (
-        <div className={`adj-rev ${pick === correct ? 'ok' : 'bad'}`} style={{ marginTop: 14 }}>
+        <div className={`adj-rev ans-body ${pick === correct ? 'ok' : 'bad'}`} style={{ marginTop: 14 }}>
           <div className="adj-rev-phrase">{pick === correct ? '✅ Richtig!' : '❌'} <b>{card.full || `${card.before}${correct}${card.after}`}</b></div>
           {card.erklaerung ? <div className="adj-rev-rule">📐 {card.erklaerung}</div> : null}
           {card.tip ? <div className="adj-rev-tip">💡 {card.tip}</div> : null}

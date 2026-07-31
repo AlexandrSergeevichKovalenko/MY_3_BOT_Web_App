@@ -64,6 +64,7 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
       <div className="ans-head">
         <h1 className="ans-title">📜 История батлов{refreshing ? <span className="bh-refresh"> · обновляю…</span> : null}</h1>
       </div>
+      <div className="ans-body bh-list">
       {sections.map((sec) => (
         <div className="bh-section" key={sec.key}>
           <div className="bh-section-head">{sec.label}</div>
@@ -102,6 +103,7 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
           })}
         </div>
       ))}
+      </div>
       <p className="ans-sub" style={{ opacity: 0.7 }}>Открытые батлы играются из приглашения или «Мои батлы».</p>
       <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
     </>);

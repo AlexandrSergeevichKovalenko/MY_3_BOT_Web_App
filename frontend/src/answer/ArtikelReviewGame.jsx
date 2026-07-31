@@ -146,7 +146,7 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
         })}
       </div>
       {chosen ? (
-        <div className="al-reveal" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <div className="al-reveal ans-body" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
           <div className={`al-feedback ${chosen === c.a ? 'ok' : 'bad'}`}>
             {chosen === c.a ? '✅ Верно!' : `❌ Правильно: ${c.a}`}
             {c.ru ? <span className="al-ru"> · {c.ru}</span> : null}

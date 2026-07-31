@@ -110,7 +110,7 @@ export default function ReviewSession({ api, haptic, onClose }) {
           <h1 className="ans-title">Fehler wiederholen</h1>
           <p className="ans-sub">Wähle einen Bereich — {overview.total} zu wiederholen</p>
         </div>
-        <div className="ans-sections">
+        <div className="ans-sections ans-body">
           {(overview.sections || []).map((s) => (
             <button
               key={s.family}
