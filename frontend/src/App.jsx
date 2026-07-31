@@ -3873,7 +3873,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
   explainErrorMap,
   explanationLoading,
   explanations,
-  collapsedResultCards,
   collapsedExplanationBlocks,
   collapsedFollowupAnswerBlocks,
   explanationQuestionOpen,
@@ -3884,7 +3883,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
   explanationQuestionSaveLoading,
   explanationQuestionSaveError,
   explanationQuestionSaveMessage,
-  handleToggleResultCardCollapsed,
   handleToggleExplanationCollapsed,
   handleToggleFollowupAnswerCollapsed,
   handleToggleExplanationQuestion,
@@ -4607,7 +4605,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 const correctTextForTts = extractCorrectTranslationText(item);
                 const explanationKey = String(item.sentence_number ?? item.original_text);
                 const resultCardKey = getResultCardIdentityKey(item, index);
-                const resultCollapsed = Boolean(collapsedResultCards[resultCardKey]);
                 const explanationCollapsed = Boolean(collapsedExplanationBlocks[explanationKey]);
                 const followupAnswerCollapsed = Boolean(collapsedFollowupAnswerBlocks[explanationKey]);
                 const followupOpen = Boolean(explanationQuestionOpen[explanationKey]);
@@ -4628,18 +4625,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                     className="webapp-result-card"
                     ref={(node) => registerTranslationResultCardNode(resultCardKey, node)}
                   >
-                    <label className="translation-block-visibility-toggle">
-                      <input
-                        type="checkbox"
-                        checked={resultCollapsed}
-                        onChange={(event) => handleToggleResultCardCollapsed(item, event.target.checked)}
-                      />
-                      <span>
-                        {resultCollapsed
-                          ? tr('Скрыто', 'Ausgeblendet')
-                          : tr('Скрыть этот результат', 'Dieses Ergebnis ausblenden')}
-                      </span>
-                    </label>
                     {item.incomplete ? (
                       <div
                         className="webapp-result-pending"
@@ -4667,15 +4652,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       </div>
                     ) : item.error ? (
                       <div className="webapp-error">{item.error}</div>
-                    ) : resultCollapsed ? (
-                      <div className="translation-collapsed-summary">
-                        <strong>
-                          {tr('Предложение', 'Satz')} {item.sentence_number ?? '—'}
-                        </strong>
-                        <span>
-                          {tr('Балл', 'Punktzahl')}: {item.score ?? '—'}/100
-                        </span>
-                      </div>
                     ) : (
                       <>
                         {Number(item?.translation_id || 0) > 0 && (
@@ -6571,7 +6547,7 @@ function AppInner() {
   // что отдал бутстрап. Завершённая сессия плашку не показывает.
   const pausedTranslationSession = useMemo(() => {
     if (finishStatus === 'done') return null;
-    if (sentences.length > 0 && results.length > 0) {
+    if (sentences.length > 0) {
       return { translated: results.length, total: results.length + sentences.length };
     }
     return bootstrapTranslationSession;
@@ -6585,7 +6561,6 @@ function AppInner() {
   const [explainLangDe, setExplainLangDe] = useState({});         // key -> bool (🇩🇪 explanation)
   const [explainErrorMap, setExplainErrorMap] = useState({});     // key -> fetch error message
   const [explanationLoading, setExplanationLoading] = useState({});
-  const [collapsedResultCards, setCollapsedResultCards] = useState({});
   const [collapsedExplanationBlocks, setCollapsedExplanationBlocks] = useState({});
   const [collapsedFollowupAnswerBlocks, setCollapsedFollowupAnswerBlocks] = useState({});
   const [explanationQuestionOpen, setExplanationQuestionOpen] = useState({});
@@ -18339,7 +18314,7 @@ function AppInner() {
           const openTotal = Math.max(0, Number(openTranslationSession.total_sentences || 0) || 0);
           const openTranslated = Math.max(0, Number(openTranslationSession.translated_count || 0) || 0);
           setBootstrapTranslationSession(
-            openTotal > 0 && openTranslated > 0 && openTranslated < openTotal
+            openTotal > 0 && openTranslated < openTotal
               ? { translated: openTranslated, total: openTotal }
               : null
           );
@@ -29351,7 +29326,6 @@ function AppInner() {
     setExplainStructured({});
     setExplainGrammar({});
     setExplainGrammarLoading({});
-    setCollapsedResultCards({});
     setCollapsedExplanationBlocks({});
     setTranslationAudioGrammarOptIn({});
     setTranslationAudioGrammarSaving({});
@@ -29659,11 +29633,6 @@ function AppInner() {
     } finally {
       setExplanationQuestionLoading((prev) => ({ ...prev, [key]: false }));
     }
-  };
-
-  const handleToggleResultCardCollapsed = (item, collapsed) => {
-    const key = getResultCardIdentityKey(item);
-    setCollapsedResultCards((prev) => ({ ...prev, [key]: Boolean(collapsed) }));
   };
 
   const handleToggleExplanationCollapsed = (item, collapsed) => {
@@ -32740,7 +32709,6 @@ function AppInner() {
   const closeExplainModalStable = useStableCallback(closeExplainModal);
   const openStoryResultModalStable = useStableCallback(openStoryResultModal);
   const handleSetExplainLangStable = useStableCallback(handleSetExplainLang);
-  const handleToggleResultCardCollapsedStable = useStableCallback(handleToggleResultCardCollapsed);
   const handleToggleExplanationCollapsedStable = useStableCallback(handleToggleExplanationCollapsed);
   const handleToggleFollowupAnswerCollapsedStable = useStableCallback(handleToggleFollowupAnswerCollapsed);
   const handleToggleExplanationQuestionStable = useStableCallback(handleToggleExplanationQuestion);
@@ -36033,7 +36001,6 @@ function AppInner() {
                 explainErrorMap={explainErrorMap}
                 explanationLoading={explanationLoading}
                 explanations={explanations}
-                collapsedResultCards={collapsedResultCards}
                 collapsedExplanationBlocks={collapsedExplanationBlocks}
                 collapsedFollowupAnswerBlocks={collapsedFollowupAnswerBlocks}
                 explanationQuestionOpen={explanationQuestionOpen}
@@ -36044,7 +36011,6 @@ function AppInner() {
                 explanationQuestionSaveLoading={explanationQuestionSaveLoading}
                 explanationQuestionSaveError={explanationQuestionSaveError}
                 explanationQuestionSaveMessage={explanationQuestionSaveMessage}
-                handleToggleResultCardCollapsed={handleToggleResultCardCollapsedStable}
                 handleToggleExplanationCollapsed={handleToggleExplanationCollapsedStable}
                 handleToggleFollowupAnswerCollapsed={handleToggleFollowupAnswerCollapsedStable}
                 handleToggleExplanationQuestion={handleToggleExplanationQuestionStable}

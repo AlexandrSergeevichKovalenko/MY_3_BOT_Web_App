@@ -5820,33 +5820,6 @@ body:has(.webapp-page.is-theme-light),
   align-self: flex-start;
 }
 
-.translation-block-visibility-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  align-self: flex-start;
-  font-size: 12px;
-  color: var(--tr-text-secondary, #94a3b8);
-}
-
-.translation-block-visibility-toggle input {
-  width: 15px;
-  height: 15px;
-}
-
-.translation-block-visibility-toggle-inner {
-  margin-bottom: 12px;
-}
-
-.translation-collapsed-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 14px;
-  align-items: center;
-  font-size: 14px;
-  color: var(--tr-text-primary, #e2e8f0);
-}
-
 .result-audio-optin {
   display: inline-flex;
   align-items: center;

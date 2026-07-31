@@ -266,7 +266,9 @@ export default function HomeDashboardTiles({
   };
   const resumeTotal = Math.max(0, Number(pausedTranslationSession?.total || 0) || 0);
   const resumeTranslated = Math.max(0, Number(pausedTranslationSession?.translated || 0) || 0);
-  const showResumeChip = resumeTotal > 0 && resumeTranslated > 0 && resumeTranslated < resumeTotal;
+  // Ноль переведённых тоже показываем: набор человек уже запросил, и строчка «0 из 7»
+  // работает как напоминание, что он лежит и ждёт.
+  const showResumeChip = resumeTotal > 0 && resumeTranslated < resumeTotal;
 
   return (
     <div className="hdt-root">
