@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
+import AdjHint from './AdjHint.jsx';
 
 // Adjektiv Sprint — a set of 15 adjective-ending situations, 5 s each (auto-advance
 // or tap "Weiter"). Same engine/feel as Artikel Sprint: whole set preloaded, each
@@ -198,7 +199,7 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
           </>) : '…'}
         </span>
       </div>
-      {it && it.ru ? <div className="adj-hint">{it.ru}</div> : null}
+      <AdjHint text={it && it.ru} />
       <div className="as-buttons adj-buttons">
         {ENDINGS.map((e) => (
           <button key={e} type="button" className="as-btn-art adj-end" onClick={() => answer(e)}>-{e}</button>

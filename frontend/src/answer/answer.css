@@ -1073,7 +1073,55 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .fit-line.adj-line { display: inline-block; }
 .adj-word { font-size: 30px; text-align: center; overflow: hidden; }
 .adj-slot { display: inline-block; vertical-align: baseline; margin: 0 3px; color: #8b5cf6; font-weight: 900; min-width: 28px; text-align: center; border-bottom: 3px solid #8b5cf6; padding: 0 4px; }
-.adj-hint { margin-top: 10px; font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
+/* The case/gender/declension plaque. It is not a footnote — the ending is read
+   off it, so it gets display type, a lit background and depth. `flex-wrap` keeps
+   a long line (Дательный • жен. род • смешанное) from ever pushing the card
+   wider; it drops to a second line instead. */
+.adj-hint {
+  align-self: center;
+  margin: -2px auto 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 3px 13px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 8px 14px 9px;
+  border-radius: 18px;
+  font-family: "Unbounded", "Manrope", var(--dmps-font-family, system-ui), sans-serif;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: #E9E2FF;
+  background:
+    linear-gradient(180deg, rgba(167, 139, 250, 0.26), rgba(91, 33, 182, 0.30));
+  border: 1px solid rgba(167, 139, 250, 0.5);
+  box-shadow:
+    0 10px 22px rgba(76, 29, 149, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  text-shadow: 0 1px 2px rgba(2, 8, 22, 0.55);
+  animation: adj-hint-in 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.adj-hint-part.g-m { color: #93C5FD; }
+.adj-hint-part.g-f { color: #F9A8D4; }
+.adj-hint-part.g-n { color: #6EE7B7; }
+@keyframes adj-hint-in {
+  from { opacity: 0; transform: translateY(5px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+html[data-scheme="light"] .adj-hint {
+  color: #4C1D95;
+  background: linear-gradient(180deg, #F7F4FF, #EBE4FE);
+  border-color: rgba(124, 58, 237, 0.42);
+  box-shadow:
+    0 8px 18px rgba(109, 40, 217, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+html[data-scheme="light"] .adj-hint-part.g-m { color: #1D4ED8; }
+html[data-scheme="light"] .adj-hint-part.g-f { color: #BE185D; }
+html[data-scheme="light"] .adj-hint-part.g-n { color: #047857; }
 /* Tap-to-translate words inside the phrase */
 .adj-word-tap { cursor: pointer; border-bottom: 2px dotted #8b5cf6; padding-bottom: 1px; }
 .adj-word-tap:active { color: #8b5cf6; }

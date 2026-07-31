@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
 import AskOverlay from './AskOverlay.jsx';
+import AdjHint from './AdjHint.jsx';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
 
 // Adjektiv Trainer — self-paced learning deck for adjective endings (companion to
@@ -161,7 +162,7 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
           })()}
         </span>
       </div>
-      {card.ru ? <div className="adj-hint">{card.ru}</div> : null}
+      <AdjHint text={card.ru} />
       {(card.adj || card.noun) ? (
         <div className="adj-disclaimer">
           Тапни слово — перевод и «в словарь». Фразы генерируются автоматически и
