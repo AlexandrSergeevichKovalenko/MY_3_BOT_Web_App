@@ -43375,6 +43375,29 @@ def lookup_base_dictionary_entry(word: str, source_lang: str = "de") -> dict | N
     return dict(zip(cols, row))
 
 
+def base_dictionary_forms(words, source_lang: str = "de") -> dict[str, str]:
+    """Словарная форма → часть речи, одним запросом на весь список.
+
+    Нужна приёмке кроссворда, чтобы отличить слово от его формы: «füttern» в
+    словаре есть, «fütter» — нет. Частотный список этого не различает, он собран
+    из живой речи, где встречается и то и другое."""
+    keys = {k for k in (_normalize_lemma_key(w) for w in (words or [])) if k}
+    if not keys:
+        return {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT lemma_key, COALESCE(pos, '')
+                FROM bt_base_dictionary
+                WHERE source_lang = %s AND lemma_key = ANY(%s)
+                """,
+                (source_lang, list(keys)),
+            )
+            rows = cursor.fetchall() or []
+    return {str(k): str(p or "") for k, p in rows}
+
+
 def lookup_base_dictionary_entry_by_translation(word: str, entry_source_lang: str = "de") -> dict | None:
     normalized_word = _normalize_dictionary_text_key(word)
     if not normalized_word:

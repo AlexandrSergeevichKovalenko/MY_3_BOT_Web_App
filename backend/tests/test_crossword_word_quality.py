@@ -50,6 +50,43 @@ def test_everyday_words_pass(word):
     assert ok, f"{word} отклонено: {reason}"
 
 
+def test_verb_stem_is_not_a_word():
+    """FÜTTER — основа глагола, а не слово: есть «füttern» и «das Futter».
+
+    Частотный список этого не различает (в живой речи «fütter ihn» встречается),
+    поэтому форму подтверждает словарь словарных форм."""
+    from backend.crossword_word_gate import check_word, form_lookup_keys
+
+    lemma_pos = {"füttern": "verb", "futter": "noun"}
+    ok, reason = check_word("FÜTTER", lemma_pos=lemma_pos)
+    assert not ok and "основа глагола" in reason
+    # …а сам глагол и само существительное проходят
+    assert check_word("FÜTTERN", lemma_pos=lemma_pos)[0]
+    assert check_word("FUTTER", lemma_pos=lemma_pos)[0]
+    # у словаря спрашиваем и слово, и его инфинитив — иначе основу не отличить
+    keys = form_lookup_keys(["FÜTTER"])
+    assert "fütter" in keys and "füttern" in keys
+
+
+def test_a_noun_whose_verb_exists_is_not_mistaken_for_a_stem():
+    """BESUCH — существительное, хотя «besuchen» тоже есть. Слово в словаре есть,
+    значит форма правильная, и правило про основу к нему не применяется."""
+    from backend.crossword_word_gate import check_word
+
+    ok, reason = check_word("BESUCH", lemma_pos={"besuch": "noun", "besuchen": "verb"})
+    assert ok, reason
+
+
+def test_word_rank_does_not_guess_endings():
+    """Общий словарь артиклей при промахе дописывает окончание — здесь так нельзя:
+    из-за этой догадки «fütter» получал место слова «füttern»."""
+    from backend.article_word_gate import word_rank as tolerant_rank
+    from backend.crossword_word_gate import word_rank as strict_rank
+
+    assert tolerant_rank("fütter") == tolerant_rank("füttern")
+    assert strict_rank("fütter") != strict_rank("füttern")
+
+
 def test_spelling_is_repaired_from_the_dictionary():
     # Модель пишет умляуты то транслитом, то теряет их вовсе — в сетку должно лечь
     # написание, которое подтверждает словарь.
@@ -118,3 +155,54 @@ def test_saved_word_gets_the_translation_and_falls_back_to_the_clue():
     assert targets["KÜHLSCHRANK"] == "холодильник"
     # У старых кроссвордов перевода в банке нет — подсказка остаётся запасным вариантом.
     assert targets["MIETE"] == "Плата за квартиру каждый месяц"
+
+
+def test_form_judge_failure_does_not_kill_the_puzzle(monkeypatch):
+    """Второе мнение — полировка, а не сито безопасности.
+
+    Запрос не прошёл — слова остаются: существование они уже подтвердили, иначе
+    одна сетевая заминка остановила бы наполнение пула целиком."""
+    import backend.crossword_word_gate as gate
+    from backend.crossword_generator import _apply_form_judge
+
+    def _boom(_words):
+        raise gate.FormJudgeUnavailable("нет сети")
+
+    monkeypatch.setattr(gate, "judge_word_forms", _boom)
+    words = [{"word": f"WORT{i}"} for i in range(8)]
+    rejected: list[str] = []
+    assert _apply_form_judge(words, rejected) == words
+    assert not rejected
+
+
+def test_form_judge_drops_what_it_names_and_keeps_the_rest(monkeypatch):
+    """Отвергнутое уходит, а слово, о котором модель промолчала, остаётся:
+    молчание — не приговор."""
+    import backend.crossword_word_gate as gate
+    from backend.crossword_generator import _apply_form_judge
+
+    monkeypatch.setattr(gate, "judge_word_forms",
+                        lambda words: {"PASSTASCHE": False, "KÜHLSCHRANK": True})
+    words = [{"word": "PASSTASCHE"}, {"word": "KÜHLSCHRANK"}, {"word": "TELLER"}]
+    rejected: list[str] = []
+    kept = [w["word"] for w in _apply_form_judge(words, rejected)]
+    assert kept == ["KÜHLSCHRANK", "TELLER"]
+    assert rejected and "PASSTASCHE" in rejected[0]
+
+
+def test_form_judge_reads_the_model_verdicts(monkeypatch):
+    """Разбор ответа модели: false — убрать, отсутствие ключа — оставить."""
+    import requests
+    import backend.crossword_word_gate as gate
+
+    class _Resp:
+        ok = True
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": '{"PASSTASCHE": false}'}}]}
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: _Resp())
+    verdicts = gate.judge_word_forms(["PASSTASCHE", "KÜHLSCHRANK"])
+    assert verdicts["PASSTASCHE"] is False
+    assert verdicts["KÜHLSCHRANK"] is True

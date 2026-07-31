@@ -215,7 +215,7 @@ def _call_gpt_for_words(
     return words
 
 
-def _accept_word_entry(entry: dict) -> tuple[Optional[dict], str]:
+def _accept_word_entry(entry: dict, lemma_pos: dict[str, str] | None = None) -> tuple[Optional[dict], str]:
     """Приёмка одного слова от модели → (готовая запись, причина отказа).
 
     Прежняя проверка смотрела только длину и что символы буквенные — этого хватало,
@@ -228,7 +228,7 @@ def _accept_word_entry(entry: dict) -> tuple[Optional[dict], str]:
     word = normalize_word(entry.get("word"))
     if not word:
         return None, "пустое слово"
-    ok, reason = check_word(word)
+    ok, reason = check_word(word, lemma_pos=lemma_pos)
     if not ok:
         return None, f"{word}: {reason}"
     clue_de = str(entry.get("clue_de") or "").strip()
@@ -245,6 +245,36 @@ def _accept_word_entry(entry: dict) -> tuple[Optional[dict], str]:
         # её сохраняли в словарь как «перевод», в карточке оказывалось предложение.
         "translation_ru": str(entry.get("translation_ru") or "").strip(),
     }, ""
+
+
+def _apply_form_judge(words: list[dict], rejected: list[str]) -> list[dict]:
+    """Убрать слова, про которые второе мнение говорит «так не говорят».
+
+    Offline-данные отвечают только на вопрос «слово существует?»: REGENJACKE и
+    PASSTASCHE одинаково отсутствуют и в частотном списке, и в словаре форм, но
+    первое нормально, а второе не говорит никто. Различить их может только суждение.
+
+    Модель не ответила — слова остаются. Второе мнение здесь полировка, а не сито
+    безопасности: существование слова уже подтверждено, а если ронять набор на
+    каждой сетевой заминке, наполнение пула встанет целиком.
+    """
+    if not words:
+        return words
+    from backend.crossword_word_gate import FormJudgeUnavailable, judge_word_forms
+
+    try:
+        verdicts = judge_word_forms([w["word"] for w in words])
+    except FormJudgeUnavailable as exc:
+        logging.warning("crossword_generator: второе мнение о форме не получено: %s", exc)
+        return words
+
+    kept: list[dict] = []
+    for word in words:
+        if verdicts.get(word["word"], True):
+            kept.append(word)
+        else:
+            rejected.append(f"{word['word']}: так не говорят или это форма другого слова")
+    return kept
 
 
 # ─── Grid placement ────────────────────────────────────────────────────────────
@@ -548,12 +578,25 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     # 1. Get words from GPT
     raw_words = _call_gpt_for_words(topic, difficulty, angle=angle, avoid=avoid)
 
-    # 2. Приёмка: написание, существование слова, подсказки
+    # Словарные формы для этих слов — одним запросом. По ним видно, что «FÜTTER» это
+    # основа глагола «füttern», а не слово: частотный список, собранный из живой речи,
+    # такого не различает.
+    lemma_pos: dict[str, str] = {}
+    try:
+        from backend.crossword_word_gate import form_lookup_keys
+        from backend.database import base_dictionary_forms
+        lemma_pos = base_dictionary_forms(form_lookup_keys(
+            [str((e or {}).get("word") or "") for e in raw_words]
+        ))
+    except Exception:
+        logging.warning("crossword_generator: словарь форм недоступен", exc_info=True)
+
+    # 2. Приёмка: написание, словарная форма, существование слова, подсказки
     valid_words: list[dict] = []
     seen_words: set[str] = set()
     rejected: list[str] = []
     for entry in raw_words:
-        accepted, reason = _accept_word_entry(entry)
+        accepted, reason = _accept_word_entry(entry, lemma_pos)
         if not accepted:
             rejected.append(reason)
             continue
@@ -567,6 +610,9 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
             continue
         seen_words.add(accepted["word"])
         valid_words.append(accepted)
+
+    # 2б. Второе мнение о форме и естественности.
+    valid_words = _apply_form_judge(valid_words, rejected)
 
     if rejected:
         logging.info("crossword_generator: отклонено слов %d: %s", len(rejected), "; ".join(rejected))
