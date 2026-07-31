@@ -767,6 +767,10 @@ from backend.database import (
 )
 from backend.database import (
     refresh_user_display_name,
+    clean_identity_name,
+    get_user_display_name,
+    get_user_display_names,
+    remember_user_identity,
     lookup_base_dictionary_entry,
     upsert_base_dictionary_entry,
     list_base_dictionary_for_offline_pack,
@@ -3389,6 +3393,16 @@ def _grant_self_serve_webapp_access(
     if _HOTPATH_ALLOWLIST_CACHE.get(memo_key, allow_stale=False) is not None:
         return False
     display_name = _extract_display_name(user_data or {}) if user_data else None
+    if user_data:
+        # Регистрация нового человека — первое место, где мы вообще узнаём, как его зовут.
+        # Запоминаем сразу, чтобы ни один будущий пользователь не начинал жизнь безымянным.
+        remember_user_identity(
+            uid,
+            first_name=str((user_data or {}).get("first_name") or ""),
+            last_name=str((user_data or {}).get("last_name") or ""),
+            tg_username=str((user_data or {}).get("username") or ""),
+            source="signup",
+        )
     source = str(source_override or "").strip() or _self_serve_source_label(user_data, parsed_init_data)
     try:
         with db_acquire_scope("self_serve_access_grant"):
@@ -3504,9 +3518,10 @@ _display_name_refresh_seen: dict[int, str] = {}
 
 
 def _maybe_persist_display_name(user_id: int, user_data: dict) -> None:
-    """Best-effort: keep bt_3_user_progress.username populated for EVERY user from their
-    Telegram profile on webapp visits, so analytics never shows "Unknown". Never blocks
-    or fails the request."""
+    """Единственная точка записи имени на стороне приложения: каждый вход приносит свежий
+    профиль от Telegram, мы кладём его в таблицу личности (её читают все тексты для
+    человека) и заодно в прогресс — там на имени висит старая аналитика. Никогда не
+    задерживает и не роняет запрос."""
     try:
         uid = int(user_id or 0)
         if uid <= 0 or not user_data:
@@ -3520,6 +3535,13 @@ def _maybe_persist_display_name(user_id: int, user_data: dict) -> None:
         if _display_name_refresh_seen.get(uid) == cache_key:
             return
         _display_name_refresh_seen[uid] = cache_key
+        remember_user_identity(
+            uid,
+            first_name=first,
+            last_name=last,
+            tg_username=str(user_data.get("username") or ""),
+            source="webapp_visit",
+        )
         refresh_user_display_name(uid, display)
     except Exception:
         logging.debug("persist display name failed", exc_info=True)
@@ -4575,45 +4597,41 @@ def _build_signed_init_data_for_user(user_data: dict, auth_date: int | None = No
     return urlencode(payload)
 
 
-# Display name for a user we authenticated WITHOUT Telegram initData — the standalone
-# home-screen app signs its own session and Telegram is not there to hand us a name.
-# Without this the name lands as NULL in every row that visit writes, and later reports
-# greet the person with "None". Cached per process so a boot costs at most one lookup.
-_KNOWN_DISPLAY_NAME_TTL_SEC = 3600
-_known_display_name_cache: dict[int, tuple[float, str]] = {}
+# Про кого мы уже спрашивали Telegram и он тоже не знает имени. Без этого каждый запрос
+# такого пользователя тянул бы за собой обращение к Telegram прямо в обработчике.
+_UNKNOWN_NAME_RETRY_SEC = 900
+_unknown_display_name_seen: dict[int, float] = {}
 
 
 def _known_display_name_for_user(user_id: int | None) -> str:
-    """Best-known Telegram display name for ``user_id``: what earlier visits stored, else
-    ask Telegram once. Returns "" when nothing is known — callers must never substitute a
-    placeholder that can reach the user ("None", "user_123")."""
+    """Как зовут пользователя: таблица личности, а если там пусто — спрашиваем Telegram
+    один раз и тут же запоминаем. Возвращает "" когда имени правда нет: подставлять
+    вместо него "None" или "user_123" нельзя — это уходит человеку в текст."""
     safe_user_id = int(user_id or 0)
     if safe_user_id <= 0:
         return ""
-    now = time.time()
-    cached = _known_display_name_cache.get(safe_user_id)
-    if cached and (now - cached[0]) < _KNOWN_DISPLAY_NAME_TTL_SEC:
-        return cached[1]
-    label = ""
     try:
-        from backend.database import get_display_names_for_users
-
-        label = _normalize_user_label(
-            (get_display_names_for_users([safe_user_id]) or {}).get(safe_user_id)
-        )
+        label = get_user_display_name(safe_user_id)
+        if label:
+            _unknown_display_name_seen.pop(safe_user_id, None)
+            return label
+        asked_at = _unknown_display_name_seen.get(safe_user_id)
+        if asked_at and (time.time() - asked_at) < _UNKNOWN_NAME_RETRY_SEC:
+            return ""
+        _unknown_display_name_seen[safe_user_id] = time.time()
+        label = clean_identity_name(_fetch_telegram_chat_display_name(safe_user_id))
+        if label:
+            remember_user_identity(safe_user_id, display_name=label, source="telegram_getchat")
+        return label
     except Exception:
         logging.debug("known display name lookup failed user=%s", safe_user_id, exc_info=True)
-    if not label:
-        label = _normalize_user_label(_fetch_telegram_chat_display_name(safe_user_id))
-    _known_display_name_cache[safe_user_id] = (now, label)
-    return label
+        return ""
 
 
 def _delivery_display_name(user_id: int | None, raw_value: str | None = None) -> str:
-    """Name for text that reaches the USER. Takes the stored name when it is real, else
-    the best one we can find. Returns "" when we truly don't know — callers phrase around
-    it instead of printing "None" or "user_117649764" at a person."""
-    return _normalize_user_label(raw_value) or _known_display_name_for_user(user_id)
+    """Имя для текста, который уходит ЧЕЛОВЕКУ. Берёт то, что передали, если это настоящее
+    имя, иначе — имя из таблицы личности. "" когда не знаем: звать по id нельзя."""
+    return clean_identity_name(raw_value) or _known_display_name_for_user(user_id)
 
 
 def _extract_webapp_user_from_init_data(init_data: str) -> tuple[int | None, str | None]:
@@ -21224,18 +21242,17 @@ def _resolve_today_user_label(
     fallback: str = "друг",
     cache: dict[int, str | None] | None = None,
 ) -> str:
-    label = _normalize_user_label(raw_value)
+    label = clean_identity_name(raw_value)
     if label:
         return label
     safe_user_id = int(user_id)
-    tg_label: str | None
     if cache is not None and safe_user_id in cache:
-        tg_label = cache[safe_user_id]
+        known = cache[safe_user_id]
     else:
-        tg_label = _normalize_user_label(_fetch_telegram_chat_display_name(safe_user_id))
+        known = _known_display_name_for_user(safe_user_id)
         if cache is not None:
-            cache[safe_user_id] = tg_label
-    return tg_label or str(fallback or "друг")
+            cache[safe_user_id] = known or None
+    return known or str(fallback or "друг")
 
 
 def _resolve_today_group_user_label(
@@ -21244,13 +21261,13 @@ def _resolve_today_group_user_label(
     *,
     cache: dict[int, str | None] | None = None,
 ) -> str:
-    label = _normalize_user_label(raw_value)
+    label = clean_identity_name(raw_value)
     if not label:
         safe_user_id = int(user_id)
         if cache is not None and safe_user_id in cache:
             label = cache[safe_user_id] or ""
         else:
-            label = _normalize_user_label(_fetch_telegram_chat_display_name(safe_user_id))
+            label = _known_display_name_for_user(safe_user_id)
             if cache is not None:
                 cache[safe_user_id] = label or None
     if not label:

@@ -164,6 +164,10 @@ from backend.database import (
     get_telegram_quiz_poll_stats,
     is_telegram_quiz_word_mastered,
     get_admin_telegram_ids,
+    clean_identity_name,
+    get_user_display_name,
+    get_user_display_names,
+    remember_user_identity,
     is_telegram_user_allowed,
     is_telegram_user_allowed_async,
     log_billing_event,
@@ -7580,6 +7584,44 @@ async def track_group_member_context(update: Update, context: CallbackContext) -
         )
 
 
+# Что мы уже записали в этом процессе: {user_id: имя}. Пишем в базу только когда имя
+# видим впервые или когда человек его в Telegram сменил — иначе на каждый апдейт летел бы
+# лишний поток и лишняя запись.
+_identity_seen_in_process: dict[int, str] = {}
+
+
+def _remember_identity_from_telegram_user(user) -> None:
+    """Запомнить имя из апдейта Telegram. Фоном и молча: имя — не повод задерживать или
+    ронять обработку сообщения."""
+    try:
+        user_id = int(getattr(user, "id", 0) or 0)
+        if user_id <= 0:
+            return
+        first = str(getattr(user, "first_name", "") or "").strip()
+        last = str(getattr(user, "last_name", "") or "").strip()
+        handle = str(getattr(user, "username", "") or "").strip()
+        fingerprint = f"{first}|{last}|{handle}"
+        if _identity_seen_in_process.get(user_id) == fingerprint:
+            return
+        _identity_seen_in_process[user_id] = fingerprint
+
+        def _run() -> None:
+            try:
+                remember_user_identity(
+                    user_id,
+                    first_name=first,
+                    last_name=last,
+                    tg_username=handle,
+                    source="telegram_update",
+                )
+            except Exception:
+                logging.debug("remember identity from update failed", exc_info=True)
+
+        threading.Thread(target=_run, name="user-identity", daemon=True).start()
+    except Exception:
+        logging.debug("remember identity from update skipped", exc_info=True)
+
+
 async def enforce_user_access(update: Update, context: CallbackContext):
     user = update.effective_user
     if not user:
@@ -7591,6 +7633,11 @@ async def enforce_user_access(update: Update, context: CallbackContext):
     # "⛔️ Доступ к боту закрыт" into the chat right after every pin. Skip bots.
     if getattr(user, "is_bot", False):
         return
+
+    # Каждое касание бота — свежее имя от Telegram. Одна точка записи на весь бот:
+    # дальше любое обращение к человеку берёт имя из таблицы личности, а не из копии
+    # в своей таблице. Не блокирует апдейт и никогда его не роняет.
+    _remember_identity_from_telegram_user(user)
 
     # Poll answers must be processed to deliver private quiz feedback.
     if getattr(update, "poll_answer", None):
@@ -22974,67 +23021,8 @@ async def user_stats(update: Update, context: CallbackContext):
 
 
 def _normalize_report_display_name(value: str | None) -> str:
-    label = str(value or "").strip().lstrip("@").strip()
-    if not label:
-        return ""
-    lowered = label.lower()
-    if lowered in {"unknown", "unknown user", "unknown_user", "none", "null", "nan", "неизвестный пользователь"}:
-        return ""
-    if re.fullmatch(r"user[_\-\s]*\d+", lowered):
-        return ""
-    return label
-
-
-def _load_report_display_name_candidates(user_ids: set[int]) -> dict[int, str]:
-    safe_ids = sorted({int(uid) for uid in (user_ids or set()) if int(uid or 0) > 0})
-    if not safe_ids:
-        return {}
-
-    query = """
-        WITH candidates AS (
-            SELECT user_id, username, 1 AS priority, MAX(timestamp) AS seen_at
-            FROM bt_3_translations
-            WHERE user_id = ANY(%s) AND COALESCE(NULLIF(username, ''), '') <> ''
-            GROUP BY user_id, username
-            UNION ALL
-            SELECT user_id, username, 2 AS priority, MAX(start_time) AS seen_at
-            FROM bt_3_user_progress
-            WHERE user_id = ANY(%s) AND COALESCE(NULLIF(username, ''), '') <> ''
-            GROUP BY user_id, username
-            UNION ALL
-            SELECT user_id, username, 3 AS priority, MAX(timestamp) AS seen_at
-            FROM bt_3_messages
-            WHERE user_id = ANY(%s) AND COALESCE(NULLIF(username, ''), '') <> ''
-            GROUP BY user_id, username
-            UNION ALL
-            SELECT user_id, username, 4 AS priority, MAX(updated_at) AS seen_at
-            FROM bt_3_allowed_users
-            WHERE user_id = ANY(%s) AND COALESCE(NULLIF(username, ''), '') <> ''
-            GROUP BY user_id, username
-        ),
-        ranked AS (
-            SELECT user_id, username,
-                   ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY priority ASC, seen_at DESC NULLS LAST) AS rn
-            FROM candidates
-        )
-        SELECT user_id, username
-        FROM ranked
-        WHERE rn = 1;
-    """
-    out: dict[int, str] = {}
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(query, (safe_ids, safe_ids, safe_ids, safe_ids))
-        for uid, label in cursor.fetchall() or []:
-            normalized = _normalize_report_display_name(label)
-            if normalized:
-                out[int(uid)] = normalized
-        cursor.close()
-        conn.close()
-    except Exception:
-        logging.warning("report display-name candidate lookup failed", exc_info=True)
-    return out
+    """Настоящее имя или "" — заглушки отсекает общий фильтр слоя личности."""
+    return clean_identity_name(value)
 
 
 async def _resolve_report_display_names(
@@ -23042,27 +23030,36 @@ async def _resolve_report_display_names(
     user_ids: set[int],
     seed_names: dict[int, str] | None = None,
 ) -> dict[int, str]:
+    """Как зовут этих людей. Одно место на весь бот: имя берём из таблицы личности, а кого
+    там ещё нет — спрашиваем у Telegram один раз и тут же запоминаем. Кого не знаем — того
+    в ответе нет: обращаться к человеку по id нельзя."""
     safe_ids = {int(uid) for uid in (user_ids or set()) if int(uid or 0) > 0}
-    labels = await asyncio.to_thread(_load_report_display_name_candidates, safe_ids)
-    for uid, raw in (seed_names or {}).items():
-        normalized = _normalize_report_display_name(raw)
-        if normalized:
-            labels.setdefault(int(uid), normalized)
+    if not safe_ids:
+        return {}
 
-    for uid in sorted(safe_ids):
+    for uid, raw in (seed_names or {}).items():
+        seeded = clean_identity_name(raw)
+        if seeded:
+            await asyncio.to_thread(
+                remember_user_identity, int(uid), display_name=seeded, source="report_seed"
+            )
+
+    labels = await asyncio.to_thread(get_user_display_names, safe_ids)
+    for uid in sorted(safe_ids - set(labels)):
         try:
             chat = await context.bot.get_chat(int(uid))
         except Exception:
             continue
-        first = str(getattr(chat, "first_name", "") or "").strip()
-        last = str(getattr(chat, "last_name", "") or "").strip()
-        full_name = _normalize_report_display_name(" ".join(part for part in (first, last) if part))
-        if full_name:
-            labels[int(uid)] = full_name
-            continue
-        username = _normalize_report_display_name(str(getattr(chat, "username", "") or ""))
-        if username:
-            labels.setdefault(int(uid), username)
+        learned = await asyncio.to_thread(
+            remember_user_identity,
+            int(uid),
+            first_name=str(getattr(chat, "first_name", "") or ""),
+            last_name=str(getattr(chat, "last_name", "") or ""),
+            tg_username=str(getattr(chat, "username", "") or ""),
+            source="telegram_getchat",
+        )
+        if learned:
+            labels[int(uid)] = learned
     return labels
 
 

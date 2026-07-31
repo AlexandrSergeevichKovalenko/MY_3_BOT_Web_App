@@ -715,6 +715,244 @@ def refresh_user_display_name(user_id: int, display_name: str) -> int:
             return cursor.rowcount or 0
 
 
+# === Кто есть кто: ОДНО имя пользователя на весь продукт ====================================
+# Имя человека исторически копировалось в два десятка таблиц (переводы, прогресс, сообщения,
+# результаты спринтов, участники баттлов…). Каждая копия писалась своим куском кода в свой
+# момент, и стоило одному месту записать пусто — отчёт, который читал именно эту таблицу,
+# здоровался с человеком как "None". Здесь один источник правды: пишет его одна функция
+# (remember_user_identity — её зовут все точки касания: любое сообщение боту, любой вход в
+# приложение), читает тоже одна (get_user_display_name / get_user_display_names). Старые
+# колонки остаются как исторический след, но текстами для человека больше не управляют.
+_USER_IDENTITY_SCHEMA_READY = False
+_USER_IDENTITY_SCHEMA_LOCK = threading.Lock()
+_USER_IDENTITY_CACHE: dict[int, tuple[str, float]] = {}
+_USER_IDENTITY_CACHE_LOCK = threading.Lock()
+_USER_IDENTITY_CACHE_TTL_SEC = max(
+    0, int(str(os.getenv("USER_IDENTITY_CACHE_TTL_SEC") or "600").strip() or "600")
+)
+
+# Не имена, а служебные пометки и заглушки: их нельзя показывать человеку и нельзя
+# запоминать как имя. Список закрытый — всё остальное считаем настоящим именем.
+_IDENTITY_JUNK_NAMES = {
+    "unknown",
+    "unknown user",
+    "unknown_user",
+    "none",
+    "null",
+    "nan",
+    "admin",
+    "owner_admin",
+    "student",
+    "неизвестный пользователь",
+}
+_IDENTITY_JUNK_PATTERN = re.compile(r"^(user|useer|load[_\- ]?test)[_\- ]*\d*$", re.IGNORECASE)
+
+
+def clean_identity_name(value: str | None) -> str:
+    """Настоящее имя или "" — заглушки ("Unknown", "user_123", "load_test_…") отсекаются."""
+    label = str(value or "").strip().lstrip("@").strip()
+    if not label:
+        return ""
+    if label.lower() in _IDENTITY_JUNK_NAMES:
+        return ""
+    if _IDENTITY_JUNK_PATTERN.match(label):
+        return ""
+    return label
+
+
+def ensure_user_identity_schema() -> None:
+    global _USER_IDENTITY_SCHEMA_READY
+    if _USER_IDENTITY_SCHEMA_READY:
+        return
+    with _USER_IDENTITY_SCHEMA_LOCK:
+        if _USER_IDENTITY_SCHEMA_READY:
+            return
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_xact_lock(%s);", (94081137,))
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_user_identity (
+                        user_id BIGINT PRIMARY KEY,
+                        display_name TEXT NOT NULL,
+                        first_name TEXT,
+                        last_name TEXT,
+                        tg_username TEXT,
+                        source TEXT,
+                        refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+            conn.commit()
+        _USER_IDENTITY_SCHEMA_READY = True
+
+
+def _identity_cache_get(user_id: int) -> str | None:
+    if _USER_IDENTITY_CACHE_TTL_SEC <= 0:
+        return None
+    with _USER_IDENTITY_CACHE_LOCK:
+        hit = _USER_IDENTITY_CACHE.get(int(user_id))
+    if not hit:
+        return None
+    name, stored_at = hit
+    if (time.time() - stored_at) > _USER_IDENTITY_CACHE_TTL_SEC:
+        return None
+    return name
+
+
+def _identity_cache_put(user_id: int, display_name: str) -> None:
+    if _USER_IDENTITY_CACHE_TTL_SEC <= 0:
+        return
+    with _USER_IDENTITY_CACHE_LOCK:
+        _USER_IDENTITY_CACHE[int(user_id)] = (str(display_name or ""), time.time())
+
+
+def remember_user_identity(
+    user_id: int,
+    *,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    tg_username: str | None = None,
+    display_name: str | None = None,
+    source: str | None = None,
+) -> str:
+    """Запомнить, как зовут человека. Зовётся на КАЖДОМ касании (сообщение боту, вход в
+    приложение, выдача сессии) — Telegram отдаёт свежее имя, мы его храним. Возвращает
+    имя, которое теперь считается верным ("" — если ничего настоящего не передали и
+    ничего не знали раньше). Пустое/служебное значение никогда не затирает настоящее."""
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0:
+        return ""
+    first = clean_identity_name(first_name)
+    last = str(last_name or "").strip()
+    handle = clean_identity_name(tg_username)
+    resolved = clean_identity_name(display_name) or " ".join(p for p in (first, last) if p).strip() or handle
+    if not resolved:
+        return get_user_display_name(safe_user_id)
+    if _identity_cache_get(safe_user_id) == resolved:
+        return resolved
+    try:
+        ensure_user_identity_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_user_identity
+                        (user_id, display_name, first_name, last_name, tg_username, source, refreshed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        display_name = EXCLUDED.display_name,
+                        first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), bt_3_user_identity.first_name),
+                        last_name = COALESCE(NULLIF(EXCLUDED.last_name, ''), bt_3_user_identity.last_name),
+                        tg_username = COALESCE(NULLIF(EXCLUDED.tg_username, ''), bt_3_user_identity.tg_username),
+                        source = EXCLUDED.source,
+                        refreshed_at = NOW();
+                    """,
+                    (safe_user_id, resolved, first, last, handle, str(source or "").strip() or None),
+                )
+            conn.commit()
+        _identity_cache_put(safe_user_id, resolved)
+    except Exception:
+        logging.warning("remember_user_identity failed user=%s", safe_user_id, exc_info=True)
+    return resolved
+
+
+# Откуда достать имя для того, кого мы ещё не записали в bt_3_user_identity: старые таблицы,
+# куда имя копировалось раньше. Список доступа (bt_3_allowed_users) сюда НЕ входит — там
+# лежат админские пометки вроде "owner_admin", а не имена.
+_IDENTITY_LEGACY_SOURCES_SQL = """
+    SELECT user_id, btrim(username) AS name, MAX(timestamp) AS seen_at
+    FROM bt_3_translations
+    WHERE user_id = ANY(%s) AND COALESCE(btrim(username), '') <> ''
+    GROUP BY user_id, btrim(username)
+    UNION ALL
+    SELECT user_id, btrim(username), MAX(start_time)
+    FROM bt_3_user_progress
+    WHERE user_id = ANY(%s) AND COALESCE(btrim(username), '') <> ''
+    GROUP BY user_id, btrim(username)
+    UNION ALL
+    SELECT user_id, btrim(username), MAX(timestamp)
+    FROM bt_3_messages
+    WHERE user_id = ANY(%s) AND COALESCE(btrim(username), '') <> ''
+    GROUP BY user_id, btrim(username)
+    UNION ALL
+    SELECT user_id, btrim(user_name), MAX(created_at)
+    FROM bt_3_challenge_results
+    WHERE user_id = ANY(%s) AND COALESCE(btrim(user_name), '') <> ''
+    GROUP BY user_id, btrim(user_name)
+"""
+
+
+def _load_identity_from_legacy_tables(user_ids: list[int]) -> dict[int, str]:
+    if not user_ids:
+        return {}
+    out: dict[int, str] = {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "WITH candidates AS ("
+                    + _IDENTITY_LEGACY_SOURCES_SQL
+                    + ") SELECT DISTINCT ON (user_id) user_id, name FROM candidates "
+                    "ORDER BY user_id, seen_at DESC NULLS LAST;",
+                    (user_ids, user_ids, user_ids, user_ids),
+                )
+                for uid, name in cursor.fetchall() or []:
+                    cleaned = clean_identity_name(name)
+                    if cleaned:
+                        out[int(uid)] = cleaned
+    except Exception:
+        logging.warning("identity legacy lookup failed", exc_info=True)
+    return out
+
+
+def get_user_display_names(user_ids: list[int] | set[int]) -> dict[int, str]:
+    """Имена для набора пользователей. Сначала таблица личности; кого там нет — достаём из
+    старых таблиц и тут же записываем в личность, чтобы второй раз не искать. Пользователи,
+    про которых мы ничего не знаем, в ответе отсутствуют — звать их по id нельзя."""
+    ids = sorted({int(uid) for uid in (user_ids or []) if int(uid or 0) > 0})
+    if not ids:
+        return {}
+    out: dict[int, str] = {}
+    missing: list[int] = []
+    for uid in ids:
+        cached = _identity_cache_get(uid)
+        if cached:
+            out[uid] = cached
+        else:
+            missing.append(uid)
+    if missing:
+        try:
+            ensure_user_identity_schema()
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT user_id, display_name FROM bt_3_user_identity WHERE user_id = ANY(%s);",
+                        (missing,),
+                    )
+                    for uid, name in cursor.fetchall() or []:
+                        cleaned = clean_identity_name(name)
+                        if cleaned:
+                            out[int(uid)] = cleaned
+                            _identity_cache_put(int(uid), cleaned)
+        except Exception:
+            logging.warning("identity lookup failed", exc_info=True)
+    still_missing = [uid for uid in ids if uid not in out]
+    for uid, name in _load_identity_from_legacy_tables(still_missing).items():
+        out[uid] = name
+        remember_user_identity(uid, display_name=name, source="legacy_tables")
+    return out
+
+
+def get_user_display_name(user_id: int) -> str:
+    """Имя одного пользователя или "" — заглушки вроде "user_123" не возвращаются никогда."""
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0:
+        return ""
+    return get_user_display_names([safe_user_id]).get(safe_user_id, "")
+
+
 def sync_translation_session_activity(
     *,
     user_id: int,
@@ -45863,6 +46101,39 @@ def count_crossword_bank_entries(*, exclude_retired: bool = True) -> int:
             return int((row or [0])[0])
 
 
+def recent_crossword_bank_words(*, limit_entries: int = 12) -> list[str]:
+    """Слова из последних собранных кроссвордов — чтобы не загадывать одно и то же.
+
+    Разбор банка 31.07: 48 % мест занимали повторы (UMWELTSCHUTZ — 10 раз,
+    KLIMAWANDEL — 9). Список уходит в запрос к модели как «эти уже были»."""
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT words_json FROM bt_3_crossword_bank
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (int(limit_entries),),
+            )
+            rows = cursor.fetchall() or []
+    seen: list[str] = []
+    known: set[str] = set()
+    for row in rows:
+        raw = row[0]
+        try:
+            words = raw if isinstance(raw, list) else _json.loads(raw or "[]")
+        except (ValueError, TypeError):
+            continue
+        for item in words or []:
+            word = str((item or {}).get("word") or "").strip().upper()
+            if word and word not in known:
+                known.add(word)
+                seen.append(word)
+    return seen
+
+
 def get_crossword_bank_entry(crossword_id: str) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -46856,15 +47127,17 @@ def get_sprint_leaderboard_rows_since(since_hours: int = 24) -> list[dict]:
 
 
 def get_display_names_for_users(user_ids: list[int]) -> dict[int, str]:
-    """Best-known display name per user_id, drawn from every table that captures the
-    Telegram display name (translation-session progress + challenge results + both sprint
-    result tables). Picks the MOST RECENT non-empty name per user. Used to backfill
-    leaderboard rows whose source table has no name column (Telegram-GROUP inline answers
-    land in per-type answer tables that only store user_id) so 2nd/3rd/… places don't
-    degrade to the "Student" placeholder. Returns ``{user_id: name}`` (known names only)."""
+    """Имена для таблиц лидеров и прочих списков. Сначала единый источник — таблица
+    личности; кого там ещё нет, ищем в старых таблицах результатов (там имя писалось
+    копией) и тут же запоминаем, чтобы второй раз не искать. Возвращает только известные
+    имена: строку без имени показываем как "Ученик", но не как "user_123"."""
     ids = sorted({int(u) for u in (user_ids or []) if u is not None})
     if not ids:
         return {}
+    out = get_user_display_names(ids)
+    ids = [uid for uid in ids if uid not in out]
+    if not ids:
+        return out
     sql = """
         SELECT DISTINCT ON (user_id) user_id, user_name
         FROM (
@@ -46886,14 +47159,14 @@ def get_display_names_for_users(user_ids: list[int]) -> dict[int, str]:
         ) t
         ORDER BY user_id, ts DESC;
     """
-    out: dict[int, str] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(sql, (ids, ids, ids, ids))
             for uid, name in (cursor.fetchall() or []):
-                nm = str(name or "").strip()
+                nm = clean_identity_name(name)
                 if nm:
                     out[int(uid)] = nm
+                    remember_user_identity(int(uid), display_name=nm, source="legacy_tables")
     return out
 
 
