@@ -12288,6 +12288,33 @@ async def handle_retire_review_callback(update: Update, context: CallbackContext
             logging.warning("retire review reply failed", exc_info=True)
 
 
+def _artask_redis_key(message_id: int) -> str:
+    return f"artwords_ask:{int(message_id)}"
+
+
+def _artask_bind(message_id: int, theme_key: str, ttl: int = 604800) -> None:
+    """Запомнить, к какой теме относится просьба «пришли свои слова».
+
+    Привязка живёт ОТДЕЛЬНО от состояния темы и переживает завершённый разбор. Раньше она
+    хранилась в самой теме и стиралась, как только слова записывались: владелец отвечал на
+    то же сообщение второй раз, привязки уже не было, и слова уходили в переводчик."""
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is not None:
+        client.set(_artask_redis_key(message_id), str(theme_key), ex=ttl)
+
+
+def _artask_theme(message_id: int) -> str | None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is None:
+        return None
+    raw = client.get(_artask_redis_key(message_id))
+    if not raw:
+        return None
+    return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+
+
 def _artwords_redis_key(proposal_id: str) -> str:
     return f"artwords_proposal:{proposal_id}"
 
@@ -12443,6 +12470,7 @@ async def handle_fill_control_callback(update: Update, context: CallbackContext)
             )
             await asyncio.to_thread(set_theme_fill_state, theme_key, "awaiting_words",
                                     awaiting_message_id=int(ask.message_id))
+            _artask_bind(int(ask.message_id), theme_key)
         except Exception:
             logging.warning("fill control: ask for words failed theme=%s", theme_key, exc_info=True)
             await query.message.reply_text("Не получилось собрать список слов. Подробности в логах.")
@@ -12486,14 +12514,27 @@ async def handle_manual_theme_words(update: Update, context: CallbackContext) ->
         return
     if not _is_admin_user(user.id):
         return
+    reply_to = int(message.reply_to_message.message_id)
     try:
-        from backend.database import theme_awaiting_words_by_message
-        theme_key = await asyncio.to_thread(
-            theme_awaiting_words_by_message, int(message.reply_to_message.message_id))
+        # Сначала привязка самого сообщения: она переживает завершённый разбор, поэтому
+        # на одну и ту же просьбу можно ответить и второй раз, и третий.
+        theme_key = _artask_theme(reply_to)
+        if not theme_key:
+            from backend.database import theme_awaiting_words_by_message
+            theme_key = await asyncio.to_thread(theme_awaiting_words_by_message, reply_to)
     except Exception:
         logging.warning("manual theme words: lookup failed", exc_info=True)
         return
     if not theme_key:
+        # Ответ на просьбу, которую мы уже не помним (перезапуск, истёкший срок). Молча
+        # пропустить нельзя: слова уйдут в переводчик, и человек второй раз не поймёт,
+        # почему то же действие дало другой результат.
+        replied = str(getattr(message.reply_to_message, "text", "") or "")
+        if replied.startswith("✍️ Свои слова для темы"):
+            await message.reply_text(
+                "Этот разбор уже закрыт. Нажми «✍️ ещё слова» — пришлю свежий список "
+                "слов темы, и ответишь на него.")
+            raise ApplicationHandlerStop
         return
     await message.reply_text("Проверяю слова — артикли по справочнику, перевод сам…")
     try:
