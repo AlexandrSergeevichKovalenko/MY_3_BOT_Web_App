@@ -29254,7 +29254,7 @@ function AppInner() {
     await saveManualTranscriptToDb(fallback);
   };
 
-  const handleFinishTranslation = async () => {
+  const runFinishTranslation = async () => {
     if (translationFinishInFlightRef.current) {
       return;
     }
@@ -29330,6 +29330,40 @@ function AppInner() {
       translationFinishInFlightRef.current = false;
       setWebappLoading(false);
     }
+  };
+
+  // Завершение закрывает набор насовсем: непереведённые предложения из него больше не
+  // вернутся, а на бесплатном тарифе следующий набор — только завтра. Поэтому, если на
+  // экране остались непроверенные предложения, сначала спрашиваем.
+  const handleFinishTranslation = async () => {
+    // Проверенные предложения уходят из `sentences` в `results`, поэтому на экране
+    // остаётся ровно то, что человек ещё не перевёл.
+    const remainingCount = Array.isArray(sentences) ? sentences.length : 0;
+    const checkedCount = Array.isArray(results) ? results.filter((item) => !item?.incomplete).length : 0;
+    const totalCount = checkedCount + remainingCount;
+    if (remainingCount > 0 && !translationFinishInFlightRef.current) {
+      const isFreeTier = billingEffectiveMode === 'free';
+      showNoticeModal({
+        emoji: '✍️',
+        title: tr('Ещё не всё переведено', 'Noch nicht alles übersetzt'),
+        message: tr(
+          isFreeTier
+            ? `Переведено ${checkedCount} из ${totalCount}. Если завершить сейчас, остальные предложения из этого набора пропадут, а новый набор откроется завтра.`
+            : `Переведено ${checkedCount} из ${totalCount}. Если завершить сейчас, остальные предложения из этого набора пропадут.`,
+          isFreeTier
+            ? `Übersetzt: ${checkedCount} von ${totalCount}. Wenn du jetzt beendest, sind die übrigen Sätze dieses Sets weg — ein neues Set gibt es morgen.`
+            : `Übersetzt: ${checkedCount} von ${totalCount}. Wenn du jetzt beendest, sind die übrigen Sätze dieses Sets weg.`
+        ),
+        okLabel: tr('Продолжить перевод', 'Weiter übersetzen'),
+        confirmLabel: tr('Всё равно завершить', 'Trotzdem beenden'),
+        onConfirm: () => {
+          setNoticeModal(null);
+          void runFinishTranslation();
+        },
+      });
+      return;
+    }
+    await runFinishTranslation();
   };
 
   // Разборы уже лежат в базе, экран — не хранилище. Убираем их отсюда, когда человек
@@ -36127,6 +36161,8 @@ function AppInner() {
               title={noticeModal?.title}
               message={noticeModal?.message}
               okLabel={noticeModal?.okLabel}
+              confirmLabel={noticeModal?.confirmLabel}
+              onConfirm={noticeModal?.onConfirm}
             />
 
             <ReaderAudioLimitModal
