@@ -534,10 +534,11 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     # Слова из последних кроссвордов — чтобы «Кухня» не приходила каждый раз с одним
     # и тем же холодильником: в старом банке 48 % мест занимали повторы.
     try:
-        avoid = recent_crossword_bank_words(limit_entries=12)
+        avoid = recent_crossword_bank_words(limit_entries=25)
     except Exception:
         logging.debug("crossword_generator: recent words unavailable", exc_info=True)
         avoid = []
+    avoid_set = {w.upper() for w in avoid}
 
     logging.info(
         "crossword_generator: generating topic=%r angle=%r difficulty=%s avoid=%d",
@@ -557,6 +558,12 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
             rejected.append(reason)
             continue
         if accepted["word"] in seen_words:
+            continue
+        # Просьбы «эти слова уже были» модель слушается не всегда: в первом же
+        # пересобранном банке FÜTTER встретилось трижды. Поэтому повтор не просто
+        # не приветствуется, а не проходит.
+        if accepted["word"] in avoid_set:
+            rejected.append(f"{accepted['word']}: недавно уже было")
             continue
         seen_words.add(accepted["word"])
         valid_words.append(accepted)
