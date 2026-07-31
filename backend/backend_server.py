@@ -4575,6 +4575,47 @@ def _build_signed_init_data_for_user(user_data: dict, auth_date: int | None = No
     return urlencode(payload)
 
 
+# Display name for a user we authenticated WITHOUT Telegram initData — the standalone
+# home-screen app signs its own session and Telegram is not there to hand us a name.
+# Without this the name lands as NULL in every row that visit writes, and later reports
+# greet the person with "None". Cached per process so a boot costs at most one lookup.
+_KNOWN_DISPLAY_NAME_TTL_SEC = 3600
+_known_display_name_cache: dict[int, tuple[float, str]] = {}
+
+
+def _known_display_name_for_user(user_id: int | None) -> str:
+    """Best-known Telegram display name for ``user_id``: what earlier visits stored, else
+    ask Telegram once. Returns "" when nothing is known — callers must never substitute a
+    placeholder that can reach the user ("None", "user_123")."""
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0:
+        return ""
+    now = time.time()
+    cached = _known_display_name_cache.get(safe_user_id)
+    if cached and (now - cached[0]) < _KNOWN_DISPLAY_NAME_TTL_SEC:
+        return cached[1]
+    label = ""
+    try:
+        from backend.database import get_display_names_for_users
+
+        label = _normalize_user_label(
+            (get_display_names_for_users([safe_user_id]) or {}).get(safe_user_id)
+        )
+    except Exception:
+        logging.debug("known display name lookup failed user=%s", safe_user_id, exc_info=True)
+    if not label:
+        label = _normalize_user_label(_fetch_telegram_chat_display_name(safe_user_id))
+    _known_display_name_cache[safe_user_id] = (now, label)
+    return label
+
+
+def _delivery_display_name(user_id: int | None, raw_value: str | None = None) -> str:
+    """Name for text that reaches the USER. Takes the stored name when it is real, else
+    the best one we can find. Returns "" when we truly don't know — callers phrase around
+    it instead of printing "None" or "user_117649764" at a person."""
+    return _normalize_user_label(raw_value) or _known_display_name_for_user(user_id)
+
+
 def _extract_webapp_user_from_init_data(init_data: str) -> tuple[int | None, str | None]:
     if not init_data or not _telegram_hash_is_valid(init_data):
         return None, None
@@ -4678,6 +4719,10 @@ def _authenticate_webapp_request(payload: dict | None = None) -> tuple[int | Non
         return None, None, "initData не прошёл проверку и токен недействителен"
     if not _is_webapp_user_allowed(int(user_id)):
         return None, None, "Доступ к приложению закрыт администратором."
+    if not _normalize_user_label(username):
+        # Token-authenticated request (no Telegram initData) — fall back to the name we
+        # already know, so rows this request writes are never nameless.
+        username = _known_display_name_for_user(int(user_id)) or None
     return int(user_id), username, None
 
 
@@ -21067,7 +21112,11 @@ def _extract_display_name(user_data: dict | None) -> str | None:
     if full_name:
         return full_name
     username = (user_data.get("username") or "").strip()
-    return username or None
+    if username:
+        return username
+    # A session signed without a name (standalone home-screen app) must not write nameless
+    # rows — fall back to the name we already know for this user.
+    return _known_display_name_for_user(user_data.get("id")) or None
 
 
 def _normalize_user_label(raw_value: str | None) -> str:
@@ -38267,7 +38316,13 @@ def issue_app_browser_session():
         user_id = _resolve_webapp_user_id(request.get_json(silent=True) or {})
     if not user_id or int(user_id) <= 0:
         return jsonify({"error": "not authenticated"}), 401
-    init_data = _build_signed_init_data_for_user({"id": int(user_id)}, auth_date=int(time.time()))
+    # The name matters: everything this session writes (translations, check sessions,
+    # progress rows) copies the name out of initData, and reports read it back. Signing
+    # an id-only session made those rows NULL and the weekly report greeted "None".
+    init_data = _build_signed_init_data_for_user(
+        {"id": int(user_id), "first_name": _known_display_name_for_user(int(user_id))},
+        auth_date=int(time.time()),
+    )
     if not init_data:
         return jsonify({"error": "Не удалось выпустить initData"}), 500
     return jsonify({"ok": True, "initData": init_data})
@@ -58392,10 +58447,14 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     continue
                 try:
                     audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
-                    name = daily_names.get(user_id) or f"user_{user_id}"
+                    name = _delivery_display_name(user_id, daily_names.get(user_id))
                     pair_label = _pair_code(source_lang, target_lang)
-                    filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
-                    caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
+                    filename = safe_filename(f"{name or 'mistakes'}_{pair_label}", user_id, target_date.isoformat())
+                    caption = (
+                        f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
+                        if name
+                        else f"Ошибки за {target_date.isoformat()} ({pair_label})"
+                    )
                     _send_mistakes_card(target_chat_id=int(chat_id), name=name, count=len(mistakes), kind="daily")
                     _send_group_audio(audio, filename, caption, chat_id=int(chat_id))
                     sent_daily += 1
@@ -58407,10 +58466,14 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                     continue
                 try:
                     audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
-                    name = story_names.get(user_id) or f"user_{user_id}"
+                    name = _delivery_display_name(user_id, story_names.get(user_id))
                     pair_label = _pair_code(source_lang, target_lang)
-                    filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
-                    caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
+                    filename = safe_filename(f"{name or 'mistakes'}_{pair_label}", user_id, target_date.isoformat())
+                    caption = (
+                        f"История за {target_date.isoformat()} — {name} ({pair_label})"
+                        if name
+                        else f"История за {target_date.isoformat()} ({pair_label})"
+                    )
                     _send_mistakes_card(target_chat_id=int(chat_id), name=name, count=len(mistakes), kind="story")
                     _send_group_audio(audio, filename, caption, chat_id=int(chat_id))
                     sent_story += 1
@@ -58422,10 +58485,14 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 continue
             try:
                 audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
-                name = daily_names.get(user_id) or f"user_{user_id}"
+                name = _delivery_display_name(user_id, daily_names.get(user_id))
                 pair_label = _pair_code(source_lang, target_lang)
-                filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
-                caption = f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
+                filename = safe_filename(f"{name or 'mistakes'}_{pair_label}", user_id, target_date.isoformat())
+                caption = (
+                    f"Ошибки за {target_date.isoformat()} — {name} ({pair_label})"
+                    if name
+                    else f"Ошибки за {target_date.isoformat()} ({pair_label})"
+                )
                 target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.daily")
                 _send_mistakes_card(target_chat_id=int(target_chat_id), name=name, count=len(mistakes), kind="daily")
                 if int(target_chat_id) < 0:
@@ -58441,10 +58508,14 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 continue
             try:
                 audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
-                name = story_names.get(user_id) or f"user_{user_id}"
+                name = _delivery_display_name(user_id, story_names.get(user_id))
                 pair_label = _pair_code(source_lang, target_lang)
-                filename = safe_filename(f"{name}_{pair_label}", user_id, target_date.isoformat())
-                caption = f"История за {target_date.isoformat()} — {name} ({pair_label})"
+                filename = safe_filename(f"{name or 'mistakes'}_{pair_label}", user_id, target_date.isoformat())
+                caption = (
+                    f"История за {target_date.isoformat()} — {name} ({pair_label})"
+                    if name
+                    else f"История за {target_date.isoformat()} ({pair_label})"
+                )
                 target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.story")
                 _send_mistakes_card(target_chat_id=int(target_chat_id), name=name, count=len(mistakes), kind="story")
                 if int(target_chat_id) < 0:
@@ -58626,16 +58697,18 @@ def _dispatch_private_analytics(target_date: date) -> dict:
             total = int(summary.get("total_translations") or 0)
             if total <= 0:
                 continue
-            name = username or f"user_{user_id}"
+            name = _delivery_display_name(user_id, username)
             text = (
                 f"📊 Твоя аналитика за неделю ({bounds.start_date} — {bounds.end_date})\n"
-                f"👤 {name}\n"
-                f"✅ Успешных переводов: {summary.get('successful_translations', 0)} / {total}\n"
-                f"🎯 Средний балл: {summary.get('avg_score', 0)}\n"
-                f"📈 Успешность: {summary.get('success_rate', 0)}%\n"
-                f"⏱️ Среднее время: {summary.get('avg_time_min', 0)} мин\n"
-                f"🔥 Final score: {summary.get('final_score', 0)}\n\n"
-                f"Открыть графики и детали:\n{_build_webapp_deeplink('analytics')}"
+                + (f"👤 {name}\n" if name else "")
+                + (
+                    f"✅ Успешных переводов: {summary.get('successful_translations', 0)} / {total}\n"
+                    f"🎯 Средний балл: {summary.get('avg_score', 0)}\n"
+                    f"📈 Успешность: {summary.get('success_rate', 0)}%\n"
+                    f"⏱️ Среднее время: {summary.get('avg_time_min', 0)} мин\n"
+                    f"🔥 Final score: {summary.get('final_score', 0)}\n\n"
+                    f"Открыть графики и детали:\n{_build_webapp_deeplink('analytics')}"
+                )
             )
             target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_private_analytics")
             if int(target_chat_id) < 0:
@@ -59415,7 +59488,8 @@ def _build_plan_goals_chart_png(
     ax_reading.bar([x[reading_index]], [actual_values[reading_index]], width=width, color="#34d399", alpha=0.9)
     ax_reading.bar([x[reading_index] + width], [forecast_values[reading_index]], width=width, color="#f59e0b", alpha=0.9)
 
-    ax.set_title(f"Личные цели ({period_label}): {username} ({source_lang}->{target_lang})\n{start_date} — {end_date}")
+    who = f": {username}" if str(username or "").strip() else ""
+    ax.set_title(f"Личные цели ({period_label}){who} ({source_lang}->{target_lang})\n{start_date} — {end_date}")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=0)
     ax.grid(axis="y", linestyle="--", alpha=0.25)
@@ -59528,7 +59602,7 @@ def _dispatch_plan_period_progress(
                 as_of_date=target_date,
             )
             metrics = progress.get("metrics") if isinstance(progress, dict) else {}
-            title_name = username or f"user_{user_id}"
+            title_name = _delivery_display_name(user_id, username)
             chart_png = _build_plan_goals_chart_png(
                 username=title_name,
                 source_lang=source_lang,
@@ -59546,7 +59620,8 @@ def _dispatch_plan_period_progress(
             m_agent = (metrics or {}).get("agent_minutes") or {}
             m_reading = (metrics or {}).get("reading_minutes") or {}
             caption = (
-                f"🎯 Личные цели ({period_label}): {title_name} ({source_lang}->{target_lang})\n"
+                f"🎯 Личные цели ({period_label})"
+                f"{f': {title_name}' if title_name else ''} ({source_lang}->{target_lang})\n"
                 f"{progress.get('start_date')} — {progress.get('end_date')}\n"
                 f"Переводы: {m_trans.get('actual', 0)} / {m_trans.get('goal', 0)} (прогноз {m_trans.get('forecast', 0)})\n"
                 f"Слова: {m_words.get('actual', 0)} / {m_words.get('goal', 0)} (прогноз {m_words.get('forecast', 0)})\n"
@@ -59590,10 +59665,10 @@ def _dispatch_plan_period_progress(
                 )
                 if has_plan:
                     continue
-                name = username or f"user_{user_id}"
+                name = _delivery_display_name(user_id, username)
                 reminder = (
-                    f"🗓 Новый понедельник, {name}.\n"
-                    "Поставь личный план на неделю: переводы, выученные слова, минуты с агентом и чтение."
+                    (f"🗓 Новый понедельник, {name}.\n" if name else "🗓 Новый понедельник.\n")
+                    + "Поставь личный план на неделю: переводы, выученные слова, минуты с агентом и чтение."
                 )
                 plan_button_url = _build_webapp_deeplink("webapp")
                 reply_markup = {

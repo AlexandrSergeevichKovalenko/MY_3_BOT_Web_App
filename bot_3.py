@@ -22514,16 +22514,10 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext, only_user
 
         total_sentences, mistakes_week, top_mistake_category, number_of_top_category_mistakes, top_mistake_subcategory_1, top_mistake_subcategory_2 = await rate_mistakes(safe_user_id)
         if total_sentences:
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        SELECT DISTINCT username FROM bt_3_translations WHERE user_id = %s;
-                        """,
-                        (safe_user_id,),
-                    )
-                    result = cursor.fetchone()
-                    username = result[0] if result else "Unknown User"
+            # One nameless row was enough to make the raw DISTINCT query hand back NULL and
+            # greet the person with "None". The shared resolver takes the newest real name
+            # across every table that stores one, and asks Telegram when none exists.
+            username = (await _resolve_report_display_names(context, {safe_user_id})).get(safe_user_id, "")
 
             ranked_topics = _get_weekly_recommendation_topics(
                 safe_user_id,
@@ -22570,8 +22564,9 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext, only_user
 
             valid_links = video_data or ["❌ Не удалось найти видео на YouTube по этой теме. Попробуйте позже."]
             rounded_value = round(mistakes_week / total_sentences, 2)
+            greeting = f"🧔 *{username}*,\n" if username else "🧔 "
             recommendations = (
-                f"🧔 *{username}*,\nВы *перевели* за неделю: {total_sentences} предложений;\n"
+                f"{greeting}Вы *перевели* за неделю: {total_sentences} предложений;\n"
                 f"📌 *В них допущено* {mistakes_week} ошибок;\n"
                 f"🚨 *Количество ошибок на одно предложение:* {rounded_value} штук;\n"
                 f"🔴 *Больше всего ошибок:* {number_of_top_category_mistakes} штук в категории:\n {top_mistake_category or 'неизвестно'}\n"
@@ -22597,19 +22592,11 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext, only_user
             await asyncio.sleep(5)
             continue
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT DISTINCT username FROM bt_3_translations WHERE user_id = %s;
-                    """,
-                    (safe_user_id,),
-                )
-                result = cursor.fetchone()
-                username = result[0] if result else f"User {safe_user_id}"
-
+        username = (await _resolve_report_display_names(context, {safe_user_id})).get(safe_user_id, "")
         no_activity_text = escape_html_with_bold(
-            f"⚠️ Пользователь {username} не перевёл ни одного предложения на этой неделе."
+            f"⚠️ {username}, на этой неделе вы не перевели ни одного предложения."
+            if username
+            else "⚠️ На этой неделе вы не перевели ни одного предложения."
         )
         await _send_analytics_message_with_fallback(
             context,
@@ -23362,16 +23349,17 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
             """)
             user_ids = [i[0] for i in cursor.fetchall() if i[0] is not None]
             print(user_ids)
+            display_names = await _resolve_report_display_names(
+                context, {int(uid) for uid in user_ids}
+            )
             for user_id in user_ids:
                 safe_user_id = int(user_id)
                 original_by_id = {}
 
-                cursor.execute("""
-                SELECT username FROM bt_3_user_progress
-                WHERE user_id = %s;
-                """, (user_id,))
-                row = cursor.fetchone()
-                username = row[0] if row and row[0] else f"useer_{user_id}"
+                # Каптион идёт живому человеку: имя — только настоящее, иначе без имени.
+                # Файл называем по id, чтобы имя пользователя не попадало в имя файла.
+                username = display_names.get(safe_user_id, "")
+                voice_key = f"mistakes_{safe_user_id}"
 
                 ## Шаг 1 — Собираем оригинальные предложения по user_id
                 # ✅ Загружаем все предложения из базы ошибок
@@ -23406,11 +23394,16 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
 
                 sentence_pairs = [(origin_sentence, correct_transl) for correct_transl, origin_sentence in original_by_id.items()]
                 try:
-                    await mistakes_to_voice(username, sentence_pairs)
+                    await mistakes_to_voice(voice_key, sentence_pairs)
                 except Exception as e:
-                    print(f"❌ Ошибка синтеза речи для {username}: {e}")
+                    print(f"❌ Ошибка синтеза речи для {safe_user_id}: {e}")
                     continue
-                audio_path = Path(f"{username}.mp3")
+                audio_path = Path(f"{voice_key}.mp3")
+                audio_caption = (
+                    f"🎧 Ошибки пользователя {username} за вчерашний день."
+                    if username
+                    else "🎧 Ошибки за вчерашний день."
+                )
                 print(f"📦 Размер файла: {audio_path.stat().st_size / 1024 / 1024:.2f} MB ")
 
                 target_chat_id = await _resolve_user_delivery_chat_id(
@@ -23426,22 +23419,22 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
                             await context.bot.send_audio(
                                 chat_id=int(target_chat_id),
                                 audio=audio_file,
-                                caption=f"🎧 Ошибки пользователя @{username} за вчерашний день."
+                                caption=audio_caption
                             )
                         print(f"⏱ Отправка заняла {asyncio.get_running_loop().time() - start:.2f} секунд")
                         await asyncio.sleep(5)
                     except Exception as e:
-                        print(f"❌ Ошибка при отправке аудиофайла для @{username}: {e}")
+                        print(f"❌ Ошибка при отправке аудиофайла для {safe_user_id}: {e}")
                         if int(target_chat_id) != safe_user_id:
                             try:
                                 with audio_path.open("rb") as audio_file:
                                     await context.bot.send_audio(
                                         chat_id=safe_user_id,
                                         audio=audio_file,
-                                        caption=f"🎧 Ошибки пользователя @{username} за вчерашний день."
+                                        caption=audio_caption
                                     )
                             except Exception as fallback_error:
-                                print(f"❌ Ошибка fallback отправки аудио в личку @{username}: {fallback_error}")
+                                print(f"❌ Ошибка fallback отправки аудио в личку {safe_user_id}: {fallback_error}")
 
                     try:    
                         audio_path.unlink()
@@ -23453,7 +23446,7 @@ async def get_yesterdays_mistakes_for_audio_message(context: CallbackContext):
                         context,
                         user_id=safe_user_id,
                         target_chat_id=int(target_chat_id),
-                        text=escape_html_with_bold(f"❌ Для пользователя @{username} не найден аудиофайл."),
+                        text=escape_html_with_bold("❌ Аудио с ошибками за вчера собрать не удалось. Пришлём в следующий раз."),
                     )
                     await asyncio.sleep(5)
 

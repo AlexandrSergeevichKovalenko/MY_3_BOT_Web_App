@@ -9541,10 +9541,11 @@ def build_user_daily_summary(user_id: int, username: str | None) -> str | None:
         avg_time_min=float(avg_minutes or 0.0),
         missed_days=missed_days,
     )
-    display_name = username or f"user_{user_id}"
+    # Never label the person with a machine id: greet by name only when we have one.
+    display_name = str(username or "").strip()
 
     return (
-        f"📅 Сегодняшняя статистика ({display_name})\n"
+        f"📅 Сегодняшняя статистика{f' ({display_name})' if display_name else ''}\n"
         f"📜 Всего предложений: {total_sentences}\n"
         f"✅ Переведено: {translated}\n"
         f"🚨 Не переведено: {missed}\n"
