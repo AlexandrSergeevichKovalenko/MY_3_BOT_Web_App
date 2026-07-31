@@ -2501,6 +2501,13 @@ def run_retire_review_dm_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_fill_control_dm_actor() -> None:
+    """Сводка по наполнению тем и кнопки под теми, где добор встал сам."""
+    from backend.article_fill_control import send_fill_control_dm
+    send_fill_control_dm()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_tts_prewarm_scheduler_actor() -> None:
     from backend.tts_scheduler import run_tts_prewarm_scheduler_job
     run_tts_prewarm_scheduler_job()

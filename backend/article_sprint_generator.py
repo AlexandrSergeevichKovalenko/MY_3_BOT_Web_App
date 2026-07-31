@@ -722,12 +722,21 @@ def autofill_themes_below_target(*, per_theme_cap: int = 40, total_cap: int = 12
     from backend.article_sprint_themes import article_sprint_themes
     from backend.database import count_article_sprint_nouns
 
+    from backend.database import list_theme_fill_report, record_theme_fill_run
+
+    # Тему, снятую с добора, не трогаем. Раньше выбор был только по цели, поэтому
+    # выдохшуюся тему ночной прогон обходил каждую ночь и каждую ночь платил за пустой
+    # результат: ходовых слов там просто не осталось.
+    states = {r["theme_key"]: r["state"] for r in list_theme_fill_report()}
     results: list[dict] = []
+    exhausted: list[str] = []
     total_added = 0
     for t in article_sprint_themes():
         if total_added >= total_cap:
             break
         key = str(t["key"])
+        if states.get(key, "auto") != "auto":
+            continue
         target = int(t.get("target_count") or 0)
         have = count_article_sprint_nouns(key, verified_only=True)
         room = min(int(per_theme_cap), target - have, total_cap - total_added)
@@ -738,7 +747,12 @@ def autofill_themes_below_target(*, per_theme_cap: int = 40, total_cap: int = 12
         except Exception:
             logging.warning("autofill: fill_theme failed theme=%s", key, exc_info=True)
             continue
-        total_added += int(res.get("added") or 0)
-        results.append({"theme": key, "added": int(res.get("added") or 0),
+        added = int(res.get("added") or 0)
+        total_added += added
+        run = record_theme_fill_run(key, added)
+        if run.get("exhausted"):
+            exhausted.append(key)
+        results.append({"theme": key, "added": added, "dry_streak": run.get("dry_streak"),
+                        "exhausted": bool(run.get("exhausted")),
                         "final_verified": res.get("final_verified"), "target": target})
-    return {"total_added": total_added, "themes": results}
+    return {"total_added": total_added, "themes": results, "exhausted": exhausted}

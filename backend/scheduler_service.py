@@ -92,6 +92,7 @@ from backend.background_jobs import (  # noqa: E402
     run_cap_health_report_actor,
     run_article_review_dm_actor,
     run_retire_review_dm_actor,
+    run_fill_control_dm_actor,
     run_wiktionary_warm_actor,
     run_monthly_budget_policy_actor,
     run_german_form_index_warm_actor,
@@ -419,6 +420,10 @@ def _dispatch_article_review_dm() -> None:
 
 def _dispatch_retire_review_dm() -> None:
     run_retire_review_dm_actor.send()
+
+
+def _dispatch_fill_control_dm() -> None:
+    run_fill_control_dm_actor.send()
 
 
 def _dispatch_weekly_global_ranking_report() -> None:
@@ -829,6 +834,21 @@ def _build_scheduler():
             hour=_int_env("RETIRE_REVIEW_HOUR", 12),
             minute=_int_env("RETIRE_REVIEW_MINUTE", 30),
             timezone=_tz(os.getenv("RETIRE_REVIEW_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
+    # -- Наполнение тем: сводка раз в три дня и кнопки под выдохшимися темами. Задание
+    # запускается ежедневно, а сам отчёт пропускает лишние дни через свой run-guard:
+    # так «раз в три дня» не съедет, если сервис перезапустили в неудачный день.
+    if _enabled("FILL_CONTROL_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_fill_control_dm,
+            "cron",
+            hour=_int_env("FILL_CONTROL_HOUR", 13),
+            minute=_int_env("FILL_CONTROL_MINUTE", 15),
+            timezone=_tz(os.getenv("FILL_CONTROL_TZ") or "Europe/Vienna"),
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,

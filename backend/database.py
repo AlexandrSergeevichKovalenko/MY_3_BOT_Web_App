@@ -47873,6 +47873,34 @@ def ensure_article_sprint_schema() -> None:
                 );
                 """
             )
+            # Как идёт наполнение темы. Цель в 150 слов сама по себе ничего не решает:
+            # в «Чувствах» ходовых слов навалом, в «Вечеринках» их физически нет, и
+            # неприкосновенная цифра заставляла генератор скрести дно — так в банк и
+            # попали «центрифуга для салата» и «тёрка для муската». Решает ПРИРОСТ:
+            # два прогона подряд дали меньше трёх слов — тема выдохлась, наполнение
+            # встаёт на паузу и владелец решает кнопками, что с ней делать.
+            #   auto           — добираем как обычно;
+            #   paused         — не добираем, тема живёт как есть (в игре она остаётся);
+            #   awaiting_words — владелец сказал «дам свои слова», ждём его список.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_themes "
+                "ADD COLUMN IF NOT EXISTS fill_state TEXT NOT NULL DEFAULT 'auto';"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_themes "
+                "ADD COLUMN IF NOT EXISTS dry_streak INTEGER NOT NULL DEFAULT 0;"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_themes "
+                "ADD COLUMN IF NOT EXISTS fill_state_at TIMESTAMPTZ;"
+            )
+            # message_id того сообщения со списком слов, на которое владелец отвечает
+            # своими словами. По нему и определяем тему: так не спутается, даже если
+            # раскрыто сразу несколько тем.
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_themes "
+                "ADD COLUMN IF NOT EXISTS awaiting_message_id BIGINT;"
+            )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bt_3_article_sprint_nouns (
@@ -49062,6 +49090,135 @@ def set_article_sprint_theme_active(theme_key: str, active: bool) -> bool:
             changed = cursor.rowcount > 0
         conn.commit()
     return changed
+
+
+# Сколько слов за прогон считается «прирост есть». Меньше — прогон пустой.
+THEME_FILL_MIN_GROWTH = 3
+# Сколько пустых прогонов подряд означает «тема выдохлась».
+THEME_FILL_DRY_LIMIT = 2
+# Сколько ждём обещанный список слов, прежде чем считать, что владелец передумал.
+THEME_AWAITING_DAYS = 7
+
+
+def record_theme_fill_run(theme_key: str, added: int) -> dict:
+    """Записать прогон наполнения. → {"dry_streak": n, "exhausted": bool}.
+
+    Цель в 150 слов сама по себе ничего не решает: в «Чувствах» ходовых слов навалом, в
+    «Вечеринках» их физически нет. Неприкосновенная цифра заставляла генератор скрести
+    дно — так в банк попали «центрифуга для салата» и «тёрка для муската». Решает прирост:
+    два прогона подряд дали меньше трёх слов — тема выдохлась.
+
+    Выдохшуюся ставим на паузу САМИ и сразу: иначе ночной прогон каждую ночь будет платить
+    за один и тот же пустой обход, пока владелец не дойдёт до отчёта. Пауза только по
+    наполнению — в игре тема остаётся.
+    """
+    key = str(theme_key or "").strip().lower()
+    grew = int(added or 0) >= THEME_FILL_MIN_GROWTH
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_themes "
+                "SET dry_streak = CASE WHEN %s THEN 0 ELSE dry_streak + 1 END, "
+                "    updated_at = NOW() "
+                "WHERE theme_key = %s RETURNING dry_streak, fill_state;",
+                (grew, key),
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.commit()
+                return {"dry_streak": 0, "exhausted": False}
+            streak, state = int(row[0] or 0), str(row[1] or "auto")
+            exhausted = streak >= THEME_FILL_DRY_LIMIT and state == "auto"
+            if exhausted:
+                cursor.execute(
+                    "UPDATE bt_3_article_sprint_themes "
+                    "SET fill_state = 'paused', fill_state_at = NOW(), updated_at = NOW() "
+                    "WHERE theme_key = %s;", (key,))
+        conn.commit()
+    return {"dry_streak": streak, "exhausted": exhausted}
+
+
+def set_theme_fill_state(theme_key: str, state: str, *, awaiting_message_id: int | None = None) -> bool:
+    """auto — добираем; paused — не добираем; awaiting_words — ждём список от владельца."""
+    if str(state) not in ("auto", "paused", "awaiting_words"):
+        return False
+    key = str(theme_key or "").strip().lower()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_themes "
+                "SET fill_state = %s, fill_state_at = NOW(), awaiting_message_id = %s, "
+                # «Продолжить» обнуляет счётчик пустых прогонов: владелец решил, что тема
+                # ещё жива, и второй раз спрашивать его надо только после новых двух пустых.
+                "    dry_streak = CASE WHEN %s = 'auto' THEN 0 ELSE dry_streak END, "
+                "    updated_at = NOW() "
+                "WHERE theme_key = %s;",
+                (str(state), int(awaiting_message_id) if awaiting_message_id else None,
+                 str(state), key),
+            )
+            changed = cursor.rowcount > 0
+        conn.commit()
+    return changed
+
+
+def theme_awaiting_words_by_message(message_id: int) -> str | None:
+    """Тема, чей список слов владелец сейчас дополняет (по сообщению, на которое отвечает).
+
+    Привязка именно к сообщению, а не к «последней нажатой кнопке»: владелец может
+    раскрыть три темы сразу, и тогда «последняя» будет врать."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT theme_key FROM bt_3_article_sprint_themes "
+                "WHERE awaiting_message_id = %s AND fill_state = 'awaiting_words';",
+                (int(message_id),),
+            )
+            row = cursor.fetchone()
+    return str(row[0]) if row else None
+
+
+def list_theme_fill_report() -> list[dict]:
+    """Состояние наполнения по всем живым темам — для отчёта раз в три дня."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT t.theme_key, t.label_ru, t.target_count,
+                       COALESCE(t.fill_state, 'auto'), COALESCE(t.dry_streak, 0),
+                       t.fill_state_at,
+                       count(n.id) FILTER (WHERE NOT n.retired AND n.verified),
+                       count(n.id) FILTER (WHERE NOT n.retired AND n.verified
+                                             AND n.created_at > NOW() - INTERVAL '3 days')
+                FROM bt_3_article_sprint_themes t
+                LEFT JOIN bt_3_article_sprint_nouns n ON n.theme_key = t.theme_key
+                WHERE t.active
+                GROUP BY t.theme_key, t.label_ru, t.target_count, t.fill_state,
+                         t.dry_streak, t.fill_state_at
+                ORDER BY count(n.id) FILTER (WHERE NOT n.retired AND n.verified);
+                """
+            )
+            rows = cursor.fetchall() or []
+    return [{"theme_key": r[0], "label": r[1] or r[0], "target": int(r[2] or 0),
+             "state": str(r[3]), "dry_streak": int(r[4]), "state_at": r[5],
+             "words": int(r[6] or 0), "fresh": int(r[7] or 0)} for r in rows]
+
+
+def expire_stale_awaiting_themes(days: int = THEME_AWAITING_DAYS) -> list[str]:
+    """Владелец обещал слова и не прислал. Тема не должна висеть в ожидании вечно."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_themes "
+                "SET fill_state = 'paused', awaiting_message_id = NULL, "
+                "    fill_state_at = NOW(), updated_at = NOW() "
+                "WHERE fill_state = 'awaiting_words' "
+                "  AND fill_state_at < NOW() - make_interval(days => %s) "
+                "RETURNING theme_key;",
+                (int(days),),
+            )
+            rows = cursor.fetchall() or []
+        conn.commit()
+    return [str(r[0]) for r in rows]
 
 
 def _coerce_json_list(value) -> list:

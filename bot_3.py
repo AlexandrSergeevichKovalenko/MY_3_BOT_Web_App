@@ -12175,6 +12175,37 @@ async def handle_artikel_retired_command(update: Update, context: CallbackContex
         await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
 
 
+async def handle_artikel_fill_report_command(update: Update, context: CallbackContext) -> None:
+    """/artikel_fill_report — позвать сводку по наполнению тем сейчас, не дожидаясь срока."""
+    user = update.effective_user
+    if not user or not _is_admin_user(user.id):
+        return
+    await update.message.reply_text("Собираю сводку по темам…")
+    try:
+        from backend.article_fill_control import send_fill_control_dm
+        res = await asyncio.to_thread(send_fill_control_dm, force=True)
+    except Exception:
+        logging.warning("artikel_fill_report failed", exc_info=True)
+        await update.message.reply_text("Не получилось. Подробности в логах.")
+        return
+    if not res.get("ok"):
+        await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
+
+
+async def handle_artikel_fill_go_command(update: Update, context: CallbackContext) -> None:
+    """/artikel_fill_go <тема> — вернуть теме автодобор, если раньше остановили."""
+    user = update.effective_user
+    if not user or not _is_admin_user(user.id):
+        return
+    theme_key = " ".join(context.args or []).strip().lower()
+    if not theme_key:
+        await update.message.reply_text("Укажи тему: /artikel_fill_go haus_wohnen")
+        return
+    from backend.article_fill_control import apply_fill_decision
+    text = await asyncio.to_thread(apply_fill_decision, "go", theme_key)
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
 async def handle_retire_review_callback(update: Update, context: CallbackContext) -> None:
     """Тап «вернуть в игру» / «мусор» по снятому слову в личке."""
     query = update.callback_query
@@ -12208,6 +12239,95 @@ async def handle_retire_review_callback(update: Update, context: CallbackContext
             await query.message.reply_text(text, parse_mode="HTML")
         except Exception:
             logging.warning("retire review reply failed", exc_info=True)
+
+
+async def handle_fill_control_callback(update: Update, context: CallbackContext) -> None:
+    """Тап по кнопке «остановить / продолжить / дам свои слова» под выдохшейся темой."""
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    parts = str(query.data or "").split(":", 2)   # artfill:<stop|go|mine|cancel>:<theme>
+    action = parts[1] if len(parts) > 1 else ""
+    theme_key = parts[2] if len(parts) > 2 else ""
+    if not action or not theme_key:
+        await query.answer("Не понял кнопку.", show_alert=True)
+        return
+    await query.answer("Записываю…", show_alert=False)
+
+    if action == "mine":
+        # Сначала показываем, что в теме УЖЕ есть: без этого владелец пишет дубликаты.
+        # Ждём ответ именно на сообщение с просьбой — по нему потом и узнаём тему.
+        try:
+            from backend.article_fill_control import word_list_messages, ask_for_words_text
+            from backend.database import set_theme_fill_state
+            for chunk in await asyncio.to_thread(word_list_messages, theme_key):
+                await query.message.reply_text(chunk, disable_web_page_preview=True)
+            ask = await query.message.reply_text(
+                ask_for_words_text(theme_key), parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                    "🚫 не нашёл слов", callback_data=f"artfill:cancel:{theme_key}")]]),
+            )
+            await asyncio.to_thread(set_theme_fill_state, theme_key, "awaiting_words",
+                                    awaiting_message_id=int(ask.message_id))
+        except Exception:
+            logging.warning("fill control: ask for words failed theme=%s", theme_key, exc_info=True)
+            await query.message.reply_text("Не получилось собрать список слов. Подробности в логах.")
+        return
+
+    try:
+        from backend.article_fill_control import apply_fill_decision
+        text = await asyncio.to_thread(apply_fill_decision, action, theme_key)
+    except Exception:
+        logging.warning("fill control action failed theme=%s", theme_key, exc_info=True)
+        await query.message.reply_text("Не получилось записать. Подробности в логах.")
+        return
+    try:
+        await query.edit_message_text(text, parse_mode="HTML")
+    except Exception:
+        try:
+            await query.message.reply_text(text, parse_mode="HTML")
+        except Exception:
+            logging.warning("fill control reply failed", exc_info=True)
+
+
+async def handle_manual_theme_words(update: Update, context: CallbackContext) -> None:
+    """Ответ владельца со списком слов для темы.
+
+    Тему узнаём по сообщению, на которое отвечают, а не по «последней нажатой кнопке»:
+    владелец может раскрыть три темы сразу, и «последняя» будет врать.
+
+    Стоит в раннёй группе и съедает сообщение только когда оно действительно про слова:
+    иначе обычная переписка перестала бы доходить до своих обработчиков."""
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user or not message.reply_to_message:
+        return
+    if not (message.text or "").strip() or (message.text or "").startswith("/"):
+        return
+    if not _is_admin_user(user.id):
+        return
+    try:
+        from backend.database import theme_awaiting_words_by_message
+        theme_key = await asyncio.to_thread(
+            theme_awaiting_words_by_message, int(message.reply_to_message.message_id))
+    except Exception:
+        logging.warning("manual theme words: lookup failed", exc_info=True)
+        return
+    if not theme_key:
+        return
+    await message.reply_text("Проверяю слова — артикли по справочнику, перевод сам…")
+    try:
+        from backend.article_fill_control import accept_manual_words
+        text = await asyncio.to_thread(accept_manual_words, theme_key, message.text or "")
+        await message.reply_text(text, parse_mode="HTML")
+    except Exception:
+        logging.warning("manual theme words failed theme=%s", theme_key, exc_info=True)
+        await message.reply_text("Не получилось добавить слова. Подробности в логах.")
+    raise ApplicationHandlerStop
 
 
 async def handle_article_review_callback(update: Update, context: CallbackContext) -> None:
@@ -40684,6 +40804,13 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_appcap_callback, pattern=r"^appcap:"))
     application.add_handler(CallbackQueryHandler(handle_article_review_callback, pattern=r"^artrev:"))
     application.add_handler(CallbackQueryHandler(handle_retire_review_callback, pattern=r"^artret:"))
+    application.add_handler(CallbackQueryHandler(handle_fill_control_callback, pattern=r"^artfill:"))
+    application.add_handler(CommandHandler("artikel_fill_report", handle_artikel_fill_report_command))
+    application.add_handler(CommandHandler("artikel_fill_go", handle_artikel_fill_go_command))
+    # Ранняя группа: ответ владельца со списком слов для темы. Съедает сообщение только
+    # когда оно действительно ответ на просьбу — иначе обычная переписка не дойдёт дальше.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                           handle_manual_theme_words), group=-2)
     application.add_handler(CommandHandler("artikel_review", handle_artikel_review_command))
     application.add_handler(CommandHandler("wiktionary_warm", handle_wiktionary_warm_command))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
