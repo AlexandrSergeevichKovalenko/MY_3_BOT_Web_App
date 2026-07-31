@@ -12239,6 +12239,37 @@ async def handle_artikel_fill_report_command(update: Update, context: CallbackCo
         await update.message.reply_text(f"Не отправилось: {res.get('error') or 'неизвестно'}")
 
 
+async def handle_artikel_words_command(update: Update, context: CallbackContext) -> None:
+    """/artikel_words — выбрать тему и дописать в неё свои слова, не дожидаясь отчёта.
+
+    Кнопка «дам свои слова» жила только в сводке раз в три дня. Владелец, у которого слова
+    появились сегодня, должен был либо ждать сводку, либо помнить ключ темы латиницей."""
+    user = update.effective_user
+    if not user or not _is_admin_user(user.id):
+        return
+    from backend.database import list_theme_fill_report
+    rows = await asyncio.to_thread(list_theme_fill_report)
+    if not rows:
+        await update.message.reply_text("Тем пока нет.")
+        return
+    # Сначала самые бедные: там помощь нужнее всего, и туда чаще всего и добавляют.
+    rows = sorted(rows, key=lambda r: r["words"])
+    buttons, row = [], []
+    for r in rows:
+        row.append(InlineKeyboardButton(f"{r['label']} · {r['words']}",
+                                        callback_data=f"artfill:mine:{r['theme_key']}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    await update.message.reply_text(
+        "✍️ <b>Куда добавить слова?</b>\n"
+        "Рядом с темой — сколько слов в ней сейчас, бедные сверху.\n"
+        "Выберешь тему — пришлю её список, чтобы ты не написал то, что уже есть.",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+
+
 async def handle_artikel_fill_go_command(update: Update, context: CallbackContext) -> None:
     """/artikel_fill_go <тема> — вернуть теме автодобор, если раньше остановили."""
     user = update.effective_user
@@ -40993,6 +41024,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_artwords_callback, pattern=r"^artwords:"))
     application.add_handler(CommandHandler("artikel_fill_report", handle_artikel_fill_report_command))
     application.add_handler(CommandHandler("artikel_fill_go", handle_artikel_fill_go_command))
+    application.add_handler(CommandHandler("artikel_words", handle_artikel_words_command))
     # Ответ владельца со списком слов для темы.
     # ⚠️ СВОЯ группа, как у обработчика оплаты ниже. В group=-2 первым стоит catch-all
     # TypeHandler(Update, enforce_user_access), а PTB запускает в группе только ПЕРВЫЙ
