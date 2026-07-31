@@ -788,6 +788,19 @@ def ensure_user_identity_schema() -> None:
         _USER_IDENTITY_SCHEMA_READY = True
 
 
+# Настоящий Telegram-id — это минимум шестизначное число. Всё, что меньше, приходит из
+# тестов и заглушек: такие "пользователи" не должны попадать в таблицу личности, иначе
+# прогон тестов дописывает в неё людей, которых не существует.
+_MIN_REAL_TELEGRAM_USER_ID = 100_000
+
+
+def is_real_telegram_user_id(user_id: int | None) -> bool:
+    safe_user_id = int(user_id or 0)
+    if safe_user_id < _MIN_REAL_TELEGRAM_USER_ID:
+        return False
+    return safe_user_id < SYNTHETIC_TELEGRAM_USER_ID_MIN
+
+
 def _identity_cache_get(user_id: int) -> str | None:
     if _USER_IDENTITY_CACHE_TTL_SEC <= 0:
         return None
@@ -822,7 +835,7 @@ def remember_user_identity(
     имя, которое теперь считается верным ("" — если ничего настоящего не передали и
     ничего не знали раньше). Пустое/служебное значение никогда не затирает настоящее."""
     safe_user_id = int(user_id or 0)
-    if safe_user_id <= 0:
+    if not is_real_telegram_user_id(safe_user_id):
         return ""
     first = clean_identity_name(first_name)
     last = str(last_name or "").strip()
@@ -911,7 +924,7 @@ def get_user_display_names(user_ids: list[int] | set[int]) -> dict[int, str]:
     """Имена для набора пользователей. Сначала таблица личности; кого там нет — достаём из
     старых таблиц и тут же записываем в личность, чтобы второй раз не искать. Пользователи,
     про которых мы ничего не знаем, в ответе отсутствуют — звать их по id нельзя."""
-    ids = sorted({int(uid) for uid in (user_ids or []) if int(uid or 0) > 0})
+    ids = sorted({int(uid) for uid in (user_ids or []) if is_real_telegram_user_id(uid)})
     if not ids:
         return {}
     out: dict[int, str] = {}
