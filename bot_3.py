@@ -527,7 +527,12 @@ MASTERY_CORRECT_RATIO = max(0.1, min(1.0, float((os.getenv("MASTERY_CORRECT_RATI
 MASTERY_ACTIVE_WINDOW_DAYS = max(7, int((os.getenv("MASTERY_ACTIVE_WINDOW_DAYS") or "30").strip() or "30"))
 LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
 LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
-LISTENING_POOL_TARGET   = max(3, int((os.getenv("LISTENING_POOL_TARGET") or "7").strip() or "7"))
+# Банк обязан быть БОЛЬШЕ, чем кулдаун × расход в день, иначе слот встаёт: при 7 текстах
+# и 7-дневном кулдауне свободных не остаётся вообще (проверено на проде 30.07 — слот
+# 18:30 не ушёл никому). Расход — до 2 в день: обычный слот плюс капельная выдача.
+# Пол считаем от кулдауна, чтобы две константы больше не разъехались.
+LISTENING_POOL_TARGET   = max(3, LISTENING_COOLDOWN_DAYS * 2 + 2,
+                              int((os.getenv("LISTENING_POOL_TARGET") or "16").strip() or "16"))
 PENDING_INPUT_STATE_LISTENING = "listening_answer"
 LISTENING_ANSWER_TTL_SECONDS  = 60 * 45  # 45 minutes
 NUMDICT_SLOT_TIMES = [(15, 10), (18, 10)]    # Zahlen-Diktat: twice a day
@@ -26593,10 +26598,17 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
             if tier_active and safe_chat_id > 0 and user_ids_for_chat:
                 uid = int(user_ids_for_chat[0])
                 p = prefs_map.get(uid) or {}
-                if _drip_delivery_enabled() and p.get("schedule"):
+                is_pro_user = pro_map.get(uid, False)
+                # Свои часы — фича полного доступа, и капельную выдачу (_drip_delivery_job)
+                # получают только оплаченные. Значит и вынимать из обычной рассылки по
+                # слотам можно ТОЛЬКО оплаченного. У бесплатного строка расписания может
+                # остаться с приветственного триала: если считать его «с окном», он выпадет
+                # из обоих путей сразу и не получит вообще ничего. Для него окно не
+                # существует — обычная рассылка и его дневной лимит.
+                windowed = bool(p.get("schedule")) and is_pro_user
+                if _drip_delivery_enabled() and windowed:
                     tier_skipped += 1
                     continue  # windowed → drip job delivers; no live slot sends
-                is_pro_user = pro_map.get(uid, False)
                 budget = _user_send_budget(uid, is_pro=is_pro_user,
                                            active_recent=active_recent, preset=p.get("preset"))
                 # Silence / inactive suppression (budget 0) is ALWAYS respected — even a
@@ -26617,7 +26629,7 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
                 if not _scheduled_send_bonus.get() and position >= budget:
                     tier_skipped += 1
                     continue  # outside this user's allocation
-                in_window = _now_in_window(p.get("schedule"), p.get("tz_name")) if p else True
+                in_window = _now_in_window(p.get("schedule"), p.get("tz_name")) if windowed else True
                 if not in_window:
                     # Off-window but in allocation: HOLD it (release job batches it when
                     # the window opens) — only if deferral is on AND this kind's sender
