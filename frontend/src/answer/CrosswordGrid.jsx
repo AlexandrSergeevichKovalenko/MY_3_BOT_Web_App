@@ -218,8 +218,15 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
       setNote('В этом слове подсказка уже открыта — встань на другое слово');
       return;
     }
-    const spot = (word.cells || []).find(([r, c]) => isEmpty(r, c) && !inputs[k(r, c)] && !hintCells[k(r, c)])
-      || (word.cells || []).find(([r, c]) => isEmpty(r, c) && !hintCells[k(r, c)]);
+    // Открываем ИМЕННО ту клетку, на которой стоит человек. Раньше подсказка всегда
+    // открывала первую пустую клетку слова, и буква появлялась не там, куда тапнули.
+    const free = ([r, c]) => isEmpty(r, c) && !hintCells[k(r, c)];
+    const onCell = activeCell && (word.cells || [])
+      .some(([r, c]) => r === activeCell[0] && c === activeCell[1]) && free(activeCell)
+      ? activeCell : null;
+    const spot = onCell
+      || (word.cells || []).find((cc) => free(cc) && !inputs[k(cc[0], cc[1])])
+      || (word.cells || []).find(free);
     if (!spot) {
       setNote('В этом слове открывать нечего — все буквы уже на месте');
       return;
@@ -239,7 +246,9 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
     } finally {
       setHintBusy(false);
     }
-  }, [hintBusy, onHint, words, activeWord, hintWords, hintCells, inputs, isEmpty, advance]);
+    // activeCell в зависимостях обязателен: без него колбэк помнит положение курсора
+    // с прошлого рендера, и подсказка открывает не ту клетку, на которую тапнули.
+  }, [hintBusy, onHint, words, activeWord, activeCell, hintWords, hintCells, inputs, isEmpty, advance]);
 
   const emptyLeft = emptyKeys.filter((key) => !inputs[key] && !hintCells[key]).length;
   const allFilled = emptyKeys.length > 0 && emptyLeft === 0;

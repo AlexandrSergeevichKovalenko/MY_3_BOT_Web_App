@@ -104,6 +104,20 @@ _TOPICS: list[tuple[str, str, tuple[str, ...]]] = [
         "Tisch decken", "Reste und Kühlschrank")),
 ]
 
+# Темы про живое и предметы: синицу, кабачок и пятку в разговорах называют редко,
+# поэтому частотный список их занижает — им нужна своя, более щедрая планка
+# (backend/crossword_word_gate.py). Замер по «Tiere und Natur»: общий порог отсекал
+# KRANICH, EICHEL, MARIENKÄFER, TANNE, SPECHT — все слова настоящие и обиходные.
+_OBJECT_TOPICS = {
+    "Tiere und Natur",
+    "Wetter und Jahreszeiten",
+    "Essen und Trinken",
+    "Kochen und Küche",
+    "Körper und Aussehen",
+    "Kleidung und Aussehen",
+    "Wohnung und Haushalt",
+}
+
 # ─── GPT prompts ──────────────────────────────────────────────────────────────
 
 _GPT_SYSTEM = """\
@@ -128,7 +142,10 @@ Regeln für jedes Wort:
   (WASCHMASCHINE ja, UMWELTFAKTOR nein)
 - clue_de: EIN einfacher Satz auf A2-Niveau, der das Wort beschreibt, ohne es zu
   nennen. Wo es hilft, ein Alltagsbeispiel statt einer Definition
-- clue_ru: derselbe Hinweis auf natürlichem Russisch
+- clue_ru: derselbe Hinweis auf natürlichem Russisch. WICHTIG: der russische
+  Hinweis darf die Übersetzung NICHT enthalten — sonst steht die Antwort in der
+  Aufgabe. Falsch für SCHMETTERLING: «Яркая бабочка, которая летает в саду».
+  Richtig: «Красивое насекомое с яркими крыльями, летает над цветами»
 - translation_ru: die reine Übersetzung des Wortes, 1-3 Wörter, ohne Erklärung
 
 Antworte NUR mit validem JSON, ohne Erklärungen."""
@@ -215,7 +232,9 @@ def _call_gpt_for_words(
     return words
 
 
-def _accept_word_entry(entry: dict, lemma_pos: dict[str, str] | None = None) -> tuple[Optional[dict], str]:
+def _accept_word_entry(
+    entry: dict, lemma_pos: dict[str, str] | None = None, max_rank: int | None = None,
+) -> tuple[Optional[dict], str]:
     """Приёмка одного слова от модели → (готовая запись, причина отказа).
 
     Прежняя проверка смотрела только длину и что символы буквенные — этого хватало,
@@ -223,27 +242,37 @@ def _accept_word_entry(entry: dict, lemma_pos: dict[str, str] | None = None) -> 
     написание приводится к подтверждённому словарём виду, а слово, которого в живом
     немецком нет, дальше не проходит (backend/crossword_word_gate.py).
     """
-    from backend.crossword_word_gate import check_word, normalize_word
+    from backend.crossword_word_gate import (
+        DIRECT_MAX_RANK, check_word, clue_gives_away, normalize_word,
+    )
 
     word = normalize_word(entry.get("word"))
     if not word:
         return None, "пустое слово"
-    ok, reason = check_word(word, lemma_pos=lemma_pos)
+    ok, reason = check_word(word, lemma_pos=lemma_pos,
+                            max_rank=max_rank or DIRECT_MAX_RANK)
     if not ok:
         return None, f"{word}: {reason}"
     clue_de = str(entry.get("clue_de") or "").strip()
     clue_ru = str(entry.get("clue_ru") or "").strip()
+    translation_ru = str(entry.get("translation_ru") or "").strip()
     if not clue_de:
         return None, f"{word}: нет немецкой подсказки"
     if not clue_ru:
         return None, f"{word}: нет русской подсказки"
+    # Подсказка, в которой стоит ответ, — это не загадка: «Яркая бабочка, которая
+    # часто летает летом в саду» к слову SCHMETTERLING.
+    leak = clue_gives_away(word=word, clue_de=clue_de, clue_ru=clue_ru,
+                           translation_ru=translation_ru)
+    if leak:
+        return None, f"{word}: {leak}"
     return {
         "word": word,
         "clue_de": clue_de,
         "clue_ru": clue_ru,
         # Перевод отдельно от подсказки: подсказка — это фраза-описание, и когда
         # её сохраняли в словарь как «перевод», в карточке оказывалось предложение.
-        "translation_ru": str(entry.get("translation_ru") or "").strip(),
+        "translation_ru": translation_ru,
     }, ""
 
 
@@ -467,7 +496,8 @@ def _word_cells(w: dict) -> set[tuple[int, int]]:
     return {(w["row"] + dr * i, w["col"] + dc * i) for i in range(len(w["word"]))}
 
 
-def _select_hidden_words(words: list[dict], hidden_count: int = 3) -> list[dict]:
+def _select_hidden_words(words: list[dict], hidden_count: int = 3,
+                         everyday_max_rank: int | None = None) -> list[dict]:
     """Mark hidden_count words as hidden=True.
 
     The hidden words are chosen to form a CONNECTED chain — each one directly
@@ -481,8 +511,9 @@ def _select_hidden_words(words: list[dict], hidden_count: int = 3) -> list[dict]
     Слово может быть редковатым и всё равно стоять в сетке как подсказка-опора,
     но вводить с клавиатуры мы просим только то, что человек и правда употребляет.
     """
-    from backend.crossword_word_gate import is_everyday
+    from backend.crossword_word_gate import HIDDEN_MAX_RANK, is_everyday
 
+    limit = everyday_max_rank or HIDDEN_MAX_RANK
     result = [{**w, "hidden": False} for w in words]
     n = len(result)
     if n <= hidden_count:
@@ -490,7 +521,7 @@ def _select_hidden_words(words: list[dict], hidden_count: int = 3) -> list[dict]
             w["hidden"] = True
         return result
 
-    everyday = [is_everyday(w["word"]) for w in result]
+    everyday = [is_everyday(w["word"], max_rank=limit) for w in result]
 
     def _length_pref(idx: int) -> float:
         # обиходность важнее длины: разрыв в 10 больше любой разницы по длине
@@ -570,9 +601,19 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
         avoid = []
     avoid_set = {w.upper() for w in avoid}
 
+    # Предметные темы судим по своей планке: частотный список занижает всё, что
+    # люди чаще держат в руках, чем произносят.
+    from backend.crossword_word_gate import (
+        DIRECT_MAX_RANK, HIDDEN_MAX_RANK,
+        OBJECT_DIRECT_MAX_RANK, OBJECT_HIDDEN_MAX_RANK,
+    )
+    is_object_topic = topic in _OBJECT_TOPICS
+    max_rank = OBJECT_DIRECT_MAX_RANK if is_object_topic else DIRECT_MAX_RANK
+    hidden_max_rank = OBJECT_HIDDEN_MAX_RANK if is_object_topic else HIDDEN_MAX_RANK
+
     logging.info(
-        "crossword_generator: generating topic=%r angle=%r difficulty=%s avoid=%d",
-        topic, angle, difficulty, len(avoid),
+        "crossword_generator: generating topic=%r angle=%r difficulty=%s avoid=%d порог=%d",
+        topic, angle, difficulty, len(avoid), max_rank,
     )
 
     # 1. Get words from GPT
@@ -596,7 +637,7 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     seen_words: set[str] = set()
     rejected: list[str] = []
     for entry in raw_words:
-        accepted, reason = _accept_word_entry(entry, lemma_pos)
+        accepted, reason = _accept_word_entry(entry, lemma_pos, max_rank)
         if not accepted:
             rejected.append(reason)
             continue
@@ -634,7 +675,7 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     #    the chain so solving one reveals letters of the next). _MIN_HIDDEN is a
     #    hard floor: a puzzle with fewer blanks is rejected, never shipped.
     hidden_count = 4 if len(words_numbered) >= 6 else _MIN_HIDDEN
-    words_final = _select_hidden_words(words_numbered, hidden_count)
+    words_final = _select_hidden_words(words_numbered, hidden_count, hidden_max_rank)
 
     hidden_count_actual = sum(1 for w in words_final if w.get("hidden"))
     if hidden_count_actual < _MIN_HIDDEN:
@@ -645,7 +686,8 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     # Загаданное слово человек набирает руками. Одно слово «на вырост» в наборе
     # допустимо, два и больше — это уже не кроссворд, а экзамен: такой не отправляем.
     from backend.crossword_word_gate import is_everyday
-    rare_hidden = [w["word"] for w in words_final if w.get("hidden") and not is_everyday(w["word"])]
+    rare_hidden = [w["word"] for w in words_final
+                   if w.get("hidden") and not is_everyday(w["word"], max_rank=hidden_max_rank)]
     if len(rare_hidden) > 1:
         raise RuntimeError(
             "загаданы неходовые слова (%s) — кроссворд не отправляем" % ", ".join(rare_hidden)

@@ -206,3 +206,59 @@ def test_form_judge_reads_the_model_verdicts(monkeypatch):
     verdicts = gate.judge_word_forms(["PASSTASCHE", "KÜHLSCHRANK"])
     assert verdicts["PASSTASCHE"] is False
     assert verdicts["KÜHLSCHRANK"] is True
+
+
+def test_clue_must_not_contain_the_answer():
+    """Живой случай 31.07: SCHMETTERLING с подсказкой «Яркая бабочка, которая часто
+    летает летом в саду» — по-русски ответ написан прямо в условии."""
+    from backend.crossword_word_gate import clue_gives_away
+
+    assert clue_gives_away(
+        word="SCHMETTERLING",
+        clue_de="Ein bunter Falter, der im Sommer oft im Garten fliegt",
+        clue_ru="Яркая бабочка, которая часто летает летом в саду",
+        translation_ru="бабочка",
+    )
+    # Тот же немецкий текст с честной русской подсказкой проходит
+    assert not clue_gives_away(
+        word="SCHMETTERLING",
+        clue_de="Ein bunter Falter, der im Sommer oft im Garten fliegt",
+        clue_ru="Красивое насекомое с яркими крыльями, летает над цветами",
+        translation_ru="бабочка",
+    )
+    # Немецкая подсказка тоже не должна называть слово
+    assert clue_gives_away(
+        word="KÜHLSCHRANK",
+        clue_de="Der Kühlschrank steht in der Küche",
+        clue_ru="Стоит на кухне",
+        translation_ru="холодильник",
+    )
+    # Перевод из нескольких слов: хватает совпадения по любому
+    assert clue_gives_away(
+        word="SCHWAGER", clue_de="Der Mann deiner Schwester",
+        clue_ru="Муж сестры — шурин", translation_ru="шурин, зять",
+    )
+
+
+def test_entry_with_a_leaking_clue_is_refused():
+    entry, reason = _accept_word_entry({
+        "word": "SCHMETTERLING",
+        "clue_de": "Ein bunter Falter im Garten",
+        "clue_ru": "Яркая бабочка, которая летает в саду",
+        "translation_ru": "бабочка",
+    })
+    assert entry is None
+    assert "называет перевод" in reason
+
+
+def test_object_topics_get_their_own_threshold():
+    """Частотный список занижает всё, что чаще держат в руках, чем произносят:
+    KRANICH стоит на 35 038 месте, TANNE на 44 956, AUBERGINE на 36 033."""
+    from backend.crossword_word_gate import OBJECT_DIRECT_MAX_RANK, check_word
+
+    for word in ("KRANICH", "TANNE", "SPECHT", "AUBERGINE", "FERSE"):
+        assert not check_word(word)[0], f"{word} прошло по общему порогу"
+        assert check_word(word, max_rank=OBJECT_DIRECT_MAX_RANK)[0], word
+    # Выдуманные слова щедрость не спасает — их нет в корпусе вовсе
+    for word in ("MIVVERKEHR", "TIERWOEHNDE", "DEONTOLIGIE"):
+        assert not check_word(word, max_rank=OBJECT_DIRECT_MAX_RANK)[0], word

@@ -52,6 +52,15 @@ DIRECT_MAX_RANK = 30_000   # слово стоит в живом языке са
 PART_MAX_RANK = 15_000     # обе части сложного слова должны быть ходовыми
 HIDDEN_MAX_RANK = 12_000   # загаданное слово — только из обиходной речи
 
+# Темы про ЖИВОЕ И ПРЕДМЕТЫ — отдельная планка. Частотный список собран из речи
+# и разговоров, а не из жизни: про счёт и договор говорят постоянно, про синицу,
+# кабачок и пятку — почти никогда. Замер 31.07 по теме «Tiere und Natur»: при
+# общем пороге сито отсекало KRANICH (35 038), EICHEL (37 364), MARIENKÄFER
+# (36 880), TANNE (44 956), SPECHT (32 627) — все слова настоящие и обиходные.
+# Для таких тем достаточно, чтобы слово вообще встречалось в живой речи.
+OBJECT_DIRECT_MAX_RANK = 50_000
+OBJECT_HIDDEN_MAX_RANK = 25_000
+
 MIN_LEN = 4
 MAX_LEN = 13   # WASCHMASCHINE и KOPFSCHMERZEN — ходовые слова, терять их незачем
 
@@ -220,7 +229,10 @@ def wrong_dictionary_form(word: str, lemma_pos: dict[str, str] | None) -> str:
     return ""
 
 
-def check_word(word: str, *, lemma_pos: dict[str, str] | None = None) -> tuple[bool, str]:
+def check_word(
+    word: str, *, lemma_pos: dict[str, str] | None = None,
+    max_rank: int = DIRECT_MAX_RANK,
+) -> tuple[bool, str]:
     """→ (брать ли слово, причина отказа). Слово уже нормализовано."""
     clean = str(word or "").strip()
     if not clean:
@@ -235,7 +247,7 @@ def check_word(word: str, *, lemma_pos: dict[str, str] | None = None) -> tuple[b
         return False, bad_form
 
     rank = _attested_rank(clean)
-    if rank and rank <= DIRECT_MAX_RANK:
+    if rank and rank <= max_rank:
         return True, ""
     if _attested_split(clean):
         return True, ""
@@ -258,10 +270,44 @@ def everyday_rank(word: str) -> int | None:
     return None
 
 
-def is_everyday(word: str) -> bool:
+def is_everyday(word: str, *, max_rank: int = HIDDEN_MAX_RANK) -> bool:
     """Годится ли слово в ЗАГАДАННЫЕ — те, что человек набирает руками."""
     rank = everyday_rank(word)
-    return bool(rank and rank <= HIDDEN_MAX_RANK)
+    return bool(rank and rank <= max_rank)
+
+
+# ─── Подсказка не должна содержать ответ ──────────────────────────────────────
+
+def _ru_stem(word: str) -> str:
+    """Огрубление русского слова до основы: «бабочка» → «бабочк», «зять» → «зят»."""
+    low = "".join(ch for ch in str(word or "").lower() if ch.isalpha())
+    return low[:-1] if len(low) > 5 else low
+
+
+def clue_gives_away(*, word: str, clue_de: str, clue_ru: str, translation_ru: str) -> str:
+    """Причина, по которой подсказка выдаёт ответ. Пусто — подсказка честная.
+
+    Живой пример 31.07: слово SCHMETTERLING, подсказка «Яркая бабочка, которая
+    часто летает летом в саду». По-немецки загадка честная (Falter — синоним), а
+    по-русски ответ написан прямо в условии.
+    """
+    de = str(clue_de or "").lower()
+    ru = str(clue_ru or "").lower()
+    target = str(word or "").lower()
+
+    if target and target in de.replace(" ", ""):
+        return "немецкая подсказка называет само слово"
+    parts = split_compound(target) if target else None
+    if parts:
+        for part in parts:
+            if len(part) >= 5 and part in de:
+                return f"немецкая подсказка называет часть слова ({part})"
+
+    for piece in str(translation_ru or "").replace("/", ",").split(","):
+        stem = _ru_stem(piece)
+        if len(stem) >= 4 and stem in ru:
+            return f"русская подсказка называет перевод ({piece.strip()})"
+    return ""
 
 
 # ─── Второе мнение о форме ────────────────────────────────────────────────────
