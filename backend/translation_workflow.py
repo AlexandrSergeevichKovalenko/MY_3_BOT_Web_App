@@ -447,7 +447,36 @@ def finalize_open_translation_sessions() -> dict[str, int]:
             )
             rows = cursor.fetchall()
             closed_sessions = len(rows)
-            affected_user_ids = list({int(row[0]) for row in rows if row[0] is not None})
+            affected_user_ids = {int(row[0]) for row in rows if row[0] is not None}
+
+            # Сессия без единого предложения: набор не удалось собрать ни из запаса, ни из
+            # пула, ни у GPT. Под условия выше она не подходит (сравнивать нечего), и
+            # остаётся висеть открытой. Пользователю она не мешает — следующий запуск
+            # перевода сносит её сам, — но в таблице копится мусор, поэтому закрываем.
+            # Час выдержки: свежая сессия законно ждёт фонового наполнения, оно занимает
+            # секунды, и убивать её на полпути нельзя.
+            cursor.execute(
+                """
+                UPDATE bt_3_user_progress up
+                SET
+                    active_started_at = NULL,
+                    active_running = FALSE,
+                    end_time = NOW(),
+                    completed = TRUE
+                WHERE up.completed = FALSE
+                  AND up.start_time < NOW() - INTERVAL '1 hour'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = up.user_id
+                      AND ds.session_id = up.session_id
+                  )
+                RETURNING up.user_id;
+                """
+            )
+            empty_rows = cursor.fetchall()
+            closed_empty_sessions = len(empty_rows)
+            affected_user_ids.update(int(row[0]) for row in empty_rows if row[0] is not None)
 
     for user_id in affected_user_ids:
         try:
@@ -455,7 +484,10 @@ def finalize_open_translation_sessions() -> dict[str, int]:
         except Exception:
             logging.warning("Failed to clear session presence card for user %s", user_id, exc_info=True)
 
-    return {"closed_sessions": closed_sessions}
+    return {
+        "closed_sessions": closed_sessions,
+        "closed_empty_sessions": closed_empty_sessions,
+    }
 
 
 def _get_active_session_id(
@@ -9306,6 +9338,143 @@ def finish_translation_webapp(user_id: int, timing_breakdown: dict | None = None
     finally:
         cursor.close()
         conn.close()
+
+
+def get_translation_session_progress(
+    user_id: int,
+    session_id: str | int,
+    *,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict[str, int]:
+    """Сколько предложений сессии показано человеку и сколько из них уже проверено."""
+    normalized_session_id = str(session_id or "").strip()
+    if int(user_id or 0) <= 0 or not normalized_session_id:
+        return {"shown_count": 0, "translated_count": 0}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            state = _get_translation_session_state_with_cursor(
+                cursor,
+                user_id=int(user_id),
+                session_id=normalized_session_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+    return {
+        "shown_count": int(state.get("shown_count") or 0),
+        "translated_count": int(state.get("translated_count") or 0),
+    }
+
+
+def auto_finish_translation_session_if_complete(
+    user_id: int,
+    session_id: str | int,
+    *,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict[str, Any] | None:
+    """Закрыть сессию сразу, как только проверено последнее показанное предложение.
+
+    Предложение переводится ровно один раз: после проверки последнего делать в сессии
+    больше нечего, поэтому день закрывается сам — человеку не нужно помнить про кнопку
+    «Завершить перевод». Возвращает те же поля, что и finish_translation_webapp, либо
+    None, если сессия ещё не доделана, уже закрыта или её вовсе нет.
+
+    Сессию с непроверенными предложениями НЕ трогаем: человек мог перевести часть и
+    захотеть вернуться позже. Такие сессии закрывает ночной джоб в 23:59.
+    """
+    normalized_session_id = str(session_id or "").strip()
+    if int(user_id or 0) <= 0 or not normalized_session_id:
+        return None
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM bt_3_user_progress
+                WHERE user_id = %s
+                  AND session_id = %s
+                  AND completed = FALSE
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_session_id),
+            )
+            if cursor.fetchone() is None:
+                return None
+
+            session_state = _get_translation_session_state_with_cursor(
+                cursor,
+                user_id=int(user_id),
+                session_id=normalized_session_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            shown_count = int(session_state.get("shown_count") or 0)
+            shown_pending_count = int(session_state.get("shown_pending_count") or 0)
+            if shown_count <= 0 or shown_pending_count > 0:
+                return None
+
+            _close_user_progress_session(
+                cursor,
+                user_id=int(user_id),
+                session_id=normalized_session_id,
+            )
+
+    translated_count = int(session_state.get("translated_count") or 0)
+
+    # Тот же сброс кэшей, что и при ручном завершении: иначе приложение продолжит
+    # считать сессию активной и не отдаст новый набор предложений.
+    try:
+        _clear_active_translation_session_pointer(
+            user_id=int(user_id),
+            session_id=normalized_session_id,
+        )
+        clear_translation_session_card(int(user_id))
+        set_translation_session_state(
+            normalized_session_id,
+            _build_translation_session_state_payload(
+                user_id=int(user_id),
+                session_id=normalized_session_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_kind=None,
+                focus_key=None,
+                level=None,
+                state="finished",
+                ready_count=shown_count,
+                expected_total=shown_count,
+                generation_status="ready",
+                background_fill_required=False,
+            ),
+        )
+    except Exception:
+        logging.warning(
+            "auto_finish_translation_session_if_complete: cache reset failed user_id=%s session_id=%s",
+            user_id,
+            normalized_session_id,
+            exc_info=True,
+        )
+
+    logging.info(
+        "Translation session auto-finished after last check: user_id=%s session_id=%s translated=%s/%s",
+        user_id,
+        normalized_session_id,
+        translated_count,
+        shown_count,
+    )
+
+    return {
+        "message": (
+            "🎉 Вы успешно завершили перевод!\n"
+            f"Все {shown_count} предложений этой сессии переведены! 🚀"
+        ),
+        "status": "completed",
+        "session_id": normalized_session_id,
+        "total_sentences": shown_count,
+        "translated_count": translated_count,
+        "auto_finished": True,
+    }
 
 
 def build_user_daily_summary(user_id: int, username: str | None) -> str | None:

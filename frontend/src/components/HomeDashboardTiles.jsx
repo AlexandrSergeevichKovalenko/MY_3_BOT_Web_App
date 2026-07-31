@@ -232,6 +232,27 @@ function TodayStrip({ tr, todayPlan, weeklyPlan, skillReport, uiLang, showMetric
   );
 }
 
+// Незаконченный перевод: человек проверил часть предложений и ушёл. Сессия жива, к ней
+// можно вернуться — тайл говорит об этом сам, вместо того чтобы ждать, пока вспомнят.
+function ResumeChip({ tr, translated, total }) {
+  const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((translated / total) * 100))) : 0;
+  return (
+    <div className="hdt-resume">
+      <div className="hdt-resume-head">
+        <span className="hdt-resume-dot" aria-hidden="true" />
+        <span className="hdt-resume-title">{tr('Перевод не закончен', 'Übersetzung offen')}</span>
+      </div>
+      <div className="hdt-resume-count">
+        {translated}<span className="hdt-resume-of">{tr(' из ', ' von ')}</span>{total}
+      </div>
+      <div className="hdt-resume-bar" aria-hidden="true">
+        <span style={{ width: `${pct}%` }} />
+      </div>
+      <div className="hdt-resume-cta">{tr('Продолжить', 'Weitermachen')}</div>
+    </div>
+  );
+}
+
 export default function HomeDashboardTiles({
   tr,
   uiLang,
@@ -246,12 +267,16 @@ export default function HomeDashboardTiles({
   showMetrics = true,
   canViewEconomics = false,
   lockedSections = [],
+  pausedTranslationSession = null,
 }) {
   const currentUiLang = uiLang === 'de' ? 'de' : 'ru';
   const badges = {
     tr: getTranslationBadge(todayPlan),
     ca: getCardsBadge(todayPlan, srsQueueInfo),
   };
+  const resumeTotal = Math.max(0, Number(pausedTranslationSession?.total || 0) || 0);
+  const resumeTranslated = Math.max(0, Number(pausedTranslationSession?.translated || 0) || 0);
+  const showResumeChip = resumeTotal > 0 && resumeTranslated > 0 && resumeTranslated < resumeTotal;
 
   return (
     <div className="hdt-root">
@@ -294,6 +319,9 @@ export default function HomeDashboardTiles({
                   <div className="hdt-bars">
                     {[42, 66, 52, 82, 60, 94].map((h, i) => <i key={i} style={{ height: `${h}%` }} />)}
                   </div>
+                )}
+                {def.k === 'tr' && showResumeChip && (
+                  <ResumeChip tr={tr} translated={resumeTranslated} total={resumeTotal} />
                 )}
                 <div className="hdt-bl">{label}</div>
               </button>

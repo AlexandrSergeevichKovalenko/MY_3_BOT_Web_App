@@ -4815,24 +4815,43 @@ const TranslationsSection = React.memo(function TranslationsSection({
         )}
 
         <div className="tr-footer-actions">
-          {sentences.length === 0 && !webappLoading && !showPreparingTranslationEmptyState && (
+          {finishStatus === 'done' ? (
             <div className="tr-footer-hint">
-              {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session hängt, kann sie manuell beendet werden.')}
+              {tr(
+                'Разборы остаются здесь — можно спокойно читать их дальше.',
+                'Die Analysen bleiben hier — du kannst sie in Ruhe weiterlesen.'
+              )}
             </div>
-          )}
-          {results.length === 0 && !storyResult && !webappLoading && sentences.length > 0 && (
-            <div className="tr-footer-hint">
-              {tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst prüfen, dann beenden.')}
-            </div>
+          ) : (
+            <>
+              {sentences.length === 0 && !webappLoading && !showPreparingTranslationEmptyState && (
+                <div className="tr-footer-hint">
+                  {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session hängt, kann sie manuell beendet werden.')}
+                </div>
+              )}
+              {results.length === 0 && !storyResult && !webappLoading && sentences.length > 0 && (
+                <div className="tr-footer-hint">
+                  {tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst prüfen, dann beenden.')}
+                </div>
+              )}
+              {results.length > 0 && sentences.length > 0 && !webappLoading && (
+                <div className="tr-footer-hint">
+                  {tr(
+                    'Остальные предложения можно перевести позже — проверенное уже сохранено.',
+                    'Die restlichen Sätze kannst du später übersetzen — das Geprüfte ist gespeichert.'
+                  )}
+                </div>
+              )}
+            </>
           )}
           <button
             type="button"
             onClick={handleFinishTranslation}
             className={`tr-finish-btn ${finishStatus === 'done' ? 'is-done' : ''}`}
-            disabled={webappLoading || ((results.length === 0 && !storyResult) && sentences.length > 0)}
+            disabled={webappLoading || finishStatus === 'done' || ((results.length === 0 && !storyResult) && sentences.length > 0)}
           >
             {finishStatus === 'done'
-              ? <><span>✓</span> {tr('Завершено', 'Abgeschlossen')}</>
+              ? <><span>✓</span> {tr('День засчитан', 'Tag gezählt')}</>
               : <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>{tr('Завершить перевод', 'Übersetzung beenden')}</>}
           </button>
           <button
@@ -6513,6 +6532,18 @@ function AppInner() {
   const [historyError, setHistoryError] = useState('');
   const [historyVisible, setHistoryVisible] = useState(false);
   const [finishStatus, setFinishStatus] = useState('idle');
+  // Незакрытая сессия переводов, увиденная при старте приложения: {translated, total}.
+  // Нужна главному экрану, пока раздел переводов ещё не открывали в этом запуске.
+  const [bootstrapTranslationSession, setBootstrapTranslationSession] = useState(null);
+  // Что показать на главной: живые счётчики, пока человек в разделе переводов, иначе то,
+  // что отдал бутстрап. Завершённая сессия плашку не показывает.
+  const pausedTranslationSession = useMemo(() => {
+    if (finishStatus === 'done') return null;
+    if (sentences.length > 0 && results.length > 0) {
+      return { translated: results.length, total: results.length + sentences.length };
+    }
+    return bootstrapTranslationSession;
+  }, [bootstrapTranslationSession, finishStatus, results.length, sentences.length]);
   const [explanations, setExplanations] = useState({});
   // Teacher-grade structured explanation modal (replaces the old inline text blocks).
   const [explainModalKey, setExplainModalKey] = useState(null);   // which sentence's modal is open
@@ -7444,6 +7475,7 @@ function AppInner() {
   const readerAutoPausedByNavigationRef = useRef(false);
   const readerAutoPausedByIdleRef = useRef(false);
   const translationCheckPollTokenRef = useRef(0);
+  const translationSessionAutoFinishedRef = useRef(false);
   const translationCheckUnmountedRef = useRef(false);
   const translationSubmitInFlightRef = useRef(false);
   const translationStartInFlightRef = useRef(false);
@@ -18267,6 +18299,20 @@ function AppInner() {
         if (data?.welcome_trial) {
           setWelcomeTrial(data.welcome_trial);
         }
+        const openTranslationSession = data?.translation_session && typeof data.translation_session === 'object'
+          ? data.translation_session
+          : null;
+        if (String(openTranslationSession?.type || '').trim().toLowerCase() === 'regular') {
+          const openTotal = Math.max(0, Number(openTranslationSession.total_sentences || 0) || 0);
+          const openTranslated = Math.max(0, Number(openTranslationSession.translated_count || 0) || 0);
+          setBootstrapTranslationSession(
+            openTotal > 0 && openTranslated > 0 && openTranslated < openTotal
+              ? { translated: openTranslated, total: openTotal }
+              : null
+          );
+        } else {
+          setBootstrapTranslationSession(null);
+        }
         // Keep the cold-start landing view on the home dashboard.
         // Translations should hydrate only after the user explicitly opens that section
         // or via an intentional deep link/start_param. This avoids paying the sentence
@@ -20438,6 +20484,9 @@ function AppInner() {
       translationActivitySessionRef.current = normalizedSessionId;
       translationActivityRunningRef.current = false;
       translationActivityInFlightRef.current = false;
+      if (normalizedSessionId) {
+        translationSessionAutoFinishedRef.current = false;
+      }
     }
     if (!normalizedSessionId) {
       translationActivityRunningRef.current = false;
@@ -20741,7 +20790,41 @@ function AppInner() {
     }
   }, []);
 
+  // Сессия закрылась сама, когда проверено последнее предложение. Чистим только то, что
+  // относится к сессии (черновики, её id), но НЕ результаты: человек как раз их читает.
+  const applyServerSideSessionFinish = () => {
+    if (translationSessionAutoFinishedRef.current) {
+      return;
+    }
+    translationSessionAutoFinishedRef.current = true;
+    if (translationDraftStorageTimeoutRef.current) {
+      clearTimeout(translationDraftStorageTimeoutRef.current);
+      translationDraftStorageTimeoutRef.current = null;
+    }
+    if (translationDraftSyncTimeoutRef.current) {
+      clearTimeout(translationDraftSyncTimeoutRef.current);
+      translationDraftSyncTimeoutRef.current = null;
+    }
+    const finishedSessionId = String(translationSessionIdRef.current || translationDraftScopeKey || '').trim();
+    translationDraftsRef.current = {};
+    if (finishedSessionId) {
+      translationShownAckedRef.current.delete(finishedSessionId);
+    }
+    safeStorageRemove(translationDraftStorageKey);
+    setTranslationDrafts({});
+    setSessionType('none');
+    translationSessionIdRef.current = '';
+    setTranslationSessionId(null);
+    setFinishStatus('done');
+    setFinishMessage('');
+    setBootstrapTranslationSession(null);
+  };
+
   const applyTranslationCheckStatusPayload = (payload) => {
+    const summaryPayload = payload?.summary && typeof payload.summary === 'object' ? payload.summary : null;
+    if (summaryPayload?.source_session_finished) {
+      applyServerSideSessionFinish();
+    }
     const checkSession = payload?.check_session && typeof payload.check_session === 'object'
       ? payload.check_session
       : null;
@@ -21210,6 +21293,7 @@ function AppInner() {
     setWebappError('');
     setFinishMessage('');
     setFinishStatus('idle');
+    setBootstrapTranslationSession(null);
     setTranslationCheckProgress({ active: false, done: 0, total: 0 });
     try {
       const response = await fetch('/api/webapp/start', {
@@ -29188,6 +29272,7 @@ function AppInner() {
       const data = await response.json();
       setFinishMessage(data.message || tr('Перевод завершён.', 'Übersetzung abgeschlossen.'));
       setFinishStatus('done');
+      setBootstrapTranslationSession(null);
       if (translationDraftStorageTimeoutRef.current) {
         clearTimeout(translationDraftStorageTimeoutRef.current);
         translationDraftStorageTimeoutRef.current = null;
@@ -35098,6 +35183,7 @@ function AppInner() {
                 openSection={openSingleSectionAndScroll}
                 onOpenMore={openMoreFunctionsPanel}
                 canViewEconomics={canViewEconomics}
+                pausedTranslationSession={pausedTranslationSession}
                 lockedSections={ASSISTANT_UNDER_CONSTRUCTION ? ['assistant'] : []}
                 refs={{
                   translationsRef,

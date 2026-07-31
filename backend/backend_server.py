@@ -809,6 +809,8 @@ from backend.translation_workflow import (
     persist_translation_webapp_item_results_batch,
     fill_translation_session_webapp,
     finish_translation_webapp,
+    auto_finish_translation_session_if_complete,
+    get_translation_session_progress,
     get_db_connection as get_translation_workflow_db_connection,
     get_daily_translation_history,
     start_translation_session_webapp,
@@ -28286,6 +28288,25 @@ def bootstrap_webapp_session():
             session_projection_payload, _session_lookup_mode = _load_session_presence_projection_with_source(int(parsed_user_id))
             if isinstance(session_projection_payload, dict):
                 translation_session = _build_session_presence_response_payload(session_projection_payload)
+                # Незакрытая сессия = человек перевёл часть и ушёл. Главному экрану нужны
+                # живые счётчики, чтобы позвать его обратно словами «3 из 7», а не молчать.
+                if str((translation_session or {}).get("type") or "").strip().lower() == "regular":
+                    try:
+                        _session_source_lang, _session_target_lang, _ = _get_user_language_pair(int(parsed_user_id))
+                        _session_progress = get_translation_session_progress(
+                            int(parsed_user_id),
+                            str(translation_session.get("session_id") or "").strip(),
+                            source_lang=_session_source_lang,
+                            target_lang=_session_target_lang,
+                        )
+                        translation_session["translated_count"] = int(_session_progress.get("translated_count") or 0)
+                        translation_session["total_sentences"] = int(_session_progress.get("shown_count") or 0)
+                    except Exception:
+                        logging.warning(
+                            "Bootstrap: active translation session progress lookup failed user=%s",
+                            parsed_user_id,
+                            exc_info=True,
+                        )
             _prime_webapp_home_snapshots_async(
                 user_id=int(parsed_user_id),
                 username=_extract_display_name(parsed_user),
@@ -30929,6 +30950,30 @@ def _run_translation_check_completion_side_effects(
                 claimed_session.get("user_id"),
                 exc_info=True,
             )
+
+        # Проверено последнее предложение сессии → закрываем её сами. Флаг уезжает во
+        # фронт вместе с итогами проверки, чтобы кнопка внизу показала «День засчитан»,
+        # а не предлагала завершать уже закрытую сессию.
+        try:
+            auto_finish_result = _auto_finish_translation_session_after_check(
+                user_id=int(claimed_session.get("user_id") or 0),
+                session_id=str(claimed_session.get("source_session_id") or "").strip() or None,
+                username=str(claimed_session.get("username") or "").strip() or None,
+                source_lang=str(claimed_session.get("source_lang") or "ru"),
+                target_lang=str(claimed_session.get("target_lang") or "de"),
+            )
+        except Exception:
+            auto_finish_result = None
+            logging.warning(
+                "Translation session auto-finish after check failed: session=%s user=%s",
+                session_id,
+                claimed_session.get("user_id"),
+                exc_info=True,
+            )
+        if isinstance(auto_finish_result, dict) and isinstance(summary_json, dict):
+            summary_json["source_session_finished"] = True
+            summary_json["source_session_translated_count"] = int(auto_finish_result.get("translated_count") or 0)
+            summary_json["source_session_total_sentences"] = int(auto_finish_result.get("total_sentences") or 0)
 
         finalized_session = finalize_translation_check_completion_side_effects(
             session_id=int(session_id),
@@ -40771,6 +40816,126 @@ def _dispatch_post_finish_snapshot_bookkeeping(
         },
         daemon=True,
     ).start()
+
+
+def _auto_finish_translation_session_after_check(
+    *,
+    user_id: int,
+    session_id: str | None,
+    username: str | None,
+    source_lang: str,
+    target_lang: str,
+) -> dict[str, Any] | None:
+    """Закрыть сессию переводов, когда проверено последнее предложение.
+
+    Кнопка «Завершить перевод» ничего не сохраняет — переводы и баллы пишутся в момент
+    проверки. Она лишь закрывает сессию: без этого время учёбы за сегодня не попадает в
+    отчёты (они фильтруют completed = TRUE) и новый набор предложений не выдаётся. Люди
+    про неё забывают, поэтому после проверки последнего предложения закрываем сами и
+    прогоняем ровно тот же post-finish, что и ручное завершение.
+    """
+    normalized_session_id = str(session_id or "").strip()
+    if int(user_id or 0) <= 0 or not normalized_session_id:
+        return None
+
+    result = auto_finish_translation_session_if_complete(
+        int(user_id),
+        normalized_session_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if not isinstance(result, dict) or str(result.get("status") or "").strip().lower() != "completed":
+        return None
+
+    translated_count = int(result.get("translated_count") or 0)
+    total_sentences = int(result.get("total_sentences") or 0)
+
+    try:
+        clear_active_translation_session_state(int(user_id))
+    except Exception:
+        logging.warning(
+            "Auto-finish: clear_active_translation_session_state failed user_id=%s session_id=%s",
+            user_id, normalized_session_id, exc_info=True,
+        )
+
+    try:
+        set_session_presence_card(
+            int(user_id),
+            _build_session_presence_card_payload(
+                user_id=int(user_id),
+                state="post_finish_none",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                finished_session_id=normalized_session_id,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                translated_count=translated_count,
+                total_sentences=total_sentences,
+                recent_finish_until_ms=int(
+                    (time.time() + float(WEBAPP_RECENT_FINISH_SESSION_CACHE_TTL_SEC)) * 1000
+                ),
+            ),
+        )
+        _remember_recent_finish_no_active_session(int(user_id))
+    except Exception:
+        logging.warning(
+            "Auto-finish: session presence publish failed user_id=%s session_id=%s",
+            user_id, normalized_session_id, exc_info=True,
+        )
+
+    skills_seed_payload: dict | None = None
+    skills_seed_meta: dict | None = None
+    try:
+        snapshot_key = _skills_card_projection_key(_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS)
+        existing_payload = _validate_skills_card_projection_payload(
+            get_skills_card(int(user_id), snapshot_key),
+            expected_lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
+        )
+        if not isinstance(existing_payload, dict):
+            existing_snapshot = get_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind=_SKILLS_CARD_KIND,
+                snapshot_key=snapshot_key,
+            ) or {}
+            existing_payload = dict(existing_snapshot.get("payload") or {})
+        skills_seed_payload, skills_seed_meta = _build_skills_card_seed_payload(
+            user_id=int(user_id),
+            lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            card_version=f"auto_finish:{normalized_session_id}",
+            recent_session_seed=_build_skills_recent_session_seed(
+                finish_session_id=normalized_session_id,
+                translated_count=translated_count,
+                total_sentences=total_sentences,
+            ),
+            projection_status="refreshing",
+            pending_finish_session_id=normalized_session_id,
+            existing_projection_payload=existing_payload,
+        )
+        set_skills_card(int(user_id), snapshot_key, skills_seed_payload)
+    except Exception:
+        skills_seed_payload = None
+        skills_seed_meta = None
+        logging.warning(
+            "Auto-finish: skills card seed failed user_id=%s session_id=%s",
+            user_id, normalized_session_id, exc_info=True,
+        )
+
+    _dispatch_post_finish_snapshot_bookkeeping(
+        user_id=int(user_id),
+        username=username,
+        plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ),
+        finished_session_id=normalized_session_id,
+        session_presence_source_lang=source_lang,
+        session_presence_target_lang=target_lang,
+        session_presence_translated_count=translated_count,
+        session_presence_total_sentences=total_sentences,
+        skills_seed_payload=skills_seed_payload,
+        skills_seed_meta=skills_seed_meta,
+        skills_seed_source_lang=source_lang,
+        skills_seed_target_lang=target_lang,
+    )
+    return result
 
 
 def _mark_today_plan_snapshot_stale(*, user_id: int, plan_date: date | None = None) -> None:

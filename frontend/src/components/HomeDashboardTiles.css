@@ -91,6 +91,24 @@
 .hdt-bars i{ flex:1; background:rgba(255,255,255,0.5); border-radius:2px 2px 0 0; }
 .hdt-pct{ font-family:var(--hdt-disp); font-size:13px; font-weight:600; color:#fff; }
 
+/* Незаконченный перевод внутри тайла «Переводы»: сколько проверено, сколько осталось
+   и явное «Продолжить». Янтарь на синем стекле — акцент виден, тайл не перегружен. */
+.hdt-resume{ position:relative; z-index:1; margin-top:10px; padding:8px 9px 9px;
+  border-radius:14px; background:rgba(9,14,32,0.28); border:1px solid rgba(255,255,255,0.2);
+  backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px); }
+.hdt-resume-head{ display:flex; align-items:center; gap:5px; }
+.hdt-resume-dot{ width:6px; height:6px; border-radius:50%; background:#FBBF24; flex:none;
+  box-shadow:0 0 0 3px rgba(251,191,36,0.24); }
+.hdt-resume-title{ font-size:9.5px; font-weight:800; letter-spacing:0.04em; text-transform:uppercase;
+  color:rgba(255,255,255,0.9); line-height:1.2; }
+.hdt-resume-count{ font-family:var(--hdt-disp); font-size:19px; font-weight:600; color:#fff;
+  line-height:1.1; margin-top:3px; font-variant-numeric:tabular-nums; }
+.hdt-resume-of{ font-size:12px; font-weight:600; color:rgba(255,255,255,0.72); }
+.hdt-resume-bar{ height:4px; border-radius:999px; background:rgba(255,255,255,0.24); overflow:hidden; margin-top:6px; }
+.hdt-resume-bar span{ display:block; height:100%; border-radius:999px;
+  background:linear-gradient(90deg,#FBBF24,#F59E0B); }
+.hdt-resume-cta{ margin-top:6px; font-size:10.5px; font-weight:700; color:#FCD34D; letter-spacing:-0.01em; }
+
 /* progress badge for non-hero tiles (optional, via showBadges) */
 .hdt-badge{ position:absolute; top:11px; right:11px; z-index:2; background:rgba(255,255,255,0.24); border:1px solid rgba(255,255,255,0.32); border-radius:999px; font-size:9.5px; font-weight:800; color:#fff; padding:2px 7px; line-height:1.4; font-variant-numeric:tabular-nums; pointer-events:none; }
 
