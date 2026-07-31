@@ -161,5 +161,34 @@ class ExhaustionSignalTests(unittest.TestCase):
         self.assertEqual(res["exhausted"], ["party"])
 
 
+class SendingTellsTheTruthTests(unittest.TestCase):
+    """«Отправлено 1» при 401 от Telegram — отчёт, которому верят, а сообщения нет."""
+
+    def _send(self, status):
+        import backend.database as dbm
+
+        class _Resp:
+            status_code = status
+            text = "{\"ok\":false,\"description\":\"Unauthorized\"}"
+
+        with patch.dict("os.environ", {"TELEGRAM_Deutsch_BOT_TOKEN": "t"}), \
+                patch.object(dbm, "get_admin_telegram_ids", lambda: {1}), \
+                patch.object(dbm, "list_theme_fill_report", lambda: ReportWordingTests.ROWS), \
+                patch.object(dbm, "expire_stale_awaiting_themes", lambda *a, **k: []), \
+                patch.object(ctl.requests, "post", lambda *a, **k: _Resp()):
+            return ctl.send_fill_control_dm(force=True)
+
+    def test_a_rejected_message_is_not_counted_as_sent(self):
+        res = self._send(401)
+        self.assertEqual(res["sent"], 0)
+        self.assertFalse(res["ok"], "не дошло ни до кого — значит не ok")
+        self.assertTrue(res["failed"], "причина отказа должна быть видна")
+
+    def test_a_delivered_message_is_counted(self):
+        res = self._send(200)
+        self.assertEqual(res["sent"], 1)
+        self.assertTrue(res["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

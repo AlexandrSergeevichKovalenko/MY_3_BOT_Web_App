@@ -135,30 +135,47 @@ def send_fill_control_dm(*, force: bool = False) -> dict[str, Any]:
         if expired:
             text += ("\n\n⏳ Ждали твои слова и не дождались: "
                      + ", ".join(expired) + ". Эти темы вернул на паузу.")
+        # Считаем ДОСТАВЛЕННОЕ, а не число админов в списке. Прежний счётчик рос всегда,
+        # поэтому отчёт бодро говорил «отправлено 1» даже когда Telegram отвечал 401 и
+        # в личку не приходило ничего.
         sent = 0
-        for uid in admin_ids:
+        failed: list[str] = []
+
+        def _post(payload: dict) -> bool:
             try:
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                              json={"chat_id": uid, "text": text, "parse_mode": "HTML",
-                                    "disable_web_page_preview": True}, timeout=_HTTP_TIMEOUT)
-                for r in need_decision:
-                    body = (f"⏸ <b>{r['label']}</b> — добор остановился.\n"
-                            f"В теме {r['words']} слов. Последние два прогона не дали почти "
-                            f"ничего: ходовых слов по этой теме, похоже, больше нет.\n\n"
-                            f"Что делаем?")
-                    requests.post(
-                        f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": uid, "text": body, "parse_mode": "HTML",
-                              "reply_markup": _keyboard(r["theme_key"])},
-                        timeout=_HTTP_TIMEOUT)
-                sent += 1
-            except Exception:
-                logging.warning("fill control DM failed uid=%s", uid, exc_info=True)
+                resp = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                     json=payload, timeout=_HTTP_TIMEOUT)
+                if resp.status_code >= 400:
+                    failed.append(f"{resp.status_code} {resp.text[:120]}")
+                    logging.warning("fill control DM rejected: %s", resp.text[:200])
+                    return False
+                return True
+            except Exception as exc:
+                failed.append(str(exc)[:120])
+                logging.warning("fill control DM failed", exc_info=True)
+                return False
+
+        for uid in admin_ids:
+            ok = _post({"chat_id": uid, "text": text, "parse_mode": "HTML",
+                        "disable_web_page_preview": True})
+            for r in need_decision:
+                body = (f"⏸ <b>{r['label']}</b> — новых слов для темы больше не находится.\n"
+                        f"В теме {r['words']} слов, они остаются в игре. Последние два "
+                        f"прогона не дали почти ничего: ходовых слов по этой теме, похоже, "
+                        f"больше нет.\n\nЧто делаем?")
+                _post({"chat_id": uid, "text": body, "parse_mode": "HTML",
+                       "reply_markup": _keyboard(r["theme_key"])})
+            sent += 1 if ok else 0
         if not force:
             finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period,
-                                       target_scope="global", status="completed",
-                                       metadata={"sent": sent, "decisions": len(need_decision)})
-        return {"ok": True, "sent": sent, "themes": len(rows), "decisions": len(need_decision)}
+                                       target_scope="global",
+                                       status="completed" if sent else "failed",
+                                       metadata={"sent": sent, "decisions": len(need_decision),
+                                                 "failed": failed[:3]})
+        # ok=False, если не дошло ни до кого: «ок, отправлено 0» — это отчёт, которому
+        # верят, а потом ищут сообщение, которого нет.
+        return {"ok": bool(sent), "sent": sent, "themes": len(rows),
+                "decisions": len(need_decision), "failed": failed[:3]}
     except Exception as exc:
         if not force:
             finish_scheduler_run_guard(job_key=JOB_KEY, run_period=run_period,
