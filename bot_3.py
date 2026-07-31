@@ -40800,10 +40800,15 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_fill_control_callback, pattern=r"^artfill:"))
     application.add_handler(CommandHandler("artikel_fill_report", handle_artikel_fill_report_command))
     application.add_handler(CommandHandler("artikel_fill_go", handle_artikel_fill_go_command))
-    # Ранняя группа: ответ владельца со списком слов для темы. Съедает сообщение только
-    # когда оно действительно ответ на просьбу — иначе обычная переписка не дойдёт дальше.
+    # Ответ владельца со списком слов для темы.
+    # ⚠️ СВОЯ группа, как у обработчика оплаты ниже. В group=-2 первым стоит catch-all
+    # TypeHandler(Update, enforce_user_access), а PTB запускает в группе только ПЕРВЫЙ
+    # подошедший обработчик — поэтому здесь этот не срабатывал ни разу: владелец отвечал
+    # на просьбу списком слов, а слова уходили в переводчик. Группа -3 идёт раньше всех
+    # и пуста, так что обработчик гарантированно получает сообщение; чужое он пропускает
+    # дальше сам, а своё съедает через ApplicationHandlerStop.
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
-                                           handle_manual_theme_words), group=-2)
+                                           handle_manual_theme_words), group=-3)
     application.add_handler(CommandHandler("artikel_review", handle_artikel_review_command))
     application.add_handler(CommandHandler("wiktionary_warm", handle_wiktionary_warm_command))
     application.add_handler(CommandHandler("reader_r2_orphans", reader_r2_orphans_command))
@@ -40814,7 +40819,10 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_describe_new_callback, pattern=r"^dnew_"))
     # Early group: capture an admin's typed custom description after «✏️ Своё» (consumes
     # the message via ApplicationHandlerStop only when that admin is pending).
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_describe_custom_input), group=-2)
+    # ⚠️ Тоже своя группа: в group=-2 первым стоит catch-all TypeHandler(enforce_user_access),
+    # и этот обработчик там не срабатывал вообще — набранное админом описание уходило в
+    # переводчик. Одна группа = один обработчик, поэтому и не -3: там уже занято.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_describe_custom_input), group=-4)
     application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_question_cancel_callback, pattern=r"^quizaskcancel$"))
