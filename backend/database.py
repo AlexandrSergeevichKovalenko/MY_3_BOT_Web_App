@@ -52896,3 +52896,49 @@ def prune_stale_analytics_snapshots(*, older_than_days: int = 14) -> int:
             count = cursor.rowcount
         conn.commit()
     return count
+
+
+# ── Тестовое меню интерактивов ────────────────────────────────────────────────────────
+# Часть интерактивов открывается по конкретному заданию (ребус, кроссворд, аудирование,
+# Aufgabe…), поэтому меню «открыть каждый интерактив» должно знать свежий id для этого
+# человека. Одна выборка на все виды: последнее задание каждого вида, отправленное ему.
+INTERACTIVE_DISPATCH_TABLES: dict[str, str] = {
+    "rb": "bt_3_rebus_dispatches",
+    "cw": "bt_3_crossword_dispatches",
+    "ag": "bt_3_anagram_dispatches",
+    "ls": "bt_3_listening_dispatches",
+    "qf": "bt_3_quiz_freeform_dispatches",
+    "au": "bt_3_aufgabe_dispatches",
+    "mc": "bt_3_mc_dispatches",
+    "sp": "bt_3_sprint_dispatches",
+    "tr": "bt_3_trainer_dispatches",
+    "nd": "bt_3_numdict_dispatches",
+}
+
+
+def get_latest_interactive_dispatch_ids(user_id: int) -> dict[str, int]:
+    """kind → id последнего задания этого вида, отправленного пользователю.
+
+    Виды, которых у человека ещё не было, в ответе просто отсутствуют — вызывающий сам
+    решает, что показать вместо кнопки. Пропавшая таблица (старая база) не роняет всё
+    меню: такой вид тихо пропускается.
+    """
+    out: dict[str, int] = {}
+    uid = int(user_id or 0)
+    if not uid:
+        return out
+    with get_db_connection_context() as conn:
+        for kind, table in INTERACTIVE_DISPATCH_TABLES.items():
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"SELECT id FROM {table} WHERE target_user_id = %s ORDER BY id DESC LIMIT 1;",
+                        (uid,),
+                    )
+                    row = cursor.fetchone()
+                if row and row[0]:
+                    out[kind] = int(row[0])
+            except Exception as exc:  # таблицы может не быть — это не повод терять остальные
+                conn.rollback()
+                logging.debug("interactive_dispatch_lookup_failed kind=%s err=%s", kind, exc)
+    return out

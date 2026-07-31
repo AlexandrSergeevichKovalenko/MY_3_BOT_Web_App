@@ -3216,6 +3216,91 @@ async def _streak_caption_block(uid: int) -> str:
     return "\n".join(lines)
 
 
+# ── /interaktiv_test — открыть любой интерактив вручную ────────────────────────────────
+# Проверять правки вёрстки и логики надо на живом телефоне, а половина интерактивов
+# приходит только по расписанию. Эта команда собирает меню: у каждого вида — своя кнопка,
+# которая открывает Mini App сразу на нужной игре. Работает у любого аккаунта: каждый
+# открывает СВОИ задания и свои лимиты, поэтому одну и ту же правку можно смотреть с двух
+# телефонов параллельно.
+#
+# Виды, которым нужно конкретное задание (ребус, кроссворд, аудирование, Aufgabe, квиз,
+# синонимы, числа-диктант), показываются только если такое задание человеку уже приходило —
+# id берётся из последнего. Чего нет, перечислено текстом, чтобы это не выглядело поломкой.
+_INTERACTIVE_ALWAYS = [
+    ("⚡ Artikel Sprint", "as"),
+    ("🏋️ Artikel: тренировка", "asp"),
+    ("📚 Артикли: учить", "al"),
+    ("🎯 Артикли: мои ошибки", "alf"),
+    ("⚡ Adjektiv Sprint", "ad"),
+    ("📚 Adjektiv: учить", "adl"),
+    ("⚡ Wo-Fragen Sprint", "wf"),
+    ("📚 Wo-Fragen: учить", "wfl"),
+    ("🔢 Числа: тренажёр", "np"),
+    ("🔁 Работа над ошибками", "rv"),
+    ("🖼 Студия «Найди предмет»", "pv"),
+    ("📜 История батлов", "bh"),
+    ("⚔️ Батлы: артикли", "asbl"),
+    ("⚔️ Батлы: прилагательные", "adbl"),
+    ("⚔️ Батлы: Wo-Fragen", "wfbl"),
+]
+_INTERACTIVE_BY_TASK = [
+    ("🧩 Ребус", "rb", "приходит по расписанию"),
+    ("🔤 Кроссворд", "cw", "приходит по расписанию"),
+    ("🔤 Анаграмма", "ag", "приходит по расписанию"),
+    ("🎧 Аудирование", "ls", "приходит по расписанию"),
+    ("✍️ Свой ответ", "qf", "приходит с заданием в группе"),
+    ("✏️ Aufgabe B2+", "au", "приходит по расписанию"),
+    ("🎯 Квиз", "mc", "приходит по расписанию"),
+    ("🟢 Синонимы-спринт", "sp", "приходит после разбора слова"),
+    ("🟢 Синонимы: тренировка", "tr", "приходит через 3 дня после спринта"),
+    ("🔢 Zahlen-Diktat", "nd", "приходит по расписанию"),
+]
+
+
+async def _interaktiv_test_command(update: Update, context: CallbackContext) -> None:
+    """/interaktiv_test — меню со всеми интерактивами: по кнопке на каждый вид."""
+    if not update.effective_user or not update.effective_message:
+        return
+    uid = int(update.effective_user.id)
+    try:
+        from backend.database import get_latest_interactive_dispatch_ids
+        latest = await asyncio.to_thread(get_latest_interactive_dispatch_ids, uid)
+    except Exception as exc:
+        logging.warning("interaktiv_test_lookup_failed uid=%s err=%s", uid, exc)
+        latest = {}
+
+    rows: list[list[InlineKeyboardButton]] = []
+    pending: list[InlineKeyboardButton] = []
+    for label, kind in _INTERACTIVE_ALWAYS:
+        pending.append(InlineKeyboardButton(label, url=get_webapp_deeplink(f"ans_{kind}_0")))
+        if len(pending) == 2:
+            rows.append(pending); pending = []
+    missing: list[str] = []
+    for label, kind, note in _INTERACTIVE_BY_TASK:
+        task_id = latest.get(kind)
+        if not task_id:
+            missing.append(f"{label} — {note}")
+            continue
+        pending.append(InlineKeyboardButton(label, url=get_webapp_deeplink(f"ans_{kind}_{int(task_id)}")))
+        if len(pending) == 2:
+            rows.append(pending); pending = []
+    if pending:
+        rows.append(pending)
+
+    lines = ["🧪 <b>Интерактивы — открыть вручную</b>",
+             "Каждая кнопка открывает свой вид игры прямо в приложении."]
+    if missing:
+        lines.append("")
+        lines.append("Пока нечего открыть (нужно задание, оно придёт само):")
+        lines.extend(f"• {m}" for m in missing)
+    await update.effective_message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows) if rows else None,
+        disable_web_page_preview=True,
+    )
+
+
 async def _streak_command(update: Update, context: CallbackContext) -> None:
     """/streak — quiet alias (no longer a menu button): the status block + freeze/
     earned-Pro detail."""
@@ -40935,6 +41020,7 @@ def main():
     application.add_handler(CommandHandler("allow", allow_user_command))
     application.add_handler(CommandHandler("deny", deny_user_command))
     application.add_handler(CommandHandler("streak", _streak_command))
+    application.add_handler(CommandHandler("interaktiv_test", _interaktiv_test_command))
     application.add_handler(CommandHandler("invite", _invite_command))
     # Inline-режим: «Поделиться» из Mini-App кладёт другу карточку с рабочей кнопкой.
     # Требует включённого inline mode у @BotFather — иначе апдейты просто не придут.
