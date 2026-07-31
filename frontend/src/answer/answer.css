@@ -9,7 +9,11 @@
  * default body margin would otherwise let the webview's white background bleed
  * through at the screen edges. Scoped to this route — main App is unaffected. */
 html, body { margin: 0; padding: 0; }
-body { background: var(--dmps-bg, #0F172A); overflow-x: hidden; }
+/* overflow-x: clip, а не hidden — hidden делает body скролл-контейнером и ломает
+   `position: sticky` у прижатой к низу кнопки (см. .ans-root.is-scroll). Клип режет
+   горизонтальный вылет так же, но контейнером прокрутки не становится. Старые браузеры
+   не знают `clip` и остаются на hidden. */
+body { background: var(--dmps-bg, #0F172A); overflow-x: hidden; overflow-x: clip; }
 #root { min-height: 100vh; }
 
 /* Every element on this route uses border-box so width:100% + padding + border
@@ -56,6 +60,7 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
   min-height: 100vh;
   box-sizing: border-box;
   overflow-x: hidden;
+  overflow-x: clip;   /* hidden сделал бы контейнер прокрутки и убил sticky-кнопку */
   padding: 22px 16px calc(22px + env(safe-area-inset-bottom, 0px));
   background:
     radial-gradient(120% 80% at 50% -10%, rgba(37, 99, 235, 0.18), transparent 60%),
@@ -100,6 +105,29 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
 .ans-root.is-tight > .ans-card:not(.ans-card--cw) {
   padding: 14px 14px 16px;
   gap: 10px;
+}
+/* Экран длиннее любого разумного масштаба (итоги со списком всех слов, длинный разбор):
+   карточка встаёт ровно по высоте экрана, а самый длинный блок внутри получает свою
+   прокрутку. Заголовок, счёт и кнопка действия при этом видны всегда. */
+.ans-card.is-panelled { overflow: hidden; }
+.ans-card.is-panelled > * { flex: 0 0 auto; }
+.ans-card.is-panelled > .is-fit-panel {
+  flex: 1 1 auto;
+  min-height: 72px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  /* чтобы было видно, что блок листается, а не обрезан */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+}
+
+/* Совсем крайний случай: даже так не влезло — тогда обычная прокрутка, но последняя
+   кнопка карточки липнет к низу экрана, до неё не придётся долистывать. */
+.ans-root.is-scroll > .ans-card > .ans-btn:last-child {
+  position: sticky;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  z-index: 4;
 }
 
 .ans-head { display: flex; flex-direction: column; gap: 6px; }
