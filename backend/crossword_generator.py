@@ -255,6 +255,10 @@ _MAX_GRID = 25
 # at least 4 placed words (so some letters stay visible as anchors).
 _MIN_HIDDEN = 3
 _MIN_PLACED = 4
+# Сетка должна читаться на телефоне целиком: 12 клеток по стороне — это ~26 px на
+# клетку на экране 390 px шириной. Больше — буквы становятся нечитаемыми.
+_MAX_SPAN = 12
+_MAX_PLACED = 7
 
 
 def _can_place(grid: dict, word: str, row: int, col: int, direction: str) -> bool:
@@ -331,12 +335,26 @@ def _find_best_placement(grid: dict, word: str) -> Optional[tuple]:
     return best
 
 
+def _span(grid: dict[tuple[int, int], str]) -> tuple[int, int]:
+    """Размер занятой части сетки: (строк, колонок)."""
+    if not grid:
+        return 0, 0
+    rows = [r for r, _ in grid]
+    cols = [c for _, c in grid]
+    return max(rows) - min(rows) + 1, max(cols) - min(cols) + 1
+
+
 def _place_words(word_entries: list[dict]) -> tuple[dict, list[dict]]:
     """
     Greedy crossword placement.
     Returns (grid, placed_words).
       grid: dict of (row, col) -> letter
       placed_words: word_entry dicts with added direction/row/col
+
+    Сетка держится в пределах _MAX_SPAN клеток по каждой стороне. Раньше границы
+    не было, и банк наполнялся полотнами 20×15 и 24×22: на телефоне такая сетка
+    ужимается до 12-15 px на клетку, то есть до нечитаемых букв. Размещение
+    останавливается и по числу слов — с семью словами сетка остаётся обозримой.
     """
     words = sorted(word_entries, key=lambda w: len(w["word"]), reverse=True)
     if not words:
@@ -360,10 +378,13 @@ def _place_words(word_entries: list[dict]) -> tuple[dict, list[dict]]:
             continue
         direction, row, col = placement
         dr, dc = (0, 1) if direction == "across" else (1, 0)
-        for i, ch in enumerate(entry["word"]):
-            grid[(row + dr * i, col + dc * i)] = ch
+        cells = {(row + dr * i, col + dc * i): ch for i, ch in enumerate(entry["word"])}
+        rows_span, cols_span = _span({**grid, **cells})
+        if rows_span > _MAX_SPAN or cols_span > _MAX_SPAN:
+            continue  # слово раздувает сетку за пределы экрана — берём следующее
+        grid.update(cells)
         placed.append({**entry, "direction": direction, "row": row, "col": col})
-        if len(placed) >= 9:
+        if len(placed) >= _MAX_PLACED:
             break
 
     return grid, placed

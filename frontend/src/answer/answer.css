@@ -495,42 +495,56 @@ html[data-scheme="light"] .ag-diff-cell.bad { color: #dc2626; background: rgba(2
 .ls-gram-errs { margin: 3px 0 0; padding-left: 18px; color: var(--dmps-text-muted, #94A3B8); font-size: 13px; }
 .ls-gram-errs li { margin: 1px 0; }
 
-/* ── Interactive crossword grid + on-screen keyboard ───────────────────────── */
-/* One-screen layout: root fills the viewport, the grid takes the space left over
-   by header + clue + keyboard + button and is scaled (in JS) to fit both axes. */
-/* Tapping a cell focuses a hidden input → the native keyboard opens and shrinks
-   the viewport, which used to scroll the title under Telegram's Mini-App header.
-   Same fix as the dictionary overlay: a top-anchored scroll container sized to the
-   (dynamic) viewport with safe-area + header clearance at the top. */
+/* Кроссворд занимает экран целиком и НИКОГДА не прокручивается: сетка, подсказка,
+   клавиатура и кнопка «Prüfen» видны сразу, на любом экране.
+
+   Раньше сверху висела пустая полоса в 56 px — защита от нативной клавиатуры,
+   которая открывалась по тапу в клетку. Клавиатура давно своя (.cw-kb), скрытого
+   поля ввода нет, а полоса осталась и отъедала ровно ту высоту, из-за которой
+   кнопка уезжала под сгиб.
+
+   Высоты клавиш, кнопки и шрифтов заданы в clamp() от высоты экрана: на маленьком
+   телефоне всё поджимается, на большом — растёт в тех же пропорциях. Сетке
+   достаётся вся оставшаяся высота, а размер клетки под неё считает CrosswordGrid. */
 .ans-root--cw {
   height: 100vh;
   height: 100dvh;
   min-height: 0;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  overflow: hidden;
   overscroll-behavior-y: contain;
-  padding-top: calc(env(safe-area-inset-top, 0px) + 56px);
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) 8px
+           calc(env(safe-area-inset-bottom, 0px) + 8px);
 }
 .ans-card--cw {
   margin: 0 auto;
-  gap: 8px;
-  padding: 16px 12px;
+  width: 100%;
+  max-width: 35.0rem;          /* сетке нужно больше места, чем текстовой карточке */
+  height: 100%;
+  min-height: 0;
+  gap: clamp(0.25rem, 1vh, 0.625rem);
+  padding: clamp(0.625rem, 1.6vh, 1.125rem) clamp(0.625rem, 2.4vw, 1.125rem);
+  overflow: hidden;
 }
-.ans-head--cw { flex: none; }
-.ans-card--cw .ans-title { font-size: 19px; }
-.ans-card--cw .ans-sub { font-size: 12.5px; }
+.ans-head--cw { flex: 0 0 auto; gap: 2px; }
+.ans-card--cw .ans-eyebrow { padding: 3px 0.625rem; font-size: clamp(0.6562rem, 1.5vh, 0.7812rem); }
+.ans-card--cw .ans-title { font-size: clamp(0.9375rem, 2.6vh, 1.3125rem); }
+.ans-card--cw .ans-sub { font-size: clamp(0.6875rem, 1.7vh, 0.875rem); }
 
-/* Grid scrolls vertically if tall; cells are sized by width (readable). The
-   top/left padding leaves room for the corner number badges so they're not clipped. */
+/* Сетке достаётся вся высота, которая осталась от заголовка, подсказки,
+   клавиатуры и кнопки. overflow: hidden здесь принципиален: без него блок рос бы
+   под содержимое и расчёт размера клетки зациклился бы сам на себе. */
 .cw-grid-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
+  align-items: center;
   justify-content: center;
-  padding: 10px 0 2px 10px;
-  overflow: visible;
+  padding: 0.625rem 0 2px 0.625rem;
+  overflow: hidden;
 }
 .cw-grid {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   margin: 0 auto;
 }
 .cw-cell {
@@ -592,26 +606,47 @@ html[data-scheme="light"] .ag-diff-cell.bad { color: #dc2626; background: rgba(2
 }
 .cw-letter { line-height: 1; font-size: calc(var(--cw-cell, 28px) * 0.52); }
 
+/* Подсказка держит постоянную высоту в две строки: иначе при переходе с короткого
+   слова на длинное сетка прыгала на строку вверх-вниз. Что не влезло — листается
+   внутри самой подсказки, а не двигает всё остальное. */
 .cw-clue {
-  font-size: 14.5px; font-weight: 600; line-height: 1.35;
+  flex: 0 0 auto;
+  font-size: clamp(0.75rem, 1.9vh, 0.9375rem); font-weight: 600; line-height: 1.35;
   color: var(--dmps-text-secondary, #CBD5E1);
-  padding: 8px 2px;
+  padding: 0.375rem 2px;
+  height: calc(2 * 1.35em + 0.75rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Экран повыше — отдаём подсказке третью строку: немецкая фраза вместе с русским
+   переводом почти всегда влезает целиком, и листать её не приходится. */
+@media (min-height: 700px) {
+  .cw-clue { height: calc(3 * 1.35em + 0.75rem); }
 }
 
-.cw-kb { display: flex; flex-direction: column; gap: 6px; }
-.cw-kb-row { display: flex; justify-content: center; gap: 4px; }
+.cw-kb { flex: 0 0 auto; display: flex; flex-direction: column; gap: clamp(3px, 0.7vh, 0.375rem); }
+.cw-kb-row { display: flex; justify-content: center; gap: clamp(3px, 0.8vw, 0.3125rem); }
 .cw-key {
-  flex: 1 1 0; min-width: 0; max-width: 38px; height: 42px;
-  font-family: inherit; font-size: 15px; font-weight: 700;
+  flex: 1 1 0; min-width: 0;
+  max-width: clamp(2.125rem, 8.2vw, 3.25rem);
+  height: clamp(1.875rem, 5.4vh, 3.0rem);
+  font-family: inherit; font-size: clamp(0.8125rem, 2vh, 1.0625rem); font-weight: 700;
   color: var(--dmps-text-primary, #F8FAFC);
   background: linear-gradient(180deg, #28344b, #1b2740);
   border: 1px solid rgba(148,163,184,0.2);
-  border-radius: 8px; cursor: pointer;
+  border-radius: 0.5rem; cursor: pointer;
   transition: transform 0.08s ease, filter 0.1s ease;
 }
 .cw-key:active { transform: translateY(1px) scale(0.96); filter: brightness(1.12); }
 .cw-key:disabled { opacity: 0.5; }
-.cw-key-wide { max-width: 52px; flex: 1.4 1 0; }
+.cw-key-wide { max-width: clamp(2.75rem, 11vw, 4.0rem); flex: 1.4 1 0; }
+
+/* Кнопка проверки — последний элемент экрана, и она видна всегда. */
+.ans-card--cw > .ans-btn {
+  flex: 0 0 auto;
+  min-height: clamp(2.625rem, 6.6vh, 3.5rem);
+  font-size: clamp(0.875rem, 2vh, 1.0rem);
+}
 
 /* ── Ranking / trophy card ─────────────────────────────────────────────────── */
 .rank-card {

@@ -11,16 +11,19 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 function tapHaptic() { try { tg?.HapticFeedback?.impactOccurred?.('light'); } catch (_e) { /* ignore */ } }
 
+// Три ряда, а не четыре: четвёртый ряд отъедал у сетки высоту, из-за которой
+// клетки становились мельче. Умляуты переехали в нижний ряд, а «ß» убрана совсем —
+// сетка заглавная, а заглавная ß в немецком записывается как SS, так что нажать её
+// было некуда, зато перепутать с S можно было легко.
 const KB_ROWS = [
   ['Q', 'W', 'E', 'R', 'T', 'Z', 'U', 'I', 'O', 'P'],
   ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
-  ['Y', 'X', 'C', 'V', 'B', 'N', 'M'],
-  ['Ä', 'Ö', 'Ü', 'ß'],
+  ['Y', 'X', 'C', 'V', 'B', 'N', 'M', 'Ä', 'Ö', 'Ü'],
 ];
 
 const k = (r, c) => `${r},${c}`;
 
-const CW_GAP = 3;  // keep in sync with .cw-grid gap in answer.css
+const CW_GAP = 2;  // keep in sync with .cw-grid gap in answer.css
 
 export default function CrosswordGrid({ task, onSubmit, submitting }) {
   const grid = task.grid || [];
@@ -28,24 +31,29 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
   const rows = grid.length;
   const words = useMemo(() => task.words || [], [task]);
 
-  // Size cells by WIDTH so letters stay readable and adapt to the phone width
-  // (the grid always fits horizontally; it scrolls vertically if it's tall).
-  // Clamped so cells aren't tiny on wide grids nor huge on small ones.
+  // Размер клетки считается по ОБЕИМ осям — по ширине и по высоте того места,
+  // которое осталось от заголовка, подсказки, клавиатуры и кнопки (это место
+  // задаёт flex-раскладка в answer.css). Раньше считалась только ширина, поэтому
+  // на высоком экране сетка вылезала вниз и кнопка «Prüfen» уезжала под сгиб.
+  //
+  // Потолок клетки — не фикс, а доля экрана: на телефоне клетка мельче, на
+  // планшете крупнее, пропорции те же.
   const wrapRef = useRef(null);
   const [cell, setCell] = useState(0);
   useEffect(() => {
     const el = wrapRef.current;
-    if (!el || !cols) return undefined;
+    if (!el || !cols || !rows) return undefined;
     const compute = () => {
       const w = el.clientWidth;
+      const h = el.clientHeight;
       if (!w) return;
-      const PAD = 16;  // room for the corner number badges + edge breathing
+      const PAD = 12;  // место под угловые номера + воздух по краю
       const fitW = Math.floor((w - PAD - CW_GAP * (cols - 1)) / cols);
-      // Use the largest size that FITS the card width (capped at 40). Never force a
-      // hard minimum that could exceed the width — that pushed the last column out
-      // of the card on wide grids / narrow phones. Only shrink below 16 for
-      // unusually wide grids, so the whole grid always stays inside the card.
-      const size = fitW >= 16 ? Math.min(40, fitW) : Math.max(12, fitW);
+      const fitH = h ? Math.floor((h - 12 - CW_GAP * (rows - 1)) / rows) : fitW;
+      const cap = Math.max(40, Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.11));
+      // Берём наибольший размер, который влезает по обеим осям. Жёсткого минимума
+      // нет: он вытолкнул бы последний столбец за карточку на узком телефоне.
+      const size = Math.max(12, Math.min(cap, fitW, fitH));
       setCell(size);
     };
     compute();
@@ -53,7 +61,7 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
     ro.observe(el);
     window.addEventListener('resize', compute);
     return () => { ro.disconnect(); window.removeEventListener('resize', compute); };
-  }, [cols]);
+  }, [cols, rows]);
 
   // cell "r,c" → [wordIdx, ...]
   const cellWords = useMemo(() => {
