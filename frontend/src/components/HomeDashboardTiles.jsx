@@ -232,23 +232,13 @@ function TodayStrip({ tr, todayPlan, weeklyPlan, skillReport, uiLang, showMetric
   );
 }
 
-// Незаконченный перевод: человек проверил часть предложений и ушёл. Сессия жива, к ней
-// можно вернуться — тайл говорит об этом сам, вместо того чтобы ждать, пока вспомнят.
+// Незаконченный перевод: человек проверил часть предложений и ушёл. Одна короткая
+// строчка со счётчиком — плитке нельзя терять своё название, особенно на узких экранах.
 function ResumeChip({ tr, translated, total }) {
-  const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((translated / total) * 100))) : 0;
   return (
-    <div className="hdt-resume">
-      <div className="hdt-resume-head">
-        <span className="hdt-resume-dot" aria-hidden="true" />
-        <span className="hdt-resume-title">{tr('Перевод не закончен', 'Übersetzung offen')}</span>
-      </div>
-      <div className="hdt-resume-count">
-        {translated}<span className="hdt-resume-of">{tr(' из ', ' von ')}</span>{total}
-      </div>
-      <div className="hdt-resume-bar" aria-hidden="true">
-        <span style={{ width: `${pct}%` }} />
-      </div>
-      <div className="hdt-resume-cta">{tr('Продолжить', 'Weitermachen')}</div>
+    <div className="hdt-resume" title={tr('Перевод не закончен', 'Übersetzung offen')}>
+      <span className="hdt-resume-dot" aria-hidden="true" />
+      <span className="hdt-resume-count">{translated}<span className="hdt-resume-of">{tr(' из ', ' von ')}</span>{total}</span>
     </div>
   );
 }

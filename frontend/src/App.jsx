@@ -3898,6 +3898,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   parseExplanationFollowupAnswerPayload,
   handleToggleResultAudioGrammar,
   handleFinishTranslation,
+  handleArchiveResultsToHistory,
   finishStatus,
   handleLoadDailyHistory,
   historyLoading,
@@ -4589,7 +4590,18 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
         {results.length > 0 && (
           <section className="webapp-result">
-            <h3>{tr('Результат проверки', 'Prüfungsergebnis')}</h3>
+            <div className="tr-results-head">
+              <h3>{tr('Результат проверки', 'Prüfungsergebnis')}</h3>
+              {/* Разобрался — убрал с экрана. Разборы никуда не деваются: они лежат в
+                  истории за сегодня и достаются кнопкой внизу. */}
+              <button
+                type="button"
+                className="tr-archive-btn"
+                onClick={handleArchiveResultsToHistory}
+              >
+                {tr('Убрать в историю', 'Ins Archiv')}
+              </button>
+            </div>
             <div className="webapp-result-list">
               {results.map((item, index) => {
                 const correctTextForTts = extractCorrectTranslationText(item);
@@ -4818,8 +4830,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
           {finishStatus === 'done' ? (
             <div className="tr-footer-hint">
               {tr(
-                'Разборы остаются здесь — можно спокойно читать их дальше.',
-                'Die Analysen bleiben hier — du kannst sie in Ruhe weiterlesen.'
+                'Разборы уйдут в историю при следующем заходе — или уберите их сейчас.',
+                'Die Analysen wandern beim nächsten Besuch ins Archiv — oder räum sie jetzt weg.'
               )}
             </div>
           ) : (
@@ -7496,6 +7508,7 @@ function AppInner() {
   const readerAutoPausedByIdleRef = useRef(false);
   const translationCheckPollTokenRef = useRef(0);
   const translationSessionAutoFinishedRef = useRef(false);
+  const translationsSectionWasOpenRef = useRef(false);
   const translationCheckUnmountedRef = useRef(false);
   const translationSubmitInFlightRef = useRef(false);
   const translationStartInFlightRef = useRef(false);
@@ -29328,6 +29341,43 @@ function AppInner() {
     }
   };
 
+  // Разборы уже лежат в базе, экран — не хранилище. Убираем их отсюда, когда человек
+  // сказал, что разобрался; достать обратно можно кнопкой «Посмотреть результат за
+  // сегодня». Предложения, которые ещё не переведены, не трогаем.
+  const clearTranslationResultsFromScreen = () => {
+    setResults([]);
+    setExplanations({});
+    setExplanationLoading({});
+    setExplainStructured({});
+    setExplainGrammar({});
+    setExplainGrammarLoading({});
+    setCollapsedResultCards({});
+    setCollapsedExplanationBlocks({});
+    setTranslationAudioGrammarOptIn({});
+    setTranslationAudioGrammarSaving({});
+    setFinishMessage('');
+  };
+
+  const handleArchiveResultsToHistory = () => {
+    clearTranslationResultsFromScreen();
+    setHistoryVisible(false);
+  };
+
+  // Если человек ушёл, не убрав разборы закрытого набора, они не должны встречать его
+  // при следующем заходе в раздел: набор уже сдан, его место в истории за сегодня.
+  useEffect(() => {
+    const sectionOpen = selectedSections.has('translations');
+    const wasOpen = translationsSectionWasOpenRef.current;
+    translationsSectionWasOpenRef.current = sectionOpen;
+    if (sectionOpen && !wasOpen && finishStatus === 'done') {
+      clearTranslationResultsFromScreen();
+      setFinishStatus('idle');
+    }
+    // clearTranslationResultsFromScreen пересоздаётся каждый рендер; вход в раздел
+    // отслеживает ref, поэтому в зависимости её не берём.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finishStatus, selectedSections]);
+
   function getExplanationItemKey(item) {
     return String(item?.sentence_number ?? item?.original_text ?? '');
   }
@@ -32700,6 +32750,7 @@ function AppInner() {
   const handleSaveExplanationFollowupAnswerStable = useStableCallback(handleSaveExplanationFollowupAnswer);
   const renderExplanationContentStable = useStableCallback(renderExplanationContent);
   const handleFinishTranslationStable = useStableCallback(handleFinishTranslation);
+  const handleArchiveResultsToHistoryStable = useStableCallback(handleArchiveResultsToHistory);
   const handleLoadDailyHistoryStable = useStableCallback(handleLoadDailyHistory);
   const saveWeeklyPlanStable = useStableCallback(saveWeeklyPlan);
   const regenerateTodayPlanStable = useStableCallback(regenerateTodayPlan);
@@ -36007,6 +36058,7 @@ function AppInner() {
                 parseExplanationFollowupAnswerPayload={parseExplanationFollowupAnswerPayload}
                 handleToggleResultAudioGrammar={handleToggleResultAudioGrammar}
                 handleFinishTranslation={handleFinishTranslationStable}
+                handleArchiveResultsToHistory={handleArchiveResultsToHistoryStable}
                 finishStatus={finishStatus}
                 handleLoadDailyHistory={handleLoadDailyHistoryStable}
                 historyLoading={historyLoading}
