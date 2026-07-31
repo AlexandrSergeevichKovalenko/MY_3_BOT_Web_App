@@ -52264,6 +52264,40 @@ def get_youtube_transcript():
             )
             return jsonify(response_payload)
 
+        # Cache miss + автоподгрузка = ничего не делаем. «Фильмы» — это и есть таблица
+        # субтитров, поэтому ЛЮБАЯ живая загрузка возвращает видео в общий каталог всем.
+        # Приложение подтягивает субтитры само (восстановило последнее видео на телефоне),
+        # и удалённый администратором фильм таким образом воскресал без единого нажатия.
+        # Живая загрузка + сохранение — только когда видео выбрал человек.
+        if bool(payload.get("auto")):
+            _log_flow_observation(
+                "youtube_transcript",
+                "youtube_transcript_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                video_id=video_id,
+                requested_lang=lang,
+                subtitle_target_lang=subtitle_target_lang,
+                proxy_allowed=bool(proxy_allowed),
+                cache_hit=False,
+                cache_tier="auto_miss_no_fetch",
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+                cached_db_duration_ms=cached_db_duration_ms,
+                final_status="error",
+                error_code="youtube_transcript_not_cached",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=404,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({
+                "error": "youtube_transcript_not_cached",
+                "error_code": "youtube_transcript_not_cached",
+                "message": "Субтитры этого видео не сохранены.",
+                "video_id": video_id,
+            }), 404
+
         # Cache miss. Non-admins normally can't trigger a live proxy fetch (a cost/abuse guard
         # on arbitrary user-supplied videos). EXCEPTION: curated «Начни день с новостей» videos
         # ALWAYS have subtitles (we only pick captioned ones) and must be viewable by EVERYONE —
@@ -53184,6 +53218,10 @@ def delete_youtube_catalog():
         with db_acquire_scope("youtube_catalog_delete"):
             for vid in video_ids:
                 deleted.append(delete_youtube_catalog_video(vid))
+                # Субтитры лежат ещё и в памяти воркера — без этого удалённое видео
+                # продолжало открываться с субтитрами до истечения TTL.
+                _yt_transcript_cache.pop(vid, None)
+                _yt_transcript_errors.pop(vid, None)
     except Exception as exc:
         _log_flow_observation(
             "youtube_catalog_delete",

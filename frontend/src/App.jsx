@@ -25314,6 +25314,22 @@ function AppInner() {
       }
       const removed = new Set(videoIds);
       setMovies((prev) => prev.filter((item) => !removed.has(item?.video_id)));
+      // Удалённое видео нужно забыть и на устройстве: приложение восстанавливает
+      // последнее просмотренное при каждом запуске, и удалённый фильм так возвращался.
+      try {
+        const storedRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
+        const storedId = storedRaw ? String(JSON.parse(storedRaw)?.id || '').trim() : '';
+        if (storedId && removed.has(storedId)) {
+          safeStorageRemove(youtubeResumeStorageKey);
+          safeStorageRemove('webapp_youtube');
+        }
+      } catch (_error) {
+        safeStorageRemove(youtubeResumeStorageKey);
+        safeStorageRemove('webapp_youtube');
+      }
+      if (youtubeId && removed.has(youtubeId)) {
+        setYoutubeInput('');
+      }
       exitMoviesSelectMode();
     } catch (error) {
       setMoviesError(normalizeNetworkErrorMessage(error, 'Не удалось удалить видео. Попробуйте ещё раз.', 'Videos konnten nicht gelöscht werden. Bitte erneut versuchen.'));
@@ -31764,10 +31780,14 @@ function AppInner() {
     throw new Error(tr('Субтитры всё ещё подготавливаются. Попробуйте ещё раз.', 'Untertitel werden noch vorbereitet. Bitte erneut versuchen.'));
   };
 
-  const fetchTranscript = async () => {
+  // options.auto === true — субтитры тянет само приложение (восстановило последнее видео),
+  // а не человек. Такой запрос отдаёт только уже сохранённые субтитры: живая загрузка пишет
+  // видео в общий каталог «Фильмы», и удалённый фильм возвращался туда сам по себе.
+  const fetchTranscript = async (options = {}) => {
+    const autoRequest = options?.auto === true;
     if (!youtubeId) return;
     if (!initData) {
-      setYoutubeTranscriptError(initDataMissingMsg);
+      if (!autoRequest) setYoutubeTranscriptError(initDataMissingMsg);
       return;
     }
     if (youtubeManualOverride) return;
@@ -31782,6 +31802,7 @@ function AppInner() {
           initData,
           videoId: youtubeId,
           lang: requestedLang,
+          auto: autoRequest,
         }),
       });
       if (response.status === 202) {
@@ -31793,6 +31814,13 @@ function AppInner() {
         let message = await response.text();
         try {
           const data = JSON.parse(message);
+          if (data.error_code === 'youtube_transcript_not_cached') {
+            // Автоподгрузка не нашла сохранённых субтитров. Это не ошибка: человек нажмёт
+            // «Субтитры» — тогда они и загрузятся. Красную плашку не показываем.
+            setYoutubeTranscript([]);
+            setYoutubeTranscriptError('');
+            return;
+          }
           if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
             message = `${YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX}${tr(
               'Субтитры для этого видео недоступны.\n\nВключите оригинальные субтитры YouTube или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
@@ -31905,7 +31933,10 @@ function AppInner() {
     if (youtubeTranscriptLoading || youtubeTranscript.length > 0) return;
     if (youtubeNewsTranscriptRequestedRef.current === youtubeId) return;
     youtubeNewsTranscriptRequestedRef.current = youtubeId;
-    fetchTranscript();
+    // Новость дня — курируемое видео, его субтитры грузим живьём (так задумано).
+    // Обычное восстановленное видео — только из сохранённого: иначе приложение само
+    // возвращает в общий каталог фильм, который админ удалил.
+    fetchTranscript({ auto: !youtubeNewsMode });
   }, [youtubeNewsMode, isWideLayout, youtubeSectionVisible, youtubeId, initData, youtubeManualOverride, youtubeTranscriptLoading, youtubeTranscript]);
 
   // PHONE: the on-video overlay is coupled to fullscreen (there's no separate overlay button).
