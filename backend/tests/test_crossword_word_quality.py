@@ -226,12 +226,21 @@ def test_clue_must_not_contain_the_answer():
         clue_ru="Красивое насекомое с яркими крыльями, летает над цветами",
         translation_ru="бабочка",
     )
-    # Немецкая подсказка тоже не должна называть слово
+    # Немецкая подсказка тоже не должна называть слово целиком
     assert clue_gives_away(
         word="KÜHLSCHRANK",
         clue_de="Der Kühlschrank steht in der Küche",
         clue_ru="Стоит на кухне",
         translation_ru="холодильник",
+    )
+    # …но назвать родственное слово — нормальная загадка, а не выдача ответа
+    assert not clue_gives_away(
+        word="TREFFPUNKT", clue_de="Ein Ort, wo sich Freunde treffen",
+        clue_ru="Место, где договорились увидеться", translation_ru="место сбора",
+    )
+    assert not clue_gives_away(
+        word="GROSSMUTTER", clue_de="Die Mutter deines Vaters",
+        clue_ru="Мама твоего папы", translation_ru="бабушка",
     )
     # Перевод из нескольких слов: хватает совпадения по любому
     assert clue_gives_away(

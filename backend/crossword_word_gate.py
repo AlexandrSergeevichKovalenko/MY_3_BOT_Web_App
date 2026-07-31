@@ -297,11 +297,10 @@ def clue_gives_away(*, word: str, clue_de: str, clue_ru: str, translation_ru: st
 
     if target and target in de.replace(" ", ""):
         return "немецкая подсказка называет само слово"
-    parts = split_compound(target) if target else None
-    if parts:
-        for part in parts:
-            if len(part) >= 5 and part in de:
-                return f"немецкая подсказка называет часть слова ({part})"
+    # По ЧАСТЯМ сложного слова не судим: «Ein Ort, wo sich Freunde treffen» к слову
+    # TREFFPUNKT и «Die Mutter deines Vaters» к GROSSMUTTER — нормальные загадки, а
+    # проверка по частям объявляла их подсказкой с ответом (замер по банку: так
+    # отсеялось бы больше половины сеток, почти всё — зря).
 
     for piece in str(translation_ru or "").replace("/", ",").split(","):
         stem = _ru_stem(piece)
