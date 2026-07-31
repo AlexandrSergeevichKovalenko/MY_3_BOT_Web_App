@@ -62,12 +62,13 @@ function viewportHeight() {
 
 function availHeight(root) {
   const cs = getComputedStyle(root);
-  return viewportHeight() - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+  // 3 px запаса: округления в разных браузерах не должны давать лишний пиксель прокрутки
+  return viewportHeight() - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0) - 3;
 }
 
 function stateOf(card) {
   let st = cards.get(card);
-  if (!st) { st = { k: 1, avail: 0, vis: 0, stretched: null }; cards.set(card, st); }
+  if (!st) { st = { k: 1, avail: 0, vis: 0, stretched: null, runs: 0 }; cards.set(card, st); }
   return st;
 }
 
@@ -138,6 +139,11 @@ function fitOne(root) {
   const availNow = availHeight(root);
   if (st.vis && Math.abs(card.getBoundingClientRect().height - st.vis) < EPS
       && Math.abs(availNow - st.avail) < EPS) return;
+  // Предохранитель от «подрастания»: на одно и то же содержимое хватает пары расчётов.
+  // Дальше замолкаем до следующей смены контента (её ловит MutationObserver) или размера
+  // окна — иначе редкие расхождения в пару пикселей гоняли бы карточку кадр за кадром.
+  if (st.runs >= 2) return;
+  st.runs += 1;
 
   // 1. Натуральный размер: снимаем всё, что применяли раньше.
   resetCard(root, card, st);
@@ -174,13 +180,13 @@ function fitOne(root) {
       if (sc.scrollHeight - sc.clientHeight < 2) break;   // прокручивать уже нечего
       prev = cardH;
       const cur = sc.getBoundingClientRect().height;
-      sc.style.maxHeight = `${Math.round((cur + slack - 1) / k)}px`;
+      sc.style.maxHeight = `${Math.round((cur + slack - 4) / k)}px`;
     }
     for (let i = 0; i < 2; i += 1) {
       const over = card.getBoundingClientRect().height - avail;
       if (over <= 0) break;
       const cur = sc.getBoundingClientRect().height;
-      sc.style.maxHeight = `${Math.round((cur - over - 1) / k)}px`;
+      sc.style.maxHeight = `${Math.round((cur - over - 3) / k)}px`;
     }
   };
 
@@ -268,7 +274,11 @@ function fitOne(root) {
   const panel = pickPanel(card);
   if (panel) {
     const rest = h - panel.getBoundingClientRect().height; // всё, кроме длинного блока
-    const kp = Math.max(MIN_ZOOM, Math.min(1, (avail - PANEL_MIN) / Math.max(1, rest)));
+    // Если внутри блока живёт кнопка действия — она прилипнет к его низу, значит на текст
+    // должно остаться место СВЕРХ её высоты, иначе от разбора видно две строки.
+    const btnInside = panel.querySelector('.ans-btn, .ans-btn-ghost');
+    const needPanel = PANEL_MIN + (btnInside ? btnInside.getBoundingClientRect().height : 0);
+    const kp = Math.max(MIN_ZOOM, Math.min(1, (avail - needPanel) / Math.max(1, rest)));
     setZoom(card, kp);
     card.classList.add('is-panelled');
     panel.classList.add('is-fit-panel');
@@ -314,6 +324,7 @@ function freshStart() {
       const st = stateOf(card);
       st.vis = 0;
       st.avail = 0;
+      st.runs = 0;
     });
   } catch (_e) { /* noop */ }
   schedule();
@@ -330,7 +341,13 @@ export default function installCardAutoFit() {
     // Синхронно, прямо в колбэке: он выполняется ПОСЛЕ правки DOM, но ДО отрисовки —
     // значит подгонка попадёт в тот же кадр и пользователь не увидит промежуточный,
     // не влезающий вариант. Через rAF был бы лишний мелькающий кадр.
-    const mo = new MutationObserver(run);
+    const mo = new MutationObserver(() => {
+      // содержимое поменялось — предохранитель снимаем, считаем заново
+      try {
+        document.querySelectorAll('.ans-root > .ans-card').forEach((card) => { stateOf(card).runs = 0; });
+      } catch (_e) { /* noop */ }
+      run();
+    });
     mo.observe(document.body, { childList: true, subtree: true });
   }
 
