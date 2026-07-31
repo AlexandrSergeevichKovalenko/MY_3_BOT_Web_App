@@ -190,5 +190,39 @@ class SendingTellsTheTruthTests(unittest.TestCase):
         self.assertTrue(res["ok"])
 
 
+class ButtonsStayWithinReachTests(unittest.TestCase):
+    """Ссылаться на кнопку, которой рядом нет, — значит заставить искать её в ленте."""
+
+    def test_the_answer_after_manual_words_carries_its_own_buttons(self):
+        kb = ctl.after_words_keyboard("party_freizeit")
+        data = [b["callback_data"] for row in kb["inline_keyboard"] for b in row]
+        self.assertIn("artfill:go:party_freizeit", data)
+        self.assertIn("artfill:mine:party_freizeit", data)
+
+    def test_the_answer_does_not_send_the_owner_hunting_for_a_button(self):
+        seen = {}
+
+        def _add(theme_key, entries):
+            return {"added": 1, "skipped_dup": 0, "rejected": 0, "final_verified": 52}
+
+        with patch.object(db, "get_article_sprint_theme", lambda t: {"label_ru": "Вечеринки"}), \
+                patch.object(db, "set_theme_fill_state", lambda *a, **k: seen or True), \
+                patch.object(gen, "add_manual_words", _add):
+            text = ctl.accept_manual_words("party_freizeit", "Konfetti")
+        self.assertNotIn("кнопкой", text, "кнопка едет вместе с сообщением, а не словами")
+        self.assertIn("52 слова", text, "число слов склоняем")
+
+    def test_a_decision_can_be_taken_back(self):
+        stop = ctl.decision_keyboard("stop", "party_freizeit")
+        self.assertIn("artfill:go:party_freizeit",
+                      [b["callback_data"] for row in stop["inline_keyboard"] for b in row])
+        go = ctl.decision_keyboard("go", "party_freizeit")
+        self.assertIn("artfill:stop:party_freizeit",
+                      [b["callback_data"] for row in go["inline_keyboard"] for b in row])
+
+    def test_an_unknown_action_gets_no_keyboard(self):
+        self.assertIsNone(ctl.decision_keyboard("wat", "party_freizeit"))
+
+
 if __name__ == "__main__":
     unittest.main()

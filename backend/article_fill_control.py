@@ -221,8 +221,8 @@ def apply_fill_decision(action: str, theme_key: str) -> str:
     act = str(action or "").strip().lower()
     if act == "stop":
         set_theme_fill_state(theme_key, "paused")
-        return (f"⏸ «{label}» — добор остановлен. В игре тема остаётся, слова никуда не "
-                f"деваются. Захочешь вернуть добор — скажи /artikel_fill_go {theme_key}.")
+        return (f"⏸ «{label}» — новых слов больше не добираем. В игре тема остаётся, слова "
+                f"никуда не деваются.")
     if act == "go":
         set_theme_fill_state(theme_key, "auto")
         return (f"▶️ «{label}» — добор снова идёт. Если следующие два прогона опять дадут "
@@ -232,6 +232,23 @@ def apply_fill_decision(action: str, theme_key: str) -> str:
         return (f"🚫 «{label}» — понял, слов не нашлось. Тема на паузе, дёргать тебя по ней "
                 f"больше не буду.")
     return "Не понял действие."
+
+
+def decision_keyboard(action: str, theme_key: str) -> dict[str, Any] | None:
+    """Кнопка обратного хода под ответом: решение не должно становиться необратимым.
+
+    Раньше после тапа сообщение перерисовывалось в голый текст, кнопки исчезали, а вернуть
+    добор можно было только командой с ключом темы, который надо где-то посмотреть."""
+    act = str(action or "").strip().lower()
+    if act in ("stop", "cancel"):
+        return {"inline_keyboard": [[
+            {"text": "▶️ включить добор", "callback_data": f"artfill:go:{theme_key}"},
+            {"text": "✍️ дам свои слова", "callback_data": f"artfill:mine:{theme_key}"},
+        ]]}
+    if act == "go":
+        return {"inline_keyboard": [[
+            {"text": "⏸ остановить добор", "callback_data": f"artfill:stop:{theme_key}"}]]}
+    return None
 
 
 def accept_manual_words(theme_key: str, raw: str) -> str:
@@ -252,13 +269,26 @@ def accept_manual_words(theme_key: str, raw: str) -> str:
     added = int(res.get("added") or 0)
     dup = int(res.get("skipped_dup") or 0)
     bad = int(res.get("rejected") or 0)
-    lines = [f"✍️ <b>{label}</b>: принял {len(entries)} слов."]
+    total = res.get("final_verified")
+    lines = [f"✍️ <b>{label}</b>: принял {_words_ru(len(entries))}."]
     lines.append(f"• добавлено: {added}")
     if dup:
         lines.append(f"• уже были в теме: {dup}")
     if bad:
         lines.append(f"• не взял: {bad} — не существительное или артикль не подтвердился")
     lines.append("")
-    lines.append(f"Всего в теме теперь {res.get('final_verified', '?')} слов. "
-                 f"Автодобор остался на паузе — включить кнопкой «продолжить».")
+    lines.append(f"Всего в теме теперь {_words_ru(total) if total is not None else '?'}. "
+                 f"Автодобор на паузе.")
     return "\n".join(lines)
+
+
+def after_words_keyboard(theme_key: str) -> dict[str, Any]:
+    """Кнопки прямо под ответом.
+
+    Текст «включить кнопкой продолжить» отсылал к сообщению, которое к этому моменту
+    уехало вверх по переписке на десяток экранов. Ссылаться на кнопку, которой рядом нет,
+    — это заставлять человека искать её глазами в ленте."""
+    return {"inline_keyboard": [[
+        {"text": "▶️ включить добор", "callback_data": f"artfill:go:{theme_key}"},
+        {"text": "✍️ ещё слова", "callback_data": f"artfill:mine:{theme_key}"},
+    ]]}

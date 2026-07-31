@@ -12279,17 +12279,23 @@ async def handle_fill_control_callback(update: Update, context: CallbackContext)
         return
 
     try:
-        from backend.article_fill_control import apply_fill_decision
+        from backend.article_fill_control import apply_fill_decision, decision_keyboard
         text = await asyncio.to_thread(apply_fill_decision, action, theme_key)
+        # Кнопка обратного хода: иначе решение необратимо, а вернуть добор можно только
+        # командой с ключом темы, который ещё надо где-то посмотреть.
+        kb = decision_keyboard(action, theme_key)
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(b["text"], callback_data=b["callback_data"])
+            for b in row] for row in kb["inline_keyboard"]]) if kb else None
     except Exception:
         logging.warning("fill control action failed theme=%s", theme_key, exc_info=True)
         await query.message.reply_text("Не получилось записать. Подробности в логах.")
         return
     try:
-        await query.edit_message_text(text, parse_mode="HTML")
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
     except Exception:
         try:
-            await query.message.reply_text(text, parse_mode="HTML")
+            await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
         except Exception:
             logging.warning("fill control reply failed", exc_info=True)
 
@@ -12323,7 +12329,12 @@ async def handle_manual_theme_words(update: Update, context: CallbackContext) ->
     try:
         from backend.article_fill_control import accept_manual_words
         text = await asyncio.to_thread(accept_manual_words, theme_key, message.text or "")
-        await message.reply_text(text, parse_mode="HTML")
+        # Кнопки прямо под ответом: сообщение с ними уехало вверх на десяток экранов,
+        # и «включить кнопкой продолжить» превращалось в поиск глазами по ленте.
+        await message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("▶️ включить добор", callback_data=f"artfill:go:{theme_key}"),
+            InlineKeyboardButton("✍️ ещё слова", callback_data=f"artfill:mine:{theme_key}"),
+        ]]))
     except Exception:
         logging.warning("manual theme words failed theme=%s", theme_key, exc_info=True)
         await message.reply_text("Не получилось добавить слова. Подробности в логах.")
