@@ -9,6 +9,12 @@
 Что делает. Для каждого слова-дубля выбирает ОДНУ тему (спрашивает модель, что уместнее),
 оставляет в ней лучшую карточку, остальные снимает с показа.
 
+Дубль считается по написанию И артиклю. Одинаково пишущиеся слова с разным родом —
+не копии, а РАЗНЫЕ слова: der See (озеро) и die See (море), der Kiefer (челюсть) и
+die Kiefer (сосна), der Leiter (руководитель) и die Leiter (стремянка). Ради них в игре
+и сделан показ перевода: артикль там решает смысл. Первая версия скрипта ключевалась по
+одному написанию и выбросила 28 таких карточек — половину каждой пары.
+
 Снятые копии помечаются retire_reviewed = TRUE и в стоп-лист НЕ идут: слово из игры не
 уходит, оно просто живёт в одной теме. Без этой пометки владельца завалило бы разбором
 двух тысяч «снятых» слов, которые на самом деле никуда не делись.
@@ -60,9 +66,9 @@ def load_duplicates():
                 "FROM bt_3_article_sprint_nouns WHERE NOT retired ORDER BY id"
             )
             rows = cur.fetchall()
-    by_word: dict[str, list[dict]] = defaultdict(list)
+    by_word: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for r in rows:
-        by_word[str(r[2]).strip().lower()].append({
+        by_word[(str(r[2]).strip().lower(), str(r[4] or "").strip().lower())].append({
             "id": int(r[0]), "theme": r[1], "word": str(r[2]).strip(), "ru": r[3] or "",
             "article": r[4] or "", "verified": bool(r[5]),
             "media": (1 if r[6] else 0) + (1 if r[7] else 0), "created": r[8],
@@ -111,10 +117,13 @@ def best_row(rows: list[dict]) -> dict:
 def plan(dups, labels):
     """→ (что оставляем, что снимаем, чем выбрана тема)"""
     todo = []
-    for word, rows in sorted(dups.items()):
-        keys = sorted({r["theme"] for r in rows})
-        if len(keys) > 1:
-            todo.append((rows[0]["word"], str(rows[0]["ru"])[:60], keys))
+    # Спрашиваем про «der See», а не про «See»: у двуродового слова каждый род — своё
+    # слово со своим смыслом, и тема у них может быть разная.
+    for key, rows in sorted(dups.items()):
+        themes = sorted({r["theme"] for r in rows})
+        if len(themes) > 1:
+            todo.append((f"{rows[0]['article']} {rows[0]['word']}".strip(),
+                         str(rows[0]["ru"])[:60], themes))
     picks: dict[str, str] = {}
     if todo:
         chunks = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)]
@@ -127,7 +136,7 @@ def plan(dups, labels):
     keep, drop, how = {}, [], {}
     for word, rows in sorted(dups.items()):
         keys = sorted({r["theme"] for r in rows})
-        chosen = picks.get(rows[0]["word"])
+        chosen = picks.get(f"{rows[0]['article']} {rows[0]['word']}".strip())
         if chosen in keys:
             how[word] = "модель"
         else:
@@ -177,8 +186,9 @@ def main() -> int:
         with open(args.report, "w", encoding="utf-8") as fh:
             for word in sorted(keep):
                 k = keep[word]
-                others = sorted({r["theme"] for r in drop if r["word"].lower() == word})
-                fh.write(f"{k['word']}\t{k['ru']}\tостаётся: {labels.get(k['theme'], k['theme'])}"
+                others = sorted({r["theme"] for r in drop
+                                 if (r["word"].lower(), r["article"].lower()) == word})
+                fh.write(f"{k['article']} {k['word']}\t{k['ru']}\tостаётся: {labels.get(k['theme'], k['theme'])}"
                          f"\tуходит из: {', '.join(labels.get(t, t) for t in others)}\t{how[word]}\n")
         _log(f"разбор выписан: {args.report}")
 

@@ -103,7 +103,11 @@ def build_practice_set(theme_key: str, user_id: int, play_date, *, size: int = P
     (solo, not ranked). A new set_id each call → always replayable."""
     import time
     from backend.database import get_article_sprint_verified_sample, upsert_article_sprint_set
-    words = get_article_sprint_verified_sample(theme_key, size)
+    # Личная тренировка — единственное место, где известно, КТО играет, поэтому только
+    # здесь работает остывание: слова, которые этот человек недавно взял верно, уходят в
+    # конец очереди. Общий набор дня и битвы одни на всех, там личного остывания быть не
+    # может — там слово просто остаётся в игре.
+    words = get_article_sprint_verified_sample(theme_key, size, user_id=int(user_id))
     uniq = _dedup_words(words)
     random.shuffle(uniq)
     if len(uniq) < PRACTICE_MIN:

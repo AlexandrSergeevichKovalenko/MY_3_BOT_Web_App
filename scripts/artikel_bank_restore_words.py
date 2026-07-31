@@ -41,16 +41,25 @@ def read_words(path: str, group: str) -> list[str]:
 
 
 def pick_rows(words: list[str]) -> list[dict]:
-    """По одной карточке на слово — та, что была в игре перед снятием."""
+    """По одной карточке на слово — самая полная: проверенная, с медиа, самая старая.
+
+    Слова, у которых карточка уже в игре, пропускаем: возвращать нечего, а второй
+    карточкой мы бы завели дубль. Медиа важнее возраста — у поздней копии картинка и
+    озвучка обычно пустые."""
     from backend.database import get_db_connection_context
     low = [w.lower() for w in words]
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT DISTINCT ON (lower(word)) id, word, article, meaning_ru, theme_key "
-                "FROM bt_3_article_sprint_nouns "
+                "FROM bt_3_article_sprint_nouns n "
                 "WHERE lower(word) = ANY(%s) AND retired "
-                "ORDER BY lower(word), updated_at DESC, id;", (low,))
+                "  AND NOT EXISTS (SELECT 1 FROM bt_3_article_sprint_nouns a "
+                "                  WHERE lower(a.word) = lower(n.word) AND NOT a.retired) "
+                "ORDER BY lower(word), verified DESC, "
+                "         (CASE WHEN COALESCE(audio_object_key,'') <> '' THEN 1 ELSE 0 END"
+                "        + CASE WHEN COALESCE(image_object_key,'') <> '' THEN 1 ELSE 0 END) DESC,"
+                "         created_at, id;", (low,))
             return [{"id": r[0], "word": r[1], "article": (r[2] or "").lower(),
                      "ru": r[3] or "", "theme": r[4]} for r in cur.fetchall()]
 

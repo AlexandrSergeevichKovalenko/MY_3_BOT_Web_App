@@ -49710,27 +49710,76 @@ def seed_two_gender_senses(entries: list[dict]) -> dict:
     return {"words": words_done, "senses_written": senses_written}
 
 
-def get_article_sprint_verified_sample(theme_key: str | None, n: int, *, exclude_words: list[str] | None = None) -> list[dict]:
+# Сколько дней слово не показывается человеку после верного ответа. Растёт с каждым
+# верным ответом: увидел раз — вернётся через полторы недели, третий раз — через квартал.
+# Слово при этом НЕ снимается: артикль надо помнить годами, а не «сдать и забыть».
+ARTICLE_COOLDOWN_DAYS = (10, 30, 90)
+
+
+def get_article_sprint_verified_sample(
+    theme_key: str | None, n: int, *, exclude_words: list[str] | None = None,
+    user_id: int | None = None,
+) -> list[dict]:
     """Random n verified, non-retired nouns. theme_key=None → from any theme (mix).
-    Returns [{"w":word, "a":article, "ru":meaning_ru, "tg":two_gender}]."""
+    Returns [{"w":word, "a":article, "ru":meaning_ru, "tg":two_gender}].
+
+    user_id — личное остывание: слова, которые ЭТОТ человек недавно взял верно, уходят
+    в конец очереди. Не отбрасываются, а именно в конец: если в теме слов меньше, чем
+    нужно на набор, остывшие подберутся сами. Лучше повтор знакомого слова, чем набор
+    на 8 карточек вместо 15.
+
+    Раньше на этом месте была ротация «толпа выучила»: слово, на которое трое ответили и
+    двое угадали, снималось с показа НАВСЕГДА и у всех. Выбивало ровно лучшее — ходовые
+    слова спрашивают чаще и отвечают на них лучше, — а новичку, который их не видел ни
+    разу, их бы уже не показали. Теперь ничего не снимается, а редеет только у того, кто
+    это слово знает."""
     excl = [str(w).strip().lower() for w in (exclude_words or []) if str(w).strip()]
-    where = ["verified", "NOT retired"]
+    where = ["n.verified", "NOT n.retired"]
     params: list = []
     if theme_key:
-        where.append("theme_key = %s")
+        where.append("n.theme_key = %s")
         params.append(str(theme_key))
     if excl:
-        where.append("lower(word) <> ALL(%s)")
+        where.append("lower(n.word) <> ALL(%s)")
         params.append(excl)
+
+    if user_id is None:
+        order = "random()"
+    else:
+        # Ответы лежат в двух местах: спринт/битвы и тренажёр. Берём оба, иначе
+        # выученное в тренажёре продолжало бы сыпаться в спринте.
+        order = "cooling, random()"
+        # Порядок подстановок = порядок %s в готовом запросе: сначала три срока из
+        # SELECT (от большего к меньшему — так стоят ветки CASE), потом два user_id из
+        # JOIN, потом фильтры WHERE и LIMIT.
+        params[:0] = [*reversed(ARTICLE_COOLDOWN_DAYS), int(user_id), int(user_id)]
+
+    cooling = "0 AS cooling" if user_id is None else """
+        CASE WHEN c.last_ok IS NULL THEN 0
+             WHEN c.last_ok > NOW() - make_interval(days =>
+                    CASE WHEN c.hits >= 3 THEN %s WHEN c.hits = 2 THEN %s ELSE %s END)
+             THEN 1 ELSE 0 END AS cooling"""
+    join = "" if user_id is None else """
+        LEFT JOIN (
+            SELECT lower(word) AS w, count(*) AS hits, max(at) AS last_ok FROM (
+                SELECT word, answered_at AS at FROM bt_3_article_sprint_word_answers
+                 WHERE user_id = %s AND is_correct
+                UNION ALL
+                SELECT word, created_at AS at FROM bt_3_article_learn_answers
+                 WHERE user_id = %s AND is_correct
+            ) a GROUP BY 1
+        ) c ON c.w = lower(n.word)"""
+
     params.append(int(max(0, n)))
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT word, article, meaning_ru, two_gender
-                FROM bt_3_article_sprint_nouns
+                SELECT n.word, n.article, n.meaning_ru, n.two_gender, {cooling}
+                FROM bt_3_article_sprint_nouns n
+                {join}
                 WHERE {' AND '.join(where)}
-                ORDER BY random()
+                ORDER BY {order}
                 LIMIT %s;
                 """,
                 tuple(params),

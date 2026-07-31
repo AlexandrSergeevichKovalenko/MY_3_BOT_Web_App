@@ -34261,33 +34261,29 @@ async def _rotate_listening_domain(context: CallbackContext, *, min_answerers: i
 
 
 async def _rotate_article_words_domain(context: CallbackContext, *, min_answerers: int) -> tuple[int, int]:
-    """Retire der/die/das nouns the crowd mastered (across sprint/trainer/battles) and
-    regenerate fresh via the nightly auto-grow. Returns (retired, added).
+    """Слова артиклей из ротации ВЫВЕДЕНЫ: банк не сокращается. Возвращает (0, 0).
 
-    Доливку считает BACKGROUND_JOBS, поэтому `added` здесь всегда 0: на момент возврата
-    слова ещё не добавлены. Их число запишет сам актор — отдельной строкой ротации с
-    retired=0. Сводка суммирует строки по домену, так что недельный итог сходится, а
-    выдуманного числа в отчёте не появляется."""
-    from backend.database import mastered_article_sprint_words, retire_article_sprint_nouns_by_words
-    words = await asyncio.to_thread(mastered_article_sprint_words,
-                                    min_answerers=min_answerers, ratio=MASTERY_CORRECT_RATIO)
-    retired = await asyncio.to_thread(retire_article_sprint_nouns_by_words, words)
-    if retired:
-        def _enqueue() -> dict:
-            from backend.job_queue import enqueue_artikel_autofill_job
-            return enqueue_artikel_autofill_job(
-                per_theme_cap=ARTIKEL_AUTOFILL_PER_THEME,
-                total_cap=max(ARTIKEL_AUTOFILL_TOTAL, retired),
-                rotation_domain="article_words",
-            )
+    Раньше здесь снимались с показа слова, которые «толпа выучила»: хватало трёх
+    ответивших и двух верных ответов из трёх. Механика била ровно по лучшему — самые
+    ходовые слова темы спрашивают чаще всех и отвечают на них лучше всех, поэтому первыми
+    исчезали der Junge, der Gürtel, die Kollegin, der Bräutigam. Всего так ушло 28 слов.
 
-        try:
-            outcome = await asyncio.to_thread(_enqueue)
-            if not outcome.get("queued"):
-                logging.warning("rotation: article-words regen NOT enqueued: %s", outcome.get("reason"))
-        except Exception:
-            logging.warning("rotation: article-words regen enqueue failed", exc_info=True)
-    return retired, 0
+    Заменить их нечем: темы и так недобраны, а новых ходовых слов в теме взять негде —
+    ради этого и городился фильтр полезности. Ротация выгрызала лучшее и требовала долить
+    худшим.
+
+    Плюс она мерила не то. «Толпа выучила» — про толпу, а человек, зарегистрировавшийся
+    завтра, этих слов не видел ни разу, и ему их бы уже не показали. Артикль — не
+    одноразовый контент вроде задания: слово должно возвращаться, просто реже.
+
+    Что вместо: личное остывание в подборе слов (get_article_sprint_verified_sample) —
+    верно ответил, слово уходит из ТВОЕГО подбора на срок, который растёт, а у остальных
+    остаётся. Банк при этом только растёт.
+
+    Функция оставлена, чтобы домен не пропал из недельного отчёта ротации: строка с
+    нулями честно говорит «здесь ничего не снимаем».
+    """
+    return 0, 0
 
 
 async def _mastery_rotation_job(context: CallbackContext) -> list[tuple[str, int, int]]:
