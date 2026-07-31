@@ -448,6 +448,7 @@ class BillingEconomicsTests(unittest.TestCase):
         cursor = _DummyCursor([
             (30.0,),
             (29.0,),
+            None,               # дедуп по ключу: этого действия сегодня ещё не было
             (
                 42,
                 "reserve:test",
@@ -493,7 +494,11 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertIn("pg_advisory_xact_lock", queries[0])
         self.assertIn("FROM plan_limits", queries[1])
         self.assertIn("SELECT COALESCE(SUM(units_value), 0)", queries[2])
-        self.assertIn("INSERT INTO bt_3_billing_events", queries[3])
+        self.assertIn("WHERE idempotency_key = %s", queries[3])
+        self.assertIn("INSERT INTO bt_3_billing_events", queries[4])
+        # Ключ живёт одни местные сутки: завтра то же действие спишет новую единицу.
+        insert_params = cursor.executed[4][1]
+        self.assertEqual(insert_params[0], "reserve:test:2026-03-20")
 
     def test_reserve_free_feature_usage_blocks_without_insert(self):
         event_time = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
@@ -517,6 +522,44 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertTrue(result["blocked"])
         self.assertEqual(result["error"]["feature"], "dictionary_lookup_daily")
         self.assertFalse(any("INSERT INTO bt_3_billing_events" in query for query, _params in cursor.executed))
+
+    def test_reserve_free_feature_usage_reuses_own_reservation_at_limit(self):
+        """Повтор ТОГО ЖЕ действия не должен упираться в собственную резервацию.
+
+        Разбор ошибок шлёт два параллельных запроса под общим ключом; при лимите 1/день
+        второй получал 429, и человек видел «на сегодня разборы закончились», не получив
+        ни одного разбора. Лимит исчерпан (1 из 1), но ключ уже наш — отдаём ту же единицу.
+        """
+        event_time = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        existing_row = (
+            42, "explain:webapp:77:abc:2026-03-20", 77, "de", "ru",
+            "dictionary_openai_explanation_daily", "app_internal", "requests", 1.0,
+            None, 0.0, "USD", "estimated", {"origin": "webapp_explain"}, event_time, event_time,
+        )
+        cursor = _DummyCursor([(1.0,), (1.0,), existing_row])
+
+        @contextmanager
+        def _conn():
+            yield _DummyConnection(cursor)
+
+        with patch("backend.database.get_db_connection_context", return_value=_conn()), \
+             patch("backend.database.resolve_entitlement", return_value={"effective_mode": "free"}):
+            result = reserve_free_feature_usage(
+                user_id=77,
+                feature_key="dictionary_openai_explanation_daily",
+                idempotency_key="explain:webapp:77:abc",
+                now_ts_utc=event_time,
+                tz="Europe/Vienna",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["blocked"])
+        self.assertTrue(result["reused"])
+        self.assertEqual(result["event"]["id"], 42)
+        self.assertFalse(any("INSERT INTO bt_3_billing_events" in query for query, _params in cursor.executed))
+        lookup_query, lookup_params = cursor.executed[-1]
+        self.assertIn("WHERE idempotency_key = %s", lookup_query)
+        self.assertEqual(lookup_params[0], "explain:webapp:77:abc:2026-03-20")
 
     def test_build_free_limit_error_payload(self):
         payload = build_free_limit_error(

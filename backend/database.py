@@ -38712,6 +38712,64 @@ def _insert_free_feature_usage_with_cursor(
     return _billing_event_row_to_dict(row) if row else None
 
 
+def refund_stolen_grammar_explains(*, days: int = 1, tz: str = "Europe/Vienna") -> dict:
+    """Вернуть дневные разборы, которые съел служебный companion-запрос.
+
+    С 15.07 по фикс модалка разбора слала ДВА запроса на /api/webapp/explain: сначала
+    служебный `mode="grammar"`, следом сам разбор ошибок. Оба резервировали одну и ту же
+    дневную единицу по общему ключу, но проверка лимита стояла ВЫШЕ дедупа — поэтому
+    первый занимал единицу, а второй получал 429. Пользователь видел «на сегодня разборы
+    закончились», не получив ни одного разбора.
+
+    Строка с metadata->>'mode' = 'grammar' — это ровно такой случай: единица списана,
+    разбор не отдан. После фикса резервация пишется с mode='explain', так что признак
+    остаётся однозначным. Удаляем такие строки за последние `days` местных суток —
+    счётчик дня считается по этой же таблице, значит день возвращается пользователю.
+    """
+    window_days = max(1, min(30, int(days or 1)))
+    tz_name = str(tz or "Europe/Vienna").strip() or "Europe/Vienna"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_billing_events
+                WHERE action_type = 'dictionary_openai_explanation_daily'
+                  AND units_type = 'requests'
+                  AND metadata->>'mode' = 'grammar'
+                  AND (event_time AT TIME ZONE %s)::date
+                      > (NOW() AT TIME ZONE %s)::date - %s::int
+                RETURNING user_id;
+                """,
+                (tz_name, tz_name, window_days),
+            )
+            rows = cursor.fetchall() or []
+    user_ids = {int(row[0]) for row in rows if row and row[0] is not None}
+    logging.info(
+        "explain_grammar_refund deleted=%s users=%s days=%s", len(rows), len(user_ids), window_days
+    )
+    return {"deleted": len(rows), "users": len(user_ids), "days": window_days}
+
+
+def _find_free_feature_usage_by_key(cursor, *, idempotency_key: str) -> dict | None:
+    """Уже записанное событие с этим ключом идемпотентности (или None).
+    Нужен, чтобы повтор одного и того же действия переиспользовал свою резервацию,
+    а не упирался в дневной лимит, который сам же и занял."""
+    cursor.execute(
+        """
+        SELECT
+            id, idempotency_key, user_id, source_lang, target_lang, action_type, provider,
+            units_type, units_value, price_snapshot_id, cost_amount, currency, status,
+            metadata, event_time, created_at
+        FROM bt_3_billing_events
+        WHERE idempotency_key = %s
+        LIMIT 1;
+        """,
+        (str(idempotency_key),),
+    )
+    row = cursor.fetchone()
+    return _billing_event_row_to_dict(row) if row else None
+
+
 def increment_free_feature_usage(
     *,
     user_id: int,
@@ -38798,6 +38856,11 @@ def reserve_free_feature_usage(
     day_local = _to_aware_datetime(now_value).astimezone(_resolve_timezone(tz)).date()
     lock_material = f"free_feature:{safe_user_id}:{feature}:{day_local.isoformat()}"
     lock_key = int.from_bytes(hashlib.sha256(lock_material.encode("utf-8")).digest()[:8], "big", signed=True)
+    # Лимит дневной — значит и ключ идемпотентности живёт один день. Иначе то же самое действие
+    # завтра попадёт в старую запись (ON CONFLICT DO NOTHING), новая единица не спишется, и
+    # платная работа уйдёт мимо счётчика. Со дня в ключе повтор внутри дня бесплатен, а завтра
+    # честно списывается заново.
+    scoped_key = f"{key}:{day_local.isoformat()}"
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -38811,6 +38874,21 @@ def reserve_free_feature_usage(
                 tz=tz,
                 cursor=cursor,
             )
+            # Идемпотентность ДО проверки лимита. Ключ означает «это то же самое действие»:
+            # ретрай после обрыва сети, параллельный companion-запрос того же экрана, повторное
+            # открытие уже оплаченного разбора. Раньше дедуп стоял ниже лимита — и такой повтор
+            # упирался в собственную же резервацию (used=1 при лимите 1) и получал 429. Для
+            # пользователя это выглядело как «на сегодня закончились», хотя он не сделал ничего.
+            existing = _find_free_feature_usage_by_key(cursor, idempotency_key=scoped_key)
+            if existing:
+                return {
+                    "ok": True,
+                    "blocked": False,
+                    "event": existing,
+                    "used": used_today,
+                    "limit": limit_value,
+                    "reused": True,
+                }
             if limit_value >= 0 and used_today + 1.0 > limit_value:
                 log_limit_runtime_event(
                     user_id=safe_user_id,
@@ -38840,7 +38918,7 @@ def reserve_free_feature_usage(
                 }
             event = _insert_free_feature_usage_with_cursor(
                 cursor,
-                idempotency_key=key,
+                idempotency_key=scoped_key,
                 user_id=safe_user_id,
                 feature_key=feature,
                 source_lang=source_lang,

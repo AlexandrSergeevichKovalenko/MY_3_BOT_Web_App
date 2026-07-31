@@ -65586,6 +65586,11 @@ def explain_webapp_translation():
     # "grammar" is a companion call to the SAME modal open as the default translation
     # explain — share its reservation (same idempotency key, mode folded to "") so the
     # progressive grammar block doesn't burn a 2nd daily explain unit for Free users.
+    # The two calls fly in PARALLEL, so either may arrive first: the shared reservation is
+    # what makes that harmless (reserve_free_feature_usage dedupes by key BEFORE the limit
+    # check, so the loser reuses the winner's unit instead of hitting a 429 on its twin).
+    # The ledger records the SHARED mode, not the caller's — a row still labelled "grammar"
+    # is pre-fix damage and refundable via refund_stolen_grammar_explains().
     _cap_mode = "" if mode == "grammar" else mode
     _explain_key = hashlib.sha1(f"{original_text}|{user_translation}|{_cap_mode}".encode("utf-8", "ignore")).hexdigest()[:24]
     _explain_reservation = reserve_free_feature_usage(
@@ -65594,7 +65599,7 @@ def explain_webapp_translation():
         idempotency_key=f"explain:webapp:{int(user_id)}:{_explain_key}",
         source_lang=source_lang,
         target_lang=target_lang,
-        metadata={"origin": "webapp_explain", "mode": mode},
+        metadata={"origin": "webapp_explain", "mode": _cap_mode or "explain", "call": mode or "explain"},
         tz="Europe/Vienna",
     )
     if _explain_reservation.get("blocked"):

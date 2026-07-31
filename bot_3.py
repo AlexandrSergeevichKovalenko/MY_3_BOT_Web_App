@@ -3584,6 +3584,37 @@ async def _admin_shortcut_reset_command(update: Update, context: CallbackContext
         parse_mode="HTML")
 
 
+async def _admin_refund_explains_command(update: Update, context: CallbackContext) -> None:
+    """/refund_explains [дней=1] — вернуть дневные разборы, съеденные служебным
+    grammar-запросом (баг 15.07–фикс: человек видел «на сегодня закончились», не сделав
+    ни одного разбора). Чистит для ВСЕХ пользователей сразу."""
+    from backend.database import refund_stolen_grammar_explains
+    user = update.effective_user; message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only."); return
+    args = context.args or []
+    try:
+        days = int(str(args[0]).strip()) if args else 1
+    except Exception:
+        days = 1
+    result = await asyncio.to_thread(refund_stolen_grammar_explains, days=days)
+    deleted = int(result.get("deleted") or 0)
+    users = int(result.get("users") or 0)
+    if not deleted:
+        await message.reply_text(
+            f"✅ Возвращать нечего: за последние {result.get('days')} сут. съеденных разборов не найдено."
+        ); return
+    await message.reply_text(
+        f"🔁 Разборы возвращены\n"
+        f"Освобождено единиц: <b>{deleted}</b>\n"
+        f"Пользователей: <b>{users}</b>\n"
+        f"Окно: последние <b>{result.get('days')}</b> сут. (Вена).\n\n"
+        f"Эти люди снова могут открыть бесплатный разбор сегодня.",
+        parse_mode="HTML")
+
+
 async def _admin_grant_pro_command(update: Update, context: CallbackContext) -> None:
     """/admin_grant_pro <user_id> [days] — grant earned Pro now + show is_user_pro
     flip (verifies the earned-grant path)."""
@@ -40542,6 +40573,7 @@ def main():
     application.add_handler(CommandHandler("admin_fix_group_pins", _admin_fix_group_pins_command))
     application.add_handler(CommandHandler("shortcut_runs", _admin_shortcut_runs_command))
     application.add_handler(CommandHandler("shortcut_reset", _admin_shortcut_reset_command))
+    application.add_handler(CommandHandler("refund_explains", _admin_refund_explains_command))
     application.add_handler(CommandHandler("admin_digest", _admin_test_digest_command))
     application.add_handler(CommandHandler("admin_sprint_distractors", _admin_sprint_distractors_command))
     application.add_handler(CommandHandler("admin_build_trainers", _admin_build_trainers_command))
