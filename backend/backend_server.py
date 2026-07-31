@@ -40691,6 +40691,11 @@ def _run_post_finish_snapshot_bookkeeping(
                 trigger="finish_complete",
                 prefetched_plan=_plan,
             )
+            # Синк только что переписал счётчики задачи в базе, а _plan остался таким,
+            # каким был ДО него. Записать карточку «Сегодня» из него — значит показать на
+            # главной вчерашние цифры (кольцо «1 из 7» на закрытом наборе). Перечитываем
+            # план после синка: он же сбросил кэш, так что это свежие данные.
+            _plan = get_daily_plan(user_id=int(user_id), plan_date=plan_date) or _plan
             if isinstance(_plan, dict):
                 _write_today_card_projection_from_daily_plan(
                     user_id=int(user_id),

@@ -4870,27 +4870,47 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
         {historyError && <div className="webapp-error">{historyError}</div>}
 
-        {historyVisible && (
-          <section className="webapp-result">
-            <h3>{tr('История переводов за сегодня', 'Übersetzungsverlauf für heute')}</h3>
-            <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {activeLanguagePairLabel}</p>
-            {historyItems.length === 0 ? (
-              <p className="webapp-muted">{tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Übersetzungen.')}</p>
-            ) : (
-              <div className="webapp-result-list">
-                {historyItems.map((item, index) => (
-                  <div key={item.id ?? index} className="webapp-result-card">
-                    <div
-                      className="webapp-result-text tr-history-result-text"
-                    >
-                      {renderFeedback(buildHistoryFeedback(item))}
+        {historyVisible && (() => {
+          // Разборы текущего набора уже висят выше. История за день возвращает их же —
+          // без этого отсева человек получал те же семь предложений вторым списком.
+          const shownTranslationIds = new Set(
+            results
+              .map((item) => Number(item?.translation_id || 0))
+              .filter((value) => Number.isFinite(value) && value > 0)
+          );
+          const restHistoryItems = historyItems.filter(
+            (item) => !shownTranslationIds.has(Number(item?.id || 0))
+          );
+          const everythingAlreadyOnScreen = historyItems.length > 0 && restHistoryItems.length === 0;
+          return (
+            <section className="webapp-result">
+              <h3>{tr('История переводов за сегодня', 'Übersetzungsverlauf für heute')}</h3>
+              <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {activeLanguagePairLabel}</p>
+              {restHistoryItems.length === 0 ? (
+                <p className="webapp-muted">
+                  {everythingAlreadyOnScreen
+                    ? tr(
+                      'Все сегодняшние переводы уже показаны выше.',
+                      'Alle heutigen Übersetzungen stehen bereits oben.'
+                    )
+                    : tr('Сегодня пока нет завершённых переводов.', 'Heute gibt es noch keine abgeschlossenen Übersetzungen.')}
+                </p>
+              ) : (
+                <div className="webapp-result-list">
+                  {restHistoryItems.map((item, index) => (
+                    <div key={item.id ?? index} className="webapp-result-card">
+                      <div
+                        className="webapp-result-text tr-history-result-text"
+                      >
+                        {renderFeedback(buildHistoryFeedback(item))}
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
+                  ))}
+                </div>
+              )}
+            </section>
+          );
+        })()}
         </div>{/* /.tr-workspace */}
       </section>
     </PerfProfiler>
