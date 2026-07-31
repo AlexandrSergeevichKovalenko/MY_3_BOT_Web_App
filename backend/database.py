@@ -49161,10 +49161,21 @@ def restore_retired_article_noun(row_id: int, *, article: str = "") -> dict | No
         тапом, строка помечается two_gender=TRUE, и в игре у слова показывается
         русский перевод, чтобы вопрос «der/die/das?» был честным.
 
-    Правим только ЭТУ строку, когда артикль пришёл от владельца: у двуродового слова
-    у каждого смысла своя строка со своим артиклем, и трогать соседний смысл нельзя.
-    Когда род однозначен — правим все строки слова разом (оно могло быть снято в
-    нескольких темах)."""
+    Возвращаем ОДНУ карточку, а не все копии слова. Раньше при однозначном роде поднимались
+    все снятые строки разом — «оно могло быть снято в нескольких темах». С тех пор правило
+    другое: слово живёт в одной теме, копии в соседних сняты дедупликацией как лишние.
+    Старое поведение возвращало их обратно, и каждый тап «вернуть» заново плодил дубли:
+    die Tante оживала сразу в «Семье» и в «Праздниках».
+
+    Какую именно карточку — не ту, что попалась в очередь разбора (там слово берётся один
+    раз, тема какая придётся), а самую полную: проверенную, с картинкой и озвучкой, самую
+    старую. Это её человек и видел в игре до снятия.
+
+    Остальные копии остаются снятыми, но помечаются разобранными: слово уже показали
+    владельцу, второй раз спрашивать про него незачем.
+
+    Исключение — артикль от владельца: у двуродового слова у каждого смысла своя строка со
+    своим артиклем, поэтому правим ровно ту строку, которую показали."""
     from backend.article_authority import authoritative_article
     picked = str(article or "").strip().lower()
     try:
@@ -49204,12 +49215,32 @@ def restore_retired_article_noun(row_id: int, *, article: str = "") -> dict | No
                     "meaning_ru": meaning, "reason": source}
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
+                # Самая полная карточка слова: проверенная, с медиа, самая старая. Медиа
+                # важнее возраста — у поздней копии картинка и озвучка обычно пустые, и
+                # выбрав её, мы выбросили бы уже оплаченную работу.
+                cursor.execute(
+                    "SELECT id FROM bt_3_article_sprint_nouns "
+                    "WHERE lower(word) = lower(%s) AND retired "
+                    "ORDER BY verified DESC, "
+                    "         (CASE WHEN COALESCE(audio_object_key,'') <> '' THEN 1 ELSE 0 END"
+                    "        + CASE WHEN COALESCE(image_object_key,'') <> '' THEN 1 ELSE 0 END) DESC,"
+                    "         created_at, id LIMIT 1;",
+                    (word,),
+                )
+                best = cursor.fetchone()
+                if not best:
+                    return None
                 cursor.execute(
                     "UPDATE bt_3_article_sprint_nouns "
                     "SET retired = FALSE, retire_reviewed = TRUE, article = %s, "
                     "    verified = TRUE, source = %s, updated_at = NOW() "
-                    "WHERE lower(word) = lower(%s) AND retired;",
-                    (verdict, str(source or "")[:40], word),
+                    "WHERE id = %s;",
+                    (verdict, str(source or "")[:40], int(best[0])),
+                )
+                # Копии остаются снятыми, но разобранными: слово владельцу уже показали.
+                cursor.execute(
+                    "UPDATE bt_3_article_sprint_nouns SET retire_reviewed = TRUE "
+                    "WHERE lower(word) = lower(%s) AND retired;", (word,)
                 )
                 cursor.execute(
                     "DELETE FROM bt_3_article_word_blacklist WHERE word = lower(%s);", (word,)

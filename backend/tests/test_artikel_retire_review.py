@@ -12,8 +12,12 @@ from backend.article_retire_review import _word_text, _keyboard
 
 
 class _FakeCursor:
-    def __init__(self, rows):
+    """`best_id` — ответ на «какую карточку слова возвращаем»: у этого запроса своя форма."""
+
+    def __init__(self, rows, *, best_id=None):
         self._rows = rows
+        self._best_id = best_id
+        self._last = ""
         self.sql_log: list[str] = []
 
     def __enter__(self):
@@ -23,12 +27,15 @@ class _FakeCursor:
         return False
 
     def execute(self, sql, params=None):
-        self.sql_log.append(" ".join(str(sql).split()))
+        self._last = " ".join(str(sql).split())
+        self.sql_log.append(self._last)
 
     def fetchall(self):
         return self._rows
 
     def fetchone(self):
+        if self._last.startswith("SELECT id FROM bt_3_article_sprint_nouns"):
+            return (self._best_id,) if self._best_id is not None else None
         return self._rows[0] if self._rows else None
 
 
@@ -115,8 +122,8 @@ class RetireReviewQueueTests(unittest.TestCase):
         ])
         self.assertEqual(len(out), 1)
 
-    def _restore(self, verdict):
-        cur = _FakeCursor([("Kühler", "die", "радиатор")])
+    def _restore(self, verdict, *, best_id=7):
+        cur = _FakeCursor([("Kühler", "die", "радиатор")], best_id=best_id)
 
         @contextmanager
         def _fake_ctx(*a, **k):
@@ -128,16 +135,39 @@ class RetireReviewQueueTests(unittest.TestCase):
             res = db.restore_retired_article_noun(1)
         return res, cur
 
-    def test_restore_writes_the_checked_article_in_every_theme(self):
+    def test_restore_brings_back_one_card_not_every_copy(self):
+        # Слово живёт в одной теме. Раньше возврат поднимал все снятые строки, и каждый
+        # тап «вернуть» заново плодил дубли: die Tante оживала и в «Семье», и в «Праздниках».
         res, cur = self._restore("der")
         self.assertEqual(res["article"], "der")
         self.assertEqual(res["stored_article"], "die")
-        update = [s for s in cur.sql_log if s.startswith("UPDATE")][0]
-        self.assertIn("lower(word) = lower(%s)", update, "вернуть надо во всех темах, не одну строку")
-        self.assertIn("retired = FALSE", update)
-        self.assertIn("article = %s", update, "в игру должен уйти проверенный артикль")
+        back = [s for s in cur.sql_log if s.startswith("UPDATE") and "retired = FALSE" in s]
+        self.assertEqual(len(back), 1)
+        self.assertIn("WHERE id = %s", back[0], "в игру возвращаем одну карточку")
+        self.assertIn("article = %s", back[0], "и с проверенным артиклем")
         self.assertTrue([s for s in cur.sql_log if s.startswith("DELETE FROM bt_3_article_word_blacklist")],
                         "возвращённое слово надо снять со стоп-листа")
+
+    def test_restore_picks_the_fullest_card(self):
+        _, cur = self._restore("der")
+        pick = [s for s in cur.sql_log if s.startswith("SELECT id FROM bt_3_article_sprint_nouns")][0]
+        self.assertIn("verified DESC", pick)
+        self.assertIn("audio_object_key", pick, "карточку с озвучкой не выбрасываем")
+        self.assertIn("image_object_key", pick, "и с картинкой тоже")
+
+    def test_restore_marks_the_remaining_copies_as_reviewed(self):
+        # Копии остаются снятыми, но спрашивать про это слово второй раз незачем.
+        _, cur = self._restore("der")
+        marked = [s for s in cur.sql_log
+                  if s.startswith("UPDATE") and "retire_reviewed = TRUE" in s
+                  and "retired = FALSE" not in s]
+        self.assertTrue(marked, "копии должны уйти из очереди разбора")
+        self.assertIn("lower(word) = lower(%s)", marked[0])
+
+    def test_restore_stops_when_the_word_has_no_retired_card(self):
+        res, cur = self._restore("der", best_id=None)
+        self.assertIsNone(res)
+        self.assertFalse([s for s in cur.sql_log if "retired = FALSE" in s])
 
     def test_restore_asks_for_the_sense_when_the_gender_depends_on_it(self):
         res, cur = self._restore(None)
