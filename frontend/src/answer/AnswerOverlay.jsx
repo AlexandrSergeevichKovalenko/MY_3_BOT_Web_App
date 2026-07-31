@@ -508,7 +508,7 @@ function AufgabeResult({ result }) {
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       {isErr ? (
-        <div className="au-err-list">
+        <div className="au-err-list ans-body">
           {result.errors.map((e, i) => (
             <div className={`au-err-item ${e.status}`} key={i}>
               <div className="au-err-head">
@@ -612,7 +612,7 @@ function AufgabeResult({ result }) {
         <div className="ans-why-wrong">⚠️ Твой ответ{mine ? <> «{mine}»</> : null}: {result.wrong_reason}</div>
       ) : null}
       {saveable.length ? (
-        <div className="sp-all">
+        <div className="sp-all ans-body">
           <div className="sp-all-head">
             {result.format === 'antonym' ? 'Антонимы' : 'Синонимы'}{' '}
             <span className="sp-all-dim">(👆 нажми, чтобы сохранить в словарь)</span>:

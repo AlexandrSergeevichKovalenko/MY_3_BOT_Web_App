@@ -241,7 +241,7 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
         </div>
       ) : null}
       {items.length ? (
-        <div className="as-result-list">
+        <div className="as-result-list ans-body">
           {items.map((it, i) => (
             <div key={i} className={`adj-rev ${it.ok ? 'ok' : 'bad'}`}>
               <div className="adj-rev-phrase">

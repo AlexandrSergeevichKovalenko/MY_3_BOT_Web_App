@@ -237,7 +237,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
       </div>
       <SprintRanking ranking={r.ranking} />
       {allChips.length ? (
-        <div className="sp-all">
+        <div className="sp-all ans-body">
           <div className="sp-all-head">Все варианты <span className="sp-all-dim">(зелёным — что нашёл · 👆 нажми, чтобы сохранить в словарь)</span>:</div>
           <div className="sp-chips">
             {allChips.map((a, i) => {

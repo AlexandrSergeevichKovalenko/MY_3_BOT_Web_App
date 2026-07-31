@@ -246,7 +246,7 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
         </div>
       ) : null}
       {items.length ? (
-        <div className="as-result-list">
+        <div className="as-result-list ans-body">
           {items.map((it, i) => {
             const [pre, post] = splitBlank(it.s);
             return (

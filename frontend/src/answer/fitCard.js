@@ -91,10 +91,17 @@ function findScroller(card) {
   return best ? best.el : null;
 }
 
-// Блок, который не жалко прокручивать, если экран пересобирается целиком: самый высокий.
+// Блок, который не жалко прокручивать, если экран пересобирается целиком.
+//
+// Сначала спрашиваем саму вёрстку: игра помечает своё «тело» классом `ans-body` (список
+// слов, разбор). Это правильный порядок — решение принимает разметка, а не догадка по
+// высоте. Эвристика ниже осталась для экранов, которые ещё не размечены.
+//
 // Кнопка действия внутри такого блока не теряется — CSS прижимает её к низу блока
 // (`.is-fit-panel > .ans-btn`), так что «Дальше» видно всегда.
 function pickPanel(card) {
+  const marked = card.querySelector(':scope > .ans-body');
+  if (marked) return marked;
   const cardH = card.getBoundingClientRect().height;
   let best = null;
   for (const el of Array.from(card.children)) {
@@ -210,7 +217,7 @@ function fitOne(root) {
       if (nk >= k - 0.002) break;
       k = nk;
       setZoom(card, k);
-      if (card.classList.contains('is-panelled')) card.style.maxHeight = `${Math.round(avail / k)}px`;
+      if (card.classList.contains('is-panelled')) card.style.maxHeight = `${Math.round((avail - 2) / k)}px`;
     }
     remember(k);
   };
@@ -282,7 +289,7 @@ function fitOne(root) {
     setZoom(card, kp);
     card.classList.add('is-panelled');
     panel.classList.add('is-fit-panel');
-    card.style.maxHeight = `${Math.round(avail / kp)}px`; // px внутри карточки — уже в её масштабе
+    card.style.maxHeight = `${Math.round((avail - 2) / kp)}px`; // px внутри карточки — уже в её масштабе; −2 на рамку
     if (card.getBoundingClientRect().height <= avail + EPS) { settle(kp); return; }
     // не помогло — откатываем к обычной прокрутке
     card.classList.remove('is-panelled');

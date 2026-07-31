@@ -207,7 +207,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         </div>
 
         {answered ? (
-          <div className={`tr-feedback ${picked.__correct ? 'ok' : 'bad'}`}>
+          <div className={`tr-feedback ans-body ${picked.__correct ? 'ok' : 'bad'}`}>
             {picked.__correct ? (
               <>
                 <div className="tr-fb-head">✅ Верно — <b>{correctDe}</b>{round.correct?.ru ? ` · ${round.correct.ru}` : ''}</div>
