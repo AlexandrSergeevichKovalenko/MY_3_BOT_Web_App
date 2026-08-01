@@ -157,7 +157,6 @@ function RebusResult({ result }) {
   const mine = String(result.user_answer || '').trim();
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
-      <Toast state={chipToast.state} onClose={chipToast.hide} />
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       <div className="ans-answer">
         {good ? '' : 'Richtige Antwort: '}
@@ -506,6 +505,7 @@ function AufgabeResult({ result }) {
   const ERR_ICON = { fixed: '✅', wrong_fix: '❌', missed: '🔎' };
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+      <Toast state={chipToast.state} onClose={chipToast.hide} />
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       {isErr ? (
         <div className="au-err-list ans-body">
