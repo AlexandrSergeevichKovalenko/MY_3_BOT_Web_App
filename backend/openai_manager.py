@@ -5514,7 +5514,7 @@ logging.basicConfig(
 
 # SYNTHETIC_LOAD_MODE returns a deterministic in-process proxy instead of a real
 # AsyncOpenAI client (no network). Default OFF -> identical to AsyncOpenAI(...).
-from backend.synthetic_load import build_async_openai_client
+from backend.synthetic_load import build_async_openai_client, is_synthetic_user
 client = build_async_openai_client(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
 logging.info("OpenAI SDK version detected: %s", getattr(openai, "__version__", "unknown"))
 _LAST_LLM_USAGE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("last_llm_usage", default=None)
@@ -6153,6 +6153,18 @@ async def _run_task_text_via_assistants(
     return content
 
 
+def _synthetic_task_text(*, task_name: str, user_message: str) -> str:
+    """The same deterministic payload the whole-service synthetic mode would have produced,
+    so a stubbed run exercises exactly the same parsing/fallback paths downstream."""
+    from backend.synthetic_load import fake_chat_completion
+
+    completion = fake_chat_completion(
+        model=_get_task_gateway_model(task_name),
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return str(completion.choices[0].message.content or "").strip()
+
+
 async def llm_execute(
     *,
     task_name: str,
@@ -6165,6 +6177,16 @@ async def llm_execute(
     allow_assistants_fallback: bool | None = None,
 ) -> str:
     _LAST_LLM_USAGE.set(None)
+
+    # Load-runner traffic never reaches OpenAI. Its fake learners exist to prove the queue
+    # and the workers hold up under 50 concurrent sessions — that answer does not require
+    # paying the model to grade sentences nobody wrote. No usage is stored either, so a
+    # load run leaves no phantom cost in the ledger. Real users are untouched: the gate is
+    # the acting user's id, not a service-wide switch.
+    if is_synthetic_user(_LLM_BILLING_USER_ID.get()):
+        logging.info("🧪 synthetic actor — skipping OpenAI for task=%s", task_name)
+        return _synthetic_task_text(task_name=task_name, user_message=user_message)
+
     fallback_allowed = LLM_ALLOW_ASSISTANTS_FALLBACK if allow_assistants_fallback is None else bool(allow_assistants_fallback)
 
     async def _run_responses_with_limits() -> str:

@@ -34,6 +34,29 @@ def is_synthetic_load_mode() -> bool:
     return (os.getenv("SYNTHETIC_LOAD_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+# The load profile creates its fake learners with consecutive ids from --start-id
+# 9937001801 (see the LOAD_RUNNER service command), so the whole fleet shares one prefix.
+# Overridable in case a future profile picks a different block.
+_SYNTHETIC_USER_ID_PREFIX = (os.getenv("SYNTHETIC_LOAD_USER_ID_PREFIX") or "99370018").strip()
+
+
+def is_synthetic_user(user_id: Any) -> bool:
+    """True for the load-runner's fake learners.
+
+    SYNTHETIC_LOAD_MODE is a whole-service switch, so it can never be turned on in
+    production — real people would get fake answers. This per-actor check is what lets the
+    stub live safely in prod: a load run costs nothing, everyone else keeps the real model.
+    Measured 2026-08-01: six runs since April drove 1777 fake translations through real
+    grading, ~€0.4–5.7 of OpenAI per run."""
+    if not _SYNTHETIC_USER_ID_PREFIX:
+        return False
+    try:
+        digits = str(int(user_id))
+    except (TypeError, ValueError):
+        return False
+    return digits.startswith(_SYNTHETIC_USER_ID_PREFIX)
+
+
 # --------------------------------------------------------------------------- #
 # Deterministic fake payload builders
 # --------------------------------------------------------------------------- #
