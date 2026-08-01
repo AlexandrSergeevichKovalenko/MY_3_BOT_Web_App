@@ -6602,9 +6602,13 @@ def _kb_should_attach(user_id: int) -> bool:
 # Bump REPLY_KEYBOARD_VERSION to force a one-time re-delivery to everyone (e.g. after a
 # layout change) — the next DM push to each user re-sends the fresh keyboard.
 REPLY_KEYBOARD_VERSION = "2026-08-01-fix"
-# Раз в столько суток клавиатура выдаётся заново, даже если версия не менялась —
-# страховка от потери кнопок на стороне клиента.
-KB_REFRESH_DAYS = 7.0
+# Через столько суток без единого прикрепления клавиатура выдаётся отдельным сообщением.
+# Это НИЖНИЙ слой, а не основной путь возврата: клавиатура едет с каждым обычным ответом
+# бота, поэтому человек, который что-то написал или получил любой текстовый пуш, получает
+# кнопки назад сразу. Сюда попадают только те, кому за сутки не ушло НИ ОДНОГО сообщения,
+# способного нести разметку (одни фото/карточки с инлайн-кнопками). Меньше суток ставить
+# нельзя: тогда таким людям будет прилетать отдельное «Меню» по нескольку раз в день.
+KB_REFRESH_DAYS = 1.0
 # In-memory cache of "user already has version X" so the hot send path stays O(1) once
 # warmed. Empty on a fresh process → first DM send per user does one DB read.
 _kb_delivered_versions: dict[int, str] = {}
