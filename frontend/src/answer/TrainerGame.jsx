@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
+import useFitText from './useFitText.js';
 import Toast, { useToast } from './Toast.jsx';
 import { saveErrorToast } from './saveNotice.js';
 
@@ -74,6 +75,12 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   const [saved, setSaved] = useState(() => new Set());
   const [known, setKnown] = useState(() => new Set());  // already in the dictionary
   const toast = useToast();
+  // Длинное немецкое слово («die Geschwindigkeitsbegrenzung») вылезало за край карточки.
+  // Тот же хук, что у карточек артиклей: кегль берём из CSS и уменьшаем ТОЛЬКО если не влезло.
+  // Пересчитывать надо и при СМЕНЕ ЭКРАНА: слово появляется в разметке позже, чем
+  // отработал хук, — по одному только слову в зависимости подгонка не запускалась.
+  const heroRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
+  const anchorRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
 
   // word(normalised) → substitution example {sentence_de, sentence_ru}
   const exampleByWord = useMemo(() => {
@@ -156,7 +163,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
     <>
       <div className="ans-head"><span className="ans-eyebrow">{rel.emoji} {rel.title}</span></div>
       <div className="tr-hero">
-        <div className="tr-hero-word">{meta?.wort}</div>
+        <div className="tr-hero-word"><span className="fit-word" ref={heroRef}>{meta?.wort}</span></div>
         {meta?.hint_ru ? <div className="tr-hero-hint">{meta.hint_ru}</div> : null}
       </div>
       <div className="tr-intro">
@@ -183,7 +190,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         <div className="tr-bar"><div className="tr-bar-fill" style={{ width: `${((ri + (answered ? 1 : 0)) / total) * 100}%` }} /></div>
 
         <div className="tr-anchor">
-          <div className="tr-anchor-word">{meta?.wort}</div>
+          <div className="tr-anchor-word"><span className="fit-word" ref={anchorRef}>{meta?.wort}</span></div>
           {meta?.hint_ru ? <div className="tr-anchor-hint">{meta.hint_ru}</div> : null}
           <div className="tr-anchor-ask">Найди {rel.ask}:</div>
         </div>

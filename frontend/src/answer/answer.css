@@ -1300,6 +1300,9 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
    card edge instead of wrapping. With `normal` as the default, the worst case is a
    harmless wrap to a second line — it can never clip. (useFitText still measures
    correctly: it sets `nowrap` itself for the duration of the measurement.) */
+/* Слово, которому кегль подгоняет хук useFitText (см. `max: 'css'`): меряется по ширине
+   родителя, поэтому должно быть инлайн-блоком и не шире него. */
+.fit-word { display: inline-block; max-width: 100%; line-height: inherit; overflow-wrap: break-word; }
 .fit-line { display: inline-block; white-space: normal; line-height: 1.15; max-width: 100%; text-align: center; word-break: normal; overflow-wrap: break-word; }
 /* Keep the phrase line a plain inline-block: useFitText shrinks the font by
    reading el.scrollWidth, which only reports overflow on a block box. An

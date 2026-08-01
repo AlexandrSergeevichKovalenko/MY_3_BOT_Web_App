@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
 import Toast, { useToast } from './Toast.jsx';
+import useFitText from './useFitText.js';
 import { saveErrorToast } from './saveNotice.js';
 
 // 60-second "name as many synonyms/antonyms as you can" game. Winner = most
@@ -53,6 +54,9 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const [saved, setSaved] = useState(() => new Set());
   const [known, setKnown] = useState(() => new Set());  // already in the dictionary
   const toast = useToast();
+  // Кегль слова подгоняется под ширину карточки (тот же хук, что у карточек артиклей):
+  // длинное немецкое слово иначе вылезает за край.
+  const heroRef = useFitText(`${phase}|${meta?.wort || ''}`, { max: 'css', min: 15, padding: 10, fitBy: 'word' });
   const startRef = useRef(0);
   const wordsRef = useRef([]);
   const timerRef = useRef(null);
@@ -171,7 +175,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
         <span className="ans-eyebrow">{rel.emoji} {rel.title} · B2+</span>
       </div>
       <div className="sp-hero">
-        <div className="sp-hero-word">{meta?.wort}</div>
+        <div className="sp-hero-word"><span className="fit-word" ref={heroRef}>{meta?.wort}</span></div>
         {meta?.hint_ru ? <div className="sp-hero-hint">{meta.hint_ru}</div> : null}
       </div>
       <div className="sp-intro">

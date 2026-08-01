@@ -1,10 +1,24 @@
 import { useCallback, useLayoutEffect, useRef } from 'react';
 
+// Один общий canvas на весь роут — только для замера ширины текста, в DOM не попадает.
+let measureCanvas = null;
+function fitCanvas() {
+  if (!measureCanvas) measureCanvas = document.createElement('canvas');
+  return measureCanvas;
+}
+
 // Shrink a one-line text element so it always fits its container's width on ONE
 // line (no ugly mid-phrase wrap), on any screen. Attach the returned ref to an
 // inline-block element with `white-space: nowrap` (e.g. class "fit-line"); it is
 // re-fit whenever `dep` changes and on window resize.
-export default function useFitText(dep, { max = 40, min = 14, padding = 28 } = {}) {
+// `max: 'css'` — потолок берём из самой вёрстки: размер НИКОГДА не больше того, что задал
+// CSS (а он у нас считается от экрана и на планшете свой), хук только уменьшает, если слово
+// не влезло. Так подгонка кегля не ломает согласованную типографику — она её страхует.
+// `fitBy: 'word'` — влезать должно САМОЕ ДЛИННОЕ СЛОВО, а не вся фраза в одну строку.
+// Тогда «die Zustimmung» в узкой колонке планшета спокойно переносится на две строки
+// крупным кеглем, а «die Geschwindigkeitsbegrenzung» ужимается — ровно настолько, чтобы
+// не разрезаться посередине. Режим по умолчанию (вся фраза в одну строку) не тронут.
+export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitBy = 'line' } = {}) {
   const ref = useRef(null);
   const fit = useCallback(() => {
     const el = ref.current;
@@ -12,13 +26,32 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28 } = {
     if (!el || !box) return;
     el.style.whiteSpace = 'nowrap'; // measure/shrink on one line first
     let size = max;
+    if (max === 'css') {
+      el.style.fontSize = '';                                  // вернуть размер из CSS…
+      size = parseFloat(getComputedStyle(el).fontSize) || 24;   // …и стартовать от него
+    }
     el.style.fontSize = `${size}px`;
     const avail = box.clientWidth - padding;
     let guard = 0;
-    while (el.scrollWidth > avail && size > min && guard < 80) {
-      size -= 1;
+    if (fitBy === 'word') {
+      // Ширину самого длинного слова меряем на canvas: без вставки узлов в DOM, которым
+      // владеет React, и без зависимости от текущего переноса строк.
+      const words = String(el.textContent || '').split(/\s+/).filter(Boolean);
+      const longest = words.sort((a, b) => b.length - a.length)[0] || '';
+      const cs = getComputedStyle(el);
+      const ctx = fitCanvas().getContext('2d');
+      const widthAt = (px) => {
+        ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${px}px ${cs.fontFamily}`;
+        return ctx.measureText(longest).width;
+      };
+      while (longest && widthAt(size) > avail && size > min && guard < 80) { size -= 1; guard += 1; }
       el.style.fontSize = `${size}px`;
-      guard += 1;
+    } else {
+      while (el.scrollWidth > avail && size > min && guard < 80) {
+        size -= 1;
+        el.style.fontSize = `${size}px`;
+        guard += 1;
+      }
     }
     // Resting state: always allow normal word-wrapping. If the phrase fits at the
     // size we just settled on, it stays on one line anyway; but if a later change
@@ -28,7 +61,7 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28 } = {
     // break-word` in the CSS, whole words wrap at the spaces — a long word like
     // "Kaffeemaschine" drops to the next line intact rather than being cut off.
     el.style.whiteSpace = 'normal';
-  }, [max, min, padding]);
+  }, [max, min, padding, fitBy]);
 
   // re-fit on content change (next item) — layout effect avoids a flash
   useLayoutEffect(() => { fit(); }, [dep, fit]);

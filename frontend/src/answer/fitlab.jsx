@@ -13,7 +13,7 @@ const SHORT = 'Beschreibt eine ablehnende Haltung.';
 const D = (de, ru, why) => ({ de, ru_gloss: ru, why_not: why, example_de: `„Ein Satz mit ${de} als Beispiel."` });
 
 const TASK = {
-  wort: 'die Zustimmung',
+  wort: (typeof window !== 'undefined' && window.__WORT) || 'die Zustimmung',
   hint_ru: 'согласие',
   relation: 'synonym',
   target_example: { de: '„Er gab seine Zustimmung zu dem Projekt."' },
