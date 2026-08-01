@@ -5559,6 +5559,13 @@ _SYSTEM_ATTRIBUTION_TASKS: frozenset[str] = frozenset({
     "aufgabe_pin_image", "aufgabe_pin_scene", "aufgabe_pin_blueprint",
     "aufgabe_pin_for_word", "pin_word_meta", "pin_scene_prompt",
     "rebus_component", "aufgabe_wortbildung",
+    # Aufgabe pool items + their verifier. Built inside the aufgabe_pool generator
+    # (bot_3.py, log tag "aufgabe_pool:"), never on a learner's request. Triggering the
+    # build from an admin command used to book the whole pool run on that admin.
+    "aufgabe_error", "verify_aufgabe_error", "aufgabe_hoerluecke",
+    # Sentence→chunk split for audio. Cached in bt_3_tts_chunk_cache under a hash of the
+    # sentence itself, so it is computed once and reused for every learner forever.
+    "tts_chunk_de",
     # Pool-build verifiers for those items (shared content, never a user's request)
     "check_wortbildung_batch", "check_wortgruppe_batch",
     # DALL·E images (battles, heroes, plaques, news) — pre-built, reused

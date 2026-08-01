@@ -25,6 +25,16 @@ class ResolveBillingUserForTaskTests(unittest.TestCase):
                 # a shared task must never land on that user.
                 self.assertIsNone(om._resolve_billing_user_for_task(task, 117649764))
 
+    def test_aufgabe_pool_items_and_shared_chunking_are_system(self):
+        # Verified 2026-08-01 at the call sites: the "error"/"hoerluecke" items and their
+        # verifier are produced inside the aufgabe_pool generator (bot_3.py, log tag
+        # "aufgabe_pool:"), and tts_chunk_de is cached in bt_3_tts_chunk_cache under a hash
+        # of the sentence, so one split serves every learner. Triggering a pool build from
+        # an admin command must not book the run on that admin.
+        for task in ("aufgabe_error", "verify_aufgabe_error", "aufgabe_hoerluecke", "tts_chunk_de"):
+            with self.subTest(task=task):
+                self.assertIsNone(om._resolve_billing_user_for_task(task, 117649764))
+
     def test_personal_and_dual_tasks_keep_the_user(self):
         for task in (
             "check_translation_multilang", "recheck_translation",

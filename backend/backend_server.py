@@ -31772,6 +31772,19 @@ def _process_translation_check_session_item(
     result_item: dict[str, Any] | None = item.get("result_json") if isinstance(item.get("result_json"), dict) else None
     deferred_store_payload: dict[str, Any] | None = None
 
+    # Grading a learner's own sentence is purely personal work: the feedback is about
+    # THEIR mistake and is reusable by nobody, so its OpenAI cost belongs on them. This
+    # runs inside the TRANSLATION_CHECK_WORKER, which receives only a session_id — no
+    # request and no Telegram update ever set the billing user here, so until now every
+    # graded sentence booked user_id=NULL and never reached anybody's daily budget. The
+    # session row carries the owner; reset in `finally` because worker threads are reused
+    # and a leaked id would follow the next session (or a pool job) on the same thread.
+    from backend.openai_manager import set_llm_billing_user
+    try:
+        set_llm_billing_user(int(session.get("user_id") or 0) or None)
+    except (TypeError, ValueError):
+        set_llm_billing_user(None)
+
     try:
         checkpoint_present = bool(
             result_item
@@ -31923,6 +31936,8 @@ def _process_translation_check_session_item(
             "queue_private_grammar_text": False,
             "deferred_store_payload": None,
         }
+    finally:
+        set_llm_billing_user(None)
 
 
 def _reconcile_stranded_translation_check_items(
