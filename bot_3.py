@@ -32119,6 +32119,16 @@ async def admin_crossword_send_command(update: Update, context: CallbackContext)
             target_user_id=int(user.id),
         )
         if ok:
+            # Отмечаем отправленным — иначе очередь не двигается и команда раз за
+            # разом присылает ОДИН И ТОТ ЖЕ кроссворд: `pick_next_crossword` берёт
+            # самый давно не отправлявшийся, а без этой отметки он навсегда остаётся
+            # первым. Плановая рассылка и /admin_cw_resend это делают, а тестовая
+            # отправка — нет.
+            try:
+                await asyncio.to_thread(mark_crossword_sent, crossword_id)
+            except Exception:
+                logging.warning("admin_cw_send: mark_crossword_sent failed crossword_id=%s",
+                                crossword_id, exc_info=True)
             await status_msg.delete()
             return
         # send_photo failed (e.g. broken image) → advance/retire and try next.
