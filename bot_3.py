@@ -6072,13 +6072,13 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
-        # ⭐ is_persistent=True — единственный переключатель Telegram (Bot API 6.4+), который
-        # заставляет клиент ВСЕГДА показывать кнопки: «Requests clients to always show the
-        # keyboard when the regular keyboard is hidden». Именно так кнопки всегда на месте у
-        # других ботов. При False клиент сворачивает меню в иконку ⌨ — человек видит это как
-        # «кнопки пропали» и вынужден писать /start. Владелец решил (01.08.2026): кнопки —
-        # основной элемент управления, они должны быть видны всегда. Не переключать обратно.
-        is_persistent=True,
+        # ⛔️ is_persistent=False — НЕ ТРОГАТЬ, НИКОГДА, НИ ПРИ КАКИХ ЖАЛОБАХ.
+        # Решение владельца, подтверждено трижды (21.07, 27.07 и 01.08.2026 после того, как
+        # я это нарушил): при True клавиатура вылезает от любого касания и свайпа и закрывает
+        # пол-экрана даже на iPhone 17 Pro Max — работать невозможно. Меню вызывается иконкой ⌨.
+        # «Кнопки пропали» решается ЧЕМ УГОДНО, но не этим флагом: якорь от ночной чистки,
+        # гарантированная доставка, /start, меню «/». См. комментарии ниже по коду.
+        is_persistent=False,
     )
 
 
@@ -6554,7 +6554,7 @@ def _kb_should_attach(user_id: int) -> bool:
 # it once, sending a single lightweight standalone menu message if not.
 # Bump REPLY_KEYBOARD_VERSION to force a one-time re-delivery to everyone (e.g. after a
 # layout change) — the next DM push to each user re-sends the fresh keyboard.
-REPLY_KEYBOARD_VERSION = "2026-08-01-persistent"
+REPLY_KEYBOARD_VERSION = "2026-08-01-fix"
 # In-memory cache of "user already has version X" so the hot send path stays O(1) once
 # warmed. Empty on a fresh process → first DM send per user does one DB read.
 _kb_delivered_versions: dict[int, str] = {}
