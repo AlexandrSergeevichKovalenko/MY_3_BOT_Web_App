@@ -28466,6 +28466,16 @@ def record_telegram_system_message(
             )
 
 
+# ⛔️ Эти сообщения ночная чистка не удаляет НИКОГДА, в каком бы сервисе она ни крутилась
+# и что бы ни стояло в SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES.
+#   certificate / battle_podium / champion — награды, их люди хотят сохранить;
+#   reply_keyboard — сообщение, на котором висит клавиатура пользователя: удалить его =
+#   снять клавиатуру на стороне Telegram, у человека пропадают кнопки и сама иконка вызова.
+# Список жил только в bot_3.py, а чистку запускают ещё три сервиса своим кодом — они об
+# исключениях не знали и удаляли якоря. Поэтому константа теперь здесь, рядом с выборкой.
+ALWAYS_PRESERVE_MESSAGE_TYPES = ["certificate", "battle_podium", "champion", "reply_keyboard"]
+
+
 def get_pending_telegram_system_messages(
     target_date: date,
     tz_name: str = "UTC",
@@ -28473,8 +28483,12 @@ def get_pending_telegram_system_messages(
     limit: int = 5000,
     excluded_types: list[str] | None = None,
 ) -> list[dict]:
+    # Защищённые типы добавляются ВСЕГДА — вызывающий не может их «забыть».
     max_days_back = max(0, int(max_days_back))
     excluded = [str(item or "").strip().lower() for item in (excluded_types or []) if str(item or "").strip()]
+    for protected in ALWAYS_PRESERVE_MESSAGE_TYPES:
+        if protected not in excluded:
+            excluded.append(protected)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             if excluded:

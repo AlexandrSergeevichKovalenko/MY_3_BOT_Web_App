@@ -1365,7 +1365,10 @@ SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES = [
 # (the anchor). Deleting it would drop the keyboard on Telegram's side (→ "no buttons
 # in the morning"), so the nightly cleanup must never touch it. When a newer anchor is
 # set, the old one is re-tagged to a deletable type (see _set_reply_keyboard_anchor).
-ALWAYS_PRESERVE_MESSAGE_TYPES = ["certificate", "battle_podium", "champion", "reply_keyboard"]
+# Список один на весь проект (backend/database.py): чистку запускают ещё три сервиса
+# своим кодом, и раньше они об этих исключениях не знали — удаляли и награды, и якорь
+# клавиатуры. Здесь только импорт, чтобы копии не разъехались.
+from backend.database import ALWAYS_PRESERVE_MESSAGE_TYPES  # noqa: E402
 REPLY_KEYBOARD_ANCHOR_TYPE = "reply_keyboard"
 ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE = (
