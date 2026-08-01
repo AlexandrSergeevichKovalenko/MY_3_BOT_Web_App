@@ -86,7 +86,8 @@ import re
 import html
 import multiprocessing
 import inspect
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed, wait as futures_wait, FIRST_COMPLETED
 from zoneinfo import ZoneInfo
 from datetime import timedelta, date
@@ -22565,6 +22566,32 @@ def _audio_lru_put(cache: OrderedDict, key, value, max_size: int) -> None:
     while len(cache) > max_size:
         cache.popitem(last=False)
 
+
+# Per-thread counter of characters that actually hit Google TTS. Cache hits (memory, DB/R2,
+# /tmp) are free, so a caller that wants to bill a user must count SYNTHESIS, not script
+# length — the same sentence voiced for a second user costs nothing.
+_TTS_SYNTH_ACCOUNTING = threading.local()
+
+
+@contextmanager
+def tts_synthesis_accounting() -> Iterator[dict]:
+    ledger: dict[str, int] = {"chars": 0, "clips": 0}
+    previous = getattr(_TTS_SYNTH_ACCOUNTING, "ledger", None)
+    _TTS_SYNTH_ACCOUNTING.ledger = ledger
+    try:
+        yield ledger
+    finally:
+        _TTS_SYNTH_ACCOUNTING.ledger = previous
+
+
+def _note_tts_synthesis(text: str) -> None:
+    ledger = getattr(_TTS_SYNTH_ACCOUNTING, "ledger", None)
+    if ledger is None:
+        return
+    ledger["chars"] = int(ledger.get("chars") or 0) + len(_normalize_utterance_text(text))
+    ledger["clips"] = int(ledger.get("clips") or 0) + 1
+
+
 # _TTS_VOICES and _TTS_LANG_CODES live in backend.tts_generation (imported above)
 
 _TTS_SPEED_DEFAULT = 0.9
@@ -22573,6 +22600,16 @@ _PAUSE_BETWEEN_STEPS_MS = 900
 _PAUSE_BETWEEN_MISTAKES_MS = 1700
 _CHAIN_INTER_CHUNK_MS = 240
 _MAX_CHUNKS = 10
+
+# Google TTS hands us 24 kHz mono MP3 at 64 kbps. Re-encoding the montage above that
+# invents no quality, it only multiplies bytes — and a 32-разбор batch re-encoded at
+# 192k weighed ~62 MB, which Telegram refused with 413 (bot uploads cap at 50 MB).
+_AUDIO_EXPORT_BITRATE = "64k"
+_AUDIO_EXPORT_KBPS = 64
+
+# Safety net only: at 64 kbps a part this size is ~90 minutes, far beyond any realistic
+# day. Splitting happens on разбор boundaries — a разбор is never cut in half.
+_MISTAKES_AUDIO_MAX_PART_BYTES = 45 * 1024 * 1024
 
 
 def safe_filename(username: str | None, user_id: int, date_str: str) -> str:
@@ -23232,8 +23269,12 @@ def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAU
         len(str(text or "").strip()),
     )
     audio_bytes = _synthesize_mp3(text, language=language_code, voice=voice, speed=speed)
+    _note_tts_synthesis(text)
     audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-    audio.export(cache_path, format="mp3", bitrate="192k")
+    # Store Google's own bytes — re-encoding the cache copy only adds a generation of
+    # loss and weight. The DB/R2 copy below already keeps the original.
+    with open(cache_path, "wb") as cache_file:
+        cache_file.write(audio_bytes)
     try:
         upsert_tts_audio_cache(
             cache_key=key,
@@ -26711,11 +26752,17 @@ def chunk_sentence_for_language(sentence: str, language: str) -> list[str]:
     return _chunk_sentence_rules_for_language(sentence, lang)
 
 
-def build_target_script(chunks: list[str], target_lang: str = "de") -> list[dict]:
+def build_target_script(
+    chunks: list[str],
+    target_lang: str = "de",
+    full_sentence: str | None = None,
+) -> list[dict]:
     if not chunks:
         return []
     script = []
     lang = _normalize_short_lang_code(target_lang, fallback="de")
+    whole = _normalize_utterance_text(full_sentence or "")
+    last_index = len(chunks) - 1
     for i in range(len(chunks)):
         chunk = chunks[i]
         for _ in range(2):
@@ -26729,17 +26776,31 @@ def build_target_script(chunks: list[str], target_lang: str = "de") -> list[dict
                 }
             )
         if i > 0:
+            # The closing step of the snowball is the WHOLE sentence. A chain glues the
+            # separately synthesized chunks, so every chunk keeps its own falling final
+            # intonation and the phrase never sounds like one phrase. When we know the
+            # original sentence, voice it as a sentence (one extra TTS call per mistake)
+            # and keep chains only for the intermediate steps.
             chain = chunks[: i + 1]
+            step = (
+                {
+                    "kind": "utterance",
+                    "lang": lang,
+                    "text": whole,
+                    "speed": _TTS_SPEED_DEFAULT,
+                    "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
+                }
+                if i == last_index and whole
+                else {
+                    "kind": "chain",
+                    "lang": lang,
+                    "chunks": chain,
+                    "speed": _TTS_SPEED_DEFAULT,
+                    "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
+                }
+            )
             for _ in range(2):
-                script.append(
-                    {
-                        "kind": "chain",
-                        "lang": lang,
-                        "chunks": chain,
-                        "speed": _TTS_SPEED_DEFAULT,
-                        "pause_ms_after": _PAUSE_BETWEEN_REPEATS_MS,
-                    }
-                )
+                script.append(dict(step))
         script[-1]["pause_ms_after"] = _PAUSE_BETWEEN_STEPS_MS
     return script
 
@@ -26767,33 +26828,46 @@ def build_ru_script(ru_text: str) -> list[dict]:
     return build_source_script(ru_text, source_lang="ru")
 
 
+def build_mistake_script(
+    item: dict,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> list[dict]:
+    """One self-contained разбор: the source sentence, the snowball drill over the correct
+    target sentence, and (opt-in) the grammar explanation. Kept separate from
+    build_full_script so delivery can split a long batch on разбор boundaries."""
+    src = _normalize_short_lang_code(source_lang, fallback="ru")
+    tgt = _normalize_short_lang_code(target_lang, fallback="de")
+    source_text = item.get("source_text") or item.get("ru_original") or ""
+    target_text = item.get("target_text") or item.get("de_correct") or ""
+    explanation_text = item.get("explanation_text") or ""
+    script: list[dict] = []
+    script.extend(build_source_script(source_text, source_lang=src))
+    chunks = chunk_sentence_for_language(target_text, tgt)
+    if not chunks:
+        chunks = [target_text.strip()] if target_text.strip() else []
+    script.extend(build_target_script(chunks, target_lang=tgt, full_sentence=target_text))
+    if explanation_text:
+        script.extend(
+            build_explanation_mixed_script(
+                explanation_text=explanation_text,
+                source_lang=src,
+                target_lang=tgt,
+            )
+        )
+    if script:
+        script[-1]["pause_ms_after"] = _PAUSE_BETWEEN_MISTAKES_MS
+    return script
+
+
 def build_full_script(
     mistakes: list[dict],
     source_lang: str = "ru",
     target_lang: str = "de",
 ) -> list[dict]:
     script = []
-    src = _normalize_short_lang_code(source_lang, fallback="ru")
-    tgt = _normalize_short_lang_code(target_lang, fallback="de")
     for item in mistakes:
-        source_text = item.get("source_text") or item.get("ru_original") or ""
-        target_text = item.get("target_text") or item.get("de_correct") or ""
-        explanation_text = item.get("explanation_text") or ""
-        script.extend(build_source_script(source_text, source_lang=src))
-        chunks = chunk_sentence_for_language(target_text, tgt)
-        if not chunks:
-            chunks = [target_text.strip()] if target_text.strip() else []
-        script.extend(build_target_script(chunks, target_lang=tgt))
-        if explanation_text:
-            script.extend(
-                build_explanation_mixed_script(
-                    explanation_text=explanation_text,
-                    source_lang=src,
-                    target_lang=tgt,
-                )
-            )
-        if script:
-            script[-1]["pause_ms_after"] = _PAUSE_BETWEEN_MISTAKES_MS
+        script.extend(build_mistake_script(item, source_lang=source_lang, target_lang=target_lang))
     return script
 
 
@@ -27029,7 +27103,7 @@ def build_explanation_mixed_script(
     return script
 
 
-def render_script_to_audio(script: list[dict]) -> bytes:
+def render_script_to_segment(script: list[dict]) -> AudioSegment:
     combined = AudioSegment.silent(duration=0)
     for step in script:
         kind = step.get("kind")
@@ -27049,9 +27123,17 @@ def render_script_to_audio(script: list[dict]) -> bytes:
         combined += clip
         if pause_ms:
             combined += _get_silence(pause_ms)
+    return combined
+
+
+def export_audio_segment(segment: AudioSegment) -> bytes:
     buf = io.BytesIO()
-    combined.export(buf, format="mp3", bitrate="192k")
+    segment.export(buf, format="mp3", bitrate=_AUDIO_EXPORT_BITRATE)
     return buf.getvalue()
+
+
+def render_script_to_audio(script: list[dict]) -> bytes:
+    return export_audio_segment(render_script_to_segment(script))
 
 
 def _test_build_de_script() -> None:
@@ -58190,6 +58272,100 @@ def submit_webapp_group_message():
     return jsonify({"ok": True})
 
 
+def pack_mistake_segments(
+    segments: list[AudioSegment],
+    max_part_bytes: int | None = None,
+) -> list[bytes]:
+    """Group rendered разборы into files Telegram will accept — bot uploads die at 50 MB
+    with a 413, which is exactly how a 32-разбор batch went missing. A разбор is the atom:
+    it always lands whole inside one file, so nobody gets a sentence cut mid-drill. Sizes
+    come from duration — the export bitrate is constant, so ms → bytes is exact enough."""
+    budget_bytes = max(1, int(max_part_bytes or _MISTAKES_AUDIO_MAX_PART_BYTES))
+    parts: list[bytes] = []
+    current: AudioSegment | None = None
+    current_bytes = 0
+
+    def _estimate_bytes(segment: AudioSegment) -> int:
+        return int(len(segment) / 1000.0 * _AUDIO_EXPORT_KBPS * 1000 / 8)
+
+    def _flush() -> None:
+        nonlocal current, current_bytes
+        if current is not None and len(current) > 0:
+            parts.append(export_audio_segment(current))
+        current, current_bytes = None, 0
+
+    for segment in segments:
+        if len(segment) == 0:
+            continue
+        size = _estimate_bytes(segment)
+        if current is not None and current_bytes + size > budget_bytes:
+            _flush()
+        if current is None:
+            # A single разбор over budget can't be split without breaking the drill —
+            # send it alone and let the 413 (if any) surface in the job errors.
+            current, current_bytes = segment, size
+        else:
+            current += segment
+            current_bytes += size
+    _flush()
+    return parts
+
+
+def _send_mistakes_audio_parts(
+    *,
+    target_chat_id: int,
+    parts: list[bytes],
+    filename: str,
+    caption: str,
+) -> None:
+    total = len(parts)
+    for index, payload in enumerate(parts, start=1):
+        part_caption = caption if total == 1 else f"{caption} — часть {index} из {total}"
+        part_filename = filename if total == 1 else f"{filename.rsplit('.', 1)[0]}_{index}.mp3"
+        if int(target_chat_id) < 0:
+            _send_group_audio(payload, part_filename, part_caption, chat_id=int(target_chat_id))
+        else:
+            _send_private_audio(
+                user_id=int(target_chat_id),
+                audio_bytes=payload,
+                filename=part_filename,
+                caption=part_caption,
+            )
+
+
+def _bill_mistakes_audio_tts(
+    *,
+    user_id: int,
+    ledger: dict,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    """Attribute the morning mistakes-audio synthesis to the learner it was made for.
+    Only characters that actually reached Google are billed — a sentence already in the
+    TTS cache costs nothing and must not inflate anyone's daily budget."""
+    try:
+        chars = int((ledger or {}).get("chars") or 0)
+        if chars <= 0 or int(user_id) <= 0:
+            return
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="mistakes_audio_tts_chars",
+            provider="google_tts",
+            units_type="chars",
+            units_value=float(chars),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"mistakes-audio-tts:{user_id}:{source_lang}:{target_lang}:{time.time_ns()}",
+            status="estimated",
+            metadata={
+                "clips": int((ledger or {}).get("clips") or 0),
+                "surface": "mistakes_audio",
+            },
+        )
+    except Exception:
+        logging.debug("mistakes-audio TTS billing skipped", exc_info=True)
+
+
 def _dispatch_daily_audio(target_date: date) -> dict:
     def _pair_code(source_lang: str | None, target_lang: str | None) -> str:
         src = str(source_lang or "ru").strip().upper() or "RU"
@@ -58425,21 +58601,36 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                             }
                         )
 
-    def _render_enriched_audio(mistakes: list[dict], *, source_lang: str, target_lang: str) -> bytes:
-        enriched: list[dict] = []
-        for item in mistakes:
-            enriched_item = dict(item)
-            if bool(item.get("audio_grammar_opt_in")):
-                explanation_text = _generate_audio_grammar_explanation(
-                    sentence=str(item.get("target_text") or ""),
+    def _render_enriched_audio(
+        mistakes: list[dict], *, user_id: int, source_lang: str, target_lang: str
+    ) -> list[bytes]:
+        segments: list[AudioSegment] = []
+        with tts_synthesis_accounting() as ledger:
+            try:
+                for item in mistakes:
+                    enriched_item = dict(item)
+                    if bool(item.get("audio_grammar_opt_in")):
+                        explanation_text = _generate_audio_grammar_explanation(
+                            sentence=str(item.get("target_text") or ""),
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                        if explanation_text:
+                            enriched_item["explanation_text"] = explanation_text
+                    script = build_mistake_script(
+                        enriched_item, source_lang=source_lang, target_lang=target_lang
+                    )
+                    segments.append(render_script_to_segment(script))
+            finally:
+                # Bill what Google was actually paid for, even if the render died halfway
+                # or the upload later fails — the money left the building either way.
+                _bill_mistakes_audio_tts(
+                    user_id=user_id,
+                    ledger=ledger,
                     source_lang=source_lang,
                     target_lang=target_lang,
                 )
-                if explanation_text:
-                    enriched_item["explanation_text"] = explanation_text
-            enriched.append(enriched_item)
-        script = build_full_script(enriched, source_lang=source_lang, target_lang=target_lang)
-        return render_script_to_audio(script)
+        return pack_mistake_segments(segments)
 
     def _send_mistakes_card(*, target_chat_id: int, name: str, count: int, kind: str) -> None:
         """Branded hero card sent right BEFORE the audio so this important morning
@@ -58496,7 +58687,9 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 if not mistakes or user_id not in member_user_ids:
                     continue
                 try:
-                    audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
+                    parts = _render_enriched_audio(
+                        mistakes, user_id=user_id, source_lang=source_lang, target_lang=target_lang
+                    )
                     name = _delivery_display_name(user_id, daily_names.get(user_id))
                     pair_label = _pair_code(source_lang, target_lang)
                     filename = safe_filename(f"{name or 'mistakes'}_{pair_label}", user_id, target_date.isoformat())
@@ -58506,7 +58699,9 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         else f"Ошибки за {target_date.isoformat()} ({pair_label})"
                     )
                     _send_mistakes_card(target_chat_id=int(chat_id), name=name, count=len(mistakes), kind="daily")
-                    _send_group_audio(audio, filename, caption, chat_id=int(chat_id))
+                    _send_mistakes_audio_parts(
+                        target_chat_id=int(chat_id), parts=parts, filename=filename, caption=caption
+                    )
                     sent_daily += 1
                 except Exception as exc:
                     errors.append(f"daily chat {chat_id} user {user_id} {source_lang}->{target_lang}: {exc}")
@@ -58515,7 +58710,9 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 if not mistakes or user_id not in member_user_ids:
                     continue
                 try:
-                    audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
+                    parts = _render_enriched_audio(
+                        mistakes, user_id=user_id, source_lang=source_lang, target_lang=target_lang
+                    )
                     name = _delivery_display_name(user_id, story_names.get(user_id))
                     pair_label = _pair_code(source_lang, target_lang)
                     filename = safe_filename(f"{name or 'mistakes'}_{pair_label}", user_id, target_date.isoformat())
@@ -58525,7 +58722,9 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         else f"История за {target_date.isoformat()} ({pair_label})"
                     )
                     _send_mistakes_card(target_chat_id=int(chat_id), name=name, count=len(mistakes), kind="story")
-                    _send_group_audio(audio, filename, caption, chat_id=int(chat_id))
+                    _send_mistakes_audio_parts(
+                        target_chat_id=int(chat_id), parts=parts, filename=filename, caption=caption
+                    )
                     sent_story += 1
                 except Exception as exc:
                     errors.append(f"story chat {chat_id} user {user_id} {source_lang}->{target_lang}: {exc}")
@@ -58534,7 +58733,9 @@ def _dispatch_daily_audio(target_date: date) -> dict:
             if not mistakes:
                 continue
             try:
-                audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
+                parts = _render_enriched_audio(
+                    mistakes, user_id=user_id, source_lang=source_lang, target_lang=target_lang
+                )
                 name = _delivery_display_name(user_id, daily_names.get(user_id))
                 pair_label = _pair_code(source_lang, target_lang)
                 filename = safe_filename(f"{name or 'mistakes'}_{pair_label}", user_id, target_date.isoformat())
@@ -58545,10 +58746,9 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 )
                 target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.daily")
                 _send_mistakes_card(target_chat_id=int(target_chat_id), name=name, count=len(mistakes), kind="daily")
-                if int(target_chat_id) < 0:
-                    _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
-                else:
-                    _send_private_audio(user_id=int(target_chat_id), audio_bytes=audio, filename=filename, caption=caption)
+                _send_mistakes_audio_parts(
+                    target_chat_id=int(target_chat_id), parts=parts, filename=filename, caption=caption
+                )
                 sent_daily += 1
             except Exception as exc:
                 errors.append(f"daily user {user_id} {source_lang}->{target_lang}: {exc}")
@@ -58557,7 +58757,9 @@ def _dispatch_daily_audio(target_date: date) -> dict:
             if not mistakes:
                 continue
             try:
-                audio = _render_enriched_audio(mistakes, source_lang=source_lang, target_lang=target_lang)
+                parts = _render_enriched_audio(
+                    mistakes, user_id=user_id, source_lang=source_lang, target_lang=target_lang
+                )
                 name = _delivery_display_name(user_id, story_names.get(user_id))
                 pair_label = _pair_code(source_lang, target_lang)
                 filename = safe_filename(f"{name or 'mistakes'}_{pair_label}", user_id, target_date.isoformat())
@@ -58568,10 +58770,9 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                 )
                 target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name="_dispatch_daily_audio.story")
                 _send_mistakes_card(target_chat_id=int(target_chat_id), name=name, count=len(mistakes), kind="story")
-                if int(target_chat_id) < 0:
-                    _send_group_audio(audio, filename, caption, chat_id=int(target_chat_id))
-                else:
-                    _send_private_audio(user_id=int(target_chat_id), audio_bytes=audio, filename=filename, caption=caption)
+                _send_mistakes_audio_parts(
+                    target_chat_id=int(target_chat_id), parts=parts, filename=filename, caption=caption
+                )
                 sent_story += 1
             except Exception as exc:
                 errors.append(f"story user {user_id} {source_lang}->{target_lang}: {exc}")
