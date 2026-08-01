@@ -51,14 +51,23 @@ function supportsZoom() {
   try { return !!(window.CSS && CSS.supports && CSS.supports('zoom', '0.9')); } catch (_e) { return false; }
 }
 
-// Высота, которой мы реально располагаем. В Telegram webview может быть выше видимой
-// шторки, поэтому учитываем и viewportStableHeight (stable = без клавиатуры).
+// Высота, которой мы реально располагаем.
+//
+// Источник правды — сам браузер: `visualViewport.height` это РЕАЛЬНО видимая высота, то
+// же число, что стоит за единицей `dvh`. Так делают все адаптивные приложения, и по той
+// же причине: платформа знает про свои шторки, панели и клавиатуру, а мы — нет.
+//
+// Число Telegram (`viewportStableHeight`) сюда НЕ входит намеренно. Это бухгалтерия хоста:
+// во время анимации разворота шторки она отстаёт, а обновляется событием, которое может
+// прийти раньше, чем мы подписались, — или не прийти вовсе. Пока мы брали минимум из двух,
+// одно устаревшее число намертво подгоняло карточку под высоту, которой уже нет: карточка
+// «скукоживалась» посреди пустого экрана. Событие Telegram мы по-прежнему слушаем — но как
+// ПОВОД пересчитать, а не как величину (см. installCardAutoFit).
 function viewportHeight() {
-  const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
-  const stable = Number(tg?.viewportStableHeight) || 0;
-  const inner = Number(window.innerHeight) || 0;
-  if (stable > 200 && inner > 200) return Math.min(stable, inner);
-  return Math.max(stable, inner);
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+  const visual = Number(vv?.height) || 0;
+  if (visual > 200) return visual;
+  return Number(window.innerHeight) || 0;
 }
 
 function availHeight(root) {
@@ -165,6 +174,10 @@ function fitOne(root) {
   // Предохранитель от «подрастания»: на одно и то же содержимое хватает пары расчётов.
   // Дальше замолкаем до следующей смены контента (её ловит MutationObserver) или размера
   // окна — иначе редкие расхождения в пару пикселей гоняли бы карточку кадр за кадром.
+  // Но если ИЗМЕНИЛАСЬ САМА ВЫСОТА ЭКРАНА — это не дребезг, а новая вводная (шторка
+  // Telegram доехала), и предохранитель снимаем: иначе карточка навсегда останется
+  // подогнанной под старую, меньшую высоту — «скукоженной» посреди пустого экрана.
+  if (Math.abs(availNow - st.avail) > EPS) st.runs = 0;
   if (st.runs >= 2) return;
   st.runs += 1;
 
@@ -226,10 +239,27 @@ function fitOne(root) {
     card.style.minHeight = `${Math.round((cardH + slack - 2) / k)}px`;
   };
 
+  // ГЛАВНАЯ проверка, важнее любой ветки выше: если после всех расчётов на экране осталось
+  // пустое место — значит расчёт ошибся, а не экран такой. Ветка могла ошибиться (не
+  // доехавшая шторка Telegram, замер до подгрузки шрифта, откат из режима панели), замер
+  // по факту — нет. Тогда возвращаем масштаб, который реально помещается, и добираем
+  // остаток высотой самой карточки. Ровно этим лечится «карточка скукожилась в центре
+  // экрана, а сверху и снизу пусто».
+  const rescue = (k, roomy) => {
+    let cur = k;
+    if (card.classList.contains('is-panelled')) return cur;   // там высота задана точно
+    if (availHeight(root) - card.getBoundingClientRect().height < 12) return cur;
+    root.classList.remove('is-scroll');
+    const ceiling = roomy ? MAX_ZOOM : 1;
+    if (cur < ceiling - 0.002) cur = fitsAt(ceiling) ? ceiling : bisect(cur, ceiling);
+    if (roomy) fill(cur);
+    return cur;
+  };
+
   // Финальная проверка ПО ФАКТУ: страница не должна прокручиваться. Замер высоты карточки
   // при zoom отдаёт родителю чуть другую величину, поэтому доводим по самому документу.
   // Всё в том же синхронном проходе — промежуточных состояний пользователь не видит.
-  const settle = (k0, canFill) => {
+  const settle = (k0, roomy) => {
     let k = k0;
     stretch(k);
     for (let i = 0; i < 3; i += 1) {
@@ -251,8 +281,7 @@ function fitOne(root) {
       setZoom(card, k);
       if (card.classList.contains('is-panelled')) card.style.maxHeight = `${Math.round((avail - 2) / k)}px`;
     }
-    if (canFill) fill(k);
-    remember(k);
+    remember(rescue(k, roomy));
   };
 
   // Помещается ли карточка при масштабе kk (замер, а не расчёт: текст переносится иначе).
@@ -268,19 +297,14 @@ function fitOne(root) {
     return best;
   };
 
+  // Короткий экран (заставка, обратный отсчёт) не раздуваем — ему воздух идёт на пользу.
+  // Всё остальное обязано занять экран целиком: за это отвечает rescue() в конце settle().
+  const roomy = h >= avail * 0.6;
+
   if (h <= avail) {
-    // Есть запас. Сначала отдаём его внутреннему прокручиваемому блоку.
-    stretch(1);
-    const left = avail - card.getBoundingClientRect().height;
-    // Место всё равно осталось (прокручивать нечего) — увеличиваем карточку, пока она не
-    // упрётся в края: экран должен быть занят, а текст крупным. Короткие экраны (заставка,
-    // обратный отсчёт) не раздуваем — им воздух идёт на пользу.
-    if (left >= 10 && h >= avail * 0.6) {
-      const kUp = fitsAt(MAX_ZOOM) ? MAX_ZOOM : bisect(1, MAX_ZOOM);
-      settle(kUp, true);
-      return;
-    }
-    settle(1);
+    // Есть запас. Сначала отдаём его внутреннему прокручиваемому блоку, остальное доберёт
+    // rescue(): увеличит масштаб до предела и растянет карточку на всю высоту.
+    settle(1, roomy);
     return;
   }
 
@@ -289,14 +313,7 @@ function fitOne(root) {
   avail = availHeight(root);
   h = card.getBoundingClientRect().height;
   if (h <= avail) {
-    stretch(1);
-    const left = avail - card.getBoundingClientRect().height;
-    if (left >= 10 && h >= avail * 0.6) {
-      const kUp = fitsAt(MAX_ZOOM) ? MAX_ZOOM : bisect(1, MAX_ZOOM);
-      settle(kUp, true);
-      return;
-    }
-    settle(1);
+    settle(1, roomy);
     return;
   }
 
@@ -305,7 +322,7 @@ function fitOne(root) {
   const k0 = (avail - 2) / h;
   if (k0 >= MILD_ZOOM) {
     const k = fitsAt(k0) ? bisect(k0, Math.min(1, k0 * 1.35)) : bisect(Math.max(MIN_ZOOM, k0 * 0.85), k0);
-    if (card.getBoundingClientRect().height <= avail) { settle(k); return; }
+    if (card.getBoundingClientRect().height <= avail) { settle(k, roomy); return; }
   }
 
   // 4. Ужимать сильнее нельзя — текст станет нечитаемым. Тогда экран собирается иначе:
@@ -323,7 +340,7 @@ function fitOne(root) {
     card.classList.add('is-panelled');
     panel.classList.add('is-fit-panel');
     card.style.maxHeight = `${Math.round((avail - 2) / kp)}px`; // px внутри карточки — уже в её масштабе; −2 на рамку
-    if (card.getBoundingClientRect().height <= avail + EPS) { settle(kp); return; }
+    if (card.getBoundingClientRect().height <= avail + EPS) { settle(kp, roomy); return; }
     // не помогло — откатываем к обычной прокрутке
     card.classList.remove('is-panelled');
     panel.classList.remove('is-fit-panel');
@@ -334,9 +351,9 @@ function fitOne(root) {
   //    прижимаем к низу экрана — до неё не придётся долистывать.
   setZoom(card, MIN_ZOOM);
   root.classList.add('is-scroll');
-  st.k = MIN_ZOOM;
-  st.avail = availHeight(root);
-  st.vis = card.getBoundingClientRect().height;
+  // И здесь проверяем по факту: если после ужатия на экране всё-таки осталось место —
+  // расчёт выше ошибся, масштаб возвращаем (сюда попадала «скукоженная» карточка).
+  remember(rescue(MIN_ZOOM, roomy));
 }
 
 function run() {
@@ -382,9 +399,16 @@ export default function installCardAutoFit() {
     // значит подгонка попадёт в тот же кадр и пользователь не увидит промежуточный,
     // не влезающий вариант. Через rAF был бы лишний мелькающий кадр.
     const mo = new MutationObserver(() => {
-      // содержимое поменялось — предохранитель снимаем, считаем заново
+      // Содержимое поменялось — считаем заново. Сбрасываем и запомненную высоту: карточка,
+      // растянутая на весь экран, имеет ЗАКРЕПЛЁННУЮ высоту, и по ней смену содержимого не
+      // видно — сравнение «высота такая же» приняло бы новый экран за старый и оставило
+      // ему чужой масштаб.
       try {
-        document.querySelectorAll('.ans-root > .ans-card').forEach((card) => { stateOf(card).runs = 0; });
+        document.querySelectorAll('.ans-root > .ans-card').forEach((card) => {
+          const st = stateOf(card);
+          st.runs = 0;
+          st.vis = 0;
+        });
       } catch (_e) { /* noop */ }
       run();
     });
@@ -393,6 +417,13 @@ export default function installCardAutoFit() {
 
   window.addEventListener('resize', freshStart);
   window.addEventListener('orientationchange', freshStart);
+  // Видимая область меняется без `resize`: шторка Telegram, панели браузера, клавиатура.
+  // Ровно для этого и существует visualViewport — штатный сигнал, а не наша выдумка.
+  try {
+    window.visualViewport?.addEventListener('resize', freshStart);
+    window.visualViewport?.addEventListener('scroll', freshStart);
+  } catch (_e) { /* noop */ }
+  // Событие Telegram — тоже повод пересчитать (величину берём у браузера, см. viewportHeight).
   try { window.Telegram?.WebApp?.onEvent?.('viewportChanged', freshStart); } catch (_e) { /* noop */ }
 
   const isField = (el) => !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
