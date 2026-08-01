@@ -1429,7 +1429,9 @@ html[data-scheme="light"] .adj-wordpop-ru { color: #334155; }
   align-self: center; font-size: 0.8125rem; padding: 3px 0.75rem; border-radius: 62.4375rem;
   background: rgba(234,179,8,.18); color: #eab308;
 }
-.al-word-text { display: inline-block; white-space: nowrap; line-height: 1.1; }
+/* Подгонка кегля делает своё дело, но если она почему-то не успела (шрифт догрузился,
+   карточка сменила ширину), слово должно ПЕРЕНЕСТИСЬ, а не вылезти за пределы блока. */
+.al-word-text { display: inline-block; max-width: 100%; line-height: 1.1; overflow-wrap: anywhere; }
 .al-streak { text-align: center; font-size: 1.0rem; font-weight: 800; color: #f97316; }
 /* "Тема дня" — neat highlighted card. A real border (box-sizing: border-box, so
    it sits INSIDE the button) + tinted gradient, instead of an outline which the

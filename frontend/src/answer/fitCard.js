@@ -38,6 +38,7 @@ const PANEL_MIN = 96;    // сколько px экрана минимум ост
 const EPS = 6;           // допуск в px: мелкие расхождения не должны запускать пересчёт
 
 const cards = new WeakMap(); // card → { k, avail, vis, stretched }
+const naturalMaxWidth = new WeakMap(); // card → max-width в натуральную величину, px
 const observedCards = new WeakSet();
 
 let installed = false;
@@ -74,7 +75,20 @@ function stateOf(card) {
 
 function setZoom(card, k) {
   // ровно 1 — снимаем свойство совсем; и уменьшение, и УВЕЛИЧЕНИЕ пишем как есть
-  card.style.zoom = (k > 0.999 && k < 1.001) ? '' : String(Math.round(k * 1000) / 1000);
+  const one = k > 0.999 && k < 1.001;
+  card.style.zoom = one ? '' : String(Math.round(k * 1000) / 1000);
+  // max-width карточки задан в её собственных px, а они масштабируются zoom'ом — без
+  // поправки ужатая карточка становится ещё и уже, и по бокам появляется пустота.
+  if (one) {
+    card.style.maxWidth = '';
+  } else {
+    if (!naturalMaxWidth.has(card)) {
+      const raw = parseFloat(getComputedStyle(card).maxWidth);
+      naturalMaxWidth.set(card, Number.isFinite(raw) ? raw : 0);
+    }
+    const base = naturalMaxWidth.get(card) || 0;
+    card.style.maxWidth = base > 0 ? `${Math.round(base / k)}px` : '';
+  }
 }
 
 // Блок внутри карточки со СВОЕЙ прокруткой (список разборов, список слов). Именно ему
@@ -117,6 +131,7 @@ function pickPanel(card) {
 // иначе карточка может «залипнуть» мелкой после длинного экрана.
 function resetCard(root, card, st) {
   setZoom(card, 1);
+  card.style.maxWidth = '';
   root.style.minHeight = '';
   root.classList.remove('is-tight', 'is-scroll');
   card.classList.remove('is-panelled');
@@ -152,14 +167,15 @@ function fitOne(root) {
   if (st.runs >= 2) return;
   st.runs += 1;
 
-  // 1. Натуральный размер: снимаем всё, что применяли раньше.
+  // 1. Натуральный размер: снимаем всё, что применяли раньше. Корень сразу прижимаем к
+  //    видимой высоте — иначе центрирование и замеры считаются по разной мере.
   resetCard(root, card, st);
+  root.style.minHeight = `${Math.round(viewportHeight())}px`;
   let avail = availHeight(root);
   let h = card.getBoundingClientRect().height;
   if (!(avail > 160) || !(h > 0)) return;
 
   const remember = (k) => {
-    root.style.minHeight = `${Math.round(viewportHeight())}px`;
     st.k = k;
     st.avail = availHeight(root);
     st.vis = card.getBoundingClientRect().height;
@@ -204,7 +220,10 @@ function fitOne(root) {
     let k = k0;
     stretch(k);
     for (let i = 0; i < 3; i += 1) {
-      const over = document.documentElement.scrollHeight - Math.round(viewportHeight());
+      // высота КОРНЯ интерактива против видимой высоты — не документа: документ выше
+      // видимой области (см. комментарий к viewportHeight), и по нему получалось бы
+      // вечное «не влезает».
+      const over = Math.round(root.getBoundingClientRect().height - viewportHeight());
       if (over <= 1) break;
       const vis = card.getBoundingClientRect().height;
       if (!(vis > 0)) break;
@@ -372,5 +391,9 @@ export default function installCardAutoFit() {
 
   // Шрифты догружаются после первого layout и меняют высоту текста.
   try { document.fonts?.ready?.then(freshStart); } catch (_e) { /* noop */ }
+  // Шторка Telegram разворачивается с анимацией: первый расчёт может попасть на ещё не
+  // доехавшую высоту. Два поздних пересчёта дешевле, чем застрявшая маленькая карточка.
+  setTimeout(freshStart, 400);
+  setTimeout(freshStart, 1200);
   schedule();
 }

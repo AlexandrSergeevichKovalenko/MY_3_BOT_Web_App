@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import useFitText from './useFitText.js';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * Artikel section of «работа над ошибками», built on the SAME template as the Artikel
@@ -21,18 +22,11 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
   const [remaining, setRemaining] = useState(0);
   const touchX = useRef(null);
   const audioRef = useRef(null);
-  const wordRef = useRef(null);
-
-  // Shrink long compounds to fit the card on one line (no ugly mid-word wrap).
-  const fitWord = useCallback(() => {
-    const el = wordRef.current;
-    const box = el?.parentElement;
-    if (!el || !box) return;
-    let size = 40;
-    el.style.fontSize = `${size}px`;
-    const avail = box.clientWidth - 28;
-    while (el.scrollWidth > avail && size > 15) { size -= 1; el.style.fontSize = `${size}px`; }
-  }, []);
+  // Длинные составные слова ужимаются под ширину карточки общим хуком: в нём есть
+  // ResizeObserver, поэтому подгонка переигрывается, когда карточка меняет ширину
+  // (подгонка под экран это делает), и после загрузки шрифтов. Свой вариант этого не
+  // умел — слово вылезало за пределы блока.
+  const wordRef = useFitText(idx, { max: 40, min: 15, padding: 28 });
 
   const playAudio = useCallback((url) => {
     if (!url) return;
@@ -82,7 +76,6 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
     setIdx(ni);
   }, [idx, remaining, loadBatch]);
 
-  useLayoutEffect(() => { if (phase === 'learning') fitWord(); }, [idx, phase, fitWord]);
 
   const onTouchStart = (e) => { touchX.current = e.touches?.[0]?.clientX ?? null; };
   const onTouchEnd = (e) => {
