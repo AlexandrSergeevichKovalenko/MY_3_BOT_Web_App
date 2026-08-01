@@ -36935,10 +36935,13 @@ function AppInner() {
                               worldNewsTouchXRef.current = null;
                             }}
                           >
-                            <div className="worldnews-card-de">
+                            {/* Длинные составные слова (Fußballweltmeisterschaft) не переносим
+                                и не рвём — уменьшаем кегль, пока слово не влезет в ширину карточки. */}
+                            <FitText className="worldnews-card-de" refitKey={`${idx}:${phrase.phrase_de || ''}`}
+                                     max={30} min={15}>
                               {article && <span className={`worldnews-art ${gClass}`}>{article} </span>}
                               <span className="worldnews-head-main">{headRest}</span>
-                            </div>
+                            </FitText>
                             {phrase.translation_ru && <div className="worldnews-card-ru">{phrase.translation_ru}</div>}
                             {phrase.usage_ru && (
                               <div className="worldnews-card-note">

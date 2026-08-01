@@ -17707,6 +17707,7 @@ body.worldnews-active .webapp-topbar {
 
 /* Word swipe deck — each card is a compact word breakdown */
 .worldnews-deck {
+  min-width: 0;
   display: grid;
   gap: 14px;
   padding: 2px 0 8px;
@@ -17718,7 +17719,11 @@ body.worldnews-active .webapp-topbar {
   color: var(--wn-muted);
   letter-spacing: 0.04em;
 }
+/* Длинное слово не должно уносить вправо всю страницу: карточка режет вылет по ширине,
+   а подгонка кегля (FitText) в этот момент уже уменьшает слово. */
 .worldnews-card {
+  min-width: 0;
+  overflow-x: clip;
   min-height: 236px;
   display: flex;
   flex-direction: column;
@@ -17735,6 +17740,9 @@ body.worldnews-active .webapp-topbar {
   touch-action: pan-y;
 }
 .worldnews-card-de {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
   font-family: Georgia, "Times New Roman", "Noto Serif", serif;
   font-size: 30px;
   font-weight: 700;
