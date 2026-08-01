@@ -143,11 +143,14 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
   const cellAt = useCallback((r, c) => (grid[r] ? grid[r][c] : null), [grid]);
   const isEmpty = useCallback((r, c) => { const x = cellAt(r, c); return !!(x && x.e); }, [cellAt]);
 
+  // Клетка, в которую человек ещё может писать: пустая и не подаренная подсказкой.
+  const isOpen = useCallback((r, c) => isEmpty(r, c) && !hintCells[k(r, c)], [isEmpty, hintCells]);
+
   const firstEmptyOf = useCallback((wi, fromUnfilled = false) => {
     const cells = (words[wi] && words[wi].cells) || [];
-    const found = cells.find(([r, c]) => isEmpty(r, c) && (!fromUnfilled || !inputs[k(r, c)]));
-    return found || cells.find(([r, c]) => isEmpty(r, c)) || null;
-  }, [words, isEmpty, inputs]);
+    const found = cells.find(([r, c]) => isOpen(r, c) && (!fromUnfilled || !inputs[k(r, c)]));
+    return found || cells.find(([r, c]) => isOpen(r, c)) || null;
+  }, [words, isOpen, inputs]);
 
   useEffect(() => {
     if (!activeCell && words.length) setActiveCell(firstEmptyOf(0, true));
@@ -166,27 +169,27 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
       wi = ws[0];
     }
     setActiveWord(wi);
-    setActiveCell(isEmpty(r, c) ? [r, c] : firstEmptyOf(wi, true));
-  }, [cellWords, activeCell, activeWord, isEmpty, firstEmptyOf]);
+    setActiveCell(isOpen(r, c) ? [r, c] : firstEmptyOf(wi, true));
+  }, [cellWords, activeCell, activeWord, isOpen, firstEmptyOf]);
 
   const advance = useCallback((wi, fromCell) => {
     const cells = (words[wi] && words[wi].cells) || [];
     const idx = cells.findIndex(([r, c]) => fromCell && r === fromCell[0] && c === fromCell[1]);
     for (let i = idx + 1; i < cells.length; i++) {
       const [r, c] = cells[i];
-      if (isEmpty(r, c)) return [r, c];
+      if (isOpen(r, c)) return [r, c];
     }
     return fromCell; // word filled → stay
-  }, [words, isEmpty]);
+  }, [words, isOpen]);
 
   const typeLetter = useCallback((ch) => {
     let cell = activeCell;
-    if (!cell || !isEmpty(cell[0], cell[1])) cell = firstEmptyOf(activeWord, true);
+    if (!cell || !isOpen(cell[0], cell[1])) cell = firstEmptyOf(activeWord, true);
     if (!cell) return;
     tapHaptic();
     setInputs((prev) => ({ ...prev, [k(cell[0], cell[1])]: ch }));
     setActiveCell(advance(activeWord, cell));
-  }, [activeCell, activeWord, isEmpty, firstEmptyOf, advance]);
+  }, [activeCell, activeWord, isOpen, firstEmptyOf, advance]);
 
   const backspace = useCallback(() => {
     tapHaptic();
@@ -200,13 +203,13 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
     const idx = cell ? cells.findIndex(([r, c]) => r === cell[0] && c === cell[1]) : cells.length;
     for (let i = idx - 1; i >= 0; i--) {
       const [r, c] = cells[i];
-      if (isEmpty(r, c)) {
+      if (isOpen(r, c)) {
         setInputs((prev) => { const n = { ...prev }; delete n[k(r, c)]; return n; });
         setActiveCell([r, c]);
         return;
       }
     }
-  }, [activeCell, activeWord, inputs, words, isEmpty]);
+  }, [activeCell, activeWord, inputs, words, isOpen]);
 
   const hintsLeft = Math.max(0, words.length - hintWords.size);
 
@@ -220,7 +223,7 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
     }
     // Открываем ИМЕННО ту клетку, на которой стоит человек. Раньше подсказка всегда
     // открывала первую пустую клетку слова, и буква появлялась не там, куда тапнули.
-    const free = ([r, c]) => isEmpty(r, c) && !hintCells[k(r, c)];
+    const free = ([r, c]) => isOpen(r, c);
     const onCell = activeCell && (word.cells || [])
       .some(([r, c]) => r === activeCell[0] && c === activeCell[1]) && free(activeCell)
       ? activeCell : null;
@@ -248,7 +251,7 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
     }
     // activeCell в зависимостях обязателен: без него колбэк помнит положение курсора
     // с прошлого рендера, и подсказка открывает не ту клетку, на которую тапнули.
-  }, [hintBusy, onHint, words, activeWord, activeCell, hintWords, hintCells, inputs, isEmpty, advance]);
+  }, [hintBusy, onHint, words, activeWord, activeCell, hintWords, hintCells, inputs, isOpen, advance]);
 
   const emptyLeft = emptyKeys.filter((key) => !inputs[key] && !hintCells[key]).length;
   const allFilled = emptyKeys.length > 0 && emptyLeft === 0;
@@ -263,10 +266,13 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
     // позицию — человек увидел бы чужие ответы напротив своих слов.
     const guesses = words.map((w) => (w.cells || []).map(([r, c]) => {
       const cell = cellAt(r, c);
-      return (cell && cell.l) ? cell.l : (inputs[k(r, c)] || '_');
+      // Буква, открытая подсказкой, живёт отдельно от набранного — и её тоже надо
+      // отправить. Без этого слово уходило на проверку с дыркой на месте подарка:
+      // человек видел заполненное слово, а в разборе получал «не отвечено».
+      return (cell && cell.l) ? cell.l : (hintCells[k(r, c)] || inputs[k(r, c)] || '_');
     }).join(''));
     onSubmit(guesses.join(' '));
-  }, [words, cellAt, inputs, onSubmit]);
+  }, [words, cellAt, inputs, hintCells, onSubmit]);
 
   // «Prüfen» с пустыми клетками — это нормально: слово может быть незнакомым, и
   // застревать на нём человек не обязан. Но спрашиваем, чтобы случайный тап не
