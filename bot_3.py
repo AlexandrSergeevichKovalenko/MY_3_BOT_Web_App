@@ -151,6 +151,7 @@ from backend.database import (
     mark_reply_keyboard_delivered,
     get_reply_keyboard_anchor,
     get_reply_keyboard_delivered_age_days,
+    is_reply_keyboard_alive,
     set_reply_keyboard_anchor,
     init_db,
     db_acquire_scope,
@@ -6576,19 +6577,43 @@ async def handle_admin_commands_callback(update: Update, context: CallbackContex
 # per user — and once on the first reply after every redeploy, so a changed
 # layout updates itself automatically. In-memory by design: a fresh process →
 # empty map → re-attaches on each user's next reply.
-# ⭐ 0 = прикрепляем клавиатуру к КАЖДОМУ обычному ответу бота в личке (решение владельца
-# 01.08.2026). Так делают боты, у которых иконка ⌨ всегда на месте: разметка едет вместе с
-# обычным сообщением — человеку это никак не мешает (клавиатура остаётся свёрнутой,
-# is_persistent=False), зато привязка всегда сидит на САМОМ СВЕЖЕМ сообщении. Раньше стоял
-# порог в 2 часа: привязка оставалась на старом сообщении, и если его удаляли — кнопки
-# исчезали до следующего окна.
-_KB_REATTACH_SECONDS = 0
+# ⛔️ Клавиатуру НЕ трогаем без причины. Каждое пере-прикрепление разворачивает её у
+# человека на экране и закрывает пол-экрана — это ровно то, чего быть не должно.
+# Причина ровно одна: клавиатуры фактически нет (якорь не записан или его сообщение
+# удалили). Пока якорь жив — не делаем ничего: клавиатура висит на стороне Telegram
+# сколько угодно долго, иконка вызова у человека на месте.
+# Ответ кешируем на _KB_STATE_TTL, чтобы горячий путь отправки не ходил в базу.
+_KB_STATE_TTL = 30 * 60
+_kb_alive_cache: dict[int, tuple[float, bool]] = {}
 _kb_last_attach: dict[int, float] = {}
 
 
+def _kb_mark_alive(user_id: int) -> None:
+    _kb_alive_cache[int(user_id)] = (pytime.time(), True)
+
+
+def _kb_keyboard_missing(user_id: int) -> bool:
+    """True только если клавиатуры у человека сейчас нет и её надо вернуть."""
+    uid = int(user_id)
+    cached = _kb_alive_cache.get(uid)
+    if cached and (pytime.time() - cached[0]) < _KB_STATE_TTL:
+        return not cached[1]
+    try:
+        alive = is_reply_keyboard_alive(uid)
+    except Exception:
+        alive = True     # не знаем — не трогаем
+    _kb_alive_cache[uid] = (pytime.time(), bool(alive))
+    return not alive
+
+
 def _kb_should_attach(user_id: int) -> bool:
-    _kb_last_attach[int(user_id)] = pytime.time()
-    return True
+    """Прикреплять ли клавиатуру к этому сообщению. Да — только если её нет."""
+    uid = int(user_id)
+    if _kb_delivered_versions.get(uid) != REPLY_KEYBOARD_VERSION:
+        return True      # раскладка сменилась — надо выдать новую
+    if _kb_keyboard_missing(uid):
+        return True      # клавиатура пропала — возвращаем
+    return False
 # NOTE: the actual piggyback lives in TrackingExtBot.send_message — PTB's Bot uses
 # __slots__ and forbids reassigning bot.send_message on the instance, so it must be
 # a subclass method, not a monkey-patch.
@@ -6605,6 +6630,11 @@ def _kb_should_attach(user_id: int) -> bool:
 # Bump REPLY_KEYBOARD_VERSION to force a one-time re-delivery to everyone (e.g. after a
 # layout change) — the next DM push to each user re-sends the fresh keyboard.
 REPLY_KEYBOARD_VERSION = "2026-08-01-fix"
+def _kb_keyboard_missing_sync(user_id: int) -> bool:
+    """Синхронная обёртка для потока: клавиатуры нет?"""
+    return _kb_keyboard_missing(user_id)
+
+
 # Через столько суток без единого прикрепления клавиатура выдаётся отдельным сообщением.
 # Это НИЖНИЙ слой, а не основной путь возврата: клавиатура едет с каждым обычным ответом
 # бота, поэтому человек, который что-то написал или получил любой текстовый пуш, получает
@@ -6648,6 +6678,7 @@ async def _set_reply_keyboard_anchor(chat_id: int, message) -> None:
         )
         await asyncio.to_thread(set_reply_keyboard_anchor, uid, new_mid)
         TrackingExtBot.remember_anchor(uid, new_mid)
+        _kb_mark_alive(uid)
         if old_mid and old_mid != new_mid:
             # The new anchor is already the active keyboard-setter, so the old message
             # is now safe to clean; re-tag it so the nightly purge picks it up.
@@ -6673,15 +6704,11 @@ async def _ensure_reply_keyboard_delivered(bot, chat_id: int, force: bool = Fals
     always bring them back."""
     uid = int(chat_id)
     if not force:
-        try:
-            stale_days = await asyncio.to_thread(get_reply_keyboard_delivered_age_days, uid)
-        except Exception:
-            stale_days = None
-        # Раз в KB_REFRESH_DAYS клавиатуру выдаём заново, даже если версия та же. Это
-        # страховка от потери на стороне Telegram/клиента: раньше доставка была
-        # «один раз на версию», и потерянные кнопки не возвращались никогда сами.
-        stale = stale_days is not None and stale_days >= KB_REFRESH_DAYS
-        if not stale:
+        # Отдельное сообщение «Меню» — только если клавиатуры реально нет. Ни по
+        # расписанию, ни «на всякий случай»: человеку не нужны сообщения о том, что
+        # кнопки вернулись, ему нужно, чтобы они просто были.
+        missing = await asyncio.to_thread(_kb_keyboard_missing_sync, uid)
+        if not missing:
             if _kb_delivered_versions.get(uid) == REPLY_KEYBOARD_VERSION:
                 return
             try:
@@ -9085,8 +9112,8 @@ def _send_reply_keyboard_health_report_safe() -> None:
     """
     try:
         from backend.database import count_dm_users_without_reply_keyboard
-        stat = count_dm_users_without_reply_keyboard(KB_REFRESH_DAYS)
-        problem = int(stat.get("never", 0)) + int(stat.get("stale", 0))
+        stat = count_dm_users_without_reply_keyboard()
+        problem = int(stat.get("never", 0)) + int(stat.get("lost", 0))
         _record_sched_heartbeat("reply_keyboard_health", "completed", stat)
         logging.info("reply_keyboard_health %s", stat)
         if problem <= 0:
@@ -9095,7 +9122,7 @@ def _send_reply_keyboard_health_report_safe() -> None:
             "⌨️ <b>Кнопки в личке</b>\n"
             f"Без кнопок: <b>{problem}</b> из {stat.get('total', 0)}\n"
             f"• ни разу не получали: {stat.get('never', 0)}\n"
-            f"• не обновлялись дольше {int(KB_REFRESH_DAYS)} дней: {stat.get('stale', 0)}\n\n"
+            f"• сообщение с клавиатурой удалено: {stat.get('lost', 0)}\n\n"
             "Каждому из них клавиатура уйдёт заново при ближайшем сообщении от бота."
         )
         # Тот же путь, что у остальных суточных отчётов: HTTP-вызов Telegram из потока

@@ -52980,47 +52980,84 @@ def get_latest_interactive_dispatch_ids(user_id: int) -> dict[str, int]:
     return out
 
 
-def count_dm_users_without_reply_keyboard(stale_days: float = 7.0) -> dict:
-    """Сколько людей в личке остались без кнопок.
+def count_dm_users_without_reply_keyboard(stale_days: float = 1.0) -> dict:
+    """Сколько людей в личке остались без кнопок ФАКТИЧЕСКИ.
 
-    Кнопки живут на стороне Telegram и привязаны к сообщению; если оно исчезло, у человека
-    пропадает и сама иконка вызова. Пока это ловилось только жалобами — цифра показывает
-    состояние до того, как кто-то напишет «кнопок нет».
+    Не «давно не обновляли» — клавиатура может висеть месяцами и это нормально, — а именно
+    «клавиатуры нет»: якорь не записан или его сообщение удалено. Считаем только по живым
+    перепискам (кому бот писал за последний месяц), иначе цифра превращается в шум из тех,
+    кто ботом не пользуется.
 
-    Возвращает: {"total": активных в личке, "never": ни разу не получали,
-                 "stale": не получали дольше stale_days, "ok": остальные}.
+    Возвращает: {"total", "never" — ни разу не получали, "lost" — сообщение-якорь удалено,
+                 "ok" — кнопки на месте}.
     """
-    out = {"total": 0, "never": 0, "stale": 0, "ok": 0}
+    out = {"total": 0, "never": 0, "lost": 0, "ok": 0}
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    -- Только ЖИВЫЕ переписки: те, кому бот что-то писал за последний месяц.
-                    -- Иначе отчёт считает всех, кто когда-либо был в списке доступа, и вместо
-                    -- сигнала выдаёт шум (сейчас это 76 «без кнопок» из 88 — люди, которые
-                    -- просто не пользуются ботом).
                     WITH active AS (
                         SELECT DISTINCT chat_id AS user_id
                         FROM bt_3_telegram_system_messages
                         WHERE created_at > NOW() - INTERVAL '30 days' AND chat_id > 0
+                    ),
+                    state AS (
+                        SELECT a.user_id,
+                               k.anchor_message_id,
+                               (SELECT s.deleted_at IS NULL
+                                  FROM bt_3_telegram_system_messages s
+                                 WHERE s.chat_id = a.user_id
+                                   AND s.message_id = k.anchor_message_id
+                                 ORDER BY s.id DESC LIMIT 1) AS anchor_alive
+                        FROM active a
+                        LEFT JOIN bt_3_reply_keyboard_state k ON k.user_id = a.user_id
                     )
-                    SELECT
-                        COUNT(*)                                                        AS total,
-                        COUNT(*) FILTER (WHERE k.user_id IS NULL)                       AS never_got,
-                        COUNT(*) FILTER (WHERE k.delivered_at IS NOT NULL
-                                           AND k.delivered_at < NOW() - (%s || ' days')::interval) AS stale
-                    FROM active a
-                    LEFT JOIN bt_3_reply_keyboard_state k ON k.user_id = a.user_id;
+                    SELECT COUNT(*),
+                           COUNT(*) FILTER (WHERE anchor_message_id IS NULL),
+                           COUNT(*) FILTER (WHERE anchor_message_id IS NOT NULL
+                                              AND COALESCE(anchor_alive, FALSE) = FALSE)
+                    FROM state;
                     """,
-                    (str(float(stale_days)),),
                 )
                 row = cursor.fetchone()
         if row:
             out["total"] = int(row[0] or 0)
             out["never"] = int(row[1] or 0)
-            out["stale"] = int(row[2] or 0)
-            out["ok"] = max(0, out["total"] - out["never"] - out["stale"])
+            out["lost"] = int(row[2] or 0)
+            out["ok"] = max(0, out["total"] - out["never"] - out["lost"])
     except Exception:
         logging.warning("count_dm_users_without_reply_keyboard failed", exc_info=True)
     return out
+
+
+def is_reply_keyboard_alive(user_id: int) -> bool:
+    """Жива ли клавиатура у этого человека прямо сейчас.
+
+    Клавиатура на стороне Telegram привязана к сообщению-якорю. Значит проверка простая:
+    якорь записан И это сообщение не удалено. Если да — трогать клавиатуру НЕ НАДО: она на
+    месте, иконка вызова у человека есть. Пере-прикрепление лишний раз разворачивает
+    клавиатуру на экране и мешает — именно поэтому оно должно делаться только по факту
+    пропажи, а не по расписанию.
+    """
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT s.deleted_at IS NULL
+                    FROM bt_3_reply_keyboard_state k
+                    JOIN bt_3_telegram_system_messages s
+                      ON s.chat_id = k.user_id AND s.message_id = k.anchor_message_id
+                    WHERE k.user_id = %s
+                    ORDER BY s.id DESC
+                    LIMIT 1;
+                    """,
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+        return bool(row and row[0])
+    except Exception:
+        logging.debug("is_reply_keyboard_alive failed user_id=%s", user_id, exc_info=True)
+        # Не знаем — считаем, что жива: лучше не трогать, чем мешать лишним сообщением.
+        return True
