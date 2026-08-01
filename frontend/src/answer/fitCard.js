@@ -31,7 +31,7 @@
 // Один контроллер на весь роут вместо хука в ~20 файлах игр: покрыты все экраны всех игр,
 // включая те, что появятся позже.
 
-const MAX_ZOOM = 1.18;   // на большом экране карточку не только можно, но и НУЖНО увеличить
+const MAX_ZOOM = 1.35;   // на большом экране карточку не только можно, но и НУЖНО увеличить
 const MILD_ZOOM = 0.82;  // до этого масштаба просто ужимаем карточку целиком
 const MIN_ZOOM = 0.72;   // ниже не опускаемся никогда — дальше текст не читается
 const PANEL_MIN = 96;    // сколько px экрана минимум оставляем прокручиваемому блоку
@@ -134,8 +134,9 @@ function resetCard(root, card, st) {
   card.style.maxWidth = '';
   root.style.minHeight = '';
   root.classList.remove('is-tight', 'is-scroll');
-  card.classList.remove('is-panelled');
+  card.classList.remove('is-panelled', 'is-filled');
   card.style.maxHeight = '';
+  card.style.minHeight = '';
   const panel = card.querySelector(':scope > .is-fit-panel');
   if (panel) panel.classList.remove('is-fit-panel');
   if (st && st.stretched) { st.stretched.style.maxHeight = ''; st.stretched = null; }
@@ -213,10 +214,22 @@ function fitOne(root) {
     }
   };
 
+  // Место всё равно осталось (упёрлись в предел масштаба — крупнее текст делать уже
+  // некрасиво): карточка растягивается на всю высоту экрана, а остаток уходит внутрь неё.
+  // Иначе получалось то, на что жалуются: карточка «скукожилась» посреди экрана, а сверху
+  // и снизу пустые полосы.
+  const fill = (k) => {
+    const cardH = card.getBoundingClientRect().height;
+    const slack = availHeight(root) - cardH;
+    if (slack < 12) return;
+    card.classList.add('is-filled');
+    card.style.minHeight = `${Math.round((cardH + slack - 2) / k)}px`;
+  };
+
   // Финальная проверка ПО ФАКТУ: страница не должна прокручиваться. Замер высоты карточки
   // при zoom отдаёт родителю чуть другую величину, поэтому доводим по самому документу.
   // Всё в том же синхронном проходе — промежуточных состояний пользователь не видит.
-  const settle = (k0) => {
+  const settle = (k0, canFill) => {
     let k = k0;
     stretch(k);
     for (let i = 0; i < 3; i += 1) {
@@ -238,6 +251,7 @@ function fitOne(root) {
       setZoom(card, k);
       if (card.classList.contains('is-panelled')) card.style.maxHeight = `${Math.round((avail - 2) / k)}px`;
     }
+    if (canFill) fill(k);
     remember(k);
   };
 
@@ -263,7 +277,7 @@ function fitOne(root) {
     // обратный отсчёт) не раздуваем — им воздух идёт на пользу.
     if (left >= 10 && h >= avail * 0.6) {
       const kUp = fitsAt(MAX_ZOOM) ? MAX_ZOOM : bisect(1, MAX_ZOOM);
-      settle(kUp);
+      settle(kUp, true);
       return;
     }
     settle(1);
@@ -279,7 +293,7 @@ function fitOne(root) {
     const left = avail - card.getBoundingClientRect().height;
     if (left >= 10 && h >= avail * 0.6) {
       const kUp = fitsAt(MAX_ZOOM) ? MAX_ZOOM : bisect(1, MAX_ZOOM);
-      settle(kUp);
+      settle(kUp, true);
       return;
     }
     settle(1);

@@ -148,6 +148,11 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
 .ans-card.is-panelled > .is-fit-panel .tr-chips,
 .ans-card.is-panelled > .is-fit-panel .sp-chips { max-height: none; overflow-y: visible; }
 
+/* Экран занят целиком: масштаб упёрся в потолок, а место ещё осталось (fitCard.js
+   выставил высоту). Содержимое стоит по центру карточки — пустых полос сверху и снизу
+   больше нет, вместо них поля самой карточки. */
+.ans-card.is-filled { justify-content: center; }
+
 /* Совсем крайний случай: даже так не влезло — тогда обычная прокрутка, но последняя
    кнопка карточки липнет к низу экрана, до неё не придётся долистывать. */
 .ans-root.is-scroll > .ans-card > .ans-btn:last-child {
