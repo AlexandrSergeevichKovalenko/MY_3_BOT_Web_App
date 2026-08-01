@@ -177,6 +177,9 @@ function LibraryWordDetail({ item }) {
   );
   const [filling, setFilling] = useState(false);
   const [failed, setFailed] = useState(false);
+  // Дневной лимит — это НЕ поломка, и «открой слово ещё раз» тут враньё: сколько ни
+  // открывай, сегодня уже не соберётся. Такой случай ведём отдельно и говорим прямо.
+  const [capped, setCapped] = useState(false);
   const requestedRef = useRef(null);
 
   useEffect(() => {
@@ -186,13 +189,15 @@ function LibraryWordDetail({ item }) {
     requestedRef.current = entryId;
     setFilling(true);
     setFailed(false);
+    setCapped(false);
     (async () => {
       try {
         const res = await dictApi('/api/webapp/flashcards/enrich', { entry_id: entryId });
         if (res && res.response_json) setFilled(res.response_json);
         else setFailed(true);
-      } catch (_e) {
-        setFailed(true);
+      } catch (err) {
+        if (String(err?.payload?.error || '') === 'cost_cap_exceeded') setCapped(true);
+        else setFailed(true);
       } finally {
         setFilling(false);
       }
@@ -201,6 +206,18 @@ function LibraryWordDetail({ item }) {
 
   if (!hasCard) {
     if (filling) return <div className="vocab-word-card-hint">Собираю карточку…</div>;
+    if (capped) {
+      return (
+        <div className="vocab-word-card-limit">
+          <div className="vocab-word-card-limit-title">Сегодня разбор нового слова уже не собрать</div>
+          <p>Дневной запас на сегодня израсходован.</p>
+          <p className="vocab-word-card-limit-next">
+            Что делать: слово сохранено и никуда не денется — загляните завтра, разбор откроется.
+            С полным доступом запас на день больше.
+          </p>
+        </div>
+      );
+    }
     if (failed) return <div className="vocab-word-card-hint">Не получилось собрать карточку — открой слово ещё раз.</div>;
     return null;
   }
