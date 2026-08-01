@@ -259,12 +259,6 @@ export default function SprintGame({ id, api, haptic, onClose }) {
               );
             })}
           </div>
-          {known.size ? (
-            <div className="tr-known-note">
-              «Уже есть» — это слово давно лежит в твоём словаре.
-            </div>
-          ) : null}
-
         </div>
       ) : null}
       {r.erklaerung ? <div className="ans-explain">{r.erklaerung}</div> : null}

@@ -279,11 +279,6 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       {items.length ? (
         <>
           <div className="as-save-hint">👆 нажми на слово, чтобы сохранить в словарь (с артиклем)</div>
-          {knownWords.size ? (
-            <div className="tr-known-note">
-              «Уже есть» — это слово давно лежит в твоём словаре.
-            </div>
-          ) : null}
           <div className="as-result-list ans-body">
             {items.map((it, i) => {
               const de = `${it.a} ${it.w}`.trim();

@@ -142,6 +142,11 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
 }
+/* Прокрутка ровно одна. Списки слов умеют листаться сами (.tr-chips/.sp-chips), но раз
+   экран уже пересобран и весь блок стал прокручиваемым — вложенную прокрутку снимаем,
+   иначе палец листает то одно, то другое. */
+.ans-card.is-panelled > .is-fit-panel .tr-chips,
+.ans-card.is-panelled > .is-fit-panel .sp-chips { max-height: none; overflow-y: visible; }
 
 /* Совсем крайний случай: даже так не влезло — тогда обычная прокрутка, но последняя
    кнопка карточки липнет к низу экрана, до неё не придётся долистывать. */
@@ -1149,7 +1154,12 @@ html[data-scheme="light"] .au-gap-correct { color: #0f172a; }
 .sp-bar-fill { height: 100%; background: #22c55e; border-radius: 0.375rem; transition: width 1s linear; }
 .sp-count { text-align: center; font-size: 2.5rem; font-weight: 900; color: #22c55e; margin: 0.25rem 0 0.625rem; }
 .sp-count-sub { font-size: 0.9375rem; font-weight: 600; color: var(--dmps-text-muted, #94A3B8); }
-.sp-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 0.625rem; }
+/* см. .tr-chips: длинный список слов листается сам, кнопку вниз не выдавливает */
+.sp-chips {
+  display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 0.625rem;
+  max-height: 44vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
 .sp-chip { font-size: 0.875rem; padding: 0.25rem 0.625rem; border-radius: 0.875rem; background: rgba(148,163,184,.18); color: var(--dmps-text-secondary, #CBD5E1); }
 .sp-chip.hit { background: rgba(34,197,94,.20); color: #22c55e; font-weight: 700; }
 .sp-chip.pending { opacity: .7; }
@@ -1846,10 +1856,17 @@ html[data-scheme="light"] .tr-fb-nuance { color: #b45309; }
 .tr-score-of { font-size: 1.375rem; color: var(--dmps-text-muted, #94A3B8); font-weight: 700; }
 .tr-score-sub { margin-top: 0.25rem; font-size: 0.8438rem; color: var(--dmps-text-muted, #94A3B8); }
 .tr-done-note { font-size: 0.9375rem; line-height: 1.5; text-align: center; color: var(--dmps-text-secondary, #CBD5E1); }
-.tr-all { display: flex; flex-direction: column; gap: 0.5rem; }
+.tr-all { display: flex; flex-direction: column; gap: 0.5rem; min-height: 0; }
 .tr-all-head { font-size: 0.8125rem; font-weight: 600; color: var(--dmps-text-secondary, #CBD5E1); }
 .tr-all-dim { color: var(--dmps-text-subtle, #64748B); font-weight: 500; }
-.tr-chips { display: flex; flex-wrap: wrap; gap: 0.4375rem; }
+/* Слов может быть сколько угодно — список листается сам, а не выдавливает кнопку
+   «Schließen» под сгиб. Подгонка (fitCard.js) найдёт эту прокрутку и отдаст списку
+   всю свободную высоту экрана, так что на длинном экране окошко не будет узким. */
+.tr-chips {
+  display: flex; flex-wrap: wrap; gap: 0.4375rem;
+  max-height: 44vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
 .tr-chip {
   font-family: inherit; font-size: 0.875rem; font-weight: 600; line-height: 1.2;
   padding: 0.375rem 0.75rem; border-radius: 0.875rem; border: none; cursor: pointer;
@@ -1859,12 +1876,9 @@ html[data-scheme="light"] .tr-fb-nuance { color: #b45309; }
 .tr-chip:active { transform: scale(0.94); }
 .tr-chip.saved { background: rgba(37,99,235,.22); color: #60a5fa; }
 /* Already in the dictionary: the save refreshed an OLD entry, so the word keeps its old
-   place in the list. Green ✓ + the note below, or the user hunts for it at the top. */
+   place in the list. The word itself says «· уже есть» right on the chip — no extra
+   legend under the list: it stole a line and pushed the action button off-screen. */
 .tr-chip.known { background: rgba(34,197,94,.18); color: #4ade80; }
-.tr-known-note {
-  font-size: 0.7812rem; line-height: 1.4; color: var(--dmps-text-secondary, #CBD5E1);
-  background: rgba(34,197,94,.10); border-radius: 0.625rem; padding: 0.5rem 0.625rem;
-}
 
 html[data-scheme="light"] .tr-hero-word, html[data-scheme="light"] .tr-anchor-word {
   background: linear-gradient(180deg, #d97706, #b45309); -webkit-background-clip: text; background-clip: text;
@@ -1876,7 +1890,6 @@ html[data-scheme="light"] .tr-fb-swap, html[data-scheme="light"] .tr-fb-right b 
 html[data-scheme="light"] .tr-chip { background: rgba(217,119,6,.14); color: #b45309; }
 html[data-scheme="light"] .tr-chip.saved { background: rgba(37,99,235,.14); color: #1d4ed8; }
 html[data-scheme="light"] .tr-chip.known { background: rgba(22,163,74,.14); color: #15803d; }
-html[data-scheme="light"] .tr-known-note { color: #475569; background: rgba(22,163,74,.10); }
 
 /* «Оба ответа верны»: Woran / Worunter leidest du? — обе формы немецкие, поэтому
    засчитываем любую, а разницу объясняем прямо в разборе, а не прячем задание. */

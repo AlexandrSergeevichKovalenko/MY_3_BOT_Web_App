@@ -248,7 +248,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         Через 3 дня <b>{meta?.wort}</b> вернётся в спринте — там впишешь {rel.ask}ы по памяти 🔥
       </div>
       {allCorrect.length ? (
-        <div className="tr-all">
+        <div className="tr-all ans-body">
           <div className="tr-all-head">Все {rel.ask}ы <span className="tr-all-dim">· 👆 нажми, чтобы сохранить в словарь</span>:</div>
           <div className="tr-chips">
             {allCorrect.map((c, i) => {
@@ -263,12 +263,6 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
               );
             })}
           </div>
-          {known.size ? (
-            <div className="tr-known-note">
-              «Уже есть» — это слово давно лежит в твоём словаре.
-            </div>
-          ) : null}
-
         </div>
       ) : null}
       <button className="ans-btn" onClick={onClose}>Schließen</button>
