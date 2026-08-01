@@ -254,10 +254,15 @@ async function loadAppComponent() {
 // startapp=ans_rb_<id> / ans_cw_<id>. Mounts ONLY the tiny overlay (lazy chunk)
 // and skips the heavy main App so it opens instantly over the group chat.
 function getAnswerStartParam() {
-  const fromTelegram = String(window.Telegram?.WebApp?.initDataUnsafe?.start_param || '').trim();
-  if (fromTelegram) return fromTelegram;
+  // Явный ?startapp в адресе ГЛАВНЕЕ того, что Telegram прислал при запуске.
+  // Внутри мини-приложения мы иногда переходим сами (например, из интерактива в раздел
+  // «Подписка»): при таком переходе Telegram по-прежнему отдаёт start_param запуска
+  // (ans_sp_<id>), и он возвращал человека обратно в ту же игру — переход «не работал»,
+  // а тренировка начиналась заново.
   const fromQuery = String(params.get('startapp') || params.get('start_param') || '').trim();
   if (fromQuery) return fromQuery;
+  const fromTelegram = String(window.Telegram?.WebApp?.initDataUnsafe?.start_param || '').trim();
+  if (fromTelegram) return fromTelegram;
   // Path-based entry: a short URL like /dict (or /d) opens the quick-dictionary
   // overlay directly. The BotFather "Main Mini App" URL has a length cap and the
   // long Railway domain leaves no room for ?startapp=dict, so we expose a short

@@ -127,6 +127,8 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
   position: sticky;
   bottom: 0;
   z-index: 3;
+  /* фон под кнопкой, иначе текст «просвечивает» из-под неё при прокрутке */
+  box-shadow: 0 -0.5rem 0.75rem rgba(0, 0, 0, 0.12);
 }
 .ans-card.is-panelled > .is-fit-panel {
   flex: 1 1 auto;
@@ -1795,11 +1797,13 @@ html[data-scheme="dark"] .pinrev-word { background: #0f172a; color: #F8FAFC; }
 .tr-anchor-hint { margin-top: 2px; font-size: 0.875rem; color: var(--dmps-text-muted, #94A3B8); }
 .tr-anchor-ask { margin-top: 0.5rem; font-size: 0.8125rem; font-weight: 600; color: var(--dmps-text-subtle, #64748B); }
 
-.tr-options { display: flex; flex-direction: column; gap: 0.5625rem; }
+.tr-options { display: flex; flex-direction: column; gap: 0.375rem; }
+/* Варианты намеренно компактнее разбора: выбрать из пяти коротких слов легко и мелким
+   кеглем, а вот объяснение читают внимательно — ему и отдаём освободившееся место. */
 .tr-opt {
   display: flex; align-items: center; justify-content: space-between; gap: 0.625rem;
-  width: 100%; min-height: 3.25rem; box-sizing: border-box; padding: 0.75rem 1.0rem;
-  font-family: inherit; font-size: 1.0625rem; font-weight: 700; text-align: left;
+  width: 100%; min-height: 2.625rem; box-sizing: border-box; padding: 0.5rem 0.875rem;
+  font-family: inherit; font-size: 0.875rem; font-weight: 700; text-align: left;
   color: var(--dmps-text-primary, #F8FAFC);
   background: var(--dmps-card-alt, #0B1220);
   border: 1.5px solid var(--dmps-border, #334155);
@@ -1812,7 +1816,7 @@ html[data-scheme="dark"] .pinrev-word { background: #0f172a; color: #F8FAFC; }
 .tr-opt.correct { border-color: #22c55e; background: rgba(34,197,94,.14); color: #86efac; }
 .tr-opt.wrong { border-color: #ef4444; background: rgba(239,68,68,.14); color: #fca5a5; }
 .tr-opt.dim { opacity: .5; }
-.tr-opt-mark { font-size: 1.0625rem; font-weight: 800; }
+.tr-opt-mark { font-size: 0.9375rem; font-weight: 800; }
 
 .tr-feedback {
   display: flex; flex-direction: column; gap: 0.5rem;
@@ -1823,15 +1827,15 @@ html[data-scheme="dark"] .pinrev-word { background: #0f172a; color: #F8FAFC; }
 }
 .tr-feedback.ok { border-color: rgba(34,197,94,.4); background: rgba(34,197,94,.08); }
 .tr-feedback.bad { border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.07); }
-.tr-fb-head { font-size: 0.9688rem; font-weight: 700; color: var(--dmps-text-title, #E2E8F0); }
-.tr-fb-why { font-size: 0.875rem; line-height: 1.45; color: var(--dmps-text-secondary, #CBD5E1); }
-.tr-fb-nuance { font-size: 0.875rem; line-height: 1.45; font-weight: 600; color: #fbbf24; }
+.tr-fb-head { font-size: 1.0625rem; font-weight: 700; color: var(--dmps-text-title, #E2E8F0); }
+.tr-fb-why { font-size: 1.0rem; line-height: 1.5; color: var(--dmps-text-secondary, #CBD5E1); }
+.tr-fb-nuance { font-size: 1.0rem; line-height: 1.5; font-weight: 600; color: #fbbf24; }
 html[data-scheme="light"] .tr-fb-nuance { color: #b45309; }
 .tr-fb-ex { display: flex; flex-direction: column; gap: 3px; }
-.tr-fb-base { font-size: 0.875rem; font-style: italic; color: var(--dmps-text-muted, #94A3B8); }
-.tr-fb-swap { font-size: 0.9375rem; font-weight: 600; color: #86efac; }
-.tr-fb-ru { font-size: 0.8438rem; color: var(--dmps-text-muted, #94A3B8); }
-.tr-fb-right { font-size: 0.875rem; color: var(--dmps-text-secondary, #CBD5E1); }
+.tr-fb-base { font-size: 0.9375rem; font-style: italic; color: var(--dmps-text-muted, #94A3B8); }
+.tr-fb-swap { font-size: 1.0rem; font-weight: 600; color: #86efac; }
+.tr-fb-ru { font-size: 0.9375rem; color: var(--dmps-text-muted, #94A3B8); }
+.tr-fb-right { font-size: 1.0rem; color: var(--dmps-text-secondary, #CBD5E1); }
 .tr-fb-right b { color: #86efac; }
 .tr-next { margin-top: 0.25rem; background: linear-gradient(135deg, #f59e0b, #d97706); box-shadow: 0 8px 20px rgba(217,119,6,.32); }
 
@@ -1945,3 +1949,20 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
 /* «Тело» истории батлов: секции лежали прямо в карточке и получали её вертикальный gap,
    после обёртки задаём тот же ритм явно, иначе они слипаются. */
 .bh-list { display: flex; flex-direction: column; gap: 1rem; }  /* тот же ритм, что давала карточка */
+
+/* ── Карточка с картинкой не отбирает место у разбора ─────────────────────────────────
+   Верхний блок (картинка + слово + der/die/das) должен занимать столько же места, сколько
+   он занимает БЕЗ картинки. Появилась картинка — значит остальные его элементы ужимаются,
+   а не выталкивают объяснение в щёлку на две строки. Правило включается само, по наличию
+   картинки в карточке, поэтому спринт без картинок остаётся прежним. */
+.ans-card:has(.al-img) .al-img { height: 6rem; }
+.ans-card:has(.al-img) .al-img img { object-fit: contain; background: rgba(148,163,184,.10); }
+.ans-card:has(.al-img) .as-word {
+  font-size: 1.75rem;
+  padding: 0.5rem 0.75rem;
+  min-height: 2.25rem;
+}
+.ans-card:has(.al-img) .as-btn-art { font-size: 1.25rem; padding: 0.625rem 0; }
+.ans-card:has(.al-img) .as-buttons { gap: 0.5rem; }
+/* Освободившееся место уходит объяснению: ему же и крупный кегль. */
+.ans-card:has(.al-img) .al-tip { font-size: 1.0rem; line-height: 1.5; }
