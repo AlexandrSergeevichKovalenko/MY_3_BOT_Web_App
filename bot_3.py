@@ -6072,9 +6072,13 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
-        # is_persistent=False on purpose: the menu must NOT pop up on every tap —
-        # it stays reachable via the keyboard icon. (Do NOT set True.)
-        is_persistent=False,
+        # ⭐ is_persistent=True — единственный переключатель Telegram (Bot API 6.4+), который
+        # заставляет клиент ВСЕГДА показывать кнопки: «Requests clients to always show the
+        # keyboard when the regular keyboard is hidden». Именно так кнопки всегда на месте у
+        # других ботов. При False клиент сворачивает меню в иконку ⌨ — человек видит это как
+        # «кнопки пропали» и вынужден писать /start. Владелец решил (01.08.2026): кнопки —
+        # основной элемент управления, они должны быть видны всегда. Не переключать обратно.
+        is_persistent=True,
     )
 
 
@@ -6516,9 +6520,9 @@ async def handle_admin_commands_callback(update: Update, context: CallbackContex
 
 
 # ── Silent keyboard re-attach ────────────────────────────────────────────────
-# The DM reply-keyboard lives on Telegram's side and survives restarts, but with
-# is_persistent=False it collapses to the keyboard icon and users perceive it as
-# "gone" (and type /start). Instead of spamming standalone "menu" messages, we
+# The DM reply-keyboard lives on Telegram's side and survives restarts. С is_persistent=True
+# клиент показывает её всегда, но саму клавиатуру всё равно надо ДОСТАВИТЬ (и обновить, если
+# поменялась раскладка). Instead of spamming standalone "menu" messages, we
 # piggyback the keyboard onto the bot's OWN ordinary DM replies (only ones that
 # don't already carry a markup), throttled so it refreshes at most once per window
 # per user — and once on the first reply after every redeploy, so a changed
@@ -6550,7 +6554,7 @@ def _kb_should_attach(user_id: int) -> bool:
 # it once, sending a single lightweight standalone menu message if not.
 # Bump REPLY_KEYBOARD_VERSION to force a one-time re-delivery to everyone (e.g. after a
 # layout change) — the next DM push to each user re-sends the fresh keyboard.
-REPLY_KEYBOARD_VERSION = "2026-07-27"
+REPLY_KEYBOARD_VERSION = "2026-08-01-persistent"
 # In-memory cache of "user already has version X" so the hot send path stays O(1) once
 # warmed. Empty on a fresh process → first DM send per user does one DB read.
 _kb_delivered_versions: dict[int, str] = {}
@@ -6633,8 +6637,7 @@ async def _ensure_reply_keyboard_delivered(bot, chat_id: int, force: bool = Fals
             chat_id=uid,
             text=(
                 "📋 Меню под рукой — задания, тренажёры и словарь на кнопках снизу.\n\n"
-                "💡 Если кнопки меню вдруг пропадут (Telegram иногда их сворачивает) — "
-                "напиши /start, и они сразу вернутся."
+                "💡 Кнопки теперь всегда на месте. Если их всё же не видно — напиши /start."
             ),
             reply_markup=kb,
         )
@@ -40933,6 +40936,33 @@ def _init_article_sprint() -> None:
         logging.warning("startup: article sprint theme sync failed", exc_info=True)
 
 
+
+# ── Постоянные точки входа, которые нельзя потерять ──────────────────────────────────
+# Кнопки reply-клавиатуры живут на стороне Telegram и, теоретически, могут пропасть
+# (сообщение-носитель удалили, клиент потерял состояние). Поэтому у человека всегда должен
+# быть ВТОРОЙ путь, который не зависит от сообщений вообще: список команд по «/». Он
+# задаётся один раз на бота и хранится у Telegram — потерять его нельзя.
+BOT_COMMAND_MENU = [
+    ("start", "Меню и кнопки управления"),
+    ("interaktiv_test", "Интерактивы — открыть любой"),
+    ("streak", "Моя серия дней"),
+    ("invite", "Пригласить друга"),
+]
+
+
+async def _publish_bot_command_menu(app) -> None:
+    """Заполнить меню «/» в личке. Без него у человека, потерявшего кнопки, вообще нет пути."""
+    try:
+        from telegram import BotCommand, BotCommandScopeAllPrivateChats
+        await app.bot.set_my_commands(
+            [BotCommand(cmd, desc) for cmd, desc in BOT_COMMAND_MENU],
+            scope=BotCommandScopeAllPrivateChats(),
+        )
+        logging.info("bot_command_menu_published count=%d", len(BOT_COMMAND_MENU))
+    except Exception:
+        logging.warning("bot_command_menu_publish_failed", exc_info=True)
+
+
 def main():
     global application
     bot_startup_completed_successfully = False
@@ -41006,7 +41036,7 @@ def main():
     )
     application = _run_bot_startup_phase(
         "build_telegram_application",
-        lambda: Application.builder().bot(tracking_bot).build(),
+        lambda: Application.builder().bot(tracking_bot).post_init(_publish_bot_command_menu).build(),
         enabled=True,
         category="readiness",
         required_before_first_request=True,
