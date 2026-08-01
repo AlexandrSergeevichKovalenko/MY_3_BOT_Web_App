@@ -9028,6 +9028,13 @@ def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
         )
     except Exception:
         logging.debug("attach saved entry to lex unit failed", exc_info=True)
+    # Слово могли разобрать раньше — для другого человека или ночью. Тогда новая карточка
+    # получает готовый разбор сразу же и бесплатно, вместо того чтобы лежать пустой до
+    # следующей ночи. Один SELECT и один UPDATE, к модели обращений нет.
+    try:
+        fill_thin_cards_from_units(limit=1, entry_id=int(entry_id))
+    except Exception:
+        logging.debug("перенос готового разбора в новую карточку не удался", exc_info=True)
 
 
 def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
@@ -10264,6 +10271,15 @@ def _drop_wrong_language_examples(enrich_data: dict | None, *, learning_lang: st
 
 _POOL_ENRICH_SINGLE_PAIR = False  # True = только заданная пара (для ручной отладки)
 POOL_NIGHT_ENRICH_DAILY_CAP = int((os.getenv("POOL_NIGHT_ENRICH_DAILY_CAP") or "200").strip() or "200")
+# Раздача уже собранного разбора по личным карточкам не стоит ничего — это обычный UPDATE,
+# без единого обращения к модели. Поэтому потолок здесь щедрый: он ограничивает только
+# длину ночного прохода, а не расходы. Отставание на 01.08.2026 — 3648 карточек.
+UNIT_CARD_SPREAD_NIGHT_LIMIT = int(
+    (os.getenv("UNIT_CARD_SPREAD_NIGHT_LIMIT") or "2000").strip() or "2000"
+)
+# Одно слово могут держать у себя несколько человек; больше сотни копий одной карточки
+# не бывает, а потолок страхует от бесконечного прохода при странных данных.
+UNIT_CARD_SPREAD_PER_WORD_LIMIT = 100
 # Ночью ответа никто не ждёт, а полный разбор — тяжёлый запрос: с «живым» таймаутом в
 # 14 секунд 85 слов из 200 срывались, не дождавшись ответа. Даём фону нормальное время.
 # «Полный разбор» человек ждёт осознанно и на длинном предложении 14 секунд не хватает:
@@ -10303,6 +10319,19 @@ def _run_units_night_enrichment(
             report["cards_attached"] = attach_report["attached"]
     except Exception:
         logging.debug("привязка карточек перед добором не удалась", exc_info=True)
+
+    # Сначала раздаём то, что уже оплачено: разбор, собранный прошлыми ночами, до личных
+    # карточек сам не доходит, а без него тренажёру нечего показать. Это бесплатно, так
+    # что идёт до GPT и с запасом по объёму — очередь на повторение впереди остальных.
+    if not dry_run:
+        try:
+            spread = fill_thin_cards_from_units(
+                limit=UNIT_CARD_SPREAD_NIGHT_LIMIT, lang=learning_lang,
+            )
+            if spread.get("filled"):
+                report["cards_filled_from_units"] = spread["filled"]
+        except Exception:
+            logging.warning("раздача готового разбора по карточкам не удалась", exc_info=True)
 
     units = lex_units.units_needing_card(cap, lang=learning_lang, native_lang=native_lang)
     report["picked"] = len(units)
@@ -10347,6 +10376,18 @@ def _run_units_night_enrichment(
                 continue
             if lex_units.save_unit_card(unit["id"], enrich_data):
                 report["enriched"] += 1
+                # Разбор собран — тут же отдаём его всем, у кого это слово лежит пустой
+                # карточкой. Ждать следующей ночи незачем: перенос ничего не стоит.
+                try:
+                    fill_thin_cards_from_units(
+                        limit=UNIT_CARD_SPREAD_PER_WORD_LIMIT,
+                        unit_id=int(unit["id"]),
+                        lang=learning_lang,
+                    )
+                except Exception:
+                    logging.debug(
+                        "раздача разбора слова %r по карточкам не удалась", german, exc_info=True,
+                    )
                 # Разбор знает про слово больше, чем старая строка перевода из банка:
                 # у «die Scheide» в связях было только «влагалище», хотя есть и «ножны».
                 # Поэтому сразу перечитываем переводы из разбора и раскладываем по
@@ -10362,6 +10403,99 @@ def _run_units_night_enrichment(
     # Остаток берём отдельным подсчётом, а не из выборки: она ограничена ночным
     # потолком, и сводка отчиталась бы «осталось 86» при 3356 неразобранных.
     report["remaining"] = lex_units.count_units_needing_card(lang=learning_lang)
+    return report
+
+
+# Личные поля карточки: кто её сохранил, каким текстом и в какую сторону. Из общего
+# разбора слова их брать НЕЛЬЗЯ — иначе чужая нормализованная форма затрёт то, что
+# человек сохранил себе, а направление пары может перевернуться.
+_UNIT_CARD_IDENTITY_KEYS = frozenset({
+    "source_text", "target_text", "source_lang", "target_lang", "language_pair",
+    "word_ru", "word_de", "translation_ru", "translation_de",
+    "entry_kind", "sentence_origin", "enrich_attempts",
+})
+
+
+def fill_thin_cards_from_units(
+    *,
+    limit: int = 500,
+    unit_id: int | None = None,
+    entry_id: int | None = None,
+    lang: str = "de",
+) -> dict:
+    """Перенести уже собранный разбор слова в пустые личные карточки. Без GPT.
+
+    Ночной добор кладёт разбор на ЕДИНИЦУ — одну на всех, и это правильно: одно слово
+    разбирается один раз и стоит одну оплату. Но тренажёр и подсказка читают ЛИЧНУЮ
+    карточку, а туда разбор сам не переезжает: на 01.08.2026 разбор был готов у 3648
+    пустых карточек и ни одна его не показывала.
+
+    Перенос бесплатный, поэтому он не имеет права ничего испортить: личные поля
+    (что человек сохранил, в какую сторону) остаются как есть, из разбора берём только
+    то, чего в карточке нет. Уже собранную карточку не трогаем вовсе — выборка отдаёт
+    только те, где нет ни одного примера."""
+    report = {"picked": 0, "filled": 0, "skipped": 0, "errors": 0, "samples": []}
+    try:
+        rows = lex_units.thin_entries_with_unit_card(
+            limit=int(limit), unit_id=unit_id, entry_id=entry_id, lang=lang,
+        )
+    except Exception:
+        logging.warning("перенос разбора: выборка не удалась", exc_info=True)
+        return report
+    report["picked"] = len(rows)
+    for row in rows:
+        try:
+            card = row.get("card") if isinstance(row.get("card"), dict) else {}
+            merged = dict(row.get("response_json") or {})
+            changed = False
+            for key, value in card.items():
+                if key in _UNIT_CARD_IDENTITY_KEYS:
+                    continue
+                if value in (None, "", [], {}):
+                    continue
+                existing = merged.get(key)
+                if existing in (None, "", [], {}):
+                    merged[key] = copy.deepcopy(value)
+                    changed = True
+            if not changed:
+                report["skipped"] += 1
+                continue
+            entry_source_lang = str(row.get("source_lang") or "").strip().lower() or "de"
+            entry_target_lang = str(row.get("target_lang") or "").strip().lower() or "ru"
+            source_text, target_text = _resolve_entry_texts_for_pair(
+                entry=row,
+                response_json=merged,
+                source_lang=entry_source_lang,
+                target_lang=entry_target_lang,
+            )
+            merged = _prepare_dictionary_response_json_for_save(
+                response_json=merged,
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=entry_source_lang,
+                target_lang=entry_target_lang,
+                word_ru=row.get("word_ru"),
+                word_de=row.get("word_de"),
+                translation_de=row.get("translation_de"),
+                translation_ru=row.get("translation_ru"),
+            )
+            update_webapp_dictionary_entry(int(row["entry_id"]), merged)
+            report["filled"] += 1
+            if len(report["samples"]) < 20:
+                report["samples"].append({
+                    "word": str(row.get("word_de") or source_text or "").strip(),
+                    "user_id": row.get("user_id"),
+                })
+        except Exception:
+            report["errors"] += 1
+            logging.warning(
+                "перенос разбора не удался entry_id=%s", row.get("entry_id"), exc_info=True,
+            )
+    if report["filled"]:
+        logging.info(
+            "перенос разбора из слоя единиц: наполнено %d карточек из %d отобранных",
+            report["filled"], report["picked"],
+        )
     return report
 
 

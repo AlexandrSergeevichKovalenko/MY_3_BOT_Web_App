@@ -234,13 +234,18 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
 
 
 def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru") -> list[dict]:
-    """Слова слоя, у которых ещё нет разбора, — по востребованности.
+    """Слова слоя, у которых ещё нет разбора, — сначала те, что скоро спросят.
 
     Ночной добор обязан смотреть СЮДА, а не в старый банк: после переключения поиск
     читает единицы, и добор в банк наполнял бы то, чего никто не открывает.
 
-    Востребованность считаем честно: сколько людей сохранили это слово себе, а при
-    равенстве — из скольких записей банка оно собрано."""
+    Порядок решает, что человек увидит завтра. Сначала идут слова, стоящие у кого-то
+    на повторение, — по ближайшему сроку: их покажут в ближайшие дни, и без разбора
+    подсказка в тренировке будет пустой. Дальше — по востребованности: сколько людей
+    сохранили слово себе, а при равенстве — из скольких записей банка оно собрано.
+
+    Без срока повторения впереди оказывались слова с общим спросом, а те 140, что люди
+    учат прямо сейчас, ждали своей очереди среди 2642 (замер 01.08.2026)."""
     if limit <= 0:
         return []
     try:
@@ -251,6 +256,7 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
                     SELECT u.id, u.display, u.lemma, u.gender, u.pos,
                            COALESCE(p.saved, 0) AS saved,
                            COALESCE(s.sources, 0) AS sources,
+                           d.due_at,
                            (SELECT u2.display FROM bt_3_lex_links l
                               JOIN bt_3_lex_units u2 ON u2.id = l.to_unit
                              WHERE l.from_unit = u.id AND u2.lang = %s
@@ -266,8 +272,16 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
                         SELECT unit_id, COUNT(*) AS sources
                         FROM bt_3_lex_unit_sources GROUP BY unit_id
                     ) s ON s.unit_id = u.id
+                    LEFT JOIN (
+                        SELECT q.lex_unit_id, MIN(st.due_at) AS due_at
+                        FROM bt_3_card_srs_state st
+                        JOIN bt_3_webapp_dictionary_queries q
+                          ON q.id = st.card_id AND q.user_id = st.user_id
+                        WHERE st.status <> 'suspended' AND q.lex_unit_id IS NOT NULL
+                        GROUP BY q.lex_unit_id
+                    ) d ON d.lex_unit_id = u.id
                     WHERE u.lang = %s AND u.kind = 'word' AND u.card IS NULL
-                    ORDER BY saved DESC, sources DESC, u.id
+                    ORDER BY (d.due_at IS NULL), d.due_at, saved DESC, sources DESC, u.id
                     LIMIT %s;
                     """,
                     (native_lang, lang, int(limit)),
@@ -282,7 +296,7 @@ def units_needing_card(limit: int, *, lang: str = "de", native_lang: str = "ru")
     # упражнений, — и они бы так и остались без разбора.
     return [
         {"id": r[0], "display": r[1], "lemma": r[2], "gender": r[3], "pos": r[4],
-         "saved": r[5], "sources": r[6], "translation": r[7] or ""}
+         "saved": r[5], "sources": r[6], "due_at": r[7], "translation": r[8] or ""}
         for r in rows
     ]
 
@@ -603,6 +617,89 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
     except Exception as exc:
         logging.debug("save unit card failed for %s: %s", unit_id, exc)
         return False
+
+
+def thin_entries_with_unit_card(
+    limit: int = 500,
+    *,
+    unit_id: int | None = None,
+    entry_id: int | None = None,
+    due_first: bool = True,
+    lang: str = "de",
+) -> list[dict]:
+    """Личные карточки, которые пусты, хотя разбор их слова УЖЕ собран и оплачен.
+
+    Ночной добор кладёт разбор на единицу — общую для всех. Тренажёр же читает личную
+    карточку, и до неё разбор сам не доходит: на 01.08 таких карточек было 3648. Здесь
+    мы их находим, чтобы перенести готовое даром (см. fill_thin_cards_from_units).
+
+    «Пусто» = в личной карточке нет ни одного примера. Именно примеры человек и видит
+    по кнопке-подсказке, и именно по ним отличают собранную карточку от заготовки.
+
+    Порядок — сначала то, что человек увидит раньше всех: карточки, стоящие на
+    повторение по ближайшему сроку, а уже потом всё остальное."""
+    if limit <= 0:
+        return []
+    where = [
+        # Разбор строится ПО ИЗУЧАЕМОМУ слову, поэтому и переносим только с единицы на
+        # изучаемом языке. Без этого условия карточке «враг → der Feind» мог бы достаться
+        # разбор русской единицы, и человек увидел бы русские формы у немецкого слова.
+        "u.lang = %s",
+        "u.card IS NOT NULL",
+        "u.card <> '{}'::jsonb",
+        "jsonb_typeof(u.card->'usage_examples') = 'array'",
+        "jsonb_array_length(u.card->'usage_examples') > 0",
+        # NOT (… IS TRUE), а не NOT (…): при отсутствующем ключе сравнение даёт NULL,
+        # и обычное NOT выбрасывает строку из выборки вместо того, чтобы взять её.
+        "NOT ((jsonb_typeof(q.response_json->'usage_examples') = 'array'"
+        " AND jsonb_array_length(q.response_json->'usage_examples') > 0) IS TRUE)",
+    ]
+    params: list[Any] = [str(lang or "de").strip().lower() or "de"]
+    if unit_id:
+        where.append("q.lex_unit_id = %s")
+        params.append(int(unit_id))
+    if entry_id:
+        where.append("q.id = %s")
+        params.append(int(entry_id))
+    order = (
+        "ORDER BY (s.due_at IS NULL), s.due_at, q.id DESC"
+        if due_first else "ORDER BY q.id DESC"
+    )
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT q.id, q.user_id, q.word_ru, q.word_de,
+                           q.translation_de, q.translation_ru,
+                           q.source_lang, q.target_lang,
+                           q.response_json, u.card, u.id
+                    FROM bt_3_webapp_dictionary_queries q
+                    JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
+                    LEFT JOIN bt_3_card_srs_state s
+                           ON s.card_id = q.id AND s.user_id = q.user_id
+                          AND s.status <> 'suspended'
+                    WHERE {' AND '.join(where)}
+                    {order}
+                    LIMIT %s;
+                    """,
+                    (*params, int(limit)),
+                )
+                rows = cur.fetchall()
+    except Exception as exc:
+        logging.debug("выборка тонких карточек с готовым разбором не удалась: %s", exc)
+        return []
+    return [
+        {
+            "entry_id": r[0], "user_id": r[1], "word_ru": r[2], "word_de": r[3],
+            "translation_de": r[4], "translation_ru": r[5],
+            "source_lang": r[6], "target_lang": r[7],
+            "response_json": r[8] if isinstance(r[8], dict) else {},
+            "card": r[9] if isinstance(r[9], dict) else {},
+            "unit_id": r[10],
+        }
+        for r in rows
+    ]
 
 
 def lookup(word: str, *, source_lang: str, target_lang: str) -> dict | None:

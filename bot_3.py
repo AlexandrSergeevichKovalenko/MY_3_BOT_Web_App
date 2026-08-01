@@ -11888,6 +11888,66 @@ async def admin_repair_dict_cards_command(update: Update, context: CallbackConte
         await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
 
 
+async def admin_spread_unit_cards_command(update: Update, context: CallbackContext):
+    """Раздать уже собранный разбор слова по пустым личным карточкам. Бесплатно.
+
+    Разбор собирается один раз на слово и лежит в слое единиц — общий для всех. А
+    тренажёр читает личную карточку человека, и туда разбор сам не переезжал: на
+    01.08.2026 разбор был готов у 3648 пустых карточек, и ни одна его не показывала.
+    Здесь мы переносим готовое. GPT не трогаем — это обычный UPDATE.
+
+    /admin_spread_unit_cards          → сколько карточек ждёт переноса
+    /admin_spread_unit_cards apply    → перенести (до 2000 за раз)
+    /admin_spread_unit_cards apply 500 → размер батча
+    """
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = [a.strip().lower() for a in (context.args or [])]
+    apply = "apply" in args
+    batch = next((int(a) for a in args if a.isdigit() and 1 <= int(a) <= 20000), 2000)
+
+    if not apply:
+        from backend.lex_units import thin_entries_with_unit_card
+        waiting = await asyncio.to_thread(thin_entries_with_unit_card, batch)
+        await message.reply_text(
+            f"💡 Ждут готового разбора: <b>{len(waiting)}</b> карточек "
+            f"(смотрел до {batch}).\nЗапусти с <code>apply</code>, чтобы перенести — это бесплатно.",
+            parse_mode="HTML",
+        )
+        return
+
+    await message.reply_text(f"💡 Переношу готовый разбор в пустые карточки, до {batch} за раз…")
+    try:
+        from backend.backend_server import fill_thin_cards_from_units
+        report = await asyncio.to_thread(fill_thin_cards_from_units, limit=batch)
+    except Exception as exc:
+        logging.exception("admin spread unit cards failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Перенос упал: {exc}")
+        return
+
+    from html import escape as _esc
+    samples = report.get("samples") or []
+    lines = "\n".join(f"  • {_esc(str(s.get('word') or ''))}".rstrip() for s in samples[:15])
+    text = (
+        f"💡 <b>Перенос разбора в карточки</b>\n\n"
+        f"Отобрано: <b>{report.get('picked', 0)}</b>\n"
+        f"Наполнено: <b>{report.get('filled', 0)}</b>\n"
+        f"Нечего добавить: {report.get('skipped', 0)}\n"
+        f"Ошибок: {report.get('errors', 0)}"
+    )
+    if lines:
+        text += f"\n\n<b>Примеры:</b>\n{lines}"
+    if report.get("picked", 0) >= batch:
+        text += "\n\nБатч выбран целиком — запусти ещё раз для следующего."
+    for part in _split_telegram_text(text):
+        await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+
+
 def _run_dictionary_raw_text_repair_safe() -> None:
     """Ночной бесплатный ремонт карточек (03:05 Вена — до платного добора пула в 03:10).
 
@@ -41252,6 +41312,7 @@ def main():
     application.add_handler(CommandHandler("dict_report", dict_layer_report_command))
 
     application.add_handler(CommandHandler("admin_repair_dict_cards", admin_repair_dict_cards_command))
+    application.add_handler(CommandHandler("admin_spread_unit_cards", admin_spread_unit_cards_command))
     application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
     application.add_handler(CallbackQueryHandler(handle_quarantine_callback, pattern=r"^qz:"))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))
