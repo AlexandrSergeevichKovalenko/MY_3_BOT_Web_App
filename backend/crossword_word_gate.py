@@ -317,17 +317,17 @@ _JUDGE_PROMPT = """\
 проскочили в НЕПРАВИЛЬНОЙ ФОРМЕ или являются выдуманной склейкой.
 
 НЕТ — только если верно одно из двух:
-  1. это форма другого слова, а не само слово:
-     BAUERN (мн. ч. от Bauer), BÜCHER (мн. ч. от Buch), FÜTTER (основа от füttern),
-     GEKOMMEN и GEGANGEN (причастия глаголов движения);
+  1. это НЕ слово, а обрубок или основа: FÜTTER (основа от füttern), ILLUSTRAT,
+     VERSUCHSAN — такого слова в языке нет;
   2. это склейка, которую по-немецки не говорят:
      PASSTASCHE, KAFFEEBEUTEL, PULSMESSER.
 
 ДА — во всех остальных случаях, в том числе:
   • обычные существительные, даже редковатые: MÜDIGKEIT, RUHEPAUSE, KRANICH, TANNE;
+  • МНОЖЕСТВЕННОЕ ЧИСЛО: BÜCHER, KRABBEN, PFLANZEN, FRÜCHTE, ELTERN, KOPFSCHMERZEN —
+    это полноценные слова, их тоже надо знать;
   • причастия, которые давно стали прилагательными: GESTRESST, ENTSPANNT, VERLIEBT,
     BEKANNT, VERWANDT;
-  • устойчивое множественное: KOPFSCHMERZEN, ELTERN, FERIEN, LEUTE;
   • составные слова, которые немцы правда употребляют: REGENJACKE, TRINKFLASCHE,
     LADEKABEL, WASCHMASCHINE.
 
