@@ -12,6 +12,7 @@ import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
 import NoticeModal from './components/NoticeModal';
+import WordHintModal, { collectHintExamples } from './components/WordHintModal';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
 import ProTrialModal from './components/ProTrialModal';
@@ -6669,6 +6670,9 @@ function AppInner() {
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
   const [srsRevealAnswer, setSrsRevealAnswer] = useState(false);
+  // Подсказка по слову: открыта ли она сейчас. Живёт отдельно от ответа, потому что
+  // закрытие подсказки не должно ни засчитывать оценку, ни сбрасывать таймер.
+  const [srsHintOpen, setSrsHintOpen] = useState(false);
   const [srsRevealStartedAt, setSrsRevealStartedAt] = useState(0);
   const [srsRevealElapsedSec, setSrsRevealElapsedSec] = useState(0);
   const [srsError, setSrsError] = useState('');
@@ -39839,9 +39843,41 @@ function AppInner() {
                             const srsFeelEntryId = resolveFlashcardFeelEntryId(srsCard);
                             const srsFeelQueued = srsFeelEntryId ? !!flashcardFeelQueuedMap[srsFeelEntryId] : false;
                             const srsFeelStatus = srsFeelEntryId ? String(flashcardFeelStatusMap[srsFeelEntryId] || '').trim() : '';
+                            // Подсказка по слову: показываем ТОЛЬКО то, что уже лежит в карточке.
+                            // Ничего не догружаем и не досбираем — значит, ни ожидания, ни расхода
+                            // дневного лимита. Пустую подсказку не предлагаем: если показать нечего,
+                            // лампочки просто нет.
+                            const srsHintSource = srsCard?.response_json && typeof srsCard.response_json === 'object'
+                              ? srsCard.response_json
+                              : null;
+                            const srsHintExamples = collectHintExamples(srsHintSource, 3);
+                            const srsHintFormRows = getDictionaryFormRows(srsHintSource);
+                            const srsHintTip = String(srsHintSource?.memory_tip || '').trim();
+                            const srsHintHeadword = String(srsReplayTtsTarget?.text || '').trim() || answerText;
+                            const srsHintTranslation = normalizeComparableText(srsHintHeadword) === normalizeComparableText(answerText)
+                              ? sourceText
+                              : answerText;
+                            // У фразы показывать нечего, кроме живых примеров: формы и род к ней
+                            // не относятся. Поэтому для фразы лампочка появляется только с примерами.
+                            const srsHintIsPhrase = ['phrase', 'other'].includes(
+                              String(srsHintSource?.part_of_speech || '').trim().toLowerCase(),
+                            ) || String(srsHintHeadword || '').trim().split(/\s+/).length > 2;
+                            const srsHintAvailable = srsHintExamples.length > 0
+                              || (!srsHintIsPhrase && (srsHintFormRows.length > 0 || !!srsHintTip));
                             return (
                               <>
                                 <div className={`fsrs-study-card ${srsRevealAnswer ? 'is-revealed' : ''}`}>
+                                  {srsRevealAnswer && srsHintAvailable && (
+                                    <button
+                                      type="button"
+                                      className="fsrs-hint-btn"
+                                      onClick={() => setSrsHintOpen(true)}
+                                      aria-label={tr('Показать примеры', 'Beispiele zeigen')}
+                                      title={tr('Показать примеры', 'Beispiele zeigen')}
+                                    >
+                                      💡
+                                    </button>
+                                  )}
                                   <div className="fsrs-card-source is-muted-top">{sourceText}</div>
                                   <div className="fsrs-divider" />
                                   {srsRevealAnswer && (
@@ -39872,6 +39908,7 @@ function AppInner() {
                                         setSrsRevealStartedAt(Date.now());
                                         srsRevealActiveMsRef.current = 0;
                                         setSrsRevealElapsedSec(0);
+                                        setSrsHintOpen(false);
                                         setSrsRevealAnswer(true);
                                       }}
                                       disabled={srsSubmitting}
@@ -39949,6 +39986,17 @@ function AppInner() {
                                     </div>
                                   </div>
                                 )}
+
+                                <WordHintModal
+                                  isOpen={srsRevealAnswer && srsHintOpen && srsHintAvailable}
+                                  onClose={() => setSrsHintOpen(false)}
+                                  tr={tr}
+                                  headword={srsHintHeadword}
+                                  translation={srsHintTranslation}
+                                  examples={srsHintExamples}
+                                  formRows={srsHintFormRows}
+                                  memoryTip={srsHintTip}
+                                />
                               </>
                             );
                           })()}

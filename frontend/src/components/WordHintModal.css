@@ -1,0 +1,181 @@
+/* Подсказка по слову (Fuchs UI): тёплая карточка поверх тренировки. */
+.word-hint-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000; /* выше полноэкранных оверлеев */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.word-hint-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  background: rgba(8, 12, 24, 0.62);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  cursor: pointer;
+}
+.word-hint-card {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+  /* Высокая карточка не должна упираться в края экрана: содержимое прокручивается
+     ВНУТРИ, страница под ней не двигается. */
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 22px;
+  padding: 22px 20px 18px;
+  color: #2a3650;
+  border: 1.5px solid #e4d2b0;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(230, 178, 74, 0.22) 0%, transparent 60%),
+    linear-gradient(180deg, #ffffff 0%, #fbf7ef 100%);
+  box-shadow:
+    0 0 0 1px rgba(150, 110, 40, 0.10),
+    0 30px 68px rgba(60, 40, 10, 0.34);
+  animation: wordHintPop 0.22s ease;
+}
+@keyframes wordHintPop {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+.word-hint-close {
+  position: absolute;
+  top: 8px; right: 10px;
+  width: 34px; height: 34px;
+  border: none; background: transparent;
+  font-size: 26px; line-height: 1; color: #b0a086;
+  cursor: pointer;
+}
+
+.word-hint-head {
+  text-align: center;
+  padding: 0 26px 14px;
+  border-bottom: 1px solid rgba(150, 110, 40, 0.14);
+}
+.word-hint-word {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #1c2536;
+  overflow-wrap: anywhere;
+}
+.word-hint-translation {
+  margin-top: 4px;
+  font-size: 14px;
+  color: #8a7860;
+  overflow-wrap: anywhere;
+}
+
+.word-hint-body {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-top: 14px;
+}
+.word-hint-section + .word-hint-section { margin-top: 16px; }
+.word-hint-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #b08a3c;
+  margin-bottom: 8px;
+}
+
+.word-hint-example {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(150, 110, 40, 0.12);
+}
+.word-hint-example + .word-hint-example { margin-top: 8px; }
+.word-hint-example-learning {
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 600;
+  color: #1c2536;
+  overflow-wrap: anywhere;
+}
+.word-hint-example-native {
+  margin-top: 3px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #6f7c92;
+  overflow-wrap: anywhere;
+}
+
+.word-hint-forms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.word-hint-form {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(230, 178, 74, 0.14);
+  border: 1px solid rgba(150, 110, 40, 0.14);
+}
+.word-hint-form-label {
+  font-size: 11px;
+  color: #a08246;
+  letter-spacing: 0.02em;
+}
+.word-hint-form-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1c2536;
+  overflow-wrap: anywhere;
+}
+
+.word-hint-tip {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #5d6b82;
+  overflow-wrap: anywhere;
+}
+
+.word-hint-ok {
+  margin-top: 16px;
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 13px 16px;
+  border: none;
+  border-radius: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #3a2a08;
+  background: linear-gradient(180deg, #f0c368 0%, #e0a83e 100%);
+  box-shadow: 0 8px 18px rgba(190, 140, 40, 0.28);
+  cursor: pointer;
+}
+.word-hint-ok:active { transform: translateY(1px); }
+
+/* Кнопка-лампочка в правом верхнем углу карточки повторения. */
+.fsrs-hint-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 19px;
+  line-height: 1;
+  border-radius: 50%;
+  border: 1px solid rgba(150, 110, 40, 0.22);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 2px 8px rgba(90, 65, 20, 0.14);
+  cursor: pointer;
+  z-index: 2;
+}
+.fsrs-hint-btn:active { transform: translateY(1px); }

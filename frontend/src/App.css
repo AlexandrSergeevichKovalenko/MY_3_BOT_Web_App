@@ -9936,6 +9936,7 @@ body:has(.webapp-page.is-theme-light),
 }
 
 .fsrs-study-card {
+  position: relative; /* якорь для лампочки-подсказки в правом верхнем углу */
   width: 100%;
   min-height: 0;
   margin: 0 auto;
