@@ -150,6 +150,7 @@ from backend.database import (
     get_reply_keyboard_delivered_version,
     mark_reply_keyboard_delivered,
     get_reply_keyboard_anchor,
+    get_reply_keyboard_delivered_age_days,
     set_reply_keyboard_anchor,
     init_db,
     db_acquire_scope,
@@ -1815,6 +1816,50 @@ def _install_tracked_send_wrappers(app: Application) -> None:
 
 
 class TrackingExtBot(ExtBot):
+    # ⛔️ Сообщение, на котором висит reply-клавиатура, удалять НЕЛЬЗЯ: Telegram снимает
+    # клавиатуру вместе с ним, и у человека пропадает сама иконка ⌨ — кнопки «исчезают».
+    # Ночная чистка это уже учитывала (тип reply_keyboard в исключениях), но обычные потоки
+    # удаляют свои служебные сообщения напрямую (например, разбор переводов чистит за собой
+    # хвост), и якорь мог попасть под нож. Здесь единственная дверь наружу: любой
+    # delete_message в боте идёт через этот класс, поэтому проверка стоит один раз тут.
+    _anchor_cache: dict[int, int] = {}
+
+    @classmethod
+    def remember_anchor(cls, chat_id: int, message_id: int) -> None:
+        try:
+            cls._anchor_cache[int(chat_id)] = int(message_id)
+        except Exception:
+            pass
+
+    @classmethod
+    async def _is_keyboard_anchor(cls, chat_id, message_id) -> bool:
+        try:
+            cid, mid = int(chat_id), int(message_id)
+        except Exception:
+            return False
+        if cid <= 0:              # группы/каналы — там reply-клавиатуры нет
+            return False
+        cached = cls._anchor_cache.get(cid)
+        if cached is not None:
+            return cached == mid
+        try:
+            stored = await asyncio.to_thread(get_reply_keyboard_anchor, cid)
+        except Exception:
+            return False
+        if stored is None:
+            return False
+        cls._anchor_cache[cid] = int(stored)
+        return int(stored) == mid
+
+    async def delete_message(self, chat_id, message_id, *args, **kwargs):
+        if await self._is_keyboard_anchor(chat_id, message_id):
+            logging.info(
+                "reply_keyboard_anchor_delete_skipped chat_id=%s message_id=%s",
+                chat_id, message_id,
+            )
+            return True
+        return await super().delete_message(chat_id, message_id, *args, **kwargs)
+
     async def _track_single(self, msg, message_type: str):
         await _track_telegram_message_async(msg, message_type)
         return msg
@@ -6555,6 +6600,9 @@ def _kb_should_attach(user_id: int) -> bool:
 # Bump REPLY_KEYBOARD_VERSION to force a one-time re-delivery to everyone (e.g. after a
 # layout change) — the next DM push to each user re-sends the fresh keyboard.
 REPLY_KEYBOARD_VERSION = "2026-08-01-fix"
+# Раз в столько суток клавиатура выдаётся заново, даже если версия не менялась —
+# страховка от потери кнопок на стороне клиента.
+KB_REFRESH_DAYS = 7.0
 # In-memory cache of "user already has version X" so the hot send path stays O(1) once
 # warmed. Empty on a fresh process → first DM send per user does one DB read.
 _kb_delivered_versions: dict[int, str] = {}
@@ -6590,6 +6638,7 @@ async def _set_reply_keyboard_anchor(chat_id: int, message) -> None:
             record_telegram_system_message, uid, new_mid, REPLY_KEYBOARD_ANCHOR_TYPE
         )
         await asyncio.to_thread(set_reply_keyboard_anchor, uid, new_mid)
+        TrackingExtBot.remember_anchor(uid, new_mid)
         if old_mid and old_mid != new_mid:
             # The new anchor is already the active keyboard-setter, so the old message
             # is now safe to clean; re-tag it so the nightly purge picks it up.
@@ -6615,15 +6664,24 @@ async def _ensure_reply_keyboard_delivered(bot, chat_id: int, force: bool = Fals
     always bring them back."""
     uid = int(chat_id)
     if not force:
-        if _kb_delivered_versions.get(uid) == REPLY_KEYBOARD_VERSION:
-            return
         try:
-            stored = await asyncio.to_thread(get_reply_keyboard_delivered_version, uid)
+            stale_days = await asyncio.to_thread(get_reply_keyboard_delivered_age_days, uid)
         except Exception:
-            stored = None
-        if stored == REPLY_KEYBOARD_VERSION:
-            _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION
-            return
+            stale_days = None
+        # Раз в KB_REFRESH_DAYS клавиатуру выдаём заново, даже если версия та же. Это
+        # страховка от потери на стороне Telegram/клиента: раньше доставка была
+        # «один раз на версию», и потерянные кнопки не возвращались никогда сами.
+        stale = stale_days is not None and stale_days >= KB_REFRESH_DAYS
+        if not stale:
+            if _kb_delivered_versions.get(uid) == REPLY_KEYBOARD_VERSION:
+                return
+            try:
+                stored = await asyncio.to_thread(get_reply_keyboard_delivered_version, uid)
+            except Exception:
+                stored = None
+            if stored == REPLY_KEYBOARD_VERSION:
+                _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION
+                return
     # Mark BEFORE sending so a burst of pushes (e.g. a 7-card batch) sends only one
     # standalone message; roll back if the send fails so a later push retries.
     _kb_delivered_versions[uid] = REPLY_KEYBOARD_VERSION

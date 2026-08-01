@@ -27498,6 +27498,26 @@ def mark_reply_keyboard_delivered(user_id: int, keyboard_version: str) -> None:
         conn.commit()
 
 
+def get_reply_keyboard_delivered_age_days(user_id: int) -> float | None:
+    """Сколько суток прошло с последнего прикрепления клавиатуры этому человеку.
+    None — если записи нет. Только чтение, ошибки глотает."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT EXTRACT(EPOCH FROM (NOW() - delivered_at)) / 86400.0
+                    FROM bt_3_reply_keyboard_state WHERE user_id = %s LIMIT 1;
+                    """,
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+    except Exception:
+        logging.debug("get_reply_keyboard_delivered_age_days failed user_id=%s", user_id, exc_info=True)
+        return None
+
+
 def get_reply_keyboard_anchor(user_id: int) -> int | None:
     """message_id of the DM message currently holding this user's reply keyboard,
     or None if none recorded. Read-only; best-effort (swallows errors)."""
@@ -27524,7 +27544,9 @@ def set_reply_keyboard_anchor(user_id: int, message_id: int) -> None:
                 INSERT INTO bt_3_reply_keyboard_state (user_id, anchor_message_id, delivered_at)
                 VALUES (%s, %s, NOW())
                 ON CONFLICT (user_id)
-                DO UPDATE SET anchor_message_id = EXCLUDED.anchor_message_id;
+                -- delivered_at тоже обновляем: это «когда клавиатура последний раз реально
+                -- прикреплялась». По этой отметке видно, что человек давно без кнопок.
+                DO UPDATE SET anchor_message_id = EXCLUDED.anchor_message_id, delivered_at = NOW();
                 """,
                 (int(user_id), int(message_id)),
             )
