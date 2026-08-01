@@ -9472,6 +9472,7 @@ async def admin_send_audio_command(update: Update, context: CallbackContext):
     """Manually dispatch the daily "mistakes audio" to users' private chats.
     /admin_send_audio            → for yesterday (default)
     /admin_send_audio 2026-06-29 → for a specific date (YYYY-MM-DD)
+    /admin_send_audio 2026-06-29 me → тестовая отправка ТОЛЬКО себе (никому больше)
     Bypasses the per-day run guard (calls _dispatch_daily_audio directly), so it can
     re-send a date that the scheduler already covered — useful to recover missed days."""
     sender = update.effective_user
@@ -9487,7 +9488,9 @@ async def admin_send_audio_command(update: Update, context: CallbackContext):
         now = datetime.now(ZoneInfo(tz_name))
     except Exception:
         now = datetime.utcnow()
-    arg = ((context.args or [None])[0] or "").strip()
+    raw_args = [str(a or "").strip() for a in (context.args or []) if str(a or "").strip()]
+    only_me = any(a.lower() in ("me", "я", "мне", "себе") for a in raw_args)
+    arg = next((a for a in raw_args if a.lower() not in ("me", "я", "мне", "себе")), "")
     if arg:
         try:
             target_date = datetime.strptime(arg, "%Y-%m-%d").date()
@@ -9497,13 +9500,21 @@ async def admin_send_audio_command(update: Update, context: CallbackContext):
     else:
         target_date = now.date() - timedelta(days=1)
 
-    status = await message.reply_text(f"🎧 Отправляю аудио с ошибками за {target_date.isoformat()}…")
+    scope_note = " (только тебе)" if only_me else ""
+    status = await message.reply_text(
+        f"🎧 Отправляю аудио с ошибками за {target_date.isoformat()}{scope_note}…"
+    )
     try:
         from backend.backend_server import _dispatch_daily_audio
-        result = await asyncio.to_thread(_dispatch_daily_audio, target_date)
+        result = await asyncio.to_thread(
+            _dispatch_daily_audio,
+            target_date,
+            only_user_id=int(sender.id) if only_me else None,
+        )
         errors = result.get("errors") if isinstance(result, dict) else None
         text = (
             "🎧 <b>Аудио с ошибками отправлено</b>\n"
+            f"• кому: <b>{'только тебе (тест)' if only_me else 'всем адресатам'}</b>\n"
             f"• дата: <b>{target_date.isoformat()}</b>\n"
             f"• ежедневные: <b>{result.get('sent_daily', 0)}</b>\n"
             f"• истории: <b>{result.get('sent_story', 0)}</b>\n"

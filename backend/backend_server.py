@@ -58366,7 +58366,12 @@ def _bill_mistakes_audio_tts(
         logging.debug("mistakes-audio TTS billing skipped", exc_info=True)
 
 
-def _dispatch_daily_audio(target_date: date) -> dict:
+def _dispatch_daily_audio(target_date: date, *, only_user_id: int | None = None) -> dict:
+    """Собрать и разослать «работу над ошибками» за дату.
+
+    only_user_id — тестовая отправка одному человеку: остальные адресаты отбрасываются
+    ДО рендера, поэтому проверка правки не стоит ни озвучки чужих разборов, ни чужих
+    уведомлений. Групповая рассылка при этом тоже не включается."""
     def _pair_code(source_lang: str | None, target_lang: str | None) -> str:
         src = str(source_lang or "ru").strip().upper() or "RU"
         tgt = str(target_lang or "de").strip().upper() or "DE"
@@ -58648,6 +58653,13 @@ def _dispatch_daily_audio(target_date: date) -> dict:
         except Exception:
             logging.debug("mistakes-audio hero card failed", exc_info=True)
 
+    # Тестовая отправка одному адресату: срезаем всех остальных до рендера, чтобы проверка
+    # не стоила денег на чужой озвучке и не сыпалась людям в личку.
+    if only_user_id:
+        _only = int(only_user_id)
+        daily_by_user_pair = {k: v for k, v in daily_by_user_pair.items() if int(k[0]) == _only}
+        story_by_user_pair = {k: v for k, v in story_by_user_pair.items() if int(k[0]) == _only}
+
     # #8 — the morning mistakes-audio DM is a Pro perk. Free users don't receive it.
     # Gate here ONCE (both delivery paths + the hero card read from these dicts) so we
     # also skip the expensive audio render for non-Pro users. Reversible via env.
@@ -58678,6 +58690,8 @@ def _dispatch_daily_audio(target_date: date) -> dict:
     # whenever ANY group target existed — that's why users stopped getting audio "в личку".
     # It's kept behind DAILY_AUDIO_GROUP_BROADCAST (default OFF) for reversibility only.
     group_broadcast = (os.getenv("DAILY_AUDIO_GROUP_BROADCAST") or "0").strip().lower() in ("1", "true", "yes", "on")
+    if only_user_id:
+        group_broadcast = False
 
     if group_chat_ids and group_broadcast:
         for chat_id in group_chat_ids:
@@ -64699,13 +64713,20 @@ def send_daily_audio_to_group():
     else:
         target_date = (datetime.utcnow().date() - timedelta(days=1))
 
+    # user_id — тестовая отправка одному адресату (см. _dispatch_daily_audio).
+    try:
+        only_user_id = int(payload.get("user_id") or 0) or None
+    except (TypeError, ValueError):
+        return jsonify({"error": "user_id должен быть числом"}), 400
+
     logging.info(
-        "📤 Manual daily audio dispatch requested: date=%s remote_addr=%s user_agent=%s",
+        "📤 Manual daily audio dispatch requested: date=%s only_user_id=%s remote_addr=%s user_agent=%s",
         target_date.isoformat(),
+        only_user_id,
         request.headers.get("X-Forwarded-For") or request.remote_addr,
         request.headers.get("User-Agent"),
     )
-    result = _dispatch_daily_audio(target_date)
+    result = _dispatch_daily_audio(target_date, only_user_id=only_user_id)
     logging.info("✅ Manual daily audio dispatch finished: %s", result)
     return jsonify(result)
 
