@@ -52964,3 +52964,49 @@ def get_latest_interactive_dispatch_ids(user_id: int) -> dict[str, int]:
                 conn.rollback()
                 logging.debug("interactive_dispatch_lookup_failed kind=%s err=%s", kind, exc)
     return out
+
+
+def count_dm_users_without_reply_keyboard(stale_days: float = 7.0) -> dict:
+    """Сколько людей в личке остались без кнопок.
+
+    Кнопки живут на стороне Telegram и привязаны к сообщению; если оно исчезло, у человека
+    пропадает и сама иконка вызова. Пока это ловилось только жалобами — цифра показывает
+    состояние до того, как кто-то напишет «кнопок нет».
+
+    Возвращает: {"total": активных в личке, "never": ни разу не получали,
+                 "stale": не получали дольше stale_days, "ok": остальные}.
+    """
+    out = {"total": 0, "never": 0, "stale": 0, "ok": 0}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    -- Только ЖИВЫЕ переписки: те, кому бот что-то писал за последний месяц.
+                    -- Иначе отчёт считает всех, кто когда-либо был в списке доступа, и вместо
+                    -- сигнала выдаёт шум (сейчас это 76 «без кнопок» из 88 — люди, которые
+                    -- просто не пользуются ботом).
+                    WITH active AS (
+                        SELECT DISTINCT chat_id AS user_id
+                        FROM bt_3_telegram_system_messages
+                        WHERE created_at > NOW() - INTERVAL '30 days' AND chat_id > 0
+                    )
+                    SELECT
+                        COUNT(*)                                                        AS total,
+                        COUNT(*) FILTER (WHERE k.user_id IS NULL)                       AS never_got,
+                        COUNT(*) FILTER (WHERE k.delivered_at IS NOT NULL
+                                           AND k.delivered_at < NOW() - (%s || ' days')::interval) AS stale
+                    FROM active a
+                    LEFT JOIN bt_3_reply_keyboard_state k ON k.user_id = a.user_id;
+                    """,
+                    (str(float(stale_days)),),
+                )
+                row = cursor.fetchone()
+        if row:
+            out["total"] = int(row[0] or 0)
+            out["never"] = int(row[1] or 0)
+            out["stale"] = int(row[2] or 0)
+            out["ok"] = max(0, out["total"] - out["never"] - out["stale"])
+    except Exception:
+        logging.warning("count_dm_users_without_reply_keyboard failed", exc_info=True)
+    return out

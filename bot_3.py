@@ -6573,17 +6573,19 @@ async def handle_admin_commands_callback(update: Update, context: CallbackContex
 # per user — and once on the first reply after every redeploy, so a changed
 # layout updates itself automatically. In-memory by design: a fresh process →
 # empty map → re-attaches on each user's next reply.
-_KB_REATTACH_SECONDS = 2 * 3600
+# ⭐ 0 = прикрепляем клавиатуру к КАЖДОМУ обычному ответу бота в личке (решение владельца
+# 01.08.2026). Так делают боты, у которых иконка ⌨ всегда на месте: разметка едет вместе с
+# обычным сообщением — человеку это никак не мешает (клавиатура остаётся свёрнутой,
+# is_persistent=False), зато привязка всегда сидит на САМОМ СВЕЖЕМ сообщении. Раньше стоял
+# порог в 2 часа: привязка оставалась на старом сообщении, и если его удаляли — кнопки
+# исчезали до следующего окна.
+_KB_REATTACH_SECONDS = 0
 _kb_last_attach: dict[int, float] = {}
 
 
 def _kb_should_attach(user_id: int) -> bool:
-    now = pytime.time()
-    last = _kb_last_attach.get(int(user_id))
-    if last is None or (now - last) >= _KB_REATTACH_SECONDS:
-        _kb_last_attach[int(user_id)] = now
-        return True
-    return False
+    _kb_last_attach[int(user_id)] = pytime.time()
+    return True
 # NOTE: the actual piggyback lives in TrackingExtBot.send_message — PTB's Bot uses
 # __slots__ and forbids reassigning bot.send_message on the instance, so it must be
 # a subclass method, not a monkey-patch.
@@ -9065,6 +9067,51 @@ def _send_dictionary_layer_report_safe() -> None:
     except Exception as exc:
         logging.exception("dictionary layer report failed")
         _record_sched_heartbeat("dictionary_layer_report", "failed", {"error": str(exc)[:300]})
+
+
+def _send_reply_keyboard_health_report_safe() -> None:
+    """Раз в сутки: у скольких людей в личке пропали кнопки.
+
+    Кнопки живут на стороне Telegram и привязаны к сообщению — если оно исчезло, у человека
+    пропадает и иконка вызова. Раньше это всплывало только жалобой. Молчим, когда всё
+    хорошо: сообщение уходит владельцу, ТОЛЬКО если кто-то остался без кнопок.
+    """
+    try:
+        from backend.database import count_dm_users_without_reply_keyboard
+        stat = count_dm_users_without_reply_keyboard(KB_REFRESH_DAYS)
+        problem = int(stat.get("never", 0)) + int(stat.get("stale", 0))
+        _record_sched_heartbeat("reply_keyboard_health", "completed", stat)
+        logging.info("reply_keyboard_health %s", stat)
+        if problem <= 0:
+            return
+        text = (
+            "⌨️ <b>Кнопки в личке</b>\n"
+            f"Без кнопок: <b>{problem}</b> из {stat.get('total', 0)}\n"
+            f"• ни разу не получали: {stat.get('never', 0)}\n"
+            f"• не обновлялись дольше {int(KB_REFRESH_DAYS)} дней: {stat.get('stale', 0)}\n\n"
+            "Каждому из них клавиатура уйдёт заново при ближайшем сообщении от бота."
+        )
+        # Тот же путь, что у остальных суточных отчётов: HTTP-вызов Telegram из потока
+        # планировщика (он синхронный, событийного цикла тут нет).
+        import requests
+        from backend.database import get_admin_telegram_ids
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        admin_ids = sorted(int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0)
+        if not token or not admin_ids:
+            return
+        for admin_id in admin_ids:
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": admin_id, "text": text, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=20,
+                )
+            except Exception:
+                logging.warning("reply_keyboard_health notify failed admin=%s", admin_id, exc_info=True)
+    except Exception as exc:
+        logging.exception("reply keyboard health report failed")
+        _record_sched_heartbeat("reply_keyboard_health", "failed", {"error": str(exc)[:300]})
 
 
 def _run_pool_night_enrichment_safe() -> None:
@@ -41865,6 +41912,18 @@ def main():
         # -- Ежедневно 09:15 Europe/Vienna: «Словарь за сутки» владельцу в личку --
         # Сколько обслужил свой словарь, сколько ушло в GPT, во что обошлось. Это те
         # самые числа, по которым решается судьба старого пути поиска.
+        # Кнопки в личке: раз в сутки считаем, у скольких людей они пропали. Молчит, когда
+        # всё в порядке — пишет, только если кто-то остался без управления.
+        scheduler.add_job(
+            _send_reply_keyboard_health_report_safe,
+            "cron",
+            hour=int((os.getenv("KB_HEALTH_REPORT_HOUR") or "9").strip() or "9"),
+            minute=int((os.getenv("KB_HEALTH_REPORT_MINUTE") or "5").strip() or "5"),
+            timezone=ZoneInfo(os.getenv("POOL_NIGHT_ENRICH_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+        )
         scheduler.add_job(
             _send_dictionary_layer_report_safe,
             "cron",
