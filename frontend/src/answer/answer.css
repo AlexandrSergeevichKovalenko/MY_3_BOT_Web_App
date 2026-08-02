@@ -1581,9 +1581,7 @@ html[data-scheme="light"] .ask-open-btn { color: #1e1b4b; background: #eef0ff; }
 }
 .ask-pop-head:active { cursor: grabbing; }
 .ask-pop-grip { color: var(--dmps-text-subtle, #64748B); font-size: 0.875rem; letter-spacing: -2px; }
-.ask-pop-titlewrap { flex: 1; display: flex; flex-direction: column; gap: 1px; line-height: 1.15; }
-.ask-pop-title { font-weight: 800; font-size: 0.9375rem; color: var(--dmps-text-primary, #F8FAFC); }
-.ask-pop-drag-hint { font-size: 0.625rem; font-weight: 500; color: var(--dmps-text-subtle, #64748B); opacity: 0.85; }
+.ask-pop-title { flex: 1; font-weight: 800; font-size: 0.9375rem; color: var(--dmps-text-primary, #F8FAFC); }
 .ask-pop-close {
   border: none; background: transparent; color: var(--dmps-text-muted, #94A3B8);
   font-size: 1.0rem; cursor: pointer; padding: 2px 0.375rem;

@@ -108,6 +108,14 @@ const ADJ_DECK = {
       a: 'e', full: 'der verantwortliche Erbe', ru: 'Именительный · муж. род · слабое',
       erklaerung: 'После der/die/das, муж. род, Именительный → окончание -e.',
       tip: 'der/die/das уже показал род и падеж →' },
+    // Самая длинная карточка из боевых: разбор в четыре блока. Именно на таких подгонка
+    // упирается в последнюю ветку («ужать до предела»), и именно там карточка оказывалась
+    // на 69% экрана посреди пустых полос. Пример из видео пользователя.
+    { before: 'ohne einen milchig', after: ' Hausschuh', adj: 'milchig', noun: 'Hausschuh',
+      a: 'en', full: 'ohne einen milchigen Hausschuh', ru: 'Винительный · муж. род · смешанное',
+      erklaerung: 'После ein/kein, муж. род, Винительный → окончание -en.',
+      tip: 'ein/kein здесь уже показал род и падеж → лёгкое -en, а прилагательное только соглашается с ним и ничего нового не сообщает.',
+      example: 'einen neuen Wein, einen kleinen Tag' },
   ],
 };
 

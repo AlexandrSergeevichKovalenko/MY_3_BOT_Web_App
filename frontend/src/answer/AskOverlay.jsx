@@ -207,24 +207,25 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
         onPointerCancel={onHeaderPointerUp}
       >
         <span className="ask-pop-grip">⋮⋮</span>
-        <span className="ask-pop-titlewrap">
-          <span className="ask-pop-title">Спросить</span>
-          <span className="ask-pop-drag-hint">Зажми и перетащи в удобное место</span>
-        </span>
+        {/* Подпись «зажми и перетащи» убрана: она занимала строку, а про перетаскивание уже
+            говорит сама ручка слева. Экран телефона дороже подсказки к очевидному. */}
+        <span className="ask-pop-title">Спросить</span>
         <button type="button" className="ask-pop-close" onClick={onClose} aria-label="Закрыть">✕</button>
       </div>
-      <div className="ask-pop-thread" ref={threadRef}>
-        {messages.length === 0 ? (
-          <div className="ask-pop-hint">Задай любой вопрос по этому заданию — отвечу здесь.</div>
-        ) : null}
-        {messages.map((m, i) => (
-          <div key={i} className={`ask-bubble ${m.role === 'user' ? 'me' : 'bot'}`}>
-            {m.role === 'bot' ? renderRich(m.text) : m.text}
-          </div>
-        ))}
-        {busy ? <div className="ask-bubble bot ask-typing">…</div> : null}
-        {err ? <div className="ask-pop-err">{err}</div> : null}
-      </div>
+      {/* Переписки ещё нет — блока тоже нет. Раньше он занимал четверть экрана ради одной
+          фразы «задай любой вопрос — отвечу здесь», которая слово в слово повторяет
+          подсказку в поле ввода двумя строками ниже. Пустое место вместо содержания. */}
+      {messages.length || busy || err ? (
+        <div className="ask-pop-thread" ref={threadRef}>
+          {messages.map((m, i) => (
+            <div key={i} className={`ask-bubble ${m.role === 'user' ? 'me' : 'bot'}`}>
+              {m.role === 'bot' ? renderRich(m.text) : m.text}
+            </div>
+          ))}
+          {busy ? <div className="ask-bubble bot ask-typing">…</div> : null}
+          {err ? <div className="ask-pop-err">{err}</div> : null}
+        </div>
+      ) : null}
       <div className="ask-pop-input">
         <textarea
           value={input}

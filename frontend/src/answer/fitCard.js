@@ -60,25 +60,28 @@ function supportsZoom() {
 
 // Высота, которой мы реально располагаем.
 //
-// БЕРЁМ МИНИМУМ ИЗ ДВУХ ЧИСЕЛ, и это не перестраховка.
+// Здесь два числа, и оба «правильные» — в разных состояниях мини-аппа. Двое суток правок
+// сводились к тому, что выбор делался вслепую, поэтому запишем правило явно.
 //
-// В Telegram мини-апп живёт в шторке, но САМ WEBVIEW выложен на всю высоту экрана — шторка
-// просто закрывает его нижнюю часть. Поэтому и `window.innerHeight`, и `visualViewport
-// .height` возвращают ПОЛНУЮ высоту: про шторку они не знают, это не их слой. Единственное
-// число, которое знает видимую часть, — `viewportStableHeight` самого Telegram (stable =
-// без клавиатуры). Без него подгонка считает экран выше, чем он есть: карточку растит под
-// несуществующую высоту, текст раздувается, а низ уезжает под сгиб. В обычном браузере на
-// компьютере этого не видно — там шторки нет и оба числа совпадают.
+// Мини-апп РАЗВЁРНУТ (штатное состояние, `expand()` зовётся при старте — см. main.jsx):
+// webview и есть экран. Правду знает браузер: `visualViewport.height`. Число Telegram здесь
+// лишнее и опасное — во время анимации разворота оно отстаёт, и по устаревшему числу
+// карточка подгоняется под высоту вдвое меньше настоящей: 69% экрана и пустые полосы сверху
+// и снизу.
 //
-// Обратная беда (устаревшее число Telegram: во время анимации разворота оно отстаёт и
-// карточка остаётся «скукоженной») лечится не выбрасыванием числа, а пересчётом: мы слушаем
-// и `viewportChanged` Telegram, и `visualViewport.resize`, а расчёт снимает предохранитель,
-// как только высота изменилась (см. installCardAutoFit и fitOne).
+// Мини-апп В ШТОРКЕ (пользователь свернул её вниз): webview по-прежнему во всю высоту
+// экрана, а видно только верх. Браузер про шторку не знает — это не его слой, — и вернёт
+// полную высоту. Видимую часть знает единственное число: `viewportStableHeight` (stable =
+// без клавиатуры). Без него низ карточки уезжает под сгиб.
+//
+// Отсюда правило: спрашиваем САМ Telegram, развёрнут ли он, и берём то число, которое в
+// этом состоянии отражает экран. Догадок и «минимума на всякий случай» здесь больше нет.
 function viewportHeight() {
   const vv = typeof window !== 'undefined' ? window.visualViewport : null;
   const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
   const browser = Number(vv?.height) || Number(window.innerHeight) || 0;
   const stable = Number(tg?.viewportStableHeight) || 0;
+  if (!tg || tg.isExpanded === true) return browser || stable;
   if (stable > 200 && browser > 200) return Math.min(stable, browser);
   return Math.max(stable, browser);
 }
@@ -98,7 +101,7 @@ function availHeight(root) {
 
 function stateOf(card) {
   let st = cards.get(card);
-  if (!st) { st = { k: 1, avail: 0, vis: 0, stretched: null, runs: 0 }; cards.set(card, st); }
+  if (!st) { st = { k: 1, avail: 0, vis: 0, stretched: null, runs: 0, hard: 0 }; cards.set(card, st); }
   return st;
 }
 
@@ -189,17 +192,27 @@ function fitOne(root) {
 
   // Ничего не изменилось с прошлого расчёта — не трогаем (иначе лишние reflow).
   const availNow = availHeight(root);
-  if (st.vis && Math.abs(card.getBoundingClientRect().height - st.vis) < EPS
-      && Math.abs(availNow - st.avail) < EPS) return;
-  // Предохранитель от «подрастания»: на одно и то же содержимое хватает пары расчётов.
-  // Дальше замолкаем до следующей смены контента (её ловит MutationObserver) или размера
-  // окна — иначе редкие расхождения в пару пикселей гоняли бы карточку кадр за кадром.
-  // Но если ИЗМЕНИЛАСЬ САМА ВЫСОТА ЭКРАНА — это не дребезг, а новая вводная (шторка
-  // Telegram доехала), и предохранитель снимаем: иначе карточка навсегда останется
-  // подогнанной под старую, меньшую высоту — «скукоженной» посреди пустого экрана.
-  if (Math.abs(availNow - st.avail) > EPS) st.runs = 0;
-  if (st.runs >= 2) return;
+  const visNow = card.getBoundingClientRect().height;
+  if (st.vis && Math.abs(visNow - st.vis) < EPS && Math.abs(availNow - st.avail) < EPS) return;
+
+  // Предохранитель от бесконечного пересчёта. Он ОБЯЗАН пропускать настоящие изменения.
+  //
+  // Раньше он их не пропускал, и это была причина «карточка ниже экрана, а сверху и снизу
+  // пустые поля». После ответа карточка перерисовывается НЕ ОДИН РАЗ: React дорисовывает
+  // разбор, доезжает веб-шрифт, подгружается картинка. Счётчик «хватит двух проходов»
+  // сгорал на промежуточных состояниях, и последний, правильный расчёт уже не запускался —
+  // на экране навсегда оставался промежуточный результат. Экран-вопрос в это не попадал,
+  // потому что рисуется за один заход, — отсюда и «одна карточка нормально, другая нет».
+  //
+  // Правило теперь такое: если высота отличается от той, которую мы САМИ выставили, — это
+  // новая вводная, а не дребезг, и счётчик сбрасывается. От настоящих качелей (мы ставим
+  // X, вёрстка отвечает Y, и так по кругу) страхует ЖЁСТКИЙ потолок проходов; он снимается
+  // только сменой содержимого или размера экрана.
+  if (st.vis && Math.abs(visNow - st.vis) > EPS) st.runs = 0;
+  if (Math.abs(availNow - st.avail) > EPS) { st.runs = 0; st.hard = 0; }
+  if (st.runs >= 2 || st.hard >= 8) return;
   st.runs += 1;
+  st.hard += 1;
 
   // 1. Натуральный размер: снимаем всё, что применяли раньше. Корень сразу прижимаем к
   //    видимой высоте — иначе центрирование и замеры считаются по разной мере.
@@ -266,16 +279,23 @@ function fitOne(root) {
   //
   // Прокрутки это добавить не может: тянем строго до availHeight, и только когда место
   // ЕСТЬ. Двух режимов, где высота уже задана точно, не касаемся.
-  // Режим панели тут тоже участвует: ему задан МАКСИМУМ высоты, а не точная высота, и если
-  // содержимое оказалось короче — карточка снова висела бы полоской. Растянув её, мы заодно
-  // отдаём остаток прокручиваемому блоку: разбора видно больше.
-  const fill = (k) => {
-    if (root.classList.contains('is-scroll')) return;     // и так не влезло
-    const cardH = card.getBoundingClientRect().height;
-    const slack = availHeight(root) - cardH;
-    if (slack < 12) return;
+  // ИНВАРИАНТ: карточка занимает ровно видимую высоту экрана. ВСЕГДА, а не «если повезло с
+  // веткой». Пустых полос сверху и снизу не может быть по построению — остаток высоты
+  // забирает сама карточка, содержимое встаёт по центру (.ans-card.is-filled).
+  //
+  // Это замена целой россыпи условий («растить, если запас больше 10 px», «не раздувать
+  // короткий экран», «в режиме панели не трогать»). Каждое из них было отдельной дырой, в
+  // которую проваливался очередной экран и оставался полоской посреди пустоты. Условие
+  // осталось ровно одно: если карточка и так не влезла (обычная прокрутка страницы) —
+  // растягивать нечего.
+  //
+  // Прокрутки это добавить не может: тянем строго до availHeight.
+  const fillToScreen = (k) => {
+    if (root.classList.contains('is-scroll')) return;
+    const room = availHeight(root);
+    if (room - card.getBoundingClientRect().height < 4) return;
     card.classList.add('is-filled');
-    card.style.minHeight = `${Math.round((cardH + slack - 2) / k)}px`;
+    card.style.minHeight = `${Math.round((room - 2) / k)}px`;
   };
 
   // ГЛАВНАЯ проверка, важнее любой ветки выше: если после всех расчётов на экране осталось
@@ -295,7 +315,6 @@ function fitOne(root) {
     if (availHeight(root) - card.getBoundingClientRect().height < 12) return cur;
     root.classList.remove('is-scroll');
     if (cur < WIDE_MAX_ZOOM - 0.002) cur = fitsAt(WIDE_MAX_ZOOM) ? WIDE_MAX_ZOOM : bisect(cur, WIDE_MAX_ZOOM);
-    fill(cur);
     return cur;
   };
 
@@ -324,11 +343,12 @@ function fitOne(root) {
       setZoom(card, k);
       if (card.classList.contains('is-panelled')) card.style.maxHeight = `${Math.round((avail - 2) / k)}px`;
     }
-    // Телефон: остаток высоты забирает сама карточка — масштаб уже утверждён проверкой
-    // выше и мы его не пересматриваем (именно пересмотр масштаба ПОСЛЕ проверки и выносил
-    // кнопки под сгиб). Планшет добирает остаток в rescue(), там своя логика.
-    if (!wide) fill(k);
-    remember(rescue(k));
+    // Планшет может ещё поднять масштаб (у него запас по ширине), телефон — нет: масштаб
+    // уже утверждён проверкой на прокрутку, и пересматривать его после неё нельзя, именно
+    // это и выносило кнопки под сгиб. А высоту до экрана добирают оба — всегда.
+    const kFinal = rescue(k);
+    fillToScreen(kFinal);
+    remember(kFinal);
   };
 
   // Помещается ли карточка при масштабе kk (замер, а не расчёт: текст переносится иначе).
@@ -403,7 +423,9 @@ function fitOne(root) {
   root.classList.add('is-scroll');
   // И здесь проверяем по факту: если после ужатия на экране всё-таки осталось место —
   // расчёт выше ошибся, масштаб возвращаем (сюда попадала «скукоженная» карточка).
-  remember(rescue(MIN_ZOOM));
+  const kLast = rescue(MIN_ZOOM);
+  fillToScreen(kLast);
+  remember(kLast);
 }
 
 function run() {
@@ -432,6 +454,7 @@ function freshStart() {
       st.vis = 0;
       st.avail = 0;
       st.runs = 0;
+      st.hard = 0;
     });
   } catch (_e) { /* noop */ }
   schedule();
@@ -457,6 +480,7 @@ export default function installCardAutoFit() {
         document.querySelectorAll('.ans-root > .ans-card').forEach((card) => {
           const st = stateOf(card);
           st.runs = 0;
+          st.hard = 0;
           st.vis = 0;
         });
       } catch (_e) { /* noop */ }
@@ -477,6 +501,14 @@ export default function installCardAutoFit() {
   } catch (_e) { /* noop */ }
   // Событие Telegram — тоже повод пересчитать (величину берём у браузера, см. viewportHeight).
   try { window.Telegram?.WebApp?.onEvent?.('viewportChanged', freshStart); } catch (_e) { /* noop */ }
+
+  // Прогрев: несколько пересчётов в первые пару секунд.
+  //
+  // Разворот шторки — это АНИМАЦИЯ, и её событие может прийти раньше, чем мы подписались:
+  // тогда мы навсегда останемся с высотой, снятой в середине анимации, и карточка окажется
+  // подогнана под экран, которого уже нет. Пять дешёвых пересчётов закрывают этот разрыв
+  // надёжнее любой подписки — и на этом заканчиваются, дальше работают события.
+  [120, 320, 700, 1400, 2500].forEach((ms) => { setTimeout(freshStart, ms); });
 
   const isField = (el) => !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
   document.addEventListener('focusin', (e) => { if (isField(e.target)) { typing = true; schedule(); } });

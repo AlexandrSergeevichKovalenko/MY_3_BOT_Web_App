@@ -4,6 +4,27 @@ import { detectAppMode } from './utils/appMode.js'
 // ./ в начале пути означает, что файл App.jsx находится в той же папке, что и текущий файл main.jsx
 import './theme.css'
 
+// РАЗВЕРНУТЬ МИНИ-АПП НА ВЕСЬ ЭКРАН — и только потом что-то мерить.
+//
+// Без `expand()` Telegram открывает мини-апп ШТОРКОЙ: сам webview при этом выложен на всю
+// высоту экрана, а видно только его верхнюю часть. В этом состоянии про экран есть ДВА
+// разных числа, и оба «правильные»: браузерное (`visualViewport.height` — высота webview) и
+// телеграмовское (`viewportStableHeight` — высота видимой части). Любая подгонка под экран
+// вынуждена выбирать, и выбор всегда бьёт по одному из случаев: возьмёшь браузерное —
+// карточка уедет под шторку, возьмёшь телеграмовское (а оно ещё и отстаёт во время
+// анимации) — карточка окажется вдвое ниже экрана посреди пустых полос.
+//
+// `expand()` убирает саму развилку: мини-апп занимает экран целиком, и оба числа сходятся.
+// Так и задумано в Telegram, это штатный вызов при старте — а не наша хитрость.
+function tgReady() {
+  try {
+    const tg = window.Telegram?.WebApp;
+    if (!tg) return;
+    tg.ready?.();
+    if (tg.isExpanded !== true) tg.expand?.();
+  } catch (_e) { /* ignore */ }
+}
+
 const appMode = detectAppMode();
 const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const isWebappPath = typeof window !== 'undefined'
@@ -280,7 +301,7 @@ function getAnswerStartParam() {
 }
 
 async function bootstrapAnswerOverlay(startParam) {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   const { default: AnswerOverlay } = await import('./answer/AnswerOverlay.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
@@ -290,7 +311,7 @@ async function bootstrapAnswerOverlay(startParam) {
 }
 
 async function bootstrapDeepDive(startParam) {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   const { default: DeepDiveOverlay } = await import('./answer/DeepDiveOverlay.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
@@ -300,7 +321,7 @@ async function bootstrapDeepDive(startParam) {
 }
 
 async function bootstrapLeaderboard(startParam) {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   const { default: Leaderboard } = await import('./leaderboard/Leaderboard.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
@@ -310,7 +331,7 @@ async function bootstrapLeaderboard(startParam) {
 }
 
 async function bootstrapPlanTable() {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   const { default: PlanTable } = await import('./plan/PlanTable.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
@@ -336,7 +357,7 @@ function showBootSpinner() {
 }
 
 async function bootstrapShortcutGuide() {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   showBootSpinner();
   const { default: ShortcutGuide } = await import('./shortcut/ShortcutGuide.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
@@ -347,7 +368,7 @@ async function bootstrapShortcutGuide() {
 }
 
 async function bootstrapOnboarding() {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   showBootSpinner();
   const { default: OnboardingWizard } = await import('./onboarding/OnboardingWizard.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
@@ -405,7 +426,7 @@ function applyDictHomeScreenMeta() {
 }
 
 async function bootstrapDictionary() {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   applyDictHomeScreenMeta();
   const { default: DictionaryOverlay } = await import('./dictionary/DictionaryOverlay.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
@@ -418,7 +439,7 @@ async function bootstrapDictionary() {
 // Standalone settings page — opened from the reply-keyboard «⚙️ Настройки» button
 // (startapp=settings). Bot-native prefs (autosave, battle-readiness, schedule, theme).
 async function bootstrapSettings() {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   const { default: SettingsScreen } = await import('./settings/SettingsScreen.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
@@ -430,7 +451,7 @@ async function bootstrapSettings() {
 // Standalone «📚 Интерактив» hub — opened from the reply-keyboard button
 // (startapp=interactive). A light card page linking to the existing ans_* games.
 async function bootstrapInteractive() {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   const { default: InteractiveHub } = await import('./interactive/InteractiveHub.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
@@ -441,7 +462,7 @@ async function bootstrapInteractive() {
 
 // Standalone «⚔️ Battles» hub — opened from the reply-keyboard button (startapp=battles).
 async function bootstrapBattles() {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   const { default: BattlesHub } = await import('./battles/BattlesHub.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
@@ -453,7 +474,7 @@ async function bootstrapBattles() {
 // Full "Полный разбор" card: launched from a DM chat button via startapp=razbor_<id>.
 // Reads the pre-computed lookup by id and mounts the rich WOW breakdown only.
 async function bootstrapDeepAnalysis(startParam) {
-  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  tgReady();
   const { default: DeepAnalysis } = await import('./dictionary/DeepAnalysis.jsx');
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
