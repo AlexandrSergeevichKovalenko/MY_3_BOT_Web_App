@@ -1100,7 +1100,7 @@ function StepBody(props) {
           </div>
 
           <div className="ob-plan ob-plan-pro">
-            <p className="ob-plan-title">💎 <b>{t('Полный доступ', 'Voller Zugang')}</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">325 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
+            <p className="ob-plan-title">💎 <b>{t('Полный доступ', 'Voller Zugang')}</b>{proPrice ? <> — <span className="ob-price">{proPrice}</span></> : <> — <span className="ob-price">400 ⭐ / {t('мес', 'Mon.')}</span></>}</p>
             {IS_GUEST_TOUR ? GUEST_NOTE : (
               <button type="button" className="ob-confirm" onClick={onOpenSubscription}>
                 {t('✨ Оформить полный доступ', '✨ Vollen Zugang holen')}
@@ -1799,7 +1799,8 @@ export default function OnboardingWizard() {
         // Use the backend's authoritative amount_stars — the SAME figure the Telegram Stars
         // invoice charges (pro_price_stars(), env PRO_PRICE_EUR_MINOR). Recomputing from
         // amount_value pulled a retired Stripe €4.40 snapshot → showed 286⭐ while checkout
-        // actually charges 325⭐. Show verbatim so «what you see» == «what you pay».
+        // charged a different number. Show verbatim so «what you see» == «what you pay»:
+        // the price moves with the env var, and nothing here may hardcode it.
         const stars = pro && pro.amount_stars != null ? Number(pro.amount_stars) : null;
         if (!off && stars != null && !Number.isNaN(stars) && stars > 0) {
           const per = pro.recurring_interval === 'year' ? t('год', 'Jahr')

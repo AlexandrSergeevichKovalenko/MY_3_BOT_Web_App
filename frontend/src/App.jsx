@@ -8611,6 +8611,16 @@ function AppInner() {
         return String(a.planCode || '').localeCompare(String(b.planCode || ''));
       });
   }, [billingPlans, billingPlanMeta, uiLang, tr]);
+  // Цена на витрине тарифов = ровно та, что спишет счёт: `amount_stars` приходит с бэкенда
+  // (env PRO_PRICE_EUR_MINOR через pro_price_stars()). Раньше на витрине стояло число,
+  // вбитое руками, и при смене цены витрина со списанием разъезжались — в оплате это худший
+  // вид вранья. Запасное значение нужно только на случай, если каталог ещё не загрузился.
+  const proPlanStars = useMemo(() => {
+    const rows = Array.isArray(billingPlans) ? billingPlans : [];
+    const pro = rows.find((row) => String(row?.plan_code || '').trim().toLowerCase() === 'pro');
+    const stars = Number(pro?.amount_stars);
+    return Number.isFinite(stars) && stars > 0 ? stars : 400;
+  }, [billingPlans]);
   const billingPlanLimitDetails = useMemo(() => {
     const paidCommon = [
       tr('Переводы, разборы, словарь, карточки, тренажёры — полностью открыты.', 'Übersetzungen, Analysen, Wörterbuch, Karten, Übungen — voll freigeschaltet.'),
@@ -42054,7 +42064,7 @@ function AppInner() {
                         <span className="billing-plan__badge">{tr('7 ДНЕЙ БЕСПЛАТНО', '7 TAGE GRATIS')}</span>
                         <div className="billing-plan__top">
                           <h4 className="billing-plan__name"><span className="billing-plan__dia" aria-hidden="true">◆</span> {tr('Полный доступ', 'Voller Zugang')}</h4>
-                          <span className="billing-plan__price">325 ⭐ / {tr('мес', 'Monat')}</span>
+                          <span className="billing-plan__price">{proPlanStars} ⭐ / {tr('мес', 'Monat')}</span>
                         </div>
                         <p className="billing-plan__tag">{tr('Открыты все функции — плюс экстра.', 'Alle Funktionen frei — plus die Extras.')}</p>
                         <ul className="billing-feats">
