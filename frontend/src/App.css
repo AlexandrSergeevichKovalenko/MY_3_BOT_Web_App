@@ -8877,6 +8877,23 @@ body:has(.webapp-page.is-theme-light),
   color: #94A3B8;
 }
 .webapp-page.is-theme-light .vocab-word-card-hint { color: #a08870; }
+/* Упёрлись в дневной запас — это не ошибка, поэтому янтарная плашка дома, а не красная. */
+.vocab-word-card-limit {
+  margin: 10px 0 4px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(224, 168, 62, 0.38);
+  background: linear-gradient(180deg, rgba(240, 195, 104, 0.16) 0%, rgba(224, 168, 62, 0.08) 100%);
+  color: #E7DCC8;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.vocab-word-card-limit p { margin: 6px 0 0; }
+.vocab-word-card-limit-title { font-size: 15px; font-weight: 700; color: #F0C368; }
+.vocab-word-card-limit-next { color: #CDBFA6; }
+.webapp-page.is-theme-light .vocab-word-card-limit { color: #6b5a3e; }
+.webapp-page.is-theme-light .vocab-word-card-limit-title { color: #a8761a; }
+.webapp-page.is-theme-light .vocab-word-card-limit-next { color: #8a7860; }
 .vocab-word-fullscreen-meta {
   display: flex;
   flex-wrap: wrap;
