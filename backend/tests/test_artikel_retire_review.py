@@ -14,9 +14,10 @@ from backend.article_retire_review import _word_text, _keyboard
 class _FakeCursor:
     """`best_id` — ответ на «какую карточку слова возвращаем»: у этого запроса своя форма."""
 
-    def __init__(self, rows, *, best_id=None):
+    def __init__(self, rows, *, best_id=None, in_game=()):
         self._rows = rows
         self._best_id = best_id
+        self._in_game = [(str(w).lower(),) for w in in_game]
         self._last = ""
         self.sql_log: list[str] = []
 
@@ -31,6 +32,8 @@ class _FakeCursor:
         self.sql_log.append(self._last)
 
     def fetchall(self):
+        if self._last.startswith("SELECT DISTINCT lower(word)"):
+            return self._in_game     # слова, стоящие в игре прямо сейчас
         return self._rows
 
     def fetchone(self):
@@ -60,8 +63,8 @@ class RetireReviewQueueTests(unittest.TestCase):
         (5, "Segelboot", "das", "парусник", "verkehr_reisen", "gpt"),      # справочник смолчит
     ]
 
-    def _rows(self, rows=None, *, authority=None):
-        cur = _FakeCursor(self.ROWS if rows is None else rows)
+    def _rows(self, rows=None, *, authority=None, in_game=()):
+        cur = _FakeCursor(self.ROWS if rows is None else rows, in_game=in_game)
 
         @contextmanager
         def _fake_ctx(*a, **k):
@@ -133,6 +136,25 @@ class RetireReviewQueueTests(unittest.TestCase):
         ])
         self.assertEqual(len(out), 1)
 
+    def test_a_word_already_in_the_game_is_not_asked_about(self):
+        # Живая карточка есть — значит решение по слову принято, а снятая копия в соседней
+        # теме это дубль. Спрашивать про неё = присылать владельцу одно и то же слово
+        # каждый день, пока не кончатся копии.
+        out, _ = self._rows([(1, "Kühler", "der", "радиатор", "auto_fahren", "gpt")],
+                            in_game=["kühler"])
+        self.assertEqual(out, [])
+
+    def test_two_senses_of_one_word_come_in_the_same_batch(self):
+        # der Junge «мальчик» и das Junge «детёныш» — разные вопросы, их не схлопываем.
+        # Но частота у них одна, значит они лягут в одну пачку, а не приедут назавтра
+        # как «то же самое слово опять».
+        out, _ = self._rows([
+            (1, "Junge", "der", "мальчик", "familie", "gpt"),
+            (2, "Junge", "der", "мальчик", "party_freizeit", "gpt"),
+            (3, "Junge", "das", "детёныш животного", "tiere", "gpt"),
+        ], authority={})
+        self.assertEqual([r["meaning_ru"] for r in out], ["мальчик", "детёныш животного"])
+
     def _restore(self, verdict, *, best_id=7):
         cur = _FakeCursor([("Kühler", "die", "радиатор")], best_id=best_id)
 
@@ -187,6 +209,11 @@ class RetireReviewQueueTests(unittest.TestCase):
                          "пока артикль не выбран, в игру ничего не пишем")
 
     def test_owner_tap_returns_a_two_gender_word_with_its_sense(self):
+        res, _ = self._owner_tap()
+        self.assertEqual(res["article"], "der")
+        self.assertTrue(res["two_gender"])
+
+    def _owner_tap(self):
         cur = _FakeCursor([("Flur", "die", "коридор")])
 
         @contextmanager
@@ -195,8 +222,18 @@ class RetireReviewQueueTests(unittest.TestCase):
 
         with patch.object(db, "get_db_connection_context", _fake_ctx):
             res = db.restore_retired_article_noun(1, article="der")
-        self.assertEqual(res["article"], "der")
-        self.assertTrue(res["two_gender"])
+        return res, cur
+
+    def test_owner_tap_closes_the_same_question_in_other_themes(self):
+        # Тап закрывал ровно показанную строку, а копии того же смысла лежали в соседних
+        # темах — и приезжали на следующий день. Владелец подтверждал «der Junge» трижды.
+        _, cur = self._owner_tap()
+        closed = [s for s in cur.sql_log
+                  if s.startswith("UPDATE") and "retire_reviewed = TRUE" in s
+                  and "retired = FALSE" not in s]
+        self.assertTrue(closed, "копии того же вопроса должны уйти из очереди")
+        self.assertIn("lower(word) = lower(%s)", closed[0])
+        self.assertIn("meaning_ru", closed[0], "закрываем именно этот смысл, а не все смыслы")
         update = [s for s in cur.sql_log if s.startswith("UPDATE")][0]
         self.assertIn("two_gender = TRUE", update, "игра должна показать перевод к такому слову")
         self.assertIn("WHERE id = %s", update, "у каждого смысла своя строка — соседний не трогаем")

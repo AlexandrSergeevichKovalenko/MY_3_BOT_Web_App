@@ -49733,7 +49733,15 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
     Двуродовые (der/die Flur, das/der Service) и субстантивированные прилагательные
     (die Erwachsene) из очереди НЕ выкидываем: игра учит понимать артикли, и такие слова
     в ней нужны. Для них ответ решает не написание, а смысл — поэтому в игре у них
-    показывается русский перевод, и вопрос становится честным."""
+    показывается русский перевод, и вопрос становится честным.
+
+    Два правила против «одно и то же слово каждый день»:
+      • слово, которое уже стоит в игре, не спрашиваем совсем — снятая копия в соседней
+        теме это дубль, а не вопрос (владелец решение по нему уже принял);
+      • один вопрос = слово + перевод. Копии одного смысла по разным темам схлопываются,
+        а РАЗНЫЕ смыслы (der Junge «мальчик» и das Junge «детёныш») остаются, но у них
+        одинаковая частота — значит они лягут рядом в одну и ту же пачку, а не приедут
+        назавтра как «то же самое слово опять»."""
     from backend.article_word_gate import word_rank
     from backend.article_sprint_generator import is_ambiguous_noun  # noqa: F401  (пометка, не фильтр)
     with get_db_connection_context() as conn:
@@ -49744,15 +49752,20 @@ def _retired_review_rows(max_rank: int) -> list[dict]:
                 "WHERE retired AND NOT COALESCE(retire_reviewed, FALSE);"
             )
             rows = cursor.fetchall() or []
+            cursor.execute("SELECT DISTINCT lower(word) FROM bt_3_article_sprint_nouns "
+                           "WHERE NOT retired;")
+            in_game = {str(r[0]) for r in (cursor.fetchall() or []) if r and r[0]}
     out: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for r in rows:
         word = str(r[1] or "")
         rank = word_rank(word)
         if not rank or rank > int(max_rank):
             continue
-        key = word.lower()
-        if key in seen:  # одно и то же слово в нескольких темах — спрашиваем один раз
+        if word.lower() in in_game:  # слово уже в игре — спрашивать не о чем
+            continue
+        key = (word.lower(), str(r[3] or "").strip().lower())
+        if key in seen:  # тот же вопрос в другой теме — задаём один раз
             continue
         seen.add(key)
         out.append({"id": int(r[0]), "word": word, "article": str(r[2] or ""),
@@ -49867,6 +49880,17 @@ def restore_retired_article_noun(row_id: int, *, article: str = "") -> dict | No
                         "    two_gender = TRUE, verified = TRUE, source = 'owner', updated_at = NOW() "
                         "WHERE id = %s;",
                         (picked, int(row_id)),
+                    )
+                    # Тот же вопрос лежит копиями в соседних темах (der Junge «мальчик» в
+                    # четырёх). Раньше тап закрывал ровно показанную строку, и назавтра
+                    # приходила следующая копия: одно и то же слово владелец подтверждал
+                    # по три раза. Копии остаются снятыми (слово живёт в одной теме), но
+                    # разобранными — вопрос закрыт целиком.
+                    cursor.execute(
+                        "UPDATE bt_3_article_sprint_nouns SET retire_reviewed = TRUE "
+                        "WHERE lower(word) = lower(%s) AND lower(btrim(COALESCE(meaning_ru,''))) "
+                        "      = lower(btrim(%s)) AND retired;",
+                        (word, meaning),
                     )
                     cursor.execute(
                         "DELETE FROM bt_3_article_word_blacklist WHERE word = lower(%s);", (word,)
