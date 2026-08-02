@@ -31,7 +31,14 @@
 // Один контроллер на весь роут вместо хука в ~20 файлах игр: покрыты все экраны всех игр,
 // включая те, что появятся позже.
 
-const MAX_ZOOM = 1.35;   // на большом экране карточку не только можно, но и НУЖНО увеличить
+// Потолок увеличения у телефона и у планшета РАЗНЫЙ, и это не вкусовщина.
+// Кегли внутри карточки заданы в её собственных px, а zoom масштабирует и их, и ширину
+// карточки — значит слово занимает ту же долю строки только до тех пор, пока запас по
+// ширине есть. На телефоне его нет: колонка узкая, немецкие слова длинные, и уже на +35%
+// «Ladegerät» разрезалось посередине, а кнопки уезжали под сгиб. 1.18 — проверенное на
+// матрице телефонов значение, его не трогаем. Планшету +35% можно: там колонка вдвое шире.
+const MAX_ZOOM = 1.18;        // телефон
+const WIDE_MAX_ZOOM = 1.35;   // планшет / большой браузер
 const MILD_ZOOM = 0.82;  // до этого масштаба просто ужимаем карточку целиком
 const MIN_ZOOM = 0.72;   // ниже не опускаемся никогда — дальше текст не читается
 const PANEL_MIN = 96;    // сколько px экрана минимум оставляем прокручиваемому блоку
@@ -51,23 +58,28 @@ function supportsZoom() {
   try { return !!(window.CSS && CSS.supports && CSS.supports('zoom', '0.9')); } catch (_e) { return false; }
 }
 
-// Высота, которой мы реально располагаем.
+// Высота, которой мы реально располагаем. ОДИН ИСТОЧНИК — БРАУЗЕР.
 //
-// Источник правды — сам браузер: `visualViewport.height` это РЕАЛЬНО видимая высота, то
-// же число, что стоит за единицей `dvh`. Так делают все адаптивные приложения, и по той
-// же причине: платформа знает про свои шторки, панели и клавиатуру, а мы — нет.
+// `visualViewport.height` — то же число, что стоит за единицей `dvh`, и именно по нему
+// браузер рисует страницу; разойтись с тем, что видит пользователь, оно не может.
 //
-// Число Telegram (`viewportStableHeight`) сюда НЕ входит намеренно. Это бухгалтерия хоста:
-// во время анимации разворота шторки она отстаёт, а обновляется событием, которое может
-// прийти раньше, чем мы подписались, — или не прийти вовсе. Пока мы брали минимум из двух,
-// одно устаревшее число намертво подгоняло карточку под высоту, которой уже нет: карточка
-// «скукоживалась» посреди пустого экрана. Событие Telegram мы по-прежнему слушаем — но как
-// ПОВОД пересчитать, а не как величину (см. installCardAutoFit).
+// Числа Telegram (`viewportStableHeight`) здесь НЕТ намеренно. Замер по кадру с живого
+// телефона: мини-апп развёрнут на весь экран, `dvh` даёт 723, а Telegram отдаёт ~566. По
+// его числу карточка подгонялась под экран на треть меньше настоящего — 69% высоты и
+// пустые полосы сверху и снизу. Проверить свежесть этого числа изнутри страницы нельзя,
+// поэтому мы на него не опираемся.
 function viewportHeight() {
   const vv = typeof window !== 'undefined' ? window.visualViewport : null;
   const visual = Number(vv?.height) || 0;
   if (visual > 200) return visual;
   return Number(window.innerHeight) || 0;
+}
+
+// Планшет / большой браузер. Порог тот же, что у медиазапроса в answer.css (ширина от
+// 700 px И высота от 560 px), чтобы движок и вёрстка считали «широким» одно и то же.
+// Телефон в горизонтали сюда намеренно не попадает.
+function isWide(root) {
+  return root.getBoundingClientRect().width >= 700 && viewportHeight() >= 560;
 }
 
 function availHeight(root) {
@@ -189,6 +201,14 @@ function fitOne(root) {
   let h = card.getBoundingClientRect().height;
   if (!(avail > 160) || !(h > 0)) return;
 
+  // Растягивание карточки на всю высоту (fill/rescue ниже) — ТОЛЬКО планшет. На телефоне
+  // вёрстка выверена по матрице телефонов и подгонка там делает ровно одно: ужимает то,
+  // что не влезло, и умеренно (до MAX_ZOOM) растит то, что почти влезло. Попытка занять
+  // телефонный экран «целиком» ломала его: текст раздувался, длинные слова разрезались,
+  // кнопки уходили под сгиб.
+  const wide = isWide(root);
+  const zoomCeil = wide ? WIDE_MAX_ZOOM : MAX_ZOOM;
+
   const remember = (k) => {
     st.k = k;
     st.avail = availHeight(root);
@@ -245,21 +265,25 @@ function fitOne(root) {
   // по факту — нет. Тогда возвращаем масштаб, который реально помещается, и добираем
   // остаток высотой самой карточки. Ровно этим лечится «карточка скукожилась в центре
   // экрана, а сверху и снизу пусто».
-  const rescue = (k, roomy) => {
+  //
+  // Только планшет. На телефоне эта же добавка и творила беду: она срабатывала ПОСЛЕ
+  // финальной проверки «страница не прокручивается» и поднимала масштаб мимо неё — отсюда
+  // и не влезающие кнопки, и дёрганье карточки между расчётами.
+  const rescue = (k) => {
     let cur = k;
+    if (!wide) return cur;
     if (card.classList.contains('is-panelled')) return cur;   // там высота задана точно
     if (availHeight(root) - card.getBoundingClientRect().height < 12) return cur;
     root.classList.remove('is-scroll');
-    const ceiling = roomy ? MAX_ZOOM : 1;
-    if (cur < ceiling - 0.002) cur = fitsAt(ceiling) ? ceiling : bisect(cur, ceiling);
-    if (roomy) fill(cur);
+    if (cur < WIDE_MAX_ZOOM - 0.002) cur = fitsAt(WIDE_MAX_ZOOM) ? WIDE_MAX_ZOOM : bisect(cur, WIDE_MAX_ZOOM);
+    fill(cur);
     return cur;
   };
 
   // Финальная проверка ПО ФАКТУ: страница не должна прокручиваться. Замер высоты карточки
   // при zoom отдаёт родителю чуть другую величину, поэтому доводим по самому документу.
   // Всё в том же синхронном проходе — промежуточных состояний пользователь не видит.
-  const settle = (k0, roomy) => {
+  const settle = (k0) => {
     let k = k0;
     stretch(k);
     for (let i = 0; i < 3; i += 1) {
@@ -281,7 +305,7 @@ function fitOne(root) {
       setZoom(card, k);
       if (card.classList.contains('is-panelled')) card.style.maxHeight = `${Math.round((avail - 2) / k)}px`;
     }
-    remember(rescue(k, roomy));
+    remember(rescue(k));
   };
 
   // Помещается ли карточка при масштабе kk (замер, а не расчёт: текст переносится иначе).
@@ -297,35 +321,35 @@ function fitOne(root) {
     return best;
   };
 
-  // Короткий экран (заставка, обратный отсчёт) не раздуваем — ему воздух идёт на пользу.
-  // Всё остальное обязано занять экран целиком: за это отвечает rescue() в конце settle().
-  // На планшете исключения нет: там раскладка двухколоночная, содержимое по определению
-  // ниже экрана, и оставлять полэкрана пустым — ровно то, на что жалуются.
-  const wide = root.getBoundingClientRect().width >= 700 && viewportHeight() >= 560;
-  const roomy = wide || h >= avail * 0.6;
+  // Растим карточку, только если она уже занимает БОЛЬШУЮ ЧАСТЬ экрана. Короткий экран
+  // (заставка, обратный отсчёт, слово и три кнопки) не раздуваем — ему воздух идёт на
+  // пользу, а раздутый он выглядит именно так, как выглядел: гигантские буквы и мишени
+  // во весь экран. На планшете исключения нет: там раскладка двухколоночная и содержимое
+  // по определению ниже экрана.
+  const grow = () => {
+    stretch(1);
+    const left = avail - card.getBoundingClientRect().height;
+    if (left >= 10 && (wide || h >= avail * 0.6)) {
+      settle(fitsAt(zoomCeil) ? zoomCeil : bisect(1, zoomCeil));
+      return;
+    }
+    settle(1);
+  };
 
-  if (h <= avail) {
-    // Есть запас. Сначала отдаём его внутреннему прокручиваемому блоку, остальное доберёт
-    // rescue(): увеличит масштаб до предела и растянет карточку на всю высоту.
-    settle(1, roomy);
-    return;
-  }
+  if (h <= avail) { grow(); return; }   // есть запас — сначала внутреннему блоку, потом рост
 
   // 2. Отдаём отступы — это бесплатно.
   root.classList.add('is-tight');
   avail = availHeight(root);
   h = card.getBoundingClientRect().height;
-  if (h <= avail) {
-    settle(1, roomy);
-    return;
-  }
+  if (h <= avail) { grow(); return; }
 
   // 3. Ужимаем карточку целиком — пока это не бьёт по читаемости. Масштаб подбираем
   //    замером, а не формулой: при другом кегле текст переносится иначе.
   const k0 = (avail - 2) / h;
   if (k0 >= MILD_ZOOM) {
     const k = fitsAt(k0) ? bisect(k0, Math.min(1, k0 * 1.35)) : bisect(Math.max(MIN_ZOOM, k0 * 0.85), k0);
-    if (card.getBoundingClientRect().height <= avail) { settle(k, roomy); return; }
+    if (card.getBoundingClientRect().height <= avail) { settle(k); return; }
   }
 
   // 4. Ужимать сильнее нельзя — текст станет нечитаемым. Тогда экран собирается иначе:
@@ -343,7 +367,7 @@ function fitOne(root) {
     card.classList.add('is-panelled');
     panel.classList.add('is-fit-panel');
     card.style.maxHeight = `${Math.round((avail - 2) / kp)}px`; // px внутри карточки — уже в её масштабе; −2 на рамку
-    if (card.getBoundingClientRect().height <= avail + EPS) { settle(kp, roomy); return; }
+    if (card.getBoundingClientRect().height <= avail + EPS) { settle(kp); return; }
     // не помогло — откатываем к обычной прокрутке
     card.classList.remove('is-panelled');
     panel.classList.remove('is-fit-panel');
@@ -356,7 +380,7 @@ function fitOne(root) {
   root.classList.add('is-scroll');
   // И здесь проверяем по факту: если после ужатия на экране всё-таки осталось место —
   // расчёт выше ошибся, масштаб возвращаем (сюда попадала «скукоженная» карточка).
-  remember(rescue(MIN_ZOOM, roomy));
+  remember(rescue(MIN_ZOOM));
 }
 
 function run() {
@@ -422,9 +446,11 @@ export default function installCardAutoFit() {
   window.addEventListener('orientationchange', freshStart);
   // Видимая область меняется без `resize`: шторка Telegram, панели браузера, клавиатура.
   // Ровно для этого и существует visualViewport — штатный сигнал, а не наша выдумка.
+  // `scroll` здесь НЕ слушаем намеренно: на iOS он приходит на каждый кадр инерционной
+  // прокрутки, и полный пересчёт на каждом кадре — это и есть то самое «дёрганье» карточки.
+  // Размер видимой области от прокрутки не меняется, так что сигнал нам ничего не даёт.
   try {
     window.visualViewport?.addEventListener('resize', freshStart);
-    window.visualViewport?.addEventListener('scroll', freshStart);
   } catch (_e) { /* noop */ }
   // Событие Telegram — тоже повод пересчитать (величину берём у браузера, см. viewportHeight).
   try { window.Telegram?.WebApp?.onEvent?.('viewportChanged', freshStart); } catch (_e) { /* noop */ }
