@@ -448,8 +448,15 @@ function fitOne(root) {
 // одно, а телефон ведёт себя иначе. Снять сразу, как только причина будет найдена.
 const DEBUG_OWNER_ID = 117649764;
 function debugOn() {
-  try { return Number(window.Telegram?.WebApp?.initDataUnsafe?.user?.id) === DEBUG_OWNER_ID; }
-  catch (_e) { return false; }
+  try {
+    if (Number(window.Telegram?.WebApp?.initDataUnsafe?.user?.id) === DEBUG_OWNER_ID) return true;
+    // initData бывает пустым (открытие по ссылке, перезапуск из свёрнутого состояния) —
+    // тогда id ищем в самой строке initData и в сохранённой копии.
+    const raw = String(window.Telegram?.WebApp?.initData || ''
+      || (typeof localStorage !== 'undefined' ? localStorage.getItem('dq_initdata_v1') : '') || '');
+    if (raw.includes(String(DEBUG_OWNER_ID))) return true;
+    return /(^|[?&])fitdbg=1/.test(window.location.search);
+  } catch (_e) { return false; }
 }
 function debugLine(root, card, branch) {
   if (!debugOn()) return;
@@ -471,7 +478,15 @@ function debugLine(root, card, branch) {
   })();
   const r = card.getBoundingClientRect();
   const vh = viewportHeight();
-  el.textContent = `dvh=${Math.round(probe.getBoundingClientRect().height)} vv=${Math.round(window.visualViewport?.height || 0)} `
+  // Отпечаток сборки: хеш в имени бандла. Сразу видно, свежий ли код у пользователя на руках
+  // или service worker всё ещё отдаёт вчерашний — без этого спорить о причинах бессмысленно.
+  let build = '?';
+  try {
+    build = (document.querySelector('script[type="module"][src]')?.getAttribute('src') || '')
+      .replace(/^.*index-/, '').replace(/\.js$/, '') || '?';
+  } catch (_e) { /* noop */ }
+  el.textContent = `build=${build} `
+    + `dvh=${Math.round(probe.getBoundingClientRect().height)} vv=${Math.round(window.visualViewport?.height || 0)} `
     + `iH=${window.innerHeight} tg=${Math.round(Number(tg?.viewportStableHeight) || 0)}/${tg?.isExpanded} `
     + `vh=${Math.round(vh)} avail=${Math.round(availHeight(root))} k=${card.style.zoom || '1'} `
     + `card=${Math.round(r.height)}(${Math.round(r.height / vh * 100)}%) top=${Math.round(r.top)} `
