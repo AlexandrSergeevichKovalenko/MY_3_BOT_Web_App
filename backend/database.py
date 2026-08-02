@@ -35857,6 +35857,12 @@ def backfill_openai_billing_costs(*, dry_run: bool = True) -> dict:
     }
 
 
+# Провайдеры, которые обозначают НЕ покупку у внешнего сервиса, а нашу собственную
+# бухгалтерию: счётчики бесплатных лимитов, обращения человека, платежи. Их запись
+# нельзя выключать в тестах — на её результат опирается логика лимитов.
+_LEDGER_INTERNAL_PROVIDERS: frozenset[str] = frozenset({"app_internal", "stripe"})
+
+
 def log_billing_event(
     *,
     idempotency_key: str,
@@ -35877,6 +35883,23 @@ def log_billing_event(
     event_time: datetime | None = None,
     cost_amount: float | None = None,
 ) -> dict | None:
+    # Прогон тестов НЕ должен дописывать расход в боевую ведомость. На машине
+    # разработчика лежат боевые креденшелы (см. backend/tests/conftest.py), а запись
+    # уходит в демон-потоке, который никаким patch'ем внутри теста не перехватишь.
+    # Замерено 02.08.2026: за неделю локальные прогоны насыпали 1010 фантомных
+    # «обращений к OpenAI» от тестовых пользователей 123 и 456 (test_shortcut_lookup_split
+    # подсовывает поддельного клиента без usage — оттого строки без токенов) и ещё 108 от
+    # судьи кроссвордов. В отчёте это выглядело как 1037 обращений вместо 27 настоящих.
+    #
+    # Запрет ТОЛЬКО на внешних провайдеров: строки app_internal/stripe — это внутренний
+    # учёт (например, счётчик бесплатных лимитов в increment_free_feature_usage), на его
+    # возврат опирается логика, и тесты обязаны видеть её настоящее поведение.
+    # Прод переменную НЕ ставит.
+    if (
+        str(provider or "").strip().lower() not in _LEDGER_INTERNAL_PROVIDERS
+        and (os.getenv("SKIP_BILLING_LEDGER_WRITES") or "").strip().lower() in ("1", "true", "yes", "on")
+    ):
+        return None
     key = str(idempotency_key or "").strip()
     if not key:
         raise ValueError("idempotency_key is required")

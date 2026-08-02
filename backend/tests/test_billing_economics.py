@@ -1,3 +1,4 @@
+import os
 import unittest
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -118,7 +119,10 @@ class BillingEconomicsTests(unittest.TestCase):
             )
         ])
 
-        with patch("backend.database.get_db_connection_context", _db_context(cursor)):
+        # Этот тест проверяет САМУ запись, поэтому запрет из conftest тут снимаем: база
+        # подменена курсором-заглушкой, в боевую ведомость ничего уйти не может.
+        with patch("backend.database.get_db_connection_context", _db_context(cursor)), \
+             patch.dict(os.environ, {"SKIP_BILLING_LEDGER_WRITES": ""}, clear=False):
             item = log_billing_event(
                 idempotency_key="ev_test",
                 user_id=77,
