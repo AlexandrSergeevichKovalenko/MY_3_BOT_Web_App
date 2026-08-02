@@ -41,13 +41,14 @@ if ! python3 -m pytest backend/tests -q; then
 fi
 
 # Запомнить прогон ровно в том же виде, в каком его проверяет хук, — чтобы обычный
-# `git push` следом не гонял тесты заново. Отпечаток = коммит + хеш незакоммиченных
-# правок: в общем рабочем каталоге поверх коммита почти всегда лежит WIP.
+# `git push` следом не гонял тесты заново. Отпечаток берём по тому коду, который эти
+# тесты проверяют: дерево backend/ в коммите + незакоммиченные правки в backend/ и
+# scripts/. Формула обязана совпадать с code_fingerprint в scripts/git-hooks/pre-push.
 VERIFIED_FILE=$(git rev-parse --git-path pre-push-verified 2>/dev/null || true)
 if [ -n "$VERIFIED_FILE" ]; then
-    HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "no-head")
-    DIRTY_SHA=$(git diff HEAD 2>/dev/null | git hash-object --stdin 2>/dev/null || echo "no-diff")
-    echo "$HEAD_SHA:$DIRTY_SHA" >> "$VERIFIED_FILE" 2>/dev/null || true
+    BACKEND_TREE=$(git rev-parse HEAD:backend 2>/dev/null || echo "no-tree")
+    DIRTY_SHA=$(git diff HEAD -- backend scripts 2>/dev/null | git hash-object --stdin 2>/dev/null || echo "no-diff")
+    echo "$BACKEND_TREE:$DIRTY_SHA" >> "$VERIFIED_FILE" 2>/dev/null || true
     if tail -n 20 "$VERIFIED_FILE" > "$VERIFIED_FILE.tmp" 2>/dev/null; then
         mv "$VERIFIED_FILE.tmp" "$VERIFIED_FILE" 2>/dev/null || rm -f "$VERIFIED_FILE.tmp"
     fi
