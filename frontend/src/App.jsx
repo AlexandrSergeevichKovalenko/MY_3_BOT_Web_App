@@ -159,15 +159,14 @@ function EmbeddedWordCard({ item, hideMeanings }) {
   );
 }
 
-// A saved entry keeps whatever card it was saved with. Entries that came from thin save
-// paths (bot private chat, starter-dictionary import, quick game saves) carry only the
-// word + translation, so the body used to render as a blank sheet forever — there was no
-// enrich-on-read anywhere. Now opening such an entry fills it ON DEMAND (one LLM call,
-// persisted server-side), so we pay only for words the learner actually opens.
+// Сохранённое слово несёт ту карточку, с которой его сохранили. Часть путей сохранения
+// (личка бота, стартовый словарь, быстрые сохранения из игр) кладут только слово и
+// перевод. Раньше открытие такого слова тут же шло к модели — человек ждал и тратил свой
+// дневной запас на то, что и так соберётся ночью и достанется всем даром. Теперь открытие
+// ничего не собирает: разбор приходит ночью и сам расходится по карточкам, а здесь мы
+// говорим об этом прямо, вместо пустого листа.
 function LibraryWordDetail({ item }) {
-  const [filled, setFilled] = useState(null); // card fetched on demand for this entry
-  const stored = (item && typeof item.response_json === 'object' && item.response_json) ? item.response_json : null;
-  const data = filled || stored;
+  const data = (item && typeof item.response_json === 'object' && item.response_json) ? item.response_json : null;
   const hasCard = !!data && !!(
     data.part_of_speech || data.meanings || data.grammar_tables || data.forms
     || data.etymology_note || data.memory_tip
@@ -175,51 +174,17 @@ function LibraryWordDetail({ item }) {
     || (data.related_words || []).length || (data.common_collocations || []).length
     || (data.usage_examples || []).length || (data.government_patterns || []).length
   );
-  const [filling, setFilling] = useState(false);
-  const [failed, setFailed] = useState(false);
-  // Дневной лимит — это НЕ поломка, и «открой слово ещё раз» тут враньё: сколько ни
-  // открывай, сегодня уже не соберётся. Такой случай ведём отдельно и говорим прямо.
-  const [capped, setCapped] = useState(false);
-  const requestedRef = useRef(null);
-
-  useEffect(() => {
-    const entryId = Number(item?.id || 0);
-    if (!entryId || hasCard) return;
-    if (requestedRef.current === entryId) return; // one attempt per entry
-    requestedRef.current = entryId;
-    setFilling(true);
-    setFailed(false);
-    setCapped(false);
-    (async () => {
-      try {
-        const res = await dictApi('/api/webapp/flashcards/enrich', { entry_id: entryId });
-        if (res && res.response_json) setFilled(res.response_json);
-        else setFailed(true);
-      } catch (err) {
-        if (String(err?.payload?.error || '') === 'cost_cap_exceeded') setCapped(true);
-        else setFailed(true);
-      } finally {
-        setFilling(false);
-      }
-    })();
-  }, [item?.id, hasCard]);
 
   if (!hasCard) {
-    if (filling) return <div className="vocab-word-card-hint">Собираю карточку…</div>;
-    if (capped) {
-      return (
-        <div className="vocab-word-card-limit">
-          <div className="vocab-word-card-limit-title">Сегодня разбор нового слова уже не собрать</div>
-          <p>Дневной запас на сегодня израсходован.</p>
-          <p className="vocab-word-card-limit-next">
-            Что делать: слово сохранено и никуда не денется — загляните завтра, разбор откроется.
-            С полным доступом запас на день больше.
-          </p>
-        </div>
-      );
-    }
-    if (failed) return <div className="vocab-word-card-hint">Не получилось собрать карточку — открой слово ещё раз.</div>;
-    return null;
+    return (
+      <div className="vocab-word-card-pending">
+        <div className="vocab-word-card-pending-title">Разбор этого слова ещё готовится</div>
+        <p>Слово сохранено и никуда не денется.</p>
+        <p className="vocab-word-card-pending-next">
+          Что делать: загляните завтра — примеры, формы и подсказка «как запомнить» откроются здесь сами.
+        </p>
+      </div>
+    );
   }
   return <EmbeddedWordCard item={data} hideMeanings />;
 }

@@ -3047,7 +3047,9 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/dictionary/feel": {"cap": True, "feature_code": "feel_word_daily"},
     "/api/webapp/flashcards/feel": {"cap": True, "feature_code": "feel_word_daily"},
     "/api/webapp/flashcards/feel/dispatch": {"cap": True},
-    "/api/webapp/flashcards/enrich": {"cap": True},
+    # NOT here since 02.08.2026: открытие слова больше не зовёт модель — оно лишь
+    # раздаёт готовый разбор из слоя единиц обычным UPDATE. Держать его за проверкой
+    # дневного запаса значило бы отказывать человеку в том, что нам ничего не стоит.
     # Free taster: 1/day each via in-endpoint reservations (dictionary_openai_explanation_daily
     # for explain, ask_gpt_daily for ask) — NOT fully paid. Seeing the value once/day is the hook.
     "/api/webapp/explain": {"cap": True},
@@ -52267,10 +52269,6 @@ def enrich_flashcard_entry():
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     entry_id = payload.get("entry_id")
-    word_ru = (payload.get("word_ru") or "").strip()
-    word_de = (payload.get("word_de") or "").strip()
-    source_text_hint = (payload.get("source_text") or "").strip()
-    target_text_hint = (payload.get("target_text") or "").strip()
 
     if not entry_id:
         return jsonify({"error": "entry_id обязателен"}), 400
@@ -52299,21 +52297,12 @@ def enrich_flashcard_entry():
             response_json = json.loads(response_json)
         except Exception:
             response_json = None
-    # Already a RICH card → no LLM call. Opening the same full word twice must stay free.
-    # A single-word card built by the old thin prompt (forms+examples but no meanings /
-    # Rektion / collocations) is upgraded on this user-paced open — that is the "kreieren
-    # куцый" fix — so a card the gate calls "full" but is actually thin still gets enriched
-    # once, then stays free forever after.
-    _german_headword = str(entry.get("word_de") or word_de or "").strip()
-    _is_thin_word = (
-        _dictionary_word_card_is_thin(response_json)
-        and _is_single_word_dictionary_entry(_german_headword, "de")
-    )
-    if (
-        isinstance(response_json, dict)
-        and not _dictionary_payload_needs_enrichment(response_json)
-        and not _is_thin_word
-    ):
+    # ОТКРЫТИЕ СЛОВА НЕ ЗОВЁТ МОДЕЛЬ (решение владельца 02.08.2026). Разбор собирается
+    # ночью один раз на слово и сам расходится по личным карточкам. Платить за срочность
+    # деньгами и дневным запасом человека ради того, что бесплатно придёт к утру, мы не
+    # хотим. Здесь остаётся только раздача уже готового: SELECT + UPDATE, ноль обращений
+    # к модели. Поэтому же путь снят с проверки дневного запаса (_BILLING_GUARD_RULES).
+    if isinstance(response_json, dict) and not _dictionary_payload_needs_enrichment(response_json):
         return jsonify(
             {
                 "ok": True,
@@ -52323,61 +52312,39 @@ def enrich_flashcard_entry():
             }
         )
 
-    source_text, target_text = _resolve_entry_texts_for_pair(
-        entry=entry,
-        response_json=response_json if isinstance(response_json, dict) else {},
-        source_lang=source_lang,
-        target_lang=target_lang,
-        source_text_hint=source_text_hint or word_ru,
-        target_text_hint=target_text_hint or word_de,
-    )
-
-    # Unified rich enrichment (same prompt as the live lookup) so an opened card reaches the
-    # SAME fullness — Rektion / collocations / meanings / etymology / mnemonic — instead of
-    # the thin forms+examples the old enrich_word prompt produced.
+    # Слово могли разобрать раньше — ночью или для другого человека. Тогда карточка
+    # наполняется прямо сейчас и даром: перенос из слоя единиц, обычный UPDATE.
     try:
-        enrich = _rich_enrich_card_fields(
-            source_text=source_text,
-            target_text=target_text,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка enrich: {exc}"}), 500
-
-    if not response_json:
-        response_json = {}
-    if isinstance(enrich, dict) and enrich:
-        response_json.update(_normalize_dictionary_enrich_payload(enrich))
-        response_json = _prepare_dictionary_response_json_for_save(
-            response_json=response_json,
-            source_text=source_text,
-            target_text=target_text,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            word_ru=str(entry.get("word_ru") or response_json.get("word_ru") or "").strip() or None,
-            word_de=str(entry.get("word_de") or response_json.get("word_de") or "").strip() or None,
-            translation_de=str(entry.get("translation_de") or response_json.get("translation_de") or "").strip() or None,
-            translation_ru=str(entry.get("translation_ru") or response_json.get("translation_ru") or "").strip() or None,
-        )
-
-    try:
-        update_webapp_dictionary_entry(int(entry_id), response_json)
+        fill_thin_cards_from_units(limit=1, entry_id=int(entry_id))
     except Exception:
-        pass
-    # Наполнили карточку по требованию одного пользователя — она сразу общая.
-    _publish_enriched_card_to_shared_stores(
-        payload=response_json,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        source_text=source_text,
-        target_text=target_text,
-    )
+        logging.debug("перенос готового разбора при открытии слова не удался", exc_info=True)
 
+    refreshed = get_dictionary_entry_by_id(int(entry_id)) or {}
+    fresh_json = refreshed.get("response_json")
+    if isinstance(fresh_json, str):
+        try:
+            fresh_json = json.loads(fresh_json)
+        except Exception:
+            fresh_json = None
+    if isinstance(fresh_json, dict) and not _dictionary_payload_needs_enrichment(fresh_json):
+        return jsonify(
+            {
+                "ok": True,
+                "response_json": fresh_json,
+                "filled_from_units": True,
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+        )
+
+    # Разбора нет ещё нигде — его соберёт ночь. Это НЕ ошибка: отвечаем спокойно, чтобы
+    # человеку показали «скоро откроется», а не красную плашку про сбой.
     return jsonify(
         {
             "ok": True,
-            "response_json": response_json,
+            "pending": True,
+            "response_json": fresh_json if isinstance(fresh_json, dict) else (
+                response_json if isinstance(response_json, dict) else {}
+            ),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
