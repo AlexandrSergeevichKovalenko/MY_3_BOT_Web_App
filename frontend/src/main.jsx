@@ -19,41 +19,9 @@ import './theme.css'
 function tgReady() {
   try {
     const tg = window.Telegram?.WebApp;
-    if (tg) {
-      tg.ready?.();
-      if (tg.isExpanded !== true) tg.expand?.();
-    }
-  } catch (_e) { /* ignore */ }
-  stampBuild();   // ставится ВСЕГДА, даже если Telegram-объекта нет
-}
-
-// ВРЕМЕННО. Отметка сборки в САМОЙ ТОЧКЕ ЗАПУСКА, до любых маршрутов и до подгонки под
-// экран. Нужна, чтобы отличить два принципиально разных случая, которые снаружи выглядят
-// одинаково: «на телефоне выполняется вчерашняя сборка» и «сборка свежая, но подгонка не
-// сработала». Раньше отметка жила внутри подгонки — и если та не запускалась (нет поддержки
-// zoom, нет ResizeObserver), на экране не появлялось НИЧЕГО, и отличить одно от другого
-// было нечем. Видна только владельцу. Снять вместе с остальной диагностикой.
-const DEBUG_OWNER_ID = 117649764;
-function debugOwner() {
-  try {
-    const tg = window.Telegram?.WebApp;
-    if (Number(tg?.initDataUnsafe?.user?.id) === DEBUG_OWNER_ID) return true;
-    if (String(tg?.initData || '').includes(String(DEBUG_OWNER_ID))) return true;
-    return /(^|[?&])fitdbg=1/.test(window.location.search);
-  } catch (_e) { return false; }
-}
-function stampBuild() {
-  try {
-    if (!debugOwner() || document.getElementById('bldstamp')) return;
-    const src = document.querySelector('script[type="module"][src]')?.getAttribute('src') || '?';
-    const el = document.createElement('div');
-    el.id = 'bldstamp';
-    el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;'
-      + 'font:10px/1.3 ui-monospace,monospace;background:#000;color:#0f0;padding:2px 4px;pointer-events:none';
-    el.textContent = `build ${src.replace(/^.*index-/, '').replace(/\.js$/, '')} · zoom=`
-      + `${(() => { try { return CSS.supports('zoom', '0.9'); } catch (_e) { return 'err'; } })()}`
-      + ` · RO=${typeof ResizeObserver !== 'undefined'} · mode=${appMode}`;
-    (document.body || document.documentElement).appendChild(el);
+    if (!tg) return;
+    tg.ready?.();
+    if (tg.isExpanded !== true) tg.expand?.();
   } catch (_e) { /* ignore */ }
 }
 
@@ -148,14 +116,11 @@ async function ensureFreshBundle() {
         // ignore storage failures
       }
     }
-    // Устаревшая оболочка приходит из precache service worker'а, и простая перезагрузка
-    // отдаст ТУ ЖЕ старую сборку. Поэтому сначала сносим кеши и снимаем worker, потом
-    // перезагружаемся — тогда запрос дойдёт до сервера.
-    //
-    // Раньше это делалось только для установленного PWA. Но worker живёт на том же домене и
-    // обслуживает и вебвью Telegram: мини-апп точно так же получал вчерашнюю сборку, а
-    // «починить» это было нечем — пользователь не может почистить кеш внутри Telegram.
-    await purgeAppShellCaches();
+    // PWA: the stale shell comes from the SW precache — a reload alone re-serves it. Drop the
+    // caches + unregister the worker so the reload hits the server for the current build.
+    if (appMode === 'pwa') {
+      await purgeAppShellCaches();
+    }
     window.location.replace(buildTelegramReloadUrl(serverBuildId));
     return false;
   } catch (_error) {
@@ -776,15 +741,6 @@ function installAppTokenAuthShim() {
 async function bootstrapApp() {
   installDictTokenAuthShim();
   installAppTokenAuthShim();
-
-  // ЗДЕСЬ НЕ ДОЛЖНО БЫТЬ ПРОВЕРКИ СВЕЖЕСТИ СБОРКИ. Я её сюда добавлял — и мини-апп остался
-  // с пустым экраном: проверка ходит в сеть и умеет отменять отрисовку (возвращает false и
-  // сама перезагружает страницу), а в вебвью Telegram эта перезагрузка не доводится до
-  // конца. Пустой экран хуже любой неидеальной вёрстки — не блокируем запуск ничем.
-  //
-  // От устаревшей сборки мини-аппы защищены на уровне service worker: корень `/` внесён в
-  // navigateFallbackDenylist (vite.config.js), поэтому навигация всегда идёт на сервер, а
-  // сервер отдаёт HTML с `no-store`. Этого достаточно, и это ничего не может сломать.
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
     await bootstrapAnswerOverlay(answerStartParam);
