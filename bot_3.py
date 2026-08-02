@@ -1047,16 +1047,14 @@ def _slot_rank_today(kind: str, hour: int, minute: int, now: datetime | None = N
 _tiered_rank_cache: dict | None = None
 
 
-def _tiered_slot_position(kind: str, hour: int, minute: int, *, free: bool,
-                          now: datetime | None = None) -> int:
-    """Position of this slot in the user's tier ordering, where mandatory core-skill
-    slots are pulled to the FRONT (top ranks) and the rest keep their global rank.
-    A user with budget N receives a slot iff its tiered position < N — so mandatory
-    land inside the limit first, then rotation fills the remainder.
+def _tiered_order(*, free: bool, now: datetime | None = None) -> list:
+    """Today's active slots in the order this tier receives them: mandatory core-skill
+    slots pulled to the FRONT, the rest in their global rank. A user with budget N gets
+    the first N of this list — so mandatory land inside the limit first, then rotation
+    fills the remainder.
 
-    Free tier uses the 4 Free-mandatory kinds and counts only ONE slot per kind
-    (a kind's 2nd+ daily slot falls back into the rotation pool); Pro uses all
-    mandatory slots. Slots not active today rank past the end."""
+    Free tier uses the Free-mandatory kinds and counts only ONE slot per kind (a kind's
+    2nd+ daily slot falls back into the rotation pool); Pro uses all mandatory slots."""
     global _tiered_rank_cache
     day = (now or _get_quiz_schedule_now()).date().toordinal()
     cache_key = (day, bool(free))
@@ -1075,8 +1073,25 @@ def _tiered_slot_position(kind: str, hour: int, minute: int, *, free: bool,
             else:
                 rotation.append(e)  # incl. a Free kind's 2nd+ slot, and all non-mandatory
         order = mandatory + rotation
-        _tiered_rank_cache[cache_key] = {e.key: i for i, e in enumerate(order)}
-    return _tiered_rank_cache[cache_key].get(_slot_key(kind, hour, minute), 10_000)
+        _tiered_rank_cache[cache_key] = (order, {e.key: i for i, e in enumerate(order)})
+    return _tiered_rank_cache[cache_key][0]
+
+
+def _tiered_slot_position(kind: str, hour: int, minute: int, *, free: bool,
+                          now: datetime | None = None) -> int:
+    """0-based position of this slot in the tier ordering (see _tiered_order). A user
+    with budget N receives it iff position < N. Slots not active today rank past the end."""
+    day = (now or _get_quiz_schedule_now()).date().toordinal()
+    _tiered_order(free=free, now=now)  # fills the cache for (day, tier)
+    return _tiered_rank_cache[(day, bool(free))][1].get(_slot_key(kind, hour, minute), 10_000)
+
+
+def _free_plan_today(now: datetime | None = None) -> list:
+    """[(kind, hour, minute)] — те слоты, которые сегодня положены бесплатному тарифу.
+    Ровно то, по чему рассылка и решает, кому что слать; отсюда же берёт план вечерний
+    отчёт «получили ли бесплатные свои шесть»."""
+    return [(e.kind, int(e.hour), int(e.minute))
+            for e in _tiered_order(free=True, now=now)[:FREE_SEND_BUDGET]]
 
 
 def _user_send_budget(user_id: int, *, is_pro: bool, active_recent: set | None,
@@ -1088,6 +1103,66 @@ def _user_send_budget(user_id: int, *, is_pro: bool, active_recent: set | None,
     if active_recent is not None and int(user_id) not in active_recent:
         return 0
     return FREE_SEND_BUDGET
+
+
+# ── Вечерний отчёт «получили ли бесплатные свои шесть» ───────────────────────
+# Обещание тарифа проверить на глаз нельзя: часть карточек приходит сверх плана
+# (работа над ошибками, спринт, повтор тренировки, новость), часть выглядит разгоном,
+# и пересчёт в чате врёт. Раз в вечер кладём рядом план дня и факт по каждому
+# бесплатному и присылаем владельцу в личку. Отчёт — не рассылка, тишину не соблюдает.
+FREE_DELIVERY_REPORT_HOUR = max(0, min(23, int((os.getenv("FREE_DELIVERY_REPORT_HOUR") or "23").strip() or "23")))
+FREE_DELIVERY_REPORT_MINUTE = max(0, min(59, int((os.getenv("FREE_DELIVERY_REPORT_MINUTE") or "0").strip() or "0")))
+
+
+def _free_delivery_report_enabled() -> bool:
+    return (os.getenv("FREE_DELIVERY_REPORT_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _send_free_delivery_report(context: CallbackContext) -> None:
+    """23:00 — владельцу в личку: план дня для бесплатного тарифа и сколько из него
+    реально дошло каждому. Один раз в сутки (перезапуск в 23:00 не задвоит)."""
+    if not _free_delivery_report_enabled():
+        return
+    from backend.database import claim_scheduler_run_guard, finish_scheduler_run_guard
+    from backend.free_delivery_report import JOB_KEY, build_free_delivery_text
+    now = _get_quiz_schedule_now()
+    day = now.date()
+    admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    if not admin_ids:
+        return
+    if not await asyncio.to_thread(
+            lambda: claim_scheduler_run_guard(job_key=JOB_KEY, run_period=day.isoformat())):
+        return
+    try:
+        uids = await _collect_scheduler_candidate_user_ids(
+            lookback_days=30, include_allowed=True, include_admins=False)
+        pro_map = await asyncio.to_thread(
+            lambda ids=tuple(uids): {u: _is_user_pro_cached(int(u)) for u in ids})
+        free_ids = [int(u) for u in uids if not pro_map.get(u)]
+        active_recent = set(await _collect_scheduler_candidate_user_ids(
+            lookback_days=FREE_INACTIVE_SUPPRESS_DAYS, include_allowed=False, include_admins=False))
+        silent = [u for u in free_ids if u not in active_recent]
+        text = await asyncio.to_thread(
+            build_free_delivery_text,
+            day=day, tz_name=QUIZ_SCHEDULE_TZ_NAME, plan=_free_plan_today(now),
+            budget=FREE_SEND_BUDGET, free_user_ids=free_ids, silent_user_ids=silent,
+            repeat_slot_hours=[h * 100 + m for (h, m) in TRAINER_REPEAT_SLOT_TIMES],
+        )
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML",
+                                               disable_web_page_preview=True)
+            except Exception:
+                logging.warning("free_delivery_report: DM failed admin=%s", admin_id, exc_info=True)
+        await asyncio.to_thread(
+            lambda: finish_scheduler_run_guard(job_key=JOB_KEY, run_period=day.isoformat(),
+                                               status="completed", metadata={"free": len(free_ids)}))
+        logging.info("free_delivery_report sent day=%s free=%d", day, len(free_ids))
+    except Exception as exc:
+        await asyncio.to_thread(
+            lambda: finish_scheduler_run_guard(job_key=JOB_KEY, run_period=day.isoformat(),
+                                               status="failed", metadata={"error": str(exc)[:200]}))
+        logging.exception("free_delivery_report failed")
 
 
 # Short-TTL memo so tier-filtering doesn't hit the DB once per recipient per send.
@@ -42776,6 +42851,18 @@ def main():
                 hour=_trr_hour,
                 minute=_trr_minute,
                 timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- Вечерний отчёт владельцу: получили ли бесплатные свои шесть заданий --
+        if _free_delivery_report_enabled():
+            scheduler.add_job(
+                lambda: submit_async(_send_free_delivery_report, CallbackContext(application=application)),
+                "cron",
+                hour=FREE_DELIVERY_REPORT_HOUR,
+                minute=FREE_DELIVERY_REPORT_MINUTE,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=1800,
             )
         # -- Sprint pool nightly top-up (03:20) --
         scheduler.add_job(
