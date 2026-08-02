@@ -10342,6 +10342,15 @@ def _run_units_night_enrichment(
                 report["cards_filled_from_units"] = spread["filled"]
         except Exception:
             logging.warning("раздача готового разбора по карточкам не удалась", exc_info=True)
+        # Слова, которым разбор уже собрали раньше, но часть речи так и не проставили:
+        # артикль в разборе есть, а слово формально «неизвестно что» и потому без рода.
+        # Проход бесплатный и идёт тут же, чтобы такие хвосты не копились годами.
+        try:
+            adopted = lex_units.backfill_pos_gender_from_cards(lang=learning_lang)
+            if adopted.get("updated"):
+                report["pos_adopted"] = adopted["updated"]
+        except Exception:
+            logging.warning("простановка части речи по артиклю не удалась", exc_info=True)
 
     units = lex_units.units_needing_card(cap, lang=learning_lang, native_lang=native_lang)
     report["picked"] = len(units)
@@ -10386,6 +10395,10 @@ def _run_units_night_enrichment(
                 continue
             if lex_units.save_unit_card(unit["id"], enrich_data):
                 report["enriched"] += 1
+                # Артикль из свежего разбора сразу делает слово существительным с родом.
+                # Без этого шага слово остаётся «неизвестно чем»: род требуется только
+                # существительным, и в отчётах оно так и висит без артикля.
+                lex_units.adopt_pos_gender_from_card(int(unit["id"]), enrich_data)
                 # Разбор собран — тут же отдаём его всем, у кого это слово лежит пустой
                 # карточкой. Ждать следующей ночи незачем: перенос ничего не стоит.
                 try:
@@ -10571,6 +10584,7 @@ def resweep_thin_unit_cards(
                 continue
             if lex_units.save_unit_card(unit["id"], enrich_data, source="пересбор"):
                 report["enriched"] += 1
+                lex_units.adopt_pos_gender_from_card(int(unit["id"]), enrich_data)
                 spread = fill_thin_cards_from_units(
                     limit=UNIT_CARD_SPREAD_PER_WORD_LIMIT,
                     unit_id=int(unit["id"]), lang=learning_lang,

@@ -619,6 +619,108 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
         return False
 
 
+# Артикль однозначно выдаёт существительное, а вместе с ним и род. Это единственный
+# признак, которому можно верить без модели: заглавная буква сама по себе НЕ признак
+# («Hineingehen», «Nahtlos» — глагол и прилагательное с большой буквы), поэтому требуем
+# ОБА условия сразу — артикль в разборе И заглавную первую букву.
+_ARTICLE_TO_GENDER = {"der": "der", "die": "die", "das": "das"}
+_CAPITALIZED_RE = re.compile(r"^[A-ZÄÖÜ]")
+
+
+def _gender_from_card(card: dict | None) -> str:
+    if not isinstance(card, dict):
+        return ""
+    return _ARTICLE_TO_GENDER.get(str(card.get("article") or "").strip().lower(), "")
+
+
+def adopt_pos_gender_from_card(unit_id: int, card: dict | None, *, lemma: str = "") -> bool:
+    """Проставить слову часть речи и род, взяв их из собранного разбора. Без модели.
+
+    Зачем: род требуется только существительным, и пока у слова не проставлена часть
+    речи, оно формально «неизвестно что» — отсюда «Ausgabe» и «Käsefuß» без артикля в
+    отчётах, хотя артикль лежал в разборе. Настоящая дыра — именно часть речи.
+
+    Осторожность здесь не лишняя: опознание единицы = лемма + часть речи + род, поэтому
+    правка МЕНЯЕТ ключ, по которому слово находят. Если рядом уже живёт такое же слово с
+    проставленным родом, обновление упрётся в уникальный индекс — такую строку молча
+    пропускаем, сливать единицы без решения владельца нельзя.
+
+    Ничего не перезаписываем: трогаем только слова, у которых части речи нет вовсе."""
+    gender = _gender_from_card(card)
+    if not gender or not unit_id:
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE bt_3_lex_units
+                       SET pos = 'noun',
+                           gender = COALESCE(NULLIF(gender, ''), %s),
+                           pos_source = COALESCE(pos_source, 'card'),
+                           gender_source = COALESCE(gender_source, 'card'),
+                           updated_at = NOW()
+                     WHERE id = %s AND pos IS NULL AND lemma ~ '^[A-ZÄÖÜ]'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM bt_3_lex_units o
+                            WHERE o.lang = bt_3_lex_units.lang
+                              AND o.kind = bt_3_lex_units.kind
+                              AND o.lemma_key = bt_3_lex_units.lemma_key
+                              AND o.pos = 'noun'
+                              AND COALESCE(o.gender, '') = %s
+                              AND o.id <> bt_3_lex_units.id
+                       );
+                    """,
+                    (gender, int(unit_id), gender),
+                )
+                changed = cur.rowcount
+            conn.commit()
+        return bool(changed)
+    except Exception as exc:
+        logging.debug("adopt pos/gender for unit %s failed: %s", unit_id, exc)
+        return False
+
+
+def backfill_pos_gender_from_cards(*, limit: int = 500, lang: str = "de", dry_run: bool = False) -> dict:
+    """Пройтись по словам, у которых часть речи не задана, а в разборе есть артикль.
+
+    Идёт бесплатным шагом в ночной работе, поэтому новые такие слова закрываются сами:
+    сегодня их 28, остальные подтянутся по мере того, как ночь соберёт им разбор."""
+    report = {"candidates": 0, "updated": 0, "skipped": 0, "samples": []}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, display, card->>'article'
+                      FROM bt_3_lex_units
+                     WHERE lang = %s AND kind = 'word' AND pos IS NULL
+                       AND COALESCE(card->>'article', '') IN ('der', 'die', 'das')
+                       AND lemma ~ '^[A-ZÄÖÜ]'
+                     ORDER BY id
+                     LIMIT %s;
+                    """,
+                    (str(lang or "de").strip().lower() or "de", int(limit)),
+                )
+                rows = cur.fetchall()
+    except Exception as exc:
+        logging.debug("backfill pos/gender selection failed: %s", exc)
+        return report
+    report["candidates"] = len(rows)
+    for unit_id, display, article in rows:
+        if len(report["samples"]) < 15:
+            report["samples"].append({"word": display, "article": article})
+        if dry_run:
+            continue
+        if adopt_pos_gender_from_card(int(unit_id), {"article": article}):
+            report["updated"] += 1
+        else:
+            report["skipped"] += 1
+    if report["updated"]:
+        logging.info("часть речи и род проставлены по артиклю: %d слов", report["updated"])
+    return report
+
+
 def units_with_thin_card(limit: int, *, lang: str = "de", native_lang: str = "ru") -> list[dict]:
     """Слова, у которых разбор ЕСТЬ, но куцый: примеры и формы на месте, а значений,
     управления и сочетаний нет.
