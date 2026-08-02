@@ -19,9 +19,41 @@ import './theme.css'
 function tgReady() {
   try {
     const tg = window.Telegram?.WebApp;
-    if (!tg) return;
-    tg.ready?.();
-    if (tg.isExpanded !== true) tg.expand?.();
+    if (tg) {
+      tg.ready?.();
+      if (tg.isExpanded !== true) tg.expand?.();
+    }
+  } catch (_e) { /* ignore */ }
+  stampBuild();   // ставится ВСЕГДА, даже если Telegram-объекта нет
+}
+
+// ВРЕМЕННО. Отметка сборки в САМОЙ ТОЧКЕ ЗАПУСКА, до любых маршрутов и до подгонки под
+// экран. Нужна, чтобы отличить два принципиально разных случая, которые снаружи выглядят
+// одинаково: «на телефоне выполняется вчерашняя сборка» и «сборка свежая, но подгонка не
+// сработала». Раньше отметка жила внутри подгонки — и если та не запускалась (нет поддержки
+// zoom, нет ResizeObserver), на экране не появлялось НИЧЕГО, и отличить одно от другого
+// было нечем. Видна только владельцу. Снять вместе с остальной диагностикой.
+const DEBUG_OWNER_ID = 117649764;
+function debugOwner() {
+  try {
+    const tg = window.Telegram?.WebApp;
+    if (Number(tg?.initDataUnsafe?.user?.id) === DEBUG_OWNER_ID) return true;
+    if (String(tg?.initData || '').includes(String(DEBUG_OWNER_ID))) return true;
+    return /(^|[?&])fitdbg=1/.test(window.location.search);
+  } catch (_e) { return false; }
+}
+function stampBuild() {
+  try {
+    if (!debugOwner() || document.getElementById('bldstamp')) return;
+    const src = document.querySelector('script[type="module"][src]')?.getAttribute('src') || '?';
+    const el = document.createElement('div');
+    el.id = 'bldstamp';
+    el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;'
+      + 'font:10px/1.3 ui-monospace,monospace;background:#000;color:#0f0;padding:2px 4px;pointer-events:none';
+    el.textContent = `build ${src.replace(/^.*index-/, '').replace(/\.js$/, '')} · zoom=`
+      + `${(() => { try { return CSS.supports('zoom', '0.9'); } catch (_e) { return 'err'; } })()}`
+      + ` · RO=${typeof ResizeObserver !== 'undefined'} · mode=${appMode}`;
+    (document.body || document.documentElement).appendChild(el);
   } catch (_e) { /* ignore */ }
 }
 
