@@ -10093,14 +10093,29 @@ body:has(.webapp-page.is-theme-light),
   color: rgba(202, 220, 249, 0.74);
 }
 
-.fsrs-card-target {
+/* Обёртка-мерка для подгонки кегля: её ширина = ровно то место, что есть у слова
+   внутри карточки (без её паддингов). Хук FsrsHeadword меряется по ней. */
+.fsrs-card-target-fit {
   width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+
+/* inline-block + max-width: 100% — так замер видит РЕАЛЬНУЮ ширину слова
+   (тот же приём, что у .fit-line в тренажёрах), иначе шрифт не с чем сравнивать. */
+.fsrs-card-target {
+  display: inline-block;
+  max-width: 100%;
   font-size: clamp(39px, 5vw, 46px);
   line-height: 1.32;
   font-weight: 700;
   color: #ffffff;
   text-align: center;
-  word-break: break-word;
+  /* Слово НЕ режем посреди букв: сначала уменьшается кегль (FsrsHeadword), и
+     только если даже минимальный размер не помещается — перенос по пробелу. */
+  word-break: normal;
+  overflow-wrap: break-word;
+  hyphens: none;
 }
 
 .fsrs-card-meta {

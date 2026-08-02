@@ -14,6 +14,7 @@ import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
 import NoticeModal from './components/NoticeModal';
 import WordHintModal, { collectHintExamples } from './components/WordHintModal';
+import FsrsHeadword from './answer/FsrsHeadword';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
 import ProTrialModal from './components/ProTrialModal';
@@ -39619,7 +39620,7 @@ function AppInner() {
                                   <div className="fsrs-divider" />
                                   {srsRevealAnswer && (
                                     <>
-                                      <div className="fsrs-card-target">{answerText}</div>
+                                      <FsrsHeadword text={answerText} />
                                       {supplementalMeaningRows.length > 0 && (
                                         <div className="flashcard-meaning-list">
                                           {supplementalMeaningRows.map((row) => (
