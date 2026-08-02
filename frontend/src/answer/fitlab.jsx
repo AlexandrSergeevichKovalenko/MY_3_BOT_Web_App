@@ -7,6 +7,9 @@ import TrainerGame from './TrainerGame.jsx';
 import ArtikelSprintGame from './ArtikelSprintGame.jsx';
 import ArtikelLearnGame from './ArtikelLearnGame.jsx';
 import WoFrageLearnGame from './WoFrageLearnGame.jsx';
+import AdjektivLearnGame from './AdjektivLearnGame.jsx';
+import ArtikelReviewGame from './ArtikelReviewGame.jsx';
+import WoFrageReviewGame from './WoFrageReviewGame.jsx';
 import installCardAutoFit from './fitCard.js';
 
 const LONG = 'Weigerung bedeutet, sich zu weigern oder abzulehnen, also das Gegenteil von Zustimmung, und passt deshalb nicht als Synonym.';
@@ -90,6 +93,37 @@ const WO_DECK = {
   ],
 };
 
+// Окончания прилагательных — экран со скриншотов пользователя. Две карточки НАРОЧНО
+// разной длины разбора: с примером (длинный) и без (короткий). Именно на этой паре видно,
+// занимает карточка экран целиком или висит полоской посреди пустоты.
+const ADJ_DECK = {
+  ok: true,
+  items: [
+    { before: 'stark', after: ' Muskelkater', adj: 'stark', noun: 'Muskelkater',
+      a: 'er', full: 'starker Muskelkater', ru: 'Именительный · муж. род · сильное',
+      erklaerung: 'Без артикля, муж. род, Именительный → окончание -er.',
+      tip: 'Без артикля прилагательное «надевает шляпу артикля» → копирует -er (как der).',
+      example: 'neuer Wein, kleiner Tag' },
+    { before: 'der verantwortlich', after: ' Erbe', adj: 'verantwortlich', noun: 'Erbe',
+      a: 'e', full: 'der verantwortliche Erbe', ru: 'Именительный · муж. род · слабое',
+      erklaerung: 'После der/die/das, муж. род, Именительный → окончание -e.',
+      tip: 'der/die/das уже показал род и падеж →' },
+  ],
+};
+
+const ART_REVIEW = {
+  ok: true, remaining: 5,
+  cards: [
+    { id: 1, w: 'Ladegerät', a: 'das', ru: 'зарядное устройство', tip: '-gerät → das.' },
+    { id: 2, w: 'Sanktion', a: 'die', ru: 'санкция', tip: '-tion → die.' },
+  ],
+};
+
+const WO_REVIEW = {
+  ok: true, remaining: 5,
+  cards: WO_DECK.items.map((it, n) => ({ id: n + 1, ...it })),
+};
+
 const stub = (data) => () => new Promise((r) => setTimeout(() => r(data), 30));
 
 function App() {
@@ -98,6 +132,9 @@ function App() {
   if (game === 'sprint') return <ArtikelSprintGame api={stub(ARTIKEL_SET)} haptic={() => {}} onClose={() => {}} />;
   if (game === 'artikel') return <ArtikelLearnGame api={stub(LEARN_DECK)} haptic={() => {}} onClose={() => {}} />;
   if (game === 'wofrage') return <WoFrageLearnGame api={stub(WO_DECK)} haptic={() => {}} onClose={() => {}} />;
+  if (game === 'adjektiv') return <AdjektivLearnGame api={stub(ADJ_DECK)} haptic={() => {}} onClose={() => {}} />;
+  if (game === 'artreview') return <ArtikelReviewGame api={stub(ART_REVIEW)} haptic={() => {}} onClose={() => {}} />;
+  if (game === 'woreview') return <WoFrageReviewGame api={stub(WO_REVIEW)} haptic={() => {}} onClose={() => {}} />;
   return <TrainerGame id={1} api={stub(TASK)} haptic={() => {}} onClose={() => {}} />;
 }
 
