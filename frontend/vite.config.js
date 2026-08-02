@@ -101,7 +101,18 @@ export default defineConfig(async () => {
           // Same reason for the MAIN app's token entry /webapp/t/<token> (and /webapp): the
           // server rewrites the manifest link to carry the app token (…?aqt=…), so the
           // installed home-screen icon cold-launches authenticated instead of logged out.
-          navigateFallbackDenylist: [/^\/api\//, /^\/dict(\/|$|\?)/, /^\/d(\/|$|\?)/, /^\/webapp(\/|$|\?)/],
+          // Корень `/` тоже В СПИСКЕ, и это важнее всего перечисленного выше.
+          //
+          // Мини-апп Telegram открывается именно с корня. Пока его здесь не было, навигацию
+          // перехватывал service worker и отдавал СВОЮ сохранённую копию index.html —
+          // со ссылками на вчерашние бандлы. Сервер при этом отдаёт HTML с `no-store`, то
+          // есть свежий, но до сервера дело просто не доходило: пользователь мог сутками
+          // работать со старой сборкой, а почистить кеш внутри Telegram нельзя.
+          // Именно так исправления «не доезжали» до телефона, хотя лежали на сервере.
+          //
+          // Офлайн от этого не страдает по существу: без сети приложение всё равно
+          // бесполезно — весь контент приходит с сервера.
+          navigateFallbackDenylist: [/^\/$/, /^\/api\//, /^\/dict(\/|$|\?)/, /^\/d(\/|$|\?)/, /^\/webapp(\/|$|\?)/],
           runtimeCaching: [
             {
               urlPattern: ({ url, request }) => {
