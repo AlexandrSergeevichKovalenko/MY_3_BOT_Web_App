@@ -29807,6 +29807,10 @@ def trainer_task():
     meta = load_trainer_task(dispatch_id=dispatch_id, user_id=user_id)
     if meta is None:
         return jsonify({"error": "Тренажёр для этого слова ещё не готов"}), 404
+    # Тренажёр играется целиком на клиенте — сервер узнаёт о нём только здесь, в момент
+    # открытия. Поэтому строку в ведомости дня закрываем на открытии, иначе задание
+    # навсегда останется в «не сделано за сегодня».
+    _inbox_mark_kind_done(int(user_id), "tr")  # ✅ карточка тренировки
     return jsonify({"ok": True, **meta})
 
 

@@ -351,6 +351,7 @@ from backend.database import (
     create_mc_dispatch,
     update_mc_dispatch_telegram_id,
     record_interactive_inbox,
+    mark_interactive_inbox_answered,
     get_oldest_unanswered_inbox,
     count_open_inbox,
     get_inbox_next_and_count,
@@ -2696,6 +2697,8 @@ _INBOX_KIND_DISPLAY = {
     "rb": f"{CAT_QUIZ} Ребус", "cw": f"{CAT_QUIZ} Кроссворд", "ag": f"{CAT_QUIZ} Анаграмма",
     "au": f"{CAT_QUIZ} Aufgabe", "ls": f"{CAT_AUDIO} Аудирование", "as": f"{CAT_SPEED} Artikel Sprint",
     "ad": f"{CAT_SPEED} Adjektiv Sprint", "mc": f"{CAT_QUIZ} Квиз", "rv": f"{CAT_QUIZ} Работа над ошибками",
+    "wf": f"{CAT_SPEED} Wo-Frage Sprint", "nd": f"{CAT_AUDIO} Zahlen-Diktat",
+    "al": f"{CAT_LEARN} Artikel Trainer", "tr": f"{CAT_QUIZ} Тренировка синонимов/антонимов",
     "artikel": f"{CAT_BATTLE} Artikel-батл", "adjektiv": f"{CAT_BATTLE} Adjektiv-батл",
 }
 
@@ -31762,6 +31765,22 @@ async def send_article_quiz_to_chat(
     except Exception:
         logging.warning("aq_send: update telegram_id failed dispatch_id=%s", dispatch_id, exc_info=True)
 
+    # Ведомость дня: артикль-квиз тоже занимает один из дневных слотов, поэтому факт
+    # выдачи записываем — иначе «Следующее задание» посчитает слот свободным и выдаст
+    # лишнее. Отвечают на квиз кнопками прямо в чате, Mini-App-экрана у него нет, так
+    # что ссылки нет: строка только считается, в списке «что открыть» не показывается.
+    if int(chat_id) == int(target_user_id):  # DM feed only
+        try:
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=int(target_user_id), kind="aq", dispatch_id=int(dispatch_id),
+                chat_id=int(chat_id), telegram_message_id=int(photo_message.message_id),
+                deeplink="", title="🧩 Артикль-квиз",
+                keyboard_json=_inbox_kb_json(keyboard),
+            )
+        except Exception:
+            logging.warning("aq_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
+
     logging.info("aq_send_ok dispatch_id=%s word_id=%s chat_id=%s", dispatch_id, word_id, chat_id)
     return True
 
@@ -31913,6 +31932,16 @@ async def handle_article_quiz_callback(update: Update, context: CallbackContext)
             "aq_callback: record_answer failed dispatch_id=%s user_id=%s",
             dispatch_id, int(user.id), exc_info=True,
         )
+
+    # Ответил — закрываем строку в ведомости дня, чтобы квиз не висел
+    # в «не сделано за сегодня».
+    try:
+        await asyncio.to_thread(
+            mark_interactive_inbox_answered,
+            user_id=int(user.id), kind="aq", dispatch_id=int(dispatch_id),
+        )
+    except Exception:
+        logging.warning("aq_callback: inbox close failed dispatch_id=%s", dispatch_id, exc_info=True)
 
     if is_correct:
         icon = "✅"
@@ -37711,6 +37740,23 @@ async def send_trainer_to_chat(context: CallbackContext, *, entry: dict, relatio
         await asyncio.to_thread(update_trainer_dispatch_message_id, dispatch_id, telegram_message_id=int(msg.message_id))
     except Exception:
         pass
+    # Ведомость дня. Первая тренировка — ОДНО из дневных заданий (make_rotation_gated),
+    # значит факт выдачи обязан быть записан: по этой таблице «Следующее задание»
+    # считает, сколько из дневного лимита уже потрачено. Без записи слот выглядит
+    # неизрасходованным и человек получает лишнее задание сверх лимита.
+    # Повтор на следующий день — подарок сверх плана (make_bonus_gated), он лимит не
+    # тратит, поэтому в ведомость НЕ пишется.
+    if not repeat and int(chat_id) == int(target_user_id):  # DM feed only
+        try:
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=int(target_user_id), kind="tr", dispatch_id=int(dispatch_id),
+                chat_id=int(chat_id), telegram_message_id=int(msg.message_id),
+                deeplink=f"ans_tr_{dispatch_id}", title=f"{emoji} Тренировка {rel_ru}",
+                keyboard_json=_inbox_kb_json(keyboard),
+            )
+        except Exception:
+            logging.warning("trainer_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
     return True
 
 

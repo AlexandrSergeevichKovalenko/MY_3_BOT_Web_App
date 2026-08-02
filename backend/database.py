@@ -19064,9 +19064,14 @@ def count_open_inbox(user_id: int, *, max_age_days: int = 3) -> int:
 def get_inbox_open_today(user_id: int, *, since_ts, limit: int = 3, kind: str | None = None) -> dict:
     """Up to `limit` OLDEST still-open tasks created since `since_ts` (start of the
     user's day) + the total open count, in one round-trip — for the «Следующее
-    задание» card's 2/3 buttons. Optional `kind` filter for the type chooser."""
+    задание» card's 2/3 buttons. Optional `kind` filter for the type chooser.
+
+    Rows WITHOUT a deeplink are skipped: some kinds (article-quiz) are answered by
+    inline buttons in the chat and have no Mini-App screen to open, so they belong in
+    the daily count (get_inbox_delivery_stats_today) but never on this card."""
     out = {"tasks": [], "open_count": 0}
-    where = "user_id = %s AND answered = FALSE AND created_at >= %s"
+    where = ("user_id = %s AND answered = FALSE AND created_at >= %s "
+             "AND COALESCE(deeplink, '') <> ''")
     params: list = [int(user_id), since_ts]
     if kind:
         where += " AND kind = %s"
@@ -19103,7 +19108,8 @@ def get_inbox_open_today(user_id: int, *, since_ts, limit: int = 3, kind: str | 
 
 def get_inbox_open_kinds_today(user_id: int, *, since_ts) -> list:
     """Distinct open kinds (with counts) created since `since_ts`, oldest-first — for
-    the «Выбрать тип» chooser."""
+    the «Выбрать тип» chooser. Deeplink-less kinds are skipped for the same reason as
+    in get_inbox_open_today — picking them would render a card with no buttons."""
     out: list = []
     try:
         with get_db_connection_context() as conn:
@@ -19113,6 +19119,7 @@ def get_inbox_open_kinds_today(user_id: int, *, since_ts) -> list:
                     SELECT kind, COUNT(*) AS n, MIN(created_at) AS first_at
                     FROM bt_3_interactive_inbox
                     WHERE user_id = %s AND answered = FALSE AND created_at >= %s
+                      AND COALESCE(deeplink, '') <> ''
                     GROUP BY kind
                     ORDER BY first_at ASC;
                     """,
