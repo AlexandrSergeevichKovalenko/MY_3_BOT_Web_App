@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo
 import { createPortal } from 'react-dom';
 import './App.css';
 import './components/reader-redesign.css';
+import useWordStudyTimer from './utils/useWordStudyTimer';
 import BlocksTrainer from './components/BlocksTrainer';
 import FitText from './components/FitText';
 import HomeDashboardTiles from './components/HomeDashboardTiles';
@@ -6601,8 +6602,6 @@ function AppInner() {
   const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
   const [todayTimerNowMs, setTodayTimerNowMs] = useState(Date.now());
-  const [flashcardsDailyElapsedSec, setFlashcardsDailyElapsedSec] = useState(0);
-  const [flashcardsDailyTimerActive, setFlashcardsDailyTimerActive] = useState(false);
   const [theoryLoading, setTheoryLoading] = useState(false);
   const [theoryError, setTheoryError] = useState('');
   const [theoryPackage, setTheoryPackage] = useState(null);
@@ -7459,11 +7458,6 @@ function AppInner() {
   const globalTimerAutoResumeInFlightRef = useRef(false);
   const sectionVisibilitySnapshotRef = useRef(null);
   const autoPausedTodayTimerIdsRef = useRef(new Set());
-  const flashcardsDailyTimerStorageKeyRef = useRef('');
-  const flashcardsDailyElapsedRef = useRef(0);
-  const flashcardsDailyStartedAtRef = useRef(null);
-  const flashcardsDailyActiveRef = useRef(false);
-  const flashcardsDailyHydratedKeyRef = useRef('');
   const youtubeTodayTimerSyncInFlightRef = useRef(false);
   const readerAutoPausedByNavigationRef = useRef(false);
   const readerAutoPausedByIdleRef = useRef(false);
@@ -9349,9 +9343,6 @@ function AppInner() {
   const canManageYoutubeTranscripts = stableWebappUserId === '117649764';
   const canTestReaderAudioEngine = stableWebappUserId === '117649764';
   const currentLocalDateKey = getLocalDateKey();
-  const flashcardsDailyTimerStorageKey = useMemo(() => {
-    return `flashcards_daily_active_seconds_${stableWebappUserId}_${currentLocalDateKey}`;
-  }, [currentLocalDateKey, stableWebappUserId]);
   const skillTrainingStorageKey = useMemo(() => {
     return `skill_training_sessions_${stableWebappUserId}_${getLocalDateKey()}`;
   }, [stableWebappUserId]);
@@ -12366,198 +12357,17 @@ function AppInner() {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
-  const readFlashcardsDailyTimerSnapshot = useCallback(() => {
-    const key = flashcardsDailyTimerStorageKeyRef.current;
-    if (!key || typeof window === 'undefined') {
-      return { elapsedSeconds: 0 };
-    }
-    try {
-      const raw = window.localStorage.getItem(key);
-      const parsed = raw ? JSON.parse(raw) : null;
-      return {
-        elapsedSeconds: Math.max(0, Math.floor(Number(parsed?.elapsed_seconds || 0))),
-      };
-    } catch (_error) {
-      return { elapsedSeconds: 0 };
-    }
-  }, []);
-
-  const writeFlashcardsDailyTimerSnapshot = useCallback((elapsedSeconds) => {
-    const key = flashcardsDailyTimerStorageKeyRef.current;
-    if (!key || typeof window === 'undefined') return;
-    const safeElapsed = Math.max(0, Math.floor(Number(elapsedSeconds || 0)));
-    try {
-      window.localStorage.setItem(key, JSON.stringify({
-        date_key: currentLocalDateKey,
-        elapsed_seconds: safeElapsed,
-        updated_at: new Date().toISOString(),
-      }));
-    } catch (_error) {
-      // Local persistence is best-effort; the server task timer still syncs separately.
-    }
-  }, [currentLocalDateKey]);
-
-  const pauseFlashcardsDailyTimer = useCallback((reason = 'pause') => {
-    if (!flashcardsDailyActiveRef.current) {
-      writeFlashcardsDailyTimerSnapshot(flashcardsDailyElapsedRef.current);
-      return flashcardsDailyElapsedRef.current;
-    }
-    const nowMs = Date.now();
-    const startedAt = Number(flashcardsDailyStartedAtRef.current || 0);
-    const segmentSeconds = startedAt > 0 ? Math.max(0, Math.floor((nowMs - startedAt) / 1000)) : 0;
-    const nextElapsed = Math.max(0, Math.floor(Number(flashcardsDailyElapsedRef.current || 0))) + segmentSeconds;
-    flashcardsDailyElapsedRef.current = nextElapsed;
-    flashcardsDailyStartedAtRef.current = null;
-    flashcardsDailyActiveRef.current = false;
-    setFlashcardsDailyElapsedSec(nextElapsed);
-    setFlashcardsDailyTimerActive(false);
-    writeFlashcardsDailyTimerSnapshot(nextElapsed);
-    if (reason !== 'tick') {
-      setTodayTimerNowMs(nowMs);
-    }
-    return nextElapsed;
-  }, [writeFlashcardsDailyTimerSnapshot]);
-
-  const startFlashcardsDailyTimer = useCallback(() => {
-    const key = flashcardsDailyTimerStorageKeyRef.current;
-    if (key && flashcardsDailyHydratedKeyRef.current !== key) {
-      const snapshot = readFlashcardsDailyTimerSnapshot();
-      flashcardsDailyHydratedKeyRef.current = key;
-      flashcardsDailyElapsedRef.current = snapshot.elapsedSeconds;
-      setFlashcardsDailyElapsedSec(snapshot.elapsedSeconds);
-    }
-    if (flashcardsDailyActiveRef.current) return flashcardsDailyElapsedRef.current;
-    const nowMs = Date.now();
-    flashcardsDailyStartedAtRef.current = nowMs;
-    flashcardsDailyActiveRef.current = true;
-    setFlashcardsDailyTimerActive(true);
-    writeFlashcardsDailyTimerSnapshot(flashcardsDailyElapsedRef.current);
-    setTodayTimerNowMs(nowMs);
-    return flashcardsDailyElapsedRef.current;
-  }, [readFlashcardsDailyTimerSnapshot, writeFlashcardsDailyTimerSnapshot]);
-
-  const getFlashcardsDailyDisplayElapsedSeconds = useCallback((nowMs = Date.now()) => {
-    const baseSeconds = Math.max(0, Math.floor(Number(flashcardsDailyElapsedRef.current || 0)));
-    if (!flashcardsDailyActiveRef.current || !flashcardsDailyStartedAtRef.current) {
-      return baseSeconds;
-    }
-    return baseSeconds + Math.max(0, Math.floor((nowMs - Number(flashcardsDailyStartedAtRef.current)) / 1000));
-  }, []);
-
-  const ensureFlashcardsDailyTimerAtLeast = useCallback((elapsedSeconds) => {
-    const safeElapsed = Math.max(0, Math.floor(Number(elapsedSeconds || 0)));
-    const currentElapsed = getFlashcardsDailyDisplayElapsedSeconds(Date.now());
-    if (safeElapsed <= currentElapsed) return currentElapsed;
-    flashcardsDailyElapsedRef.current = safeElapsed;
-    if (flashcardsDailyActiveRef.current) {
-      flashcardsDailyStartedAtRef.current = Date.now();
-    }
-    setFlashcardsDailyElapsedSec(safeElapsed);
-    writeFlashcardsDailyTimerSnapshot(safeElapsed);
-    setTodayTimerNowMs(Date.now());
-    return safeElapsed;
-  }, [getFlashcardsDailyDisplayElapsedSeconds, writeFlashcardsDailyTimerSnapshot]);
-
-  useEffect(() => {
-    flashcardsDailyTimerStorageKeyRef.current = flashcardsDailyTimerStorageKey;
-    const snapshot = readFlashcardsDailyTimerSnapshot();
-    flashcardsDailyHydratedKeyRef.current = flashcardsDailyTimerStorageKey;
-    flashcardsDailyElapsedRef.current = snapshot.elapsedSeconds;
-    flashcardsDailyStartedAtRef.current = null;
-    flashcardsDailyActiveRef.current = false;
-    setFlashcardsDailyElapsedSec(snapshot.elapsedSeconds);
-    setFlashcardsDailyTimerActive(false);
-    setTodayTimerNowMs(Date.now());
-  }, [flashcardsDailyTimerStorageKey, readFlashcardsDailyTimerSnapshot]);
-
-  useEffect(() => {
-    flashcardsDailyElapsedRef.current = Math.max(0, Math.floor(Number(flashcardsDailyElapsedSec || 0)));
-  }, [flashcardsDailyElapsedSec]);
-
-  useEffect(() => {
-    flashcardsDailyActiveRef.current = Boolean(flashcardsDailyTimerActive);
-  }, [flashcardsDailyTimerActive]);
-
-  useEffect(() => {
-    if (!flashcardsDailyTimerActive) return undefined;
-    // Foreground-only accounting: a 1s interval can't fire while the device is asleep
-    // (screen locked) or the Telegram web view is suspended in the background. On iOS those
-    // do NOT reliably emit visibilitychange/pagehide/blur, so we must not depend on them to
-    // stop the clock. Instead, on EVERY tick we count only the time up to MAX_STEP_MS
-    // (~2× the interval, absorbing normal jitter); anything beyond that is background/asleep
-    // time and is subtracted by shifting the segment start forward, so it is never counted.
-    // Because a frozen web view simply can't tick, background time can't accrue at all — this
-    // is the primary, event-independent guard that stops the badge counting while swiped away.
-    // (When visibilitychange DOES fire, the timer is already paused and this interval isn't
-    // running, so the two mechanisms never double-correct.)
-    const MAX_STEP_MS = 2000;
-    let lastTickMs = Date.now();
-    const intervalId = window.setInterval(() => {
-      const now = Date.now();
-      const backgroundMs = Math.max(0, (now - lastTickMs) - MAX_STEP_MS);
-      if (
-        backgroundMs > 0
-        && flashcardsDailyActiveRef.current
-        && flashcardsDailyStartedAtRef.current
-      ) {
-        flashcardsDailyStartedAtRef.current = Number(flashcardsDailyStartedAtRef.current) + backgroundMs;
-        // Persist the corrected elapsed so a reload/snapshot stays consistent too.
-        writeFlashcardsDailyTimerSnapshot(getFlashcardsDailyDisplayElapsedSeconds(now));
-      }
-      lastTickMs = now;
-      setTodayTimerNowMs(now);
-    }, 1000);
-    return () => window.clearInterval(intervalId);
-  }, [flashcardsDailyTimerActive, writeFlashcardsDailyTimerSnapshot, getFlashcardsDailyDisplayElapsedSeconds]);
-
-  // Pause the daily flashcards timer when the app/tab is backgrounded, and resume it
-  // on return — but ONLY if we're still on an active flashcards screen
-  // (flashcardActiveMode is set to null on every exit path, so leaving the section
-  // won't auto-resume). The in-tick sleep-gap correction above is the backstop for
-  // platforms that don't reliably fire visibilitychange (iOS Telegram); this handler
-  // covers the ones that do, so the timer never keeps counting while the user is away.
-  useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
-    const pauseForBackground = () => {
-      if (flashcardsDailyActiveRef.current) pauseFlashcardsDailyTimer('app_hidden');
-    };
-    const resumeForForeground = () => {
-      if (flashcardActiveMode && !flashcardsDailyActiveRef.current) {
-        startFlashcardsDailyTimer();
-      }
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        pauseForBackground();
-      } else if (document.visibilityState === 'visible') {
-        resumeForForeground();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('pagehide', pauseForBackground);
-    // Telegram-native lifecycle (Bot API 8.0+): the client emits `deactivated`/`activated`
-    // even on iOS, where the DOM visibilitychange/pagehide events are unreliable when the
-    // app is swiped away. Registering them gives an instant, exact pause on those clients;
-    // on older clients they simply never fire and the per-tick clamp above still covers us.
-    let telegramLifecycleBound = false;
-    if (telegramApp && typeof telegramApp.onEvent === 'function') {
-      try {
-        telegramApp.onEvent('deactivated', pauseForBackground);
-        telegramApp.onEvent('activated', resumeForForeground);
-        telegramLifecycleBound = true;
-      } catch (_e) { /* unsupported client — DOM events + clamp remain */ }
-    }
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('pagehide', pauseForBackground);
-      if (telegramLifecycleBound && typeof telegramApp.offEvent === 'function') {
-        try {
-          telegramApp.offEvent('deactivated', pauseForBackground);
-          telegramApp.offEvent('activated', resumeForForeground);
-        } catch (_e) { /* no-op */ }
-      }
-    };
-  }, [flashcardActiveMode, pauseFlashcardsDailyTimer, startFlashcardsDailyTimer]);
+  // Время активной учёбы словам живёт в одном месте — в хуке. Он сам решает,
+  // идти счёту или нет (видимость, фокус, экран тренировки, простой 30 секунд),
+  // сам досылает отрезки на сервер и сам продолжает дневную сумму после входа.
+  // Раньше этим управляли три разные группы обработчиков, и они спорили.
+  const wordStudyTimer = useWordStudyTimer({
+    initData,
+    userId: stableWebappUserId,
+    active: Boolean(flashcardActiveMode),
+    telegramApp,
+    enabled: Boolean(initData),
+  });
 
   const formatSrsIntervalHint = (seconds) => {
     const safeSeconds = Number(seconds);
@@ -12587,19 +12397,11 @@ function AppInner() {
   };
 
   const toggleTodaySectionTaskTimer = async (sectionKey) => {
-    const isFlashcardsTimer = String(sectionKey || '').toLowerCase() === 'flashcards';
+    // У счётчика слов ручной паузы нет: он сам останавливается, когда человек
+    // ушёл с экрана, свернул приложение или 30 секунд ничего не трогал.
+    if (String(sectionKey || '').toLowerCase() === 'flashcards') return;
     const item = getTodayTaskForSection(sectionKey);
-    if (!item) {
-      // Flashcards timer runs independently — toggle the standalone daily timer.
-      if (isFlashcardsTimer) {
-        if (flashcardsDailyTimerActive) {
-          pauseFlashcardsDailyTimer('pause');
-        } else {
-          startFlashcardsDailyTimer();
-        }
-      }
-      return;
-    }
+    if (!item) return;
     const nowElapsed = getTodayItemElapsedSeconds(item, Date.now());
     if (isTodayItemTimerRunning(item)) {
       await syncTodayItemTimer(item, 'pause', { elapsedSeconds: nowElapsed, running: false });
@@ -12623,56 +12425,41 @@ function AppInner() {
     // Without this, progress >= 100 replaces the timer with ✅ which hides it mid-session.
     const ignoreProgress = Boolean(options?.ignoreProgress);
     const elapsed = isFlashcardsTimer
-      ? getFlashcardsDailyDisplayElapsedSeconds(todayTimerNowMs)
+      ? wordStudyTimer.daySeconds
       : getTodayItemDisplayElapsedSeconds(item, todayTimerNowMs);
     const progress = item ? getTodayItemProgressPercent(item, todayTimerNowMs) : 0;
     const done = item && (String(item?.status || '').toLowerCase() === 'done' || (!ignoreProgress && progress >= 100));
-    const running = isFlashcardsTimer ? flashcardsDailyTimerActive : isTodayItemTimerRunning(item);
+    const running = isFlashcardsTimer ? wordStudyTimer.counting : isTodayItemTimerRunning(item);
+    const label = running ? `⏱ ${formatCompactTimer(elapsed)}` : `⏸ ${formatCompactTimer(elapsed)}`;
     return (
       <div className={`today-section-task-hud ${inline ? 'is-inline' : ''}`.trim()}>
         {done && (
           <span className="today-section-task-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
         )}
-        <button
-          type="button"
-          className={`reader-timer-pill today-section-timer-pill ${!running ? 'is-paused' : ''}`}
-          onClick={() => toggleTodaySectionTaskTimer(sectionKey)}
-          title={tr('Пауза/продолжение таймера задачи', 'Aufgaben-Timer pausieren/fortsetzen')}
-        >
-          {running ? `⏱ ${formatCompactTimer(elapsed)}` : `⏸ ${formatCompactTimer(elapsed)}`}
-        </button>
+        {isFlashcardsTimer ? (
+          <span
+            className={`reader-timer-pill today-section-timer-pill ${!running ? 'is-paused' : ''}`}
+            title={tr('Время занятий словами за сегодня', 'Heutige Lernzeit mit Wörtern')}
+          >
+            {label}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className={`reader-timer-pill today-section-timer-pill ${!running ? 'is-paused' : ''}`}
+            onClick={() => toggleTodaySectionTaskTimer(sectionKey)}
+            title={tr('Пауза/продолжение таймера задачи', 'Aufgaben-Timer pausieren/fortsetzen')}
+          >
+            {label}
+          </button>
+        )}
       </div>
     );
   };
 
-  const ensureFlashcardsTaskTimerRunning = async () => {
-    const item = getTodayTaskForSection('flashcards');
-    if (!item) return;
-    const serverElapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
-    ensureFlashcardsDailyTimerAtLeast(serverElapsedSeconds);
-    if (isTodayItemTimerRunning(item)) return;
-    const elapsedSeconds = Math.max(
-      serverElapsedSeconds,
-      getFlashcardsDailyDisplayElapsedSeconds(Date.now())
-    );
-    const hasStartedBefore = elapsedSeconds > 0 || String(item?.status || '').toLowerCase() === 'doing';
-    await syncTodayItemTimer(
-      item,
-      hasStartedBefore ? 'resume' : 'start',
-      { elapsedSeconds, running: true }
-    );
-  };
-
-  const pauseFlashcardsTaskTimer = async () => {
-    const item = getTodayTaskForSection('flashcards');
-    if (!item) return;
-    if (!isTodayItemTimerRunning(item)) return;
-    const elapsedSeconds = Math.max(
-      getTodayItemElapsedSeconds(item, Date.now()),
-      getFlashcardsDailyDisplayElapsedSeconds(Date.now())
-    );
-    await syncTodayItemTimer(item, 'pause', { elapsedSeconds, running: false });
-  };
+  // Серверный таймер задачи «Карточки» больше не заводится с фронта: сервер сам
+  // кладёт в неё дневную сумму при каждой досылке отрезка. Два счётчика на одно
+  // и то же время расходились — теперь источник один.
 
   const prepareTodayTheory = async (item, options = {}) => {
     if (!initData || !item?.id) return;
@@ -16269,7 +16056,6 @@ function AppInner() {
   }
 
   const goHomeScreen = () => {
-    pauseFlashcardsDailyTimer('home');
     setFlashcardsOnly(false);
     setFlashcardSessionActive(false);
     setSelectedSections(new Set());
@@ -16370,7 +16156,6 @@ function AppInner() {
 
   const openFlashcardsSetup = (ref) => {
     stopTtsPlayback();
-    pauseFlashcardsDailyTimer('open_flashcards_setup');
     setFlashcardsVisible(true);
     setFlashcardsOnly(false);
     setFlashcardActiveMode(null);
@@ -16388,7 +16173,6 @@ function AppInner() {
 
   const exitFlashcardsTraining = async () => {
     stopTtsPlayback();
-    pauseFlashcardsDailyTimer('exit_flashcards');
     void dispatchQueuedFlashcardFeel('exit_session');
     setFlashcardsOnly(false);
     setFlashcardActiveMode(null);
@@ -16397,7 +16181,6 @@ function AppInner() {
     setFlashcardPreviewActive(false);
     setFlashcardExitSummary(false);
     setFlashcardsEmptyState(null);
-    await pauseFlashcardsTaskTimer();
   };
 
   const startFlashcardsMode = async (mode) => {
@@ -16429,8 +16212,6 @@ function AppInner() {
     setFlashcardExitSummary(false);
     setFlashcardsError('');
     setFlashcardsEmptyState(null);
-    startFlashcardsDailyTimer();
-    await ensureFlashcardsTaskTimerRunning();
 
     if (normalizedMode === 'fsrs') {
       setFlashcardSessionActive(false);
@@ -17322,7 +17103,6 @@ function AppInner() {
   const pauseAllActiveTimers = useCallback(async (reason = 'auto') => {
     if (globalTimerAutoPauseInFlightRef.current) return;
     globalTimerAutoPauseInFlightRef.current = true;
-    pauseFlashcardsDailyTimer(reason);
     setGlobalTimerSuspended(true);
     setGlobalPauseReason(
       reason === 'lifecycle'
@@ -17345,9 +17125,7 @@ function AppInner() {
         });
         await Promise.all(runningTodayTimers.map((item) => (
           syncTodayItemTimer(item, 'pause', {
-            elapsedSeconds: String(item?.task_type || '').toLowerCase() === 'cards'
-              ? Math.max(getTodayItemElapsedSeconds(item, nowMs), getFlashcardsDailyDisplayElapsedSeconds(nowMs))
-              : getTodayItemElapsedSeconds(item, nowMs),
+            elapsedSeconds: getTodayItemElapsedSeconds(item, nowMs),
             running: false,
             keepalive: reason === 'pagehide' || reason === 'beforeunload',
           })
@@ -17396,9 +17174,7 @@ function AppInner() {
     assistantSessionId,
     syncTodayItemTimer,
     getTodayItemElapsedSeconds,
-    getFlashcardsDailyDisplayElapsedSeconds,
     isTodayItemTimerRunning,
-    pauseFlashcardsDailyTimer,
     stopReaderSessionTracking,
     stopAssistantSessionTracking,
   ]);
@@ -17557,10 +17333,6 @@ function AppInner() {
         return null;
       };
 
-      if (sectionVisibility.flashcards && flashcardActiveMode) {
-        startFlashcardsDailyTimer();
-      }
-
       if (items.length === 0) return;
 
       const nowMs = Date.now();
@@ -17618,11 +17390,9 @@ function AppInner() {
     readerTimerPaused,
     flashcardActiveMode,
     getTodayItemElapsedSeconds,
-    getFlashcardsDailyDisplayElapsedSeconds,
     isTodayItemTimerRunning,
     syncTodayItemTimer,
     startReaderSessionTracking,
-    startFlashcardsDailyTimer,
   ]);
 
   const tabletAutoFullscreenDoneRef = useRef(false);
@@ -17942,13 +17712,6 @@ function AppInner() {
       const wasVisible = Boolean(prevVisibility[sectionKey]);
       const isVisible = Boolean(sectionVisibility[sectionKey]);
       if (wasVisible === isVisible) return;
-      if (sectionKey === 'flashcards') {
-        if (wasVisible && !isVisible) {
-          pauseFlashcardsDailyTimer('section_hidden');
-        } else if (!wasVisible && isVisible && flashcardActiveMode) {
-          startFlashcardsDailyTimer();
-        }
-      }
       const item = getSectionTask(sectionKey);
       if (!item?.id) return;
       const status = String(item?.status || '').toLowerCase();
@@ -17956,9 +17719,7 @@ function AppInner() {
         autoPausedTodayTimerIdsRef.current.delete(item.id);
         return;
       }
-      const elapsedSeconds = sectionKey === 'flashcards'
-        ? Math.max(getTodayItemElapsedSeconds(item, nowMs), getFlashcardsDailyDisplayElapsedSeconds(nowMs))
-        : getTodayItemElapsedSeconds(item, nowMs);
+      const elapsedSeconds = getTodayItemElapsedSeconds(item, nowMs);
       if (wasVisible && !isVisible && isTodayItemTimerRunning(item)) {
         pausedByNavigation = true;
         if (sectionKey !== 'youtube') {
@@ -18049,11 +17810,8 @@ function AppInner() {
     readerSessionId,
     flashcardActiveMode,
     getTodayItemElapsedSeconds,
-    getFlashcardsDailyDisplayElapsedSeconds,
     isTodayItemTimerRunning,
-    pauseFlashcardsDailyTimer,
     syncTodayItemTimer,
-    startFlashcardsDailyTimer,
     stopReaderSessionTracking,
     startReaderSessionTracking,
   ]);
@@ -19786,19 +19544,6 @@ function AppInner() {
     loadSrsNextCard,
     prefetchSrsCards,
     updateSrsPrefetchQueue,
-  ]);
-
-  useEffect(() => {
-    if (!flashcardsOnly || !flashcardActiveMode || !isSectionVisible('flashcards')) return;
-    if (todayPlanLoading && !todayPlanLoadedOnce) return;
-    void ensureFlashcardsTaskTimerRunning();
-  }, [
-    flashcardsOnly,
-    flashcardActiveMode,
-    selectedSections,
-    todayPlan,
-    todayPlanLoading,
-    todayPlanLoadedOnce,
   ]);
 
   useEffect(() => {

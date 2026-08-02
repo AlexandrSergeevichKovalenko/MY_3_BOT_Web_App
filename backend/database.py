@@ -53061,3 +53061,137 @@ def is_reply_keyboard_alive(user_id: int) -> bool:
         logging.debug("is_reply_keyboard_alive failed user_id=%s", user_id, exc_info=True)
         # Не знаем — считаем, что жива: лучше не трогать, чем мешать лишним сообщением.
         return True
+
+
+# ---------------------------------------------------------------------------
+# Время активной учёбы (секунды внимания к тренировкам слов) — учёт по отрезкам.
+#
+# Клиент считает ТОЛЬКО текущий незакрытый отрезок и досылает его каждые
+# несколько секунд под одним и тем же segment_id. Сервер держит дневную сумму.
+# Поэтому убитое приложение теряет максимум интервал досылки, а не весь сеанс,
+# а повторная присылка того же отрезка ничего не задваивает.
+# ---------------------------------------------------------------------------
+
+_STUDY_TIME_SCHEMA_DONE = False
+
+# Потолки — защита от битого клиента: один отрезок и один день не могут быть
+# длиннее разумного, иначе одна кривая цифра навсегда испортит статистику.
+STUDY_TIME_MAX_SEGMENT_SECONDS = 4 * 60 * 60
+STUDY_TIME_MAX_DAY_SECONDS = 16 * 60 * 60
+STUDY_TIME_SURFACES = {"words"}
+
+
+def ensure_study_time_schema() -> None:
+    global _STUDY_TIME_SCHEMA_DONE
+    if _STUDY_TIME_SCHEMA_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_study_time_segments (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    surface TEXT NOT NULL,
+                    local_day DATE NOT NULL,
+                    segment_id TEXT NOT NULL,
+                    active_seconds INTEGER NOT NULL DEFAULT 0,
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"""
+            )
+            cur.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS bt_3_study_time_segments_uniq
+                   ON bt_3_study_time_segments (user_id, segment_id);"""
+            )
+            cur.execute(
+                """CREATE INDEX IF NOT EXISTS bt_3_study_time_segments_day_idx
+                   ON bt_3_study_time_segments (user_id, surface, local_day);"""
+            )
+        conn.commit()
+    _STUDY_TIME_SCHEMA_DONE = True
+
+
+def _normalize_study_surface(surface: str | None) -> str:
+    normalized = str(surface or "").strip().lower()
+    return normalized if normalized in STUDY_TIME_SURFACES else "words"
+
+
+def get_study_time_day_seconds(
+    *,
+    user_id: int,
+    surface: str,
+    local_day: date,
+) -> int:
+    ensure_study_time_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(active_seconds), 0)
+                FROM bt_3_study_time_segments
+                WHERE user_id = %s AND surface = %s AND local_day = %s;
+                """,
+                (int(user_id), _normalize_study_surface(surface), local_day),
+            )
+            row = cursor.fetchone()
+    total = int((row[0] if row else 0) or 0)
+    return max(0, min(total, STUDY_TIME_MAX_DAY_SECONDS))
+
+
+def upsert_study_time_segment(
+    *,
+    user_id: int,
+    surface: str,
+    local_day: date,
+    segment_id: str,
+    active_seconds: int,
+    started_at: datetime | None = None,
+) -> int:
+    """Записывает отрезок и возвращает дневную сумму.
+
+    active_seconds у отрезка только растёт (GREATEST): досылки могут прийти не по
+    порядку, и опоздавшая старая копия не должна откатывать уже учтённое время.
+    """
+    ensure_study_time_schema()
+    normalized_segment_id = str(segment_id or "").strip()[:80]
+    if not normalized_segment_id:
+        raise ValueError("segment_id обязателен")
+    safe_seconds = max(0, min(int(active_seconds or 0), STUDY_TIME_MAX_SEGMENT_SECONDS))
+    safe_started_at = started_at or datetime.now(timezone.utc)
+    normalized_surface = _normalize_study_surface(surface)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_study_time_segments
+                    (user_id, surface, local_day, segment_id, active_seconds, started_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id, segment_id) DO UPDATE
+                SET active_seconds = GREATEST(
+                        bt_3_study_time_segments.active_seconds,
+                        EXCLUDED.active_seconds
+                    ),
+                    updated_at = NOW();
+                """,
+                (
+                    int(user_id),
+                    normalized_surface,
+                    local_day,
+                    normalized_segment_id,
+                    safe_seconds,
+                    safe_started_at,
+                ),
+            )
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(active_seconds), 0)
+                FROM bt_3_study_time_segments
+                WHERE user_id = %s AND surface = %s AND local_day = %s;
+                """,
+                (int(user_id), normalized_surface, local_day),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    total = int((row[0] if row else 0) or 0)
+    return max(0, min(total, STUDY_TIME_MAX_DAY_SECONDS))

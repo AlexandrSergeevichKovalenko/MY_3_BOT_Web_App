@@ -563,6 +563,8 @@ from backend.database import (
     update_daily_plan_item_status,
     update_daily_plan_item_payload,
     update_daily_plan_item_timer,
+    get_study_time_day_seconds,
+    upsert_study_time_segment,
     get_best_video_recommendation_for_focus,
     upsert_video_recommendation,
     get_video_recommendation_by_id,
@@ -42933,6 +42935,150 @@ def update_today_item_timer(item_id: int):
         plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ),
     )
     return jsonify({"ok": True, "item": item})
+
+
+def _resolve_study_time_local_day(raw_value: object) -> date:
+    """День берём у клиента: счётчик показывает ЕГО сегодня, а не наше.
+
+    Но принимаем только соседние с серверным днём даты — иначе кривые/подкрученные
+    часы на телефоне могут насыпать время в произвольную дату.
+    """
+    server_today = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+    text = str(raw_value or "").strip()
+    if not text:
+        return server_today
+    try:
+        parsed = date.fromisoformat(text[:10])
+    except Exception:
+        return server_today
+    if abs((parsed - server_today).days) > 1:
+        return server_today
+    return parsed
+
+
+def _mirror_study_time_into_cards_task(*, user_id: int, plan_date: date, day_seconds: int) -> None:
+    """Дневная сумма — единственный источник времени и для задачи «Карточки».
+
+    Без этого у задачи дня был бы свой отдельный счётчик, который расходится с
+    бейджем: ровно та беда, из-за которой время учёбы жило в трёх местах сразу.
+    """
+    try:
+        plan = get_daily_plan(int(user_id), plan_date)
+        items = list((plan or {}).get("items") or [])
+        item = next((entry for entry in items if str(entry.get("task_type") or "").lower() == "cards"), None)
+        if not item or not item.get("id"):
+            return
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        goal_seconds = max(0, int(payload.get("timer_goal_seconds") or (max(0, int(item.get("estimated_minutes") or 0)) * 60)))
+        stored_seconds = max(0, int(payload.get("timer_seconds") or 0))
+        next_seconds = max(stored_seconds, int(day_seconds))
+        progress_percent = 0.0
+        if goal_seconds > 0:
+            progress_percent = min(100.0, (float(next_seconds) / float(goal_seconds)) * 100.0)
+        elif next_seconds > 0:
+            progress_percent = 100.0
+        updates = {
+            "timer_seconds": int(next_seconds),
+            "timer_goal_seconds": int(goal_seconds),
+            "timer_progress_percent": round(progress_percent, 2),
+        }
+        if all(payload.get(key) == value for key, value in updates.items()):
+            return
+        update_daily_plan_item_payload(user_id=int(user_id), item_id=int(item["id"]), payload_updates=updates)
+        _mark_today_plan_snapshot_stale(user_id=int(user_id), plan_date=plan_date)
+    except Exception:
+        logging.warning("Study time mirror into cards task failed: user=%s", user_id, exc_info=True)
+
+
+@app.route("/api/study-time/day", methods=["GET"])
+def get_study_time_day():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    surface = str(request.args.get("surface") or "words").strip().lower()
+    local_day = _resolve_study_time_local_day(request.args.get("local_day"))
+    try:
+        day_seconds = get_study_time_day_seconds(
+            user_id=int(user_id),
+            surface=surface,
+            local_day=local_day,
+        )
+    except Exception:
+        logging.warning("Study time day read failed: user=%s", user_id, exc_info=True)
+        return jsonify({"error": "Не удалось прочитать время занятий"}), 500
+
+    return jsonify({
+        "ok": True,
+        "surface": surface,
+        "local_day": local_day.isoformat(),
+        "day_seconds": int(day_seconds),
+    })
+
+
+@app.route("/api/study-time/segment", methods=["POST"])
+def sync_study_time_segment():
+    user_id, _username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        return jsonify({"error": error}), status
+
+    body = request.get_json(silent=True) or {}
+    raw_segments = body.get("segments")
+    if not isinstance(raw_segments, list):
+        raw_segments = [body]
+
+    surface = str(body.get("surface") or "words").strip().lower()
+    day_seconds: int | None = None
+    touched_days: set[date] = set()
+
+    for entry in raw_segments[:50]:
+        if not isinstance(entry, dict):
+            continue
+        segment_id = str(entry.get("segment_id") or "").strip()
+        if not segment_id:
+            continue
+        try:
+            active_seconds = max(0, int(round(float(entry.get("active_ms") or 0) / 1000.0)))
+        except Exception:
+            continue
+        local_day = _resolve_study_time_local_day(entry.get("local_day") or body.get("local_day"))
+        started_at = _parse_iso_datetime(entry.get("started_at")) or datetime.now(timezone.utc)
+        try:
+            day_seconds = upsert_study_time_segment(
+                user_id=int(user_id),
+                surface=surface,
+                local_day=local_day,
+                segment_id=segment_id,
+                active_seconds=active_seconds,
+                started_at=started_at,
+            )
+            touched_days.add(local_day)
+        except Exception:
+            logging.warning(
+                "Study time segment write failed: user=%s segment=%s",
+                user_id,
+                segment_id,
+                exc_info=True,
+            )
+
+    if day_seconds is None:
+        return jsonify({"error": "Нет отрезков для записи"}), 400
+
+    if surface == "words":
+        for touched_day in touched_days:
+            _mirror_study_time_into_cards_task(
+                user_id=int(user_id),
+                plan_date=touched_day,
+                day_seconds=get_study_time_day_seconds(
+                    user_id=int(user_id),
+                    surface=surface,
+                    local_day=touched_day,
+                ),
+            )
+
+    return jsonify({"ok": True, "surface": surface, "day_seconds": int(day_seconds)})
 
 
 @app.route("/api/today/video/recommend", methods=["POST"])

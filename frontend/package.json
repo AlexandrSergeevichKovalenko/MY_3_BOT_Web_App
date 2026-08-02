@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "start": "serve -s dist -l $PORT",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:rules": "node --test src/utils/*.test.mjs"
   },
   "dependencies": {
     "@livekit/components-react": "^2.7.0",
