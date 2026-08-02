@@ -26,14 +26,14 @@ import unittest
 from pathlib import Path
 
 
-# Счётчики, которым `provider='openai'` пока законен: настоящий вызов у них НИКТО не
-# замеряет, поэтому такая строка — единственная запись о том, что модель звали.
-# Убрать отсюда можно только вместе с добавлением настоящего замера расхода.
-UNMEASURED_CALLS_ALLOWLIST = {
-    "story_start_generation",
-    "story_submit_check",
-    "story_explain",
-}
+# Пусто — и должно оставаться пустым. Здесь жили три счётчика «Загадочной истории»
+# (story_start_generation, story_submit_check, story_explain): их вызовы никто не замерял,
+# поэтому пометка была единственной записью о том, что модель звали. 02.08.2026 замер
+# добавлен — истории зовут модель через llm_execute, а обработчики теперь ставят
+# set_llm_billing_user, так что расход пишется на человека и попадает в его дневной
+# потолок. Пополнять список нельзя: если у нового действия нет замера, добавляйте замер,
+# а не исключение.
+UNMEASURED_CALLS_ALLOWLIST: set[str] = set()
 
 _SERVER = Path(__file__).resolve().parent.parent / "backend_server.py"
 
@@ -83,6 +83,9 @@ class RequestRowMeaningTests(unittest.TestCase):
             "ask_gpt_daily",
             "theory_check_feedback",
             "theory_package_prepare",
+            "story_start_generation",
+            "story_submit_check",
+            "story_explain",
         ):
             with self.subTest(action=action):
                 counters = [

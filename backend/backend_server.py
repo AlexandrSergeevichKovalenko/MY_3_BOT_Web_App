@@ -58222,6 +58222,14 @@ def start_webapp_story():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
+    # «Загадочная история» — платная функция, и модель здесь зовёт конкретный человек.
+    # Без этой строки generate_mystery_story писался в ведомость с user_id=NULL: расход
+    # был, а в дневной потолок этого человека не попадал (потолок считает сумму
+    # cost_amount по его user_id). Снимаем в finally: поток веб-сервера переиспользуется,
+    # и забытый id уехал бы на следующий запрос. Внутри asyncio.run значение доживает —
+    # задачи копируют текущий контекст, в том числе под asyncio.gather.
+    from backend.openai_manager import set_llm_billing_user
+    set_llm_billing_user(int(user_id))
     try:
         result = asyncio.run(
             start_story_session_webapp(
@@ -58237,14 +58245,18 @@ def start_webapp_story():
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка запуска истории: {exc}"}), 500
+    finally:
+        set_llm_billing_user(None)
 
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 400
     if isinstance(result, dict) and bool(result.get("created")):
+        # Счётчик «человек запустил историю». Настоящий вызов (generate_mystery_story)
+        # теперь замеряется и пишется на него же — см. set_llm_billing_user выше.
         _billing_log_event_safe(
             user_id=int(user_id),
             action_type="story_start_generation",
-            provider="openai",
+            provider="app_internal",
             units_type="requests",
             units_value=1.0,
             source_lang=source_lang,
@@ -58302,6 +58314,11 @@ def submit_webapp_story():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
+    # Проверка ЕГО перевода и разбор ЕГО догадки — чисто личная работа, никому больше
+    # не пригодится. Два вызова (check_translation_story_arena и
+    # check_story_guess_semantic) писались в никуда; теперь идут в его дневной потолок.
+    from backend.openai_manager import set_llm_billing_user
+    set_llm_billing_user(int(user_id))
     try:
         result = asyncio.run(
             submit_story_translation_webapp(
@@ -58318,13 +58335,16 @@ def submit_webapp_story():
         if detailed_message:
             return jsonify({"error": f"Ошибка истории: {detailed_message}"}), 500
         return jsonify({"error": "Ошибка истории: не удалось обработать проверку"}), 500
+    finally:
+        set_llm_billing_user(None)
 
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 400
+    # Счётчик «человек сдал перевод». Настоящие вызовы замеряются и пишутся на него.
     _billing_log_event_safe(
         user_id=int(user_id),
         action_type="story_submit_check",
-        provider="openai",
+        provider="app_internal",
         units_type="requests",
         units_value=3.0,
         source_lang=source_lang,
@@ -58375,6 +58395,11 @@ def explain_webapp_story():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
+    # Разбор ЕГО ошибок в истории. Внутри два параллельных вызова через asyncio.gather
+    # (check_story_explanation_core и ..._meta) — оба копируют этот контекст, поэтому
+    # обоим достаётся владелец разбора.
+    from backend.openai_manager import set_llm_billing_user
+    set_llm_billing_user(int(user_id))
     try:
         result = asyncio.run(
             explain_story_translation_webapp(
@@ -58388,16 +58413,19 @@ def explain_webapp_story():
         if detailed_message:
             return jsonify({"error": f"Ошибка разбора: {detailed_message}"}), 500
         return jsonify({"error": "Ошибка разбора: не удалось подготовить разбор"}), 500
+    finally:
+        set_llm_billing_user(None)
 
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 400
 
     # Only bill when we actually ran the LLM (cached re-opens are free).
     if not result.get("cached"):
+        # Счётчик «человек открыл разбор». Настоящие вызовы замеряются и пишутся на него.
         _billing_log_event_safe(
             user_id=int(user_id),
             action_type="story_explain",
-            provider="openai",
+            provider="app_internal",
             units_type="requests",
             units_value=1.0,
             source_lang=source_lang,
