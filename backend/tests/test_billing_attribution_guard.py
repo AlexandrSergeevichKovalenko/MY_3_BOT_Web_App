@@ -35,6 +35,22 @@ class ResolveBillingUserForTaskTests(unittest.TestCase):
             with self.subTest(task=task):
                 self.assertIsNone(om._resolve_billing_user_for_task(task, 117649764))
 
+    def test_background_card_enrichment_is_system_and_split_from_the_live_breakdown(self):
+        # Same prompt, same model, different NAME: the live breakdown a person asked for
+        # stays personal, while the background fill of the shared card is ours. Before the
+        # split both wrote "dictionary_assistant_multilang" and the ledger could not tell
+        # them apart — measuring a user's real cost meant guessing by hour of day.
+        self.assertIsNone(om._resolve_billing_user_for_task("dictionary_card_enrichment", 117649764))
+        self.assertEqual(om._resolve_billing_user_for_task("dictionary_assistant_multilang", 117649764), 117649764)
+        # Model must stay in step with the live breakdown, or card fullness starts depending
+        # on which path happened to fill it.
+        self.assertEqual(
+            om._DEFAULT_TASK_MODELS.get("dictionary_card_enrichment"),
+            om._DEFAULT_TASK_MODELS.get("dictionary_assistant_multilang"),
+        )
+        # Same gateway as the live breakdown (responses API), so behaviour is unchanged.
+        self.assertIn("dictionary_card_enrichment", om._DEFAULT_RESPONSES_TASKS)
+
     def test_personal_and_dual_tasks_keep_the_user(self):
         for task in (
             "check_translation_multilang", "recheck_translation",

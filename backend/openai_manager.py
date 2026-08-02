@@ -90,11 +90,19 @@ _DEFAULT_TASK_MODELS = {
     # (c) every sibling variant (_core_fast excepted), the enrichment batch and the stream path
     # already run on mini. Roll back instantly with LLM_TASK_MODEL_DICTIONARY_ASSISTANT_MULTILANG.
     "dictionary_assistant_multilang": "gpt-4.1-mini",
+    # Same prompt and same model as the live breakdown above — only the NAME differs, so the
+    # ledger can tell "a person asked for this word" from "we filled the shared card in the
+    # background". They used to share one name, which made them indistinguishable: the only
+    # way to split them was guessing by hour of day. Keep this model in step with
+    # dictionary_assistant_multilang, otherwise a card's fullness starts depending on which
+    # path happened to fill it — the exact thing _rich_enrich_card_fields was built to end.
+    "dictionary_card_enrichment": "gpt-4.1-mini",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
     "dictionary_assistant_de",
     "dictionary_assistant_multilang",
+    "dictionary_card_enrichment",
     "dictionary_assistant_multilang_core_fast",
     "dictionary_assistant_multilang_core_fast_batch",
     "dictionary_enrichment_multilang",
@@ -5547,6 +5555,11 @@ def set_llm_billing_user(user_id) -> None:
 _SYSTEM_ATTRIBUTION_TASKS: frozenset[str] = frozenset({
     # Shared dictionary pool enrichment (opportunistic fattening of the global entry)
     "enrich_word", "enrich_word_multilang",
+    # Фоновая сборка карточки слова: досбор сразу после сохранения, ночной добор единиц и
+    # пула, разовый пересбор куцых. Прошено НЕ человеком, а нами — результат ложится в общий
+    # пул и достаётся всем. Раньше эта работа шла под именем живого разбора и была от него
+    # неотличима в ведомости.
+    "dictionary_card_enrichment",
     "dictionary_enrichment_multilang",
     "dictionary_enrichment_multilang_word_compact",
     "dictionary_enrichment_multilang_phrase_compact",

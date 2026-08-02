@@ -204,9 +204,10 @@ function fitOne(root) {
   // только сменой содержимого или размера экрана.
   if (st.vis && Math.abs(visNow - st.vis) > EPS) st.runs = 0;
   if (Math.abs(availNow - st.avail) > EPS) { st.runs = 0; st.hard = 0; }
-  if (st.runs >= 2 || st.hard >= 8) return;
+  if (st.runs >= 2 || st.hard >= 8) { debugLine(root, card, `stop r${st.runs}h${st.hard}`); return; }
   st.runs += 1;
   st.hard += 1;
+  let branch = '?';
 
   // 1. Натуральный размер: снимаем всё, что применяли раньше. Корень сразу прижимаем к
   //    видимой высоте — иначе центрирование и замеры считаются по разной мере.
@@ -228,6 +229,7 @@ function fitOne(root) {
     st.k = k;
     st.avail = availHeight(root);
     st.vis = card.getBoundingClientRect().height;
+    debugLine(root, card, branch);
   };
 
   // Отдать внутреннему прокручиваемому блоку всю оставшуюся высоту экрана. Цикл — внутри
@@ -373,20 +375,20 @@ function fitOne(root) {
     settle(1);
   };
 
-  if (h <= avail) { grow(); return; }   // есть запас — сначала внутреннему блоку, потом рост
+  if (h <= avail) { branch = '1grow'; grow(); return; }   // есть запас — сначала внутреннему блоку, потом рост
 
   // 2. Отдаём отступы — это бесплатно.
   root.classList.add('is-tight');
   avail = availHeight(root);
   h = card.getBoundingClientRect().height;
-  if (h <= avail) { grow(); return; }
+  if (h <= avail) { branch = '2tight'; grow(); return; }
 
   // 3. Ужимаем карточку целиком — пока это не бьёт по читаемости. Масштаб подбираем
   //    замером, а не формулой: при другом кегле текст переносится иначе.
   const k0 = (avail - 2) / h;
   if (k0 >= MILD_ZOOM) {
     const k = fitsAt(k0) ? bisect(k0, Math.min(1, k0 * 1.35)) : bisect(Math.max(MIN_ZOOM, k0 * 0.85), k0);
-    if (card.getBoundingClientRect().height <= avail) { settle(k); return; }
+    if (card.getBoundingClientRect().height <= avail) { branch = '3shrink'; settle(k); return; }
   }
 
   // 4. Ужимать сильнее нельзя — текст станет нечитаемым. Тогда экран собирается иначе:
@@ -404,7 +406,7 @@ function fitOne(root) {
     card.classList.add('is-panelled');
     panel.classList.add('is-fit-panel');
     card.style.maxHeight = `${Math.round((avail - 2) / kp)}px`; // px внутри карточки — уже в её масштабе; −2 на рамку
-    if (card.getBoundingClientRect().height <= avail + EPS) { settle(kp); return; }
+    if (card.getBoundingClientRect().height <= avail + EPS) { branch = '4panel'; settle(kp); return; }
     // не помогло — откатываем к обычной прокрутке
     card.classList.remove('is-panelled');
     panel.classList.remove('is-fit-panel');
@@ -429,13 +431,51 @@ function fitOne(root) {
   // до высоты экрана.
   if (card.getBoundingClientRect().height <= avail - 4) {
     root.classList.remove('is-scroll');
+    branch = '5back';
     settle(fitsAt(1) ? 1 : bisect(MIN_ZOOM, 1));
     return;
   }
 
+  branch = '5scroll';
   const kLast = rescue(MIN_ZOOM);
   fillToScreen(kLast);
   remember(kLast);
+}
+
+// ВРЕМЕННО. Строка с числами расчёта поверх экрана — видна ТОЛЬКО владельцу (его telegram
+// id), остальным её нет. Нужна, чтобы один скриншот показывал, что движок считает экраном и
+// какой ветке он отдал карточку: три дня правок вслепую упирались в то, что стенд считает
+// одно, а телефон ведёт себя иначе. Снять сразу, как только причина будет найдена.
+const DEBUG_OWNER_ID = 117649764;
+function debugOn() {
+  try { return Number(window.Telegram?.WebApp?.initDataUnsafe?.user?.id) === DEBUG_OWNER_ID; }
+  catch (_e) { return false; }
+}
+function debugLine(root, card, branch) {
+  if (!debugOn()) return;
+  let el = document.getElementById('fitdbg');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'fitdbg';
+    el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;font:10px/1.25 ui-monospace,monospace;'
+      + 'background:rgba(0,0,0,.82);color:#7CFC00;padding:2px 4px;white-space:pre-wrap;pointer-events:none';
+    document.body.appendChild(el);
+  }
+  const tg = window.Telegram?.WebApp;
+  const probe = document.getElementById('fitdbgprobe') || (() => {
+    const p = document.createElement('div');
+    p.id = 'fitdbgprobe';
+    p.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:100dvh;pointer-events:none;opacity:0';
+    document.body.appendChild(p);
+    return p;
+  })();
+  const r = card.getBoundingClientRect();
+  const vh = viewportHeight();
+  el.textContent = `dvh=${Math.round(probe.getBoundingClientRect().height)} vv=${Math.round(window.visualViewport?.height || 0)} `
+    + `iH=${window.innerHeight} tg=${Math.round(Number(tg?.viewportStableHeight) || 0)}/${tg?.isExpanded} `
+    + `vh=${Math.round(vh)} avail=${Math.round(availHeight(root))} k=${card.style.zoom || '1'} `
+    + `card=${Math.round(r.height)}(${Math.round(r.height / vh * 100)}%) top=${Math.round(r.top)} `
+    + `br=${branch} cls=${card.className.replace(/ans-card|as-card|al-card|\s+/g, ' ').trim()}|${root.className.replace('ans-root', '').trim()}`;
 }
 
 function run() {

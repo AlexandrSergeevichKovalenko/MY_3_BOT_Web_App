@@ -9804,6 +9804,12 @@ def _rich_enrich_card_fields(
                 source_lang="de",
                 target_lang=native_lang,
                 explanation_lang=native_lang,
+                # Промпт и модель — те же, что у живого разбора (system_instruction_key не
+                # трогаем), меняется ТОЛЬКО имя задачи. Иначе в ведомости фоновый досбор и
+                # запрос живого человека пишутся одной строкой и различить их нечем: за
+                # месяц пришлось разводить их по часу суток и по совпадению с сохранениями.
+                # Имя стоит в _SYSTEM_ATTRIBUTION_TASKS, так что эта работа — всегда наша.
+                task_name="dictionary_card_enrichment",
                 # В фоне никто не ждёт ответа, поэтому жёсткий «живой» таймаут здесь
                 # только вредит: ночью 85 слов из 200 срывались на 14 секундах.
                 responses_timeout_seconds=timeout_seconds,

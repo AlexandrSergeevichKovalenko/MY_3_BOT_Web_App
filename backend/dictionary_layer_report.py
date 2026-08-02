@@ -17,6 +17,10 @@ from backend.database import get_db_connection_context
 # Задачи GPT, которые относятся именно к словарю: их стоимость слой и должен снижать.
 DICTIONARY_LLM_TASKS = (
     "dictionary_assistant_multilang",
+    # Фоновая сборка карточки (досбор после сохранения, ночной добор, пересбор). До
+    # 02.08.2026 писалась под именем живого разбора; без этой строки отчёт потерял бы
+    # самую большую статью словаря.
+    "dictionary_card_enrichment",
     "dictionary_assistant_multilang_reader",
     "dictionary_assistant_multilang_core_fast",
     "enrich_word_multilang",
