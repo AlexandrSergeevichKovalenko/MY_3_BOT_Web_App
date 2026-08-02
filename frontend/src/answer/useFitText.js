@@ -63,12 +63,25 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitB
     el.style.whiteSpace = 'normal';
   }, [max, min, padding, fitBy]);
 
-  // re-fit on content change (next item) — layout effect avoids a flash
-  useLayoutEffect(() => { fit(); }, [dep, fit]);
+  // Подбор кегля — ПОСЛЕ КАЖДОЙ ОТРИСОВКИ, без списка зависимостей. И это не небрежность.
+  //
+  // Раньше здесь стояло `[dep, fit]`, и первое слово спринта оставалось неподогнанным.
+  // Порядок такой: игра монтируется на экране отсчёта, элемента со словом ещё нет, эффект
+  // отрабатывает вхолостую (ref пустой). Потом отсчёт заканчивается, слово появляется — но
+  // `dep` (индекс слова) всё ещё 0 и `fit` тот же, значит эффект НЕ перезапускается. Кегль
+  // так и остаётся тот, что дал CSS от ширины экрана, и длинное слово вроде «Aschenbecher»
+  // браузер переносит посередине. Заодно не создавался и ResizeObserver — он тоже искал
+  // элемент, которого ещё не было, поэтому и последующие изменения ширины ничего не чинили.
+  //
+  // Стоимость: цикл подбора ограничен и почти всегда завершается на первом сравнении, а эти
+  // экраны перерисовываются по нажатию, а не постоянно.
+  useLayoutEffect(() => { fit(); });
   // re-fit on viewport resize / rotation AND whenever the container's own width
   // settles (Telegram WebApp sheet animates in → the box width isn't final on first
   // layout; a plain window-resize listener doesn't catch that). ResizeObserver fires
   // an initial callback on observe, so this also covers the post-mount width.
+  // Тот же список зависимостей заменён на «после каждой отрисовки» по той же причине:
+  // наблюдатель за шириной нужно ставить тогда, когда элемент уже есть в разметке.
   useLayoutEffect(() => {
     window.addEventListener('resize', fit);
     let ro;
@@ -95,7 +108,7 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitB
         try { fontSet.removeEventListener('loadingdone', reFit); } catch (_e) { /* ignore */ }
       }
     };
-  }, [fit]);
+  });
 
   return ref;
 }
