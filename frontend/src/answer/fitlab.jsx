@@ -4,6 +4,9 @@ import React, { useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import './answer.css';
 import TrainerGame from './TrainerGame.jsx';
+import ArtikelSprintGame from './ArtikelSprintGame.jsx';
+import ArtikelLearnGame from './ArtikelLearnGame.jsx';
+import WoFrageLearnGame from './WoFrageLearnGame.jsx';
 import installCardAutoFit from './fitCard.js';
 
 const LONG = 'Weigerung bedeutet, sich zu weigern oder abzulehnen, also das Gegenteil von Zustimmung, und passt deshalb nicht als Synonym.';
@@ -50,10 +53,52 @@ const TASK = {
   ],
 };
 
+// Спринт артиклей — вторая семья экранов: короткое слово и три крупные кнопки. Именно она
+// сильнее всего страдала от раздувания, поэтому меряем её отдельно от «синонимов».
+// Слова разной длины, включая заведомо длинное — на нём и проверяется, не режется ли оно.
+const ARTIKEL_WORDS = [
+  { w: 'Ladegerät', a: 'das' },
+  { w: 'Geschwindigkeitsbegrenzung', a: 'die' },
+  { w: 'Sanktion', a: 'die', tg: false },
+  { w: 'Auto', a: 'das' },
+  { w: 'Führerschein', a: 'der' },
+];
+const ARTIKEL_SET = {
+  ok: true, set_id: 1, theme_label: 'Computer & Geräte', duration_s: 120, words: ARTIKEL_WORDS,
+};
+
+// Карточка «выбери артикль» — самый частый экран продукта и тот, что на скриншотах.
+// Длинное слово стоит первым: на нём видно, режется оно или нет.
+const LEARN_DECK = {
+  ok: true, theme_label: 'Computer & Geräte', streak: 3, has_more: false,
+  cards: [
+    { w: 'Ladegerät', a: 'das', ru: 'зарядное устройство', tip: '-gerät → das.' },
+    { w: 'Geschwindigkeitsbegrenzung', a: 'die', ru: 'ограничение скорости', tip: '-ung → die.' },
+    { w: 'Sanktion', a: 'die', ru: 'санкция', tip: '-tion → die.' },
+  ],
+};
+
+const WO_DECK = {
+  ok: true,
+  items: [
+    { s: '___ bemühst du dich?', a: 'Worum', opts: ['Wovor', 'Um wen', 'Worum', 'Wogegen'],
+      clue: '— Jonas.', frage_ru: 'О чём ты стараешься?', lemma: 'sich bemühen um', verb_ru: 'стараться',
+      erklaerung: 'Предлог um + вещь → wo(r)+um = worum.', tip: 'Про человека было бы «um wen».' },
+    { s: '___ freust du dich?', a: 'Worauf', opts: ['Worauf', 'Auf wen', 'Wovon', 'Wobei'],
+      clue: '— Auf den Urlaub.', frage_ru: 'Чего ты ждёшь с радостью?', lemma: 'sich freuen auf', verb_ru: 'радоваться',
+      erklaerung: 'Предлог auf + вещь → worauf.', tip: 'Про человека — «auf wen».' },
+  ],
+};
+
+const stub = (data) => () => new Promise((r) => setTimeout(() => r(data), 30));
+
 function App() {
   useEffect(() => { installCardAutoFit(); }, []);
-  const api = () => new Promise((r) => setTimeout(() => r(TASK), 30));
-  return <TrainerGame id={1} api={api} haptic={() => {}} onClose={() => {}} />;
+  const game = new URLSearchParams(location.search).get('game') || 'trainer';
+  if (game === 'sprint') return <ArtikelSprintGame api={stub(ARTIKEL_SET)} haptic={() => {}} onClose={() => {}} />;
+  if (game === 'artikel') return <ArtikelLearnGame api={stub(LEARN_DECK)} haptic={() => {}} onClose={() => {}} />;
+  if (game === 'wofrage') return <WoFrageLearnGame api={stub(WO_DECK)} haptic={() => {}} onClose={() => {}} />;
+  return <TrainerGame id={1} api={stub(TASK)} haptic={() => {}} onClose={() => {}} />;
 }
 
 document.documentElement.setAttribute('data-scheme', new URLSearchParams(location.search).get('scheme') || 'light');
