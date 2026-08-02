@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { createPortal } from 'react-dom';
+import useModalFit from './useModalFit';
 import './WordHintModal.css';
 
 /**
@@ -63,24 +64,33 @@ export default function WordHintModal({
   formRows = [],
   memoryTip = '',
 }) {
-  if (!isOpen) return null;
+  const overlayRef = useRef(null);
+  const cardRef = useRef(null);
+  const bodyRef = useRef(null);
   const t = tr || ((ru) => ru);
+  const tip = String(memoryTip || '').trim();
+  // Содержимое сменилось — повод пересчитать: у длинной фразы с тремя примерами и у
+  // короткого слова с одной формой масштаб разный.
+  useModalFit(
+    overlayRef, cardRef, bodyRef, isOpen,
+    `${headword}|${examples.length}|${formRows.length}|${tip.length}`,
+  );
+  if (!isOpen) return null;
   const closeLabel = t('Закрыть', 'Schließen');
   const hasExamples = examples.length > 0;
   const hasForms = formRows.length > 0;
-  const tip = String(memoryTip || '').trim();
 
   const node = (
-    <div className="word-hint-overlay" role="dialog" aria-modal="true">
+    <div className="word-hint-overlay" role="dialog" aria-modal="true" ref={overlayRef}>
       <button type="button" className="word-hint-backdrop" aria-label={closeLabel} onClick={onClose} />
-      <div className="word-hint-card" onClick={(event) => event.stopPropagation()}>
+      <div className="word-hint-card" ref={cardRef} onClick={(event) => event.stopPropagation()}>
         <button type="button" className="word-hint-close" aria-label={closeLabel} onClick={onClose}>×</button>
         <div className="word-hint-head">
           <div className="word-hint-word">{headword}</div>
           {translation ? <div className="word-hint-translation">{translation}</div> : null}
         </div>
 
-        <div className="word-hint-body">
+        <div className="word-hint-body" ref={bodyRef}>
           {hasExamples ? (
             <section className="word-hint-section">
               <div className="word-hint-label">{t('Как это говорят', 'So wird es gesagt')}</div>

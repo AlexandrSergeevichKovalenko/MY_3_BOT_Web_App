@@ -1,12 +1,18 @@
 /* Подсказка по слову (Fuchs UI): тёплая карточка поверх тренировки. */
 .word-hint-overlay {
   position: fixed;
-  inset: 0;
+  left: 0;
+  top: 0;
+  width: 100%;
+  /* НЕ `inset: 0`: в шторке Telegram вебвью выложен на всю высоту экрана, и нижняя его
+     часть закрыта — окно уехало бы под сгиб. Видимую высоту приносит useModalFit;
+     100dvh — запасной вариант для обычного браузера. */
+  height: var(--wh-vh, 100dvh);
   z-index: 100000; /* выше полноэкранных оверлеев */
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 18px;
+  padding: 10px;
 }
 .word-hint-backdrop {
   position: absolute;
@@ -21,14 +27,16 @@
 .word-hint-card {
   position: relative;
   width: 100%;
-  max-width: 380px;
-  /* Высокая карточка не должна упираться в края экрана: содержимое прокручивается
-     ВНУТРИ, страница под ней не двигается. */
-  max-height: 82vh;
+  /* Экран используется целиком: на телефоне окно во всю ширину, на планшете колонка
+     упирается в разумный потолок, чтобы строка не растягивалась на полметра. */
+  max-width: min(100%, 560px);
+  /* Выше видимой высоты окно не станет никогда: длинное содержимое прокручивается
+     ВНУТРИ тела, страница под ним не двигается. */
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   border-radius: 22px;
-  padding: 22px 20px 18px;
+  padding: 20px 18px 16px;
   color: #2a3650;
   border: 1.5px solid #e4d2b0;
   background:
@@ -58,7 +66,7 @@
   border-bottom: 1px solid rgba(150, 110, 40, 0.14);
 }
 .word-hint-word {
-  font-size: 22px;
+  font-size: calc(22px * var(--wh-k, 1));
   font-weight: 800;
   letter-spacing: -0.01em;
   color: #1c2536;
@@ -66,19 +74,31 @@
 }
 .word-hint-translation {
   margin-top: 4px;
-  font-size: 14px;
+  font-size: calc(14px * var(--wh-k, 1));
   color: #8a7860;
   overflow-wrap: anywhere;
 }
 
 .word-hint-body {
+  /* Тело забирает всю свободную высоту окна и прокручивается внутри себя — шапка со
+     словом и кнопка «Понятно» видны всегда, долистывать до них не нужно. */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding-top: 14px;
 }
+/* Содержимого меньше, чем экран: окно всё равно занимает высоту целиком (иначе висит
+   полоской посреди пустоты), а текст встаёт по центру. Ставится только когда запас
+   ЕСТЬ — прокрутки это добавить не может. */
+.word-hint-card.is-filled .word-hint-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
 .word-hint-section + .word-hint-section { margin-top: 16px; }
 .word-hint-label {
-  font-size: 11px;
+  font-size: calc(11px * var(--wh-k, 1));
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -94,7 +114,7 @@
 }
 .word-hint-example + .word-hint-example { margin-top: 8px; }
 .word-hint-example-learning {
-  font-size: 16px;
+  font-size: calc(16px * var(--wh-k, 1));
   line-height: 1.4;
   font-weight: 600;
   color: #1c2536;
@@ -102,7 +122,7 @@
 }
 .word-hint-example-native {
   margin-top: 3px;
-  font-size: 14px;
+  font-size: calc(14px * var(--wh-k, 1));
   line-height: 1.4;
   color: #6f7c92;
   overflow-wrap: anywhere;
@@ -123,12 +143,12 @@
   border: 1px solid rgba(150, 110, 40, 0.14);
 }
 .word-hint-form-label {
-  font-size: 11px;
+  font-size: calc(11px * var(--wh-k, 1));
   color: #a08246;
   letter-spacing: 0.02em;
 }
 .word-hint-form-value {
-  font-size: 15px;
+  font-size: calc(15px * var(--wh-k, 1));
   font-weight: 600;
   color: #1c2536;
   overflow-wrap: anywhere;
@@ -136,20 +156,20 @@
 
 .word-hint-tip {
   margin: 0;
-  font-size: 15px;
+  font-size: calc(15px * var(--wh-k, 1));
   line-height: 1.5;
   color: #5d6b82;
   overflow-wrap: anywhere;
 }
 
 .word-hint-ok {
-  margin-top: 16px;
+  margin-top: 14px;
   flex: 0 0 auto;
   width: 100%;
   padding: 13px 16px;
   border: none;
   border-radius: 14px;
-  font-size: 16px;
+  font-size: calc(16px * var(--wh-k, 1));
   font-weight: 700;
   color: #3a2a08;
   background: linear-gradient(180deg, #f0c368 0%, #e0a83e 100%);
@@ -179,3 +199,14 @@
   z-index: 2;
 }
 .fsrs-hint-btn:active { transform: translateY(1px); }
+
+/* Планшет / большой браузер: та же граница, что у интерактивов (ширина от 700 И высота
+   от 560) — движок подгонки и вёрстка обязаны считать «широким» одно и то же. */
+@media (min-width: 700px) and (min-height: 560px) {
+  .word-hint-overlay { padding: 24px; }
+  .word-hint-card {
+    max-width: min(92%, 720px);
+    border-radius: 26px;
+    padding: 26px 28px 22px;
+  }
+}
