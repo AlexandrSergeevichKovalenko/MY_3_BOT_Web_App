@@ -5661,12 +5661,25 @@ def _log_openai_usage_event(task_name, usage, user_id) -> None:
                     provider="openai", units_type="requests", units_value=1.0,
                     status="estimated", metadata={"model": model, "tier": "bot"},
                 )
-                if tokens_in > 0:
+                # Вход делится на «из кеша» и «свежий»: кешированный стоит вчетверо
+                # дешевле, и без разделения ночной добор словаря выглядел в полтора раза
+                # дороже, чем есть (92% его входа — кеш). Тип единиц у обеих строк один,
+                # чтобы подсчёты количества токенов не поехали.
+                from backend.openai_usage_logging import split_input_tokens
+                cached_in, fresh_in = split_input_tokens(u, tokens_in)
+                if fresh_in > 0:
                     log_billing_event(
                         idempotency_key=f"tin:{seed}", user_id=uid, action_type=tn,
-                        provider="openai", units_type="tokens_in", units_value=float(tokens_in),
+                        provider="openai", units_type="tokens_in", units_value=float(fresh_in),
                         price_provider="openai", price_sku=f"{model}_input", price_unit="tokens_in",
-                        status="estimated", metadata={"model": model, "tier": "bot"},
+                        status="estimated", metadata={"model": model, "tier": "bot", "input_kind": "fresh"},
+                    )
+                if cached_in > 0:
+                    log_billing_event(
+                        idempotency_key=f"tinc:{seed}", user_id=uid, action_type=tn,
+                        provider="openai", units_type="tokens_in", units_value=float(cached_in),
+                        price_provider="openai", price_sku=f"{model}_cached", price_unit="tokens_in",
+                        status="estimated", metadata={"model": model, "tier": "bot", "input_kind": "cached"},
                     )
                 if tokens_out > 0:
                     log_billing_event(

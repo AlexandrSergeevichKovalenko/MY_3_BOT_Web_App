@@ -14899,13 +14899,50 @@ def _upsert_price_snapshot_if_changed(
     )
 
 
+# Доля цены кешированного входа от обычного. У OpenAI это ровно четверть на всей линейке
+# (проверено по прайсу 02.08.2026: gpt-4.1-mini — $0.40 против $0.10 за 1M, gpt-4.1 —
+# $2.00 против $0.50). Держим отдельной константой с env-переопределением, чтобы смена
+# прайса провайдером не требовала правки кода. Явный `OPENAI_PRICE_<МОДЕЛЬ>_CACHED_PER_1M`
+# всегда старше этой доли.
+def _openai_cached_input_price_ratio() -> float:
+    try:
+        value = float(str(os.getenv("OPENAI_CACHED_INPUT_PRICE_RATIO") or "0.25").strip())
+    except Exception:
+        return 0.25
+    return value if 0 < value <= 1 else 0.25
+
+
+def _seed_derived_cached_price(model_name: str, input_per_1m: float, currency: str):
+    """Цена кешированного входа, выведенная из цены обычного.
+
+    Нужна там, где явной цены нет: без неё кешированная часть расхода считалась бы по
+    нулю, и отчёт врал бы в другую сторону — показывал ночной добор дешевле, чем он есть.
+    Возвращает (статус, данные) или (None, {}) при выключенной доле."""
+    ratio = _openai_cached_input_price_ratio()
+    if not (ratio > 0) or not model_name or not (input_per_1m > 0):
+        return None, {}
+    return _upsert_price_snapshot_if_changed(
+        provider="openai",
+        sku=f"{model_name}_cached",
+        unit="tokens_in",
+        price_per_unit=float(input_per_1m) * ratio / 1_000_000.0,
+        currency=currency,
+        source="derived_from_input",
+        raw_payload={"input_price_per_1m": float(input_per_1m), "cached_ratio": ratio},
+    )
+
+
 def _sync_openai_price_snapshots_from_env() -> dict:
     currency = (os.getenv("BILLING_CURRENCY") or BILLING_CURRENCY_DEFAULT or "USD").strip().upper() or "USD"
-    pattern = re.compile(r"^OPENAI_PRICE_(.+)_(INPUT|OUTPUT)_PER_1M$")
+    # Ленивая группа модели: иначе жадная точка съела бы «..._CACHED» и приняла его за
+    # часть названия модели, а сторону прочитала бы как обычный INPUT.
+    pattern = re.compile(r"^OPENAI_PRICE_(.+?)_(CACHED|INPUT|OUTPUT)_PER_1M$")
     created: list[dict] = []
     skipped: list[dict] = []
     errors: list[dict] = []
     considered = 0
+    input_prices: dict[str, float] = {}   # модель → цена свежего входа за 1M
+    cached_seen: set[str] = set()         # модели с ЯВНОЙ ценой кеша
     for env_name, raw_value in sorted(os.environ.items()):
         match = pattern.match(str(env_name or "").strip())
         if not match:
@@ -14926,8 +14963,12 @@ def _sync_openai_price_snapshots_from_env() -> dict:
         if not model_name:
             errors.append({"env": env_name, "error": "invalid_model_key"})
             continue
-        sku = f"{model_name}_{'input' if side == 'input' else 'output'}"
-        unit = "tokens_in" if side == "input" else "tokens_out"
+        sku = f"{model_name}_{side}"
+        unit = "tokens_out" if side == "output" else "tokens_in"
+        if side == "input":
+            input_prices[model_name] = per_1m
+        elif side == "cached":
+            cached_seen.add(model_name)
         price_per_unit = per_1m / 1_000_000.0
         status, payload = _upsert_price_snapshot_if_changed(
             provider="openai",
@@ -14944,6 +14985,23 @@ def _sync_openai_price_snapshots_from_env() -> dict:
             skipped.append({"env": env_name, **payload, "reason": "unchanged"})
         else:
             errors.append({"env": env_name, **payload})
+
+    # Цена кешированного входа для моделей, у которых её не задали явно. Без неё
+    # кешированная половина расхода уходила бы в ноль — и отчёт врал бы уже в другую
+    # сторону, показывая ночной добор дешевле, чем он есть.
+    for model_name, per_1m in sorted(input_prices.items()):
+        if model_name in cached_seen:
+            continue
+        status, payload = _seed_derived_cached_price(model_name, per_1m, currency)
+        if not status:
+            continue
+        entry = {"env": f"(доля от входа {model_name})", **payload}
+        if status == "created":
+            created.append(entry)
+        elif status == "unchanged":
+            skipped.append({**entry, "reason": "unchanged"})
+        else:
+            errors.append(entry)
     return {
         "currency": currency,
         "considered": considered,
@@ -15038,6 +15096,12 @@ def _sync_openai_price_snapshots_from_public() -> dict:
                 source="public_openai",
                 raw_payload={"source_url": url, "price_per_1m": value},
             )
+            if side == "input":
+                # Прайс обновился — вслед за ним обновляем и цену кеша, иначе она
+                # осталась бы долей от вчерашней цены.
+                cached_status, cached_payload = _seed_derived_cached_price(model, float(value), currency)
+                if cached_status == "created":
+                    created.append({"model": model, "side": "cached", **cached_payload})
             if status == "created":
                 created.append({"model": model, "side": side, **payload})
             elif status == "unchanged":
@@ -15253,12 +15317,18 @@ _OPENAI_MODEL_DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 
 
 def _openai_priced_sku(model: str, unit: str) -> tuple[dict | None, str]:
-    """Resolve an OpenAI price snapshot for a token unit ('tokens_in'/'tokens_out'): try the
-    exact (possibly DATED) model SKU first, then the date-stripped FAMILY SKU. Returns
-    (snapshot_or_None, sku_that_matched). Fixes web-tier gpt-4.1-mini-<date> being priced at $0
-    (snapshots are seeded under the family name), WITHOUT breaking full-model SKUs seeded dated
-    — the exact match always wins first."""
-    kind = "input" if str(unit) == "tokens_in" else "output"
+    """Resolve an OpenAI price snapshot for a token unit ('tokens_in'/'tokens_in_cached'/
+    'tokens_out'): try the exact (possibly DATED) model SKU first, then the date-stripped
+    FAMILY SKU. Returns (snapshot_or_None, sku_that_matched). Fixes web-tier
+    gpt-4.1-mini-<date> being priced at $0 (snapshots are seeded under the family name),
+    WITHOUT breaking full-model SKUs seeded dated — the exact match always wins first.
+
+    `tokens_in_cached` is a PRICE bucket, not a new unit: input the provider served from
+    its prompt cache costs a quarter of fresh input, but it is still measured in
+    `tokens_in`, so the snapshot lookup uses that unit."""
+    unit_key = str(unit)
+    kind = {"tokens_in": "input", "tokens_in_cached": "cached"}.get(unit_key, "output")
+    unit = "tokens_in" if unit_key == "tokens_in_cached" else unit_key
     exact_sku = f"{model}_{kind}"
     snap = get_effective_billing_price_snapshot(
         provider="openai", sku=exact_sku, unit=unit, currency=BILLING_CURRENCY_DEFAULT
@@ -15300,29 +15370,42 @@ def _billing_log_openai_usage(
     }
     if prompt_tokens > 0:
         try:
-            snapshot_in, sku_in = _openai_priced_sku(model, "tokens_in")
-            meta_in = dict(base_meta)
-            meta_in["price_sku"] = sku_in
-            if snapshot_in:
-                meta_in["pricing_state"] = "priced"
-            else:
-                meta_in["pricing_state"] = "missing_snapshot"
-            log_billing_event(
-                idempotency_key=f"tok_in_{hashlib.sha1((seed + ':in').encode('utf-8', 'ignore')).hexdigest()[:30]}",
-                user_id=int(user_id) if user_id is not None else None,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                action_type=action_type,
-                provider="openai",
-                units_type="tokens_in",
-                units_value=float(prompt_tokens),
-                price_provider="openai" if snapshot_in else None,
-                price_sku=sku_in if snapshot_in else None,
-                price_unit="tokens_in" if snapshot_in else None,
-                currency=BILLING_CURRENCY_DEFAULT,
-                status="estimated",
-                metadata=meta_in,
-            )
+            # Вход делится по ЦЕНЕ: то, что провайдер отдал из своего кеша, стоит вчетверо
+            # дешевле свежего. Одной строкой по полной цене отчёт завышал любую задачу с
+            # длинной постоянной инструкцией — у ночного разбора словаря из кеша идёт 92%
+            # входа. Тип единиц у обеих строк остаётся `tokens_in`: считалки количества
+            # токенов не должны заметить разницы.
+            from backend.openai_usage_logging import split_input_tokens
+            cached_tokens, fresh_tokens = split_input_tokens(usage, prompt_tokens)
+            for kind, amount, unit_kind in (
+                ("fresh", fresh_tokens, "tokens_in"),
+                ("cached", cached_tokens, "tokens_in_cached"),
+            ):
+                if amount <= 0:
+                    continue
+                snapshot_in, sku_in = _openai_priced_sku(model, unit_kind)
+                meta_in = dict(base_meta)
+                meta_in["price_sku"] = sku_in
+                meta_in["input_kind"] = kind
+                meta_in["pricing_state"] = "priced" if snapshot_in else "missing_snapshot"
+                log_billing_event(
+                    idempotency_key=(
+                        f"tok_in_{hashlib.sha1((seed + ':' + kind).encode('utf-8', 'ignore')).hexdigest()[:30]}"
+                    ),
+                    user_id=int(user_id) if user_id is not None else None,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    action_type=action_type,
+                    provider="openai",
+                    units_type="tokens_in",
+                    units_value=float(amount),
+                    price_provider="openai" if snapshot_in else None,
+                    price_sku=sku_in if snapshot_in else None,
+                    price_unit="tokens_in" if snapshot_in else None,
+                    currency=BILLING_CURRENCY_DEFAULT,
+                    status="estimated",
+                    metadata=meta_in,
+                )
         except Exception as exc:
             logging.debug("billing tokens_in skipped: %s", exc)
     if completion_tokens > 0:
