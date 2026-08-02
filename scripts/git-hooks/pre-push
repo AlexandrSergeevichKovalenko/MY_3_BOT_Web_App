@@ -54,6 +54,16 @@ code_fingerprint() {
     echo "$backend_tree:$dirty_sha"
 }
 
+# Хук живёт копией в .git/hooks и после правки исходника сам не обновляется. Молча это
+# стоило прогона впустую: копия считала отпечаток по старой формуле, память не совпадала.
+# Предупреждаем, но не блокируем — пуш не должен зависеть от гигиены хуков.
+HOOK_SRC="$REPO_ROOT/scripts/git-hooks/pre-push"
+HOOK_INSTALLED=$(git rev-parse --git-path hooks)/pre-push
+if [ -f "$HOOK_SRC" ] && [ -f "$HOOK_INSTALLED" ] && ! cmp -s "$HOOK_SRC" "$HOOK_INSTALLED"; then
+    echo "⚠️  Установленный хук отличается от scripts/git-hooks/pre-push."
+    echo "   Обновить:  ./scripts/git-hooks/install.sh"
+fi
+
 VERIFIED_FILE=$(git rev-parse --git-path pre-push-verified 2>/dev/null)
 FINGERPRINT=$(code_fingerprint)
 
