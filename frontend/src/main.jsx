@@ -116,11 +116,14 @@ async function ensureFreshBundle() {
         // ignore storage failures
       }
     }
-    // PWA: the stale shell comes from the SW precache — a reload alone re-serves it. Drop the
-    // caches + unregister the worker so the reload hits the server for the current build.
-    if (appMode === 'pwa') {
-      await purgeAppShellCaches();
-    }
+    // Устаревшая оболочка приходит из precache service worker'а, и простая перезагрузка
+    // отдаст ТУ ЖЕ старую сборку. Поэтому сначала сносим кеши и снимаем worker, потом
+    // перезагружаемся — тогда запрос дойдёт до сервера.
+    //
+    // Раньше это делалось только для установленного PWA. Но worker живёт на том же домене и
+    // обслуживает и вебвью Telegram: мини-апп точно так же получал вчерашнюю сборку, а
+    // «починить» это было нечем — пользователь не может почистить кеш внутри Telegram.
+    await purgeAppShellCaches();
     window.location.replace(buildTelegramReloadUrl(serverBuildId));
     return false;
   } catch (_error) {
@@ -741,6 +744,17 @@ function installAppTokenAuthShim() {
 async function bootstrapApp() {
   installDictTokenAuthShim();
   installAppTokenAuthShim();
+
+  // ПРОВЕРКА СВЕЖЕСТИ БАНДЛА — ДО РАЗБОРА МАРШРУТА, для ВСЕХ экранов.
+  //
+  // Раньше она стояла в самом низу, на «полном пути приложения», а каждый мини-апп
+  // (интерактив, разбор, словарь, настройки, батлы, онбординг…) выходил из функции раньше и
+  // до неё не доходил НИКОГДА. То есть ровно те экраны, что открываются из бота по кнопке,
+  // не имели никакой защиты от устаревшей сборки: service worker отдавал вчерашний код,
+  // сколько бы раз мы ни задеплоили новый. Именно поэтому исправления «не работали» на
+  // телефоне, хотя лежали на сервере, — их там просто не было.
+  if (!(await ensureFreshBundle())) return;
+
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
     await bootstrapAnswerOverlay(answerStartParam);
