@@ -5,7 +5,7 @@ Prerequisites: [00b](00b_http_and_backend_foundations.md) (HTTP, webhooks), [02]
 lean on all three.
 
 **The model in one paragraph.** "Pro" (full access) is sold **only via Telegram Stars** (⭐) as a
-recurring monthly subscription (≈**292⭐**). Donations (coffee/cheesecake) are one-time Stars
+recurring monthly subscription (≈**400⭐**). Donations (coffee/cheesecake) are one-time Stars
 purchases that **grant bonus Pro days**. Book-audio is a one-time Stars unlock. **Stripe is
 retired** — the code is still there but behind an off-by-default flag; Pro cannot be bought with a
 card right now. There is **no** `payments.py` module — the logic lives in `bot_3.py` (Telegram
@@ -20,7 +20,7 @@ Money code is where security matters most, so this file is heavy on the "why". S
 ## 1.1 Price is computed on the server, never sent by the client
 
 The Stars price is derived from EUR constants server-side (`backend_server.py:19075`):
-`PRO_PRICE_EUR_MINOR=449` (€4.49) × `STARS_MARKUP=1.30` × `STARS_PER_EUR=50` → `ceil(...) = 292⭐`.
+`PRO_PRICE_EUR_MINOR=615` (€6.15) × `STARS_MARKUP=1.30` × `STARS_PER_EUR=50` → `ceil(...) = 400⭐`.
 The client only ever names *what* it wants (`plan_code="pro"`, a `document_id`, a donation tier) —
 validated against allow-lists — and the server decides the amount. The client **cannot** supply a
 price. Remember this; it's the backbone of defense T-forgery.
@@ -229,7 +229,7 @@ Stripe stops retrying.)
 
 ```
   MINI APP  ──POST /billing/stars_invoice {plan_code}──▶  BACKEND (initData HMAC gate)
-    (client names WHAT, never the price)                    │ price = server EUR→Stars (292⭐)
+    (client names WHAT, never the price)                    │ price = server EUR→Stars (400⭐)
                                                             ▼ createInvoiceLink (XTR, empty provider_token)
   MINI APP ◀────────────── invoice link ──────────────────┘
     │ openInvoice → user pays Stars
@@ -251,7 +251,7 @@ Stripe stops retrying.)
 # 🥷 2. Threats
 
 - **T1 — Payment forgery / price tampering.** Make the server grant Pro without paying, or pay less
-  than 292⭐ — e.g. POST a fake amount, or inject a fake `successful_payment`.
+  than 400⭐ — e.g. POST a fake amount, or inject a fake `successful_payment`.
 - **T2 — Replay.** Capture one real `successful_payment` and replay it to get granted repeatedly.
 - **T3 — Entitlement bypass.** Skip payment entirely and convince the app you're Pro (forge the
   entitlement check, or a never-expiring lapsed sub).
@@ -307,7 +307,7 @@ Stripe stops retrying.)
 # Self-check
 
 1. The client calls `/billing/stars_invoice`. Which fields can it control, and which one can it
-   **not** — and why does that make "pay less than 292⭐" impossible?
+   **not** — and why does that make "pay less than 400⭐" impossible?
 2. Why can't an attacker forge a `successful_payment` the way they could POST a fake Stripe webhook?
    What's the difference in how the two events reach our code?
 3. `record_star_payment_once` uses `ON CONFLICT (telegram_payment_charge_id) DO NOTHING`. What attack
