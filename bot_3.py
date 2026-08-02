@@ -11298,47 +11298,10 @@ async def admin_pool_enrich_command(update: Update, context: CallbackContext):
     src, tgt = ("ru", "de") if "ru" in args else ("de", "ru")
     chat_id = message.chat_id
 
-    from html import escape as _esc
-
+    # Отчёт собирает ОДНА функция на уровне модуля: её же зовёт досчёт после
+    # перезапуска, и два разных текста об одном прогоне разъехались бы на первой правке.
     def _format_report(report: dict) -> str:
-        if report.get("already_running"):
-            return "⏳ Добор уже идёт — второй запуск удвоил бы траты."
-        samples = report.get("samples") or []
-        lines = "\n".join(
-            f"  • {_esc(str(s.get('word')))} — {_esc(str(s.get('translation')))} "
-            f"(спрашивали: {_esc(str(s.get('demand')))})"
-            for s in samples[:12]
-        )
-        text = (
-            f"🌙 <b>Добор общего пула</b> ({'apply' if apply else 'dry-run'}, {src}→{tgt})\n\n"
-            f"Взято в работу: <b>{report.get('picked', 0)}</b> (потолок {report.get('cap', 0)})\n"
-            f"Обогащено: <b>{report.get('enriched', 0)}</b>\n"
-            f"Пропущено: {report.get('skipped', 0)}"
-            + (f" (пусто от GPT {int(report.get('skipped_empty') or 0)} · "
-               f"неполная карточка {int(report.get('skipped_thin') or 0)})"
-               if (report.get('skipped_empty') or report.get('skipped_thin')) else "")
-            + "\n"
-            f"Ошибок: {report.get('errors', 0)}\n"
-            f"Осталось тонких: <b>{report.get('remaining', 0)}</b>"
-        )
-        if lines:
-            text += f"\n\n<b>Очередь (по востребованности):</b>\n{lines}"
-        return text
-
-    def _send_raw(text: str) -> None:
-        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
-        if not token:
-            return
-        for part in _split_telegram_text(text):
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": chat_id, "text": part, "parse_mode": "HTML",
-                          "disable_web_page_preview": True},
-                    timeout=20,
-                )
-            except Exception:
-                logging.warning("pool enrich raw send failed", exc_info=True)
+        return _format_pool_enrich_report(report, {"src": src, "tgt": tgt})
 
     # dry-run never calls GPT (it previews the queue and returns), so it's safe to run
     # inline on the event loop. apply DOES call GPT per word — 20 words = many minutes of
@@ -11369,33 +11332,13 @@ async def admin_pool_enrich_command(update: Update, context: CallbackContext):
     await message.reply_text(
         f"🌙 Добор пула {src}→{tgt}: ПРИМЕНЯЮ"
         f"{f', до {limit} слов' if limit else ''}. Один запрос к GPT на слово — это минуты; "
-        f"итог пришлю сюда, как закончу."
+        f"итог пришлю сюда, как закончу. Перезапуск сервиса прогон переживёт — "
+        f"досчитаю с остатка и всё равно отчитаюсь."
     )
-
-    def _progress(idx: int, total: int, rep: dict) -> None:
-        # Ping on the very first word (proves it started moving) and then every 5th, so a
-        # slow-but-alive run is visibly distinct from a stuck one — and we see WHERE it stalls.
-        if idx == 0 or (idx % 5 == 0):
-            done = int(rep.get("enriched", 0)) + int(rep.get("skipped", 0)) + int(rep.get("errors", 0))
-            _send_raw(
-                f"⚙️ Добор {src}→{tgt}: беру слово {idx + 1}/{total} "
-                f"(готово {done}: +{int(rep.get('enriched', 0))} обогащено, "
-                f"{int(rep.get('skipped', 0))} пропущено)"
-            )
-
-    def _worker() -> None:
-        try:
-            from backend.backend_server import run_pool_night_enrichment
-            report = run_pool_night_enrichment(
-                limit=limit, dry_run=False, source_lang=src, target_lang=tgt,
-                progress_cb=_progress,
-            )
-            _send_raw(_format_report(report))
-        except Exception as exc:
-            logging.exception("pool enrich apply (thread) failed user_id=%s", int(sender.id))
-            _send_raw(f"❌ Добор пула упал: {_esc(str(exc))}")
-
-    threading.Thread(target=_worker, name="pool-enrich-manual", daemon=True).start()
+    _start_durable_admin_run(
+        job_key="admin_run_pool_enrich", chat_id=chat_id, limit=limit,
+        params={"src": src, "tgt": tgt},
+    )
 
 
 # ── Карантин пула: интерактивный разбор «отметь галочками, удали мусор» ──────────
@@ -11888,6 +11831,240 @@ async def admin_repair_dict_cards_command(update: Update, context: CallbackConte
         await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
 
 
+# ── Долгие ручные прогоны переживают перезапуск ──────────────────────────────────
+#
+# Пересбор разбора и добор пула идут ДЕСЯТКИ МИНУТ в обычном потоке внутри бота: один
+# запрос к модели на слово, по одному подряд. Любой деплой и любая смена переменной на
+# Railway поднимают новый контейнер — и поток умирает без следа. 02.08.2026 так и вышло:
+# пересбор оборвался на 244-м слове из 252, итог никому не пришёл, а по остатку в базе
+# это выглядело как «модель не смогла разобрать 8 слов».
+#
+# Поэтому состояние прогона живёт в БАЗЕ (одна строка отметок планировщика на ключ
+# работы, метаданные в JSONB — новая таблица не нужна), а при старте бот проверяет, не
+# остался ли прогон в состоянии «идёт». Если остался — значит его оборвали: в свежем
+# процессе ничего идти не может. Тогда бот досылает владельцу, где оборвалось, и
+# продолжает с остатка.
+#
+# Дозаписи защищены от петли: если прогон обрывается снова и снова (например, сервис в
+# цикле перезапусков), после _ADMIN_RUN_MAX_RESUMES попыток он закрывается с сообщением,
+# а не жжёт деньги вечно.
+_ADMIN_RUN_MAX_RESUMES = 3
+
+
+def _admin_run_send(chat_id: int, text: str) -> None:
+    """Отправка СЫРЫМ HTTP: сообщение уходит из обычного потока, где нет петли событий."""
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    if not token or not chat_id:
+        return
+    for part in _split_telegram_text(text):
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": int(chat_id), "text": part, "parse_mode": "HTML",
+                      "disable_web_page_preview": True},
+                timeout=20,
+            )
+        except Exception:
+            logging.warning("admin run raw send failed", exc_info=True)
+
+
+def _admin_run_save(job_key: str, status: str, state: dict) -> None:
+    _record_sched_heartbeat(job_key, status, state)
+
+
+def _admin_run_load(job_key: str) -> tuple[str, dict]:
+    try:
+        from backend.database import get_latest_scheduler_run_guard
+        row = get_latest_scheduler_run_guard(job_key=job_key) or {}
+    except Exception:
+        logging.debug("admin run state load failed job_key=%s", job_key, exc_info=True)
+        return "", {}
+    meta = row.get("metadata")
+    return str(row.get("status") or ""), meta if isinstance(meta, dict) else {}
+
+
+def _format_resweep_report(report: dict, params: dict) -> str:
+    from html import escape as _esc
+    samples = report.get("samples") or []
+    lines = "\n".join(
+        f"  • {_esc(str(s.get('word')))} — {_esc(str(s.get('translation')))} "
+        f"(сохранили: {_esc(str(s.get('saved')))})"
+        for s in samples[:12]
+    )
+    picked = int(report.get("picked", 0))
+    dry = bool(report.get("dry_run"))
+    text = (
+        f"🧩 <b>Пересбор куцых разборов</b> ({'пробный прогон' if dry else 'применяю'})\n\n"
+        f"Взято в работу: <b>{picked}</b> (потолок {report.get('cap', 0)})\n"
+        f"Пересобрано: <b>{report.get('enriched', 0)}</b>\n"
+        f"Дошло до карточек людей: <b>{report.get('cards_filled', 0)}</b>\n"
+        f"Пропущено: пусто от модели {int(report.get('skipped_empty') or 0)} · "
+        f"лучше не стало {int(report.get('skipped_thin') or 0)}\n"
+        f"Ошибок: {report.get('errors', 0)}\n"
+        f"Осталось: <b>{report.get('remaining', 0)}</b>"
+    )
+    if dry and picked:
+        # Цена замерена 02.08.2026 живыми вызовами: $0.00208 за слово с учётом кеша
+        # инструкции. Показываем её ДО траты, а не после.
+        text += f"\n\nЦена применения: примерно <b>${picked * 0.00208:.2f}</b>"
+    if lines:
+        text += f"\n\n<b>Очередь (сначала то, что скоро спросят):</b>\n{lines}"
+    return text
+
+
+def _run_resweep(params: dict, limit: int | None, progress_cb) -> dict:
+    from backend.backend_server import resweep_thin_unit_cards
+    return resweep_thin_unit_cards(limit=limit, dry_run=False, progress_cb=progress_cb)
+
+
+def _format_pool_enrich_report(report: dict, params: dict) -> str:
+    from html import escape as _esc
+    src = str(params.get("src") or "de")
+    tgt = str(params.get("tgt") or "ru")
+    if report.get("already_running"):
+        return "⏳ Добор уже идёт — второй запуск удвоил бы траты."
+    samples = report.get("samples") or []
+    lines = "\n".join(
+        f"  • {_esc(str(s.get('word')))} — {_esc(str(s.get('translation')))} "
+        f"(спрашивали: {_esc(str(s.get('demand')))})"
+        for s in samples[:12]
+    )
+    text = (
+        f"🌙 <b>Добор общего пула</b> (применяю, {src}→{tgt})\n\n"
+        f"Взято в работу: <b>{report.get('picked', 0)}</b> (потолок {report.get('cap', 0)})\n"
+        f"Обогащено: <b>{report.get('enriched', 0)}</b>\n"
+        f"Пропущено: {report.get('skipped', 0)}"
+        + (f" (пусто от GPT {int(report.get('skipped_empty') or 0)} · "
+           f"неполная карточка {int(report.get('skipped_thin') or 0)})"
+           if (report.get('skipped_empty') or report.get('skipped_thin')) else "")
+        + "\n"
+        f"Ошибок: {report.get('errors', 0)}\n"
+        f"Осталось тонких: <b>{report.get('remaining', 0)}</b>"
+    )
+    if lines:
+        text += f"\n\n<b>Очередь (по востребованности):</b>\n{lines}"
+    return text
+
+
+def _run_pool_enrich(params: dict, limit: int | None, progress_cb) -> dict:
+    from backend.backend_server import run_pool_night_enrichment
+    return run_pool_night_enrichment(
+        limit=limit, dry_run=False,
+        source_lang=str(params.get("src") or "de"), target_lang=str(params.get("tgt") or "ru"),
+        progress_cb=progress_cb,
+    )
+
+
+# Ключ работы → как её запустить, как назвать и как отчитаться. Резюме после перезапуска
+# берёт всё отсюда, поэтому новая долгая команда подключается одной строкой.
+_DURABLE_ADMIN_RUNS: dict[str, dict] = {
+    "admin_run_resweep_units": {
+        "title": "Пересбор куцых разборов",
+        "runner": _run_resweep,
+        "formatter": _format_resweep_report,
+    },
+    "admin_run_pool_enrich": {
+        "title": "Добор общего пула",
+        "runner": _run_pool_enrich,
+        "formatter": _format_pool_enrich_report,
+    },
+}
+
+
+def _start_durable_admin_run(
+    *, job_key: str, chat_id: int, limit: int | None, params: dict | None = None,
+    done_before: int = 0, resumes: int = 0,
+) -> None:
+    """Запустить долгий прогон в отдельном потоке, помечая его состояние в базе.
+
+    Отдельный поток — не украшение: вызовы к модели идут через asyncio.run() поверх того
+    же async-клиента, которым живёт петля бота, и запуск их из петли однажды оставил
+    команду висеть без итога. Обычный поток — тот же контекст, в котором работает
+    ночной джоб, и он досчитывает надёжно."""
+    spec = _DURABLE_ADMIN_RUNS.get(job_key)
+    if not spec:
+        return
+    par = dict(params or {})
+    state = {
+        "chat_id": int(chat_id), "limit": limit, "params": par,
+        "done": int(done_before), "resumes": int(resumes),
+        "title": spec["title"],
+    }
+    _admin_run_save(job_key, "running", state)
+
+    def _progress(idx: int, total: int, rep: dict) -> None:
+        # Отмечаем ПОЗИЦИЮ в базе, а не только в сообщении: если контейнер погасят прямо
+        # сейчас, продолжать надо будет отсюда, а не с начала.
+        state["done"] = int(done_before) + idx + 1
+        if idx == 0 or (idx % 5 == 0):
+            _admin_run_save(job_key, "running", state)
+            _admin_run_send(
+                chat_id,
+                f"⚙️ {spec['title']}: беру {state['done']}/{int(done_before) + total} "
+                f"(готово {int(rep.get('enriched', 0))})",
+            )
+
+    def _worker() -> None:
+        from html import escape as _esc
+        try:
+            report = spec["runner"](par, limit, _progress)
+            state["report"] = {k: v for k, v in report.items() if k != "samples"}
+            _admin_run_save(job_key, "completed", state)
+            text = spec["formatter"](report, par)
+            if done_before:
+                text += f"\n\n<i>Прогон продолжался после перезапуска: до него сделано {done_before}.</i>"
+            _admin_run_send(chat_id, text)
+        except Exception as exc:
+            logging.exception("durable admin run failed job_key=%s", job_key)
+            state["error"] = str(exc)[:300]
+            _admin_run_save(job_key, "failed", state)
+            _admin_run_send(chat_id, f"❌ {spec['title']} упал: {_esc(str(exc))}")
+
+    threading.Thread(target=_worker, name=f"durable-{job_key}", daemon=True).start()
+
+
+def _resume_interrupted_admin_runs() -> None:
+    """Досчитать прогоны, которые оборвал перезапуск.
+
+    В свежем процессе ничего идти не может, поэтому отметка «идёт» означает ровно одно:
+    контейнер погасили на середине. Молчать тут нельзя — владелец ждал итог и не получил
+    его; сначала пишем, где оборвалось, потом продолжаем с остатка."""
+    for job_key, spec in _DURABLE_ADMIN_RUNS.items():
+        try:
+            status, state = _admin_run_load(job_key)
+            if status != "running" or not isinstance(state, dict):
+                continue
+            chat_id = int(state.get("chat_id") or 0)
+            done = int(state.get("done") or 0)
+            limit = state.get("limit")
+            resumes = int(state.get("resumes") or 0) + 1
+            if resumes > _ADMIN_RUN_MAX_RESUMES:
+                _admin_run_save(job_key, "failed", {**state, "resumes": resumes})
+                _admin_run_send(
+                    chat_id,
+                    f"⚠️ {spec['title']}: прогон обрывался {resumes - 1} раза подряд, "
+                    f"больше не продолжаю сам. Успел сделать {done}. "
+                    f"Запусти команду заново, когда сервис перестанет перезапускаться.",
+                )
+                continue
+            remaining = None if limit is None else max(0, int(limit) - done)
+            if remaining == 0:
+                _admin_run_save(job_key, "completed", {**state, "resumes": resumes})
+                _admin_run_send(chat_id, f"✅ {spec['title']}: потолок выбран, продолжать нечего.")
+                continue
+            _admin_run_send(
+                chat_id,
+                f"🔄 {spec['title']}: перезапуск оборвал прогон на {done}-м. Продолжаю с остатка"
+                + (f" (осталось не больше {remaining})." if remaining is not None else "."),
+            )
+            _start_durable_admin_run(
+                job_key=job_key, chat_id=chat_id, limit=remaining,
+                params=state.get("params") or {}, done_before=done, resumes=resumes,
+            )
+        except Exception:
+            logging.warning("resume of admin run failed job_key=%s", job_key, exc_info=True)
+
+
 async def admin_resweep_units_command(update: Update, context: CallbackContext):
     """Пересобрать разбор у слов с КУЦЕЙ карточкой: примеры и формы есть, а значений,
     управления и сочетаний нет.
@@ -11912,49 +12089,6 @@ async def admin_resweep_units_command(update: Update, context: CallbackContext):
     limit = next((int(a) for a in args if a.isdigit() and 1 <= int(a) <= 5000), None)
     chat_id = message.chat_id
 
-    from html import escape as _esc
-
-    def _format_report(report: dict) -> str:
-        samples = report.get("samples") or []
-        lines = "\n".join(
-            f"  • {_esc(str(s.get('word')))} — {_esc(str(s.get('translation')))} "
-            f"(сохранили: {_esc(str(s.get('saved')))})"
-            for s in samples[:12]
-        )
-        picked = int(report.get("picked", 0))
-        text = (
-            f"🧩 <b>Пересбор куцых разборов</b> ({'применяю' if apply else 'пробный прогон'})\n\n"
-            f"Взято в работу: <b>{picked}</b> (потолок {report.get('cap', 0)})\n"
-            f"Пересобрано: <b>{report.get('enriched', 0)}</b>\n"
-            f"Дошло до карточек людей: <b>{report.get('cards_filled', 0)}</b>\n"
-            f"Пропущено: пусто от модели {int(report.get('skipped_empty') or 0)} · "
-            f"лучше не стало {int(report.get('skipped_thin') or 0)}\n"
-            f"Ошибок: {report.get('errors', 0)}\n"
-            f"Осталось: <b>{report.get('remaining', 0)}</b>"
-        )
-        if not apply and picked:
-            # Цена замерена 02.08.2026 живыми вызовами: $0.00208 за слово с учётом
-            # кеша инструкции. Показываем её ДО траты, а не после.
-            text += f"\n\nЦена применения: примерно <b>${picked * 0.00208:.2f}</b>"
-        if lines:
-            text += f"\n\n<b>Очередь (сначала то, что скоро спросят):</b>\n{lines}"
-        return text
-
-    def _send_raw(text: str) -> None:
-        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
-        if not token:
-            return
-        for part in _split_telegram_text(text):
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": chat_id, "text": part, "parse_mode": "HTML",
-                          "disable_web_page_preview": True},
-                    timeout=20,
-                )
-            except Exception:
-                logging.warning("resweep raw send failed", exc_info=True)
-
     if not apply:
         await message.reply_text("🧩 Пересбор: пробный прогон, показываю очередь и цену…")
         try:
@@ -11964,37 +12098,18 @@ async def admin_resweep_units_command(update: Update, context: CallbackContext):
             logging.exception("resweep dry-run failed user_id=%s", int(sender.id))
             await message.reply_text(f"❌ Пересбор упал: {exc}")
             return
-        for part in _split_telegram_text(_format_report(report)):
+        for part in _split_telegram_text(_format_resweep_report(report, {})):
             await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
         return
 
     await message.reply_text(
         "🧩 Пересбор: ПРИМЕНЯЮ. Один запрос к модели на слово — это минуты; "
-        "итог пришлю сюда, как закончу."
+        "итог пришлю сюда, как закончу. Перезапуск сервиса прогон переживёт — "
+        "досчитаю с остатка и всё равно отчитаюсь."
     )
-
-    def _progress(idx: int, total: int, rep: dict) -> None:
-        if idx == 0 or (idx % 5 == 0):
-            _send_raw(
-                f"⚙️ Пересбор: беру слово {idx + 1}/{total} "
-                f"(пересобрано {int(rep.get('enriched', 0))}, "
-                f"карточек наполнено {int(rep.get('cards_filled', 0))})"
-            )
-
-    # Тот же приём, что у ручного добора пула: вызовы модели идут ПОСЛЕДОВАТЕЛЬНО и
-    # долго, а запуск их через asyncio.to_thread из живой петли бота однажды оставил
-    # команду висеть без итога — обогащение делает asyncio.run() поверх того же async
-    # клиента, которым живёт петля. Отдельный поток + отправка итога сырым HTTP.
-    def _worker() -> None:
-        try:
-            from backend.backend_server import resweep_thin_unit_cards
-            report = resweep_thin_unit_cards(limit=limit, dry_run=False, progress_cb=_progress)
-            _send_raw(_format_report(report))
-        except Exception as exc:
-            logging.exception("resweep apply (thread) failed user_id=%s", int(sender.id))
-            _send_raw(f"❌ Пересбор упал: {_esc(str(exc))}")
-
-    threading.Thread(target=_worker, name="units-resweep-manual", daemon=True).start()
+    # limit может быть None — тогда потолок берёт сама работа. Дублировать её значение
+    # здесь нельзя: два места с одним «по умолчанию» разъезжаются на первой же правке.
+    _start_durable_admin_run(job_key="admin_run_resweep_units", chat_id=chat_id, limit=limit)
 
 
 async def admin_spread_unit_cards_command(update: Update, context: CallbackContext):
@@ -42008,6 +42123,12 @@ def main():
         # Startup catch-up: if a restart/redeploy straddled either slot (this is what ate
         # 2026-07-04's news), prepare tomorrow / send today's approved-but-unsent entry now.
         scheduler.add_job(lambda: submit_async(run_world_news_startup_catchup,CallbackContext(application=application)),"date", run_date=_get_quiz_schedule_now() + timedelta(seconds=45))
+        # Досчёт долгих ручных прогонов, которые оборвал перезапуск. 02.08.2026 смена
+        # переменной на Railway погасила контейнер посреди пересбора: 244 слова из 252,
+        # итог не пришёл никому, а по остатку в базе это выглядело как «модель не смогла».
+        # Задержка та же, что у догона новостей: даём боту доподняться.
+        scheduler.add_job(_resume_interrupted_admin_runs, "date",
+                          run_date=_get_quiz_schedule_now() + timedelta(seconds=60))
         # One-shot: DM admins the admin commands still missing a curated description (the
         # list is filled by sync_discovered_admin_commands, which runs just before polling).
         scheduler.add_job(lambda: submit_async(_dm_admins_uncatalogued_commands,CallbackContext(application=application)),"date", run_date=_get_quiz_schedule_now() + timedelta(seconds=60))
