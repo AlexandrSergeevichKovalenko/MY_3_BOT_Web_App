@@ -90,7 +90,7 @@ function availHeight(root) {
 
 function stateOf(card) {
   let st = cards.get(card);
-  if (!st) { st = { k: 1, avail: 0, vis: 0, stretched: null, runs: 0 }; cards.set(card, st); }
+  if (!st) { st = { k: 1, avail: 0, vis: 0, stretched: null, runs: 0, hard: 0 }; cards.set(card, st); }
   return st;
 }
 
@@ -181,17 +181,30 @@ function fitOne(root) {
 
   // Ничего не изменилось с прошлого расчёта — не трогаем (иначе лишние reflow).
   const availNow = availHeight(root);
-  if (st.vis && Math.abs(card.getBoundingClientRect().height - st.vis) < EPS
-      && Math.abs(availNow - st.avail) < EPS) return;
+  const visNow = card.getBoundingClientRect().height;
+  if (st.vis && Math.abs(visNow - st.vis) < EPS && Math.abs(availNow - st.avail) < EPS) return;
   // Предохранитель от «подрастания»: на одно и то же содержимое хватает пары расчётов.
   // Дальше замолкаем до следующей смены контента (её ловит MutationObserver) или размера
   // окна — иначе редкие расхождения в пару пикселей гоняли бы карточку кадр за кадром.
   // Но если ИЗМЕНИЛАСЬ САМА ВЫСОТА ЭКРАНА — это не дребезг, а новая вводная (шторка
   // Telegram доехала), и предохранитель снимаем: иначе карточка навсегда останется
   // подогнанной под старую, меньшую высоту — «скукоженной» посреди пустого экрана.
-  if (Math.abs(availNow - st.avail) > EPS) st.runs = 0;
-  if (st.runs >= 2) return;
+  //
+  // И ОБЯЗАН ПРОПУСКАТЬ НАСТОЯЩИЕ ИЗМЕНЕНИЯ. Это и есть причина «после ответа карточка
+  // короче, снизу серая полоса»: разбор дорисовывается НЕ ЗА ОДИН ЗАХОД (React дорисовал
+  // блок, доехал шрифт, встали отступы). Два прохода сгорали на промежуточных состояниях, а
+  // последний, правильный, уже блокировался — и на экране навсегда оставался промежуточный
+  // результат. Экран-вопрос в это не попадал: он рисуется за один заход. Отсюда и «одна
+  // карточка нормально, соседняя нет».
+  //
+  // Правило: если высота отличается от той, которую мы САМИ выставили, — это новая вводная,
+  // а не дребезг, и счётчик сбрасывается. От настоящих качелей страхует жёсткий потолок
+  // проходов; он снимается только сменой содержимого или размера экрана.
+  if (st.vis && Math.abs(visNow - st.vis) > EPS) st.runs = 0;
+  if (Math.abs(availNow - st.avail) > EPS) { st.runs = 0; st.hard = 0; }
+  if (st.runs >= 2 || st.hard >= 8) return;
   st.runs += 1;
+  st.hard += 1;
 
   // 1. Натуральный размер: снимаем всё, что применяли раньше. Корень сразу прижимаем к
   //    видимой высоте — иначе центрирование и замеры считаются по разной мере.
@@ -421,6 +434,7 @@ function freshStart() {
       st.vis = 0;
       st.avail = 0;
       st.runs = 0;
+      st.hard = 0;
     });
   } catch (_e) { /* noop */ }
   schedule();
@@ -446,6 +460,7 @@ export default function installCardAutoFit() {
         document.querySelectorAll('.ans-root > .ans-card').forEach((card) => {
           const st = stateOf(card);
           st.runs = 0;
+          st.hard = 0;   // смена содержимого снимает и жёсткий потолок проходов
           st.vis = 0;
         });
       } catch (_e) { /* noop */ }
