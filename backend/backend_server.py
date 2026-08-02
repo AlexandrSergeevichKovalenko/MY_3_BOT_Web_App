@@ -10442,8 +10442,8 @@ def fill_thin_cards_from_units(
 
     Перенос бесплатный, поэтому он не имеет права ничего испортить: личные поля
     (что человек сохранил, в какую сторону) остаются как есть, из разбора берём только
-    то, чего в карточке нет. Уже собранную карточку не трогаем вовсе — выборка отдаёт
-    только те, где нет ни одного примера."""
+    то, чего в карточке нет. Готовые блоки не переписываются никогда — выборка отдаёт
+    заготовки без примеров и карточки, которым единица может добавить недостающий разбор."""
     report = {"picked": 0, "filled": 0, "skipped": 0, "errors": 0, "samples": []}
     try:
         rows = lex_units.thin_entries_with_unit_card(
@@ -10506,6 +10506,85 @@ def fill_thin_cards_from_units(
             "перенос разбора из слоя единиц: наполнено %d карточек из %d отобранных",
             report["filled"], report["picked"],
         )
+    return report
+
+
+# Потолок явного пересбора: разовая уборка не должна превращаться в тысячу вызовов
+# подряд, если однажды планка полноты сдвинется ещё раз.
+UNIT_RESWEEP_DEFAULT_LIMIT = int((os.getenv("UNIT_RESWEEP_DEFAULT_LIMIT") or "300").strip() or "300")
+
+
+def resweep_thin_unit_cards(
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    learning_lang: str = "de",
+    native_lang: str = "ru",
+    progress_cb=None,
+) -> dict:
+    """Пересобрать разбор у слов с КУЦЕЙ карточкой: примеры и формы есть, а значений,
+    управления и сочетаний нет.
+
+    Ночной добор такие слова не берёт намеренно — он смотрит только на слова вовсе без
+    разбора, чтобы сдвиг планки полноты не запустил массовый пересбор за деньги сам
+    собой. Поэтому это отдельный ЯВНЫЙ шаг с потолком и с сухим прогоном по умолчанию.
+
+    Собранный разбор тут же расходится по личным карточкам этого слова — иначе он снова
+    ляжет на единицу и до человека не дойдёт."""
+    cap = int(limit if limit is not None else UNIT_RESWEEP_DEFAULT_LIMIT)
+    report = {
+        "dry_run": bool(dry_run), "cap": cap, "picked": 0, "enriched": 0,
+        "skipped_empty": 0, "skipped_thin": 0, "errors": 0,
+        "cards_filled": 0, "remaining": 0, "samples": [],
+    }
+    units = lex_units.units_with_thin_card(cap, lang=learning_lang, native_lang=native_lang)
+    report["picked"] = len(units)
+    for index, unit in enumerate(units):
+        if progress_cb is not None:
+            try:
+                progress_cb(index, len(units), report)
+            except Exception:
+                logging.debug("resweep progress_cb failed", exc_info=True)
+        german = str(unit.get("display") or unit.get("lemma") or "").strip()
+        translation = str(unit.get("translation") or "").strip()
+        if len(report["samples"]) < 20:
+            report["samples"].append({"word": german, "translation": translation,
+                                      "saved": unit.get("saved")})
+        if dry_run:
+            continue
+        try:
+            enrich_data = _normalize_dictionary_enrich_payload(
+                _rich_enrich_card_fields(
+                    source_text=german, target_text=translation,
+                    source_lang=learning_lang, target_lang=native_lang,
+                    timeout_seconds=POOL_NIGHT_ENRICH_TIMEOUT_SECONDS,
+                )
+            )
+            enrich_data = _drop_wrong_language_examples(enrich_data, learning_lang=learning_lang)
+            if not enrich_data:
+                report["skipped_empty"] += 1
+                continue
+            # Планка та же, что у ночного: не сохраняем карточку, которая не стала лучше.
+            # Иначе мы платим за вызов и оставляем слово в той же куцей яме.
+            if _dictionary_word_card_is_thin(enrich_data):
+                report["skipped_thin"] += 1
+                continue
+            if lex_units.save_unit_card(unit["id"], enrich_data, source="пересбор"):
+                report["enriched"] += 1
+                spread = fill_thin_cards_from_units(
+                    limit=UNIT_CARD_SPREAD_PER_WORD_LIMIT,
+                    unit_id=int(unit["id"]), lang=learning_lang,
+                )
+                report["cards_filled"] += int(spread.get("filled") or 0)
+                lex_units.sync_unit_links_from_card(
+                    unit["id"], enrich_data, native_lang=native_lang,
+                )
+            else:
+                report["errors"] += 1
+        except Exception:
+            logging.warning("пересбор не удался для %r", german, exc_info=True)
+            report["errors"] += 1
+    report["remaining"] = lex_units.count_units_with_thin_card(lang=learning_lang)
     return report
 
 

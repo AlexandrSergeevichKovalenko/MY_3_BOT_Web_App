@@ -11888,6 +11888,115 @@ async def admin_repair_dict_cards_command(update: Update, context: CallbackConte
         await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
 
 
+async def admin_resweep_units_command(update: Update, context: CallbackContext):
+    """Пересобрать разбор у слов с КУЦЕЙ карточкой: примеры и формы есть, а значений,
+    управления и сочетаний нет.
+
+    Ночной добор такие слова не берёт СОЗНАТЕЛЬНО — он смотрит только на слова вовсе без
+    разбора, чтобы сдвиг планки полноты не запустил массовый пересбор за деньги сам
+    собой. Поэтому шаг явный, с потолком и сухим прогоном по умолчанию.
+
+    /admin_resweep_units            → сколько слов ждёт и сколько это будет стоить
+    /admin_resweep_units apply      → пересобрать (потолок из env, по умолчанию 300)
+    /admin_resweep_units apply 50   → не больше 50 за раз
+    """
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    args = [a.strip().lower() for a in (context.args or [])]
+    apply = "apply" in args
+    limit = next((int(a) for a in args if a.isdigit() and 1 <= int(a) <= 5000), None)
+    chat_id = message.chat_id
+
+    from html import escape as _esc
+
+    def _format_report(report: dict) -> str:
+        samples = report.get("samples") or []
+        lines = "\n".join(
+            f"  • {_esc(str(s.get('word')))} — {_esc(str(s.get('translation')))} "
+            f"(сохранили: {_esc(str(s.get('saved')))})"
+            for s in samples[:12]
+        )
+        picked = int(report.get("picked", 0))
+        text = (
+            f"🧩 <b>Пересбор куцых разборов</b> ({'применяю' if apply else 'пробный прогон'})\n\n"
+            f"Взято в работу: <b>{picked}</b> (потолок {report.get('cap', 0)})\n"
+            f"Пересобрано: <b>{report.get('enriched', 0)}</b>\n"
+            f"Дошло до карточек людей: <b>{report.get('cards_filled', 0)}</b>\n"
+            f"Пропущено: пусто от модели {int(report.get('skipped_empty') or 0)} · "
+            f"лучше не стало {int(report.get('skipped_thin') or 0)}\n"
+            f"Ошибок: {report.get('errors', 0)}\n"
+            f"Осталось: <b>{report.get('remaining', 0)}</b>"
+        )
+        if not apply and picked:
+            # Цена замерена 02.08.2026 живыми вызовами: $0.00208 за слово с учётом
+            # кеша инструкции. Показываем её ДО траты, а не после.
+            text += f"\n\nЦена применения: примерно <b>${picked * 0.00208:.2f}</b>"
+        if lines:
+            text += f"\n\n<b>Очередь (сначала то, что скоро спросят):</b>\n{lines}"
+        return text
+
+    def _send_raw(text: str) -> None:
+        token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+        if not token:
+            return
+        for part in _split_telegram_text(text):
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": part, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=20,
+                )
+            except Exception:
+                logging.warning("resweep raw send failed", exc_info=True)
+
+    if not apply:
+        await message.reply_text("🧩 Пересбор: пробный прогон, показываю очередь и цену…")
+        try:
+            from backend.backend_server import resweep_thin_unit_cards
+            report = await asyncio.to_thread(resweep_thin_unit_cards, limit=limit, dry_run=True)
+        except Exception as exc:
+            logging.exception("resweep dry-run failed user_id=%s", int(sender.id))
+            await message.reply_text(f"❌ Пересбор упал: {exc}")
+            return
+        for part in _split_telegram_text(_format_report(report)):
+            await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+        return
+
+    await message.reply_text(
+        "🧩 Пересбор: ПРИМЕНЯЮ. Один запрос к модели на слово — это минуты; "
+        "итог пришлю сюда, как закончу."
+    )
+
+    def _progress(idx: int, total: int, rep: dict) -> None:
+        if idx == 0 or (idx % 5 == 0):
+            _send_raw(
+                f"⚙️ Пересбор: беру слово {idx + 1}/{total} "
+                f"(пересобрано {int(rep.get('enriched', 0))}, "
+                f"карточек наполнено {int(rep.get('cards_filled', 0))})"
+            )
+
+    # Тот же приём, что у ручного добора пула: вызовы модели идут ПОСЛЕДОВАТЕЛЬНО и
+    # долго, а запуск их через asyncio.to_thread из живой петли бота однажды оставил
+    # команду висеть без итога — обогащение делает asyncio.run() поверх того же async
+    # клиента, которым живёт петля. Отдельный поток + отправка итога сырым HTTP.
+    def _worker() -> None:
+        try:
+            from backend.backend_server import resweep_thin_unit_cards
+            report = resweep_thin_unit_cards(limit=limit, dry_run=False, progress_cb=_progress)
+            _send_raw(_format_report(report))
+        except Exception as exc:
+            logging.exception("resweep apply (thread) failed user_id=%s", int(sender.id))
+            _send_raw(f"❌ Пересбор упал: {_esc(str(exc))}")
+
+    threading.Thread(target=_worker, name="units-resweep-manual", daemon=True).start()
+
+
 async def admin_spread_unit_cards_command(update: Update, context: CallbackContext):
     """Раздать уже собранный разбор слова по пустым личным карточкам. Бесплатно.
 
@@ -41313,6 +41422,7 @@ def main():
 
     application.add_handler(CommandHandler("admin_repair_dict_cards", admin_repair_dict_cards_command))
     application.add_handler(CommandHandler("admin_spread_unit_cards", admin_spread_unit_cards_command))
+    application.add_handler(CommandHandler("admin_resweep_units", admin_resweep_units_command))
     application.add_handler(CommandHandler("admin_pool_quarantine", admin_pool_quarantine_command))
     application.add_handler(CallbackQueryHandler(handle_quarantine_callback, pattern=r"^qz:"))
     application.add_handler(CommandHandler("videopoolreport", admin_video_pool_report_command))

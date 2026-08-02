@@ -20,7 +20,7 @@ import logging
 import re
 from typing import Any
 
-from backend.database import get_db_connection_context
+from backend.database import get_db_connection_context, _dictionary_pool_word_fully_rich_sql
 from backend.lex_senses import split_translation
 
 _SPACE_RE = re.compile(r"\s+")
@@ -619,6 +619,89 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
         return False
 
 
+def units_with_thin_card(limit: int, *, lang: str = "de", native_lang: str = "ru") -> list[dict]:
+    """Слова, у которых разбор ЕСТЬ, но куцый: примеры и формы на месте, а значений,
+    управления и сочетаний нет.
+
+    Ночной добор их не берёт СОЗНАТЕЛЬНО: он смотрит только на слова вовсе без разбора,
+    чтобы переключение планки «что считать полной карточкой» не запустило разом
+    массовый пересбор за деньги. Поэтому такой пересбор — отдельный явный шаг с
+    потолком, и вот его выборка.
+
+    Порядок тот же, что у ночного: сначала слова, стоящие у людей на повторение по
+    ближайшему сроку, потом по числу сохранивших."""
+    if limit <= 0:
+        return []
+    rich = _dictionary_pool_word_fully_rich_sql("u.card")
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT u.id, u.display, u.lemma, u.gender, u.pos,
+                           COALESCE(p.saved, 0) AS saved,
+                           d.due_at,
+                           (SELECT u2.display FROM bt_3_lex_links l
+                              JOIN bt_3_lex_units u2 ON u2.id = l.to_unit
+                             WHERE l.from_unit = u.id AND u2.lang = %s
+                               AND position('___' in u2.display) = 0
+                             ORDER BY l.rank, u2.id LIMIT 1) AS translation
+                    FROM bt_3_lex_units u
+                    LEFT JOIN (
+                        SELECT lex_unit_id, COUNT(*) AS saved
+                        FROM bt_3_webapp_dictionary_queries
+                        WHERE lex_unit_id IS NOT NULL GROUP BY lex_unit_id
+                    ) p ON p.lex_unit_id = u.id
+                    LEFT JOIN (
+                        SELECT q.lex_unit_id, MIN(st.due_at) AS due_at
+                        FROM bt_3_card_srs_state st
+                        JOIN bt_3_webapp_dictionary_queries q
+                          ON q.id = st.card_id AND q.user_id = st.user_id
+                        WHERE st.status <> 'suspended' AND q.lex_unit_id IS NOT NULL
+                        GROUP BY q.lex_unit_id
+                    ) d ON d.lex_unit_id = u.id
+                    WHERE u.lang = %s AND u.kind = 'word'
+                      AND u.card IS NOT NULL AND u.card <> '{{}}'::jsonb
+                      AND NOT {rich}
+                    ORDER BY (d.due_at IS NULL), d.due_at, saved DESC, u.id
+                    LIMIT %s;
+                    """,
+                    (native_lang, str(lang or "de").strip().lower() or "de", int(limit)),
+                )
+                rows = cur.fetchall()
+    except Exception as exc:
+        logging.debug("units with thin card failed: %s", exc)
+        return []
+    return [
+        {
+            "id": r[0], "display": r[1], "lemma": r[2], "gender": r[3], "pos": r[4],
+            "saved": r[5], "due_at": r[6], "translation": r[7],
+        }
+        for r in rows
+    ]
+
+
+def count_units_with_thin_card(*, lang: str = "de") -> int:
+    """Сколько всего слов ждут пересбора — считаем отдельно от выборки, иначе отчёт
+    покажет размер потолка вместо реального остатка."""
+    rich = _dictionary_pool_word_fully_rich_sql("u.card")
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""SELECT COUNT(*) FROM bt_3_lex_units u
+                        WHERE u.lang = %s AND u.kind = 'word'
+                          AND u.card IS NOT NULL AND u.card <> '{{}}'::jsonb
+                          AND NOT {rich};""",
+                    (str(lang or "de").strip().lower() or "de",),
+                )
+                row = cur.fetchone()
+        return int(row[0]) if row else 0
+    except Exception as exc:
+        logging.debug("count units with thin card failed: %s", exc)
+        return 0
+
+
 def thin_entries_with_unit_card(
     limit: int = 500,
     *,
@@ -633,13 +716,26 @@ def thin_entries_with_unit_card(
     карточку, и до неё разбор сам не доходит: на 01.08 таких карточек было 3648. Здесь
     мы их находим, чтобы перенести готовое даром (см. fill_thin_cards_from_units).
 
-    «Пусто» = в личной карточке нет ни одного примера. Именно примеры человек и видит
-    по кнопке-подсказке, и именно по ним отличают собранную карточку от заготовки.
+    Забираем ДВА случая, и второй важнее, чем кажется:
+    1. в личной карточке нет ни одного примера — заготовка, человеку показывать нечего;
+    2. в личной карточке примеры есть, но нет разборных блоков (значения, управление,
+       сочетания), а на единице они ЕСТЬ. Такую карточку прежняя выборка не видела —
+       примеры-то на месте, — и 195 человеческих карточек стояли пустыми при готовом и
+       уже оплаченном разборе (замер 02.08.2026). Перенос только дополняет пустые поля,
+       поэтому расширение не может ничего испортить.
 
     Порядок — сначала то, что человек увидит раньше всех: карточки, стоящие на
     повторение по ближайшему сроку, а уже потом всё остальное."""
     if limit <= 0:
         return []
+    unit_rich = _dictionary_pool_word_fully_rich_sql("u.card")
+    card_rich = _dictionary_pool_word_fully_rich_sql("q.response_json")
+    # NOT (… IS TRUE), а не NOT (…): при отсутствующем ключе сравнение даёт NULL,
+    # и обычное NOT выбрасывает строку из выборки вместо того, чтобы взять её.
+    card_has_examples = (
+        "((jsonb_typeof(q.response_json->'usage_examples') = 'array'"
+        " AND jsonb_array_length(q.response_json->'usage_examples') > 0) IS TRUE)"
+    )
     where = [
         # Разбор строится ПО ИЗУЧАЕМОМУ слову, поэтому и переносим только с единицы на
         # изучаемом языке. Без этого условия карточке «враг → der Feind» мог бы достаться
@@ -649,10 +745,7 @@ def thin_entries_with_unit_card(
         "u.card <> '{}'::jsonb",
         "jsonb_typeof(u.card->'usage_examples') = 'array'",
         "jsonb_array_length(u.card->'usage_examples') > 0",
-        # NOT (… IS TRUE), а не NOT (…): при отсутствующем ключе сравнение даёт NULL,
-        # и обычное NOT выбрасывает строку из выборки вместо того, чтобы взять её.
-        "NOT ((jsonb_typeof(q.response_json->'usage_examples') = 'array'"
-        " AND jsonb_array_length(q.response_json->'usage_examples') > 0) IS TRUE)",
+        f"(NOT {card_has_examples} OR ({unit_rich} AND NOT {card_rich}))",
     ]
     params: list[Any] = [str(lang or "de").strip().lower() or "de"]
     if unit_id:
