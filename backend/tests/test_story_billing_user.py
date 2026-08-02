@@ -1,8 +1,13 @@
-"""Расход «Загадочной истории» ложится на того, кто её играет.
+"""Личный расход «Загадочной истории» ложится на игрока, генерация — на заведение.
 
-Функция платная (`_paid_surface_gate_response(feature="story_mode")`), модель зовёт
-конкретный человек, и по правилу владельца такой вызов пишется на него. Замерено на
-боевой ведомости 02.08.2026: деньги были, а человека не было —
+Функция платная (`_paid_surface_gate_response(feature="story_mode")`). Правило владельца:
+на человека — то, что никому больше не пригодится; на дом — всё, что переиспользуется.
+Разбор ЕГО перевода, ЕГО догадки и ЕГО ошибок никому больше не нужен → на игрока.
+Генерация истории уходит в ОБЩИЙ банк bt_3_story_bank и предлагается другим на арене
+(`WHERE sc.user_id != exclude_user_id`), повторная игра модель не зовёт → на заведение,
+иначе за общий банк платит тот, кто открыл историю первым.
+
+Замерено на боевой ведомости 02.08.2026: деньги были, а человека не было —
 
     generate_mystery_story          2 вызова, $0.0065, user_id=NULL
     check_translation_story_arena   3 вызова, $0.0041, user_id=NULL
@@ -25,14 +30,19 @@ from backend import openai_manager as om
 
 _SERVER = Path(__file__).resolve().parent.parent / "backend_server.py"
 
-# Задачи, которые на самом деле зовут модель под этими тремя обработчиками.
-STORY_LLM_TASKS = (
-    "generate_mystery_story",
+# Личная работа: разбирают ИМЕННО его перевод и его догадку, никому больше не пригодится.
+STORY_PERSONAL_TASKS = (
     "check_translation_story_arena",
     "check_story_guess_semantic",
     "check_story_explanation_core",
     "check_story_explanation_meta",
 )
+
+# За счёт заведения: генерация наполняет ОБЩИЙ банк bt_3_story_bank, и арена предлагает
+# готовую историю другим игрокам (`WHERE sc.user_id != exclude_user_id`); при повторной
+# игре модель не зовут вообще. Если это записать на человека, за общий банк заплатит тот,
+# кто открыл историю первым, а остальные сыграют за его счёт.
+STORY_HOUSE_TASKS = ("generate_mystery_story",)
 
 # Обработчики Flask и вызов, вокруг которого обязана стоять привязка.
 STORY_HANDLERS = (
@@ -46,15 +56,26 @@ class StoryBillingUserTests(unittest.TestCase):
     def setUp(self):
         self.source = _SERVER.read_text(encoding="utf-8")
 
-    def test_story_tasks_are_personal_not_house(self):
-        # Если задачу занесут в список «ничьих», привязка перестанет действовать молча:
-        # _resolve_billing_user_for_task принудительно вернёт None.
-        for task in STORY_LLM_TASKS:
+    def test_personal_story_work_lands_on_the_player(self):
+        # Если такую задачу занесут в список «ничьих», привязка перестанет действовать
+        # молча: _resolve_billing_user_for_task принудительно вернёт None.
+        for task in STORY_PERSONAL_TASKS:
             with self.subTest(task=task):
                 self.assertEqual(
                     om._resolve_billing_user_for_task(task, 117649764),
                     117649764,
-                    f"{task} помечена как общая — расход снова перестанет попадать в потолок игрока",
+                    f"{task} помечена как общая — разбор ЕГО работы перестанет попадать в его потолок",
+                )
+
+    def test_story_generation_is_paid_by_the_house(self):
+        # Генерация наполняет общий банк, поэтому обязана оставаться ничьей ДАЖЕ когда
+        # обработчик выставил плательщика.
+        for task in STORY_HOUSE_TASKS:
+            with self.subTest(task=task):
+                self.assertIsNone(
+                    om._resolve_billing_user_for_task(task, 117649764),
+                    f"{task} записалась бы на игрока — но история уходит в общий банк "
+                    "bt_3_story_bank и предлагается другим на арене, значит платит заведение",
                 )
 
     def test_each_story_handler_sets_and_clears_the_billing_user(self):

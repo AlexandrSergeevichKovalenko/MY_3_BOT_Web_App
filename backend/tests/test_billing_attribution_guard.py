@@ -55,11 +55,19 @@ class ResolveBillingUserForTaskTests(unittest.TestCase):
         for task in (
             "check_translation_multilang", "recheck_translation",
             "theory_generation", "generate_sentences_a2",
-            "generate_mystery_story", "dictionary_assistant_multilang",
+            "dictionary_assistant_multilang",
             "feel_word", "shortcut_split", "dictionary_lookup",
         ):
             with self.subTest(task=task):
                 self.assertEqual(om._resolve_billing_user_for_task(task, 777), 777)
+
+    def test_mystery_story_generation_moved_to_the_house(self):
+        # Раньше числилась личной. Проверено по коду 02.08.2026: свежая история всегда
+        # уходит в общий банк bt_3_story_bank, арена предлагает её ДРУГИМ игрокам, а
+        # повторная игра модель не зовёт. По правилу «на дом всё, что переиспользуется»
+        # это расход заведения — иначе за общий банк платит тот, кто открыл первым.
+        # Разбор ЕГО перевода и ошибок при этом остался личным (см. test_story_billing_user).
+        self.assertIsNone(om._resolve_billing_user_for_task("generate_mystery_story", 777))
 
     def test_none_user_stays_none(self):
         # Background/prewarm work (no context) stays NULL regardless of task class.

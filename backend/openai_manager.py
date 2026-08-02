@@ -5579,6 +5579,16 @@ _SYSTEM_ATTRIBUTION_TASKS: frozenset[str] = frozenset({
     # Sentence→chunk split for audio. Cached in bt_3_tts_chunk_cache under a hash of the
     # sentence itself, so it is computed once and reused for every learner forever.
     "tts_chunk_de",
+    # «Загадочная история»: генерация НАПОЛНЯЕТ ОБЩИЙ БАНК, а не делается под одного.
+    # Проверено по коду 02.08.2026: свежая история всегда уходит в bt_3_story_bank +
+    # bt_3_story_sentences (`if not load_from_db: _save_story_bank(...)`), а арена потом
+    # предлагает её ДРУГИМ (`WHERE sc.user_id != exclude_user_id`) — при повторной игре
+    # модель не зовут вообще, берут готовое. По правилу владельца «на дом всё, что
+    # переиспользуется» это расход заведения: иначе за общий банк платил бы тот, кто
+    # открыл историю первым, а остальные играли бы за его счёт.
+    # ВАЖНО: сюда попадает ТОЛЬКО генерация. Проверка ЕГО перевода, разбор ЕГО догадки и
+    # разбор ЕГО ошибок остаются личными и идут в его дневной потолок.
+    "generate_mystery_story",
     # Pool-build verifiers for those items (shared content, never a user's request)
     "check_wortbildung_batch", "check_wortgruppe_batch",
     # DALL·E images (battles, heroes, plaques, news) — pre-built, reused
