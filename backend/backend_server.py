@@ -38569,10 +38569,16 @@ def lookup_webapp_dictionary():
             )
             mark("decorate")
             _start_dictionary_enrichment_runner(lookup_id=lookup_id)
+            # Счётчик «человек посмотрел слово», а НЕ поход к провайдеру: он пишется и
+            # тогда, когда ответ взят из кеша. Настоящий вызов замеряет
+            # _billing_log_openai_usage сразу ниже. Пока обе строки назывались
+            # provider='openai' + 'requests', отчёты складывали их и показывали 446
+            # обращений к модели вместо 92 (замер 02.08.2026 за 30 дней), а процент
+            # попаданий в кеш считался от раздутого знаменателя.
             _billing_log_event_safe(
                 user_id=int(user_id),
                 action_type="dictionary_lookup",
-                provider="openai",
+                provider="app_internal",
                 units_type="requests",
                 units_value=1.0,
                 source_lang=source_lang,
@@ -38680,10 +38686,12 @@ def lookup_webapp_dictionary():
             lookup_lang=lookup_lang,
             normalized_word=normalized_word,
         )
+    # Счётчик обращений человека к словарю, не поход к провайдеру — см. пояснение
+    # у такого же счётчика выше. Вызов замеряется отдельно, строкой ниже.
     _billing_log_event_safe(
         user_id=int(user_id),
         action_type="dictionary_lookup",
-        provider="openai",
+        provider="app_internal",
         units_type="requests",
         units_value=1.0,
         source_lang=source_lang,
@@ -38988,8 +38996,9 @@ def stream_webapp_dictionary():
                 )
         except Exception:
             logging.debug("dictionary stream cache store failed", exc_info=True)
+        # Счётчик обращений человека к словарю, не поход к провайдеру (см. выше).
         _billing_log_event_safe(
-            user_id=user_id, action_type="dictionary_lookup", provider="openai", units_type="requests",
+            user_id=user_id, action_type="dictionary_lookup", provider="app_internal", units_type="requests",
             units_value=1.0, source_lang=source_lang, target_lang=target_lang,
             idempotency_seed=f"dict_lookup_stream:{user_id}:{source_lang}:{target_lang}:{word_ru.lower()}:{direction}:{time.time_ns()}",
             status="estimated", metadata={"word": word_ru, "direction": direction, "lookup_status": "stream"},
@@ -43888,10 +43897,14 @@ def prepare_today_theory():
             )
         except Exception as exc:
             logging.warning("Skill training seed upsert failed: %s", exc)
+    # Счётчик «человек собрал теорию»: он объявлял 2 обращения к модели, но оба
+    # настоящих вызова замеряются ниже отдельно (theory_generation и
+    # theory_practice_sentences). Пока счётчик числился походом к провайдеру, одна
+    # сборка попадала в отчёт трижды.
     _billing_log_event_safe(
         user_id=int(user_id),
         action_type="theory_package_prepare",
-        provider="openai",
+        provider="app_internal",
         units_type="requests",
         units_value=2.0,
         source_lang=source_lang,
@@ -43996,10 +44009,11 @@ def check_today_theory():
     except Exception as exc:
         return jsonify({"error": f"Ошибка проверки теории: {exc}"}), 500
     usage_check = get_last_llm_usage(reset=True)
+    # Счётчик обращения человека; сам вызов замеряется ниже (см. dictionary_lookup).
     _billing_log_event_safe(
         user_id=int(user_id),
         action_type="theory_check_feedback",
-        provider="openai",
+        provider="app_internal",
         units_type="requests",
         units_value=1.0,
         source_lang=source_lang,
@@ -45653,10 +45667,12 @@ def get_webapp_dictionary_collocations():
                 )
             )
         usage_collocations = get_last_llm_usage(reset=True)
+        # Счётчик обращения человека; сам вызов замеряется строкой ниже (см. пояснение
+        # у счётчика dictionary_lookup) — иначе один вызов считался бы дважды.
         _billing_log_event_safe(
             user_id=int(user_id),
             action_type="dictionary_collocations",
-            provider="openai",
+            provider="app_internal",
             units_type="requests",
             units_value=1.0,
             source_lang=source_lang,
@@ -66455,10 +66471,11 @@ def explain_webapp_translation():
             )
             explanation = str((explanation_json or {}).get("summary") or "")
         usage_explain = get_last_llm_usage(reset=True)
+        # Счётчик обращения человека; сам вызов замеряется ниже (см. dictionary_lookup).
         _billing_log_event_safe(
             user_id=int(user_id),
             action_type="dictionary_openai_explanation",
-            provider="openai",
+            provider="app_internal",
             units_type="requests",
             units_value=1.0,
             source_lang=source_lang,
@@ -66571,10 +66588,11 @@ def explain_webapp_translation_followup_question():
             )
         )
         usage_question = get_last_llm_usage(reset=True)
+        # Счётчик обращения человека; сам вызов замеряется ниже (см. dictionary_lookup).
         _billing_log_event_safe(
             user_id=int(user_id),
             action_type="ask_gpt_daily",
-            provider="openai",
+            provider="app_internal",
             units_type="requests",
             units_value=1.0,
             source_lang=source_lang,
@@ -66682,8 +66700,9 @@ def webapp_ask_about_task():
             source_lang=source_lang, target_lang=target_lang, history=history,
         )
         usage_question = get_last_llm_usage(reset=True)
+        # Счётчик обращения человека; сам вызов замеряется ниже (см. dictionary_lookup).
         _billing_log_event_safe(
-            user_id=int(user_id), action_type="ask_gpt_daily", provider="openai",
+            user_id=int(user_id), action_type="ask_gpt_daily", provider="app_internal",
             units_type="requests", units_value=1.0, source_lang=source_lang, target_lang=target_lang,
             idempotency_seed=f"task_ask:{user_id}:{hashlib.sha1(learner_question.encode('utf-8', 'ignore')).hexdigest()[:16]}:{time.time_ns()}",
             status="estimated",
