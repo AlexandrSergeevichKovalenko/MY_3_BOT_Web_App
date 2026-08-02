@@ -251,10 +251,17 @@ function fitOne(root) {
   // некрасиво): карточка растягивается на всю высоту экрана, а остаток уходит внутрь неё.
   // Иначе получалось то, на что жалуются: карточка «скукожилась» посреди экрана, а сверху
   // и снизу пустые полосы.
+  //
+  // Работает и на телефоне, и на планшете. Масштаб при этом НЕ ТРОГАЕТСЯ — меняется только
+  // высота самой карточки, и тянется она строго до видимой высоты. Это принципиально: беду
+  // на телефоне творил не добор высоты, а подъём МАСШТАБА после финальной проверки «страница
+  // не прокручивается» — он шёл мимо неё и выносил кнопки под сгиб. Здесь масштаб уже
+  // утверждён и остаётся как есть, поэтому под сгиб уйти нечему.
   const fill = (k) => {
+    if (root.classList.contains('is-scroll')) return;   // и так не влезло — растягивать нечего
     const cardH = card.getBoundingClientRect().height;
     const slack = availHeight(root) - cardH;
-    if (slack < 12) return;
+    if (slack < 4) return;
     card.classList.add('is-filled');
     card.style.minHeight = `${Math.round((cardH + slack - 2) / k)}px`;
   };
@@ -276,8 +283,7 @@ function fitOne(root) {
     if (availHeight(root) - card.getBoundingClientRect().height < 12) return cur;
     root.classList.remove('is-scroll');
     if (cur < WIDE_MAX_ZOOM - 0.002) cur = fitsAt(WIDE_MAX_ZOOM) ? WIDE_MAX_ZOOM : bisect(cur, WIDE_MAX_ZOOM);
-    fill(cur);
-    return cur;
+    return cur;   // высоту добирает fill() в settle — общий путь для телефона и планшета
   };
 
   // Финальная проверка ПО ФАКТУ: страница не должна прокручиваться. Замер высоты карточки
@@ -305,7 +311,11 @@ function fitOne(root) {
       setZoom(card, k);
       if (card.classList.contains('is-panelled')) card.style.maxHeight = `${Math.round((avail - 2) / k)}px`;
     }
-    remember(rescue(k));
+    // Планшет может ещё поднять масштаб (у него запас по ширине), телефон — нет. А остаток
+    // высоты до края экрана добирают оба: пустых полос сверху и снизу быть не должно.
+    const kFinal = rescue(k);
+    fill(kFinal);
+    remember(kFinal);
   };
 
   // Помещается ли карточка при масштабе kk (замер, а не расчёт: текст переносится иначе).
@@ -380,7 +390,9 @@ function fitOne(root) {
   root.classList.add('is-scroll');
   // И здесь проверяем по факту: если после ужатия на экране всё-таки осталось место —
   // расчёт выше ошибся, масштаб возвращаем (сюда попадала «скукоженная» карточка).
-  remember(rescue(MIN_ZOOM));
+  const kLast = rescue(MIN_ZOOM);
+  fill(kLast);
+  remember(kLast);
 }
 
 function run() {
