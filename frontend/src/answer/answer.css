@@ -148,6 +148,15 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
 .ans-card.is-panelled > .is-fit-panel .tr-chips,
 .ans-card.is-panelled > .is-fit-panel .sp-chips { max-height: none; overflow-y: visible; }
 
+/* Карточка пересобрана в режим панели — значит места не хватило и разбор пришлось бы
+   листать внутри. Прежде чем мириться с этим, ЗАБИРАЕМ ВЫСОТУ У КНОПОК ОТВЕТА: они уже
+   сыграли свою роль (ответ дан и подсвечен), а разбор читают именно сейчас. Мишень при
+   этом остаётся пригодной для пальца — около 44 px, минимум по рекомендациям Apple. */
+.ans-card.is-panelled > .as-buttons { gap: 0.5rem; margin-top: 0.5rem; }
+.ans-card.is-panelled .as-btn-art { padding: 0.625rem 0.25rem; font-size: 1.25rem; border-radius: 0.75rem; }
+.ans-card.is-panelled .adj-end,
+.ans-card.is-panelled .wo-opt   { padding: 0.625rem 0.25rem; font-size: 1.0625rem; }
+
 /* Экран занят целиком: масштаб упёрся в потолок, а место ещё осталось (fitCard.js
    выставил высоту). Содержимое стоит по центру карточки — пустых полос сверху и снизу
    больше нет, вместо них поля самой карточки. */
@@ -1581,8 +1590,15 @@ html[data-scheme="light"] .ask-open-btn { color: #1e1b4b; background: #eef0ff; }
 }
 .ask-pop-thread {
   display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem;
-  max-height: 46vh; min-height: 6.5rem; overflow-y: auto;
+  max-height: 46vh; overflow-y: auto;
+  /* Когда открыта клавиатура, окну задана высота видимой полосы (см. AskOverlay). Ужаться
+     под неё должна переписка — у неё своя прокрутка; шапка, поле ввода и кнопки нужны
+     целиком. `min-height: 0` обязателен: без него flex-элемент не ужимается ниже контента
+     и окно вылезает за клавиатуру, ради чего всё и затевалось. */
+  flex: 1 1 auto; min-height: 0;
 }
+/* Пока клавиатуры нет, переписке нужен «рост» — иначе окно схлопывается в полоску. */
+.ask-pop-thread:not(:empty) { min-height: 3.25rem; }
 .ask-pop-hint { font-size: 0.8125rem; color: var(--dmps-text-muted, #94A3B8); text-align: center; padding: 0.5rem 0.25rem; }
 .ask-bubble {
   max-width: 86%; padding: 0.5625rem 0.75rem; border-radius: 0.875rem; font-size: 0.9062rem; line-height: 1.4;

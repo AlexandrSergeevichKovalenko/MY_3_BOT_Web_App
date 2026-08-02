@@ -266,8 +266,10 @@ function fitOne(root) {
   //
   // Прокрутки это добавить не может: тянем строго до availHeight, и только когда место
   // ЕСТЬ. Двух режимов, где высота уже задана точно, не касаемся.
+  // Режим панели тут тоже участвует: ему задан МАКСИМУМ высоты, а не точная высота, и если
+  // содержимое оказалось короче — карточка снова висела бы полоской. Растянув её, мы заодно
+  // отдаём остаток прокручиваемому блоку: разбора видно больше.
   const fill = (k) => {
-    if (card.classList.contains('is-panelled')) return;   // высота задана точно
     if (root.classList.contains('is-scroll')) return;     // и так не влезло
     const cardH = card.getBoundingClientRect().height;
     const slack = availHeight(root) - cardH;
