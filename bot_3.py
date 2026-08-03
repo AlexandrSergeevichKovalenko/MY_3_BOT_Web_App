@@ -34593,36 +34593,17 @@ def _aufgabe_payload_from_item(fmt: str, it: dict, *, admin_chosen: bool = False
         if not vollsatz or _wg_norm(satz.replace("_____", correct)) != _wg_norm(vollsatz):
             return None
 
-        # The shown words must be CONTENT words only: no article/conjunction/
-        # preposition/"zu" may leak into the lemmas (finding them is the task), and
-        # the hidden glue must not be shown. (Checks each lemma AS A WHOLE, so a
-        # multiword lemma like "sich auseinandersetzen" is fine.)
-        _WG_FUNCTION = {
-            "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
-            "eines", "einer", "zu", "ob", "dass", "und", "oder", "aber", "sich", "nicht",
-            "mit", "von", "für", "auf", "an", "in", "bei", "zwischen", "über", "unter",
-            "aus", "nach", "um", "durch", "gegen", "ohne", "vor", "wegen", "trotz",
-        }
+        # The shown words must be CONTENT words in their BASE form: no article/
+        # conjunction/preposition/"zu"/contraction, no declined possessive, no
+        # adjective carrying its ending — supplying all of that IS the task. One
+        # shared rule with the nightly purge and the serve-time check, so items that
+        # predate it are retired instead of being served with the answer on them.
+        from backend.database import wortgruppe_lemma_leak
         hidden_glue = str(it.get("hidden_glue") or it.get("preposition") or "").strip()
-        if any(_wg_norm(l) in _WG_FUNCTION for l in lemmas):
+        if wortgruppe_lemma_leak({"lemmas": lemmas, "correct": correct}):
             return None
         if hidden_glue and any(_wg_norm(l) == _wg_norm(hidden_glue) for l in lemmas):
             return None
-
-        # No lemma may be shown ALREADY INFLECTED for attribution — supplying the
-        # ending is the whole task. In German an attributive adjective directly
-        # before a noun ALWAYS carries a declension ending, so if a lowercase content
-        # lemma appears verbatim in `correct` immediately before a capitalised noun,
-        # its ending has leaked (e.g. lemma "steigenden" before "Nachfrage" gives away
-        # the -en). The correct base-form lemma ("steigend") would NOT match the
-        # inflected token, so this never rejects a properly-built item.
-        _corr_tokens = [t.strip(".,;:!?…\"'»«()") for t in correct.split()]
-        _lemma_norms = {_wg_norm(l) for l in lemmas}
-        for _i in range(len(_corr_tokens) - 1):
-            _tok, _nxt = _corr_tokens[_i], _corr_tokens[_i + 1]
-            if _tok and _tok[:1].islower() and _nxt[:1].isupper() \
-                    and _wg_norm(_tok) in _lemma_norms:
-                return None
 
         # accepted = correct + every equivalent spelling (from the verifier, falling
         # back to legacy aliases), de-duplicated, preserving order.

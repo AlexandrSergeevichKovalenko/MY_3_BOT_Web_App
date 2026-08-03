@@ -1961,6 +1961,96 @@ def normalize_error_payload(payload) -> list:
     return out
 
 
+# ─── Wortgruppe: the shown words must be BASE forms ──────────────────────────
+# The whole exercise is "put the given words into the right case, gender, ending
+# and article yourself". So a Stützwort shown WITH its ending ("langjährigen",
+# "ihrer", "im") hands the learner the very answer the task is about. These are the
+# deterministic checks; the LLM verifier (check_wortgruppe_batch, rule (c)) covers
+# what needs morphology. ONE rule, used by the build-time gate in
+# bot_3._aufgabe_payload_from_item AND by is_degenerate_aufgabe — so items that
+# predate the rule are retired at serve time / by the nightly purge instead of
+# being served with the answer written on them.
+
+# Declension endings an attributive adjective/participle or an article word can carry.
+# Longest first: "langjährigen" → stem "langjährig", not "langjährige".
+_WG_ENDINGS = ("en", "em", "er", "es", "e")
+
+# Article words + glue. Never a Stützwort: finding them IS the task. Contractions
+# ("im", "zum") are here too — they hide a preposition AND an article.
+_WG_FUNCTION_WORDS = {
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+    "eines", "einer", "zu", "ob", "dass", "und", "oder", "aber", "sich", "nicht",
+    "mit", "von", "für", "auf", "an", "in", "bei", "zwischen", "über", "unter",
+    "aus", "nach", "um", "durch", "gegen", "ohne", "vor", "wegen", "trotz",
+    "im", "am", "beim", "vom", "zum", "zur", "ins", "ans", "aufs", "fürs", "übers",
+    "seit", "während", "dank", "statt", "anstatt", "gemäß", "laut", "bis", "als",
+    "wenn", "weil", "damit", "sondern", "denn", "zwar", "wie", "es",
+    "welche", "welchen", "welcher", "welches", "welchem",
+    "dieser", "diese", "dieses", "diesen", "diesem", "jener", "jene", "jenes",
+}
+
+# Possessives are article words: shown at all, they may only appear in the bare
+# base form ("ihr"), never declined ("ihrer" — that IS the case ending to supply).
+_WG_POSSESSIVE_STEMS = {"mein", "dein", "sein", "ihr", "unser", "euer", "eur", "kein"}
+
+
+def _wg_norm(value) -> str:
+    return " ".join(str(value or "").split()).strip().casefold()
+
+
+def _wg_stem(word: str) -> str:
+    """Word minus ONE declension ending, if stripping leaves a real stem."""
+    for end in _WG_ENDINGS:
+        if word.endswith(end) and len(word) - len(end) >= 3:
+            return word[: -len(end)]
+    return word
+
+
+def wortgruppe_lemma_leak(payload) -> str:
+    """Empty string when every shown Stützwort is a base form; otherwise a short
+    Russian reason. Catches the three leaks seen in the pool:
+      • an article word / contraction shown as a Stützwort ("im");
+      • a declined possessive ("ihrer" instead of "ihr");
+      • an attributive adjective/participle carrying its ending — either verbatim
+        ("steigenden" before "Nachfrage") or in another declined form
+        ("alternde" shown, "alternden" wanted).
+    A correctly built item ("steigend", "alternd") never matches: the check fires
+    only when the Stützwort ITSELF still carries an ending."""
+    payload = payload if isinstance(payload, dict) else {}
+    lemmas = [str(w).strip() for w in (payload.get("lemmas") or []) if str(w).strip()]
+    if not lemmas:
+        return "нет опорных слов"
+    for lemma in lemmas:
+        norm = _wg_norm(lemma)
+        if norm in _WG_FUNCTION_WORDS:
+            return f"служебное слово в подсказке: «{lemma}»"
+        if " " not in norm:
+            stem = _wg_stem(norm)
+            if stem != norm and stem in _WG_POSSESSIVE_STEMS:
+                return f"притяжательное с окончанием: «{lemma}»"
+    # Attributive slot: a lowercase word standing directly before a capitalised noun
+    # ALWAYS carries a declension ending in German, so whatever stands there is an
+    # inflected form. A Stützwort that matches it — as-is or after stripping its own
+    # ending — has given the ending away.
+    tokens = [t.strip(".,;:!?…\"'»«()") for t in str(payload.get("correct") or "").split()]
+    lemma_norms = {_wg_norm(l) for l in lemmas}
+    for cur, nxt in zip(tokens, tokens[1:]):
+        if not cur or not nxt or not cur[:1].islower() or not nxt[:1].isupper():
+            continue
+        cur_norm = _wg_norm(cur)
+        if cur_norm in lemma_norms:
+            return f"склонённое слово в подсказке: «{cur}»"
+        cur_stem = _wg_stem(cur_norm)
+        for lemma in lemmas:
+            norm = _wg_norm(lemma)
+            if " " in norm:
+                continue
+            stem = _wg_stem(norm)
+            if stem != norm and stem == cur_stem:
+                return f"подсказка с окончанием: «{lemma}» (в ответе «{cur}»)"
+    return ""
+
+
 def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
     """True for a meaningless item that should never be served/reviewed:
     - wortbildung: the derived noun == the stem (no real word-formation, e.g.
@@ -2022,11 +2112,12 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
         # Also drops items whose printed text drifted away from the spoken one.
         return not hoerluecke_payload_is_hard(payload)
     if fmt == "wortgruppe":
-        # Unanswerable without the base-form lemmas shown to the learner → it
-        # becomes synonym-guessing (only the RU meaning is given). Old pre-change
-        # items lack "lemmas"; treat those as degenerate.
-        lemmas = payload.get("lemmas")
-        return not (isinstance(lemmas, list) and any(str(w).strip() for w in lemmas))
+        # Two ways to be broken, both covered by wortgruppe_lemma_leak():
+        #  • no lemmas at all → unanswerable synonym-guessing (only the RU meaning
+        #    is given); old pre-change items look like this;
+        #  • a lemma shown WITH its ending / an article word → the item hands over
+        #    the grammar it is supposed to test.
+        return bool(wortgruppe_lemma_leak(payload))
     return False
 
 

@@ -3751,15 +3751,24 @@ EINDEUTIGKEIT (HARTE PFLICHT):
   liste sie ALLE in "accepted".
 
 STÜTZWÖRTER "lemmas" (das EINZIGE, was der Lernende sieht):
+Die Aufgabe IST das Beugen. Deshalb steht in "lemmas" NUR die WÖRTERBUCHFORM — jede
+Endung, jeder Kasus, jedes Genus, jeder Artikel kommt vom Lernenden.
 - ALLE Inhaltswörter der Lösung, OHNE Artikel:
   • Substantive im Nominativ, OHNE Artikel, im für die Lösung passenden NUMERUS
-    (z. B. "Vorteile", "Nachteile").
+    (z. B. "Vorteile", "Nachteile") — NIEMALS im Genitiv/Dativ ("Klimawandel", nicht
+    "Klimawandels"; "Vorteile", nicht "Vorteilen").
   • Pronomen wie "man" werden mit aufgeführt.
   • Verben im INFINITIV; Adjektive/Adverbien/Partizipien in der GRUNDFORM OHNE Endung
     (z. B. "steigend" — NIEMALS "steigenden"/"steigender"; "wachsend" — nicht "wachsende").
-- NIEMALS in "lemmas": Artikel, Konjunktion ("ob","dass","und"), Präposition, "zu",
-  Reflexivpronomen, gebeugte Formen, Kasus-/Deklinationsendungen. GENAU DAS ergänzt der
-  Lernende. Ein attributives Adjektiv in "lemmas" steht IMMER endungslos in der Grundform.
+  • Possessivartikel NUR unflektiert ("ihr", "sein", "mein") — NIEMALS "ihrer",
+    "seines", "meinem".
+- NIEMALS in "lemmas": Artikel, Verschmelzungen ("im","am","zum","zur","vom","beim"),
+  Konjunktion ("ob","dass","und"), Präposition, "zu", Reflexivpronomen, gebeugte Formen,
+  Kasus-/Deklinationsendungen. GENAU DAS ergänzt der Lernende.
+- SELBSTTEST vor der Ausgabe: Steht ein Stützwort BUCHSTABENGLEICH so in "correct", wie es
+  dort gebeugt ist? Dann ist es die falsche Form → durch die Grundform ersetzen.
+  ✗ FALSCH: correct "Dank ihrer langjährigen Erfahrung", lemmas ["ihrer","langjährigen","Erfahrung"]
+  ✓ RICHTIG: lemmas ["ihr","langjährig","Erfahrung"]  (Endungen -er/-en ergänzt der Lernende)
 
 FELDER pro Aufgabe:
 - "vollsatz", "satz", "lemmas" (Liste), "correct".
@@ -4258,7 +4267,10 @@ For EACH item, in input order, judge TWO things:
 (c) BASE FORM: EVERY lemma must be the uninflected DICTIONARY form — verbs in the
     infinitive, adjectives/participles/adverbs in the GRUNDFORM (e.g. "steigend", NOT
     "steigenden"/"steigender"), nouns in the nominative singular-or-needed-plural without
-    any article. If ANY lemma already carries a case/declension ending or otherwise leaks
+    any article ("Klimawandel", NOT "Klimawandels"; "Vorteile", NOT "Vorteilen"),
+    possessives undeclined ("ihr", NOT "ihrer"). No article, no merged form
+    ("im"/"zum"/"zur"), no conjunction or preposition may appear as a lemma at all.
+    If ANY lemma already carries a case/declension ending or otherwise leaks
     the inflection the learner must supply → fail. (Supplying every ending is the task.)
 Return STRICT JSON ONLY, one result per item, SAME order:
 {"results":[{"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"]}, ...]}
