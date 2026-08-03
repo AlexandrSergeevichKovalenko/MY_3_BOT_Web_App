@@ -550,10 +550,38 @@ export default function installCardAutoFit() {
   // при открытии окна и разжималась при закрытии.
   const inCard = (el) => !!el?.closest?.('.ans-card');
 
+  // ЗАМОК ПРОКРУТКИ, пока печатают в окне «Спросить».
+  //
+  // Последняя — и самая заметная — половина «качелей»: карточка не ужимается, а СТРАНИЦА
+  // ПРОКРУЧИВАЕТСЯ. iOS сам подкручивает страницу к полю ввода, а поле у нас в окне
+  // «Спросить». Верх задания уезжает за экран, кнопка «Дальше» подскакивает к клавиатуре,
+  // и при закрытии всё возвращается назад — со стороны это выглядит как масштабирование.
+  //
+  // Окно «Спросить» и так само встаёт над клавиатурой, подкручивать под него ничего не надо.
+  // Поэтому на время ввода запоминаем положение прокрутки и возвращаем его: и запретом
+  // прокрутки, и возвратом по факту — iOS уважает не каждый запрет.
+  let lockedY = 0;
+  const onLockedScroll = () => {
+    if (!askTyping) return;
+    if (Math.abs((window.scrollY || 0) - lockedY) > 1) window.scrollTo(0, lockedY);
+  };
+  const lockScroll = () => {
+    lockedY = window.scrollY || 0;
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('scroll', onLockedScroll, { passive: true });
+  };
+  const unlockScroll = () => {
+    window.removeEventListener('scroll', onLockedScroll);
+    document.documentElement.style.overflow = '';
+    document.body.style.overflow = '';
+    try { window.scrollTo(0, lockedY); } catch (_e) { /* noop */ }
+  };
+
   document.addEventListener('focusin', (e) => {
     if (!isField(e.target)) return;
     freezeBase();          // ДО того, как клавиатура успеет изменить высоту
-    if (!inCard(e.target)) { askTyping = true; return; }   // окно «Спросить» — карточку не трогаем
+    if (!inCard(e.target)) { askTyping = true; lockScroll(); return; }   // окно «Спросить» — карточку не трогаем
     typing = true;
     schedule();
   });
@@ -561,6 +589,7 @@ export default function installCardAutoFit() {
     if (!isField(e.target)) return;
     const wasAsk = askTyping && !inCard(e.target);
     askTyping = false;
+    if (wasAsk) unlockScroll();
     typing = false;
     // Отпускаем кегль НЕ СРАЗУ: клавиатура закрывается с анимацией, и если снять
     // заморозку раньше, чем вернётся высота, карточка на эти доли секунды снова ужмётся —
