@@ -29111,7 +29111,11 @@ async def admin_rebus_audit_command(update: Update, context: CallbackContext) ->
 async def admin_rebus_reset_command(update: Update, context: CallbackContext) -> None:
     """Re-sync the code bank, then force compounds containing the given part word(s)
     to recompose (drops the cached card) and refill the pool. Use after fixing a
-    mislabelled part so the stale image is rebuilt. /admin_rebus_reset Ei [Wort2 …]"""
+    mislabelled part so the stale image is rebuilt. /admin_rebus_reset Ei [Wort2 …]
+
+    /admin_rebus_reset stale — no word list: finds EVERY cached image whose prompt was
+    changed in the code bank and redraws exactly those (a fixed prompt otherwise never
+    reaches the picture, because the image is cached under its word forever)."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -29119,34 +29123,48 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    words = [w.strip() for w in (context.args or []) if w.strip()] or ["Ei"]
-    status_msg = await message.reply_text(f"Ресинхр банка + сброс для: {', '.join(words)}…")
+    args = [w.strip() for w in (context.args or []) if w.strip()]
+    stale_mode = bool(args) and args[0].lower() in ("stale", "prompt", "prompts")
+    words = [] if stale_mode else (args or ["Ei"])
+    status_msg = await message.reply_text(
+        "Ищу картинки с устаревшим промптом…" if stale_mode
+        else f"Ресинхр банка + сброс для: {', '.join(words)}…"
+    )
 
-    def _reset(part_words: list[str]) -> dict:
+    def _reset(part_words: list[str], stale: bool) -> dict:
         from backend.database import (
             sync_rebus_bank_from_code, reset_rebus_compounds_for_part,
+            invalidate_stale_rebus_component_images,
         )
         from backend.rebus_generator import prepare_rebus_pool
         sync = sync_rebus_bank_from_code()
         reset = 0
+        stale_words: list[str] = []
+        if stale:
+            got = invalidate_stale_rebus_component_images()
+            stale_words = list(got.get("stale") or [])
+            reset += int(got.get("compounds_reset") or 0)
         for w in part_words:
             reset += reset_rebus_compounds_for_part(w)
         pool = prepare_rebus_pool(target_ready=REBUS_POOL_TARGET, max_attempts=40)
-        return {"sync": sync, "reset": reset, "pool": pool}
+        return {"sync": sync, "reset": reset, "pool": pool, "stale_words": stale_words}
 
     try:
-        result = await asyncio.to_thread(_reset, words)
+        result = await asyncio.to_thread(_reset, words, stale_mode)
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
         return
     sync = result.get("sync") or {}
     pool = result.get("pool") or {}
+    stale_words = result.get("stale_words") or []
     text = (
         f"✅ Sync: synced={sync.get('synced')} "
         f"skipped_inconsistent={sync.get('skipped_inconsistent')}\n"
         f"♻️ Сброшено на перекомпоновку: {result.get('reset')}\n"
         f"🧩 Pool: generated={pool.get('generated')} failed={pool.get('failed')}"
     )
+    if stale_words:
+        text += f"\n🖼 Перерисованы по новому промпту ({len(stale_words)}): " + ", ".join(stale_words[:30])
     await status_msg.edit_text(text[:4000])
 
 

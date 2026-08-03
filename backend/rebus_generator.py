@@ -58,14 +58,17 @@ def _object_key_composed(compound_id: str) -> str:
 # ─── Step 1: generate one component image ────────────────────────────────────
 
 def generate_component_image(word: str, dalle_prompt: str, *,
-                             meaning_ru: str = "", forbid: str = "") -> str:
+                             meaning_ru: str = "", forbid: str = "",
+                             sibling: str = "", sibling_meaning: str = "") -> str:
     """
     Generate a DALL-E image for a single component word, cache in R2 + DB.
     Returns the R2 object_key. Raises on failure.
 
     A vision gate verifies the image actually depicts `word` (its plain literal
-    meaning) and does not reveal `forbid` (the compound answer) before caching —
-    so wrong-object images (e.g. a pine cone for "Konus") never reach players.
+    meaning), does not reveal `forbid` (the compound answer) and does not contain
+    `sibling` (the object drawn in the puzzle's OTHER picture) before caching — so
+    wrong-object images (a pine cone for "Konus") and duplicate halves ("Kaffee"
+    drawn as a cup, next to "Tasse") never reach players.
     """
     from backend.database import get_rebus_component_image, upsert_rebus_component_image
     from backend.image_generation_provider import generate_image_bytes
@@ -95,7 +98,8 @@ def generate_component_image(word: str, dalle_prompt: str, *,
         # Vision gate (pool time, off the hot path): the image must clearly show
         # the part word, must agree with its Russian meaning (catches word/meaning
         # desync), and must not reveal the compound answer.
-        verdict = run_image_depicts(img_bytes, word, meaning=meaning_ru, forbid=forbid, mime=mime)
+        verdict = run_image_depicts(img_bytes, word, meaning=meaning_ru, forbid=forbid,
+                                    sibling=sibling, sibling_meaning=sibling_meaning, mime=mime)
         if not verdict.get("ok"):
             reason = str(verdict.get("reason") or "vision_rejected")
             upsert_rebus_component_image(word, generation_status="failed", failure_reason=f"vision: {reason}"[:500])
@@ -341,9 +345,15 @@ def prepare_rebus_entry(compound_id: str) -> dict:
         return {"status": "failed", "compound_id": compound_id, "reason": "parts_missing"}
 
     try:
-        # Generate component images (cached if already done)
-        component_keys: list[str] = []
+        from backend.rebus_bank import rebus_prompt_pair_collision
         compound_word = str(entry.get("compound") or "").strip()
+
+        # Resolve BOTH prompts before spending anything: the two halves must draw
+        # different things. "Kaffee" as a CUP of coffee next to "Tasse" gives the
+        # answer away and leaves nothing to add up — and no per-image check can see
+        # it, because each picture is fine on its own. Text-only, so a bad pair costs
+        # zero images.
+        planned: list[tuple[str, str, str]] = []   # (word, prompt, meaning_ru)
         for part in parts[:2]:
             word = str(part.get("word") or "").strip()
             if not word:
@@ -355,10 +365,24 @@ def prepare_rebus_entry(compound_id: str) -> dict:
                 prompt = str((cached or {}).get("dalle_prompt") or "").strip()
             if not prompt:
                 raise ValueError(f"no DALL-E prompt for component word '{word}'")
+            planned.append((word, prompt, str(part.get("meaning_ru") or "")))
+
+        shared = rebus_prompt_pair_collision(planned[0][1], planned[1][1])
+        if shared:
+            raise ValueError(
+                f"both halves would show a '{shared}' "
+                f"({planned[0][0]} / {planned[1][0]}) — nothing left to add up"
+            )
+
+        # Generate component images (cached if already done)
+        component_keys: list[str] = []
+        for idx, (word, prompt, meaning_ru) in enumerate(planned):
             key = generate_component_image(
                 word, prompt,
-                meaning_ru=str(part.get("meaning_ru") or ""),
+                meaning_ru=meaning_ru,
                 forbid=compound_word,
+                sibling=planned[1 - idx][0],
+                sibling_meaning=planned[1 - idx][2],
             )
             component_keys.append(key)
 
@@ -495,7 +519,18 @@ STRICT requirements for EVERY entry:
    ✓ RIGHT: Brat → "A raw beef steak on a plain white cutting board, no pan visible"
    ✗ WRONG: Blumen=flowers + Strauß=bouquet → part 1 shows a bouquet (that IS the compound already)
    ✓ RIGHT: Blumen → "Three separate flowers lying flat on white background, not arranged into a bouquet"
-   Always ask: does part 1's image contain the object shown in part 2? If yes, redesign the prompt."""
+   Always ask: does part 1's image contain the object shown in part 2? If yes, redesign the prompt.
+9b. CRITICAL — CONTENT vs CONTAINER is the most common trap: a drink, a food or a
+   material is almost always drawn INSIDE the very vessel that is the other part.
+   Draw the substance ITSELF, loose, with the vessel explicitly forbidden.
+   ✗ WRONG: Kaffeetasse → Kaffee = "A cup of black coffee" (that cup IS part 2, and both
+     pictures end up showing a cup — nothing left for the learner to add up)
+   ✓ RIGHT: Kaffee = "A small heap of roasted coffee beans lying loose, no cup, no mug, no container"
+     and Tasse = "A single EMPTY white ceramic cup, no liquid, no coffee, no tea"
+   Same for Wein+Glas, Salat+Schüssel, Suppe+Kelle, Braten+Pfanne: the food/liquid part is
+   drawn loose or raw, and the vessel part is drawn EMPTY.
+   List the forbidden object in the prompt itself ("no cup", "no bowl", "no pan") — a
+   negative is the only thing the image model reliably obeys."""
 
 _REPLENISHMENT_USER_TMPL = """\
 Generate {count} new German Komposita entries. Return ONLY valid JSON, no markdown.
@@ -779,6 +814,16 @@ def _validate_replenishment_entry(entry: dict, existing_set: set[str]) -> str | 
     dalle = entry.get("dalle_prompts")
     if not isinstance(dalle, dict) or len(dalle) < 2:
         return "dalle_prompts must map both part words"
+    # The two halves must draw DIFFERENT things — otherwise the picture pair shows the
+    # same object twice and the answer is given away (Kaffee as a cup of coffee next to
+    # Tasse). Checked on the prompt text, before any image is paid for.
+    from backend.rebus_bank import COMPONENT_IMAGE_PROMPTS, rebus_prompt_pair_collision
+    w1, w2 = str(parts[0].get("word") or ""), str(parts[1].get("word") or "")
+    p1 = str(COMPONENT_IMAGE_PROMPTS.get(w1) or dalle.get(w1) or "")
+    p2 = str(COMPONENT_IMAGE_PROMPTS.get(w2) or dalle.get(w2) or "")
+    shared = rebus_prompt_pair_collision(p1, p2)
+    if shared:
+        return f"both halves would show a '{shared}' ({w1} / {w2})"
     wrong = entry.get("wrong_options")
     if not isinstance(wrong, list) or len(wrong) != 3:
         return "wrong_options must be list of 3"

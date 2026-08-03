@@ -8404,7 +8404,8 @@ def run_quick_correct(*, text: str, source_lang: str = "") -> str:
     return corrected
 
 
-def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "", mime: str = "image/png") -> dict:
+def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "",
+                      sibling: str = "", sibling_meaning: str = "", mime: str = "image/png") -> dict:
     """Vision gate for a generated rebus component image (pool time, off the hot
     path). Verifies the single main object IS `expected` (the German word) in its
     plain literal meaning, that `expected` and its Russian `meaning` denote the
@@ -8424,6 +8425,17 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", f
         f' The image MUST NOT depict, contain, or hint at a "{forbid}" — that is the puzzle\'s hidden answer.'
         if forbid else ""
     )
+    # The other half of the rebus is drawn in its OWN picture. If this one already
+    # contains that object (coffee served IN A CUP next to the cup), the learner sees
+    # the same thing twice and has nothing to add up.
+    sibling_line = (
+        f' The puzzle\'s OTHER picture shows a "{sibling}"'
+        + (f' ({sibling_meaning})' if str(sibling_meaning or "").strip() else "")
+        + f'. This image MUST NOT contain a "{sibling}" at all — not as a container, holder,'
+          ' surface or background detail. If one is visible, reject with reason'
+          ' "contains the other half".'
+        if str(sibling or "").strip() else ""
+    )
     meaning_line = (
         f' In Russian this word means "{meaning}". The German word and its Russian translation MUST denote the '
         f'SAME physical object; if they clearly denote DIFFERENT objects (data error, e.g. German "Birne"=pear '
@@ -8433,7 +8445,7 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", f
     prompt = (
         f'Single illustration for a vocabulary rebus. Intended object: "{expected}".{meaning_line} '
         f'Judge STRICTLY: is the main, prominent object unambiguously a "{expected}" in its plain, '
-        f'literal, dictionary meaning?{forbid_line} '
+        f'literal, dictionary meaning?{forbid_line}{sibling_line} '
         'Reject (ok=false) if the main object is a DIFFERENT thing, a related-but-wrong object '
         '(e.g. a pine cone when a geometric cone was intended), or if it reveals the forbidden answer. '
         'Answer ONLY strict JSON: {"ok": true|false, "reason": "<=8 words"}.'

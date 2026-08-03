@@ -45594,6 +45594,39 @@ def get_rebus_part_meanings() -> dict:
     return out
 
 
+def invalidate_stale_rebus_component_images() -> dict:
+    """A component image is drawn ONCE and then cached forever under its word — so
+    fixing its prompt in the code bank changes nothing by itself: the old picture
+    keeps being served. This finds every cached image whose stored prompt no longer
+    matches the code bank, marks it failed and sends its compounds back to
+    'pending', so the pool job redraws them with the corrected prompt.
+
+    Returns {"stale": [word, …], "compounds_reset": int}."""
+    from backend.rebus_bank import COMPONENT_IMAGE_PROMPTS
+    stale: list[str] = []
+    reset = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT word, dalle_prompt FROM bt_3_rebus_component_images "
+                "WHERE generation_status = 'ready'"
+            )
+            rows = cursor.fetchall() or []
+    for word, stored in rows:
+        current = COMPONENT_IMAGE_PROMPTS.get(str(word))
+        if not current:
+            continue  # GPT-only component: the DB row IS the source of truth
+        if " ".join(str(stored or "").split()) != " ".join(current.split()):
+            stale.append(str(word))
+    for word in stale:
+        upsert_rebus_component_image(
+            word, generation_status="failed",
+            failure_reason="prompt changed in code bank — redraw", dalle_prompt=COMPONENT_IMAGE_PROMPTS[word],
+        )
+        reset += reset_rebus_compounds_for_part(word)
+    return {"stale": stale, "compounds_reset": reset}
+
+
 def reset_rebus_compounds_for_part(word: str) -> int:
     """Mark every ready compound that uses `word` as a part back to 'pending' so it
     recomposes (and regenerates the now-failed component image with the gate)."""

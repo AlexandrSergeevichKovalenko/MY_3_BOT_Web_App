@@ -32,7 +32,7 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Tasche":       f"A small brown leather bag, {_STYLE}",
     "Tuch":         f"A folded piece of cloth/fabric, {_STYLE}",
     "Hut":          f"A classic wide-brimmed hat, {_STYLE}",
-    "Ring":         f"A simple gold ring, {_STYLE}",
+    "Ring":         f"A plain silver ring band, no gemstone, no gold, {_STYLE}",
     "Band":         f"A decorative ribbon/band tied in a bow, {_STYLE}",
     "Kette":        f"A metal chain necklace, {_STYLE}",
     "Nagel":        f"A single metal nail, sharp and pointed, {_STYLE}",
@@ -101,7 +101,7 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Hai":          f"A shark, side view with dorsal fin, {_STYLE}",
     "Biene":        f"A yellow and black bee, {_STYLE}",
     "Huhn":         f"A hen/chicken, side view, {_STYLE}",
-    "Hahn":         f"A rooster with red comb, {_STYLE}",
+    "Hahn":         f"A rooster standing in profile, seen from the side, head turned away, {_STYLE}",
     "Tinte":        f"An ink bottle with blue ink, {_STYLE}",
     "Rüssel":       f"An elephant trunk curled, {_STYLE}",
     "Mähne":        f"A flowing lion mane, {_STYLE}",
@@ -117,10 +117,10 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Haus":         f"A small house with red roof, {_STYLE}",
     "Tür":          f"A wooden door with handle, {_STYLE}",
     "Fenster":      f"A window with frame, {_STYLE}",
-    "Topf":         f"A ceramic flower pot, terracotta, {_STYLE}",
+    "Topf":         f"A plain metal cooking pot with two handles and a lid, empty, no flowers, no soil, no plant, {_STYLE}",
     "Kasten":       f"A wooden box/crate, {_STYLE}",
     "Korb":         f"A woven wicker basket, {_STYLE}",
-    "Käfig":        f"A bird cage, wire bars, {_STYLE}",
+    "Käfig":        f"An empty metal cage with vertical bars and a closed door, nothing inside, no bird, no animal, {_STYLE}",
     "Regal":        f"A wooden bookshelf with shelves, {_STYLE}",
     "Tisch":        f"A simple wooden table, {_STYLE}",
     "Stuhl":        f"A simple wooden chair, {_STYLE}",
@@ -131,10 +131,10 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Loch":         f"A round hole in a white surface, {_STYLE}",
     "Messer":       f"A kitchen knife, blade visible, {_STYLE}",
     "Glas":         f"An empty clear drinking glass, {_STYLE}",
-    "Tasse":        f"A white ceramic tea cup with saucer, {_STYLE}",
+    "Tasse":        f"A single empty white ceramic cup with a handle, seen slightly from above so the inside is visible and completely empty, no liquid, no coffee, no tea, no saucer, no spoon, {_STYLE}",
     "Teller":       f"A round white plate, {_STYLE}",
     "Schüssel":     f"A ceramic bowl, {_STYLE}",
-    "Kelle":        f"A soup ladle, {_STYLE}",
+    "Kelle":        f"A single empty metal ladle lying flat, its scoop end empty, no soup, no bowl, no pot, no liquid, {_STYLE}",
     "Pfanne":       f"A frying pan, {_STYLE}",
     "Turm":         f"A tall stone tower, {_STYLE}",
     "Wagen":        f"A small wooden cart with wheels, {_STYLE}",
@@ -166,7 +166,7 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Berg":         f"A snow-capped mountain peak, {_STYLE}",
     "Wald":         f"A dense green forest, {_STYLE}",
     "Fall":         f"A person or object falling downward, motion blur, {_STYLE}",
-    "Brand":        f"Flames burning in a forest, {_STYLE}",
+    "Brand":        f"Bright orange flames burning alone against a plain background, no forest, no trees, no wood, {_STYLE}",
     "Rakete":       f"A rocket launching with fire trail, {_STYLE}",
     "Stall":        f"A wooden animal barn/stable, {_STYLE}",
     "Rute":         f"A plain thin straight wooden rod or switch, bare stick with no fishing equipment, {_STYLE}",
@@ -179,10 +179,10 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Brot":         f"A round loaf of bread, {_STYLE}",
     "Suppe":        f"A bowl of steaming soup, {_STYLE}",
     "Kuchen":       f"A slice of layered cake, {_STYLE}",
-    "Wein":         f"A glass of red wine, {_STYLE}",
-    "Kaffee":       f"A cup of black coffee with steam, {_STYLE}",
+    "Wein":         f"A dark green corked wine bottle standing upright, no glass, no cup, no drinking vessel, {_STYLE}",
+    "Kaffee":       f"A small heap of roasted brown coffee beans lying loose on a plain surface, no cup, no mug, no jar, no container, {_STYLE}",
     "Obst":         f"An assortment of fresh fruits in a pile, {_STYLE}",
-    "Salat":        f"A bowl of green salad, {_STYLE}",
+    "Salat":        f"Fresh green lettuce leaves lying loose on a plain surface, no bowl, no plate, no dish, {_STYLE}",
     "Fleisch":      f"A raw red meat steak, {_STYLE}",
     "Butter":       f"A block of yellow butter on a plate, {_STYLE}",
     "Saft":         f"A glass of orange juice, {_STYLE}",
@@ -206,7 +206,7 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Kochen":       f"A pot on a stove with steam rising, {_STYLE}",
     "Hüpfen":       f"A person jumping/hopping in the air, {_STYLE}",
     "Spülen":       f"Dishes being washed under running water, {_STYLE}",
-    "Braten":       f"Meat sizzling in a pan, {_STYLE}",
+    "Braten":       f"A raw red beef steak lying on a plain wooden cutting board, no pan, no pot, no fire, {_STYLE}",
     "Glühen":       f"A glowing orange ember, radiant heat, {_STYLE}",
     "Rollen":       f"A wheel rolling forward, motion lines, {_STYLE}",
     "Schaukeln":    f"A garden swing swinging, {_STYLE}",
@@ -1482,7 +1482,61 @@ _REBUS_SEMANTIC_PART_EXCEPTIONS: set[tuple[str, str]] = {
 # the image would show. Example: Zuckerhut is not "sugar + a hat" for learners.
 _REBUS_BLOCKED_COMPOUNDS: set[str] = {
     "zuckerhut",
+    # Self-revealing pairs: one half can only be drawn AS the whole compound, so the
+    # picture gives the answer away no matter how the prompt is worded.
+    "tannenbaum",       # Tanne is already a fir TREE — both pictures are the same tree
+    "elefantenrussel",  # a Rüssel can only be drawn as an elephant's trunk
+    "lowenmahne",       # a Mähne can only be drawn as a lion's mane
 }
+
+
+# ─── The two pictures may not show the same thing ────────────────────────────
+# Each half is drawn from its own prompt, and the learner must ADD them up. If
+# part A's picture already contains part B's object ("Kaffee" drawn as a CUP of
+# coffee next to "Tasse"), there is nothing to add up: two cups, one answer given
+# away. The per-image vision gate cannot see this — it judges each picture alone —
+# so the collision is caught here, on the PROMPT TEXT, before a single image is
+# paid for.
+
+# Words that describe HOW something looks, not WHAT it is. Sharing them means
+# nothing ("bright moon" + "bright light" is not a collision).
+_PROMPT_QUALIFIERS = set("""
+a an the of on in into with and or its it that this is are as at for from to be
+no not nothing without none empty bare only just alone lying standing sitting
+seen view side front top bottom back close closeup up down flat upright loose
+single one two three several few many piece pieces pile heap group set
+plain simple classic modern small large big tall long short thin thick round square
+white black grey gray brown green blue red yellow golden orange purple pink silver
+colourful colorful bright dark shiny glowing shining soft smooth fresh whole half
+open closed curled curved straight spread pointing folded stacked full detailed
+high clarity clear light heavy new old young little area part shape solid
+color colour background isolated centered centred text labels label object objects
+style illustration children book watercolor watercolour vibrant clean visible
+wooden metal metallic ceramic plastic glassy fabric
+""".split())
+
+
+def _prompt_content_words(prompt: str) -> set[str]:
+    """The THINGS a prompt asks for. Negative clauses ("no cup, no saucer") are
+    dropped — they forbid an object, they do not draw it."""
+    import re as _re
+    head = str(prompt or "").split("children's book illustration style")[0]
+    words: set[str] = set()
+    for clause in head.split(","):
+        c = clause.strip().lower()
+        if not c or c.startswith(("no ", "not ", "without ", "nothing")):
+            continue
+        for w in _re.findall(r"[a-z]+", c):
+            if len(w) > 2 and w not in _PROMPT_QUALIFIERS:
+                words.add(w)
+    return words
+
+
+def rebus_prompt_pair_collision(prompt_a: str, prompt_b: str) -> str:
+    """Empty string when the two halves draw different things; otherwise the object
+    both prompts ask for. Deterministic, runs before any image is generated."""
+    shared = _prompt_content_words(prompt_a) & _prompt_content_words(prompt_b)
+    return sorted(shared)[0] if shared else ""
 
 
 def is_rebus_compound_blocked(compound: str, *, compound_id: str = "") -> bool:
