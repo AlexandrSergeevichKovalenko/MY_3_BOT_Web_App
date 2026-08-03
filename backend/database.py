@@ -45601,7 +45601,9 @@ def invalidate_stale_rebus_component_images() -> dict:
     matches the code bank, marks it failed and sends its compounds back to
     'pending', so the pool job redraws them with the corrected prompt.
 
-    Returns {"stale": [word, …], "compounds_reset": int}."""
+    Returns {"stale": [word, …], "compounds_reset": int, "compound_ids": [id, …]} —
+    the ids are handed back because the pool job only tops up to a target and would
+    leave already-composed cards sitting at 'pending' forever otherwise."""
     from backend.rebus_bank import COMPONENT_IMAGE_PROMPTS
     stale: list[str] = []
     reset = 0
@@ -45624,7 +45626,23 @@ def invalidate_stale_rebus_component_images() -> dict:
             failure_reason="prompt changed in code bank — redraw", dalle_prompt=COMPONENT_IMAGE_PROMPTS[word],
         )
         reset += reset_rebus_compounds_for_part(word)
-    return {"stale": stale, "compounds_reset": reset}
+    compound_ids: list[str] = []
+    if stale:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT compound_id FROM bt_3_rebus_bank
+                    WHERE retired = FALSE AND composed_status = 'pending'
+                      AND EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(parts_json) p
+                        WHERE p->>'word' = ANY(%s)
+                      )
+                    """,
+                    (stale,),
+                )
+                compound_ids = [str(r[0]) for r in cursor.fetchall() or []]
+    return {"stale": stale, "compounds_reset": reset, "compound_ids": compound_ids}
 
 
 def reset_rebus_compounds_for_part(word: str) -> int:

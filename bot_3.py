@@ -29136,18 +29136,27 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
             sync_rebus_bank_from_code, reset_rebus_compounds_for_part,
             invalidate_stale_rebus_component_images,
         )
-        from backend.rebus_generator import prepare_rebus_pool
+        from backend.rebus_generator import prepare_rebus_pool, prepare_rebus_entry
         sync = sync_rebus_bank_from_code()
         reset = 0
         stale_words: list[str] = []
+        redrawn = failed = 0
         if stale:
             got = invalidate_stale_rebus_component_images()
             stale_words = list(got.get("stale") or [])
             reset += int(got.get("compounds_reset") or 0)
+            # Redraw exactly what we just invalidated. The pool job only tops up TO a
+            # target, so with a full pool it would leave these cards pending forever.
+            for cid in (got.get("compound_ids") or [])[:40]:
+                if prepare_rebus_entry(cid).get("status") == "ready":
+                    redrawn += 1
+                else:
+                    failed += 1
         for w in part_words:
             reset += reset_rebus_compounds_for_part(w)
         pool = prepare_rebus_pool(target_ready=REBUS_POOL_TARGET, max_attempts=40)
-        return {"sync": sync, "reset": reset, "pool": pool, "stale_words": stale_words}
+        return {"sync": sync, "reset": reset, "pool": pool, "stale_words": stale_words,
+                "redrawn": redrawn, "redraw_failed": failed}
 
     try:
         result = await asyncio.to_thread(_reset, words, stale_mode)
@@ -29164,7 +29173,11 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
         f"🧩 Pool: generated={pool.get('generated')} failed={pool.get('failed')}"
     )
     if stale_words:
-        text += f"\n🖼 Перерисованы по новому промпту ({len(stale_words)}): " + ", ".join(stale_words[:30])
+        text += (
+            f"\n🖼 Промпт изменился у {len(stale_words)} картинок: " + ", ".join(stale_words[:30])
+            + f"\n🎨 Пересобрано карточек: {result.get('redrawn')}"
+            + (f" (не вышло: {result.get('redraw_failed')})" if result.get("redraw_failed") else "")
+        )
     await status_msg.edit_text(text[:4000])
 
 
