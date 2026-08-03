@@ -29551,9 +29551,9 @@ def answer_rebus_review_list():
     user_id, err = _pin_review_admin_id()
     if user_id is None:
         return err
-    from backend.database import list_pending_rebus_component_reviews
+    from backend.database import list_pending_rebus_component_reviews, rebus_pool_status
     items = list_pending_rebus_component_reviews(40)
-    return jsonify({"ok": True, "items": items})
+    return jsonify({"ok": True, "items": items, "status": rebus_pool_status()})
 
 
 @app.route("/api/answer/rebusreview/verdict", methods=["POST"])

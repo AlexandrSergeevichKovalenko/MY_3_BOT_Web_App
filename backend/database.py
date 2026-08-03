@@ -45467,6 +45467,33 @@ def get_rebus_component_image(word: str) -> dict | None:
 MAX_REBUS_COMPONENT_REDRAWS = 2
 
 
+def rebus_pool_status() -> dict:
+    """Где сейчас стоит игра: сколько карточек готово к отправке, сколько ждут
+    дорисовки и сколько половинок ждут приёмки. Нужно, чтобы после «годится» было
+    видно, что картинка дошла до банка, а не улетела в никуда."""
+    out = {"ready": 0, "waiting_draw": 0, "awaiting_review": 0}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT composed_status, COUNT(*) FROM bt_3_rebus_bank "
+                    "WHERE retired = FALSE GROUP BY 1"
+                )
+                for status, count in cursor.fetchall() or []:
+                    if str(status) == "ready":
+                        out["ready"] = int(count)
+                    else:
+                        out["waiting_draw"] += int(count)
+                cursor.execute(
+                    "SELECT COUNT(*) FROM bt_3_rebus_component_images "
+                    "WHERE review_status = 'pending' AND generation_status = 'ready'"
+                )
+                out["awaiting_review"] = int((cursor.fetchone() or [0])[0])
+    except Exception:
+        logging.warning("rebus_pool_status failed", exc_info=True)
+    return out
+
+
 def list_pending_rebus_component_reviews(limit: int = 40) -> list[dict]:
     """Freshly drawn halves waiting for the owner's verdict, oldest first.
 
