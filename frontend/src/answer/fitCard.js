@@ -505,14 +505,20 @@ export default function installCardAutoFit() {
   // Поэтому на время клавиатуры прибиваем базовый кегль к тому значению, что было ДО её
   // появления, и заодно закрепляем высоту корня. После закрытия — снимаем, и всё снова
   // считается от экрана как обычно.
+  // Кроссворд сюда входит наравне с остальными: у него свой корень (`ans-root--cw`) и своя
+  // раскладка, но базовый кегль у него ТОТ ЖЕ — общий для всего приложения. Пока эта строка
+  // искала только `keepkbd`, кроссворд оставался без заморозки, и его масштабировало
+  // целиком: сначала при выезде клавиатуры, потом обратно при её закрытии.
   const freezeBase = () => {
-    const root = document.querySelector('.ans-root--keepkbd');
+    const root = document.querySelector('.ans-root--keepkbd, .ans-root--cw');
     if (!root) return;
     const html = document.documentElement;
     if (!html.style.fontSize) {
       html.style.fontSize = getComputedStyle(html).fontSize;   // текущий, ещё «доклавиатурный»
     }
-    if (!root.style.minHeight) {
+    // Высоту корня закрепляем только у обычных интерактивов. У кроссворда высота задана
+    // свойством `height` и им управляет сам кроссворд (CrosswordGrid) — сюда не лезем.
+    if (!root.classList.contains('ans-root--cw') && !root.style.minHeight) {
       const h = viewportHeight();
       if (h > 200) root.style.minHeight = `${Math.round(h)}px`;
     }
