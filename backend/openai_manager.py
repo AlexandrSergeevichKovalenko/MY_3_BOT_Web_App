@@ -4287,16 +4287,20 @@ Return STRICT JSON ONLY: {"valid": ["<exactly the candidate strings you accept>"
 """,
 "check_wortgruppe_batch": """
 You verify German "Wortgruppe" grammar exercises. Input JSON:
-{"items":[{"vollsatz":"...","satz":"...","lemmas":["...","..."],"correct":"..."}, ...]}.
-For EACH item, in input order, judge TWO things:
+{"items":[{"index":0,"vollsatz":"...","satz":"...","lemmas":["...","..."],"correct":"...","hint_ru":"..."}, ...]}.
+Return EXACTLY ONE result per input item and copy that item's "index" into it — never
+skip, merge or reorder items. For EACH item judge TWO things:
 (a) GRAMMAR: is "vollsatz" fully grammatical and natural German at C1 level — would a
     native speaker accept it as correct AND idiomatic? (Watch for wrong verb rection /
     a matrix that does not license the construction, e.g. "abhängen von … zu+Infinitiv".)
-(b) UNIQUENESS: the learner sees ONLY "satz" (with the gap) plus "lemmas" — the content
-    words in base form, WITHOUT any article, conjunction or preposition. Given EXACTLY
-    those words, is "correct" the ONE AND ONLY grammatically correct, natural way to fill
-    the gap? If the same lemmas allow a DIFFERENT valid filling (another case/rection,
-    e.g. accusative object vs. "zwischen"+dative), it is NOT unique → fail.
+(b) UNIQUENESS: the learner sees THREE things — "satz" (with the gap), "lemmas" (the
+    content words in base form, WITHOUT any article, conjunction or preposition) and
+    "hint_ru", a short Russian paraphrase of the WHOLE group's meaning. Judge with ALL
+    THREE in hand: is "correct" the ONE AND ONLY grammatically correct, natural filling?
+    A different filling that the Russian hint rules OUT does NOT make the item ambiguous —
+    that is exactly what the hint is for. Fail only when a genuinely DIFFERENT filling
+    matches the Russian hint just as well (another case/rection with the same meaning,
+    e.g. accusative object vs. "zwischen"+dative) and nothing lets the learner choose.
 (c) BASE FORM: EVERY lemma must be the uninflected DICTIONARY form — verbs in the
     infinitive, adjectives/participles/adverbs in the GRUNDFORM (e.g. "steigend", NOT
     "steigenden"/"steigender"), nouns in the nominative singular-or-needed-plural without
@@ -4319,8 +4323,8 @@ For EACH item, in input order, judge TWO things:
       lemma. Only the hidden glue — preposition, conjunction, article, "zu",
       reflexive pronoun, auxiliary — may be missing, because finding it IS the task.
       A missing content word makes the item pure guessing → fail.
-Return STRICT JSON ONLY, one result per item, SAME order:
-{"results":[{"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"]}, ...]}
+Return STRICT JSON ONLY, one result per item, SAME order, each carrying its "index":
+{"results":[{"index":0,"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"]}, ...]}
 ok = true ONLY if ALL of (a), (b), (c) and (d) hold; otherwise ok=false and accepted=[].
 """,
 "check_wortbildung_batch": """
@@ -7515,13 +7519,24 @@ async def run_check_wortgruppe_batch(*, items: list[dict]) -> list[dict]:
     """Verify a batch of wortgruppe items in ONE LLM call (pool-prep, off the hot
     path). For each: the full sentence must be grammatical AND the solution must be
     UNIQUE given only the shown lemmas. Returns a list aligned to input order,
-    [{"ok": bool, "accepted": [...]}]; [] on failure/timeout (caller fails open)."""
+    [{"ok": bool, "accepted": [...]}]; [] on failure/timeout (caller fails open).
+
+    Verdicts carry the item's own "index": a model that skips or merges one item
+    used to shift every later verdict onto the wrong item — and because the caller
+    then saw a length mismatch, the WHOLE batch went into the pool unverified.
+    Matching by index judges what came back and only lets the unanswered items
+    through."""
     payload_items = [{
+        "index": i,
         "vollsatz": str(it.get("vollsatz") or ""),
         "satz": str(it.get("satz") or ""),
         "lemmas": [str(l) for l in (it.get("lemmas") or [])],
         "correct": str(it.get("correct") or ""),
-    } for it in (items or [])]
+        # The learner also sees the Russian meaning hint. Judging uniqueness without
+        # it condemned perfectly good items for "another preposition would fit too",
+        # when the hint says which meaning is wanted.
+        "hint_ru": str(it.get("hint_ru") or ""),
+    } for i, it in enumerate(items or [])]
     if not payload_items:
         return []
     try:
@@ -7541,16 +7556,26 @@ async def run_check_wortgruppe_batch(*, items: list[dict]) -> list[dict]:
             logging.warning("check_wortgruppe_batch: no usable verdicts, head=%r",
                             str(content)[:400])
             return []
-        out: list[dict] = []
-        for r in results:
-            if isinstance(r, dict):
-                out.append({
-                    "ok": bool(r.get("ok")),
-                    "accepted": [str(a) for a in (r.get("accepted") or []) if str(a).strip()],
-                })
-            else:
-                out.append({"ok": False, "accepted": []})
-        return out
+        by_index: dict[int, dict] = {}
+        for position, r in enumerate(results):
+            if not isinstance(r, dict):
+                continue
+            try:
+                idx = int(r.get("index", position))
+            except (TypeError, ValueError):
+                idx = position
+            if not (0 <= idx < len(payload_items)) or idx in by_index:
+                continue
+            by_index[idx] = {
+                "ok": bool(r.get("ok")),
+                "accepted": [str(a) for a in (r.get("accepted") or []) if str(a).strip()],
+            }
+        if len(by_index) < len(payload_items):
+            logging.info("check_wortgruppe_batch: %d of %d items got no verdict — kept unverified",
+                         len(payload_items) - len(by_index), len(payload_items))
+        # An item the verifier never spoke about is kept (fail-open), same as when
+        # the whole call fails — it still has to clear the deterministic gates.
+        return [by_index.get(i, {"ok": True, "accepted": []}) for i in range(len(payload_items))]
     except Exception:
         logging.warning("run_check_wortgruppe_batch failed", exc_info=True)
         return []
