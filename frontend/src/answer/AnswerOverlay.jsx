@@ -92,7 +92,7 @@ const AU_SUBS = {
   transform: 'Forme den Satz mit dem Schlüsselwort um ✍️',
   error: 'Finde und korrigiere den Fehler 🔍',
   hoerluecke: 'Höre und ergänze das fehlende Wort 🎧',
-  pin: 'Tippe auf das gesuchte Objekt 🖼',
+  pin: 'Objekt antippen, dann den Artikel wählen 🖼',
   satzbau: 'Baue den richtigen Satz 🧩',
   adjektiv: 'Wähle die richtige Adjektiv-Endung 🔠',
   synonym: 'Tippe ein Synonym ✍️',
@@ -105,7 +105,7 @@ const AU_SUBS = {
 // «Спросить», которое живёт отдельно и само встаёт над ней, поэтому перестраивать
 // карточку незачем. Во всех остальных заданиях печатают прямо в карточке, и она обязана
 // уступить клавиатуре место — иначе поле ввода оказывается под ней.
-const AU_TAP_ONLY = new Set(['artikel', 'wofrage', 'adjektiv', 'satzbau', 'video']);
+const AU_TAP_ONLY = new Set(['artikel', 'wofrage', 'adjektiv', 'satzbau', 'video', 'pin']);
 
 function haptic(type) {
   try {

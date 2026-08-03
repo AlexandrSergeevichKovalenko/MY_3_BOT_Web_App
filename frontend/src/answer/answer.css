@@ -1115,11 +1115,22 @@ html[data-scheme="light"] .au-gap-correct { color: #0f172a; }
   position: relative; width: 100%; border-radius: var(--dmps-radius-inner, 1.25rem);
   overflow: hidden; cursor: crosshair; border: 1px solid var(--dmps-border, #334155);
   -webkit-touch-callout: none; user-select: none;
-  /* Под клавиатурой картинка ужимается по ширине (AufgabeGame.jsx): держим её по центру
-     карточки и меняем размер плавно, чтобы это не читалось как рывок. */
-  margin-left: auto; margin-right: auto;
-  transition: width 0.18s ease;
 }
+/* Артикль в «Finde im Bild» ВЫБИРАЮТ, а не печатают: три цветные кнопки (те же цвета, что
+   в тренажёре артиклей). Выбранная горит, остальные приглушены — видно, что ответ принят,
+   и «Prüfen» нажимается осознанно. */
+.pin-articles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.625rem; }
+.pin-art-btn {
+  font-size: 1.5rem; font-weight: 800; padding: 1.0rem 0; border-radius: 1.0rem; border: none;
+  cursor: pointer; color: #fff; opacity: 0.5;
+  transition: transform .06s, opacity .12s, box-shadow .12s;
+}
+.pin-art-btn:active { transform: scale(.94); }
+.pin-art-btn.on {
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+.pin-step { text-align: center; }
 .pin-img { display: block; width: 100%; height: auto; }
 
 /* Rebus puzzle picture duplicated into the answer overlay (same image as the chat). */

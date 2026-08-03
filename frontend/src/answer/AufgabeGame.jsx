@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { pointerFraction, pointerRect } from './pointerBox.js';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { pointerFraction } from './pointerBox.js';
 
 /**
  * B2+ text tasks ("Aufgabe"), all answered in place. Grading is a fast
@@ -287,12 +287,15 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
 }
 
 function AufgabePin({ task, onSubmit, submitting }) {
+  // Два нажатия и всё: ткнуть в предмет на картинке → выбрать артикль → «Prüfen».
+  //
+  // Поля ввода здесь НЕТ намеренно. Пока артикль вписывали руками, проверка сравнивала
+  // введённое со словом «der/die/das», и совершенно правильный ответ «die Lederschnur»
+  // засчитывался как ошибка. Так сделает любой — значит виновата не невнимательность, а
+  // сам способ ответа. Кнопки эту развилку убирают совсем, а заодно на этом экране больше
+  // не нужна клавиатура: карточку не приходится перестраивать под неё.
   const [tap, setTap] = useState(null); // normalized {x,y}
   const [article, setArticle] = useState('');
-  const wrapRef = useRef(null);
-  const [typing, setTyping] = useState(false);
-  const [imgPct, setImgPct] = useState(100);   // ширина картинки, % от натуральной
-  const pctRef = useRef(100);
   const hasImg = !!task.image_url;
   const needsArticle = !!task.needs_article;
   // Доли считаем через pointerBox: карточку подгонка масштабирует через `zoom`, а в WebKit
@@ -302,78 +305,38 @@ function AufgabePin({ task, onSubmit, submitting }) {
     setTap(pointerFraction(e.currentTarget, e.clientX, e.clientY));
     tapHaptic();
   };
-
-  // КЛАВИАТУРА: картинка ужимается, поле ввода и кнопка остаются на экране.
-  //
-  // Здесь, в отличие от остальных интерактивов, печатать нужно ПРЯМО В КАРТОЧКЕ и при этом
-  // видеть картинку — иначе не проверить, туда ли поставил точку. Поэтому карточка не
-  // «замирает под клавиатурой»: картинка уменьшается ровно на столько, на сколько карточке
-  // не хватило высоты. Пропорции сохраняются (меняем только ширину блока), а метка стоит в
-  // процентах от него, поэтому остаётся ровно на том же месте объекта.
-  useEffect(() => {
-    if (!typing || !hasImg) { pctRef.current = 100; setImgPct(100); return undefined; }
-    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
-    let raf = 0;
-    const fit = () => {
-      raf = 0;
-      const wrap = wrapRef.current;
-      const card = wrap && wrap.closest ? wrap.closest('.ans-card') : null;
-      if (!wrap || !card) return;
-      const avail = (vv?.height || window.innerHeight || 0) - 12;   // видимая часть экрана
-      const cardH = pointerRect(card).height;
-      const wrapH = pointerRect(wrap).height;
-      if (!(avail > 120) || !(cardH > 0) || !(wrapH > 0)) return;
-      const cur = pctRef.current || 100;
-      const natural = (wrapH * 100) / cur;   // какой была бы картинка в полную ширину
-      const over = cardH - avail;            // на сколько карточка не влезла
-      // Высота картинки линейна по её ширине, поэтому хватает одного пересчёта.
-      const target = Math.min(natural, Math.max(natural * 0.3, wrapH - over));
-      const next = Math.max(30, Math.min(100, Math.round((target / natural) * 100)));
-      if (Math.abs(next - cur) < 2) return;
-      pctRef.current = next;
-      setImgPct(next);
-    };
-    const onResize = () => { if (!raf) raf = requestAnimationFrame(fit); };
-    onResize();
-    // Клавиатура выезжает с анимацией — новая высота экрана приходит не сразу.
-    const t1 = setTimeout(onResize, 250);
-    const t2 = setTimeout(onResize, 600);
-    vv?.addEventListener?.('resize', onResize);
-    return () => {
-      vv?.removeEventListener?.('resize', onResize);
-      clearTimeout(t1); clearTimeout(t2);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [typing, hasImg]);
-
-  const ready = tap && (!needsArticle || article.trim());
+  const ready = tap && (!needsArticle || article);
   const submit = () => {
     if (!ready) return;
     const coords = `${tap.x.toFixed(4)},${tap.y.toFixed(4)}`;
-    onSubmit(needsArticle ? `${coords}|${article.trim()}` : coords);
+    onSubmit(needsArticle ? `${coords}|${article}` : coords);
   };
+  // Кнопка «Prüfen» неактивна, пока сделано не всё, — и экран прямо говорит, чего ждёт.
+  const step = !tap
+    ? '☝️ Tippe zuerst auf das Objekt im Bild.'
+    : (needsArticle && !article ? '👇 Und jetzt den Artikel wählen.' : '');
   return (
     <>
       <p className="au-question">{task.question_de}</p>
       {hasImg ? (
-        <div
-          className="pin-wrap" ref={wrapRef} onClick={onImgClick}
-          style={imgPct < 100 ? { width: `${imgPct}%` } : undefined}
-        >
+        <div className="pin-wrap" onClick={onImgClick}>
           <img className="pin-img" src={task.image_url} alt="" draggable="false" />
           {tap ? <span className="pin-marker" style={{ left: `${tap.x * 100}%`, top: `${tap.y * 100}%` }} /> : null}
         </div>
       ) : <div className="au-orig">🖼 Bild wird vorbereitet — gleich nochmal.</div>}
       {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
       {needsArticle ? (
-        <input
-          className="ans-input" value={article} onChange={(e) => setArticle(e.target.value)}
-          placeholder={tap ? 'Artikel: der / die / das' : 'erst auf das Objekt tippen …'}
-          autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
-          onFocus={() => setTyping(true)} onBlur={() => setTyping(false)}
-          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
-        />
+        <div className="pin-articles">
+          {['der', 'die', 'das'].map((a) => (
+            <button
+              key={a} type="button"
+              className={`pin-art-btn ${ART_CLASS[a]}${article === a ? ' on' : ''}`}
+              onClick={() => { setArticle(a); tapHaptic(); }} disabled={submitting}
+            >{a}</button>
+          ))}
+        </div>
       ) : null}
+      {step ? <p className="au-hint pin-step">{step}</p> : null}
       <PrüfenButton disabled={!ready} submitting={submitting} onClick={submit} />
     </>
   );

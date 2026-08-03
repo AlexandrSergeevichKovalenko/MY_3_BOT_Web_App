@@ -1816,7 +1816,10 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
         target_label = str(payload.get("target_label") or "").strip()
         wort = re.sub(r"^(der|die|das)\s+", "", target_label, flags=re.IGNORECASE).strip()
         if wort:
-            meta["question_de"] = f"Finde {wort} im Bild — tippe darauf und gib den Artikel ein."
+            # «wähle den Artikel», а не «gib … ein»: артикль теперь выбирают кнопкой
+            # (AufgabeGame.jsx). Текст пересобирается на каждой выдаче, поэтому меняется
+            # сразу и у заданий, которые уже лежат в пуле.
+            meta["question_de"] = f"Finde {wort} im Bild — tippe darauf und wähle den Artikel."
         else:  # no target_label (shouldn't happen) → fall back to stored text
             meta["question_de"] = str(payload.get("question_de") or "")
         meta["hint_ru"] = ""  # never show the Russian meaning during the pin task
@@ -2280,14 +2283,27 @@ def _grade_aufgabe(fmt: str, payload: dict, raw_input: str) -> tuple:
 
 
 def _parse_pin_answer(raw_input: str) -> tuple:
-    """'x,y' or 'x,y|article' → ((x, y) | None, article). Never raises."""
+    """'x,y' or 'x,y|article' → ((x, y) | None, article). Never raises.
+
+    Артикль вычленяем из текста, а не берём строку целиком. В приложении его теперь
+    ВЫБИРАЮТ кнопкой, но пока было поле ввода, люди писали ответ так, как он звучит —
+    «die Lederschnur», — и правильный ответ засчитывался как ошибка (сравнивали всю фразу
+    со словом «die»). Такие ответы приходят и сейчас: со старой открытой карточки в чужом
+    клиенте. Ошибкой это быть не должно.
+    """
     coords, sep, article = str(raw_input or "").strip().partition("|")
     x_str, _, y_str = coords.partition(",")
     try:
         tap = (float(x_str), float(y_str))
     except (TypeError, ValueError):
         tap = None
-    return tap, (article.strip() if sep else "")
+    article = article.strip() if sep else ""
+    if article:
+        words = re.findall(r"[^\W\d_]+", article, flags=re.UNICODE)
+        if len(words) > 1:
+            picked = next((w for w in words if w.lower() in ("der", "die", "das")), "")
+            article = picked or article
+    return tap, article
 
 
 def _pin_bbox_hit(payload: dict, tap: tuple) -> bool:
@@ -2319,7 +2335,8 @@ def _grade_pin(payload: dict, raw_input: str) -> tuple:
         return True, ""
     target = str(payload.get("target_label") or "").strip()
     if ok_tap and not ok_article:
-        reason = f"предмет ты нашёл верно, но артикль другой — {target or 'см. ответ выше'}."
+        reason = (f"предмет на картинке ты нашёл верно, а артикль не тот. Правильно — {target}."
+                  if target else "предмет на картинке ты нашёл верно, а артикль не тот.")
     elif ok_article and not ok_tap:
         reason = "артикль верный, но на картинке ты указал не на тот предмет."
     else:

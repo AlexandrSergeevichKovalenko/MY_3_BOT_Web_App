@@ -4542,7 +4542,7 @@ Regeln:
   KEIN Text, keine Buchstaben, keine Labels im Bild.
 - "target_label": das Zielobjekt MIT Artikel (z. B. "der Wasserkocher").
 - "article": nur der Artikel des Zielobjekts: "der" | "die" | "das".
-- "question_de": "Finde {Nomen OHNE Artikel} im Bild — tippe darauf und gib den Artikel ein."
+- "question_de": "Finde {Nomen OHNE Artikel} im Bild — tippe darauf und wähle den Artikel."
   WICHTIG: das Nomen steht OHNE Artikel (NICHT "die Schere", sondern "Schere") — den
   Artikel soll der Lernende ja selbst eingeben. KEINE russische Übersetzung im Satz.
 - "erklaerung": „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): das Wort, sein Genus und
@@ -4551,7 +4551,7 @@ Regeln:
 - "hint_ru": kurze russische Übersetzung des Wortes.
 
 Gib NUR STRICT JSON:
-{"items":[{"image_prompt":"A cluttered kitchen counter: a large shiny toaster prominently in the center, a fruit bowl, a cutting board and jars, and a small electric kettle half-hidden off to the side near the wall, photorealistic, no text","target_label":"der Wasserkocher","article":"der","question_de":"Finde Wasserkocher im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"чайник (электрический)"}]}
+{"items":[{"image_prompt":"A cluttered kitchen counter: a large shiny toaster prominently in the center, a fruit bowl, a cutting board and jars, and a small electric kettle half-hidden off to the side near the wall, photorealistic, no text","target_label":"der Wasserkocher","article":"der","question_de":"Finde Wasserkocher im Bild — tippe darauf und wähle den Artikel.","erklaerung":"…","tip":"…","hint_ru":"чайник (электрический)"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_pin_for_word": """
@@ -4583,7 +4583,7 @@ Ausgabe (STRICT JSON, genau diese Felder):
   a single small <target> partly hidden behind <something>".
 - "target_label": das Zielobjekt MIT korrektem Artikel (z. B. "der Wasserkocher").
 - "article": nur "der" | "die" | "das".
-- "question_de": "Finde {Nomen OHNE Artikel} im Bild — tippe darauf und gib den Artikel ein."
+- "question_de": "Finde {Nomen OHNE Artikel} im Bild — tippe darauf und wähle den Artikel."
 - "erklaerung": Erklärung auf Russisch (2–3 Sätze): Wort, Genus und WARUM dieser Artikel.
 - "tip": EIN kurzer russischer Genus-Merktipp. Ohne Emoji.
 - "hint_ru": kurze russische Übersetzung des Wortes.
@@ -4592,7 +4592,7 @@ Falls das Eingabewort kein konkretes, im Bild darstellbares Substantiv ist (Abst
 Verb, Unsinn), gib {"error":"not_depictable"} zurück.
 
 Gib NUR STRICT JSON, ohne Markdown:
-{"image_prompt":"A cluttered workshop bench seen from above: scattered screws, a coffee mug, a notebook, wood offcuts, a tape measure, a phone and rags spread across the surface, and tucked to one side near the edge a single small pair of pliers half-hidden under a rag, photorealistic, natural light, no text","target_label":"die Zange","article":"die","question_de":"Finde Zange im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"плоскогубцы"}
+{"image_prompt":"A cluttered workshop bench seen from above: scattered screws, a coffee mug, a notebook, wood offcuts, a tape measure, a phone and rags spread across the surface, and tucked to one side near the edge a single small pair of pliers half-hidden under a rag, photorealistic, natural light, no text","target_label":"die Zange","article":"die","question_de":"Finde Zange im Bild — tippe darauf und wähle den Artikel.","erklaerung":"…","tip":"…","hint_ru":"плоскогубцы"}
 """,
 "pin_scene_prompt": """
 Du baust EIN englisches DALL-E-Bild-Prompt aus der (meist russischen) Szenen-Beschreibung

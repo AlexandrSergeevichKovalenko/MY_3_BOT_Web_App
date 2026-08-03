@@ -52403,7 +52403,7 @@ def create_pin_target_from_scene(*, scene_id: int, image_object_key: str, bbox: 
     payload = {
         "target_label": str(target_label),
         "article": str(article),
-        "question_de": f"Finde {noun} im Bild — tippe darauf und gib den Artikel ein." if noun else "",
+        "question_de": f"Finde {noun} im Bild — tippe darauf und wähle den Artikel." if noun else "",
         "image_object_key": str(image_object_key),
         "bbox": [float(v) for v in bbox],
         "bbox_human_ok": True,
