@@ -245,7 +245,10 @@ export default function DeepDiveOverlay({ startParam }) {
 
   if (fatal) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-head"><span className="ans-eyebrow">⚠️ Hoppla</span></div>
         <p className="ans-sub">{fatal}</p>
         <button className="ans-btn-ghost" onClick={close}>Schließen</button>
@@ -255,7 +258,10 @@ export default function DeepDiveOverlay({ startParam }) {
 
   if (loading || !card) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" />
       </div></div>
     );
@@ -265,7 +271,10 @@ export default function DeepDiveOverlay({ startParam }) {
   const ru = card.source_lang === 'de' ? card.target_text : card.source_text;
 
   return (
-    <div className="ans-root">
+    // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd">
       <div className="ans-card">
         <div className="ans-head">
           <span className="ans-eyebrow">🔍 Разбор слова</span>

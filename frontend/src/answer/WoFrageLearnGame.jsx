@@ -120,5 +120,5 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
     </>);
   }
 
-  return <div className="ans-root"><div className={`ans-card as-card ${cls}`}>{body}</div></div>;
+  return <div className="ans-root ans-root--keepkbd"><div className={`ans-card as-card ${cls}`}>{body}</div></div>;
 }

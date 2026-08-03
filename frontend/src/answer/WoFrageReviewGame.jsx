@@ -130,7 +130,10 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
   }
 
   return (
-    <div className="ans-root">
+    // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd">
       <div className="ans-card as-card al-card">{body}</div>
     </div>
   );

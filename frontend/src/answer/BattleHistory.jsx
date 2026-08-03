@@ -109,5 +109,5 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
     </>);
   }
 
-  return <div className="ans-root"><div className="ans-card">{body}</div></div>;
+  return <div className="ans-root ans-root--keepkbd"><div className="ans-card">{body}</div></div>;
 }

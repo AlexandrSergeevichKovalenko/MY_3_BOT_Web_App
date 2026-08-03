@@ -144,7 +144,10 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
   }, [api, saved, haptic]);
 
   const shell = (body, cls = '') => (
-    <div className="ans-root">
+    // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd">
       <div className={`ans-card ${cls}`}>{body}</div>
       <Toast state={toast.state} onClose={toast.hide} />
     </div>

@@ -403,7 +403,10 @@ function BattleSummaryCard({ kind, battle, onClose, onOpenBattle }) {
   const total = Number(battle?.total || 0);
   const winner = battle?.winner || '—';
   return (
-    <div className="ans-root">
+    // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd">
       <div className="ans-card as-card as-done">
         <div className="ans-verdict">{kind === 'adjektiv' ? '🔠 Adjektiv Battle' : '⚡ Artikel Battle'}</div>
         <div className="ans-answer"><b>#{battle?.battle_id}</b> · {label}</div>
@@ -1029,7 +1032,10 @@ export default function AnswerOverlay({ startParam }) {
   // Fatal (bad link / task missing) — only when we have nothing to show.
   if (fatal && !result) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-head"><span className="ans-eyebrow">⚠️ Hoppla</span></div>
         <p className="ans-sub">{fatal}</p>
         <button className="ans-btn-ghost" onClick={close}>Schließen</button>
@@ -1040,7 +1046,10 @@ export default function AnswerOverlay({ startParam }) {
   // Result view (after submit or already-answered).
   if (result) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1078,7 +1087,10 @@ export default function AnswerOverlay({ startParam }) {
   // Listening input view — custom audio player + answer fields; async grading.
   if (isListening) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1104,7 +1116,10 @@ export default function AnswerOverlay({ startParam }) {
   // Multiple-choice input view — question + tappable options (in place of the poll).
   if (isMC) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1123,7 +1138,10 @@ export default function AnswerOverlay({ startParam }) {
   // Aufgabe input view — B2+ text task (cloze: sentence with a gap + text input).
   if (isAufgabe) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1174,7 +1192,10 @@ export default function AnswerOverlay({ startParam }) {
   // Freeform input view — a single text field (the "keine korrekte Antworten" path).
   if (isFreeform) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1205,7 +1226,10 @@ export default function AnswerOverlay({ startParam }) {
   // Anagram input view — its own slots/tiles UI with a built-in Prüfen button.
   if (isAnagram) {
     return (
-      <div className="ans-root"><div className="ans-card">
+      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1224,7 +1248,10 @@ export default function AnswerOverlay({ startParam }) {
   }
 
   return (
-    <div className="ans-root"><div className="ans-card">
+    // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
+    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
+    // отдельно и само встаёт над ней.
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
       <div className="ans-head">
         <span className="ans-eyebrow">{eyebrow}</span>
         <h1 className="ans-title">{heading}</h1>
