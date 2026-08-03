@@ -20,6 +20,8 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
+  const [tab, setTab] = useState('queue');          // queue | ready | waiting
+  const [cards, setCards] = useState(null);         // каталог для вкладок ready/waiting
   const [redrawFor, setRedrawFor] = useState('');   // слово, которое решили перерисовать
   const [comment, setComment] = useState('');      // своя правка вместо кнопки-причины
 
@@ -45,6 +47,59 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
       if (loud) setBusy(false);
     }
   }, [api]);
+
+  const loadCards = useCallback(async (mode) => {
+    setBusy(true); setError('');
+    try {
+      const r = await api('/api/answer/rebusreview/browse', { mode });
+      setCards(r.items || []);
+      setStatus(r.status || null);
+    } catch (e) {
+      console.warn('[game] error', e);
+      setError('Не удалось загрузить каталог.');
+      setCards([]);
+    } finally { setBusy(false); }
+  }, [api]);
+
+  const openTab = (next) => {
+    setTab(next); setNote(''); setError('');
+    if (next === 'queue') { setCards(null); refresh(false); } else { setCards(null); loadCards(next); }
+  };
+
+  // Действие над карточкой ИЗ КАТАЛОГА: снять или перерисовать половинку.
+  const actOnCard = async (item, verdict, extra = {}) => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try {
+      const r = await api('/api/answer/rebusreview/verdict', {
+        compound_id: item.compound_id, verdict, ...extra,
+      });
+      if (r.status === 'pair_dropped') setNote(`🗑 «${item.compound}» снято. Картинки остались.`);
+      else if (r.status === 'redraw') {
+        setNote(r.redraw_started
+          ? `🔄 Перерисовываю «${extra.word}» — вернётся на приёмку через пару минут.`
+          : `🔄 «${extra.word}» помечено, но запустить перерисовку сейчас не вышло.`);
+      } else if (r.status === 'blocked') setNote(`🗑 «${extra.word}» больше не рисуем.`);
+      if (r.status_pool) setStatus(r.status_pool);
+      setCards((prev) => (prev || []).filter((c) => c.compound_id !== item.compound_id));
+      haptic?.('bad');
+    } catch (e) {
+      console.warn('[game] error', e);
+      setError('Не удалось сохранить решение.');
+    } finally { setBusy(false); }
+  };
+
+  const drawCard = async (item) => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try {
+      await api('/api/answer/rebusreview/draw', { cards: 1, compound_id: item.compound_id });
+      setNote(`🖼 Дорисовываю «${item.compound}» — придёт на приёмку через пару минут.`);
+    } catch (e) {
+      console.warn('[game] error', e);
+      setError('Не удалось начать отрисовку.');
+    } finally { setBusy(false); }
+  };
 
   const draw = async (cards) => {
     if (busy) return;
@@ -100,6 +155,72 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
     ? `В банке готовых карточек: ${status.ready} · ждут дорисовки: ${status.waiting_draw}`
     : '';
 
+  const tabsRow = (
+    <div className="rbrev-tabs">
+      <button className={`rbrev-tab ${tab === 'queue' ? 'on' : ''}`} onClick={() => openTab('queue')}>На приёмке</button>
+      <button className={`rbrev-tab ${tab === 'ready' ? 'on' : ''}`} onClick={() => openTab('ready')}>В банке</button>
+      <button className={`rbrev-tab ${tab === 'waiting' ? 'on' : ''}`} onClick={() => openTab('waiting')}>Незаконченные</button>
+    </div>
+  );
+
+  // ── Каталог: пересмотреть однажды одобренное и проредить ──
+  if (tab !== 'queue') {
+    return (
+      <div className="pinw">
+        <div className="pinw-top">
+          <div className="pinw-title">🧩 Ребусы</div>
+          <div className="pinw-sub">{statusLine}</div>
+        </div>
+        {tabsRow}
+        <div className="rbrev-scroll">
+          {note ? <div className="pinrev-note">{note}</div> : null}
+          {error ? <div className="pinrev-err">{error}</div> : null}
+          {cards === null ? <div className="ans-loading">Загружаю…</div> : null}
+          {cards && !cards.length ? (
+            <div className="pinrev-empty-sub">
+              {tab === 'ready' ? 'Собранных карточек нет.' : 'Незаконченных карточек нет.'}
+            </div>
+          ) : null}
+          {(cards || []).map((c) => (
+            <div className="rbrev-row" key={c.compound_id}>
+              <div className="rbrev-row-top">
+                {c.halves.map((h) => (
+                  <figure className="rbrev-mini" key={h.word}>
+                    {h.image_url
+                      ? <img src={h.image_url} alt="" draggable="false" />
+                      : <span className="rbrev-mini-empty">?</span>}
+                    <figcaption>{h.word}</figcaption>
+                  </figure>
+                ))}
+                <div className="rbrev-row-name">
+                  <b>{c.compound}</b>
+                  {c.compound_ru ? <i>{c.compound_ru}</i> : null}
+                  {tab === 'ready' ? <em>показана {c.sent_times} раз(а)</em> : null}
+                </div>
+              </div>
+              <div className="rbrev-row-actions">
+                {c.halves.filter((h) => h.drawn).map((h) => (
+                  <button key={h.word} className="ans-btn-ghost rbrev-reject" disabled={busy}
+                    onClick={() => actOnCard(c, 'redraw', { word: h.word, reason: 'wrong_object' })}>
+                    🔁 {h.word}
+                  </button>
+                ))}
+                {tab === 'waiting' && c.halves.some((h) => !h.drawn) ? (
+                  <button className="ans-btn-ghost" disabled={busy} onClick={() => drawCard(c)}>🖼 Дорисовать</button>
+                ) : null}
+                <button className="ans-btn-ghost pinrev-skip" disabled={busy}
+                  onClick={() => actOnCard(c, 'drop_pair')}>🗑 Снять</button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="pinw-bar">
+          <button className="pinw-close" onClick={onClose}>Закрыть</button>
+        </div>
+      </div>
+    );
+  }
+
   if (items === null) return <div className="pinw"><div className="ans-loading">Загружаю приёмку…</div></div>;
 
   if (!card) {
@@ -109,6 +230,7 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
           <div className="pinw-title">🧩 Приёмка ребусов</div>
           <div className="pinw-sub">{statusLine || 'Всё разобрано'}</div>
         </div>
+        {tabsRow}
         <div className="pinw-body">
           {note ? <div className="pinrev-note">{note}</div> : null}
           <div className="pinrev-empty-sub">
@@ -140,6 +262,7 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
         <span className="pinw-title">🧩 Приёмка</span>
         <span className="pinw-count">осталось {items.length}</span>
       </div>
+      {tabsRow}
 
       <div className="rbrev-scroll">
         <div className="rbrev-pair">

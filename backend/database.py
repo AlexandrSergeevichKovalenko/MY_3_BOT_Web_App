@@ -45597,6 +45597,83 @@ def list_pending_rebus_card_reviews(limit: int = 20) -> list[dict]:
     return out
 
 
+def list_rebus_cards(mode: str = "ready", limit: int = 60) -> list[dict]:
+    """Каталог карточек для просмотра и прополки.
+
+    mode='ready'   — то, что уже собрано и уходит людям;
+    mode='waiting' — то, что ещё не собрано (обычно нарисована одна половинка из двух).
+
+    Нужен, чтобы владелец мог пересмотреть однажды одобренное, а не только свежее:
+    приёмка показывает лишь новое, а решение «это слово вообще не годится» приходит
+    чаще всего потом."""
+    from backend.r2_storage import r2_public_url
+    meanings = get_rebus_part_meanings()
+
+    def _url(key) -> str:
+        if not key:
+            return ""
+        try:
+            return r2_public_url(str(key))
+        except Exception:
+            return ""
+
+    where = ("b.composed_status = 'ready'" if str(mode) == "ready"
+             else "b.composed_status <> 'ready'")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT b.compound_id, b.compound_word, b.meaning_ru, b.parts_json,
+                       b.composed_image_object_key, b.send_count, b.last_sent_at
+                FROM bt_3_rebus_bank b
+                WHERE b.retired = FALSE AND {where}
+                ORDER BY b.compound_word
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+            words = set()
+            for _cid, _cw, _ru, parts, _key, _sc, _ls in rows:
+                for part in (parts if isinstance(parts, list) else [])[:2]:
+                    w = str((part or {}).get("word") or "")
+                    if w:
+                        words.add(w)
+            images: dict[str, dict] = {}
+            if words:
+                cursor.execute(
+                    "SELECT word, image_object_key, generation_status, review_status "
+                    "FROM bt_3_rebus_component_images WHERE word = ANY(%s)",
+                    (sorted(words),),
+                )
+                for w, key, gen, rev in cursor.fetchall() or []:
+                    images[str(w)] = {"key": key, "gen": str(gen or ""),
+                                      "review": str(rev or "approved")}
+    out = []
+    for compound_id, compound, meaning_ru, parts, card_key, send_count, last_sent in rows:
+        halves = []
+        for part in (parts if isinstance(parts, list) else [])[:2]:
+            word = str((part or {}).get("word") or "")
+            info = images.get(word) or {}
+            drawn = info.get("gen") == "ready" and bool(info.get("key"))
+            halves.append({
+                "word": word,
+                "meaning_ru": meanings.get(word, str((part or {}).get("meaning_ru") or "")),
+                "image_url": _url(info.get("key")) if drawn else "",
+                "drawn": drawn,
+                "approved": info.get("review") == "approved",
+            })
+        out.append({
+            "compound_id": str(compound_id),
+            "compound": str(compound),
+            "compound_ru": str(meaning_ru or ""),
+            "card_image_url": _url(card_key),
+            "sent_times": int(send_count or 0),
+            "halves": halves,
+        })
+    return out
+
+
 def set_rebus_card_review(compound_id: str, verdict: str, word: str = "", reason: str = "") -> dict:
     """Решение по КАРТОЧКЕ.
 

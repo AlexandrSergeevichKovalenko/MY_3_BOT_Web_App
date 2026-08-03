@@ -29556,6 +29556,21 @@ def answer_rebus_review_list():
     return jsonify({"ok": True, "items": items, "status": rebus_pool_status()})
 
 
+@app.route("/api/answer/rebusreview/browse", methods=["POST"])
+def answer_rebus_review_browse():
+    """Каталог: что уже собрано и уходит людям («ready») и что ещё не собрано
+    («waiting», обычно нарисована одна половинка). Отсюда владелец прореживает
+    однажды одобренное — приёмка показывает только новое."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    mode = "waiting" if str(payload.get("mode") or "").strip() == "waiting" else "ready"
+    from backend.database import list_rebus_cards, rebus_pool_status
+    return jsonify({"ok": True, "mode": mode, "items": list_rebus_cards(mode, 60),
+                    "status": rebus_pool_status()})
+
+
 @app.route("/api/answer/rebusreview/draw", methods=["POST"])
 def answer_rebus_review_draw():
     """Нарисовать несколько карточек по требованию прямо из приёмки.
@@ -29571,8 +29586,14 @@ def answer_rebus_review_draw():
         cards = max(1, min(4, int(payload.get("cards") or 2)))
     except (TypeError, ValueError):
         cards = 2
+    # Можно назвать конкретную карточку («Дорисовать» в каталоге) — иначе рисуются
+    # первые по очереди, и попасть в нужную можно только перебором за деньги.
+    names = [str(payload.get("compound") or "").strip()] if payload.get("compound") else []
+    ids = [str(payload.get("compound_id") or "").strip()] if payload.get("compound_id") else []
     from backend.job_queue import enqueue_rebus_draw_job
-    outcome = enqueue_rebus_draw_job(chat_id=int(user_id), cards=cards)
+    outcome = enqueue_rebus_draw_job(chat_id=int(user_id), cards=cards,
+                                     names=[n for n in names if n],
+                                     compound_ids=[i for i in ids if i])
     if not outcome.get("queued"):
         return jsonify({"error": "Очередь задач недоступна — рисование не начато, "
                                  "ничего не потрачено."}), 503

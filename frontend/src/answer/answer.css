@@ -1868,6 +1868,41 @@ html[data-scheme="light"] .pinw {
 .rbrev-half figcaption { font-size: 0.75rem; font-weight: 700; color: var(--dmps-text-secondary, #CBD5E1); }
 .rbrev-half-new figcaption { color: #B45309; }
 .rbrev-op { flex: 0 0 auto; font-size: 1.25rem; font-weight: 800; color: var(--dmps-text-muted, #94A3B8); }
+/* Вкладки каталога: приёмка / банк / незаконченные */
+.rbrev-tabs { flex: 0 0 auto; display: flex; gap: 0.375rem; }
+.rbrev-tab {
+  flex: 1 1 0; padding: 0.4375rem 0.25rem; font: inherit; font-size: 0.8125rem; font-weight: 700;
+  border-radius: 0.75rem; cursor: pointer; background: none;
+  border: 1px solid var(--dmps-border, #334155); color: var(--dmps-text-secondary, #CBD5E1);
+}
+.rbrev-tab.on { background: #2563EB; border-color: #2563EB; color: #ffffff; }
+
+/* Строка каталога: две мини-картинки, название, действия */
+.rbrev-row {
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.5rem;
+  border: 1px solid var(--dmps-border, #334155); border-radius: 0.875rem;
+  background: var(--dmps-card-alt, rgba(148,163,184,0.10));
+}
+.rbrev-row-top { display: flex; align-items: center; gap: 0.5rem; }
+.rbrev-mini { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.rbrev-mini img, .rbrev-mini-empty {
+  display: block; width: 3rem; height: 3rem; object-fit: cover; border-radius: 0.5rem;
+  border: 1px solid var(--dmps-border, #334155); background: #ffffff;
+}
+.rbrev-mini-empty {
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; color: var(--dmps-text-muted, #94A3B8);
+  background: var(--dmps-card, rgba(148,163,184,0.18));
+}
+.rbrev-mini figcaption { font-size: 0.625rem; color: var(--dmps-text-muted, #94A3B8); }
+.rbrev-row-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.rbrev-row-name b { font-size: 0.9375rem; color: var(--dmps-text-primary, #F8FAFC); }
+.rbrev-row-name i { font-style: normal; font-size: 0.75rem; color: var(--dmps-text-secondary, #CBD5E1); }
+.rbrev-row-name em { font-style: normal; font-size: 0.6875rem; color: var(--dmps-text-muted, #94A3B8); }
+.rbrev-row-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.rbrev-row-actions .ans-btn-ghost {
+  flex: 0 1 auto; width: auto; min-height: 0; padding: 0.375rem 0.625rem; font-size: 0.75rem; font-weight: 700;
+}
 .rbrev-answer-line { font-size: 1.0625rem; color: var(--dmps-text-primary, #F8FAFC); }
 .rbrev-answer-line b { font-size: 1.25rem; }
 .rbrev-answer-line i { font-style: normal; font-size: 0.9375rem; color: var(--dmps-text-secondary, #CBD5E1); }
