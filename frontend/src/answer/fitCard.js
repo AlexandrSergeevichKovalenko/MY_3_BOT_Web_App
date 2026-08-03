@@ -443,8 +443,41 @@ function schedule() {
   }, 150);
 }
 
+// БАЗОВЫЙ КЕГЛЬ ВСЕГО ИНТЕРАКТИВА — И ПОЧЕМУ ЕГО СЧИТАЕМ МЫ, А НЕ CSS.
+//
+// Все размеры в answer.css заданы в `rem`, а база раньше стояла прямо в вёрстке:
+//     html { font-size: clamp(13px, calc(1.42vh + 0.4vw + 4.8px), 18.5px); }
+// `vh` — это высота РАЗМЕТОЧНОЙ области, и на телефоне она уменьшается вместе с выездом
+// клавиатуры. Отсюда и берётся то, на что жалуется пользователь: он открывает окно
+// «Спросить» (оно живёт отдельно и к заданию отношения не имеет), клавиатура забирает
+// высоту — и задание позади масштабируется целиком, само, без всякого пересчёта. А когда
+// клавиатура уходит, оно так же само возвращается назад. Со стороны это рывок.
+//
+// Теперь ту же формулу считаем здесь и обновляем ТОЛЬКО тогда, когда клавиатуры нет.
+// Пока открыто поле ввода — величина не меняется, значит и задание измениться не может.
+//
+// Меряем `clientHeight`/`clientWidth` документа: это ровно то, что означают единицы
+// `vh`/`vw` и что проверяет медиазапрос, — поэтому без клавиатуры кегль получается
+// в точности такой же, каким был, и вёрстка ни на одном экране не поедет.
+const clampPx = (min, val, max) => Math.min(max, Math.max(min, val));
+function updateBaseFontSize() {
+  // Открыта клавиатура (или она ещё едет) — величина сейчас недостоверна, не трогаем.
+  if (typing || askTyping || settling) return;
+  const el = document.documentElement;
+  const h = el.clientHeight || 0;
+  const w = el.clientWidth || 0;
+  if (!(h > 200) || !(w > 0)) return;
+  // Порог тот же, что у медиазапроса в answer.css: ширина от 700 И высота от 560.
+  const wide = w >= 700 && h >= 560;
+  const px = wide
+    ? clampPx(16, (0.9 * h + 0.7 * w) / 100 + 5, 26)
+    : clampPx(13, (1.42 * h + 0.4 * w) / 100 + 4.8, 18.5);
+  el.style.setProperty('--ans-base', `${Math.round(px * 100) / 100}px`);
+}
+
 // Внешние обстоятельства поменялись (поворот, шторка Telegram) — забываем кеш и считаем заново.
 function freshStart() {
+  updateBaseFontSize();
   try {
     document.querySelectorAll('.ans-root > .ans-card').forEach((card) => {
       const st = stateOf(card);
@@ -461,6 +494,7 @@ export default function installCardAutoFit() {
   if (installed || typeof window === 'undefined' || typeof document === 'undefined') return;
   if (!supportsZoom() || typeof ResizeObserver === 'undefined') return; // без zoom — оставляем как было
   installed = true;
+  updateBaseFontSize();   // до первой отрисовки: дальше величину меняет только смена экрана
 
   ro = new ResizeObserver(schedule);
 
@@ -484,9 +518,7 @@ export default function installCardAutoFit() {
       if (askTyping && !document.querySelector('.ask-pop')) {
         askTyping = false;
         unlockScroll();
-        thawCardBox();
-        thawBase();
-        settleAfterKeyboard();   // клавиатура ещё уезжает — считаем, когда высота устоится
+        releaseAskFreeze();      // отпускаем, когда экран вернёт высоту; пересчёта нет
         return;
       }
 
@@ -527,38 +559,23 @@ export default function installCardAutoFit() {
   try { window.Telegram?.WebApp?.onEvent?.('viewportChanged', freshStart); } catch (_e) { /* noop */ }
 
   const isField = (el) => !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-  // ЗАМОРОЗКА БАЗОВОГО КЕГЛЯ, пока открыта клавиатура на интерактиве с `ans-root--keepkbd`.
+  // Базовый кегль от клавиатуры больше не зависит вообще (см. updateBaseFontSize выше):
+  // величина считается в JS и обновляется только когда поля ввода нет. Замораживать и
+  // размораживать её больше нечего — а именно РАЗМОРОЗКА и была видна как рывок.
   //
-  // Это второй — и главный — источник «экран сам ужимается». В вёрстке базовый размер шрифта
-  // всего приложения привязан к высоте экрана:
-  //     html { font-size: clamp(13px, calc(1.42vh + 0.4vw + 4.8px), 18.5px); }
-  // Клавиатура забирает высоту, `1.42vh` падает, базовый кегль уменьшается — а в `rem` от
-  // него заданы ВСЕ размеры внутри карточки. Поэтому карточка ужимается сама, без всякого
-  // пересчёта: движок в это время уже молчит (см. ветку `typing` выше), а картинка всё равно
-  // едет. Отключить это в движке было нельзя — источник в CSS.
-  //
-  // Поэтому на время клавиатуры прибиваем базовый кегль к тому значению, что было ДО её
-  // появления, и заодно закрепляем высоту корня. После закрытия — снимаем, и всё снова
-  // считается от экрана как обычно.
-  // Кроссворд сюда входит наравне с остальными: у него свой корень (`ans-root--cw`) и своя
-  // раскладка, но базовый кегль у него ТОТ ЖЕ — общий для всего приложения. Пока эта строка
-  // искала только `keepkbd`, кроссворд оставался без заморозки, и его масштабировало
-  // целиком: сначала при выезде клавиатуры, потом обратно при её закрытии.
-  const freezeBase = () => {
+  // Здесь остаётся одно: закрепить высоту корня в пикселях. У корня в CSS стоит
+  // `min-height: 100dvh`, а `dvh` клавиатура тоже уменьшает.
+  // Кроссворд сюда не входит: у него высота задана свойством `height` и ей управляет сам
+  // кроссворд (CrosswordGrid) — туда не лезем. Кегль при этом у него общий, и новая схема
+  // защищает его наравне со всеми.
+  const pinRootHeight = () => {
     const root = document.querySelector('.ans-root--keepkbd, .ans-root--cw');
     if (!root) return;
-    const html = document.documentElement;
-    if (!html.style.fontSize) {
-      html.style.fontSize = getComputedStyle(html).fontSize;   // текущий, ещё «доклавиатурный»
-    }
-    // Высоту корня закрепляем только у обычных интерактивов. У кроссворда высота задана
-    // свойством `height` и им управляет сам кроссворд (CrosswordGrid) — сюда не лезем.
     if (!root.classList.contains('ans-root--cw') && !root.style.minHeight) {
       const h = viewportHeight();
       if (h > 200) root.style.minHeight = `${Math.round(h)}px`;
     }
   };
-  const thawBase = () => { document.documentElement.style.fontSize = ''; };
 
   // ГЛАВНОЕ ПРАВИЛО: поле ввода ВНЕ карточки (а это всегда окно «Спросить») не имеет к
   // заданию никакого отношения — значит и трогать задание не должно. Никак. Ни на каком
@@ -599,7 +616,12 @@ export default function installCardAutoFit() {
   //
   // Окно «Спросить» это не задевает: оно рисуется отдельно, в <body>.
   const frozenBoxes = [];
+  let frozenViewportH = 0;   // высота экрана ДО клавиатуры — по ней и отпускаем
+  let frozenLayout = '';     // размер разметочной области ДО клавиатуры — см. releaseAskFreeze
+  const layoutSize = () => `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`;
   const freezeCardBox = () => {
+    frozenViewportH = viewportHeight();
+    frozenLayout = layoutSize();
     document.querySelectorAll('.ans-root').forEach((root) => {
       if (root.dataset.frozen === '1') return;
       const r = root.getBoundingClientRect();
@@ -621,10 +643,51 @@ export default function installCardAutoFit() {
       delete root.dataset.frozen;
       if (style) root.setAttribute('style', style); else root.removeAttribute('style');
     }
+    frozenViewportH = 0;
+    frozenLayout = '';
   };
 
+  // ОКНО «СПРОСИТЬ» ЗАКРЫЛИ — ОТПУСКАЕМ КАРТОЧКУ, НО НИЧЕГО НЕ ПЕРЕСЧИТЫВАЕМ.
+  //
+  // Это и есть место, которое пользователь видел как рывок. Раньше здесь снимали
+  // закрепление и тут же запускали полный пересчёт — а он попадал на момент, когда экран
+  // ещё не вернул себе высоту, отданную клавиатуре. Карточка вставала маленькой и стояла
+  // так треть секунды, пока следующий, уже правильный расчёт не возвращал её обратно.
+  //
+  // Пересчитывать тут нечего по существу: задание не менялось, пользователь печатал в
+  // ЧУЖОМ окне. Размеры, посчитанные до клавиатуры, остаются верными — их и оставляем.
+  // Единственное, чего ждём, — чтобы экран вернул себе высоту: пока он её не вернул,
+  // карточка остаётся прибитой в пикселях и просто не может дрогнуть.
+  const releaseAskFreeze = () => {
+    settling = true;   // пока клавиатура едет — никаких расчётов
+    let tries = 0;
+    const tick = () => {
+      tries += 1;
+      const restored = !(frozenViewportH > 0) || viewportHeight() >= frozenViewportH - 2;
+      // Потолок ожидания — 2 с. Отпустить всё равно надо: карточка держит свои размеры
+      // сама (масштаб и высота записаны в её собственный стиль), так что даже досрочное
+      // снятие закрепления её не меняет.
+      if (restored || tries > 40) {
+        // Экран мог измениться по-настоящему, пока держали карточку: поворот телефона,
+        // шторка Telegram. Такие события мы всё это время глушили, поэтому сверяемся с
+        // размером разметочной области. Совпал (обычный случай) — не делаем НИЧЕГО:
+        // именно отсутствие пересчёта и есть неподвижная карточка. Не совпал — считаем
+        // заново, потому что старые размеры к новому экрану уже не подходят.
+        const changed = frozenLayout && frozenLayout !== layoutSize();
+        thawCardBox();
+        settling = false;
+        if (changed) freshStart();
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  };
+
+  let scrollLocked = false;
   const lockScroll = () => {
     lockedY = window.scrollY || 0;
+    scrollLocked = true;
     document.documentElement.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
     window.addEventListener('scroll', onLockedScroll, { passive: true });
@@ -655,6 +718,8 @@ export default function installCardAutoFit() {
   };
 
   const unlockScroll = () => {
+    if (!scrollLocked) return;   // не запирали — и возвращать прокрутку некуда
+    scrollLocked = false;
     window.removeEventListener('scroll', onLockedScroll);
     document.documentElement.style.overflow = '';
     document.body.style.overflow = '';
@@ -663,30 +728,26 @@ export default function installCardAutoFit() {
 
   document.addEventListener('focusin', (e) => {
     if (!isField(e.target)) return;
-    freezeBase();          // ДО того, как клавиатура успеет изменить высоту
+    pinRootHeight();       // ДО того, как клавиатура успеет изменить высоту
     if (!inCard(e.target)) { askTyping = true; freezeCardBox(); lockScroll(); return; }
     typing = true;
     schedule();
   });
   document.addEventListener('focusout', (e) => {
     if (!isField(e.target)) return;
-    const wasAsk = askTyping && !inCard(e.target);
+    // Поле ВНЕ карточки — это всегда чужое окно поверх задания («Спросить», разбор).
+    // Признак берём по самому полю, а НЕ по флагу `askTyping`: крестик убирает окно вместе
+    // с полем, наблюдатель за DOM успевает снять флаг первым, и запоздавшее событие потери
+    // фокуса сваливалось в ветку пересчёта — то есть ровно в тот рывок, который мы убираем.
+    const wasAsk = !inCard(e.target);
     askTyping = false;
-    if (wasAsk) unlockScroll();
     typing = false;
-    // Отпускаем кегль НЕ СРАЗУ: клавиатура закрывается с анимацией, и если снять
-    // заморозку раньше, чем вернётся высота, карточка на эти доли секунды снова ужмётся —
-    // это и есть вторая половина «качелей». Ждём, пока высота реально вернётся.
-    const startedAt = viewportHeight();
-    let tries = 0;
-    const release = () => {
-      tries += 1;
-      if (viewportHeight() > startedAt + 40 || tries > 20) { thawBase(); freshStart(); return; }
-      setTimeout(release, 60);
-    };
-    if (wasAsk) { thawCardBox(); release(); settleAfterKeyboard(); return; }   // ждём, пока экран устоится
-    thawBase();
-    setTimeout(freshStart, 120);
+    // Печатали в чужом окне — задание не менялось, пересчитывать нечего.
+    if (wasAsk) { unlockScroll(); releaseAskFreeze(); return; }
+    // Печатали В САМОЙ карточке (диктант чисел, работа над ошибками, перевод): на время
+    // ввода подгонка была снята, поэтому здесь пересчёт нужен. Но ровно один и по уже
+    // вернувшейся высоте — иначе получится тот же рывок.
+    settleAfterKeyboard();
   });
 
   // Шрифты догружаются после первого layout и меняют высоту текста.
