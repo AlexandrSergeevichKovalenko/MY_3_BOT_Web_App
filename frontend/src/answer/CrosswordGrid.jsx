@@ -69,7 +69,18 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
   useEffect(() => {
     const el = wrapRef.current;
     if (!el || !cols || !rows) return undefined;
+    // Пока открыта клавиатура — НИЧЕГО НЕ ПЕРЕСЧИТЫВАЕМ.
+    //
+    // В кроссворде клавиатура вообще не нужна: буквы набираются кнопками прямо на экране.
+    // Единственный случай, когда она выезжает, — окно «Спросить» на экране результатов. Там
+    // ответы уже показаны и менять в них нечего, поэтому перекраивать под клавиатуру всю
+    // карточку незачем: она должна стоять на месте, а клавиатура — лечь поверх.
+    const isTyping = () => {
+      const a = document.activeElement;
+      return !!a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
+    };
     const compute = () => {
+      if (isTyping()) return;
       const w = el.clientWidth;
       const h = el.clientHeight;
       if (!w) return;
@@ -82,11 +93,30 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
       const size = Math.max(12, Math.min(cap, fitW, fitH));
       setCell(size);
     };
+    // Высоту всего экрана кроссворда тоже закрепляем. В вёрстке она задана как 100dvh, а
+    // это число уменьшается вместе с выездом клавиатуры — из-за него карточка и «прыгала».
+    // Запоминаем высоту, снятую БЕЗ клавиатуры, и держим её; обновляем только на повороте
+    // и на настоящем изменении размера окна.
+    const root = el.closest('.ans-root--cw');
+    const lockHeight = () => {
+      if (!root || isTyping()) return;
+      const h = window.visualViewport?.height || window.innerHeight || 0;
+      if (h > 200) root.style.height = `${Math.round(h)}px`;
+    };
+    const onResize = () => { lockHeight(); compute(); };
+
+    lockHeight();
     compute();
     const ro = new ResizeObserver(compute);
     ro.observe(el);
-    window.addEventListener('resize', compute);
-    return () => { ro.disconnect(); window.removeEventListener('resize', compute); };
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+      if (root) root.style.height = '';
+    };
   }, [cols, rows]);
 
   // cell "r,c" → [wordIdx, ...]
