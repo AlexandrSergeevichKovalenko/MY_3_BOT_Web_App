@@ -3753,6 +3753,23 @@ EINDEUTIGKEIT (HARTE PFLICHT):
 STÜTZWÖRTER "lemmas" (das EINZIGE, was der Lernende sieht):
 Die Aufgabe IST das Beugen. Deshalb steht in "lemmas" NUR die WÖRTERBUCHFORM — jede
 Endung, jeder Kasus, jedes Genus, jeder Artikel kommt vom Lernenden.
+
+DECKUNGSREGEL (die WICHTIGSTE, in BEIDE Richtungen prüfen):
+"lemmas" ist die Wortliste GENAU DIESER LÜCKE — nicht des Satzes.
+- Jedes Stützwort MUSS als Wortform in "correct" vorkommen. Ein Wort, das nur im
+  SICHTBAREN Teil von "satz" steht, ist VERBOTEN: der Lernende versucht es
+  einzusetzen, obwohl es dort schon gedruckt steht.
+  ✗ FALSCH: satz "Es ist kaum vorstellbar, _____ die Arbeiter damals arbeiten mussten.",
+    correct "unter welchen Bedingungen", lemmas ["Bedingungen","Arbeiter"]
+    → "Arbeiter" steht bereits im Satz und gehört NICHT in die Lücke.
+  ✓ RICHTIG: lemmas ["Bedingung"]
+- Umgekehrt: JEDES Inhaltswort aus "correct" braucht sein Stützwort. Fehlt eines,
+  muss der Lernende ein Wort raten, das er nicht kennen kann → Aufgabe unbrauchbar.
+  ✗ FALSCH: correct "in einer Situation schnell eine Entscheidung zu treffen",
+    lemmas ["Situation","schnell","Entscheidung"] → "treffen" fehlt.
+- Nur die versteckte Klammer bleibt ohne Stützwort: Präposition, Konjunktion,
+  Artikel, "zu", Reflexivpronomen, Hilfsverb. GENAU DAS ist die Aufgabe.
+
 - ALLE Inhaltswörter der Lösung, OHNE Artikel:
   • Substantive im Nominativ, OHNE Artikel, im für die Lösung passenden NUMERUS
     (z. B. "Vorteile", "Nachteile") — NIEMALS im Genitiv/Dativ ("Klimawandel", nicht
@@ -3782,8 +3799,11 @@ FELDER pro Aufgabe:
   welcher Kasus/welche Rektion und warum.
 - "tip" = kurzer russischer Merksatz.
 
-QUALITÄT:
-- "lemmas" decken GENAU die Inhaltswörter von "correct" ab (keines fehlt, keines zu viel).
+QUALITÄT — SELBSTTEST vor der Ausgabe, Aufgabe verwerfen wenn eine Antwort "nein" ist:
+1) Steht JEDES Stützwort (als Wortform) in "correct"? Keines darf aus dem sichtbaren
+   Satzteil stammen.
+2) Hat JEDES Inhaltswort von "correct" sein Stützwort?
+3) Ist jedes Stützwort die endungslose Grundform?
 
 WORKED EXAMPLE:
 {"vollsatz":"Eine gute Entscheidung hängt oft davon ab, ob man die Vorteile und Nachteile sorgfältig abwägt.","satz":"Eine gute Entscheidung hängt oft davon ab, _____ sorgfältig abwägt.","lemmas":["man","Vorteile","Nachteile"],"hidden_glue":"ob","correct":"ob man die Vorteile und Nachteile","accepted":["ob man die Vorteile und Nachteile","ob man die Vorteile und die Nachteile"],"hint_ru":"взвесить плюсы и минусы","erklaerung":"…","tip":"…"}
@@ -4272,9 +4292,21 @@ For EACH item, in input order, judge TWO things:
     ("im"/"zum"/"zur"), no conjunction or preposition may appear as a lemma at all.
     If ANY lemma already carries a case/declension ending or otherwise leaks
     the inflection the learner must supply → fail. (Supplying every ending is the task.)
+(d) COVERAGE — "lemmas" is the word list of THE GAP, not of the sentence. Check BOTH
+    directions and fail on either miss:
+    • every lemma must appear as a word form inside "correct". A lemma that only
+      occurs in the VISIBLE part of "satz" is a FALSE LEAD — the learner tries to
+      insert a word that is already printed there → fail. Example of a FAILING item:
+      satz "Es ist kaum vorstellbar, _____ die Arbeiter damals arbeiten mussten.",
+      correct "unter welchen Bedingungen", lemmas ["Bedingungen","Arbeiter"] — the
+      lemma "Arbeiter" belongs to the visible text, not to the gap.
+    • every CONTENT word of "correct" (noun, verb, adjective, adverb) must have a
+      lemma. Only the hidden glue — preposition, conjunction, article, "zu",
+      reflexive pronoun, auxiliary — may be missing, because finding it IS the task.
+      A missing content word makes the item pure guessing → fail.
 Return STRICT JSON ONLY, one result per item, SAME order:
 {"results":[{"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"]}, ...]}
-ok = true ONLY if ALL of (a), (b) and (c) hold; otherwise ok=false and accepted=[].
+ok = true ONLY if ALL of (a), (b), (c) and (d) hold; otherwise ok=false and accepted=[].
 """,
 "check_wortbildung_batch": """
 You verify German "Wortbildung" exercises. Input JSON:

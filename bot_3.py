@@ -34948,12 +34948,15 @@ def _aufgabe_payload_from_item(fmt: str, it: dict, *, admin_chosen: bool = False
 
         # The shown words must be CONTENT words in their BASE form: no article/
         # conjunction/preposition/"zu"/contraction, no declined possessive, no
-        # adjective carrying its ending — supplying all of that IS the task. One
+        # adjective carrying its ending — supplying all of that IS the task. They
+        # must ALSO match the answer word for word: a Stützwort that isn't in the
+        # gap (especially one already printed in the sentence) is a false lead, and
+        # a content word of the answer without a Stützwort is unguessable. One
         # shared rule with the nightly purge and the serve-time check, so items that
         # predate it are retired instead of being served with the answer on them.
         from backend.database import wortgruppe_lemma_leak
         hidden_glue = str(it.get("hidden_glue") or it.get("preposition") or "").strip()
-        if wortgruppe_lemma_leak({"lemmas": lemmas, "correct": correct}):
+        if wortgruppe_lemma_leak({"lemmas": lemmas, "correct": correct, "satz": satz}):
             return None
         if hidden_glue and any(_wg_norm(l) == _wg_norm(hidden_glue) for l in lemmas):
             return None

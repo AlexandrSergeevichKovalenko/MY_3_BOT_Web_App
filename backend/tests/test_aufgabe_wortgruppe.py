@@ -80,5 +80,81 @@ class WortgruppeBaseFormTests(unittest.TestCase):
         self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
 
 
+class WortgruppeLemmaCoverageTests(unittest.TestCase):
+    """The Stützwörter are the word list of THE GAP. A word that isn't in the answer
+    is a false lead; a content word of the answer without a Stützwort is guessing."""
+
+    def test_lemma_taken_from_the_visible_sentence_is_rejected(self) -> None:
+        # The item served in prod: "Arbeiter" is already printed next to the gap,
+        # so offering it as a Stützwort invites the learner to type it twice.
+        payload = {
+            "satz": "Es ist kaum vorstellbar, _____ die Arbeiter damals arbeiten mussten.",
+            "correct": "unter welchen Bedingungen",
+            "lemmas": ["Bedingungen", "Arbeiter"],
+        }
+        self.assertIn("Arbeiter", wortgruppe_lemma_leak(payload))
+        self.assertIn("предложении", wortgruppe_lemma_leak(payload))
+        self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
+        # Same item with the stray word dropped is fine.
+        payload["lemmas"] = ["Bedingung"]
+        self.assertEqual(wortgruppe_lemma_leak(payload), "")
+
+    def test_lemma_absent_from_the_answer_is_rejected(self) -> None:
+        payload = {
+            "satz": "_____ wurde der Antrag genehmigt.",
+            "correct": "Nach sorgfältiger Prüfung aller Unterlagen",
+            "lemmas": ["sorgfältig", "Prüfung", "Unterlage", "Behörde"],
+        }
+        self.assertIn("Behörde", wortgruppe_lemma_leak(payload))
+        self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
+
+    def test_content_word_without_a_lemma_is_rejected(self) -> None:
+        payload = {
+            "satz": "Der Erfolg hängt oft davon ab, _____ und energisch zu handeln.",
+            "correct": "in einer Situation schnell eine Entscheidung zu treffen",
+            "lemmas": ["Situation", "schnell", "Entscheidung"],
+        }
+        self.assertIn("treffen", wortgruppe_lemma_leak(payload))
+        self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
+
+    def test_hidden_glue_needs_no_lemma(self) -> None:
+        # Preposition / conjunction / article / "zu" / auxiliary are what the learner
+        # has to find — they must NOT be counted as uncovered content words.
+        for payload in (
+            {"satz": "_____ muss die Politik schnell handeln.",
+             "correct": "angesichts der neuesten Entwicklungen",
+             "lemmas": ["neu", "Entwicklung"]},
+            {"satz": "_____ erzielt haben, bleiben Fragen ungeklärt.",
+             "correct": "obwohl die Forscher viele Fortschritte",
+             "lemmas": ["Forscher", "viel", "Fortschritt"]},
+            {"satz": "Die Firma passte sich an, _____ verändert hatten.",
+             "correct": "nachdem sich die Marktbedingungen drastisch",
+             "lemmas": ["Marktbedingung", "drastisch"]},
+            {"satz": "Er war überrascht, _____ auf Zustimmung stieß.",
+             "correct": "dass sein Vorschlag",
+             "lemmas": ["Vorschlag"]},
+            {"satz": "Sie hat sich intensiv _____ beschäftigt.",
+             "correct": "mit den möglichen Folgen der Maßnahme",
+             "lemmas": ["möglich", "Folge", "Maßnahme"]},
+        ):
+            with self.subTest(payload["correct"]):
+                self.assertEqual(wortgruppe_lemma_leak(payload), "")
+                self.assertFalse(is_degenerate_aufgabe("wortgruppe", payload))
+
+    def test_plural_and_umlaut_forms_still_count_as_covered(self) -> None:
+        # "Kraft" → "Kräften", "steigen" → "steigenden": inflection changes the end
+        # of the word (and may add an umlaut) — the Stützwort is still the same word.
+        for payload in (
+            {"satz": "_____ konnte das Projekt gerettet werden.",
+             "correct": "dank den vereinten Kräften aller Beteiligten",
+             "lemmas": ["vereint", "Kraft", "Beteiligte"]},
+            {"satz": "_____ müssen Familien sparen.",
+             "correct": "wegen der steigenden Lebenshaltungskosten",
+             "lemmas": ["steigen", "Lebenshaltungskosten"]},
+        ):
+            with self.subTest(payload["correct"]):
+                self.assertEqual(wortgruppe_lemma_leak(payload), "")
+
+
 if __name__ == "__main__":
     unittest.main()

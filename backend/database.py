@@ -1961,12 +1961,17 @@ def normalize_error_payload(payload) -> list:
     return out
 
 
-# ─── Wortgruppe: the shown words must be BASE forms ──────────────────────────
+# ─── Wortgruppe: the shown words must be BASE forms OF THE ANSWER ────────────
 # The whole exercise is "put the given words into the right case, gender, ending
 # and article yourself". So a Stützwort shown WITH its ending ("langjährigen",
-# "ihrer", "im") hands the learner the very answer the task is about. These are the
-# deterministic checks; the LLM verifier (check_wortgruppe_batch, rule (c)) covers
-# what needs morphology. ONE rule, used by the build-time gate in
+# "ihrer", "im") hands the learner the very answer the task is about. And a
+# Stützwort that is NOT part of the answer at all — worst of all one already
+# PRINTED in the sentence ("Arbeiter" next to a gap wanting "unter welchen
+# Bedingungen") — is a false lead: the learner tries to fit a word that has no
+# place in the gap. Both directions must hold: every shown word belongs to the
+# answer, and every content word of the answer is shown. These are the
+# deterministic checks; the LLM verifier (check_wortgruppe_batch, rules (c)+(d))
+# covers what needs morphology. ONE rule, used by the build-time gate in
 # bot_3._aufgabe_payload_from_item AND by is_degenerate_aufgabe — so items that
 # predate the rule are retired at serve time / by the nightly purge instead of
 # being served with the answer written on them.
@@ -1985,6 +1990,12 @@ _WG_FUNCTION_WORDS = {
     "im", "am", "beim", "vom", "zum", "zur", "ins", "ans", "aufs", "fürs", "übers",
     "seit", "während", "dank", "statt", "anstatt", "gemäß", "laut", "bis", "als",
     "wenn", "weil", "damit", "sondern", "denn", "zwar", "wie", "es",
+    # secondary prepositions — the C1 favourites this format keeps hiding in the gap
+    "aufgrund", "auf grund", "infolge", "angesichts", "hinsichtlich", "bezüglich",
+    "mittels", "anhand", "seitens", "zwecks", "binnen", "innerhalb", "außerhalb",
+    "oberhalb", "unterhalb", "entlang", "gegenüber", "neben", "hinter", "samt",
+    "außer", "entgegen", "entsprechend", "zufolge", "anlässlich", "mangels",
+    "ungeachtet", "zugunsten", "zulasten", "jenseits", "diesseits", "ab",
     "welche", "welchen", "welcher", "welches", "welchem",
     "dieser", "diese", "dieses", "diesen", "diesem", "jener", "jene", "jenes",
 }
@@ -1993,9 +2004,39 @@ _WG_FUNCTION_WORDS = {
 # base form ("ihr"), never declined ("ihrer" — that IS the case ending to supply).
 _WG_POSSESSIVE_STEMS = {"mein", "dein", "sein", "ihr", "unser", "euer", "eur", "kein"}
 
+# Words INSIDE the answer that need no Stützwort: the learner is supposed to find
+# them (that IS the hidden glue), or they carry no lexical meaning to hint at —
+# subordinating conjunctions, quantifiers, auxiliaries. Everything else in the
+# answer is a content word and MUST have a Stützwort. Kept separate from
+# _WG_FUNCTION_WORDS because "sein"/"ihr" are legal Stützwörter (base-form
+# possessives) but never need one when they appear in the answer.
+_WG_ANSWER_GLUE = _WG_FUNCTION_WORDS | _WG_POSSESSIVE_STEMS | {
+    "obwohl", "nachdem", "indem", "bevor", "seitdem", "sobald", "falls", "sofern",
+    "sodass", "soweit", "obgleich", "wenngleich", "je", "desto", "umso", "da",
+    "all", "alle", "aller", "allen", "alles", "allem", "beide", "beiden",
+    "meine", "deine", "seine", "ihre", "unsere", "eure", "keine",
+    "meinen", "deinen", "seinen", "ihren", "unseren", "keinen",
+    "meines", "deines", "seines", "ihres", "unseres", "keines",
+    "meiner", "deiner", "seiner", "ihrer", "unserer", "keiner",
+    "meinem", "deinem", "seinem", "ihrem", "unserem", "keinem",
+    "ist", "sind", "war", "waren", "gewesen", "hat", "habe", "haben", "hatte",
+    "hatten", "wird", "werden", "wurde", "wurden", "worden", "würde", "wäre",
+    "hätte", "sei", "seien",
+}
+
 
 def _wg_norm(value) -> str:
     return " ".join(str(value or "").split()).strip().casefold()
+
+
+def _wg_fold(word: str) -> str:
+    """Strip punctuation, casefold, flatten umlauts — so a base form and its
+    inflected form share a prefix even when the plural adds one
+    ("Kraft" → "krafte" for "Kräften")."""
+    out = str(word or "").strip(".,;:!?…\"'»«()[]–—").casefold()
+    for a, b in (("ä", "a"), ("ö", "o"), ("ü", "u"), ("ß", "ss")):
+        out = out.replace(a, b)
+    return out
 
 
 def _wg_stem(word: str) -> str:
@@ -2006,14 +2047,40 @@ def _wg_stem(word: str) -> str:
     return word
 
 
+def _wg_tokens(text) -> list[str]:
+    """Words of a sentence/phrase, gap markers and punctuation removed."""
+    raw = str(text or "").replace("_", " ").split()
+    return [t for t in (w.strip(".,;:!?…\"'»«()[]–—") for w in raw) if t]
+
+
+def _wg_same_word(lemma: str, token: str) -> bool:
+    """True when `token` is (a form of) `lemma`. German inflection changes the
+    END of a word, so a shared stem decides: "Vorteil"↔"Vorteilen",
+    "steigend"↔"steigenden", "neu"↔"neuesten"."""
+    a, b = _wg_fold(lemma), _wg_fold(token)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shared = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        shared += 1
+    return shared >= 3 and shared >= min(len(a), len(b)) - 3
+
+
 def wortgruppe_lemma_leak(payload) -> str:
-    """Empty string when every shown Stützwort is a base form; otherwise a short
-    Russian reason. Catches the three leaks seen in the pool:
+    """Empty string when the shown Stützwörter are base forms AND match the answer
+    exactly; otherwise a short Russian reason. Catches every defect seen in the pool:
       • an article word / contraction shown as a Stützwort ("im");
       • a declined possessive ("ihrer" instead of "ihr");
       • an attributive adjective/participle carrying its ending — either verbatim
         ("steigenden" before "Nachfrage") or in another declined form
-        ("alternde" shown, "alternden" wanted).
+        ("alternde" shown, "alternden" wanted);
+      • a Stützwort that is NOT in the answer — a false lead, doubly so when it is
+        already printed in the sentence ("Arbeiter" for "unter welchen Bedingungen");
+      • a content word of the answer with NO Stützwort — unguessable.
     A correctly built item ("steigend", "alternd") never matches: the check fires
     only when the Stützwort ITSELF still carries an ending."""
     payload = payload if isinstance(payload, dict) else {}
@@ -2048,6 +2115,32 @@ def wortgruppe_lemma_leak(payload) -> str:
             stem = _wg_stem(norm)
             if stem != norm and stem == cur_stem:
                 return f"подсказка с окончанием: «{lemma}» (в ответе «{cur}»)"
+
+    # Both directions must hold between the shown words and the answer.
+    answer_tokens = _wg_tokens(payload.get("correct"))
+    if not answer_tokens:
+        return "нет ответа"
+    # (1) A shown word that is nowhere in the answer sends the learner to write a
+    #     word that has no slot. The nastiest case is a word taken from the VISIBLE
+    #     part of the sentence — it reads as "insert me" while it is already there.
+    sentence_tokens = [t for t in _wg_tokens(payload.get("satz"))
+                       if not any(_wg_same_word(t, a) for a in answer_tokens)]
+    for lemma in lemmas:
+        for word in lemma.split():
+            if _wg_norm(word) in _WG_ANSWER_GLUE:
+                continue
+            if any(_wg_same_word(word, tok) for tok in answer_tokens):
+                continue
+            if any(_wg_same_word(word, tok) for tok in sentence_tokens):
+                return f"подсказка «{lemma}» уже стоит в предложении, а не в пропуске"
+            return f"подсказка «{lemma}» не встречается в ответе"
+    # (2) A content word of the answer with no Stützwort is pure guessing: the
+    #     learner has to invent the exact noun/verb we happen to expect.
+    for tok in answer_tokens:
+        if _wg_norm(tok) in _WG_ANSWER_GLUE or len(_wg_fold(tok)) < 3:
+            continue
+        if not any(_wg_same_word(word, tok) for lemma in lemmas for word in lemma.split()):
+            return f"в ответе слово «{tok}», для которого нет подсказки"
     return ""
 
 
