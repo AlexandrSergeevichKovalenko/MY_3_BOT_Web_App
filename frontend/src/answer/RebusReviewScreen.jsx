@@ -199,10 +199,19 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
                 </div>
               </div>
               <div className="rbrev-row-actions">
+                {/* Картинка общая для всех карточек со словом: сколько заденет — на кнопке. */}
                 {c.halves.filter((h) => h.drawn).map((h) => (
                   <button key={h.word} className="ans-btn-ghost rbrev-reject" disabled={busy}
-                    onClick={() => actOnCard(c, 'redraw', { word: h.word, reason: 'wrong_object' })}>
-                    🔁 {h.word}
+                    onClick={() => {
+                      const extra = h.used_in_cards > 1
+                        ? `\n\nЭта картинка стоит в ${h.used_in_cards} карточках — все они уйдут ждать новую.`
+                        : '';
+                      // eslint-disable-next-line no-alert
+                      if (window.confirm(`Перерисовать «${h.word}»?${extra}`)) {
+                        actOnCard(c, 'redraw', { word: h.word, reason: 'wrong_object' });
+                      }
+                    }}>
+                    🔁 {h.word}{h.used_in_cards > 1 ? ` (в ${h.used_in_cards})` : ''}
                   </button>
                 ))}
                 {tab === 'waiting' && c.halves.some((h) => !h.drawn) ? (

@@ -45640,6 +45640,7 @@ def list_rebus_cards(mode: str = "ready", limit: int = 60) -> list[dict]:
                     if w:
                         words.add(w)
             images: dict[str, dict] = {}
+            usage: dict[str, int] = {}
             if words:
                 cursor.execute(
                     "SELECT word, image_object_key, generation_status, review_status "
@@ -45649,6 +45650,19 @@ def list_rebus_cards(mode: str = "ready", limit: int = 60) -> list[dict]:
                 for w, key, gen, rev in cursor.fetchall() or []:
                     images[str(w)] = {"key": key, "gen": str(gen or ""),
                                       "review": str(rev or "approved")}
+                # Картинка принадлежит СЛОВУ: перерисовка задевает все карточки с ним.
+                # Число должно стоять на кнопке, иначе одним нажатием неожиданно
+                # исчезает пара заданий.
+                cursor.execute(
+                    """
+                    SELECT p ->> 'word', COUNT(*)
+                    FROM bt_3_rebus_bank b, jsonb_array_elements(b.parts_json) p
+                    WHERE b.retired = FALSE AND p ->> 'word' = ANY(%s)
+                    GROUP BY 1
+                    """,
+                    (sorted(words),),
+                )
+                usage = {str(w): int(c) for w, c in cursor.fetchall() or []}
     out = []
     for compound_id, compound, meaning_ru, parts, card_key, send_count, last_sent in rows:
         halves = []
@@ -45662,6 +45676,7 @@ def list_rebus_cards(mode: str = "ready", limit: int = 60) -> list[dict]:
                 "image_url": _url(info.get("key")) if drawn else "",
                 "drawn": drawn,
                 "approved": info.get("review") == "approved",
+                "used_in_cards": int(usage.get(word, 1)),
             })
         out.append({
             "compound_id": str(compound_id),
