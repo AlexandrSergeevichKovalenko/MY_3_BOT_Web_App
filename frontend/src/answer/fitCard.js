@@ -60,6 +60,49 @@ function supportsZoom() {
   try { return !!(window.CSS && CSS.supports && CSS.supports('zoom', '0.9')); } catch (_e) { return false; }
 }
 
+// ── ГЛАВНОЕ МЕСТО ЭТОГО ФАЙЛА: КАК МЕРИТЬ ЗУМЛЕННУЮ КАРТОЧКУ ────────────────────────
+//
+// `getBoundingClientRect()` у элемента с `zoom` отдаёт РАЗНОЕ в разных движках:
+//   • Chrome — размер НА ЭКРАНЕ (масштаб уже применён);
+//   • Safari, а значит и Telegram на iPhone, — размер во ВНУТРЕННИХ пикселях карточки,
+//     то есть БЕЗ масштаба. Замер: блок 320 px при `zoom: 0.72` Safari отдаёт как 436.
+//
+// Весь расчёт ниже сравнивает высоту карточки с высотой ЭКРАНА. На айфоне это сравнение
+// шло между внутренними пикселями и экранными, поэтому проверка «влезло?» после ужатия
+// почти никогда не могла ответить «да»: режим панели (шаг 4) отменял сам себя и карточка
+// проваливалась в аварийную ветку — 0.72 и серые полосы сверху и снизу. А если масштаб
+// случайно выходил ровно 1, деления не было и та же карточка вставала красиво. Отсюда и
+// «одна карточка нормально, соседняя сплюснута» на одном и том же коде.
+//
+// Поэтому величину движка определяем пробой ОДИН РАЗ и дальше меряем одинаково везде.
+let rectIncludesZoom = true;
+function probeRectZoom() {
+  try {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;left:-9999px;top:0;width:100px;height:100px;zoom:0.5;';
+    document.body.appendChild(probe);
+    const h = probe.getBoundingClientRect().height;
+    probe.remove();
+    if (h > 0) rectIncludesZoom = h < 75;   // 50 → масштаб учтён, 100 → нет
+  } catch (_e) { /* не вышло — оставляем поведение Chrome */ }
+}
+
+const zoomOf = (card) => {
+  const z = parseFloat(card.style.zoom);
+  return Number.isFinite(z) && z > 0 ? z : 1;
+};
+// Высота карточки НА ЭКРАНЕ — в тех же пикселях, что и высота экрана.
+function visH(card) {
+  const h = card.getBoundingClientRect().height;
+  return rectIncludesZoom ? h : h * zoomOf(card);
+}
+// Высота элемента ВНУТРИ карточки в её собственных пикселях — в них задаются style-свойства
+// (`max-height`, `min-height`) зумленных элементов.
+function ownH(el, k) {
+  const h = el.getBoundingClientRect().height;
+  return rectIncludesZoom ? h / (k || 1) : h;
+}
+
 // Высота, которой мы реально располагаем. ОДИН ИСТОЧНИК — БРАУЗЕР.
 //
 // `visualViewport.height` — то же число, что стоит за единицей `dvh`, и именно по нему
@@ -196,7 +239,7 @@ function fitOne(root) {
 
   // Ничего не изменилось с прошлого расчёта — не трогаем (иначе лишние reflow).
   const availNow = availHeight(root);
-  const visNow = card.getBoundingClientRect().height;
+  const visNow = visH(card);
   if (st.vis && Math.abs(visNow - st.vis) < EPS && Math.abs(availNow - st.avail) < EPS) return;
   // Предохранитель от «подрастания»: на одно и то же содержимое хватает пары расчётов.
   // Дальше замолкаем до следующей смены контента (её ловит MutationObserver) или размера
@@ -226,7 +269,7 @@ function fitOne(root) {
   resetCard(root, card, st);
   root.style.minHeight = `${Math.round(viewportHeight())}px`;
   let avail = availHeight(root);
-  let h = card.getBoundingClientRect().height;
+  let h = visH(card);
   if (!(avail > 160) || !(h > 0)) return;
 
   // Растягивание карточки на всю высоту (fill/rescue ниже) — ТОЛЬКО планшет. На телефоне
@@ -240,7 +283,7 @@ function fitOne(root) {
   const remember = (k) => {
     st.k = k;
     st.avail = availHeight(root);
-    st.vis = card.getBoundingClientRect().height;
+    st.vis = visH(card);
   };
 
   // Отдать внутреннему прокручиваемому блоку всю оставшуюся высоту экрана. Цикл — внутри
@@ -258,20 +301,18 @@ function fitOne(root) {
     st.stretched = sc;
     let prev = -1;
     for (let i = 0; i < 8; i += 1) {
-      const cardH = card.getBoundingClientRect().height;
+      const cardH = visH(card);
       const slack = avail - cardH;
       if (slack < 6) break;
       if (prev > 0 && cardH - prev < 2) break;            // перестал расти — упёрся в контент
       if (sc.scrollHeight - sc.clientHeight < 2) break;   // прокручивать уже нечего
       prev = cardH;
-      const cur = sc.getBoundingClientRect().height;
-      sc.style.maxHeight = `${Math.round((cur + slack - 4) / k)}px`;
+      sc.style.maxHeight = `${Math.round(ownH(sc, k) + (slack - 4) / k)}px`;
     }
     for (let i = 0; i < 2; i += 1) {
-      const over = card.getBoundingClientRect().height - avail;
+      const over = visH(card) - avail;
       if (over <= 0) break;
-      const cur = sc.getBoundingClientRect().height;
-      sc.style.maxHeight = `${Math.round((cur - over - 3) / k)}px`;
+      sc.style.maxHeight = `${Math.round(ownH(sc, k) - (over + 3) / k)}px`;
     }
   };
 
@@ -285,13 +326,18 @@ function fitOne(root) {
   // на телефоне творил не добор высоты, а подъём МАСШТАБА после финальной проверки «страница
   // не прокручивается» — он шёл мимо неё и выносил кнопки под сгиб. Здесь масштаб уже
   // утверждён и остаётся как есть, поэтому под сгиб уйти нечему.
+  //
+  // Проверка тут ОДНА и она по факту: осталось ли на экране пустое место. Раньше первой
+  // строкой стоял выход, если карточка попала в ветку с прокруткой, — и именно он оставлял
+  // на экране сплюснутую карточку с серыми полосами: ужали до предела, места осталось
+  // навалом, а дотянуть запретили сами себе. Пустое место — всегда повод растянуть, из какой
+  // бы ветки мы сюда ни пришли; а если места нет, ничего и не произойдёт (slack < 4).
   const fill = (k) => {
-    if (root.classList.contains('is-scroll')) return;   // и так не влезло — растягивать нечего
-    const cardH = card.getBoundingClientRect().height;
-    const slack = availHeight(root) - cardH;
+    const availNow = availHeight(root);
+    const slack = availNow - visH(card);
     if (slack < 4) return;
     card.classList.add('is-filled');
-    card.style.minHeight = `${Math.round((cardH + slack - 2) / k)}px`;
+    card.style.minHeight = `${Math.round((availNow - 2) / k)}px`;
   };
 
   // ГЛАВНАЯ проверка, важнее любой ветки выше: если после всех расчётов на экране осталось
@@ -308,7 +354,7 @@ function fitOne(root) {
     let cur = k;
     if (!wide) return cur;
     if (card.classList.contains('is-panelled')) return cur;   // там высота задана точно
-    if (availHeight(root) - card.getBoundingClientRect().height < 12) return cur;
+    if (availHeight(root) - visH(card) < 12) return cur;
     root.classList.remove('is-scroll');
     if (cur < WIDE_MAX_ZOOM - 0.002) cur = fitsAt(WIDE_MAX_ZOOM) ? WIDE_MAX_ZOOM : bisect(cur, WIDE_MAX_ZOOM);
     return cur;   // высоту добирает fill() в settle — общий путь для телефона и планшета
@@ -326,12 +372,12 @@ function fitOne(root) {
       // вечное «не влезает».
       const over = Math.round(root.getBoundingClientRect().height - viewportHeight());
       if (over <= 1) break;
-      const vis = card.getBoundingClientRect().height;
+      const vis = visH(card);
       if (!(vis > 0)) break;
       if (st.stretched) {
         // сначала отдаём лишнее из растянутого блока — это не стоит читаемости
-        const cur = st.stretched.getBoundingClientRect().height;
-        if (cur - over > 80) { st.stretched.style.maxHeight = `${Math.round((cur - over - 2) / k)}px`; continue; }
+        const cur = ownH(st.stretched, k);
+        if (cur * k - over > 80) { st.stretched.style.maxHeight = `${Math.round(cur - (over + 2) / k)}px`; continue; }
       }
       const nk = Math.max(MIN_ZOOM, k * Math.max(0.5, (vis - over - 2) / vis));
       if (nk >= k - 0.002) break;
@@ -347,7 +393,7 @@ function fitOne(root) {
   };
 
   // Помещается ли карточка при масштабе kk (замер, а не расчёт: текст переносится иначе).
-  const fitsAt = (kk) => { setZoom(card, kk); return card.getBoundingClientRect().height <= avail; };
+  const fitsAt = (kk) => { setZoom(card, kk); return visH(card) <= avail; };
   // Максимальный масштаб, при котором ещё помещается: lo помещается, hi — уже нет.
   const bisect = (lo, hi) => {
     let best = lo;
@@ -366,7 +412,7 @@ function fitOne(root) {
   // по определению ниже экрана.
   const grow = () => {
     stretch(1);
-    const left = avail - card.getBoundingClientRect().height;
+    const left = avail - visH(card);
     if (left >= 10 && (wide || h >= avail * 0.6)) {
       settle(fitsAt(zoomCeil) ? zoomCeil : bisect(1, zoomCeil));
       return;
@@ -379,7 +425,7 @@ function fitOne(root) {
   // 2. Отдаём отступы — это бесплатно.
   root.classList.add('is-tight');
   avail = availHeight(root);
-  h = card.getBoundingClientRect().height;
+  h = visH(card);
   if (h <= avail) { grow(); return; }
 
   // 3. Ужимаем карточку целиком — пока это не бьёт по читаемости. Масштаб подбираем
@@ -387,7 +433,7 @@ function fitOne(root) {
   const k0 = (avail - 2) / h;
   if (k0 >= MILD_ZOOM) {
     const k = fitsAt(k0) ? bisect(k0, Math.min(1, k0 * 1.35)) : bisect(Math.max(MIN_ZOOM, k0 * 0.85), k0);
-    if (card.getBoundingClientRect().height <= avail) { settle(k); return; }
+    if (visH(card) <= avail) { settle(k); return; }
   }
 
   // 4. Ужимать сильнее нельзя — текст станет нечитаемым. Тогда экран собирается иначе:
@@ -395,6 +441,10 @@ function fitOne(root) {
   //    получает свою прокрутку. Заголовок, счёт и кнопка при этом видны всегда.
   const panel = pickPanel(card);
   if (panel) {
+    // Меряем от НАТУРАЛЬНОЙ величины: шаг 3 мог оставить свой масштаб, а `h` снята без него —
+    // иначе «всё, кроме разбора» считалось по двум разным меркам и масштаб выходил случайный.
+    setZoom(card, 1);
+    h = visH(card);
     const rest = h - panel.getBoundingClientRect().height; // всё, кроме длинного блока
     // Если внутри блока живёт кнопка действия — она прилипнет к его низу, значит на текст
     // должно остаться место СВЕРХ её высоты, иначе от разбора видно две строки.
@@ -405,20 +455,23 @@ function fitOne(root) {
     card.classList.add('is-panelled');
     panel.classList.add('is-fit-panel');
     card.style.maxHeight = `${Math.round((avail - 2) / kp)}px`; // px внутри карточки — уже в её масштабе; −2 на рамку
-    if (card.getBoundingClientRect().height <= avail + EPS) { settle(kp); return; }
+    if (visH(card) <= avail + EPS) { settle(kp); return; }
     // не помогло — откатываем к обычной прокрутке
     card.classList.remove('is-panelled');
     panel.classList.remove('is-fit-panel');
     card.style.maxHeight = '';
   }
 
-  // 5. Последний вариант: ужимаем до предела и оставляем прокрутку, но кнопку выхода
-  //    прижимаем к низу экрана — до неё не придётся долистывать.
-  setZoom(card, MIN_ZOOM);
-  root.classList.add('is-scroll');
+  // 5. Последний вариант. Ужимаем НЕ «сразу до упора», а ровно настолько, насколько нужно:
+  //    раньше здесь безусловно ставился MIN_ZOOM, и подобранный выше масштаб выбрасывался —
+  //    карточка, которой хватило бы 0.95, вставала на 0.72 и висела посреди экрана.
+  //    Прокрутку с прижатой к низу кнопкой включаем ТОЛЬКО если и на пределе не влезло.
+  const kLast0 = fitsAt(MIN_ZOOM) ? bisect(MIN_ZOOM, 1) : MIN_ZOOM;
+  setZoom(card, kLast0);
+  if (visH(card) > avail + EPS) root.classList.add('is-scroll');
   // И здесь проверяем по факту: если после ужатия на экране всё-таки осталось место —
   // расчёт выше ошибся, масштаб возвращаем (сюда попадала «скукоженная» карточка).
-  const kLast = rescue(MIN_ZOOM);
+  const kLast = rescue(kLast0);
   fill(kLast);
   remember(kLast);
 }
@@ -494,6 +547,7 @@ export default function installCardAutoFit() {
   if (installed || typeof window === 'undefined' || typeof document === 'undefined') return;
   if (!supportsZoom() || typeof ResizeObserver === 'undefined') return; // без zoom — оставляем как было
   installed = true;
+  probeRectZoom();        // как этот движок меряет зумленный элемент (см. комментарий выше)
   updateBaseFontSize();   // до первой отрисовки: дальше величину меняет только смена экрана
 
   ro = new ResizeObserver(schedule);
