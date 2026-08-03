@@ -2174,34 +2174,107 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
      до нечитаемой длины на 12.9". */
   .ans-card { max-width: min(94vw, 62rem); }
 
-  /* Тренировка синонимов/антонимов: слева слово-якорь, справа варианты и разбор. */
-  .ans-card:has(> .tr-options) {
+  /* ══ КАРКАС ПЛАНШЕТНОЙ РАСКЛАДКИ ═══════════════════════════════════════════════════
+     Экран объявляет, КАК он раскладывается на широком экране — атрибутом на карточке
+     (`data-wide="split"`), а свои блоки помечает ролями: что здесь задание, что рабочая
+     область, что разбор, что действие.
+
+         .ans-r-head    шапка (тема, счёт)      .ans-r-work    то, с чем работает пользователь
+         .ans-r-bar     полоса прогресса        .ans-r-note    разбор / обратная связь
+         .ans-r-prompt  само задание            .ans-r-action  кнопка действия
+
+     Дальше раскладку задаёт ЭТОТ файл — один раз на все игры. Новому интерактиву не нужен
+     свой блок CSS: нужны атрибут и роли на блоках. На телефоне этих правил нет вообще,
+     роли там ничего не меняют — остаётся тот же столбик, выверенный по матрице телефонов.
+
+     `is-wide` ставит движок (fitCard.js) по ВИДИМОЙ высоте экрана; медиазапрос снаружи —
+     страховка на первый кадр, до запуска скрипта. Требуем оба сразу: разошлись (шторка
+     Telegram ещё едет) — берём телефонный вид, он верен всегда, просто не так наряден.
+
+     И главное: у карточки с `data-wide` движок НЕ поднимает масштаб (см. `ownLayout` в
+     fitCard.js). Экран занимает раскладка, а не увеличительное стекло. */
+  .ans-root.is-wide > .ans-card[data-wide] > .ans-r-head   { grid-area: head; }
+  .ans-root.is-wide > .ans-card[data-wide] > .ans-r-bar    { grid-area: bar; }
+  .ans-root.is-wide > .ans-card[data-wide] > .ans-r-prompt { grid-area: prompt; }
+  .ans-root.is-wide > .ans-card[data-wide] > .ans-r-work   { grid-area: work; }
+  .ans-root.is-wide > .ans-card[data-wide] > .ans-r-note   { grid-area: note; }
+  .ans-root.is-wide > .ans-card[data-wide] > .ans-r-action { grid-area: action; }
+
+  /* СПЛИТ — «задание и работа рядом». КАК именно рядом, решает форма экрана, а не игра:
+     в АЛЬБОМЕ ширины хватает на две колонки, в ПОРТРЕТЕ — нет.
+
+     Проверено замером: портретный планшет в две колонки даёт ровно ту картинку, из-за
+     которой всё и затевалось — слово и пять коротких вариантов висят двумя тонкими
+     столбиками, а между ними и под ними пусто. Причина не в подгонке: содержимого у
+     такого экрана просто мало для колонки высотой 1100 px. Поэтому в портрете раскладка
+     другая — задание крупно сверху, мишени сеткой под ним. Игре про это знать не нужно:
+     она объявила «сплит», остальное дело каркаса. */
+  .ans-root.is-wide.is-land > .ans-card[data-wide="split"] {
     display: grid;
-    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-    /* Ряд с вариантами тянется (1fr) — иначе содержимое липнет к верху, а нижняя половина
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    /* Рабочий ряд тянется (1fr) — иначе содержимое липнет к верху, а нижняя половина
        карточки стоит пустой: формально экран занят, а выглядит как незаполненный. */
-    grid-template-rows: auto auto 1fr auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
     grid-template-areas:
-      "top     top"
+      "head    head"
       "bar     bar"
-      "anchor  options"
-      "anchor  feedback";
-    column-gap: 2rem;
+      "prompt  work"
+      "note    note"
+      "action  action";
+    column-gap: 2.5rem;
   }
-  .ans-card:has(> .tr-options) > .tr-top      { grid-area: top; }
-  .ans-card:has(> .tr-options) > .tr-bar      { grid-area: bar; }
-  /* container-type: кегль слова считается от ШИРИНЫ СВОЕЙ КОЛОНКИ (cqw), а не от ширины
+  /* container-type: кегль задания считается от ШИРИНЫ СВОЕЙ КОЛОНКИ (cqw), а не от ширины
      экрана. vw здесь врал: карточка масштабируется zoom'ом, а vw к нему не привязан, и на
      одних планшетах слово вылезало за колонку. */
-  .ans-card:has(> .tr-options) > .tr-anchor   { grid-area: anchor; align-self: center; container-type: inline-size; }
-  .ans-card:has(> .tr-options) > .tr-options  { grid-area: options; align-self: stretch; justify-content: center; }
-  .ans-card:has(> .tr-options) > .tr-feedback { grid-area: feedback; }
-  /* Слову-якорю досталась своя колонка — значит и кегль по ней, а не по телефонному.
-     Кегль считаем от ШИРИНЫ КОЛОНКИ (она ~45% карточки), иначе длинное немецкое слово
-     вылезает за край: «Zustimmung» обрезалось ровно на границе колонки. */
-  .tr-anchor-word { font-size: clamp(1.625rem, 8cqw, 3rem); overflow-wrap: break-word; }
-  .tr-anchor-hint { font-size: 1.0625rem; }
-  .tr-anchor-ask  { font-size: 1rem; }
+  .ans-root.is-wide.is-land > .ans-card[data-wide="split"] > .ans-r-prompt {
+    align-self: center; container-type: inline-size;
+  }
+  /* Остаток высоты уходит в РАВНЫЕ ПРОМЕЖУТКИ между мишенями, а не в сами мишени и не в
+     пустую полосу под ними. Растянуть кнопки во всю колонку — это ровно те цветные плиты
+     в пол-экрана, из-за которых экран выглядит раздутым; сдвинуть их в середину — это
+     мёртвая полоса снизу. Поэтому мишень остаётся мишенью (потолок ниже), а лишнее
+     разбирают промежутки. */
+  .ans-root.is-wide.is-land > .ans-card[data-wide="split"] > .ans-r-work {
+    align-self: stretch; justify-content: space-between; gap: 0.75rem;
+  }
+  /* Потолок в rem: база на планшете крупнее, значит на 12.9" мишени и правда больше,
+     чем на mini, а не одинаковые. */
+  .ans-root.is-wide.is-land > .ans-card[data-wide="split"] > .ans-r-work > * {
+    flex: 1 1 auto; min-height: 3.5rem; max-height: 6rem;
+  }
+
+  /* ПОРТРЕТ: задание крупно сверху, мишени сеткой в два столбца под ним. Ряд задания
+     тянется (1fr) — он и забирает высоту, которой на планшете с избытком. */
+  .ans-root.is-wide:not(.is-land) > .ans-card[data-wide="split"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas: "head" "bar" "prompt" "work" "note" "action";
+    row-gap: 1.25rem;
+  }
+  .ans-root.is-wide:not(.is-land) > .ans-card[data-wide="split"] > .ans-r-prompt {
+    align-self: center; container-type: inline-size;
+  }
+  .ans-root.is-wide:not(.is-land) > .ans-card[data-wide="split"] > .ans-r-work {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.875rem;
+  }
+  .ans-root.is-wide:not(.is-land) > .ans-card[data-wide="split"] > .ans-r-work > * {
+    min-height: 4.5rem; max-height: 7rem;
+  }
+  /* Нечётный последний вариант не оставляет дыру рядом с собой — тянется на оба столбца. */
+  .ans-root.is-wide:not(.is-land) > .ans-card[data-wide="split"] > .ans-r-work > *:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  /* Заданию досталась своя колонка — значит и кегль по ней, а не по телефонному.
+     Считаем от ШИРИНЫ КОЛОНКИ, иначе длинное немецкое слово вылезает за край:
+     «Zustimmung» обрезалось ровно на границе колонки. */
+  .tr-anchor-word { font-size: clamp(2.25rem, 19cqw, 5rem); overflow-wrap: break-word; }
+  .tr-anchor-hint { font-size: 1.25rem; }
+  .tr-anchor-ask  { font-size: 1.0625rem; }
+  .ans-root.is-wide > .ans-card[data-wide="split"] .tr-opt { font-size: 1.125rem; }
 
   /* Семья «слово + крупные кнопки» (артикли, прилагательные, Wo-Fragen). Двух колонок тут
      нет: игра про скорость, слово и кнопки должны быть под глазами и под пальцем. Поэтому

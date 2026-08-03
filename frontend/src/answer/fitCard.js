@@ -131,6 +131,35 @@ function isWide(root) {
   return root.getBoundingClientRect().width >= 700 && viewportHeight() >= 560;
 }
 
+// РАЗМЕР ЭКРАНА ВЁРСТКА УЗНАЁТ ОТ ДВИЖКА, А НЕ ИЗ СВОЕГО МЕДИАЗАПРОСА.
+//
+// Медиазапрос меряет РАЗМЕТОЧНУЮ область, движок — ВИДИМУЮ (visualViewport, см. выше). В
+// шторке Telegram и при выехавшей клавиатуре это разные числа, и тогда вёрстка встаёт
+// планшетной там, где движок считает экран телефонным (или наоборот): один растягивает
+// раскладку в две колонки, другой ужимает её зумом под несуществующую высоту.
+//
+// Поэтому «широкий экран» объявляет ОДНО место — вот это. Классы `is-wide` / `is-land` на
+// корне интерактива и величины `--ans-vh` / `--ans-vw` — то, на что опирается CSS. Сам
+// медиазапрос остаётся страховкой на первый кадр, до запуска скрипта.
+function publishScreen() {
+  // Клавиатура на экране — величины сейчас недостоверны (та же причина, что и у базового
+  // кегля ниже). Пересчитать раскладку по урезанной высоте значит на глазах у пользователя
+  // сложить две колонки в одну и разложить обратно, когда клавиатура уйдёт.
+  if (typing || askTyping || settling) return;
+  const el = document.documentElement;
+  const h = viewportHeight();
+  const w = el.clientWidth || 0;
+  if (!(h > 200) || !(w > 0)) return;
+  el.style.setProperty('--ans-vh', `${Math.round(h)}px`);
+  el.style.setProperty('--ans-vw', `${Math.round(w)}px`);
+  try {
+    document.querySelectorAll('.ans-root').forEach((root) => {
+      root.classList.toggle('is-wide', isWide(root));
+      root.classList.toggle('is-land', w >= h);
+    });
+  } catch (_e) { /* noop */ }
+}
+
 function availHeight(root) {
   const cs = getComputedStyle(root);
   // 3 px запаса: округления в разных браузерах не должны давать лишний пиксель прокрутки
@@ -286,6 +315,19 @@ function fitOne(root) {
   const wide = isWide(root);
   const zoomCeil = wide ? WIDE_MAX_ZOOM : MAX_ZOOM;
 
+  // ЭКРАН СО СВОЕЙ ПЛАНШЕТНОЙ РАСКЛАДКОЙ (`data-wide` на карточке, см. answer.css) МЕСТО
+  // ЗАНИМАЕТ РАСКЛАДКОЙ, А НЕ УВЕЛИЧЕНИЕМ.
+  //
+  // Замер по матрице планшетов: без этого движок доводил карточку до потолка 1.35 —
+  // формально «занято 89% экрана», а на деле телефонная колонка под увеличительным стеклом.
+  // У артиклей три кнопки превращались в цветные плиты в пол-экрана, у тренажёра слово и
+  // варианты повисали посреди 300 px пустоты. Ширину экрана этим не занять — её занимает
+  // сетка, а увеличение только раздувает то, что и так не влезает по смыслу.
+  //
+  // Поэтому у таких карточек зум остаётся ТОЛЬКО на уменьшение: не влезло — ужимаем как
+  // везде; влезло — размер держит вёрстка, а остаток высоты добирает fill().
+  const ownLayout = wide && card.hasAttribute('data-wide');
+
   const remember = (k) => {
     st.k = k;
     st.avail = availHeight(root);
@@ -358,7 +400,7 @@ function fitOne(root) {
   // и не влезающие кнопки, и дёрганье карточки между расчётами.
   const rescue = (k) => {
     let cur = k;
-    if (!wide) return cur;
+    if (!wide || ownLayout) return cur;   // у своей раскладки пустоту добирает сетка, не масштаб
     if (card.classList.contains('is-panelled')) return cur;   // там высота задана точно
     if (availHeight(root) - visH() < 12) return cur;
     root.classList.remove('is-scroll');
@@ -419,7 +461,7 @@ function fitOne(root) {
   const grow = () => {
     stretch(1);
     const left = avail - visH();
-    if (left >= 10 && (wide || h >= avail * 0.6)) {
+    if (left >= 10 && !ownLayout && (wide || h >= avail * 0.6)) {
       settle(fitsAt(zoomCeil) ? zoomCeil : bisect(1, zoomCeil));
       return;
     }
@@ -517,6 +559,7 @@ function run() {
   if (timerId) { clearTimeout(timerId); timerId = 0; }
   // Клавиатура ещё едет — считать нельзя: высота экрана в этот момент промежуточная.
   if (settling) return;
+  publishScreen();   // сперва вёрстка узнаёт размер экрана, потом считаем по уже верной раскладке
   try { document.querySelectorAll('.ans-root').forEach(fitOne); } catch (_e) { /* noop */ }
   // Пока печатают, карточка намеренно отдана в натуральную величину — не трогаем.
   if (typing || askTyping) return;
@@ -570,6 +613,7 @@ function updateBaseFontSize() {
 // Внешние обстоятельства поменялись (поворот, шторка Telegram) — забываем кеш и считаем заново.
 function freshStart() {
   updateBaseFontSize();
+  publishScreen();
   try {
     document.querySelectorAll('.ans-root > .ans-card').forEach((card) => {
       const st = stateOf(card);

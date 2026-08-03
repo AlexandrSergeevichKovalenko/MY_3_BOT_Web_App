@@ -143,12 +143,14 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
       });
   }, [api, saved, haptic]);
 
-  const shell = (body, cls = '') => (
+  // `wide` — как экран раскладывается на планшете (см. «каркас планшетной раскладки» в
+  // answer.css). Телефона это не касается: там правил для ролей нет.
+  const shell = (body, cls = '', wide = null) => (
     // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
     // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
     // отдельно и само встаёт над ней.
     <div className="ans-root ans-root--keepkbd">
-      <div className={`ans-card ${cls}`}>{body}</div>
+      <div className={`ans-card ${cls}`} data-wide={wide || undefined}>{body}</div>
       <Toast state={toast.state} onClose={toast.hide} />
     </div>
   );
@@ -186,19 +188,19 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
     const ex = exampleByWord.get(normCore(correctDe));
     return shell(
       <>
-        <div className="tr-top">
+        <div className="tr-top ans-r-head">
           <span className="tr-top-rel">{rel.emoji} {rel.ask}</span>
           <span className="tr-top-prog">{ri + 1} / {total}</span>
         </div>
-        <div className="tr-bar"><div className="tr-bar-fill" style={{ width: `${((ri + (answered ? 1 : 0)) / total) * 100}%` }} /></div>
+        <div className="tr-bar ans-r-bar"><div className="tr-bar-fill" style={{ width: `${((ri + (answered ? 1 : 0)) / total) * 100}%` }} /></div>
 
-        <div className="tr-anchor">
+        <div className="tr-anchor ans-r-prompt">
           <div className="tr-anchor-word"><span className="fit-word" ref={anchorRef}>{meta?.wort}</span></div>
           {meta?.hint_ru ? <div className="tr-anchor-hint">{meta.hint_ru}</div> : null}
           <div className="tr-anchor-ask">Найди {rel.ask}:</div>
         </div>
 
-        <div className="tr-options">
+        <div className="tr-options ans-r-work">
           {round.options.map((opt, i) => {
             let cls = 'tr-opt';
             if (answered) {
@@ -217,7 +219,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         </div>
 
         {answered ? (
-          <div className={`tr-feedback ans-body ${picked.__correct ? 'ok' : 'bad'}`}>
+          <div className={`tr-feedback ans-body ans-r-note ${picked.__correct ? 'ok' : 'bad'}`}>
             {picked.__correct ? (
               <>
                 <div className="tr-fb-head">✅ Верно — <b>{correctDe}</b>{round.correct?.ru ? ` · ${round.correct.ru}` : ''}</div>
@@ -241,7 +243,9 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
             <button className="ans-btn tr-next" onClick={next}>{ri + 1 >= total ? 'Итог →' : 'Дальше →'}</button>
           </div>
         ) : null}
-      </>
+      </>,
+      '',
+      'split',   // планшет: слева слово, справа варианты (см. answer.css)
     );
   }
 
