@@ -162,16 +162,15 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
         onPointerCancel={onHeaderPointerUp}
       >
         <span className="ask-pop-grip">⋮⋮</span>
-        <span className="ask-pop-titlewrap">
-          <span className="ask-pop-title">Спросить</span>
-          <span className="ask-pop-drag-hint">Зажми и перетащи в удобное место</span>
-        </span>
+        {/* Подпись «зажми и перетащи» убрана: про это говорит сама ручка слева, а строка
+            занимала место на экране телефона. */}
+        <span className="ask-pop-title">Спросить</span>
         <button type="button" className="ask-pop-close" onClick={onClose} aria-label="Закрыть">✕</button>
       </div>
+      {/* Пока переписки нет — блока нет вовсе. Он занимал четверть окна ради одной фразы,
+          которая слово в слово повторяет подсказку в поле ввода двумя строками ниже. */}
+      {messages.length || busy || err ? (
       <div className="ask-pop-thread" ref={threadRef}>
-        {messages.length === 0 ? (
-          <div className="ask-pop-hint">Задай любой вопрос по этому заданию — отвечу здесь.</div>
-        ) : null}
         {messages.map((m, i) => (
           <div key={i} className={`ask-bubble ${m.role === 'user' ? 'me' : 'bot'}`}>
             {m.role === 'bot' ? renderRich(m.text) : m.text}
@@ -180,6 +179,7 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
         {busy ? <div className="ask-bubble bot ask-typing">…</div> : null}
         {err ? <div className="ask-pop-err">{err}</div> : null}
       </div>
+      ) : null}
       <div className="ask-pop-input">
         <textarea
           value={input}
