@@ -49,7 +49,8 @@ const naturalMaxWidth = new WeakMap(); // card → max-width в натураль
 const observedCards = new WeakSet();
 
 let installed = false;
-let typing = false;      // пока открыта клавиатура, подгонку снимаем
+let typing = false;      // пока печатают В КАРТОЧКЕ, подгонку снимаем
+let askTyping = false;   // печатают в окне «Спросить» — карточку не трогаем вовсе
 let rafId = 0;
 let timerId = 0;
 let ro = null;
@@ -171,6 +172,10 @@ function fitOne(root) {
   if (!card) return;
   if (ro && !observedCards.has(card)) { observedCards.add(card); ro.observe(card); }
   const st = stateOf(card);
+
+  // Печатают в окне «Спросить» — оно к заданию отношения не имеет. Ничего не считаем и
+  // ничего не меняем: карточка остаётся ровно такой, какой была.
+  if (askTyping) return;
 
   if (typing) {
     // Интерактивы, которые ПОД КЛАВИАТУРУ НЕ ПЕРЕСТРАИВАЮТСЯ (класс `ans-root--keepkbd`).
@@ -460,7 +465,17 @@ export default function installCardAutoFit() {
     // Синхронно, прямо в колбэке: он выполняется ПОСЛЕ правки DOM, но ДО отрисовки —
     // значит подгонка попадёт в тот же кадр и пользователь не увидит промежуточный,
     // не влезающий вариант. Через rAF был бы лишний мелькающий кадр.
-    const mo = new MutationObserver(() => {
+    const mo = new MutationObserver((records) => {
+      // Окно «Спросить» рисуется в <body> порталом. Для наблюдателя это правка DOM — и он
+      // честно запускал полный пересчёт карточки: она дёргалась в момент открытия окна и
+      // ещё раз при его закрытии. Но к заданию окно отношения не имеет.
+      // Реагируем только на правки ВНУТРИ самого интерактива.
+      const touchesCard = records.some((r) => {
+        const t = r.target;
+        const el = t && t.nodeType === 1 ? t : t?.parentElement;
+        return !!el && !!el.closest?.('.ans-root') && !el.closest?.('.ask-pop');
+      });
+      if (!touchesCard) return;
       // Содержимое поменялось — считаем заново. Сбрасываем и запомненную высоту: карточка,
       // растянутая на весь экран, имеет ЗАКРЕПЛЁННУЮ высоту, и по ней смену содержимого не
       // видно — сравнение «высота такая же» приняло бы новый экран за старый и оставило
@@ -525,17 +540,41 @@ export default function installCardAutoFit() {
   };
   const thawBase = () => { document.documentElement.style.fontSize = ''; };
 
+  // ГЛАВНОЕ ПРАВИЛО: поле ввода ВНЕ карточки (а это всегда окно «Спросить») не имеет к
+  // заданию никакого отношения — значит и трогать задание не должно. Никак. Ни на каком
+  // интерактиве. Карточка просто стоит, клавиатура ложится поверх.
+  //
+  // Раньше связь была двойная и обе стороны портили картинку: во-первых, базовый кегль всего
+  // приложения считается от высоты экрана, и клавиатура его роняла; во-вторых, наблюдатель за
+  // DOM видел появление окна и запускал полный пересчёт. Отсюда качели: карточка ужималась
+  // при открытии окна и разжималась при закрытии.
+  const inCard = (el) => !!el?.closest?.('.ans-card');
+
   document.addEventListener('focusin', (e) => {
     if (!isField(e.target)) return;
     freezeBase();          // ДО того, как клавиатура успеет изменить высоту
+    if (!inCard(e.target)) { askTyping = true; return; }   // окно «Спросить» — карточку не трогаем
     typing = true;
     schedule();
   });
   document.addEventListener('focusout', (e) => {
     if (!isField(e.target)) return;
+    const wasAsk = askTyping && !inCard(e.target);
+    askTyping = false;
     typing = false;
+    // Отпускаем кегль НЕ СРАЗУ: клавиатура закрывается с анимацией, и если снять
+    // заморозку раньше, чем вернётся высота, карточка на эти доли секунды снова ужмётся —
+    // это и есть вторая половина «качелей». Ждём, пока высота реально вернётся.
+    const startedAt = viewportHeight();
+    let tries = 0;
+    const release = () => {
+      tries += 1;
+      if (viewportHeight() > startedAt + 40 || tries > 20) { thawBase(); freshStart(); return; }
+      setTimeout(release, 60);
+    };
+    if (wasAsk) { release(); return; }   // карточку и так не трогали — только отпустить кегль
     thawBase();
-    setTimeout(freshStart, 120); // клавиатура закрывается не мгновенно
+    setTimeout(freshStart, 120);
   });
 
   // Шрифты догружаются после первого layout и меняют высоту текста.
