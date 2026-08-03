@@ -1116,21 +1116,27 @@ html[data-scheme="light"] .au-gap-correct { color: #0f172a; }
   overflow: hidden; cursor: crosshair; border: 1px solid var(--dmps-border, #334155);
   -webkit-touch-callout: none; user-select: none;
 }
-/* Артикль в «Finde im Bild» ВЫБИРАЮТ, а не печатают: три цветные кнопки (те же цвета, что
-   в тренажёре артиклей). Выбранная горит, остальные приглушены — видно, что ответ принят,
-   и «Prüfen» нажимается осознанно. */
-.pin-articles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.625rem; }
+/* Артикль в «Finde im Bild» ВЫБИРАЮТ, а не печатают: три кнопки в один ряд, теми же
+   цветами, что в тренажёре артиклей (der синий, die малиновый, das зелёный). Ряд занимает
+   ровно то место, где было поле ввода: высота как у `.ans-input`, тот же радиус, тот же
+   шаг сетки — карточка не становится ни выше, ни ниже. Выбранная кнопка горит в полную
+   силу и обведена, остальные приглушены — сразу видно, что ответ принят. */
+.pin-articles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.625rem; }
 .pin-art-btn {
-  font-size: 1.5rem; font-weight: 800; padding: 1.0rem 0; border-radius: 1.0rem; border: none;
-  cursor: pointer; color: #fff; opacity: 0.5;
-  transition: transform .06s, opacity .12s, box-shadow .12s;
+  min-height: 3.25rem;
+  font-family: inherit; font-size: 1.25rem; font-weight: 800; letter-spacing: -0.01em;
+  color: #fff; border: none;
+  border-radius: var(--dmps-radius-button, 1.0rem);
+  cursor: pointer;
+  opacity: 0.8; filter: saturate(0.7) brightness(0.82);
+  transition: transform 0.08s ease, filter 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
 }
-.pin-art-btn:active { transform: scale(.94); }
+.pin-art-btn:active { transform: scale(0.96); }
 .pin-art-btn.on {
-  opacity: 1;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 6px 16px rgba(0, 0, 0, 0.35);
+  opacity: 1; filter: none;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 8px 18px rgba(0, 0, 0, 0.32);
 }
-.pin-step { text-align: center; }
+.pin-art-btn:disabled { opacity: 0.5; }
 .pin-img { display: block; width: 100%; height: auto; }
 
 /* Rebus puzzle picture duplicated into the answer overlay (same image as the chat). */

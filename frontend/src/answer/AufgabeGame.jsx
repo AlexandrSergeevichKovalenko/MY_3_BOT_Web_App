@@ -311,10 +311,6 @@ function AufgabePin({ task, onSubmit, submitting }) {
     const coords = `${tap.x.toFixed(4)},${tap.y.toFixed(4)}`;
     onSubmit(needsArticle ? `${coords}|${article}` : coords);
   };
-  // Кнопка «Prüfen» неактивна, пока сделано не всё, — и экран прямо говорит, чего ждёт.
-  const step = !tap
-    ? '☝️ Tippe zuerst auf das Objekt im Bild.'
-    : (needsArticle && !article ? '👇 Und jetzt den Artikel wählen.' : '');
   return (
     <>
       <p className="au-question">{task.question_de}</p>
@@ -336,7 +332,6 @@ function AufgabePin({ task, onSubmit, submitting }) {
           ))}
         </div>
       ) : null}
-      {step ? <p className="au-hint pin-step">{step}</p> : null}
       <PrüfenButton disabled={!ready} submitting={submitting} onClick={submit} />
     </>
   );
