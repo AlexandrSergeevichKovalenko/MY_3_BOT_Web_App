@@ -1,6 +1,22 @@
 import { saveErrorToast } from './saveNotice.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { renderRich } from './richText.jsx';
+
+// Полоса экрана, которую пользователь РЕАЛЬНО видит сейчас.
+//
+// Клавиатура на iOS не двигает ни `window.innerHeight`, ни систему координат плавающих
+// окон — она меняет только visual viewport. Поэтому окно, поставленное по innerHeight,
+// остаётся ровно там, где стояло, и клавиатура его просто закрывает: приходится вытаскивать
+// пальцем. Правду про видимую часть знает visualViewport: height — высота без клавиатуры,
+// offsetTop — насколько видимая область уехала внутри разметочной.
+function readView() {
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+  if (vv && vv.height > 120) {
+    return { top: vv.offsetTop || 0, height: vv.height, width: vv.width || window.innerWidth || 360 };
+  }
+  return { top: 0, height: window.innerHeight || 640, width: window.innerWidth || 360 };
+}
 
 // Floating, draggable "ask the model" window used on every interactive's result.
 // No backdrop — it floats over the task (still visible). Drag by the header to any
@@ -21,28 +37,50 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
   const threadRef = useRef(null);
   const drag = useRef(null);
 
-  // Initial position: lower-centre, so the task stays visible above the window.
+  // Видимая полоса экрана; меняется, когда выезжает клавиатура.
+  const [view, setView] = useState(readView);
+  useEffect(() => {
+    const on = () => setView(readView());
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    vv?.addEventListener('resize', on);
+    vv?.addEventListener('scroll', on);
+    window.addEventListener('resize', on);
+    return () => {
+      vv?.removeEventListener('resize', on);
+      vv?.removeEventListener('scroll', on);
+      window.removeEventListener('resize', on);
+    };
+  }, []);
+
+  // Держим окно внутри видимой полосы — и по вертикали, и ПО ГОРИЗОНТАЛИ.
+  // Горизонталь важна не меньше: после сохранения слова кнопка становится длиннее, окно
+  // расширяется, и если его край уже был у правой границы, оно уезжало вбок «перекошенным».
+  const clamp = useCallback((x, y) => {
+    const el = panelRef.current;
+    const w = el ? el.offsetWidth : 320;
+    const h = el ? el.offsetHeight : 320;
+    const top = view.top + 6;
+    const bottom = view.top + view.height - h - 6;
+    return {
+      x: Math.min(Math.max(6, x), Math.max(6, view.width - w - 6)),
+      y: Math.min(Math.max(top, y), Math.max(top, bottom)),
+    };
+  }, [view]);
+
+  // Начальное место: нижняя половина видимой полосы, чтобы задание оставалось видно сверху.
   useEffect(() => {
     const el = panelRef.current;
     if (!el) return;
     const w = el.offsetWidth || 320;
     const h = el.offsetHeight || 320;
-    const vw = window.innerWidth || 360;
-    const vh = window.innerHeight || 640;
-    setPos({ x: Math.max(8, (vw - w) / 2), y: Math.max(8, vh - h - 24) });
+    setPos({ x: Math.max(8, (view.width - w) / 2), y: Math.max(view.top + 8, view.top + view.height - h - 24) });
+    // намеренно один раз: дальше окно двигает пользователь, а границы стережёт clamp
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const clamp = useCallback((x, y) => {
-    const el = panelRef.current;
-    const w = el ? el.offsetWidth : 320;
-    const h = el ? el.offsetHeight : 320;
-    const vw = window.innerWidth || 360;
-    const vh = window.innerHeight || 640;
-    return {
-      x: Math.min(Math.max(6, x), Math.max(6, vw - w - 6)),
-      y: Math.min(Math.max(6, y), Math.max(6, vh - h - 6)),
-    };
-  }, []);
+  // Видимая полоса изменилась (выехала клавиатура, сохранение сделало окно выше) — возвращаем
+  // окно внутрь неё. Без этого оно остаётся под клавиатурой и его приходится тянуть рукой.
+  useEffect(() => { setPos((prev) => (prev ? clamp(prev.x, prev.y) : prev)); }, [clamp, saveState, messages.length, busy]);
 
   const onHeaderPointerDown = useCallback((e) => {
     const start = pos || { x: 0, y: 0 };
@@ -150,9 +188,18 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
   const saveCandidate = (input.trim() || String(saveText || '').trim());
   const saveLabelWord = saveCandidate.length > 40 ? `${saveCandidate.slice(0, 40)}…` : saveCandidate;
 
-  const style = pos ? { left: `${pos.x}px`, top: `${pos.y}px` } : { left: '50%', top: '60%', visibility: 'hidden' };
+  // Высоту окна тоже держим в пределах видимой полосы: с открытой клавиатурой места мало,
+  // и ужиматься должна переписка (у неё своя прокрутка), а не вылезать всё окно.
+  const maxH = Math.max(180, Math.round(view.height - 12));
+  const style = pos
+    ? { left: `${pos.x}px`, top: `${pos.y}px`, maxHeight: `${maxH}px` }
+    : { left: '50%', top: '60%', maxHeight: `${maxH}px`, visibility: 'hidden' };
 
-  return (
+  // Рисуем окно в <body>, а не внутри карточки. В части игр «Спросить» лежит ВНУТРИ
+  // `.ans-card`, а карточку подгонка под экран масштабирует через `zoom` — вместе с ней
+  // масштабировались бы и координаты, и размеры окна, и расчёт «поместись в видимую полосу»
+  // врал бы.
+  return createPortal((
     <div className="ask-pop" ref={panelRef} style={style}>
       <div
         className="ask-pop-head"
@@ -210,5 +257,5 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
               : saveCandidate ? `💾 Сохранить «${saveLabelWord}»` : '💾 Сохранить'}
       </button>
     </div>
-  );
+  ), document.body);
 }
