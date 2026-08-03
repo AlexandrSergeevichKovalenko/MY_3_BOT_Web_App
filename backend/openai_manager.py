@@ -7370,9 +7370,12 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
         user_message=json.dumps({"count": int(count), "level": str(level or "B2")}, ensure_ascii=False),
         poll_interval_seconds=2.0,
     )
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
+    # A whole generated batch used to be thrown away over one stray quote or a
+    # trailing comma. parse_llm_json repairs those slips before giving up.
+    data = parse_llm_json(content, context="generate_aufgabe")
+    if data is None:
+        logging.warning("run_generate_aufgabe: unparseable model output fmt=%s head=%r",
+                        format, str(content)[:400])
         return []
     items = data.get("items") if isinstance(data, dict) else data
     if not isinstance(items, list):
@@ -7486,9 +7489,11 @@ async def run_check_wortbildung_batch(*, items: list[dict]) -> list[dict]:
             poll_interval_seconds=1.5,
             responses_timeout_seconds=30.0,
         )
-        data = json.loads(content)
+        data = parse_llm_json_object(content, context="check_wortbildung_batch")
         results = data.get("results") if isinstance(data, dict) else None
         if not isinstance(results, list):
+            logging.warning("check_wortbildung_batch: no usable verdicts, head=%r",
+                            str(content)[:400])
             return []
         out: list[dict] = []
         for r in results:
@@ -7527,9 +7532,14 @@ async def run_check_wortgruppe_batch(*, items: list[dict]) -> list[dict]:
             poll_interval_seconds=1.5,
             responses_timeout_seconds=30.0,
         )
-        data = json.loads(content)
+        # One malformed character used to drop the whole verdict list and let the
+        # unverified batch straight into the pool (fail-open). Repair first, and if
+        # nothing parses, say so in the log instead of failing open in silence.
+        data = parse_llm_json_object(content, context="check_wortgruppe_batch")
         results = data.get("results") if isinstance(data, dict) else None
         if not isinstance(results, list):
+            logging.warning("check_wortgruppe_batch: no usable verdicts, head=%r",
+                            str(content)[:400])
             return []
         out: list[dict] = []
         for r in results:
