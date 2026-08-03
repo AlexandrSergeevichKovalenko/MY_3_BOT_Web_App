@@ -484,6 +484,7 @@ export default function installCardAutoFit() {
       if (askTyping && !document.querySelector('.ask-pop')) {
         askTyping = false;
         unlockScroll();
+        thawCardBox();
         thawBase();
         settleAfterKeyboard();   // клавиатура ещё уезжает — считаем, когда высота устоится
         return;
@@ -584,6 +585,44 @@ export default function installCardAutoFit() {
     if (!askTyping) return;
     if (Math.abs((window.scrollY || 0) - lockedY) > 1) window.scrollTo(0, lockedY);
   };
+  // ЖЁСТКОЕ ЗАКРЕПЛЕНИЕ КАРТОЧКИ.
+  //
+  // Все предыдущие правки затыкали причины по одной: базовый кегль от высоты экрана,
+  // прокрутка к полю ввода, события Telegram на каждом шаге клавиатуры, залипший флаг,
+  // лишний подбор кегля строки. Каждая была настоящей — и каждый раз оставалась следующая.
+  //
+  // Здесь другой подход: пока пользователь печатает в окне «Спросить», интерактив
+  // ФИКСИРУЕТСЯ В ПИКСЕЛЯХ на своём месте — `position: fixed` и точные размеры, снятые ДО
+  // появления клавиатуры. Дальше он просто не может измениться: ни от единиц, считающих
+  // высоту экрана, ни от изменения размера окна, ни от прокрутки, ни от любого пересчёта.
+  // `position: fixed` привязан к разметочной области, а её клавиатура на iOS не двигает.
+  //
+  // Окно «Спросить» это не задевает: оно рисуется отдельно, в <body>.
+  const frozenBoxes = [];
+  const freezeCardBox = () => {
+    document.querySelectorAll('.ans-root').forEach((root) => {
+      if (root.dataset.frozen === '1') return;
+      const r = root.getBoundingClientRect();
+      if (!(r.height > 100)) return;
+      frozenBoxes.push({ root, style: root.getAttribute('style') || '' });
+      root.dataset.frozen = '1';
+      root.style.position = 'fixed';
+      root.style.top = `${Math.round(r.top)}px`;
+      root.style.left = `${Math.round(r.left)}px`;
+      root.style.width = `${Math.round(r.width)}px`;
+      root.style.height = `${Math.round(r.height)}px`;
+      root.style.minHeight = `${Math.round(r.height)}px`;
+      root.style.overflow = 'hidden';
+    });
+  };
+  const thawCardBox = () => {
+    while (frozenBoxes.length) {
+      const { root, style } = frozenBoxes.pop();
+      delete root.dataset.frozen;
+      if (style) root.setAttribute('style', style); else root.removeAttribute('style');
+    }
+  };
+
   const lockScroll = () => {
     lockedY = window.scrollY || 0;
     document.documentElement.style.overflow = 'hidden';
@@ -625,7 +664,7 @@ export default function installCardAutoFit() {
   document.addEventListener('focusin', (e) => {
     if (!isField(e.target)) return;
     freezeBase();          // ДО того, как клавиатура успеет изменить высоту
-    if (!inCard(e.target)) { askTyping = true; lockScroll(); return; }   // окно «Спросить» — карточку не трогаем
+    if (!inCard(e.target)) { askTyping = true; freezeCardBox(); lockScroll(); return; }
     typing = true;
     schedule();
   });
@@ -645,7 +684,7 @@ export default function installCardAutoFit() {
       if (viewportHeight() > startedAt + 40 || tries > 20) { thawBase(); freshStart(); return; }
       setTimeout(release, 60);
     };
-    if (wasAsk) { release(); settleAfterKeyboard(); return; }   // ждём, пока экран устоится
+    if (wasAsk) { thawCardBox(); release(); settleAfterKeyboard(); return; }   // ждём, пока экран устоится
     thawBase();
     setTimeout(freshStart, 120);
   });
