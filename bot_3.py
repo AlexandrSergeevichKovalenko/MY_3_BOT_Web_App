@@ -25,6 +25,7 @@ from telegram.ext import PreCheckoutQueryHandler
 import hashlib
 import hmac
 import base64
+import math
 import re
 import difflib
 import html
@@ -4104,17 +4105,20 @@ async def _prepare_adjektiv_set_job(context: CallbackContext) -> None:
 # their active window, pulled from pre-stocked pools (decoupled from the slot clock
 # → works for any window incl. morning). Behind DRIP_DELIVERY_ENABLED (default off).
 DRIP_TICK_MINUTES = max(1, int((os.getenv("DRIP_TICK_MINUTES") or "15").strip() or "15"))
-MIN_DRIP_INTERVAL_MINUTES = max(1, int((os.getenv("MIN_DRIP_INTERVAL_MINUTES") or "30").strip() or "30"))
-# Types the drip can pull now (each needs a pool-pick + send_X_to_chat). Starts with
-# aufgabe — its many formats already give variety; more kinds added next.
-# Drip rotation order. MANDATORY core-skill kinds come FIRST so windowed Pro users
-# (who are served ONLY by the drip job — the live-slot path skips them when
-# DRIP_DELIVERY_ENABLED=1) receive them within their daily budget instead of at the
-# tail. This mirrors the live-path `_tiered_slot_position` "mandatory-to-the-front"
-# guarantee (see MANDATORY_DELIVERY_KINDS): the drip picks _DRIP_KINDS[count % N], so
-# the first `count`s of the day map to these. Non-mandatory variety follows.
-_DRIP_KINDS = ["numdict", "artikel_sprint", "adjektiv_sprint", "wofrage_sprint", "listening",
-               "artikel_learn", "aufgabe", "anagram", "rebus", "crossword"]
+# Потолок на один заход — предохранитель от свалки карточек при странных настройках.
+# Обычный темп считается по самим часам человека (см. _drip_per_tick_limit).
+DRIP_MAX_PER_TICK = max(1, int((os.getenv("DRIP_MAX_PER_TICK") or "3").strip() or "3"))
+# Типы, которые капля УМЕЕТ отправить (у каждого свой подбор из пула + send_X_to_chat).
+_DRIP_CAPABLE_KINDS = {
+    "numdict", "artikel_sprint", "adjektiv_sprint", "wofrage_sprint", "listening",
+    "artikel_learn", "aufgabe", "anagram", "rebus", "crossword", "trainer",
+    "article_quiz", "mc",
+}
+# Запасной порядок — на случай, когда сегодняшняя ротация не дала ни одного типа с
+# непустым пулом. Обязательные впереди, дальше остальные.
+_DRIP_FALLBACK_ORDER = ["numdict", "artikel_sprint", "adjektiv_sprint", "wofrage_sprint",
+                        "listening", "artikel_learn", "aufgabe", "anagram", "rebus",
+                        "crossword", "trainer", "article_quiz", "mc"]
 # Drip-only dedup discriminators for the daily-singleton reminder kinds (one shared
 # set/day). Distinct from the live slot hours so they never collide, and distinct
 # from each other so artikel_sprint vs artikel_learn (same dispatch table) dedup
@@ -4123,27 +4127,97 @@ _DRIP_AS_HOUR = 1   # artikel_sprint
 _DRIP_AL_HOUR = 2   # artikel_learn (reuses the article-sprint dispatch table)
 _DRIP_AD_HOUR = 1   # adjektiv_sprint (separate table)
 _DRIP_WF_HOUR = 1   # wofrage_sprint (separate table)
+_DRIP_TR_HOUR = 3   # тренировка синонимов/антонимов (счётная, первый заход)
+_DRIP_TRR_HOUR = 4  # повтор той же тренировки на следующий день (сверх плана)
+_DRIP_SP_HOUR = 5   # спринт по рельсу (сверх плана)
 _DRIP_AUFGABE_FORMATS = ["cloze", "satzbau", "synonym", "antonym", "transform",
                          "error", "wortbildung", "wortgruppe"]
+# Сверхплановое (спринт, повтор тренировки) стабильно на весь день: слово выбирается
+# по дате, «прошёл ли человек тренировку» — по нескольким прошлым дням. Значит хватает
+# ОДНОЙ попытки в сутки на человека, а не на каждый заход раз в четверть часа.
+_drip_bonus_pass_done: dict = {}
 
 
 def _drip_delivery_enabled() -> bool:
     return (os.getenv("DRIP_DELIVERY_ENABLED") or "0").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _window_minutes_today(schedule, tz_name) -> int:
+def _window_spans_today(schedule, tz_name) -> list:
+    """Сегодняшние окна человека в минутах от полуночи, по возрастанию.
+    Пустой список = сегодня окон нет; расписания нет вовсе → сутки целиком."""
     if not schedule:
-        return 0
+        return []
     try:
         tz = ZoneInfo(str(tz_name) if tz_name else QUIZ_SCHEDULE_TZ_NAME)
     except Exception:
         tz = ZoneInfo(QUIZ_SCHEDULE_TZ_NAME)
     now = datetime.now(tz)
-    wins = schedule.get("weekend" if now.weekday() >= 5 else "weekday") or []
-    try:
-        return sum(max(0, int(e) - int(s)) for s, e in wins)
-    except Exception:
+    wins = schedule.get("weekend" if now.weekday() >= 5 else "weekday")
+    if wins is None:
+        return [(0, 24 * 60)]
+    spans = []
+    for win in wins or []:
+        try:
+            start, end = int(win[0]), int(win[1])
+        except Exception:
+            continue
+        if end > start:
+            spans.append((start, end))
+    return sorted(spans)
+
+
+def _drip_due_by_now(schedule, tz_name, budget: int, *, now_min: int | None = None) -> int:
+    """Сколько заданий ДОЛЖНО быть выдано к этой минуте, если ровно растянуть дневную
+    норму по выбранным часам.
+
+    Считаем от прожитой части окна, а не шагом от последней отправки. Прежний расчёт
+    брал шаг один раз и отмерял его от предыдущей карточки: любой пропущенный заход
+    (перезапуск, пустой пул, доступ включился среди дня) сдвигал всю цепочку вправо, и
+    хвост нормы просто не помещался до закрытия окна. Здесь пропуск догоняется сам:
+    план на «сейчас» зависит только от времени, а не от истории отправок.
+
+    Часы тишины тут НЕ вычитаются: человек выбрал время сам, и его выбор главнее
+    общего правила молчания — оно для тех, кто часы не настраивал.
+    """
+    spans = _window_spans_today(schedule, tz_name)
+    total = sum(end - start for start, end in spans)
+    budget = int(budget or 0)
+    if total <= 0 or budget <= 0:
         return 0
+    if now_min is None:
+        try:
+            tz = ZoneInfo(str(tz_name) if tz_name else QUIZ_SCHEDULE_TZ_NAME)
+        except Exception:
+            tz = ZoneInfo(QUIZ_SCHEDULE_TZ_NAME)
+        moment = datetime.now(tz)
+        now_min = moment.hour * 60 + moment.minute
+    if int(now_min) < spans[0][0]:
+        return 0  # окно ещё не открылось
+    lived = sum(max(0, min(int(now_min), end) - start) for start, end in spans)
+    # Растягиваем норму не до самого закрытия окна, а до ПОСЛЕДНЕГО захода внутри него:
+    # заходы идут раз в DRIP_TICK_MINUTES, и последние минуты окна на них не приходятся —
+    # иначе хвост нормы «наступает» уже после того, как выдавать некому.
+    step = max(1.0, float(total) - DRIP_TICK_MINUTES) / float(budget)
+    return max(1, min(budget, int(lived // step) + 1))
+
+
+def _drip_per_tick_limit(schedule, tz_name, budget: int) -> int:
+    """Сколько карточек можно отдать за ОДИН заход: столько, сколько план успевает
+    потребовать между заходами, плюс одна на догон пропущенного.
+
+    Считаем от часов самого человека, а не константой: узкое окно с большой нормой
+    (шаг между заданиями меньше, чем промежуток между заходами) обязано выдавать по
+    несколько за раз, иначе норма не уйдёт. А при широких часах догон не должен
+    сваливаться пачкой — там предел получается один-два.
+    """
+    spans = _window_spans_today(schedule, tz_name)
+    total = sum(end - start for start, end in spans)
+    budget = int(budget or 0)
+    if total <= 0 or budget <= 0:
+        return 1
+    step = max(1.0, float(total) - DRIP_TICK_MINUTES) / float(budget)
+    planned = max(1, int(math.ceil(DRIP_TICK_MINUTES / step)))
+    return max(1, min(DRIP_MAX_PER_TICK, planned + 1))
 
 
 async def _drip_emit_reminder(context, uid, did, *, kb, caption, poster_fn, inbox_kind,
@@ -4357,7 +4431,75 @@ async def _drip_deliver_kind(context, uid, kind, idx, slot_date, slot_hour, *, h
         return await _drip_emit_reminder(context, uid, did, kb=kb, caption=caption,
             poster_fn=render_artikel_learn_card, inbox_kind="al", deeplink="ans_al_0",
             title="📚 Artikel Trainer", held=held)
+    # -- Типы, которые до этого капля не умела: человек со «своими часами» не видел их
+    #    вообще. Отвечают на них в чате или в мини-аппе, «придержать» их нельзя, поэтому
+    #    в режиме заготовки (held) они пропускаются и очередь идёт к следующему типу. --
+    if kind == "trainer":
+        if held or not _trainer_enabled():
+            return False
+        relation = "synonym" if int(idx) % 2 == 0 else "antonym"
+        entry = (await asyncio.to_thread(pick_next_trainer, relation=relation,
+                                         cooldown_days=TRAINER_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_trainer, relation=relation, cooldown_days=0))
+        if not entry:
+            return False
+        ok = await send_trainer_to_chat(context, entry=entry, relation=relation,
+                                        slot_date=slot_date, slot_hour=_DRIP_TR_HOUR,
+                                        chat_id=uid, target_user_id=uid)
+        if ok:
+            # Отметка рельса: спринт по этому слову придёт через 3 дня.
+            try: await asyncio.to_thread(mark_trainer_sent, str(entry["sprint_id"]), sent_date=slot_date)
+            except Exception: pass
+        return ok
+    if kind == "article_quiz":
+        if held or not _article_quiz_enabled():
+            return False
+        entry = (await asyncio.to_thread(pick_next_article_quiz, cooldown_days=ARTICLE_QUIZ_COOLDOWN_DAYS)
+                 or await asyncio.to_thread(pick_next_article_quiz, cooldown_days=0))
+        if not entry:
+            return False
+        object_key = str(entry.get("image_object_key") or "")
+        if not object_key:
+            return False
+        try:
+            image_url = r2_public_url(object_key)
+        except Exception:
+            return False
+        ok = await send_article_quiz_to_chat(context, entry=entry, image_url=image_url,
+                                             slot_date=slot_date, slot_hour=slot_hour,
+                                             chat_id=uid, target_user_id=uid)
+        if ok:
+            try: await asyncio.to_thread(mark_article_quiz_sent, str(entry.get("word_id") or ""))
+            except Exception: pass
+        return ok
+    if kind == "mc":
+        if held:
+            return False
+        return await _send_poll_quiz_for_target(context, target_chat_id=uid)
     return False
+
+
+def _drip_kind_order_today(now: datetime | None = None) -> list:
+    """Порядок типов на сегодня — ТОТ ЖЕ, по которому задания получают все остальные:
+    обязательная база впереди, за ней вращение дня.
+
+    Раньше здесь стоял неизменный список, и человек со «своими часами» получал одни и
+    те же типы в одном и том же порядке каждый день: обязательных ровно столько же,
+    сколько влезало заданий, поэтому до хвоста списка очередь не доходила никогда.
+    """
+    order: list = []
+    try:
+        entries = _tiered_order(free=False, now=now)
+    except Exception:
+        logging.warning("drip: сегодняшнюю ротацию собрать не вышло", exc_info=True)
+        entries = []
+    for entry in entries:
+        if entry.kind in _DRIP_CAPABLE_KINDS and entry.kind not in order:
+            order.append(entry.kind)
+    for kind in _DRIP_FALLBACK_ORDER:
+        if kind not in order:
+            order.append(kind)
+    return order
 
 
 async def _drip_deliver_one(context: CallbackContext, user_id: int, delivered_idx: int, now,
@@ -4368,8 +4510,9 @@ async def _drip_deliver_one(context: CallbackContext, user_id: int, delivered_id
     uid = int(user_id)
     slot_date = now.date()
     slot_hour = int(now.hour) * 100 + int(now.minute)
-    for off in range(len(_DRIP_KINDS)):
-        kind = _DRIP_KINDS[(int(delivered_idx) + off) % len(_DRIP_KINDS)]
+    kinds = _drip_kind_order_today(now)
+    for off in range(len(kinds)):
+        kind = kinds[(int(delivered_idx) + off) % len(kinds)]
         try:
             if await _drip_deliver_kind(context, uid, kind, delivered_idx, slot_date, slot_hour, held=held):
                 return True
@@ -4378,10 +4521,64 @@ async def _drip_deliver_one(context: CallbackContext, user_id: int, delivered_id
     return False
 
 
+async def _drip_bonus_pass(context: CallbackContext, uid: int, now) -> int:
+    """Сверхплановое для человека со своими часами: спринт по рельсу и повтор вчерашней
+    тренировки. В дневную норму не входит (строку в ведомость эти отправки не пишут),
+    поэтому идёт отдельно от счётной выдачи. Обе штуки — продолжение тренировки, и
+    достаются только тому, кто её проходил; кто не проходил, ничего не получает.
+
+    До этого человека со «своими часами» вынимали из обычной рассылки целиком — вместе
+    со сверхплановым, которого капля не умела. Рельс для него просто не существовал.
+    """
+    today = now.date()
+    if _drip_bonus_pass_done.get(int(uid)) == today:
+        return 0
+    for stale in [u for u, day in _drip_bonus_pass_done.items() if day != today]:
+        _drip_bonus_pass_done.pop(stale, None)
+    _drip_bonus_pass_done[int(uid)] = today
+    if not _trainer_enabled():
+        return 0
+    slot_date = now.date()
+    sent = 0
+    for relation in ("synonym", "antonym"):
+        if _sprint_enabled():
+            try:
+                entry = await asyncio.to_thread(pick_rail_sprint, relation=relation,
+                                                target_date=slot_date, lag_days=3)
+            except Exception:
+                entry = None
+            if entry:
+                prepped = await asyncio.to_thread(
+                    get_trainer_recipient_ids, str(entry["sprint_id"]), since_days=5)
+                if int(uid) in (prepped or set()) and await send_sprint_to_chat(
+                        context, entry=entry, relation=relation, slot_date=slot_date,
+                        slot_hour=_DRIP_SP_HOUR, chat_id=uid, target_user_id=uid):
+                    sent += 1
+        try:
+            repeat_entry = await asyncio.to_thread(
+                pick_repeat_trainer, relation=relation, sent_date=slot_date - timedelta(days=1))
+        except Exception:
+            repeat_entry = None
+        if repeat_entry:
+            first_pass = await asyncio.to_thread(
+                get_trainer_recipient_ids, str(repeat_entry["sprint_id"]), since_days=2)
+            if int(uid) in (first_pass or set()) and await send_trainer_to_chat(
+                    context, entry=repeat_entry, relation=relation, slot_date=slot_date,
+                    slot_hour=_DRIP_TRR_HOUR, chat_id=uid, target_user_id=uid, repeat=True):
+                sent += 1
+    return sent
+
+
 async def _drip_delivery_job(context: CallbackContext) -> None:
-    """Every DRIP_TICK_MINUTES: each windowed Pro user in-window + under budget gets
-    one task if their pacing interval (window_minutes / budget, floored) has elapsed."""
-    if not _drip_delivery_enabled() or _is_quiet_hours_now():
+    """Раз в DRIP_TICK_MINUTES: каждому оплаченному со «своими часами», кто сейчас внутри
+    окна, доводим выдачу до того, что положено на эту минуту, — и один раз за день
+    досылаем сверхплановое.
+
+    Часы тишины здесь не проверяются: они для тех, кто время не настраивал. Человек,
+    выставивший себе 06:00, просил писать ему с 06:00 — общее «молчим до 07:30» съедало
+    у него половину утреннего окна, и дневная норма переставала помещаться.
+    """
+    if not _drip_delivery_enabled():
         return
     now = _get_quiz_schedule_now()
     since_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -4404,19 +4601,14 @@ async def _drip_delivery_job(context: CallbackContext) -> None:
             budget = _preset_budget(u.get("preset"))
             if budget <= 0:
                 continue
-            count, last_ts = await asyncio.to_thread(get_inbox_delivery_stats_today, uid, since_ts)
+            delivered += await _drip_bonus_pass(context, uid, now)
+            count, _last_ts = await asyncio.to_thread(get_inbox_delivery_stats_today, uid, since_ts)
             if count >= budget:
                 continue
-            wmin = _window_minutes_today(schedule, tz)
-            interval = max(MIN_DRIP_INTERVAL_MINUTES, (wmin / budget) if budget else MIN_DRIP_INTERVAL_MINUTES)
-            if last_ts is not None:
-                try:
-                    elapsed = (now - last_ts).total_seconds() / 60.0
-                except Exception:
-                    elapsed = interval
-                if elapsed < interval:
-                    continue
-            if await _drip_deliver_one(context, uid, count, now):
+            behind = min(_drip_due_by_now(schedule, tz, budget), budget) - count
+            for step in range(min(behind, _drip_per_tick_limit(schedule, tz, budget))):
+                if not await _drip_deliver_one(context, uid, count + step, now):
+                    break  # пулы пусты — догоним на следующем заходе
                 delivered += 1
         except Exception:
             logging.warning("drip user failed uid=%s", u.get("user_id"), exc_info=True)
