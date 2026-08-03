@@ -475,7 +475,7 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
     """
     from backend.database import (
         count_available_rebuses, sync_rebus_bank_from_code,
-        list_pending_rebus_component_reviews,
+        list_pending_rebus_card_reviews,
     )
     import psycopg2
 
@@ -491,7 +491,9 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
     # backlog means drawing MORE cannot raise the ready count — it would just spend
     # money on every startup and every low-pool trigger, forever. Wait for the human.
     try:
-        backlog = len(list_pending_rebus_component_reviews(REBUS_REVIEW_BACKLOG_LIMIT + 1))
+        # Считаем ПАРЫ, готовые к приёмке. Одинокая половинка, чья вторая картинка ещё
+        # не нарисована, судить себя не даёт — держать из-за неё рисование нельзя.
+        backlog = len(list_pending_rebus_card_reviews(REBUS_REVIEW_BACKLOG_LIMIT + 1))
     except Exception:
         backlog = 0
     # …but composing is FREE, and a card whose halves are already accepted must not be

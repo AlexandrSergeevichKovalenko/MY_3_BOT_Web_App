@@ -29551,8 +29551,8 @@ def answer_rebus_review_list():
     user_id, err = _pin_review_admin_id()
     if user_id is None:
         return err
-    from backend.database import list_pending_rebus_component_reviews, rebus_pool_status
-    items = list_pending_rebus_component_reviews(40)
+    from backend.database import list_pending_rebus_card_reviews, rebus_pool_status
+    items = list_pending_rebus_card_reviews(20)
     return jsonify({"ok": True, "items": items, "status": rebus_pool_status()})
 
 
@@ -29566,20 +29566,32 @@ def answer_rebus_review_verdict():
     if user_id is None:
         return err
     payload = request.get_json(silent=True) or {}
+    compound_id = str(payload.get("compound_id") or "").strip()
     word = str(payload.get("word") or "").strip()
     verdict = str(payload.get("verdict") or "").strip().lower()
     reason = str(payload.get("reason") or "").strip()
-    if not word or verdict not in ("approve", "reject", "block"):
-        return jsonify({"error": "нужны слово и решение"}), 400
-    from backend.database import set_rebus_component_review
-    result = set_rebus_component_review(word, verdict, reason)
+    if not compound_id or verdict not in ("approve", "redraw", "drop_pair"):
+        return jsonify({"error": "нужны карточка и решение"}), 400
+    if verdict == "redraw" and not word:
+        return jsonify({"error": "не указано, какую половинку перерисовать"}), 400
+    from backend.database import rebus_pool_status, set_rebus_card_review
+    result = set_rebus_card_review(compound_id, verdict, word=word, reason=reason)
     if result.get("status") == "approved":
+        # Собираем СРАЗУ: обе картинки уже есть, это склейка, а не генерация. Заодно
+        # достраиваем всё, что ждало этих же половинок.
+        composed = 0
         try:
-            from backend.rebus_generator import compose_rebus_entries_waiting_for
-            result["cards"] = compose_rebus_entries_waiting_for(word)
+            from backend.rebus_generator import (
+                compose_rebus_entries_waiting_for, prepare_rebus_entry,
+            )
+            if prepare_rebus_entry(compound_id, allow_draw=False).get("status") == "ready":
+                composed += 1
+            for w in result.get("words") or []:
+                composed += int((compose_rebus_entries_waiting_for(w) or {}).get("composed") or 0)
         except Exception:
-            logging.warning("rebusreview: compose after approve failed word=%s", word, exc_info=True)
-    return jsonify({"ok": True, **result})
+            logging.warning("rebusreview: compose after approve failed id=%s", compound_id, exc_info=True)
+        result["composed"] = composed
+    return jsonify({"ok": True, **result, "status_pool": rebus_pool_status()})
 
 
 @app.route("/api/answer/review/overview", methods=["POST"])

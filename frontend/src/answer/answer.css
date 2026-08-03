@@ -1848,13 +1848,14 @@ html[data-scheme="light"] .pinw {
 /* Сложение — главное содержимое экрана: [новая] + [вторая] = слово.
    Отдельной большой картинки сверху нет: она дублировала бы левую половину пары. */
 .rbrev-pair {
-  display: flex; align-items: center; gap: 0.5rem;
+  display: flex; align-items: center; justify-content: center; gap: 0.625rem;
   border: 1px solid var(--dmps-border, #334155); border-radius: 1.0rem;
   background: var(--dmps-card-alt, rgba(148,163,184,0.10)); padding: 0.625rem;
 }
 .rbrev-half { margin: 0; flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
 .rbrev-half img, .rbrev-half-empty {
-  display: block; width: 6.25rem; height: 6.25rem; object-fit: cover;
+  display: block; width: 8.75rem; height: 8.75rem; max-width: 38vw; max-height: 38vw;
+  object-fit: cover;
   border-radius: 0.75rem; border: 1px solid var(--dmps-border, #334155); background: #ffffff;
 }
 .rbrev-half-empty {
@@ -1867,6 +1868,16 @@ html[data-scheme="light"] .pinw {
 .rbrev-half figcaption { font-size: 0.75rem; font-weight: 700; color: var(--dmps-text-secondary, #CBD5E1); }
 .rbrev-half-new figcaption { color: #B45309; }
 .rbrev-op { flex: 0 0 auto; font-size: 1.25rem; font-weight: 800; color: var(--dmps-text-muted, #94A3B8); }
+.rbrev-answer-line { font-size: 1.0625rem; color: var(--dmps-text-primary, #F8FAFC); }
+.rbrev-answer-line b { font-size: 1.25rem; }
+.rbrev-answer-line i { font-style: normal; font-size: 0.9375rem; color: var(--dmps-text-secondary, #CBD5E1); }
+/* Выбранная для перерисовки половинка — красным, чтобы решение было видно до нажатия */
+.rbrev-half-picked img { border: 3px solid #EF4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.18); }
+.rbrev-redraw {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  border: 1px solid rgba(239,68,68,0.45); border-radius: 0.875rem; padding: 0.625rem;
+}
+.rbrev-redraw-title { font-size: 0.8125rem; color: var(--dmps-text-secondary, #CBD5E1); }
 .rbrev-answer { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
 .rbrev-answer b { font-size: 1.0625rem; color: var(--dmps-text-primary, #F8FAFC); }
 .rbrev-answer i { font-style: normal; font-size: 0.8125rem; color: var(--dmps-text-secondary, #CBD5E1); }

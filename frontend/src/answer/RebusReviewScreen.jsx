@@ -1,18 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
 
 /**
- * Приёмка половинок ребуса (админ).
+ * Приёмка ребусов (админ). Единица решения — КАРТОЧКА, а не картинка.
  *
- * Показываем не картинку саму по себе, а СЛОЖЕНИЕ: [новая] + [вторая] = слово.
- * Отдельно висящая картинка ничего не решает — вопрос всегда «складываются ли
- * эти две в нужное слово». Новая половинка подсвечена, решение касается её:
- * она переиспользуется всеми словами с этой частью, поэтому второй раз в составе
- * другого слова её не показываем.
+ * Половинку саму по себе оценить нельзя («годится ли эта ступня» — вопрос ни о чём),
+ * а одно и то же слово входит в разные слова: одна пара складывается, другая нет.
+ * Поэтому на экране всегда одна пара, и решение касается именно её.
+ * Половинка без второй картинки сюда не попадает вовсе — судить нечего.
  */
-const REJECTS = [
-  { key: 'wrong_object', label: '🚫 Не тот предмет' },
-  { key: 'shows_sibling', label: '🚫 Видно вторую половину' },
-  { key: 'ugly', label: '🚫 Некрасиво / непонятно' },
+const REASONS = [
+  { key: 'wrong_object', label: 'не тот предмет' },
+  { key: 'shows_sibling', label: 'видно вторую половину' },
+  { key: 'ugly', label: 'некрасиво / непонятно' },
 ];
 
 export default function RebusReviewScreen({ api, haptic, onClose }) {
@@ -21,6 +20,8 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
+  const [redrawFor, setRedrawFor] = useState('');   // слово, которое решили перерисовать
+  const [comment, setComment] = useState('');      // своя правка вместо кнопки-причины
 
   const refresh = useCallback(async () => {
     try {
@@ -36,26 +37,31 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const item = items && items[0];
+  const card = items && items[0];
+  useEffect(() => { setRedrawFor(''); setComment(''); }, [card?.compound_id]);
 
-  const send = async (verdict, reason) => {
-    if (!item || busy) return;
+  const send = async (verdict, extra = {}) => {
+    if (!card || busy) return;
     setBusy(true); setError('');
     try {
-      const r = await api('/api/answer/rebusreview/verdict', { word: item.word, verdict, reason: reason || '' });
+      const r = await api('/api/answer/rebusreview/verdict', {
+        compound_id: card.compound_id, verdict, ...extra,
+      });
       if (r.status === 'approved') {
-        const built = r.cards?.composed || 0;
-        setNote(built
-          ? `✅ «${item.word}» принято. Карточек ушло в банк: ${built} — они уже в очереди на отправку.`
-          : `✅ «${item.word}» принято. Карточка соберётся, как только примешь вторую половину.`);
+        setNote(r.composed
+          ? `✅ «${card.compound}» в банке. Карточек собрано: ${r.composed} — уже в очереди на отправку.`
+          : `✅ «${card.compound}» принято.`);
       } else if (r.status === 'redraw') {
-        setNote(`🔄 «${item.word}» перерисую с учётом причины. Попыток осталось: ${r.redraws_left}.`);
+        setNote(`🔄 «${extra.word}» перерисую с учётом причины. Попыток осталось: ${r.redraws_left}.`);
       } else if (r.status === 'blocked') {
-        setNote(`🗑 «${item.word}» больше не рисуем. Заданий убрано: ${r.compounds_touched}.`);
+        setNote(`🗑 «${extra.word}» больше не рисуем. Заданий убрано: ${r.compounds_touched}.`);
+      } else if (r.status === 'pair_dropped') {
+        setNote(`🗑 «${card.compound}» снято. Картинки остались — они работают в других словах.`);
       }
+      if (r.status_pool) setStatus(r.status_pool);
       haptic?.(verdict === 'approve' ? 'ok' : 'bad');
-      setItems((prev) => (prev || []).slice(1));
-      if (r.cards?.composed || r.status !== 'approved') refresh();
+      setItems((prev) => (prev || []).filter((c) => c.compound_id !== card.compound_id));
+      setRedrawFor(''); setComment('');
     } catch (e) {
       console.warn('[game] error', e);
       setError('Не удалось сохранить решение. Попробуйте ещё раз.');
@@ -68,7 +74,7 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
 
   if (items === null) return <div className="pinw"><div className="ans-loading">Загружаю приёмку…</div></div>;
 
-  if (!item) {
+  if (!card) {
     return (
       <div className="pinw">
         <div className="pinw-top">
@@ -78,8 +84,8 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
         <div className="pinw-body">
           {note ? <div className="pinrev-note">{note}</div> : null}
           <div className="pinrev-empty-sub">
-            Новых картинок на приёмку нет. Как только пул начнёт дорисовывать — они появятся
-            здесь, и я напишу тебе в личку.
+            Готовых пар на приёмку нет. Появятся, когда бот дорисует недостающие
+            половинки, — я напишу тебе в личку.
           </div>
         </div>
         <div className="pinw-bar">
@@ -90,8 +96,8 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
     );
   }
 
-  const noRedrawsLeft = item.redraws_left <= 0;
-  const pairs = item.pairs || [];
+  const [left, right] = card.halves;
+  const target = card.halves.find((h) => h.word === redrawFor);
 
   return (
     <div className="pinw">
@@ -101,44 +107,57 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
       </div>
 
       <div className="rbrev-scroll">
-        <div className="rbrev-word">
-          Новая картинка: {item.word}
-          {item.meaning_ru ? <span className="rbrev-ru"> — {item.meaning_ru}</span> : null}
+        <div className="rbrev-pair">
+          {[left, right].map((h, i) => (
+            <React.Fragment key={h.word}>
+              {i === 1 ? <span className="rbrev-op">+</span> : null}
+              <figure className={`rbrev-half ${h.is_new ? 'rbrev-half-new' : ''} ${redrawFor === h.word ? 'rbrev-half-picked' : ''}`}>
+                <img src={h.image_url} alt="" draggable="false" />
+                <figcaption>{h.word}{h.meaning_ru ? ` — ${h.meaning_ru}` : ''}</figcaption>
+              </figure>
+            </React.Fragment>
+          ))}
+        </div>
+        <div className="rbrev-answer-line">
+          = <b>{card.compound}</b>{card.compound_ru ? <i> — {card.compound_ru}</i> : null}
         </div>
 
-        {pairs.length ? pairs.map((p) => (
-          <div className="rbrev-pair" key={p.compound}>
-            <figure className="rbrev-half rbrev-half-new">
-              <img src={item.image_url} alt="" draggable="false" />
-              <figcaption>{item.word}</figcaption>
-            </figure>
-            <span className="rbrev-op">+</span>
-            <figure className="rbrev-half">
-              {p.sibling_image_url
-                ? <img src={p.sibling_image_url} alt="" draggable="false" />
-                : <span className="rbrev-half-empty">?</span>}
-              <figcaption>{p.sibling}</figcaption>
-            </figure>
-            <span className="rbrev-op">=</span>
-            <div className="rbrev-answer">
-              <b>{p.compound}</b>
-              {p.compound_ru ? <i>{p.compound_ru}</i> : null}
-              {p.sibling_image_url ? null : <em>вторая половина ещё не нарисована</em>}
+        {redrawFor ? (
+          <div className="rbrev-redraw">
+            <div className="rbrev-redraw-title">
+              Перерисую только «{redrawFor}» — вторая картинка останется как есть, она уже
+              оплачена.
+              {target && target.used_in_cards > 1
+                ? ` Эта половинка стоит ещё в ${target.used_in_cards - 1} задании(ях) — они тоже подождут новую.`
+                : ''}
             </div>
+            <div className="rbrev-rejects">
+              {REASONS.map((r) => (
+                <button key={r.key} className="ans-btn-ghost rbrev-reject" disabled={busy}
+                  onClick={() => send('redraw', { word: redrawFor, reason: r.key })}>{r.label}</button>
+              ))}
+            </div>
+            {/* Своими словами — точнее любой кнопки: текст уходит прямо в задание на
+                отрисовку, поэтому «не хватает хвоста» работает лучше, чем «некрасиво». */}
+            <input
+              className="pinrev-word" value={comment} onChange={(e) => setComment(e.target.value)}
+              placeholder="или своими словами: что поправить"
+              enterKeyHint="send"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && comment.trim()) {
+                  e.target.blur();
+                  send('redraw', { word: redrawFor, reason: comment.trim() });
+                }
+              }}
+            />
+            <button className="ans-btn" disabled={busy || !comment.trim()}
+              onClick={() => send('redraw', { word: redrawFor, reason: comment.trim() })}>
+              🔁 Перерисовать по моему комментарию
+            </button>
+            <button className="pinrev-link" onClick={() => { setRedrawFor(''); setComment(''); }}>← передумал</button>
           </div>
-        )) : (
-          <>
-            <div className="rbrev-pair">
-              <figure className="rbrev-half rbrev-half-new">
-                <img src={item.image_url} alt="" draggable="false" />
-                <figcaption>{item.word}</figcaption>
-              </figure>
-            </div>
-            <div className="rbrev-where">Пока не используется ни в одном задании</div>
-          </>
-        )}
+        ) : null}
 
-        {item.last_reason ? <div className="rbrev-again">Перерисовано после замечания: «{item.last_reason}»</div> : null}
         {statusLine ? <div className="rbrev-where">{statusLine}</div> : null}
         {note ? <div className="pinrev-note">{note}</div> : null}
         {error ? <div className="pinrev-err">{error}</div> : null}
@@ -146,22 +165,21 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
 
       <div className="pinw-bar">
         <button className="ans-btn pinw-next" disabled={busy} onClick={() => send('approve')}>
-          ✅ Годится — в банк
+          ✅ Пара складывается — в банк
         </button>
         <div className="rbrev-rejects">
-          {REJECTS.map((r) => (
-            <button key={r.key} className="ans-btn-ghost rbrev-reject" disabled={busy}
-              onClick={() => send('reject', r.key)}>{r.label}</button>
-          ))}
+          <button className="ans-btn-ghost rbrev-reject" disabled={busy}
+            onClick={() => setRedrawFor(left.word)}>🔁 Перерисовать «{left.word}»</button>
+          <button className="ans-btn-ghost rbrev-reject" disabled={busy}
+            onClick={() => setRedrawFor(right.word)}>🔁 Перерисовать «{right.word}»</button>
         </div>
-        <div className="rbrev-hint">
-          {noRedrawsLeft
-            ? 'Перерисовок больше нет: любой отказ уберёт слово из игры.'
-            : `После отказа перерисую с учётом причины (осталось попыток: ${item.redraws_left}).`}
-        </div>
-        <button className="ans-btn-ghost pinrev-skip" disabled={busy} onClick={() => send('block')}>
-          🗑 Слово не для ребуса — убрать совсем
+        <button className="ans-btn-ghost pinrev-skip" disabled={busy} onClick={() => send('drop_pair')}>
+          🗑 Пара не работает — снять это задание
         </button>
+        <div className="rbrev-hint">
+          «Снять задание» убирает только это слово. Картинки останутся — они могут
+          работать в других словах.
+        </div>
         <button className="pinw-close" onClick={onClose}>Закрыть</button>
       </div>
     </div>

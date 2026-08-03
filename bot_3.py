@@ -28808,19 +28808,19 @@ async def _remind_admin_rebus_review(context: CallbackContext = None) -> None:
     if now - _INTERACTIVE_ALERT_LAST.get("rebus_review_wait", 0.0) < 6 * 3600:
         return
     try:
-        from backend.database import get_admin_telegram_ids, list_pending_rebus_component_reviews
-        pending = await asyncio.to_thread(list_pending_rebus_component_reviews, 40)
+        from backend.database import get_admin_telegram_ids, list_pending_rebus_card_reviews
+        pending = await asyncio.to_thread(list_pending_rebus_card_reviews, 20)
         if not pending:
             return
         _INTERACTIVE_ALERT_LAST["rebus_review_wait"] = now
         bot = context.bot if context is not None else (application.bot if application else None)
         if bot is None:
             return
-        words = ", ".join(p["word"] for p in pending[:8])
+        names = ", ".join(p["compound"] for p in pending[:8])
         text = (
-            f"🧩 <b>Ребусы: {len(pending)} картинок ждут приёмки</b>\n\n"
-            f"{words}{'…' if len(pending) > 8 else ''}\n\n"
-            "Пока не примешь — задания с этими половинками людям не уходят."
+            f"🧩 <b>Ребусы: {len(pending)} пар ждут приёмки</b>\n\n"
+            f"{names}{'…' if len(pending) > 8 else ''}\n\n"
+            "Пока не примешь — эти задания людям не уходят."
         )
         for admin_id in (get_admin_telegram_ids() or []):
             try:
@@ -28842,17 +28842,17 @@ async def admin_rebus_review_command(update: Update, context: CallbackContext) -
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    from backend.database import list_pending_rebus_component_reviews
-    pending = await asyncio.to_thread(list_pending_rebus_component_reviews, 40)
+    from backend.database import list_pending_rebus_card_reviews
+    pending = await asyncio.to_thread(list_pending_rebus_card_reviews, 20)
     if not pending:
         await message.reply_text(
-            "🧩 На приёмке пусто — все нарисованные половинки уже разобраны.",
+            "🧩 На приёмке пусто — все готовые пары уже разобраны.",
             reply_markup=_rebus_review_kb("🧩 Всё равно открыть"),
         )
         return
     await message.reply_text(
         f"🧩 <b>Ждут приёмки: {len(pending)}</b>\n\n"
-        + ", ".join(p["word"] for p in pending[:12])
+        + ", ".join(p["compound"] for p in pending[:12])
         + ("…" if len(pending) > 12 else ""),
         parse_mode="HTML", reply_markup=_rebus_review_kb(),
     )
@@ -29204,10 +29204,15 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
     # прогон в хендлере молча вешает бота на ВСЕХ пользователей (03.08.2026 — на
     # двадцать минут). Отчёт придёт сюда же, когда воркер закончит.
     if stale_mode:
+        # Тратить деньги — только по явному «go». Без него команда лишь показывает,
+        # что именно перерисует и почём: 03.08.2026 молчаливый прогон перерисовал
+        # 81 нормальную картинку, и остановить его было нечем.
+        apply = any(a.lower() in ("go", "apply", "да", "давай") for a in args[1:])
+
         def _enqueue() -> dict:
             from backend.job_queue import enqueue_rebus_stale_redraw_job
             return enqueue_rebus_stale_redraw_job(
-                chat_id=int(message.chat_id), cap=_REBUS_RESET_REDRAW_CAP,
+                chat_id=int(message.chat_id), cap=_REBUS_RESET_REDRAW_CAP, apply=apply,
             )
 
         try:
@@ -29217,9 +29222,12 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
             outcome = {"queued": False, "reason": "broker_error"}
         if outcome.get("queued"):
             await message.reply_text(
-                f"📥 Перерисовка встала в очередь (не больше {_REBUS_RESET_REDRAW_CAP} карточек за прогон).\n"
-                "Считает отдельный воркер — бот в это время отвечает как обычно.\n"
-                "Отчёт пришлю сюда, когда закончит."
+                ("📥 Перерисовываю — не больше "
+                 f"{_REBUS_RESET_REDRAW_CAP} карточек за прогон.\n"
+                 if apply else
+                 "🔎 Смотрю, какие картинки разошлись с описаниями. Ничего не трогаю.\n")
+                + "Считает отдельный воркер — бот в это время отвечает как обычно.\n"
+                  "Отчёт пришлю сюда, когда закончит."
             )
         else:
             await message.reply_text(

@@ -679,7 +679,8 @@ def enqueue_artikel_fill_job(
         return {"queued": False, "reason": "broker_error"}
 
 
-def enqueue_rebus_stale_redraw_job(*, chat_id: int | None = None, cap: int = 8) -> dict:
+def enqueue_rebus_stale_redraw_job(*, chat_id: int | None = None, cap: int = 8,
+                                   apply: bool = False) -> dict:
     """Поставить перерисовку устаревших половинок ребуса в очередь BACKGROUND_JOBS.
 
     В боте это делать нельзя: каждая картинка — поход к gpt-image-1 на десятки
@@ -692,7 +693,7 @@ def enqueue_rebus_stale_redraw_job(*, chat_id: int | None = None, cap: int = 8) 
         from backend.background_jobs import run_rebus_stale_redraw_job
 
         message = run_rebus_stale_redraw_job.send(
-            chat_id=int(chat_id or 0), cap=max(1, int(cap)),
+            chat_id=int(chat_id or 0), cap=max(1, int(cap)), apply=bool(apply),
         )
         return {
             "queued": True,

@@ -3581,25 +3581,49 @@ def get_visual_riddle_pool_health() -> dict:
     queue_name="scheduler_jobs",
     time_limit=_ARTIKEL_FILL_TIME_LIMIT_MS,
 )
-def run_rebus_stale_redraw_job(chat_id: int = 0, cap: int = 8) -> None:
-    """Найти картинки, чей промпт в коде изменился, и перерисовать не больше `cap`
-    карточек. Отчёт уходит в тот же чат: админ уже увидел «поставил в очередь»."""
+def run_rebus_stale_redraw_job(chat_id: int = 0, cap: int = 8, apply: bool = False) -> None:
+    """Найти картинки, чьё ОПИСАНИЕ в коде разошлось с тем, из которого картинка
+    нарисована, и (только по явной команде) перерисовать не больше `cap` карточек.
+
+    По умолчанию — сухой прогон: показать список и цену, ничего не тратя. Команда
+    тратит настоящие деньги, поэтому «покажи, что сделаешь» здесь не вежливость, а
+    страховка: 03.08.2026 такой прогон молча перерисовал 81 нормальную картинку."""
     from backend.database import (
-        invalidate_stale_rebus_component_images, sync_rebus_bank_from_code,
+        invalidate_stale_rebus_component_images, list_stale_rebus_component_images,
+        sync_rebus_bank_from_code,
     )
     from backend.rebus_generator import prepare_rebus_entry
 
     started_at = time.perf_counter()
+    lines: list[str] = []
     try:
         sync_rebus_bank_from_code()
+        if not apply:
+            stale = list_stale_rebus_component_images()
+            if not stale:
+                text = ("🖼 Перерисовывать нечего — все картинки нарисованы по тем же "
+                        "описаниям, что сейчас в коде.")
+            else:
+                text = (
+                    f"🖼 Готов перерисовать {len(stale)} картинок — это примерно "
+                    f"${len(stale) * 0.042:.2f}.\n\n"
+                    + ", ".join(stale[:30]) + ("…" if len(stale) > 30 else "")
+                    + "\n\nПока НИЧЕГО не тронуто. Если согласен — "
+                      "/admin_rebus_reset stale go"
+                )
+            _rebus_report(chat_id, text)
+            return
+
         got = invalidate_stale_rebus_component_images()
         stale_words = list(got.get("stale") or [])
         redrawn = awaiting = failed = 0
         for compound_id in (got.get("compound_ids") or [])[: max(1, int(cap))]:
             try:
-                status = str(prepare_rebus_entry(compound_id).get("status") or "")
+                result = prepare_rebus_entry(compound_id)
+                status = str(result.get("status") or "")
             except Exception:
                 logging.warning("rebus_stale_redraw: %s failed", compound_id, exc_info=True)
+                lines.append(f"• {compound_id}: сорвалось, причина в логах")
                 failed += 1
                 continue
             if status == "ready":
@@ -3608,25 +3632,38 @@ def run_rebus_stale_redraw_job(chat_id: int = 0, cap: int = 8) -> None:
                 awaiting += 1
             else:
                 failed += 1
+                lines.append(f"• {compound_id}: {result.get('reason') or status}")
         duration_s = int(time.perf_counter() - started_at)
         if not stale_words:
-            text = ("🖼 <b>Перерисовывать нечего</b> — все картинки нарисованы по "
-                    "тем описаниям, что сейчас в коде.")
+            text = "🖼 Перерисовывать нечего — все картинки нарисованы по описаниям из кода."
         else:
             text = (
-                f"🖼 <b>Перерисовка ребусов готова</b> ({duration_s} c)\n\n"
-                f"Описание изменилось у {len(stale_words)} картинок: "
+                f"🖼 Перерисовка готова, {duration_s} c.\n\n"
+                f"Перерисовано картинок: {len(stale_words)} — "
                 + ", ".join(stale_words[:20]) + ("…" if len(stale_words) > 20 else "") + "\n"
-                f"Собрано карточек: {redrawn}\n"
-                + (f"Ждут твоей приёмки: {awaiting} — /admin_rebus_review\n" if awaiting else "")
-                + (f"Не вышло: {failed}\n" if failed else "")
             )
+            if awaiting:
+                text += (f"\n{awaiting} карточек ждут твоей приёмки — /admin_rebus_review. "
+                         "Пока не примешь, людям они не уйдут.")
+            if redrawn:
+                text += f"\nСразу собрано и в банке: {redrawn}."
+            if failed:
+                text += (f"\n\nНе собралось: {failed}. Это значит, что карточку не удалось "
+                         "сделать — обычно половинки рисуют одно и то же или картинку "
+                         "забраковала проверка предмета:\n" + "\n".join(lines[:5]))
     except Exception:
         logging.exception("rebus_stale_redraw job failed")
-        text = "❌ Перерисовка ребусов сорвалась. Картинки не тронуты, причина в логах."
-    if int(chat_id or 0) > 0:
-        try:
-            from backend.telegram_notify import _send_private_message
-            _send_private_message(int(chat_id), text[:4000])
-        except Exception:
-            logging.warning("rebus_stale_redraw: report send failed", exc_info=True)
+        text = "❌ Перерисовка сорвалась. Картинки не тронуты, причина в логах."
+    _rebus_report(chat_id, text)
+
+
+def _rebus_report(chat_id: int, text: str) -> None:
+    """Отчёт админу. Без parse_mode: разметка в таком отчёте не нужна, а с ней
+    теги приезжали в сообщение как есть («<b>Перерисовка…</b>»)."""
+    if int(chat_id or 0) <= 0:
+        return
+    try:
+        from backend.telegram_notify import _send_private_message
+        _send_private_message(int(chat_id), text[:4000])
+    except Exception:
+        logging.warning("rebus report send failed", exc_info=True)

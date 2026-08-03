@@ -45494,6 +45494,148 @@ def rebus_pool_status() -> dict:
     return out
 
 
+def list_pending_rebus_card_reviews(limit: int = 20) -> list[dict]:
+    """Карточки, готовые к приёмке: ОБЕ половинки нарисованы и хотя бы одна ещё не
+    принята.
+
+    Единица приёмки — карточка, а не картинка. Одну половинку оценить нельзя («годится
+    ли эта ступня» — вопрос ни о чём), а одно и то же слово входит в разные композиты,
+    и одна пара может складываться, а другая нет. Половинка без пары сюда не попадает
+    вовсе: пока второй картинки нет, судить нечего."""
+    from backend.r2_storage import r2_public_url
+    meanings = get_rebus_part_meanings()
+
+    def _url(key) -> str:
+        if not key:
+            return ""
+        try:
+            return r2_public_url(str(key))
+        except Exception:
+            return ""
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT b.compound_id, b.compound_word, b.meaning_ru, b.parts_json
+                FROM bt_3_rebus_bank b
+                WHERE b.retired = FALSE
+                  AND b.composed_status <> 'ready'
+                  AND jsonb_array_length(b.parts_json) >= 2
+                ORDER BY b.updated_at
+                """
+            )
+            rows = cursor.fetchall() or []
+            words = set()
+            for _cid, _cw, _ru, parts in rows:
+                for part in (parts if isinstance(parts, list) else [])[:2]:
+                    w = str((part or {}).get("word") or "")
+                    if w:
+                        words.add(w)
+            images: dict[str, dict] = {}
+            usage: dict[str, int] = {}
+            if words:
+                cursor.execute(
+                    "SELECT word, image_object_key, generation_status, review_status "
+                    "FROM bt_3_rebus_component_images WHERE word = ANY(%s)",
+                    (sorted(words),),
+                )
+                for w, key, gen, rev in cursor.fetchall() or []:
+                    images[str(w)] = {"key": key, "gen": str(gen or ""),
+                                      "review": str(rev or "approved")}
+                cursor.execute(
+                    """
+                    SELECT p ->> 'word', COUNT(*)
+                    FROM bt_3_rebus_bank b, jsonb_array_elements(b.parts_json) p
+                    WHERE b.retired = FALSE AND p ->> 'word' = ANY(%s)
+                    GROUP BY 1
+                    """,
+                    (sorted(words),),
+                )
+                usage = {str(w): int(c) for w, c in cursor.fetchall() or []}
+
+    out: list[dict] = []
+    for compound_id, compound, meaning_ru, parts in rows:
+        halves = []
+        ok = True
+        for part in (parts if isinstance(parts, list) else [])[:2]:
+            word = str((part or {}).get("word") or "")
+            info = images.get(word) or {}
+            if not word or info.get("gen") != "ready" or not info.get("key"):
+                ok = False       # вторая картинка ещё не нарисована — судить нечего
+                break
+            halves.append({
+                "word": word,
+                "meaning_ru": meanings.get(word, str((part or {}).get("meaning_ru") or "")),
+                "image_url": _url(info.get("key")),
+                "is_new": info.get("review") == "pending",
+                "used_in_cards": int(usage.get(word, 1)),
+            })
+        if not ok or len(halves) < 2 or not any(h["is_new"] for h in halves):
+            continue
+        out.append({
+            "compound_id": str(compound_id),
+            "compound": str(compound),
+            "compound_ru": str(meaning_ru or ""),
+            "halves": halves,
+        })
+        if len(out) >= int(limit):
+            break
+    return out
+
+
+def set_rebus_card_review(compound_id: str, verdict: str, word: str = "", reason: str = "") -> dict:
+    """Решение по КАРТОЧКЕ.
+
+    approve    → обе её половинки приняты, карточка собирается (и все другие, которые
+                 ждали только этих картинок).
+    redraw     → перерисовать названную половинку с причиной; карточки с ней вернутся
+                 на приёмку, когда картинка будет готова.
+    drop_pair  → пара не складывается: снимаем ЭТУ карточку, картинки не трогаем — они
+                 могут прекрасно работать в других словах."""
+    compound_id = str(compound_id or "").strip()
+    verdict = str(verdict or "").strip().lower()
+    if not compound_id:
+        return {"status": "error", "error": "empty compound_id"}
+
+    if verdict == "drop_pair":
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_rebus_bank SET retired = TRUE, updated_at = NOW() "
+                    "WHERE compound_id = %s",
+                    (compound_id,),
+                )
+            conn.commit()
+        return {"status": "pair_dropped"}
+
+    if verdict == "redraw":
+        return set_rebus_component_review(word, "reject", reason)
+
+    if verdict != "approve":
+        return {"status": "error", "error": f"unknown verdict {verdict}"}
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT parts_json FROM bt_3_rebus_bank WHERE compound_id = %s",
+                (compound_id,),
+            )
+            row = cursor.fetchone()
+            parts = (row[0] if row and isinstance(row[0], list) else [])[:2]
+            words = [str((p or {}).get("word") or "") for p in parts]
+            words = [w for w in words if w]
+            if words:
+                cursor.execute(
+                    "UPDATE bt_3_rebus_component_images "
+                    "SET review_status='approved', review_reason=NULL, updated_at=NOW() "
+                    "WHERE word = ANY(%s) AND review_status = 'pending'",
+                    (words,),
+                )
+        conn.commit()
+    return {"status": "approved", "words": words}
+
+
 def list_pending_rebus_component_reviews(limit: int = 40) -> list[dict]:
     """Freshly drawn halves waiting for the owner's verdict, oldest first.
 
@@ -45839,6 +45981,33 @@ def get_rebus_part_meanings() -> dict:
     return out
 
 
+def list_stale_rebus_component_images() -> list[str]:
+    """Только СПИСОК картинок, чьё описание в коде разошлось с тем, из которого
+    картинка нарисована. Ничего не меняет — нужен, чтобы показать цену до траты."""
+    from backend.rebus_bank import COMPONENT_IMAGE_PROMPTS
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT word, dalle_prompt FROM bt_3_rebus_component_images "
+                "WHERE generation_status = 'ready'"
+            )
+            rows = cursor.fetchall() or []
+    out: list[str] = []
+    for word, stored in rows:
+        current = COMPONENT_IMAGE_PROMPTS.get(str(word))
+        if not current or not str(stored or "").strip():
+            continue
+        if _rebus_described(stored) != _rebus_described(current):
+            out.append(str(word))
+    return sorted(out)
+
+
+def _rebus_described(prompt: str) -> str:
+    """Что картинка должна ПОКАЗЫВАТЬ, без общего хвоста стиля."""
+    head = str(prompt or "").split("children's book illustration style")[0]
+    return " ".join(head.split()).strip().rstrip(",").casefold()
+
+
 def invalidate_stale_rebus_component_images() -> dict:
     """A component image is drawn ONCE and then cached forever under its word — so
     fixing its prompt in the code bank changes nothing by itself: the old picture
@@ -45859,21 +46028,13 @@ def invalidate_stale_rebus_component_images() -> dict:
                 "WHERE generation_status = 'ready'"
             )
             rows = cursor.fetchall() or []
-    def _described(prompt: str) -> str:
-        """What the picture must SHOW, without the shared style tail. Comparing whole
-        prompts marks the entire bank stale the moment the style string is touched —
-        which is exactly what happened on 03.08.2026: 81 good pictures were thrown
-        away and redrawn. Only the description decides."""
-        head = str(prompt or "").split("children's book illustration style")[0]
-        return " ".join(head.split()).strip().rstrip(",").casefold()
-
     for word, stored in rows:
         current = COMPONENT_IMAGE_PROMPTS.get(str(word))
         if not current:
             continue  # GPT-only component: the DB row IS the source of truth
         if not str(stored or "").strip():
             continue  # never recorded what it was drawn from — assume it still fits
-        if _described(stored) != _described(current):
+        if _rebus_described(stored) != _rebus_described(current):
             stale.append(str(word))
     for word in stale:
         upsert_rebus_component_image(
