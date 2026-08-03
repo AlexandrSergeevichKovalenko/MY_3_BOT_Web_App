@@ -3667,3 +3667,75 @@ def _rebus_report(chat_id: int, text: str) -> None:
         _send_private_message(int(chat_id), text[:4000])
     except Exception:
         logging.warning("rebus report send failed", exc_info=True)
+
+
+# Рисование по требованию: пул сам берётся за дело только когда запас падает ниже
+# порога, а посмотреть, как работает приёмка, нужно бывает прямо сейчас. Команда с
+# явным потолком — сколько карточек, столько и рисуем, не больше.
+@dramatiq.actor(
+    max_retries=0,
+    queue_name="scheduler_jobs",
+    time_limit=_ARTIKEL_FILL_TIME_LIMIT_MS,
+)
+def run_rebus_draw_job(chat_id: int = 0, cards: int = 2) -> None:
+    """Нарисовать `cards` несобранных карточек и отправить их владельцу на приёмку."""
+    from backend.database import get_db_connection_context
+    from backend.rebus_generator import prepare_rebus_entry
+
+    want = max(1, min(4, int(cards or 2)))
+    started_at = time.perf_counter()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT b.compound_id, b.compound_word
+                    FROM bt_3_rebus_bank b
+                    WHERE b.retired = FALSE AND b.composed_status IN ('pending', 'failed')
+                      AND EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(b.parts_json) p
+                        LEFT JOIN bt_3_rebus_component_images c ON c.word = p ->> 'word'
+                        WHERE c.word IS NULL OR c.generation_status <> 'ready'
+                      )
+                    ORDER BY b.compound_id
+                    LIMIT %s
+                    """,
+                    (want,),
+                )
+                targets = cursor.fetchall() or []
+        if not targets:
+            _rebus_report(chat_id, "🖼 Рисовать нечего — у всех незакрытых карточек обе "
+                                   "половинки уже нарисованы.")
+            return
+        drawn = ready = failed = 0
+        problems: list[str] = []
+        for compound_id, compound in targets:
+            try:
+                result = prepare_rebus_entry(str(compound_id))
+                status = str(result.get("status") or "")
+            except Exception:
+                logging.warning("rebus_draw: %s failed", compound_id, exc_info=True)
+                problems.append(f"• {compound}: сорвалось, причина в логах")
+                failed += 1
+                continue
+            if status == "awaiting_review":
+                drawn += 1
+            elif status == "ready":
+                ready += 1
+            else:
+                failed += 1
+                problems.append(f"• {compound}: {result.get('reason') or status}")
+        duration_s = int(time.perf_counter() - started_at)
+        text = f"🖼 Пробный прогон готов, {duration_s} c.\n\n"
+        if drawn:
+            text += (f"Нарисовано и ждёт твоей приёмки: {drawn} — открой /admin_rebus_review.\n")
+        if ready:
+            text += f"Собралось сразу (картинки уже были приняты): {ready}.\n"
+        if failed:
+            text += ("\nНе получилось: " + str(failed) + ". Обычно это значит, что половинки "
+                     "рисуют одно и то же или картинку забраковала проверка предмета:\n"
+                     + "\n".join(problems[:4]))
+    except Exception:
+        logging.exception("rebus_draw job failed")
+        text = "❌ Пробный прогон сорвался. Причина в логах."
+    _rebus_report(chat_id, text)

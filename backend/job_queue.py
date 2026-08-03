@@ -705,6 +705,22 @@ def enqueue_rebus_stale_redraw_job(*, chat_id: int | None = None, cap: int = 8,
         return {"queued": False, "reason": "broker_error"}
 
 
+def enqueue_rebus_draw_job(*, chat_id: int | None = None, cards: int = 2) -> dict:
+    """Нарисовать несколько карточек по требованию (проба приёмки) — в очереди, не в боте."""
+    if not can_enqueue_background_jobs():
+        return {"queued": False, "reason": "background_jobs_unavailable"}
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_rebus_draw_job
+
+        message = run_rebus_draw_job.send(chat_id=int(chat_id or 0), cards=max(1, min(4, int(cards))))
+        return {"queued": True, "reason": "queued",
+                "message_id": str(getattr(message, "message_id", None) or "").strip() or None}
+    except Exception:
+        logging.exception("enqueue_rebus_draw_job failed")
+        return {"queued": False, "reason": "broker_error"}
+
+
 def enqueue_projection_materialization_job(
     *,
     job_id: int,

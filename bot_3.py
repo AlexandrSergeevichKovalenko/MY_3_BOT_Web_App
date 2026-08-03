@@ -28858,6 +28858,47 @@ async def admin_rebus_review_command(update: Update, context: CallbackContext) -
     )
 
 
+async def admin_rebus_draw_command(update: Update, context: CallbackContext) -> None:
+    """Нарисовать несколько карточек прямо сейчас и прислать их на приёмку.
+    /admin_rebus_draw [сколько] — по умолчанию 2, максимум 4.
+
+    Нужна, потому что сам пул берётся за рисование только когда запас падает ниже
+    порога: посмотреть на приёмку в деле иначе не выйдет. Цена названа до запуска —
+    каждая карточка это до двух картинок."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        cards = max(1, min(4, int((context.args or ["2"])[0])))
+    except (ValueError, IndexError):
+        cards = 2
+
+    def _enqueue() -> dict:
+        from backend.job_queue import enqueue_rebus_draw_job
+        return enqueue_rebus_draw_job(chat_id=int(message.chat_id), cards=cards)
+
+    try:
+        outcome = await asyncio.to_thread(_enqueue)
+    except Exception:
+        logging.exception("admin_rebus_draw: enqueue failed")
+        outcome = {"queued": False, "reason": "broker_error"}
+    if outcome.get("queued"):
+        await message.reply_text(
+            f"🖼 Рисую {cards} карточк(и) — это до {cards * 2} картинок, примерно "
+            f"${cards * 2 * 0.042:.2f}.\n"
+            "Считает отдельный воркер, займёт пару минут. Как будут готовы — напишу, "
+            "и они придут на приёмку."
+        )
+    else:
+        await message.reply_text(
+            "Очередь задач недоступна — рисовать не начинаю, ничего не потрачено."
+        )
+
+
 async def admin_rebus_pool_command(update: Update, context: CallbackContext) -> None:
     """Trigger rebus pool preparation (admin command)."""
     user = update.effective_user
@@ -41922,6 +41963,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
     application.add_handler(CommandHandler("admin_rebus_review", admin_rebus_review_command))
+    application.add_handler(CommandHandler("admin_rebus_draw", admin_rebus_draw_command))
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
     application.add_handler(CommandHandler("admin_hero_images", admin_hero_images_command))
     application.add_handler(CommandHandler("admin_lazy_image", admin_lazy_image_command))
