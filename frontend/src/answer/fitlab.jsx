@@ -10,6 +10,8 @@ import WoFrageLearnGame from './WoFrageLearnGame.jsx';
 import AdjektivLearnGame from './AdjektivLearnGame.jsx';
 import ArtikelReviewGame from './ArtikelReviewGame.jsx';
 import WoFrageReviewGame from './WoFrageReviewGame.jsx';
+import CrosswordGrid from './CrosswordGrid.jsx';
+import AskOverlay from './AskOverlay.jsx';
 import installCardAutoFit from './fitCard.js';
 
 const LONG = 'Weigerung bedeutet, sich zu weigern oder abzulehnen, also das Gegenteil von Zustimmung, und passt deshalb nicht als Synonym.';
@@ -60,6 +62,7 @@ const TASK = {
 // сильнее всего страдала от раздувания, поэтому меряем её отдельно от «синонимов».
 // Слова разной длины, включая заведомо длинное — на нём и проверяется, не режется ли оно.
 const ARTIKEL_WORDS = [
+  { w: 'Aschenbecher', a: 'der' },
   { w: 'Ladegerät', a: 'das' },
   { w: 'Geschwindigkeitsbegrenzung', a: 'die' },
   { w: 'Sanktion', a: 'die', tg: false },
@@ -87,9 +90,10 @@ const WO_DECK = {
     { s: '___ bemühst du dich?', a: 'Worum', opts: ['Wovor', 'Um wen', 'Worum', 'Wogegen'],
       clue: '— Jonas.', frage_ru: 'О чём ты стараешься?', lemma: 'sich bemühen um', verb_ru: 'стараться',
       erklaerung: 'Предлог um + вещь → wo(r)+um = worum.', tip: 'Про человека было бы «um wen».' },
-    { s: '___ freust du dich?', a: 'Worauf', opts: ['Worauf', 'Auf wen', 'Wovon', 'Wobei'],
-      clue: '— Auf den Urlaub.', frage_ru: 'Чего ты ждёшь с радостью?', lemma: 'sich freuen auf', verb_ru: 'радоваться',
-      erklaerung: 'Предлог auf + вещь → worauf.', tip: 'Про человека — «auf wen».' },
+    // КОРОТКИЙ разбор — ровно случай с видео: прокручивать внутри нечего, и карточка
+    // раньше оставалась ниже экрана с серыми полосами сверху и снизу.
+    { s: '___ sprecht ihr?', a: 'Worüber', opts: ['Wovor', 'Über wen', 'Wovon', 'Worüber'],
+      clue: '— Политика.', frage_ru: 'О чём вы говорите?', lemma: 'sprechen über', verb_ru: 'говорить (о)' },
   ],
 };
 
@@ -132,6 +136,52 @@ const WO_REVIEW = {
   cards: WO_DECK.items.map((it, n) => ({ id: n + 1, ...it })),
 };
 
+// Кроссворд. Формат клетки: null — глухая, {e:1} — пустая под ввод, {l:'X'} — данная
+// буква, n — номер слова. Сетка маленькая, но настоящая: важна не она, а то, что экран
+// кроссворда собран ровно как в бою (свой корень `ans-root--cw` и своя раскладка).
+const CW_E = (n) => (n ? { e: 1, n } : { e: 1 });
+const CW_TASK = {
+  cols: 5,
+  grid: [
+    [CW_E(1), CW_E(),  CW_E(),  CW_E(),  CW_E()],
+    [CW_E(2), null,    { l: 'A' }, null, CW_E()],
+    [CW_E(),  CW_E(),  CW_E(),  CW_E(),  CW_E()],
+    [CW_E(),  null,    CW_E(),  null,    CW_E()],
+    [CW_E(3), CW_E(),  CW_E(),  CW_E(),  CW_E()],
+  ],
+  words: [
+    { number: 1, direction: 'across', clue_de: 'Ein Ort zum Wohnen', clue_ru: 'жильё',
+      cells: [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]] },
+    { number: 2, direction: 'down', clue_de: 'Etwas zum Trinken am Morgen', clue_ru: 'напиток',
+      cells: [[1, 0], [2, 0], [3, 0], [4, 0]] },
+    { number: 3, direction: 'across', clue_de: 'Das Gegenteil von klein', clue_ru: 'большой',
+      cells: [[4, 0], [4, 1], [4, 2], [4, 3], [4, 4]] },
+  ],
+  hints: [],
+  topic: 'Zuhause',
+};
+
+// Экран кроссворда собран так же, как в AnswerOverlay: тот же корень, та же карточка, та же
+// кнопка «Спросить». Без этого проверка «не масштабируется под клавиатуру» ничего не значит —
+// у кроссворда и корень, и раскладка свои.
+function CrosswordStand() {
+  const [askOpen, setAskOpen] = React.useState(false);
+  return (
+    <div className="ans-root ans-root--cw">
+      <div className="ans-card ans-card--cw">
+        <div className="ans-head ans-head--cw">
+          <span className="ans-eyebrow">🧩 Kreuzworträtsel</span>
+          <h1 className="ans-title">Kreuzworträtsel des Tages</h1>
+          <p className="ans-sub">📌 Zuhause — fülle die leeren Felder ✍️</p>
+        </div>
+        <CrosswordGrid task={CW_TASK} onSubmit={() => {}} onHint={async () => ({ letter: 'A' })} submitting={false} />
+        <button className="ask-open-btn" onClick={() => setAskOpen(true)}>❓ Спросить</button>
+      </div>
+      {askOpen ? <AskOverlay api={stub({ ok: true, answer: 'ответ' })} onClose={() => setAskOpen(false)} /> : null}
+    </div>
+  );
+}
+
 const stub = (data) => () => new Promise((r) => setTimeout(() => r(data), 30));
 
 function App() {
@@ -143,6 +193,7 @@ function App() {
   if (game === 'adjektiv') return <AdjektivLearnGame api={stub(ADJ_DECK)} haptic={() => {}} onClose={() => {}} />;
   if (game === 'artreview') return <ArtikelReviewGame api={stub(ART_REVIEW)} haptic={() => {}} onClose={() => {}} />;
   if (game === 'woreview') return <WoFrageReviewGame api={stub(WO_REVIEW)} haptic={() => {}} onClose={() => {}} />;
+  if (game === 'crossword') return <CrosswordStand />;
   return <TrainerGame id={1} api={stub(TASK)} haptic={() => {}} onClose={() => {}} />;
 }
 
