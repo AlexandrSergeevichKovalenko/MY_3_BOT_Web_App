@@ -3677,7 +3677,8 @@ def _rebus_report(chat_id: int, text: str) -> None:
     queue_name="scheduler_jobs",
     time_limit=_ARTIKEL_FILL_TIME_LIMIT_MS,
 )
-def run_rebus_draw_job(chat_id: int = 0, cards: int = 2, names: list | None = None) -> None:
+def run_rebus_draw_job(chat_id: int = 0, cards: int = 2, names: list | None = None,
+                       compound_ids: list | None = None) -> None:
     """Нарисовать карточки и отправить их владельцу на приёмку.
 
     `names` — конкретные слова («Kaffeetasse»): без них команда берёт карточки по
@@ -3689,9 +3690,16 @@ def run_rebus_draw_job(chat_id: int = 0, cards: int = 2, names: list | None = No
     started_at = time.perf_counter()
     try:
         wanted_names = [str(n).strip() for n in (names or []) if str(n).strip()]
+        wanted_ids = [str(i).strip() for i in (compound_ids or []) if str(i).strip()]
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
-                if wanted_names:
+                if wanted_ids:
+                    cursor.execute(
+                        "SELECT compound_id, compound_word FROM bt_3_rebus_bank "
+                        "WHERE retired = FALSE AND compound_id = ANY(%s)",
+                        (wanted_ids,),
+                    )
+                elif wanted_names:
                     cursor.execute(
                         """
                         SELECT b.compound_id, b.compound_word

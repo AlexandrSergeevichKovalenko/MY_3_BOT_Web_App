@@ -29599,6 +29599,22 @@ def answer_rebus_review_verdict():
         return jsonify({"error": "не указано, какую половинку перерисовать"}), 400
     from backend.database import rebus_pool_status, set_rebus_card_review
     result = set_rebus_card_review(compound_id, verdict, word=word, reason=reason)
+    if result.get("status") == "redraw":
+        # Перерисовываем СРАЗУ. Иначе картинка ждала бы, пока пул сам возьмётся за
+        # работу (а он трогается только когда запас карточек падает ниже порога) —
+        # то есть отказ уходил бы в никуда на недели.
+        try:
+            from backend.job_queue import enqueue_rebus_draw_job
+            queued = enqueue_rebus_draw_job(chat_id=int(user_id), compound_ids=[compound_id], cards=1)
+            if not queued.get("queued"):
+                # Без очереди рисовать здесь нельзя (веб-запрос столько не живёт) —
+                # честно говорим, что перерисовка не началась.
+                result["redraw_started"] = False
+            else:
+                result["redraw_started"] = True
+        except Exception:
+            logging.warning("rebusreview: redraw enqueue failed id=%s", compound_id, exc_info=True)
+            result["redraw_started"] = False
     if result.get("status") == "approved":
         # Собираем СРАЗУ: обе картинки уже есть, это склейка, а не генерация. Заодно
         # достраиваем всё, что ждало этих же половинок.

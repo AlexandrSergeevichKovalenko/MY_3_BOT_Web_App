@@ -706,7 +706,7 @@ def enqueue_rebus_stale_redraw_job(*, chat_id: int | None = None, cap: int = 8,
 
 
 def enqueue_rebus_draw_job(*, chat_id: int | None = None, cards: int = 2,
-                           names: list | None = None) -> dict:
+                           names: list | None = None, compound_ids: list | None = None) -> dict:
     """Нарисовать несколько карточек по требованию (проба приёмки) — в очереди, не в боте."""
     if not can_enqueue_background_jobs():
         return {"queued": False, "reason": "background_jobs_unavailable"}
@@ -716,7 +716,8 @@ def enqueue_rebus_draw_job(*, chat_id: int | None = None, cards: int = 2,
 
         message = run_rebus_draw_job.send(chat_id=int(chat_id or 0),
                                           cards=max(1, min(4, int(cards))),
-                                          names=list(names or []))
+                                          names=list(names or []),
+                                          compound_ids=list(compound_ids or []))
         return {"queued": True, "reason": "queued",
                 "message_id": str(getattr(message, "message_id", None) or "").strip() or None}
     except Exception:

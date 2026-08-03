@@ -76,7 +76,11 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
           ? `✅ «${card.compound}» в банке. Карточек собрано: ${r.composed} — уже в очереди на отправку.`
           : `✅ «${card.compound}» принято.`);
       } else if (r.status === 'redraw') {
-        setNote(`🔄 «${extra.word}» перерисую с учётом причины. Попыток осталось: ${r.redraws_left}.`);
+        setNote(r.redraw_started
+          ? `🔄 Перерисовываю «${extra.word}» с учётом причины — пара вернётся сюда через `
+            + `пару минут, вторая картинка останется прежней. Попыток осталось: ${r.redraws_left}.`
+          : `🔄 «${extra.word}» помечено на перерисовку, но запустить её сейчас не вышло — `
+            + 'нарисуется при следующем прогоне.');
       } else if (r.status === 'blocked') {
         setNote(`🗑 «${extra.word}» больше не рисуем. Заданий убрано: ${r.compounds_touched}.`);
       } else if (r.status === 'pair_dropped') {
