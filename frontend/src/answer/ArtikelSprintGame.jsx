@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
+import useWideScreen from './useWideScreen.js';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
 import Toast, { useToast } from './Toast.jsx';
 import { saveErrorToast } from './saveNotice.js';
@@ -28,7 +29,10 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
   const startRef = useRef(0);
   const timerRef = useRef(null);
   const idxRef = useRef(0);
-  const wordFit = useFitText(idx, { max: 44 });
+  // На планшете потолок кегля задаёт CSS (он там свой и крупный), на телефоне остаётся
+  // проверенные 44 px — телефонный вид не трогаем.
+  const wide = useWideScreen();
+  const wordFit = useFitText(`${wide}|${idx}`, { max: wide ? 'css' : 44, min: 14, fitBy: 'word' });
 
   useEffect(() => {
     let cancelled = false;

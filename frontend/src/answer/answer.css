@@ -2203,6 +2203,22 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
   .tr-anchor-hint { font-size: 1.0625rem; }
   .tr-anchor-ask  { font-size: 1rem; }
 
+  /* Семья «слово + крупные кнопки» (артикли, прилагательные, Wo-Fragen). Двух колонок тут
+     нет: игра про скорость, слово и кнопки должны быть под глазами и под пальцем. Поэтому
+     на планшете слово забирает всю свободную высоту, а кнопки становятся крупными
+     мишенями — иначе содержимое стоит полоской посреди пустой карточки. */
+  .ans-card:has(> .as-buttons) > .as-word {
+    flex: 1 1 auto;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 3.25rem;
+  }
+  .ans-card:has(> .as-buttons) > .as-word.wo-word { font-size: 2rem; }
+  /* Кнопки забирают примерно треть высоты: слово сверху, крупные мишени снизу — иначе
+     панель со словом раздувается на весь экран, а кнопки остаются телефонными. */
+  .ans-card:has(> .as-buttons) > .as-buttons { min-height: 30vh; }
+  .ans-card:has(> .as-buttons) .as-btn-art { font-size: 2.25rem; height: 100%; }
+  .ans-card:has(> .as-buttons) > .as-sense { font-size: 1.25rem; }
+
   /* Итог и заставка остаются одной колонкой, но широкой: список слов выкладывается
      в несколько рядов вместо узкого столбика. */
   .ans-card:has(> .tr-all) > .tr-done-note,
