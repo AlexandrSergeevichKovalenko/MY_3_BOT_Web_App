@@ -492,10 +492,43 @@ export default function installCardAutoFit() {
   try { window.Telegram?.WebApp?.onEvent?.('viewportChanged', freshStart); } catch (_e) { /* noop */ }
 
   const isField = (el) => !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-  document.addEventListener('focusin', (e) => { if (isField(e.target)) { typing = true; schedule(); } });
+  // ЗАМОРОЗКА БАЗОВОГО КЕГЛЯ, пока открыта клавиатура на интерактиве с `ans-root--keepkbd`.
+  //
+  // Это второй — и главный — источник «экран сам ужимается». В вёрстке базовый размер шрифта
+  // всего приложения привязан к высоте экрана:
+  //     html { font-size: clamp(13px, calc(1.42vh + 0.4vw + 4.8px), 18.5px); }
+  // Клавиатура забирает высоту, `1.42vh` падает, базовый кегль уменьшается — а в `rem` от
+  // него заданы ВСЕ размеры внутри карточки. Поэтому карточка ужимается сама, без всякого
+  // пересчёта: движок в это время уже молчит (см. ветку `typing` выше), а картинка всё равно
+  // едет. Отключить это в движке было нельзя — источник в CSS.
+  //
+  // Поэтому на время клавиатуры прибиваем базовый кегль к тому значению, что было ДО её
+  // появления, и заодно закрепляем высоту корня. После закрытия — снимаем, и всё снова
+  // считается от экрана как обычно.
+  const freezeBase = () => {
+    const root = document.querySelector('.ans-root--keepkbd');
+    if (!root) return;
+    const html = document.documentElement;
+    if (!html.style.fontSize) {
+      html.style.fontSize = getComputedStyle(html).fontSize;   // текущий, ещё «доклавиатурный»
+    }
+    if (!root.style.minHeight) {
+      const h = viewportHeight();
+      if (h > 200) root.style.minHeight = `${Math.round(h)}px`;
+    }
+  };
+  const thawBase = () => { document.documentElement.style.fontSize = ''; };
+
+  document.addEventListener('focusin', (e) => {
+    if (!isField(e.target)) return;
+    freezeBase();          // ДО того, как клавиатура успеет изменить высоту
+    typing = true;
+    schedule();
+  });
   document.addEventListener('focusout', (e) => {
     if (!isField(e.target)) return;
     typing = false;
+    thawBase();
     setTimeout(freshStart, 120); // клавиатура закрывается не мгновенно
   });
 
