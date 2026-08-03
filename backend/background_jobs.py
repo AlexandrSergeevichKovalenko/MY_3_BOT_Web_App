@@ -3709,6 +3709,7 @@ def run_rebus_draw_job(chat_id: int = 0, cards: int = 2) -> None:
             return
         drawn = ready = failed = 0
         problems: list[str] = []
+        dropped: list[str] = []
         for compound_id, compound in targets:
             try:
                 result = prepare_rebus_entry(str(compound_id))
@@ -3722,6 +3723,8 @@ def run_rebus_draw_job(chat_id: int = 0, cards: int = 2) -> None:
                 drawn += 1
             elif status == "ready":
                 ready += 1
+            elif status == "pair_impossible":
+                dropped.append(str(compound))
             else:
                 failed += 1
                 problems.append(f"• {compound}: {result.get('reason') or status}")
@@ -3731,10 +3734,16 @@ def run_rebus_draw_job(chat_id: int = 0, cards: int = 2) -> None:
             text += (f"Нарисовано и ждёт твоей приёмки: {drawn} — открой /admin_rebus_review.\n")
         if ready:
             text += f"Собралось сразу (картинки уже были приняты): {ready}.\n"
+        if dropped:
+            text += ("\nСнял как невозможные: " + ", ".join(dropped) + ".\n"
+                     "Их половинки рисуют одно и то же (орла без крыльев не бывает), "
+                     "складывать нечего. Картинки остались и работают в других словах.\n")
         if failed:
-            text += ("\nНе получилось: " + str(failed) + ". Обычно это значит, что половинки "
-                     "рисуют одно и то же или картинку забраковала проверка предмета:\n"
-                     + "\n".join(problems[:4]))
+            text += ("\nНе получилось: " + str(failed) + ". Картинку забраковала проверка "
+                     "предмета — нарисовалось не то, что просили:\n"
+                     + "\n".join(problems[:4])
+                     + "\nПопробую ещё раз при следующем прогоне; после трёх неудач подряд "
+                       "слово перестаю рисовать, чтобы не тратить деньги впустую.")
     except Exception:
         logging.exception("rebus_draw job failed")
         text = "❌ Пробный прогон сорвался. Причина в логах."

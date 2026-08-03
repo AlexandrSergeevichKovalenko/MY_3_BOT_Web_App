@@ -45467,6 +45467,19 @@ def get_rebus_component_image(word: str) -> dict | None:
 MAX_REBUS_COMPONENT_REDRAWS = 2
 
 
+def retire_rebus_compound(compound_id: str) -> None:
+    """Снять карточку с ротации (пара не складывается). Картинки не трогаем — они
+    могут работать в других словах."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_rebus_bank SET retired = TRUE, updated_at = NOW() "
+                "WHERE compound_id = %s",
+                (str(compound_id),),
+            )
+        conn.commit()
+
+
 def rebus_pool_status() -> dict:
     """Где сейчас стоит игра: сколько карточек готово к отправке, сколько ждут
     дорисовки и сколько половинок ждут приёмки. Нужно, чтобы после «годится» было
@@ -45832,7 +45845,11 @@ def upsert_rebus_component_image(
     failure_reason: str | None = None,
     dalle_prompt: str | None = None,
     review_status: str | None = None,
+    count_attempt: bool = False,
 ) -> None:
+    """count_attempt=True — это была НЕУДАЧНАЯ попытка нарисовать (проверка предмета
+    забраковала). Считаем её так же, как отказ владельца: попытка стоит денег, и
+    бесконечно повторять её нельзя."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -45847,10 +45864,11 @@ def upsert_rebus_component_image(
                     failure_reason    = EXCLUDED.failure_reason,
                     dalle_prompt      = COALESCE(EXCLUDED.dalle_prompt, bt_3_rebus_component_images.dalle_prompt),
                     review_status     = COALESCE(%s, bt_3_rebus_component_images.review_status),
+                    redraw_count      = bt_3_rebus_component_images.redraw_count + %s,
                     updated_at        = NOW()
                 """,
                 (str(word), image_object_key, str(generation_status), failure_reason, dalle_prompt,
-                 review_status, review_status),
+                 review_status, review_status, 1 if count_attempt else 0),
             )
         conn.commit()
 

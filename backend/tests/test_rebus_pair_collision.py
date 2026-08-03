@@ -58,3 +58,32 @@ class RebusPairCollisionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RebusFailureBudgetTests(unittest.TestCase):
+    """Неудачная отрисовка стоит столько же, сколько удачная. Значит у неё должен
+    быть счёт, а у невозможной пары — конец, а не вечные попытки."""
+
+    def test_blocked_compounds_include_the_self_revealing_ones(self) -> None:
+        for compound in ("Adlerflügel", "Tannenbaum", "Elefantenrüssel", "Löwenmähne"):
+            with self.subTest(compound):
+                self.assertTrue(is_rebus_compound_blocked(compound))
+
+    def test_band_is_a_strip_not_a_bow(self) -> None:
+        # Проверка предмета браковала «Band» как бант — описание было про бант.
+        prompt = COMPONENT_IMAGE_PROMPTS["Band"].lower()
+        self.assertIn("strip", prompt)
+        self.assertIn("no bow", prompt)
+
+    def test_word_is_not_redrawn_forever(self) -> None:
+        from unittest.mock import patch
+        from backend import rebus_generator
+        from backend.database import MAX_REBUS_COMPONENT_REDRAWS
+        spent = {"redraw_count": MAX_REBUS_COMPONENT_REDRAWS + 1,
+                 "generation_status": "failed", "review_status": "pending",
+                 "review_reason": "main object is a bow"}
+        with patch("backend.database.get_rebus_component_image", return_value=spent), \
+             patch("backend.image_generation_provider.generate_image_bytes") as gen:
+            with self.assertRaises(RuntimeError):
+                rebus_generator.generate_component_image("Band", "A flat ribbon strip")
+            gen.assert_not_called()

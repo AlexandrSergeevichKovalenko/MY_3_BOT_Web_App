@@ -33,7 +33,7 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Tuch":         f"A folded piece of cloth/fabric, {_STYLE}",
     "Hut":          f"A classic wide-brimmed hat, {_STYLE}",
     "Ring":         f"A plain silver ring band, no gemstone, no gold, {_STYLE}",
-    "Band":         f"A decorative ribbon/band tied in a bow, {_STYLE}",
+    "Band":         f"A single flat strip of fabric ribbon lying straight and unrolled, no bow, no knot, no loop, {_STYLE}",
     "Kette":        f"A metal chain necklace, {_STYLE}",
     "Nagel":        f"A single metal nail, sharp and pointed, {_STYLE}",
     "Schere":       f"A pair of scissors, open, {_STYLE}",
@@ -1500,6 +1500,7 @@ _REBUS_BLOCKED_COMPOUNDS: set[str] = {
     "tannenbaum",       # Tanne is already a fir TREE — both pictures are the same tree
     "elefantenrussel",  # a Rüssel can only be drawn as an elephant's trunk
     "lowenmahne",       # a Mähne can only be drawn as a lion's mane
+    "adlerflugel",      # орла без крыльев не нарисуешь — вторая половина видна всегда
 }
 
 

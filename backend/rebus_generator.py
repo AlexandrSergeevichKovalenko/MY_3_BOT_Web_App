@@ -85,10 +85,18 @@ def generate_component_image(word: str, dalle_prompt: str, *,
     from backend.openai_manager import run_image_depicts
     from backend.r2_storage import r2_put_bytes
 
+    from backend.database import MAX_REBUS_COMPONENT_REDRAWS
     # Already done?
     existing = get_rebus_component_image(word) or {}
     if existing.get("review_status") == "blocked":
         raise RuntimeError(f"component '{word}' was blocked by the owner — not drawing it again")
+    # Попытки не бесконечны: каждая стоит денег. Три неудачи подряд — значит слово
+    # рисуется не так, как мы просим, и повторять это за деньги бессмысленно.
+    if int(existing.get("redraw_count") or 0) > MAX_REBUS_COMPONENT_REDRAWS:
+        raise RuntimeError(
+            f"«{word}»: {existing.get('redraw_count')} попытки подряд не прошли проверку — "
+            f"больше не рисую. Последняя причина: {existing.get('review_reason') or existing.get('failure_reason') or '—'}"
+        )
     if existing.get("generation_status") == "ready" and existing.get("image_object_key"):
         return str(existing["image_object_key"])
 
@@ -126,7 +134,9 @@ def generate_component_image(word: str, dalle_prompt: str, *,
                                     mime=mime)
         if not verdict.get("ok"):
             reason = str(verdict.get("reason") or "vision_rejected")
-            upsert_rebus_component_image(word, generation_status="failed", failure_reason=f"vision: {reason}"[:500])
+            upsert_rebus_component_image(word, generation_status="failed",
+                                         failure_reason=f"vision: {reason}"[:500],
+                                         count_attempt=True)
             raise RuntimeError(f"vision rejected component '{word}': {reason}")
 
         ext = "png" if "png" in mime else "webp" if "webp" in mime else "png"
@@ -463,8 +473,20 @@ def prepare_rebus_entry(compound_id: str, *, allow_draw: bool = True) -> dict:
 
     except Exception as exc:
         logging.warning("rebus_generator: prepare_rebus_entry failed compound_id=%s: %s", compound_id, exc, exc_info=True)
+        text = str(exc)
+        # «на картинке видна вторая половина» — это свойство ПАРЫ, а не картинки: сама по
+        # себе она хороша и работает в других словах (орёл прекрасен везде, кроме
+        # Adlerflügel). Перерисовывать её за деньги бессмысленно — снимаем это задание.
+        if "contains the other half" in text or "nothing left to add up" in text:
+            try:
+                from backend.database import retire_rebus_compound
+                retire_rebus_compound(compound_id)
+            except Exception:
+                logging.warning("rebus_generator: retire after pair clash failed %s", compound_id, exc_info=True)
+            return {"status": "pair_impossible", "compound_id": compound_id,
+                    "reason": "половинки рисуют одно и то же — задание снято"}
         mark_rebus_compose_failed(compound_id)
-        return {"status": "failed", "compound_id": compound_id, "reason": str(exc)[:300]}
+        return {"status": "failed", "compound_id": compound_id, "reason": text[:300]}
 
 
 def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dict:
