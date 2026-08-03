@@ -1803,12 +1803,68 @@ html[data-scheme="dark"] .pinrev-word { background: #0f172a; color: #F8FAFC; }
 .pinrev-link { background: none; border: none; color: #60A5FA; font: inherit; font-size: 0.8125rem; cursor: pointer; padding: 0; align-self: flex-start; }
 .pinrev-empty-sub { font-size: 0.875rem; color: var(--dmps-text-muted, #94A3B8); }
 
-/* ── Приёмка половинок ребуса (админ): одна картинка на экран ─────────────── */
+/* ── Приёмка половинок ребуса (админ) ─────────────────────────────────────────
+ * Экраны студий (.pinw) живут ВНЕ .ans-root, поэтому светлые токены темы до них
+ * не доходили: текст брал тёмный дефолт #F8FAFC и на светлом фоне был невидим.
+ * Задаём токены прямо на .pinw — чинит заодно и студию «Найди предмет». */
+html[data-scheme="light"] .pinw {
+  --dmps-bg: #e9edf3;
+  --dmps-card: #ffffff;
+  --dmps-card-alt: #f4f6fa;
+  --dmps-border: #d6dbe4;
+  --dmps-text-primary: #0f172a;
+  --dmps-text-title: #111827;
+  --dmps-text-secondary: #334155;
+  --dmps-text-muted: #64748b;
+  --dmps-text-subtle: #94a3b8;
+}
+@media (prefers-color-scheme: light) {
+  html:not([data-scheme="dark"]) .pinw {
+    --dmps-text-primary: #0f172a;
+    --dmps-text-title: #111827;
+    --dmps-text-secondary: #334155;
+    --dmps-text-muted: #64748b;
+    --dmps-border: #d6dbe4;
+  }
+}
+
+.rbrev-scroll {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; gap: 0.625rem;
+}
+.rbrev-main { display: flex; justify-content: center; }
+.rbrev-mainimg {
+  display: block; max-width: 100%; max-height: 34vh; width: auto; height: auto;
+  border-radius: 1.0rem; border: 1px solid var(--dmps-border, #334155);
+}
 .rbrev-word { font-size: 1.375rem; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
 .rbrev-ru { font-size: 1.0rem; font-weight: 600; color: var(--dmps-text-secondary, #CBD5E1); }
 .rbrev-where { font-size: 0.8125rem; color: var(--dmps-text-muted, #94A3B8); }
-.rbrev-again { font-size: 0.8125rem; color: #FBBF24; }
+.rbrev-again { font-size: 0.8125rem; color: #B45309; }
 .rbrev-hint { font-size: 0.75rem; color: var(--dmps-text-muted, #94A3B8); text-align: center; }
+
+/* «Как это увидит человек»: две картинки → слово */
+.rbrev-pairs { display: flex; flex-direction: column; gap: 0.5rem; }
+.rbrev-pairs-title { font-size: 0.8125rem; font-weight: 700; color: var(--dmps-text-secondary, #CBD5E1); }
+.rbrev-pair {
+  display: flex; align-items: center; gap: 0.5rem;
+  border: 1px solid var(--dmps-border, #334155); border-radius: 0.875rem;
+  background: var(--dmps-card-alt, rgba(148,163,184,0.10)); padding: 0.5rem;
+}
+.rbrev-thumb {
+  flex: 0 0 auto; width: 3.5rem; height: 3.5rem; object-fit: cover;
+  border-radius: 0.625rem; border: 1px solid var(--dmps-border, #334155); background: #fff;
+}
+.rbrev-thumb-empty {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.5rem; font-weight: 800; color: var(--dmps-text-muted, #94A3B8);
+  background: var(--dmps-card, rgba(148,163,184,0.18));
+}
+.rbrev-plus, .rbrev-eq { flex: 0 0 auto; font-size: 1.125rem; font-weight: 800; color: var(--dmps-text-muted, #94A3B8); }
+.rbrev-answer { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.rbrev-answer b { font-size: 1.0rem; color: var(--dmps-text-primary, #F8FAFC); }
+.rbrev-answer i { font-style: normal; font-size: 0.8125rem; color: var(--dmps-text-secondary, #CBD5E1); }
+.rbrev-answer em { font-style: normal; font-size: 0.75rem; color: var(--dmps-text-muted, #94A3B8); }
 .rbrev-rejects { display: flex; gap: 0.5rem; }
 .rbrev-rejects .rbrev-reject {
   flex: 1 1 0; width: auto; min-width: 0; font-size: 0.75rem; font-weight: 700;

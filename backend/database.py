@@ -45468,11 +45468,24 @@ MAX_REBUS_COMPONENT_REDRAWS = 2
 
 
 def list_pending_rebus_component_reviews(limit: int = 40) -> list[dict]:
-    """Freshly drawn halves waiting for the owner's verdict, oldest first, with
-    everything the acceptance screen needs: the picture, what it is supposed to show,
-    and which compounds are held up by it."""
+    """Freshly drawn halves waiting for the owner's verdict, oldest first.
+
+    A half cannot be judged alone: the question is not "is this a nice foot" but
+    "do THESE TWO pictures add up to Fußball". So every item carries its pairs —
+    the other half's picture, the compound and its meaning — exactly as the learner
+    will see them. The verdict still applies to the ONE new picture, because that is
+    what gets reused by every compound containing this word."""
     from backend.r2_storage import r2_public_url
     meanings = get_rebus_part_meanings()
+
+    def _url(key) -> str:
+        if not key:
+            return ""
+        try:
+            return r2_public_url(str(key))
+        except Exception:
+            return ""
+
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -45489,33 +45502,70 @@ def list_pending_rebus_component_reviews(limit: int = 40) -> list[dict]:
             )
             rows = cursor.fetchall() or []
             words = [str(r[0]) for r in rows]
-            waiting: dict[str, list[str]] = {w: [] for w in words}
+            pairs: dict[str, list[dict]] = {w: [] for w in words}
             if words:
+                # Every live compound that uses one of these words, plus the picture of
+                # its OTHER half (may be missing — then the pair is not judgeable yet).
                 cursor.execute(
                     """
-                    SELECT p->>'word', compound_word
-                    FROM bt_3_rebus_bank, jsonb_array_elements(parts_json) p
-                    WHERE retired = FALSE AND p->>'word' = ANY(%s)
+                    SELECT b.compound_word, b.meaning_ru, b.parts_json,
+                           mine.value ->> 'word' AS mine_word
+                    FROM bt_3_rebus_bank b,
+                         jsonb_array_elements(b.parts_json) AS mine(value)
+                    WHERE b.retired = FALSE AND mine.value ->> 'word' = ANY(%s)
+                    ORDER BY b.compound_word
                     """,
                     (words,),
                 )
-                for part_word, compound in cursor.fetchall() or []:
-                    waiting.setdefault(str(part_word), []).append(str(compound))
+                bank_rows = cursor.fetchall() or []
+                sibling_words = set()
+                for _c, _m, parts, mine_word in bank_rows:
+                    for part in (parts if isinstance(parts, list) else [])[:2]:
+                        other = str((part or {}).get("word") or "")
+                        if other and other != str(mine_word):
+                            sibling_words.add(other)
+                sibling_img: dict[str, dict] = {}
+                if sibling_words:
+                    cursor.execute(
+                        """
+                        SELECT word, image_object_key, generation_status, review_status
+                        FROM bt_3_rebus_component_images WHERE word = ANY(%s)
+                        """,
+                        (sorted(sibling_words),),
+                    )
+                    for w, key, gen, rev in cursor.fetchall() or []:
+                        sibling_img[str(w)] = {
+                            "key": key,
+                            "ready": str(gen) == "ready" and bool(key),
+                            "approved": str(rev or "approved") == "approved",
+                        }
+                for compound, meaning_ru, parts, mine_word in bank_rows:
+                    other = ""
+                    for part in (parts if isinstance(parts, list) else [])[:2]:
+                        cand = str((part or {}).get("word") or "")
+                        if cand and cand != str(mine_word):
+                            other = cand
+                            break
+                    info = sibling_img.get(other) or {}
+                    pairs.setdefault(str(mine_word), []).append({
+                        "compound": str(compound),
+                        "compound_ru": str(meaning_ru or ""),
+                        "sibling": other,
+                        "sibling_ru": meanings.get(other, ""),
+                        "sibling_image_url": _url(info.get("key")) if info.get("ready") else "",
+                    })
     out = []
     for word, key, prompt, redraws, reason in rows:
-        try:
-            url = r2_public_url(str(key))
-        except Exception:
-            url = ""
         out.append({
             "word": str(word),
             "meaning_ru": meanings.get(str(word), ""),
-            "image_url": url,
+            "image_url": _url(key),
             "prompt": str(prompt or ""),
             "redraw_count": int(redraws or 0),
             "redraws_left": max(0, MAX_REBUS_COMPONENT_REDRAWS - int(redraws or 0)),
             "last_reason": str(reason or ""),
-            "compounds": sorted(waiting.get(str(word)) or []),
+            "pairs": pairs.get(str(word)) or [],
+            "compounds": sorted({p["compound"] for p in (pairs.get(str(word)) or [])}),
         })
     return out
 

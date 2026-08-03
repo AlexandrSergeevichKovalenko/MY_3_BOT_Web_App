@@ -86,22 +86,44 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
         <span className="pinw-count">осталось {items.length}</span>
       </div>
 
-      <div className="pinw-imgarea">
-        <div className="pinw-imgwrap">
-          <img className="pinw-img" src={item.image_url} alt="" draggable="false" />
+      <div className="rbrev-scroll">
+        <div className="rbrev-main">
+          <img className="rbrev-mainimg" src={item.image_url} alt="" draggable="false" />
         </div>
-      </div>
-
-      <div className="pinw-controls">
         <div className="rbrev-word">
           {item.word}
           {item.meaning_ru ? <span className="rbrev-ru"> — {item.meaning_ru}</span> : null}
         </div>
-        <div className="rbrev-where">
-          {item.compounds?.length
-            ? `Пойдёт в слова: ${item.compounds.join(', ')}`
-            : 'Пока не используется ни в одном задании'}
-        </div>
+
+        {/* Одну половинку не оценишь: важно, складываются ли ДВЕ картинки в слово. */}
+        {item.pairs?.length ? (
+          <div className="rbrev-pairs">
+            <div className="rbrev-pairs-title">Как это увидит человек:</div>
+            {item.pairs.map((p) => (
+              <div className="rbrev-pair" key={p.compound}>
+                <img className="rbrev-thumb" src={item.image_url} alt="" draggable="false" />
+                <span className="rbrev-plus">+</span>
+                {p.sibling_image_url ? (
+                  <img className="rbrev-thumb" src={p.sibling_image_url} alt="" draggable="false" />
+                ) : (
+                  <span className="rbrev-thumb rbrev-thumb-empty" title="ещё не нарисована">?</span>
+                )}
+                <span className="rbrev-eq">=</span>
+                <span className="rbrev-answer">
+                  <b>{p.compound}</b>
+                  {p.compound_ru ? <i> — {p.compound_ru}</i> : null}
+                  <em>
+                    {item.word} + {p.sibling}
+                    {p.sibling_image_url ? '' : ' (вторая половина ещё не нарисована)'}
+                  </em>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rbrev-where">Пока не используется ни в одном задании</div>
+        )}
+
         {item.last_reason ? <div className="rbrev-again">Перерисовано после замечания: «{item.last_reason}»</div> : null}
         {note ? <div className="pinrev-note">{note}</div> : null}
         {error ? <div className="pinrev-err">{error}</div> : null}
