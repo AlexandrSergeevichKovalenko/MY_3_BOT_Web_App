@@ -500,11 +500,45 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
     if not allow_draw:
         logging.info("rebus_generator: %s halves await acceptance — compose-only pass", backlog)
 
-    need = max(0, target_ready - already_ready)
     generated = 0
     failed = 0
     attempts = 0
     awaiting = 0
+
+    # FREE PASS FIRST. Every card whose halves are already drawn and accepted costs
+    # nothing to build — it is PIL plus two files from R2. Drawing anything before
+    # those are built means paying for pictures the bank did not need.
+    free_built = 0
+    with __import__("backend.database", fromlist=["get_db_connection_context"]).get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT b.compound_id FROM bt_3_rebus_bank b
+                WHERE b.retired = FALSE AND b.composed_status IN ('pending', 'failed')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(b.parts_json) p
+                    LEFT JOIN bt_3_rebus_component_images c ON c.word = p->>'word'
+                    WHERE c.word IS NULL OR c.generation_status <> 'ready'
+                       OR c.review_status <> 'approved' OR c.image_object_key IS NULL
+                  )
+                LIMIT 200
+                """
+            )
+            free_ids = [str(r[0]) for r in cur.fetchall() or []]
+    for cid in free_ids:
+        try:
+            if prepare_rebus_entry(cid, allow_draw=False).get("status") == "ready":
+                free_built += 1
+        except Exception:
+            logging.warning("rebus_generator: free compose failed for %s", cid, exc_info=True)
+    if free_built:
+        already_ready = count_available_rebuses()
+        logging.info("rebus_generator: composed %s cards for free — ready=%s", free_built, already_ready)
+    if already_ready >= target_ready:
+        return {"status": "sufficient", "ready": already_ready, "generated": 0,
+                "composed_free": free_built}
+
+    need = max(0, target_ready - already_ready)
 
     # Get pending entries ordered by compound_id
     with __import__("backend.database", fromlist=["get_db_connection_context"]).get_db_connection_context() as conn:
@@ -553,6 +587,7 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
         "attempts": attempts,
         "awaiting_review": awaiting,
         "compose_only": not allow_draw,
+        "composed_free": free_built,
     }
 
 
