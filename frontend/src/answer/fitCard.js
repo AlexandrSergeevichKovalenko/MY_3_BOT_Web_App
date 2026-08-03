@@ -51,6 +51,7 @@ const observedCards = new WeakSet();
 let installed = false;
 let typing = false;      // пока печатают В КАРТОЧКЕ, подгонку снимаем
 let askTyping = false;   // печатают в окне «Спросить» — карточку не трогаем вовсе
+let settling = false;    // клавиатура ещё едет — любой пересчёт сейчас будет по неверной высоте
 let rafId = 0;
 let timerId = 0;
 let ro = null;
@@ -425,6 +426,8 @@ function fitOne(root) {
 function run() {
   rafId = 0;
   if (timerId) { clearTimeout(timerId); timerId = 0; }
+  // Клавиатура ещё едет — считать нельзя: высота экрана в этот момент промежуточная.
+  if (settling) return;
   try { document.querySelectorAll('.ans-root').forEach(fitOne); } catch (_e) { /* noop */ }
 }
 
@@ -571,6 +574,31 @@ export default function installCardAutoFit() {
     document.body.style.overflow = 'hidden';
     window.addEventListener('scroll', onLockedScroll, { passive: true });
   };
+  // ПОКА КЛАВИАТУРА УЕЗЖАЕТ — НЕ СЧИТАЕМ НИЧЕГО.
+  //
+  // Telegram сам шлёт `viewportChanged`, а браузер — `visualViewport.resize`, и не один раз, а
+  // на каждом шаге ухода клавиатуры. Мы на них подписаны и запускаем полный пересчёт. Один
+  // такой пересчёт попадает на момент, когда экран ещё НЕ вернулся: карточка считается под
+  // урезанную высоту, встаёт короткой — снизу видна серая полоса, — и только следующим
+  // событием дотягивается. Со стороны это ровно то, на что жалуется пользователь: «сначала
+  // урезанный, потом масштабируется до конца».
+  //
+  // Поэтому от потери фокуса и до тех пор, пока высота экрана не перестанет меняться, все
+  // пересчёты откладываются. Высота устоялась — один расчёт, сразу правильный.
+  const settleAfterKeyboard = () => {
+    settling = true;
+    let last = viewportHeight();
+    let stable = 0;
+    const tick = () => {
+      const now = viewportHeight();
+      stable = Math.abs(now - last) < 2 ? stable + 1 : 0;
+      last = now;
+      if (stable >= 3) { settling = false; freshStart(); return; }   // ~180 мс без изменений
+      setTimeout(tick, 60);
+    };
+    setTimeout(tick, 60);
+  };
+
   const unlockScroll = () => {
     window.removeEventListener('scroll', onLockedScroll);
     document.documentElement.style.overflow = '';
@@ -601,7 +629,7 @@ export default function installCardAutoFit() {
       if (viewportHeight() > startedAt + 40 || tries > 20) { thawBase(); freshStart(); return; }
       setTimeout(release, 60);
     };
-    if (wasAsk) { release(); return; }   // карточку и так не трогали — только отпустить кегль
+    if (wasAsk) { release(); settleAfterKeyboard(); return; }   // ждём, пока экран устоится
     thawBase();
     setTimeout(freshStart, 120);
   });
