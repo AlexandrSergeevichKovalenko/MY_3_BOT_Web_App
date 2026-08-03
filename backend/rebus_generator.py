@@ -116,8 +116,14 @@ def generate_component_image(word: str, dalle_prompt: str, *,
         # Vision gate (pool time, off the hot path): the image must clearly show
         # the part word, must agree with its Russian meaning (catches word/meaning
         # desync), and must not reveal the compound answer.
+        # A documented stand-in (beans for Kaffee) is told to the gate, so the two
+        # guards stop vetoing each other: the pair rule needs the vessel gone, the
+        # object check would otherwise call the result "beans, not coffee".
+        from backend.rebus_bank import COMPONENT_DEPICTION_STANDINS
         verdict = run_image_depicts(img_bytes, word, meaning=meaning_ru, forbid=forbid,
-                                    sibling=sibling, sibling_meaning=sibling_meaning, mime=mime)
+                                    sibling=sibling, sibling_meaning=sibling_meaning,
+                                    stands_for=COMPONENT_DEPICTION_STANDINS.get(str(word), ""),
+                                    mime=mime)
         if not verdict.get("ok"):
             reason = str(verdict.get("reason") or "vision_rejected")
             upsert_rebus_component_image(word, generation_status="failed", failure_reason=f"vision: {reason}"[:500])
@@ -338,10 +344,14 @@ def compose_rebus_card(
 
 # ─── Step 3: full pipeline for one compound ───────────────────────────────────
 
-def prepare_rebus_entry(compound_id: str) -> dict:
+def prepare_rebus_entry(compound_id: str, *, allow_draw: bool = True) -> dict:
     """
     Full pipeline: generate component images → compose card → upload → mark ready.
-    Returns {"status": "ready"|"failed", "compound_id": ..., "object_key": ...}
+    Returns {"status": "ready"|"failed"|"awaiting_review"|"needs_draw", …}
+
+    allow_draw=False makes it a FREE pass: compose only what accepted pictures already
+    allow, never call the image model. Nothing is marked failed in that mode — a card
+    that still needs a drawing is simply left alone.
     """
     from backend.database import (
         get_rebus_bank_entry,
@@ -393,6 +403,18 @@ def prepare_rebus_entry(compound_id: str) -> dict:
                 f"both halves would show a '{shared}' "
                 f"({planned[0][0]} / {planned[1][0]}) — nothing left to add up"
             )
+
+        # Compose-only pass: build what the existing, accepted pictures already allow
+        # and draw nothing. Used when the acceptance queue is long — free work must
+        # never be blocked by a paid one waiting for a human.
+        if not allow_draw:
+            not_ready = [
+                word for word, _p, _m in planned
+                if (get_rebus_component_image(word) or {}).get("generation_status") != "ready"
+                or (get_rebus_component_image(word) or {}).get("review_status") != "approved"
+            ]
+            if not_ready:
+                return {"status": "needs_draw", "compound_id": compound_id, "waiting": not_ready}
 
         # Generate component images (cached if already done)
         component_keys: list[str] = []
@@ -472,10 +494,11 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
         backlog = len(list_pending_rebus_component_reviews(REBUS_REVIEW_BACKLOG_LIMIT + 1))
     except Exception:
         backlog = 0
-    if backlog > REBUS_REVIEW_BACKLOG_LIMIT:
-        logging.info("rebus_generator: %s halves await acceptance — not drawing more", backlog)
-        return {"status": "awaiting_review", "ready": already_ready, "generated": 0,
-                "awaiting_review": backlog}
+    # …but composing is FREE, and a card whose halves are already accepted must not be
+    # held hostage by the queue. So we still run — just without drawing anything.
+    allow_draw = backlog <= REBUS_REVIEW_BACKLOG_LIMIT
+    if not allow_draw:
+        logging.info("rebus_generator: %s halves await acceptance — compose-only pass", backlog)
 
     need = max(0, target_ready - already_ready)
     generated = 0
@@ -506,12 +529,14 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
             break
         attempts += 1
         try:
-            result = prepare_rebus_entry(cid)
-            if result.get("status") == "ready":
+            result = prepare_rebus_entry(cid, allow_draw=allow_draw)
+            status = str(result.get("status") or "")
+            if status == "ready":
                 generated += 1
-            elif result.get("status") == "awaiting_review":
-                # Drawn, waiting for the owner — not a failure, and not something to
-                # retry: it would only redraw pictures that already exist.
+            elif status in ("awaiting_review", "needs_draw"):
+                # Drawn and waiting for the owner, or not drawn at all in a compose-only
+                # pass. Neither is a failure, and neither is worth retrying: it would
+                # only redraw pictures that already exist.
                 awaiting += 1
             else:
                 failed += 1
@@ -527,6 +552,7 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
         "failed": failed,
         "attempts": attempts,
         "awaiting_review": awaiting,
+        "compose_only": not allow_draw,
     }
 
 
@@ -554,13 +580,13 @@ def compose_rebus_entries_waiting_for(word: str, *, limit: int = 20) -> dict:
     composed, still_waiting = 0, 0
     for cid in ids:
         try:
-            res = prepare_rebus_entry(cid)
+            res = prepare_rebus_entry(cid, allow_draw=False)
         except Exception:
             logging.warning("rebus_generator: compose after acceptance failed for %s", cid, exc_info=True)
             continue
         if res.get("status") == "ready":
             composed += 1
-        elif res.get("status") == "awaiting_review":
+        elif res.get("status") in ("awaiting_review", "needs_draw"):
             still_waiting += 1
     return {"composed": composed, "still_waiting": still_waiting, "checked": len(ids)}
 

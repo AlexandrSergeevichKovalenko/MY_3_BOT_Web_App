@@ -206,7 +206,7 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Kochen":       f"A pot on a stove with steam rising, {_STYLE}",
     "Hüpfen":       f"A person jumping/hopping in the air, {_STYLE}",
     "Spülen":       f"Dishes being washed under running water, {_STYLE}",
-    "Braten":       f"A raw red beef steak lying on a plain wooden cutting board, no pan, no pot, no fire, {_STYLE}",
+    "Braten":       f"A whole roasted joint of meat with browned crust on a plain wooden board, no pan, no pot, no fire, {_STYLE}",
     "Glühen":       f"A glowing orange ember, radiant heat, {_STYLE}",
     "Rollen":       f"A wheel rolling forward, motion lines, {_STYLE}",
     "Schaukeln":    f"A garden swing swinging, {_STYLE}",
@@ -1466,6 +1466,19 @@ def _fold_de(value: str) -> str:
         str(value or "").lower()
         .replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
     )
+
+
+# A substance drawn WITHOUT its vessel is no longer the word a vision model expects:
+# loose beans read as "Kaffeebohnen", a corked bottle as "Weinflasche". Both checks are
+# right on their own terms — the pair rule needs the vessel gone, the object check wants
+# the everyday picture. So the accepted stand-in is written down here and handed to the
+# vision gate, instead of one guard silently vetoing the other.
+COMPONENT_DEPICTION_STANDINS: dict[str, str] = {
+    "Kaffee": "loose roasted coffee beans (coffee as the raw substance, deliberately with no cup)",
+    "Wein":   "a corked wine bottle (wine as the drink, deliberately with no glass)",
+    "Salat":  "loose fresh lettuce leaves (salad as the food, deliberately with no bowl)",
+    "Braten": "a whole roasted joint of meat (a roast, deliberately with no pan)",
+}
 
 
 # Documented, intentional visual stand-ins where the part word is NOT a literal

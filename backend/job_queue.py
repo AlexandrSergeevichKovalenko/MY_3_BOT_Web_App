@@ -679,6 +679,31 @@ def enqueue_artikel_fill_job(
         return {"queued": False, "reason": "broker_error"}
 
 
+def enqueue_rebus_stale_redraw_job(*, chat_id: int | None = None, cap: int = 8) -> dict:
+    """Поставить перерисовку устаревших половинок ребуса в очередь BACKGROUND_JOBS.
+
+    В боте это делать нельзя: каждая картинка — поход к gpt-image-1 на десятки
+    секунд, а PTB собран без concurrent_updates, поэтому прогон в хендлере вешает
+    бота на всех пользователей."""
+    if not can_enqueue_background_jobs():
+        return {"queued": False, "reason": "background_jobs_unavailable"}
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_rebus_stale_redraw_job
+
+        message = run_rebus_stale_redraw_job.send(
+            chat_id=int(chat_id or 0), cap=max(1, int(cap)),
+        )
+        return {
+            "queued": True,
+            "reason": "queued",
+            "message_id": str(getattr(message, "message_id", None) or "").strip() or None,
+        }
+    except Exception:
+        logging.exception("enqueue_rebus_stale_redraw_job failed")
+        return {"queued": False, "reason": "broker_error"}
+
+
 def enqueue_projection_materialization_job(
     *,
     job_id: int,

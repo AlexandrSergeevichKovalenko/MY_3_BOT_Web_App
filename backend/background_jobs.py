@@ -3570,3 +3570,63 @@ def get_visual_riddle_pool_health() -> dict:
             int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_TRIGGER") or "5").strip() or "5"),
         ),
     }
+
+
+# Перерисовка половинок ребуса — ВНЕ бота. Каждая картинка идёт к gpt-image-1 и
+# ждёт ответа десятки секунд; PTB собран без concurrent_updates, поэтому прогон
+# прямо в хендлере вешал бота на всё это время (03.08.2026 — на двадцать минут:
+# админ жал кнопки в личке и не получал вообще ничего).
+@dramatiq.actor(
+    max_retries=0,
+    queue_name="scheduler_jobs",
+    time_limit=_ARTIKEL_FILL_TIME_LIMIT_MS,
+)
+def run_rebus_stale_redraw_job(chat_id: int = 0, cap: int = 8) -> None:
+    """Найти картинки, чей промпт в коде изменился, и перерисовать не больше `cap`
+    карточек. Отчёт уходит в тот же чат: админ уже увидел «поставил в очередь»."""
+    from backend.database import (
+        invalidate_stale_rebus_component_images, sync_rebus_bank_from_code,
+    )
+    from backend.rebus_generator import prepare_rebus_entry
+
+    started_at = time.perf_counter()
+    try:
+        sync_rebus_bank_from_code()
+        got = invalidate_stale_rebus_component_images()
+        stale_words = list(got.get("stale") or [])
+        redrawn = awaiting = failed = 0
+        for compound_id in (got.get("compound_ids") or [])[: max(1, int(cap))]:
+            try:
+                status = str(prepare_rebus_entry(compound_id).get("status") or "")
+            except Exception:
+                logging.warning("rebus_stale_redraw: %s failed", compound_id, exc_info=True)
+                failed += 1
+                continue
+            if status == "ready":
+                redrawn += 1
+            elif status == "awaiting_review":
+                awaiting += 1
+            else:
+                failed += 1
+        duration_s = int(time.perf_counter() - started_at)
+        if not stale_words:
+            text = ("🖼 <b>Перерисовывать нечего</b> — все картинки нарисованы по "
+                    "тем описаниям, что сейчас в коде.")
+        else:
+            text = (
+                f"🖼 <b>Перерисовка ребусов готова</b> ({duration_s} c)\n\n"
+                f"Описание изменилось у {len(stale_words)} картинок: "
+                + ", ".join(stale_words[:20]) + ("…" if len(stale_words) > 20 else "") + "\n"
+                f"Собрано карточек: {redrawn}\n"
+                + (f"Ждут твоей приёмки: {awaiting} — /admin_rebus_review\n" if awaiting else "")
+                + (f"Не вышло: {failed}\n" if failed else "")
+            )
+    except Exception:
+        logging.exception("rebus_stale_redraw job failed")
+        text = "❌ Перерисовка ребусов сорвалась. Картинки не тронуты, причина в логах."
+    if int(chat_id or 0) > 0:
+        try:
+            from backend.telegram_notify import _send_private_message
+            _send_private_message(int(chat_id), text[:4000])
+        except Exception:
+            logging.warning("rebus_stale_redraw: report send failed", exc_info=True)

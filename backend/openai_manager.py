@@ -8405,7 +8405,8 @@ def run_quick_correct(*, text: str, source_lang: str = "") -> str:
 
 
 def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "",
-                      sibling: str = "", sibling_meaning: str = "", mime: str = "image/png") -> dict:
+                      sibling: str = "", sibling_meaning: str = "", stands_for: str = "",
+                      mime: str = "image/png") -> dict:
     """Vision gate for a generated rebus component image (pool time, off the hot
     path). Verifies the single main object IS `expected` (the German word) in its
     plain literal meaning, that `expected` and its Russian `meaning` denote the
@@ -8442,8 +8443,16 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", f
         f'but Russian says egg), reject with reason "word/meaning mismatch".'
         if str(meaning or "").strip() else ""
     )
+    # An intentional stand-in: the rebus deliberately shows the substance without its
+    # usual vessel, because the vessel is the puzzle's other half. Without this line the
+    # gate rejects a correct picture as "beans, not coffee".
+    standin_line = (
+        f' This rebus intentionally depicts "{expected}" as {stands_for}; accept that as correct '
+        f'and do NOT reject it for being the substance rather than the everyday serving.'
+        if str(stands_for or "").strip() else ""
+    )
     prompt = (
-        f'Single illustration for a vocabulary rebus. Intended object: "{expected}".{meaning_line} '
+        f'Single illustration for a vocabulary rebus. Intended object: "{expected}".{meaning_line}{standin_line} '
         f'Judge STRICTLY: is the main, prominent object unambiguously a "{expected}" in its plain, '
         f'literal, dictionary meaning?{forbid_line}{sibling_line} '
         'Reject (ok=false) if the main object is a DIFFERENT thing, a related-but-wrong object '

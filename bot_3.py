@@ -29196,68 +29196,63 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
     args = [w.strip() for w in (context.args or []) if w.strip()]
     stale_mode = bool(args) and args[0].lower() in ("stale", "prompt", "prompts")
     words = [] if stale_mode else (args or ["Ei"])
-    status_msg = await message.reply_text(
-        "Ищу картинки с устаревшим промптом…" if stale_mode
-        else f"Ресинхр банка + сброс для: {', '.join(words)}…"
-    )
+    # Перерисовка идёт в BACKGROUND_JOBS, а не здесь: каждая картинка — поход к
+    # gpt-image-1 на десятки секунд, а PTB собран без concurrent_updates, поэтому
+    # прогон в хендлере молча вешает бота на ВСЕХ пользователей (03.08.2026 — на
+    # двадцать минут). Отчёт придёт сюда же, когда воркер закончит.
+    if stale_mode:
+        def _enqueue() -> dict:
+            from backend.job_queue import enqueue_rebus_stale_redraw_job
+            return enqueue_rebus_stale_redraw_job(
+                chat_id=int(message.chat_id), cap=_REBUS_RESET_REDRAW_CAP,
+            )
 
-    def _reset(part_words: list[str], stale: bool) -> dict:
+        try:
+            outcome = await asyncio.to_thread(_enqueue)
+        except Exception:
+            logging.exception("admin_rebus_reset: enqueue failed")
+            outcome = {"queued": False, "reason": "broker_error"}
+        if outcome.get("queued"):
+            await message.reply_text(
+                f"📥 Перерисовка встала в очередь (не больше {_REBUS_RESET_REDRAW_CAP} карточек за прогон).\n"
+                "Считает отдельный воркер — бот в это время отвечает как обычно.\n"
+                "Отчёт пришлю сюда, когда закончит."
+            )
+        else:
+            await message.reply_text(
+                "Очередь задач недоступна — перерисовку НЕ запускаю. Картинки не тронуты.\n"
+                "Прямо в боте больше не гоняю: это вешало бота на всё время прогона."
+            )
+        return
+    status_msg = await message.reply_text(f"Ресинхр банка + сброс для: {', '.join(words)}…")
+
+    def _reset(part_words: list[str]) -> dict:
         from backend.database import (
             sync_rebus_bank_from_code, reset_rebus_compounds_for_part,
-            invalidate_stale_rebus_component_images,
         )
-        from backend.rebus_generator import prepare_rebus_pool, prepare_rebus_entry
+        from backend.rebus_generator import prepare_rebus_pool
         sync = sync_rebus_bank_from_code()
         reset = 0
-        stale_words: list[str] = []
-        redrawn = failed = awaiting = 0
-        if stale:
-            got = invalidate_stale_rebus_component_images()
-            stale_words = list(got.get("stale") or [])
-            reset += int(got.get("compounds_reset") or 0)
-            # Redraw exactly what we just invalidated. The pool job only tops up TO a
-            # target, so with a full pool it would leave these cards pending forever.
-            # Hard cap per run: every card here draws up to two paid pictures, and one
-            # command must never be able to spend without a ceiling.
-            for cid in (got.get("compound_ids") or [])[:_REBUS_RESET_REDRAW_CAP]:
-                st = prepare_rebus_entry(cid).get("status")
-                if st == "ready":
-                    redrawn += 1
-                elif st == "awaiting_review":
-                    awaiting += 1
-                else:
-                    failed += 1
         for w in part_words:
             reset += reset_rebus_compounds_for_part(w)
-        # In stale mode the redraw above IS the work. Topping the pool up on top of it
-        # is a second, unbounded spend on the same run — and pointless, because freshly
-        # drawn halves wait for acceptance and cannot raise the ready count anyway.
-        pool = {} if stale else prepare_rebus_pool(target_ready=REBUS_POOL_TARGET, max_attempts=40)
-        return {"sync": sync, "reset": reset, "pool": pool, "stale_words": stale_words,
-                "redrawn": redrawn, "redraw_failed": failed, "awaiting": awaiting}
+        pool = prepare_rebus_pool(target_ready=REBUS_POOL_TARGET, max_attempts=40)
+        return {"sync": sync, "reset": reset, "pool": pool}
 
     try:
-        result = await asyncio.to_thread(_reset, words, stale_mode)
+        result = await asyncio.to_thread(_reset, words)
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
         return
     sync = result.get("sync") or {}
     pool = result.get("pool") or {}
-    stale_words = result.get("stale_words") or []
     text = (
         f"✅ Sync: synced={sync.get('synced')} "
         f"skipped_inconsistent={sync.get('skipped_inconsistent')}\n"
         f"♻️ Сброшено на перекомпоновку: {result.get('reset')}\n"
         f"🧩 Pool: generated={pool.get('generated')} failed={pool.get('failed')}"
+        + (f"\n🧩 Ждут твоей приёмки: {pool.get('awaiting_review')} — /admin_rebus_review"
+           if pool.get("awaiting_review") else "")
     )
-    if stale_words:
-        text += (
-            f"\n🖼 Промпт изменился у {len(stale_words)} картинок: " + ", ".join(stale_words[:30])
-            + f"\n🎨 Пересобрано карточек: {result.get('redrawn')}"
-            + (f" (не вышло: {result.get('redraw_failed')})" if result.get("redraw_failed") else "")
-            + (f"\n🧩 Ждут твоей приёмки: {result.get('awaiting')} — /admin_rebus_review"
-               if result.get("awaiting") else "")
-        )
     await status_msg.edit_text(text[:4000])
 
 
