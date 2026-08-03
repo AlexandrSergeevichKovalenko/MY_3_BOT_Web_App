@@ -28860,7 +28860,8 @@ async def admin_rebus_review_command(update: Update, context: CallbackContext) -
 
 async def admin_rebus_draw_command(update: Update, context: CallbackContext) -> None:
     """Нарисовать несколько карточек прямо сейчас и прислать их на приёмку.
-    /admin_rebus_draw [сколько] — по умолчанию 2, максимум 4.
+    /admin_rebus_draw [сколько]        — по порядку, по умолчанию 2, максимум 4.
+    /admin_rebus_draw Kaffeetasse Weinglas — именно эти карточки.
 
     Нужна, потому что сам пул берётся за рисование только когда запас падает ниже
     порога: посмотреть на приёмку в деле иначе не выйдет. Цена названа до запуска —
@@ -28872,14 +28873,14 @@ async def admin_rebus_draw_command(update: Update, context: CallbackContext) -> 
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    try:
-        cards = max(1, min(4, int((context.args or ["2"])[0])))
-    except (ValueError, IndexError):
-        cards = 2
+    args = [str(a).strip() for a in (context.args or []) if str(a).strip()]
+    names = [a for a in args if not a.isdigit()]
+    digits = [a for a in args if a.isdigit()]
+    cards = max(1, min(4, int(digits[0]))) if digits else (len(names) or 2)
 
     def _enqueue() -> dict:
         from backend.job_queue import enqueue_rebus_draw_job
-        return enqueue_rebus_draw_job(chat_id=int(message.chat_id), cards=cards)
+        return enqueue_rebus_draw_job(chat_id=int(message.chat_id), cards=cards, names=names)
 
     try:
         outcome = await asyncio.to_thread(_enqueue)
@@ -28888,8 +28889,10 @@ async def admin_rebus_draw_command(update: Update, context: CallbackContext) -> 
         outcome = {"queued": False, "reason": "broker_error"}
     if outcome.get("queued"):
         await message.reply_text(
-            f"🖼 Рисую {cards} карточк(и) — это до {cards * 2} картинок, примерно "
-            f"${cards * 2 * 0.042:.2f}.\n"
+            (f"🖼 Рисую: {', '.join(names)}.\n" if names else
+             f"🖼 Рисую {cards} карточк(и) по порядку.\n")
+            + f"Это до {max(cards, len(names)) * 2} картинок, примерно "
+              f"${max(cards, len(names)) * 2 * 0.042:.2f}.\n"
             "Считает отдельный воркер, займёт пару минут. Как будут готовы — напишу, "
             "и они придут на приёмку."
         )

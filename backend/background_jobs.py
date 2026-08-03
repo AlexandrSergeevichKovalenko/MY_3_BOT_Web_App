@@ -3677,32 +3677,52 @@ def _rebus_report(chat_id: int, text: str) -> None:
     queue_name="scheduler_jobs",
     time_limit=_ARTIKEL_FILL_TIME_LIMIT_MS,
 )
-def run_rebus_draw_job(chat_id: int = 0, cards: int = 2) -> None:
-    """Нарисовать `cards` несобранных карточек и отправить их владельцу на приёмку."""
+def run_rebus_draw_job(chat_id: int = 0, cards: int = 2, names: list | None = None) -> None:
+    """Нарисовать карточки и отправить их владельцу на приёмку.
+
+    `names` — конкретные слова («Kaffeetasse»): без них команда берёт карточки по
+    порядку, и попасть в нужную можно только перебором за деньги."""
     from backend.database import get_db_connection_context
     from backend.rebus_generator import prepare_rebus_entry
 
     want = max(1, min(4, int(cards or 2)))
     started_at = time.perf_counter()
     try:
+        wanted_names = [str(n).strip() for n in (names or []) if str(n).strip()]
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT b.compound_id, b.compound_word
-                    FROM bt_3_rebus_bank b
-                    WHERE b.retired = FALSE AND b.composed_status IN ('pending', 'failed')
-                      AND EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(b.parts_json) p
-                        LEFT JOIN bt_3_rebus_component_images c ON c.word = p ->> 'word'
-                        WHERE c.word IS NULL OR c.generation_status <> 'ready'
-                      )
-                    ORDER BY b.compound_id
-                    LIMIT %s
-                    """,
-                    (want,),
-                )
+                if wanted_names:
+                    cursor.execute(
+                        """
+                        SELECT b.compound_id, b.compound_word
+                        FROM bt_3_rebus_bank b
+                        WHERE b.retired = FALSE AND b.composed_status <> 'ready'
+                          AND lower(b.compound_word) = ANY(%s)
+                        LIMIT %s
+                        """,
+                        ([n.lower() for n in wanted_names], max(want, len(wanted_names))),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT b.compound_id, b.compound_word
+                        FROM bt_3_rebus_bank b
+                        WHERE b.retired = FALSE AND b.composed_status IN ('pending', 'failed')
+                          AND EXISTS (
+                            SELECT 1 FROM jsonb_array_elements(b.parts_json) p
+                            LEFT JOIN bt_3_rebus_component_images c ON c.word = p ->> 'word'
+                            WHERE c.word IS NULL OR c.generation_status <> 'ready'
+                          )
+                        ORDER BY b.compound_id
+                        LIMIT %s
+                        """,
+                        (want,),
+                    )
                 targets = cursor.fetchall() or []
+        if wanted_names and not targets:
+            _rebus_report(chat_id, "🖼 Таких карточек не нашёл: " + ", ".join(wanted_names)
+                          + ".\nПроверь написание — нужно немецкое слово целиком, например Kaffeetasse.")
+            return
         if not targets:
             _rebus_report(chat_id, "🖼 Рисовать нечего — у всех незакрытых карточек обе "
                                    "половинки уже нарисованы.")
