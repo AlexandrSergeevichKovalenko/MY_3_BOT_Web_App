@@ -941,6 +941,13 @@ html[data-scheme="light"] .au-artikel-word { color: #0f172a; }
 /* Remedial theory-video card ("тебе было сложно") — a picker of curated clips */
 .au-video-intro { margin: 2px 0 0.75rem; }
 .au-video-list { display: flex; flex-direction: column; gap: 0.625rem; margin: 0.25rem 0 0.875rem; }
+/* Превью видео НИКОГДА не сжимаются, а список ЛИСТАЕТСЯ.
+   Список — колоночный flex внутри карточки, у которой подгонка закрепляет высоту. Без этих
+   двух строк список не помещался (замер: 885 px содержимого в карточке 420 px) и не листался
+   — подгонка была вынуждена ужимать всю карточку, превью превращались в полоски в палец
+   высотой, названия налезали на них, выбрать видео было нельзя. */
+.au-video-list > * { flex: 0 0 auto; }
+.au-video-list { overflow-y: auto; min-height: 0; }
 .au-video-frame {
   position: relative; width: 100%; aspect-ratio: 16 / 9;
   border-radius: var(--dmps-radius-button, 1.0rem);
