@@ -45782,11 +45782,21 @@ def invalidate_stale_rebus_component_images() -> dict:
                 "WHERE generation_status = 'ready'"
             )
             rows = cursor.fetchall() or []
+    def _described(prompt: str) -> str:
+        """What the picture must SHOW, without the shared style tail. Comparing whole
+        prompts marks the entire bank stale the moment the style string is touched —
+        which is exactly what happened on 03.08.2026: 81 good pictures were thrown
+        away and redrawn. Only the description decides."""
+        head = str(prompt or "").split("children's book illustration style")[0]
+        return " ".join(head.split()).strip().rstrip(",").casefold()
+
     for word, stored in rows:
         current = COMPONENT_IMAGE_PROMPTS.get(str(word))
         if not current:
             continue  # GPT-only component: the DB row IS the source of truth
-        if " ".join(str(stored or "").split()) != " ".join(current.split()):
+        if not str(stored or "").strip():
+            continue  # never recorded what it was drawn from — assume it still fits
+        if _described(stored) != _described(current):
             stale.append(str(word))
     for word in stale:
         upsert_rebus_component_image(

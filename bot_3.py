@@ -28788,6 +28788,11 @@ async def admin_rebus_send_command(update: Update, context: CallbackContext) -> 
         await status_msg.edit_text("Rebus send failed — check logs.")
 
 
+# One /admin_rebus_reset run may redraw at most this many cards (up to two paid
+# pictures each). A command with no ceiling is a command that can drain the card.
+_REBUS_RESET_REDRAW_CAP = 8
+
+
 def _rebus_review_kb(label: str = "🧩 Открыть приёмку"):
     return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=get_webapp_deeplink("ans_rbv_0"))]])
 
@@ -29212,7 +29217,9 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
             reset += int(got.get("compounds_reset") or 0)
             # Redraw exactly what we just invalidated. The pool job only tops up TO a
             # target, so with a full pool it would leave these cards pending forever.
-            for cid in (got.get("compound_ids") or [])[:40]:
+            # Hard cap per run: every card here draws up to two paid pictures, and one
+            # command must never be able to spend without a ceiling.
+            for cid in (got.get("compound_ids") or [])[:_REBUS_RESET_REDRAW_CAP]:
                 st = prepare_rebus_entry(cid).get("status")
                 if st == "ready":
                     redrawn += 1
@@ -29222,7 +29229,10 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
                     failed += 1
         for w in part_words:
             reset += reset_rebus_compounds_for_part(w)
-        pool = prepare_rebus_pool(target_ready=REBUS_POOL_TARGET, max_attempts=40)
+        # In stale mode the redraw above IS the work. Topping the pool up on top of it
+        # is a second, unbounded spend on the same run — and pointless, because freshly
+        # drawn halves wait for acceptance and cannot raise the ready count anyway.
+        pool = {} if stale else prepare_rebus_pool(target_ready=REBUS_POOL_TARGET, max_attempts=40)
         return {"sync": sync, "reset": reset, "pool": pool, "stale_words": stale_words,
                 "redrawn": redrawn, "redraw_failed": failed, "awaiting": awaiting}
 

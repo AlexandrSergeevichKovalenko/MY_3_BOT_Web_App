@@ -45,6 +45,12 @@ FONT_SIZE_QUESTION = 28
 FONT_SIZE_LABEL = 22
 
 
+# How many drawn-but-unaccepted halves may pile up before the pool stops drawing.
+# Every picture costs real money and cannot become a card until the owner looks at
+# it, so there is no point in running ahead of the acceptance queue.
+REBUS_REVIEW_BACKLOG_LIMIT = 12
+
+
 def _object_key_component(word: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in word)
     return f"rebus/components/{safe}.png"
@@ -445,7 +451,10 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
     Iterates over pending bank entries, generates up to `max_attempts`.
     Returns stats dict.
     """
-    from backend.database import count_available_rebuses, sync_rebus_bank_from_code
+    from backend.database import (
+        count_available_rebuses, sync_rebus_bank_from_code,
+        list_pending_rebus_component_reviews,
+    )
     import psycopg2
 
     # Sync Python bank → DB (idempotent upsert)
@@ -455,6 +464,18 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
     already_ready = count_available_rebuses()
     if already_ready >= target_ready:
         return {"status": "sufficient", "ready": already_ready, "generated": 0}
+
+    # A drawn half only becomes a card once the owner accepts it. So an unreviewed
+    # backlog means drawing MORE cannot raise the ready count — it would just spend
+    # money on every startup and every low-pool trigger, forever. Wait for the human.
+    try:
+        backlog = len(list_pending_rebus_component_reviews(REBUS_REVIEW_BACKLOG_LIMIT + 1))
+    except Exception:
+        backlog = 0
+    if backlog > REBUS_REVIEW_BACKLOG_LIMIT:
+        logging.info("rebus_generator: %s halves await acceptance — not drawing more", backlog)
+        return {"status": "awaiting_review", "ready": already_ready, "generated": 0,
+                "awaiting_review": backlog}
 
     need = max(0, target_ready - already_ready)
     generated = 0
