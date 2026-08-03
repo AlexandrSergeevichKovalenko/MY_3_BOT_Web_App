@@ -68,6 +68,33 @@ class WortgruppeBaseFormTests(unittest.TestCase):
         self.assertIn("ihrer", wortgruppe_lemma_leak(payload))
         self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
 
+    def test_interrogative_is_hidden_glue_not_a_lemma(self) -> None:
+        # "in welcher Situation": the learner finds "in welcher" from the meaning
+        # hint — showing "welch" would hand over half the construction.
+        payload = {"satz": "Wir müssen überlegen, _____ das akzeptabel wäre.",
+                   "correct": "in welcher Situation",
+                   "lemmas": ["welch", "Situation"]}
+        self.assertIn("welch", wortgruppe_lemma_leak(payload))
+        self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
+        payload["lemmas"] = ["Situation"]
+        self.assertEqual(wortgruppe_lemma_leak(payload), "")
+
+    def test_lemma_that_is_the_whole_answer_is_rejected(self) -> None:
+        # Nothing left to do: the hint is the answer, spelling included.
+        payload = {"satz": "_____ kann ein Unternehmen neue Märkte erschließen.",
+                   "correct": "Zum Beispiel",
+                   "lemmas": ["zum Beispiel"]}
+        self.assertIn("повторяет весь ответ", wortgruppe_lemma_leak(payload))
+        self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
+
+    def test_governing_preposition_is_never_a_lemma(self) -> None:
+        payload = {"satz": "Die Regierung kündigte an, _____ zu reagieren.",
+                   "correct": "auf die steigenden Preise",
+                   "lemmas": ["auf", "steigend", "Preis"]}
+        self.assertIn("auf", wortgruppe_lemma_leak(payload))
+        payload["lemmas"] = ["steigend", "Preis"]
+        self.assertEqual(wortgruppe_lemma_leak(payload), "")
+
     def test_article_word_or_contraction_is_rejected(self) -> None:
         payload = {"correct": "Im Gegensatz zu den Erwartungen",
                    "lemmas": ["im", "Gegensatz", "Erwartungen"]}

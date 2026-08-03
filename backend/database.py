@@ -1996,7 +1996,9 @@ _WG_FUNCTION_WORDS = {
     "oberhalb", "unterhalb", "entlang", "gegenüber", "neben", "hinter", "samt",
     "außer", "entgegen", "entsprechend", "zufolge", "anlässlich", "mangels",
     "ungeachtet", "zugunsten", "zulasten", "jenseits", "diesseits", "ab",
-    "welche", "welchen", "welcher", "welches", "welchem",
+    # Fragewörter: finding "unter WELCHEN Bedingungen" is the task, so the
+    # interrogative is hidden glue and never a Stützwort — bare "welch" included.
+    "welch", "welche", "welchen", "welcher", "welches", "welchem", "wessen",
     "dieser", "diese", "dieses", "diesen", "diesem", "jener", "jene", "jenes",
 }
 
@@ -2120,6 +2122,13 @@ def wortgruppe_lemma_leak(payload) -> str:
     answer_tokens = _wg_tokens(payload.get("correct"))
     if not answer_tokens:
         return "нет ответа"
+    # A Stützwort that IS the whole answer ("Zum Beispiel" hinted as "zum Beispiel")
+    # leaves nothing to do — copy the hint into the box and you are done. Slips past
+    # the single-word checks above because the phrase itself is in no word list.
+    answer_norm = _wg_norm(" ".join(answer_tokens))
+    for lemma in lemmas:
+        if _wg_norm(lemma) == answer_norm:
+            return f"подсказка повторяет весь ответ: «{lemma}»"
     # (1) A shown word that is nowhere in the answer sends the learner to write a
     #     word that has no slot. The nastiest case is a word taken from the VISIBLE
     #     part of the sentence — it reads as "insert me" while it is already there.

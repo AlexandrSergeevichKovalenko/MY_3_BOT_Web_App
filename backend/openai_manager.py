@@ -3735,9 +3735,12 @@ SO BAUST DU JEDE AUFGABE (Reihenfolge EINHALTEN):
    BEVORZUGT der VORDERE Teil eines Nebensatzes INKL. einleitender Konjunktion oder
    Präposition; das zugehörige FINITE (gebeugte) Verb steht am SATZENDE und bleibt
    SICHTBAR — es gehört NICHT in die Lücke. So bleibt die ganze Gruppe an EINER Stelle.
-3) "satz" = exakt "vollsatz", aber mit "correct" durch GENAU EIN "_____" ersetzt.
+3) Bilde "satz" MECHANISCH: nimm "vollsatz", LÖSCHE daraus die vollständige
+   Zeichenkette "correct" und schreibe an ihre Stelle GENAU EIN "_____". Sonst ändere
+   NICHTS — kein Wort, kein Satzzeichen, keine Reihenfolge.
    HARTE PFLICHT: setzt man "correct" wieder für "_____" ein, ergibt sich WORTGENAU
-   wieder "vollsatz" (gleiche Wörter, gleiche Zeichen, gleiche Reihenfolge).
+   wieder "vollsatz". KONTROLLE: JEDES Wort von "correct" ist aus "satz" verschwunden;
+   steht auch nur eines davon noch im Rest des Satzes, hast du zu wenig gelöscht.
 
 EINDEUTIGKEIT (HARTE PFLICHT):
 - Mit den gegebenen Stützwörtern ("lemmas") darf es GENAU EINE grammatisch korrekte,
@@ -3780,8 +3783,14 @@ DECKUNGSREGEL (die WICHTIGSTE, in BEIDE Richtungen prüfen):
   • Possessivartikel NUR unflektiert ("ihr", "sein", "mein") — NIEMALS "ihrer",
     "seines", "meinem".
 - NIEMALS in "lemmas": Artikel, Verschmelzungen ("im","am","zum","zur","vom","beim"),
-  Konjunktion ("ob","dass","und"), Präposition, "zu", Reflexivpronomen, gebeugte Formen,
-  Kasus-/Deklinationsendungen. GENAU DAS ergänzt der Lernende.
+  Konjunktion ("ob","dass","und"), Präposition, "zu", Reflexivpronomen, Fragewort
+  ("welch-","was für"), gebeugte Formen, Kasus-/Deklinationsendungen. GENAU DAS
+  ergänzt der Lernende — deshalb steht es NUR in "hidden_glue", nie in "lemmas".
+  Das gilt AUCH für die regierende Präposition der Lösung: sie ist die Aufgabe.
+  ✗ FALSCH: correct "auf die steigenden Preise", lemmas ["auf","steigend","Preis"]
+  ✓ RICHTIG: lemmas ["steigend","Preis"], hidden_glue "auf"
+  ✗ FALSCH: correct "in welcher Situation", lemmas ["welch","Situation"]
+  ✓ RICHTIG: lemmas ["Situation"], hidden_glue "in welcher"
 - SELBSTTEST vor der Ausgabe: Steht ein Stützwort BUCHSTABENGLEICH so in "correct", wie es
   dort gebeugt ist? Dann ist es die falsche Form → durch die Grundform ersetzen.
   ✗ FALSCH: correct "Dank ihrer langjährigen Erfahrung", lemmas ["ihrer","langjährigen","Erfahrung"]
@@ -3800,10 +3809,14 @@ FELDER pro Aufgabe:
 - "tip" = kurzer russischer Merksatz.
 
 QUALITÄT — SELBSTTEST vor der Ausgabe, Aufgabe verwerfen wenn eine Antwort "nein" ist:
-1) Steht JEDES Stützwort (als Wortform) in "correct"? Keines darf aus dem sichtbaren
+1) Ergibt "satz" mit "correct" statt "_____" WORTGENAU den "vollsatz", und steht kein
+   Wort aus "correct" im übrigen "satz" noch einmal?
+2) Hat "correct" 2–6 Wörter?
+3) Steht JEDES Stützwort (als Wortform) in "correct"? Keines darf aus dem sichtbaren
    Satzteil stammen.
-2) Hat JEDES Inhaltswort von "correct" sein Stützwort?
-3) Ist jedes Stützwort die endungslose Grundform?
+4) Hat JEDES Inhaltswort von "correct" sein Stützwort?
+5) Ist jedes Stützwort die endungslose Grundform — und KEIN Artikel, KEINE Präposition,
+   KEINE Konjunktion, KEIN Fragewort, KEIN "zu", KEIN Reflexivpronomen?
 
 WORKED EXAMPLE:
 {"vollsatz":"Eine gute Entscheidung hängt oft davon ab, ob man die Vorteile und Nachteile sorgfältig abwägt.","satz":"Eine gute Entscheidung hängt oft davon ab, _____ sorgfältig abwägt.","lemmas":["man","Vorteile","Nachteile"],"hidden_glue":"ob","correct":"ob man die Vorteile und Nachteile","accepted":["ob man die Vorteile und Nachteile","ob man die Vorteile und die Nachteile"],"hint_ru":"взвесить плюсы и минусы","erklaerung":"…","tip":"…"}
@@ -4289,7 +4302,9 @@ For EACH item, in input order, judge TWO things:
     "steigenden"/"steigender"), nouns in the nominative singular-or-needed-plural without
     any article ("Klimawandel", NOT "Klimawandels"; "Vorteile", NOT "Vorteilen"),
     possessives undeclined ("ihr", NOT "ihrer"). No article, no merged form
-    ("im"/"zum"/"zur"), no conjunction or preposition may appear as a lemma at all.
+    ("im"/"zum"/"zur"), no conjunction, no preposition — not even the one the answer's
+    noun is governed by — and no interrogative ("welch-") may appear as a lemma at all:
+    those belong to "hidden_glue", finding them IS the task.
     If ANY lemma already carries a case/declension ending or otherwise leaks
     the inflection the learner must supply → fail. (Supplying every ending is the task.)
 (d) COVERAGE — "lemmas" is the word list of THE GAP, not of the sentence. Check BOTH
