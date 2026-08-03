@@ -29556,6 +29556,29 @@ def answer_rebus_review_list():
     return jsonify({"ok": True, "items": items, "status": rebus_pool_status()})
 
 
+@app.route("/api/answer/rebusreview/draw", methods=["POST"])
+def answer_rebus_review_draw():
+    """Нарисовать несколько карточек по требованию прямо из приёмки.
+
+    Сам пул берётся за рисование только когда запас падает ниже порога, поэтому,
+    когда очередь пуста, посмотреть приёмку в деле иначе нечем. Работу делает
+    воркер: рисование идёт минуты, в вебе его держать нельзя."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        cards = max(1, min(4, int(payload.get("cards") or 2)))
+    except (TypeError, ValueError):
+        cards = 2
+    from backend.job_queue import enqueue_rebus_draw_job
+    outcome = enqueue_rebus_draw_job(chat_id=int(user_id), cards=cards)
+    if not outcome.get("queued"):
+        return jsonify({"error": "Очередь задач недоступна — рисование не начато, "
+                                 "ничего не потрачено."}), 503
+    return jsonify({"ok": True, "cards": cards})
+
+
 @app.route("/api/answer/rebusreview/verdict", methods=["POST"])
 def answer_rebus_review_verdict():
     """Owner's verdict on one drawn half: approve / reject+reason / block the word.

@@ -23,19 +23,43 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
   const [redrawFor, setRedrawFor] = useState('');   // слово, которое решили перерисовать
   const [comment, setComment] = useState('');      // своя правка вместо кнопки-причины
 
-  const refresh = useCallback(async () => {
+  // loud=true — нажали кнопку руками: молчаливая кнопка выглядит сломанной, поэтому
+  // всегда отвечаем словами, даже когда ничего не изменилось.
+  const refresh = useCallback(async (loud = false) => {
+    if (loud) { setBusy(true); setError(''); }
     try {
       const r = await api('/api/answer/rebusreview/list', {});
-      setItems(r.items || []);
+      const list = r.items || [];
+      setItems(list);
       setStatus(r.status || null);
+      if (loud) {
+        setNote(list.length
+          ? `🔄 Проверил: пар на приёмке — ${list.length}.`
+          : '🔄 Проверил: новых пар пока нет.');
+      }
     } catch (e) {
       console.warn('[game] error', e);
       setError('Не удалось загрузить. Попробуйте позже.');
       setItems([]);
+    } finally {
+      if (loud) setBusy(false);
     }
   }, [api]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  const draw = async (cards) => {
+    if (busy) return;
+    setBusy(true); setError(''); setNote('');
+    try {
+      const r = await api('/api/answer/rebusreview/draw', { cards });
+      setNote(`🖼 Рисую ${r.cards} карточк(и) — это пара минут. Как будут готовы, я напишу `
+        + 'в личку, а здесь поможет «Проверить ещё раз».');
+    } catch (e) {
+      console.warn('[game] error', e);
+      setError('Не удалось начать рисование. Попробуйте позже.');
+    } finally { setBusy(false); }
+  };
+
+  useEffect(() => { refresh(false); }, [refresh]);
 
   const card = items && items[0];
   useEffect(() => { setRedrawFor(''); setComment(''); }, [card?.compound_id]);
@@ -84,12 +108,19 @@ export default function RebusReviewScreen({ api, haptic, onClose }) {
         <div className="pinw-body">
           {note ? <div className="pinrev-note">{note}</div> : null}
           <div className="pinrev-empty-sub">
-            Готовых пар на приёмку нет. Появятся, когда бот дорисует недостающие
-            половинки, — я напишу тебе в личку.
+            Готовых пар на приёмку нет. Бот сам возьмётся за рисование, когда свободных
+            карточек останется меньше десяти, — и тогда напишет тебе в личку.
+            Хочешь посмотреть сейчас — закажи пару карточек кнопкой ниже.
           </div>
         </div>
         <div className="pinw-bar">
-          <button className="ans-btn-ghost" disabled={busy} onClick={refresh}>🔄 Проверить ещё раз</button>
+          <button className="ans-btn pinw-next" disabled={busy} onClick={() => draw(2)}>
+            🖼 Нарисовать 2 карточки (≈ $0.17)
+          </button>
+          <button className="ans-btn-ghost" disabled={busy} onClick={() => refresh(true)}>
+            🔄 Проверить ещё раз
+          </button>
+          {error ? <div className="pinrev-err">{error}</div> : null}
           <button className="pinw-close" onClick={onClose}>Закрыть</button>
         </div>
       </div>
