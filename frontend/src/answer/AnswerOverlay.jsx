@@ -100,6 +100,13 @@ const AU_SUBS = {
   cloze: 'Setze das fehlende Wort ein ✍️',
 };
 
+// Задания, где отвечают ТОЛЬКО нажатиями — своего поля ввода в карточке нет. Только им
+// подходит `ans-root--keepkbd`: клавиатура у них выезжает исключительно под окно
+// «Спросить», которое живёт отдельно и само встаёт над ней, поэтому перестраивать
+// карточку незачем. Во всех остальных заданиях печатают прямо в карточке, и она обязана
+// уступить клавиатуре место — иначе поле ввода оказывается под ней.
+const AU_TAP_ONLY = new Set(['artikel', 'wofrage', 'adjektiv', 'satzbau', 'video']);
+
 function haptic(type) {
   try {
     if (type === 'ok') tg?.HapticFeedback?.notificationOccurred?.('success');
@@ -1137,11 +1144,14 @@ export default function AnswerOverlay({ startParam }) {
 
   // Aufgabe input view — B2+ text task (cloze: sentence with a gap + text input).
   if (isAufgabe) {
+    // `ans-root--keepkbd` («карточка под клавиатуру не перестраивается») годится только
+    // там, где печатать В САМОЙ карточке нечего и клавиатура выезжает исключительно под
+    // окно «Спросить». У заданий это не так: в «Finde im Bild» вводят артикль, в клоузе и
+    // работе над ошибками — слово, в Hörlücke — пропуск. Для них карточка обязана вести
+    // себя как «Диктант чисел»: контент поднимается, поле ввода и кнопка видны.
+    const tapOnly = AU_TAP_ONLY.has(meta?.format || '');
     return (
-      // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
-    // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
-    // отдельно и само встаёт над ней.
-    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
+    <div className={`ans-root${tapOnly ? ' ans-root--keepkbd' : ''}`}><div className="ans-card">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>

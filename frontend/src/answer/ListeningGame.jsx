@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { pointerFraction } from './pointerBox.js';
 
 /**
  * Hörverständnis game: a custom audio player (streams the R2 MP3) + one answer
@@ -111,8 +112,9 @@ export default function ListeningGame({ task, onSubmit, submitting }) {
   const seek = useCallback((e) => {
     const a = audioRef.current;
     if (!a || !dur || playsLeft <= 0) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    // pointerBox: карточку подгонка масштабирует через `zoom`, и в WebKit координаты
+    // блока приходят без его учёта — иначе перемотка встаёт мимо места нажатия.
+    const pct = pointerFraction(e.currentTarget, e.clientX, e.clientY).x;
     a.currentTime = pct * dur;
     setCur(a.currentTime);
   }, [dur, playsLeft]);

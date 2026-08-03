@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { pointerFraction, pointerRect } from './pointerBox.js';
 
 /**
  * B2+ text tasks ("Aufgabe"), all answered in place. Grading is a fast
@@ -219,8 +220,7 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
   }, [exhausted]);
   const seek = useCallback((e) => {
     const a = audioRef.current; if (!a || !dur) return;
-    const r = e.currentTarget.getBoundingClientRect();
-    a.currentTime = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * dur;
+    a.currentTime = pointerFraction(e.currentTarget, e.clientX, e.clientY).x * dur;
   }, [dur]);
   const submit = () => { if (allFilled) onSubmit(vals.map((v) => v.trim()).join('|')); };
   const pct = dur > 0 ? (cur / dur) * 100 : 0;
@@ -289,15 +289,63 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
 function AufgabePin({ task, onSubmit, submitting }) {
   const [tap, setTap] = useState(null); // normalized {x,y}
   const [article, setArticle] = useState('');
+  const wrapRef = useRef(null);
+  const [typing, setTyping] = useState(false);
+  const [imgPct, setImgPct] = useState(100);   // ширина картинки, % от натуральной
+  const pctRef = useRef(100);
   const hasImg = !!task.image_url;
   const needsArticle = !!task.needs_article;
+  // Доли считаем через pointerBox: карточку подгонка масштабирует через `zoom`, а в WebKit
+  // (движок мини-аппа на iPhone) getBoundingClientRect отдаёт координаты БЕЗ учёта zoom —
+  // из-за этого метка уезжала от места тапа. Подробности и замер — в pointerBox.js.
   const onImgClick = (e) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-    const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
-    setTap({ x, y });
+    setTap(pointerFraction(e.currentTarget, e.clientX, e.clientY));
     tapHaptic();
   };
+
+  // КЛАВИАТУРА: картинка ужимается, поле ввода и кнопка остаются на экране.
+  //
+  // Здесь, в отличие от остальных интерактивов, печатать нужно ПРЯМО В КАРТОЧКЕ и при этом
+  // видеть картинку — иначе не проверить, туда ли поставил точку. Поэтому карточка не
+  // «замирает под клавиатурой»: картинка уменьшается ровно на столько, на сколько карточке
+  // не хватило высоты. Пропорции сохраняются (меняем только ширину блока), а метка стоит в
+  // процентах от него, поэтому остаётся ровно на том же месте объекта.
+  useEffect(() => {
+    if (!typing || !hasImg) { pctRef.current = 100; setImgPct(100); return undefined; }
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    let raf = 0;
+    const fit = () => {
+      raf = 0;
+      const wrap = wrapRef.current;
+      const card = wrap && wrap.closest ? wrap.closest('.ans-card') : null;
+      if (!wrap || !card) return;
+      const avail = (vv?.height || window.innerHeight || 0) - 12;   // видимая часть экрана
+      const cardH = pointerRect(card).height;
+      const wrapH = pointerRect(wrap).height;
+      if (!(avail > 120) || !(cardH > 0) || !(wrapH > 0)) return;
+      const cur = pctRef.current || 100;
+      const natural = (wrapH * 100) / cur;   // какой была бы картинка в полную ширину
+      const over = cardH - avail;            // на сколько карточка не влезла
+      // Высота картинки линейна по её ширине, поэтому хватает одного пересчёта.
+      const target = Math.min(natural, Math.max(natural * 0.3, wrapH - over));
+      const next = Math.max(30, Math.min(100, Math.round((target / natural) * 100)));
+      if (Math.abs(next - cur) < 2) return;
+      pctRef.current = next;
+      setImgPct(next);
+    };
+    const onResize = () => { if (!raf) raf = requestAnimationFrame(fit); };
+    onResize();
+    // Клавиатура выезжает с анимацией — новая высота экрана приходит не сразу.
+    const t1 = setTimeout(onResize, 250);
+    const t2 = setTimeout(onResize, 600);
+    vv?.addEventListener?.('resize', onResize);
+    return () => {
+      vv?.removeEventListener?.('resize', onResize);
+      clearTimeout(t1); clearTimeout(t2);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [typing, hasImg]);
+
   const ready = tap && (!needsArticle || article.trim());
   const submit = () => {
     if (!ready) return;
@@ -308,7 +356,10 @@ function AufgabePin({ task, onSubmit, submitting }) {
     <>
       <p className="au-question">{task.question_de}</p>
       {hasImg ? (
-        <div className="pin-wrap" onClick={onImgClick}>
+        <div
+          className="pin-wrap" ref={wrapRef} onClick={onImgClick}
+          style={imgPct < 100 ? { width: `${imgPct}%` } : undefined}
+        >
           <img className="pin-img" src={task.image_url} alt="" draggable="false" />
           {tap ? <span className="pin-marker" style={{ left: `${tap.x * 100}%`, top: `${tap.y * 100}%` }} /> : null}
         </div>
@@ -319,6 +370,7 @@ function AufgabePin({ task, onSubmit, submitting }) {
           className="ans-input" value={article} onChange={(e) => setArticle(e.target.value)}
           placeholder={tap ? 'Artikel: der / die / das' : 'erst auf das Objekt tippen …'}
           autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
+          onFocus={() => setTyping(true)} onBlur={() => setTyping(false)}
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
         />
       ) : null}

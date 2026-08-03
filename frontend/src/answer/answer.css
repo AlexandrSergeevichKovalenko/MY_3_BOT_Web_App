@@ -1115,6 +1115,10 @@ html[data-scheme="light"] .au-gap-correct { color: #0f172a; }
   position: relative; width: 100%; border-radius: var(--dmps-radius-inner, 1.25rem);
   overflow: hidden; cursor: crosshair; border: 1px solid var(--dmps-border, #334155);
   -webkit-touch-callout: none; user-select: none;
+  /* Под клавиатурой картинка ужимается по ширине (AufgabeGame.jsx): держим её по центру
+     карточки и меняем размер плавно, чтобы это не читалось как рывок. */
+  margin-left: auto; margin-right: auto;
+  transition: width 0.18s ease;
 }
 .pin-img { display: block; width: 100%; height: auto; }
 

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { pointerFraction } from './pointerBox.js';
 
 /**
  * «Finde im Bild» studio (admin) — a two-step wizard, one screen per step, no page scroll.
@@ -55,9 +56,10 @@ export default function PinReviewScreen({ api, haptic, onClose }) {
   const pointOf = useCallback((e) => {
     const el = wrapRef.current;
     if (!el) return null;
-    const r = el.getBoundingClientRect();
     const t = e.touches?.[0] || e.changedTouches?.[0] || e;
-    return { x: Math.min(1, Math.max(0, (t.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (t.clientY - r.top) / r.height)) };
+    // pointerBox: карточка масштабируется через `zoom`, а WebKit отдаёт координаты блока
+    // без его учёта — рамка вставала бы не там, где её ведут пальцем (см. pointerBox.js).
+    return pointerFraction(el, t.clientX, t.clientY);
   }, []);
   const start = (e) => { if (!drawing) return; setPreview(null); const p = pointOf(e); if (p) setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y }); };
   const move = (e) => { if (!drawing || !drag) return; e.preventDefault(); const p = pointOf(e); if (p) setDrag((d) => ({ ...d, x1: p.x, y1: p.y })); };
