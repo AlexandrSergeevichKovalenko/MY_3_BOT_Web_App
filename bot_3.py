@@ -28601,6 +28601,9 @@ async def _send_scheduled_rebuses(context: CallbackContext) -> None:
             )
             from backend.rebus_generator import prepare_rebus_pool
             await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
+            # Whatever it drew now waits for a human verdict — say so, otherwise the
+            # pictures sit in the queue and the pool silently stops growing.
+            await _remind_admin_rebus_review(context)
         # If total bank is getting small, GPT replenishment must be explicitly
         # enabled; unreviewed compounds are too risky for production rebuses.
         total = await asyncio.to_thread(count_available_rebuses, cooldown_days=0)
@@ -28783,6 +28786,68 @@ async def admin_rebus_send_command(update: Update, context: CallbackContext) -> 
         await status_msg.delete()
     else:
         await status_msg.edit_text("Rebus send failed — check logs.")
+
+
+def _rebus_review_kb(label: str = "🧩 Открыть приёмку"):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=get_webapp_deeplink("ans_rbv_0"))]])
+
+
+async def _remind_admin_rebus_review(context: CallbackContext = None) -> None:
+    """DM the owner that freshly drawn halves are waiting for a verdict. Throttled —
+    the pool draws in bursts and one nudge per burst is enough."""
+    import time as _t
+    now = _t.time()
+    if now - _INTERACTIVE_ALERT_LAST.get("rebus_review_wait", 0.0) < 6 * 3600:
+        return
+    try:
+        from backend.database import get_admin_telegram_ids, list_pending_rebus_component_reviews
+        pending = await asyncio.to_thread(list_pending_rebus_component_reviews, 40)
+        if not pending:
+            return
+        _INTERACTIVE_ALERT_LAST["rebus_review_wait"] = now
+        bot = context.bot if context is not None else (application.bot if application else None)
+        if bot is None:
+            return
+        words = ", ".join(p["word"] for p in pending[:8])
+        text = (
+            f"🧩 <b>Ребусы: {len(pending)} картинок ждут приёмки</b>\n\n"
+            f"{words}{'…' if len(pending) > 8 else ''}\n\n"
+            "Пока не примешь — задания с этими половинками людям не уходят."
+        )
+        for admin_id in (get_admin_telegram_ids() or []):
+            try:
+                await bot.send_message(chat_id=int(admin_id), text=text,
+                                       parse_mode="HTML", reply_markup=_rebus_review_kb())
+            except Exception:
+                logging.warning("rebus review nudge: DM failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("rebus review nudge failed", exc_info=True)
+
+
+async def admin_rebus_review_command(update: Update, context: CallbackContext) -> None:
+    """Open the rebus acceptance screen: every freshly drawn half, one per screen.
+    /admin_rebus_review"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.database import list_pending_rebus_component_reviews
+    pending = await asyncio.to_thread(list_pending_rebus_component_reviews, 40)
+    if not pending:
+        await message.reply_text(
+            "🧩 На приёмке пусто — все нарисованные половинки уже разобраны.",
+            reply_markup=_rebus_review_kb("🧩 Всё равно открыть"),
+        )
+        return
+    await message.reply_text(
+        f"🧩 <b>Ждут приёмки: {len(pending)}</b>\n\n"
+        + ", ".join(p["word"] for p in pending[:12])
+        + ("…" if len(pending) > 12 else ""),
+        parse_mode="HTML", reply_markup=_rebus_review_kb(),
+    )
 
 
 async def admin_rebus_pool_command(update: Update, context: CallbackContext) -> None:
@@ -29140,7 +29205,7 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
         sync = sync_rebus_bank_from_code()
         reset = 0
         stale_words: list[str] = []
-        redrawn = failed = 0
+        redrawn = failed = awaiting = 0
         if stale:
             got = invalidate_stale_rebus_component_images()
             stale_words = list(got.get("stale") or [])
@@ -29148,15 +29213,18 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
             # Redraw exactly what we just invalidated. The pool job only tops up TO a
             # target, so with a full pool it would leave these cards pending forever.
             for cid in (got.get("compound_ids") or [])[:40]:
-                if prepare_rebus_entry(cid).get("status") == "ready":
+                st = prepare_rebus_entry(cid).get("status")
+                if st == "ready":
                     redrawn += 1
+                elif st == "awaiting_review":
+                    awaiting += 1
                 else:
                     failed += 1
         for w in part_words:
             reset += reset_rebus_compounds_for_part(w)
         pool = prepare_rebus_pool(target_ready=REBUS_POOL_TARGET, max_attempts=40)
         return {"sync": sync, "reset": reset, "pool": pool, "stale_words": stale_words,
-                "redrawn": redrawn, "redraw_failed": failed}
+                "redrawn": redrawn, "redraw_failed": failed, "awaiting": awaiting}
 
     try:
         result = await asyncio.to_thread(_reset, words, stale_mode)
@@ -29177,6 +29245,8 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
             f"\n🖼 Промпт изменился у {len(stale_words)} картинок: " + ", ".join(stale_words[:30])
             + f"\n🎨 Пересобрано карточек: {result.get('redrawn')}"
             + (f" (не вышло: {result.get('redraw_failed')})" if result.get("redraw_failed") else "")
+            + (f"\n🧩 Ждут твоей приёмки: {result.get('awaiting')} — /admin_rebus_review"
+               if result.get("awaiting") else "")
         )
     await status_msg.edit_text(text[:4000])
 
@@ -41835,6 +41905,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_recheck", admin_rebus_recheck_command))
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
+    application.add_handler(CommandHandler("admin_rebus_review", admin_rebus_review_command))
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
     application.add_handler(CommandHandler("admin_hero_images", admin_hero_images_command))
     application.add_handler(CommandHandler("admin_lazy_image", admin_lazy_image_command))

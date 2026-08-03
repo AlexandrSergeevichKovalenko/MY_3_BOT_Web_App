@@ -11391,6 +11391,26 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_rebus_component_images
                 ADD COLUMN IF NOT EXISTS dalle_prompt TEXT;
             """)
+            # Human acceptance: a freshly drawn half waits for the owner before any card
+            # is built from it. Existing rows default to 'approved' — they are already in
+            # rotation, and re-reviewing 225 old pictures at once helps nobody.
+            # 'blocked' = the owner said this word is not rebus material: never redraw it.
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_component_images
+                ADD COLUMN IF NOT EXISTS review_status TEXT NOT NULL DEFAULT 'approved';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_component_images
+                ADD COLUMN IF NOT EXISTS review_reason TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_component_images
+                ADD COLUMN IF NOT EXISTS redraw_count INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_rebus_component_review
+                ON bt_3_rebus_component_images (review_status, updated_at);
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_rebus_bank (
                     compound_id             TEXT PRIMARY KEY,
@@ -45426,7 +45446,8 @@ def get_rebus_component_image(word: str) -> dict | None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT word, image_object_key, generation_status, dalle_prompt
+                SELECT word, image_object_key, generation_status, dalle_prompt,
+                       review_status, review_reason, redraw_count
                 FROM bt_3_rebus_component_images
                 WHERE word = %s
                 """,
@@ -45438,7 +45459,150 @@ def get_rebus_component_image(word: str) -> dict | None:
     return {
         "word": row[0], "image_object_key": row[1],
         "generation_status": row[2], "dalle_prompt": row[3],
+        "review_status": row[4] or "approved", "review_reason": row[5] or "",
+        "redraw_count": int(row[6] or 0),
     }
+
+
+MAX_REBUS_COMPONENT_REDRAWS = 2
+
+
+def list_pending_rebus_component_reviews(limit: int = 40) -> list[dict]:
+    """Freshly drawn halves waiting for the owner's verdict, oldest first, with
+    everything the acceptance screen needs: the picture, what it is supposed to show,
+    and which compounds are held up by it."""
+    from backend.r2_storage import r2_public_url
+    meanings = get_rebus_part_meanings()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word, image_object_key, dalle_prompt, redraw_count, review_reason
+                FROM bt_3_rebus_component_images
+                WHERE review_status = 'pending'
+                  AND generation_status = 'ready'
+                  AND image_object_key IS NOT NULL
+                ORDER BY updated_at
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+            words = [str(r[0]) for r in rows]
+            waiting: dict[str, list[str]] = {w: [] for w in words}
+            if words:
+                cursor.execute(
+                    """
+                    SELECT p->>'word', compound_word
+                    FROM bt_3_rebus_bank, jsonb_array_elements(parts_json) p
+                    WHERE retired = FALSE AND p->>'word' = ANY(%s)
+                    """,
+                    (words,),
+                )
+                for part_word, compound in cursor.fetchall() or []:
+                    waiting.setdefault(str(part_word), []).append(str(compound))
+    out = []
+    for word, key, prompt, redraws, reason in rows:
+        try:
+            url = r2_public_url(str(key))
+        except Exception:
+            url = ""
+        out.append({
+            "word": str(word),
+            "meaning_ru": meanings.get(str(word), ""),
+            "image_url": url,
+            "prompt": str(prompt or ""),
+            "redraw_count": int(redraws or 0),
+            "redraws_left": max(0, MAX_REBUS_COMPONENT_REDRAWS - int(redraws or 0)),
+            "last_reason": str(reason or ""),
+            "compounds": sorted(waiting.get(str(word)) or []),
+        })
+    return out
+
+
+# What the owner can say about a drawn half, and what the picture must avoid when it
+# is redrawn. The reason is not decoration: it goes straight into the next prompt.
+REBUS_REJECT_REASONS: dict[str, str] = {
+    "wrong_object": "the object shown is NOT the intended word — draw the word's plain, "
+                    "literal, dictionary meaning and nothing else",
+    "shows_sibling": "the picture contains the object of the puzzle's OTHER half — draw "
+                     "the bare object alone, no container, no vessel, no holder",
+    "ugly": "the drawing is unclear or unattractive — one clean, well-lit object, "
+            "centred, simple shapes, no clutter",
+}
+
+
+def set_rebus_component_review(word: str, verdict: str, reason: str = "") -> dict:
+    """The owner's verdict on one drawn half.
+
+    approve → the picture goes into rotation and every compound waiting on it can be
+              composed.
+    reject  → the picture is dropped and redrawn ONCE more with the reason folded into
+              the prompt; after MAX_REBUS_COMPONENT_REDRAWS the word is blocked instead
+              of being redrawn forever (an image costs real money every time).
+    block   → "this word is not rebus material": never draw it again and retire the
+              compounds that depend on it.
+
+    Returns {"status": …, "compounds_touched": int}."""
+    word = str(word or "").strip()
+    verdict = str(verdict or "").strip().lower()
+    if not word:
+        return {"status": "error", "error": "empty word"}
+    if verdict == "approve":
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_rebus_component_images "
+                    "SET review_status='approved', review_reason=NULL, updated_at=NOW() "
+                    "WHERE word=%s",
+                    (word,),
+                )
+            conn.commit()
+        return {"status": "approved", "compounds_touched": 0}
+
+    row = get_rebus_component_image(word) or {}
+    redraws = int(row.get("redraw_count") or 0)
+    hint = REBUS_REJECT_REASONS.get(reason, str(reason or "").strip())
+    if verdict == "reject" and redraws + 1 <= MAX_REBUS_COMPONENT_REDRAWS:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_rebus_component_images "
+                    "SET review_status='pending', generation_status='failed', "
+                    "    image_object_key=NULL, review_reason=%s, "
+                    "    failure_reason=%s, redraw_count=redraw_count+1, updated_at=NOW() "
+                    "WHERE word=%s",
+                    (hint[:500], f"rejected by owner: {hint}"[:500], word),
+                )
+            conn.commit()
+        touched = reset_rebus_compounds_for_part(word)
+        return {"status": "redraw", "compounds_touched": touched,
+                "redraws_left": MAX_REBUS_COMPONENT_REDRAWS - (redraws + 1)}
+
+    # block: either asked for explicitly, or the redraw budget is spent.
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_rebus_component_images "
+                "SET review_status='blocked', generation_status='failed', "
+                "    review_reason=%s, failure_reason='blocked by owner', updated_at=NOW() "
+                "WHERE word=%s",
+                ((hint or "not rebus material")[:500], word),
+            )
+            cursor.execute(
+                """
+                UPDATE bt_3_rebus_bank SET retired = TRUE, updated_at = NOW()
+                WHERE retired = FALSE
+                  AND EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(parts_json) p
+                    WHERE p->>'word' = %s
+                  )
+                """,
+                (word,),
+            )
+            touched = cursor.rowcount or 0
+        conn.commit()
+    return {"status": "blocked", "compounds_touched": int(touched)}
 
 
 def upsert_rebus_component_image(
@@ -45448,22 +45612,26 @@ def upsert_rebus_component_image(
     generation_status: str = "pending",
     failure_reason: str | None = None,
     dalle_prompt: str | None = None,
+    review_status: str | None = None,
 ) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO bt_3_rebus_component_images
-                    (word, image_object_key, generation_status, failure_reason, dalle_prompt, updated_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                    (word, image_object_key, generation_status, failure_reason, dalle_prompt,
+                     review_status, updated_at)
+                VALUES (%s, %s, %s, %s, %s, COALESCE(%s, 'approved'), NOW())
                 ON CONFLICT (word) DO UPDATE SET
                     image_object_key  = COALESCE(EXCLUDED.image_object_key, bt_3_rebus_component_images.image_object_key),
                     generation_status = EXCLUDED.generation_status,
                     failure_reason    = EXCLUDED.failure_reason,
                     dalle_prompt      = COALESCE(EXCLUDED.dalle_prompt, bt_3_rebus_component_images.dalle_prompt),
+                    review_status     = COALESCE(%s, bt_3_rebus_component_images.review_status),
                     updated_at        = NOW()
                 """,
-                (str(word), image_object_key, str(generation_status), failure_reason, dalle_prompt),
+                (str(word), image_object_key, str(generation_status), failure_reason, dalle_prompt,
+                 review_status, review_status),
             )
         conn.commit()
 

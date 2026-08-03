@@ -295,7 +295,10 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
 
   const _ac = cardsRef.current[idx];
   return (
-    <div className="ans-root">
+    // `ans-root--keepkbd`: под клавиатуру этот интерактив не перестраивается. Артикль
+    // выбирается кнопками, печатать в карточке нечего; клавиатура выезжает только под окно
+    // «Спросить», а оно и так встаёт над ней.
+    <div className="ans-root ans-root--keepkbd">
       <div className="ans-card as-card al-card">{body}</div>
       {askOpen ? (
         <AskOverlay api={api} onClose={() => setAskOpen(false)}

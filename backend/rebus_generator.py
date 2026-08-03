@@ -69,6 +69,10 @@ def generate_component_image(word: str, dalle_prompt: str, *,
     `sibling` (the object drawn in the puzzle's OTHER picture) before caching — so
     wrong-object images (a pine cone for "Konus") and duplicate halves ("Kaffee"
     drawn as a cup, next to "Tasse") never reach players.
+
+    A NEW picture then waits for the owner's verdict (review_status='pending') — the
+    machine can only tell that the object is right, not that the drawing is good. No
+    card is composed from a half that has not been accepted.
     """
     from backend.database import get_rebus_component_image, upsert_rebus_component_image
     from backend.image_generation_provider import generate_image_bytes
@@ -76,9 +80,17 @@ def generate_component_image(word: str, dalle_prompt: str, *,
     from backend.r2_storage import r2_put_bytes
 
     # Already done?
-    existing = get_rebus_component_image(word)
-    if existing and existing.get("generation_status") == "ready" and existing.get("image_object_key"):
+    existing = get_rebus_component_image(word) or {}
+    if existing.get("review_status") == "blocked":
+        raise RuntimeError(f"component '{word}' was blocked by the owner — not drawing it again")
+    if existing.get("generation_status") == "ready" and existing.get("image_object_key"):
         return str(existing["image_object_key"])
+
+    # A redraw after a rejection carries the owner's reason INTO the prompt — otherwise
+    # the same picture comes back and the money is spent twice for nothing.
+    reason = str(existing.get("review_reason") or "").strip()
+    if reason and int(existing.get("redraw_count") or 0) > 0:
+        dalle_prompt = f"{dalle_prompt}. IMPORTANT, previous attempt was rejected: {reason}"
 
     logging.info("rebus_generator: generating component image word=%s", word)
     upsert_rebus_component_image(word, generation_status="pending")
@@ -113,8 +125,10 @@ def generate_component_image(word: str, dalle_prompt: str, *,
             content_type=mime,
             cache_control="public, max-age=31536000, immutable",
         )
-        upsert_rebus_component_image(word, image_object_key=object_key, generation_status="ready")
-        logging.info("rebus_generator: component ready word=%s key=%s bytes=%s", word, object_key, len(img_bytes))
+        upsert_rebus_component_image(word, image_object_key=object_key, generation_status="ready",
+                                     review_status="pending")
+        logging.info("rebus_generator: component drawn word=%s key=%s bytes=%s — awaiting owner",
+                     word, object_key, len(img_bytes))
         return object_key
 
     except Exception as exc:
@@ -386,6 +400,17 @@ def prepare_rebus_entry(compound_id: str) -> dict:
             )
             component_keys.append(key)
 
+        # Both halves must be ACCEPTED by the owner before a card exists. The entry
+        # stays 'pending' (not failed): the moment the last half is approved, the
+        # acceptance screen composes it. Nothing unreviewed ever reaches a learner.
+        waiting = [
+            word for word, _p, _m in planned
+            if (get_rebus_component_image(word) or {}).get("review_status") != "approved"
+        ]
+        if waiting:
+            logging.info("rebus_generator: %s waits for acceptance of %s", compound_id, waiting)
+            return {"status": "awaiting_review", "compound_id": compound_id, "waiting": waiting}
+
         # Compose the card
         card_bytes = compose_rebus_card(
             component_keys[0],
@@ -435,6 +460,7 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
     generated = 0
     failed = 0
     attempts = 0
+    awaiting = 0
 
     # Get pending entries ordered by compound_id
     with __import__("backend.database", fromlist=["get_db_connection_context"]).get_db_connection_context() as conn:
@@ -462,6 +488,10 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
             result = prepare_rebus_entry(cid)
             if result.get("status") == "ready":
                 generated += 1
+            elif result.get("status") == "awaiting_review":
+                # Drawn, waiting for the owner — not a failure, and not something to
+                # retry: it would only redraw pictures that already exist.
+                awaiting += 1
             else:
                 failed += 1
             time.sleep(1.5)  # rate-limit DALL-E calls
@@ -475,7 +505,43 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
         "generated": generated,
         "failed": failed,
         "attempts": attempts,
+        "awaiting_review": awaiting,
     }
+
+
+def compose_rebus_entries_waiting_for(word: str, *, limit: int = 20) -> dict:
+    """After the owner accepts one half, build every card that was only waiting for
+    it. Cards whose OTHER half is still unreviewed simply stay pending — they will be
+    built when that one is accepted. No image is generated here: both halves already
+    exist, this is pure PIL composition."""
+    from backend.database import get_db_connection_context
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT compound_id FROM bt_3_rebus_bank
+                WHERE retired = FALSE AND composed_status IN ('pending', 'failed')
+                  AND EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(parts_json) p
+                    WHERE p->>'word' = %s
+                  )
+                LIMIT %s
+                """,
+                (str(word), int(limit)),
+            )
+            ids = [str(r[0]) for r in cursor.fetchall() or []]
+    composed, still_waiting = 0, 0
+    for cid in ids:
+        try:
+            res = prepare_rebus_entry(cid)
+        except Exception:
+            logging.warning("rebus_generator: compose after acceptance failed for %s", cid, exc_info=True)
+            continue
+        if res.get("status") == "ready":
+            composed += 1
+        elif res.get("status") == "awaiting_review":
+            still_waiting += 1
+    return {"composed": composed, "still_waiting": still_waiting, "checked": len(ids)}
 
 
 # ─── GPT replenishment ────────────────────────────────────────────────────────

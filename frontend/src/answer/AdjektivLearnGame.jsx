@@ -225,7 +225,10 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
   }
 
   return (
-    <div className="ans-root">
+    // `ans-root--keepkbd`: под клавиатуру этот интерактив не перестраивается. Печатать в
+    // самой карточке нечего — окончание выбирается кнопками; клавиатура выезжает только под
+    // окно «Спросить», а оно и так встаёт над ней.
+    <div className="ans-root ans-root--keepkbd">
       <div className={`ans-card as-card ${cls}`}>{body}</div>
       {toast ? <div className={`al-toast ${toast.kind}`} role="status">{toast.text}</div> : null}
     </div>

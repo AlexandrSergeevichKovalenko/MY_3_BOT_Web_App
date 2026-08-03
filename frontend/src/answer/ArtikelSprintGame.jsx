@@ -308,7 +308,10 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
   }
 
   return (
-    <div className="ans-root">
+    // `ans-root--keepkbd`: под клавиатуру этот интерактив не перестраивается. Артикль
+    // выбирается кнопками, печатать в карточке нечего; клавиатура выезжает только под окно
+    // «Спросить», а оно и так встаёт над ней.
+    <div className="ans-root ans-root--keepkbd">
       <div className={`ans-card as-card ${cls}`}>{body}</div>
       <Toast state={toast.state} onClose={toast.hide} />
     </div>

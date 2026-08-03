@@ -29543,6 +29543,45 @@ def answer_pin_scene_done():
     return jsonify({"ok": True})
 
 
+@app.route("/api/answer/rebusreview/list", methods=["POST"])
+def answer_rebus_review_list():
+    """Freshly drawn rebus halves waiting for the owner. The review unit is the WORD,
+    not the finished card: a word is drawn once and reused by every compound that
+    contains it, so one verdict settles all of them."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    from backend.database import list_pending_rebus_component_reviews
+    items = list_pending_rebus_component_reviews(40)
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/answer/rebusreview/verdict", methods=["POST"])
+def answer_rebus_review_verdict():
+    """Owner's verdict on one drawn half: approve / reject+reason / block the word.
+
+    Approving composes every card that was only waiting for this half — that is pure
+    image composition, no generation, so it is safe to do inline."""
+    user_id, err = _pin_review_admin_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    word = str(payload.get("word") or "").strip()
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    reason = str(payload.get("reason") or "").strip()
+    if not word or verdict not in ("approve", "reject", "block"):
+        return jsonify({"error": "нужны слово и решение"}), 400
+    from backend.database import set_rebus_component_review
+    result = set_rebus_component_review(word, verdict, reason)
+    if result.get("status") == "approved":
+        try:
+            from backend.rebus_generator import compose_rebus_entries_waiting_for
+            result["cards"] = compose_rebus_entries_waiting_for(word)
+        except Exception:
+            logging.warning("rebusreview: compose after approve failed word=%s", word, exc_info=True)
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/answer/review/overview", methods=["POST"])
 def answer_review_overview():
     """Mistakes review sections + due-counts (Artikel vs Grammatik) for the section picker."""

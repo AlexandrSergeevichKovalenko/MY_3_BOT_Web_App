@@ -6,6 +6,7 @@ import DeepDiveActions from './DeepDiveActions.jsx';
 import ListeningGame from './ListeningGame.jsx';
 import CrosswordGrid from './CrosswordGrid.jsx';
 import PinReviewScreen from './PinReviewScreen.jsx';
+import RebusReviewScreen from './RebusReviewScreen.jsx';
 import AufgabeGame from './AufgabeGame.jsx';
 import SprintGame from './SprintGame.jsx';
 import TrainerGame from './TrainerGame.jsx';
@@ -50,7 +51,7 @@ function getInitData() {
 // start_param: ans_rb_123 / ans_cw_45 / ans_ag_7 / ans_ls_3 / ans_qf_9 / ans_au_2
 //   ans_qfp_<poll_id> — poll-scoped freeform (button attached under the poll)
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|tr|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|wfbl|wfb|wfl|wf|bh|nd|np|pv|rbv)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
@@ -953,6 +954,10 @@ export default function AnswerOverlay({ startParam }) {
   // Admin acceptance for «Finde im Bild»: draw the answer region by hand.
   if (kind === 'pv') {
     return <PinReviewScreen api={api} haptic={haptic} onClose={close} />;
+  }
+  // Admin acceptance for the rebus halves: one drawn word per screen.
+  if (kind === 'rbv') {
+    return <RebusReviewScreen api={api} haptic={haptic} onClose={close} />;
   }
   if (kind === 'al') {
     return <ArtikelLearnGame api={api} haptic={haptic} onClose={close} />;
