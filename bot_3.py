@@ -28730,6 +28730,9 @@ async def prepare_rebus_pool_job(context: CallbackContext) -> None:
         from backend.rebus_generator import prepare_rebus_pool
         result = await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
         logging.info("rebus_pool_job done: %s", result)
+        # Всё, что нарисовалось, ждёт человека — молча копить эту очередь нельзя:
+        # без приёмки карточки не соберутся, и пул перестанет расти.
+        await _remind_admin_rebus_review(context)
     except Exception:
         logging.warning("rebus_pool_job failed", exc_info=True)
 
