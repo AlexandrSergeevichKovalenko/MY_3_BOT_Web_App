@@ -65,7 +65,7 @@ class RebusFailureBudgetTests(unittest.TestCase):
     быть счёт, а у невозможной пары — конец, а не вечные попытки."""
 
     def test_blocked_compounds_include_the_self_revealing_ones(self) -> None:
-        for compound in ("Adlerflügel", "Tannenbaum", "Elefantenrüssel", "Löwenmähne"):
+        for compound in ("Adlerflügel", "Weinglas", "Tannenbaum", "Elefantenrüssel", "Löwenmähne"):
             with self.subTest(compound):
                 self.assertTrue(is_rebus_compound_blocked(compound))
 

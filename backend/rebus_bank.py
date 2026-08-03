@@ -1501,6 +1501,10 @@ _REBUS_BLOCKED_COMPOUNDS: set[str] = {
     "elefantenrussel",  # a Rüssel can only be drawn as an elephant's trunk
     "lowenmahne",       # a Mähne can only be drawn as a lion's mane
     "adlerflugel",      # орла без крыльев не нарисуешь — вторая половина видна всегда
+    # Содержимое, которое не нарисовать отдельно от посуды, а посуда — вторая
+    # половина. У кофе есть зёрна, у вина такого «сырья» нет: жидкость читается как
+    # сок, бутылка — это Weinflasche, виноград — Trauben. Складывать нечего.
+    "weinglas",
 }
 
 
