@@ -74,33 +74,37 @@ function supportsZoom() {
 // случайно выходил ровно 1, деления не было и та же карточка вставала красиво. Отсюда и
 // «одна карточка нормально, соседняя сплюснута» на одном и том же коде.
 //
-// Поэтому величину движка определяем пробой ОДИН РАЗ и дальше меряем одинаково везде.
-let rectIncludesZoom = true;
-function probeRectZoom() {
-  try {
-    const probe = document.createElement('div');
-    probe.style.cssText = 'position:absolute;left:-9999px;top:0;width:100px;height:100px;zoom:0.5;';
-    document.body.appendChild(probe);
-    const h = probe.getBoundingClientRect().height;
-    probe.remove();
-    if (h > 0) rectIncludesZoom = h < 75;   // 50 → масштаб учтён, 100 → нет
-  } catch (_e) { /* не вышло — оставляем поведение Chrome */ }
-}
-
+// ПРОБУ ДВИЖКА УБРАЛИ. Она угадывала правило по искусственному блоку, а верить ей на слово
+// в единственном месте, которое видит пользователь, нельзя — если проба ошиблась, ошибётся
+// всё. Меряем иначе: НЕ саму карточку, а КОРЕНЬ. Корень никогда не зумлен, поэтому его
+// прямоугольник честен в любом движке. На время замера снимаем закреплённую высоту — тогда
+// корень ровно оборачивает карточку, и его высота минус собственные отступы И ЕСТЬ высота
+// карточки на экране. Ни одного предположения о том, как движок понимает `zoom`.
 const zoomOf = (card) => {
   const z = parseFloat(card.style.zoom);
   return Number.isFinite(z) && z > 0 ? z : 1;
 };
-// Высота карточки НА ЭКРАНЕ — в тех же пикселях, что и высота экрана.
-function visH(card) {
-  const h = card.getBoundingClientRect().height;
-  return rectIncludesZoom ? h : h * zoomOf(card);
+
+function screenH(root, card) {
+  const saved = root.style.minHeight;
+  root.style.minHeight = '0px';
+  const cs = getComputedStyle(root);
+  const h = root.getBoundingClientRect().height
+    - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+  root.style.minHeight = saved;
+  // подстраховка: если корень почему-то не обернул карточку, лучше вернуть хоть что-то
+  return h > 0 ? h : card.getBoundingClientRect().height;
 }
+
 // Высота элемента ВНУТРИ карточки в её собственных пикселях — в них задаются style-свойства
-// (`max-height`, `min-height`) зумленных элементов.
-function ownH(el, k) {
-  const h = el.getBoundingClientRect().height;
-  return rectIncludesZoom ? h / (k || 1) : h;
+// (`max-height`, `min-height`) зумленных элементов. Коэффициент пересчёта не угадываем, а
+// выводим из той же честной величины: Chrome отдаёт прямоугольник уже экранным (коэффициент
+// 1), Safari — внутренним (коэффициент k).
+function ownHIn(root, card, el, k) {
+  const raw = card.getBoundingClientRect().height;
+  const vis = screenH(root, card);
+  const unit = raw > 0 && vis > 0 ? vis / raw : 1;
+  return el.getBoundingClientRect().height * unit / (k || 1);
 }
 
 // Высота, которой мы реально располагаем. ОДИН ИСТОЧНИК — БРАУЗЕР.
@@ -216,6 +220,8 @@ function fitOne(root) {
   if (!card) return;
   if (ro && !observedCards.has(card)) { observedCards.add(card); ro.observe(card); }
   const st = stateOf(card);
+  const visH = () => screenH(root, card);
+  const ownH = (el, k) => ownHIn(root, card, el, k);
 
   // Печатают в окне «Спросить» — оно к заданию отношения не имеет. Ничего не считаем и
   // ничего не меняем: карточка остаётся ровно такой, какой была.
@@ -239,7 +245,7 @@ function fitOne(root) {
 
   // Ничего не изменилось с прошлого расчёта — не трогаем (иначе лишние reflow).
   const availNow = availHeight(root);
-  const visNow = visH(card);
+  const visNow = visH();
   if (st.vis && Math.abs(visNow - st.vis) < EPS && Math.abs(availNow - st.avail) < EPS) return;
   // Предохранитель от «подрастания»: на одно и то же содержимое хватает пары расчётов.
   // Дальше замолкаем до следующей смены контента (её ловит MutationObserver) или размера
@@ -269,7 +275,7 @@ function fitOne(root) {
   resetCard(root, card, st);
   root.style.minHeight = `${Math.round(viewportHeight())}px`;
   let avail = availHeight(root);
-  let h = visH(card);
+  let h = visH();
   if (!(avail > 160) || !(h > 0)) return;
 
   // Растягивание карточки на всю высоту (fill/rescue ниже) — ТОЛЬКО планшет. На телефоне
@@ -283,7 +289,7 @@ function fitOne(root) {
   const remember = (k) => {
     st.k = k;
     st.avail = availHeight(root);
-    st.vis = visH(card);
+    st.vis = visH();
   };
 
   // Отдать внутреннему прокручиваемому блоку всю оставшуюся высоту экрана. Цикл — внутри
@@ -301,7 +307,7 @@ function fitOne(root) {
     st.stretched = sc;
     let prev = -1;
     for (let i = 0; i < 8; i += 1) {
-      const cardH = visH(card);
+      const cardH = visH();
       const slack = avail - cardH;
       if (slack < 6) break;
       if (prev > 0 && cardH - prev < 2) break;            // перестал расти — упёрся в контент
@@ -310,7 +316,7 @@ function fitOne(root) {
       sc.style.maxHeight = `${Math.round(ownH(sc, k) + (slack - 4) / k)}px`;
     }
     for (let i = 0; i < 2; i += 1) {
-      const over = visH(card) - avail;
+      const over = visH() - avail;
       if (over <= 0) break;
       sc.style.maxHeight = `${Math.round(ownH(sc, k) - (over + 3) / k)}px`;
     }
@@ -334,7 +340,7 @@ function fitOne(root) {
   // бы ветки мы сюда ни пришли; а если места нет, ничего и не произойдёт (slack < 4).
   const fill = (k) => {
     const availNow = availHeight(root);
-    const slack = availNow - visH(card);
+    const slack = availNow - visH();
     if (slack < 4) return;
     card.classList.add('is-filled');
     card.style.minHeight = `${Math.round((availNow - 2) / k)}px`;
@@ -354,7 +360,7 @@ function fitOne(root) {
     let cur = k;
     if (!wide) return cur;
     if (card.classList.contains('is-panelled')) return cur;   // там высота задана точно
-    if (availHeight(root) - visH(card) < 12) return cur;
+    if (availHeight(root) - visH() < 12) return cur;
     root.classList.remove('is-scroll');
     if (cur < WIDE_MAX_ZOOM - 0.002) cur = fitsAt(WIDE_MAX_ZOOM) ? WIDE_MAX_ZOOM : bisect(cur, WIDE_MAX_ZOOM);
     return cur;   // высоту добирает fill() в settle — общий путь для телефона и планшета
@@ -372,7 +378,7 @@ function fitOne(root) {
       // вечное «не влезает».
       const over = Math.round(root.getBoundingClientRect().height - viewportHeight());
       if (over <= 1) break;
-      const vis = visH(card);
+      const vis = visH();
       if (!(vis > 0)) break;
       if (st.stretched) {
         // сначала отдаём лишнее из растянутого блока — это не стоит читаемости
@@ -393,7 +399,7 @@ function fitOne(root) {
   };
 
   // Помещается ли карточка при масштабе kk (замер, а не расчёт: текст переносится иначе).
-  const fitsAt = (kk) => { setZoom(card, kk); return visH(card) <= avail; };
+  const fitsAt = (kk) => { setZoom(card, kk); return visH() <= avail; };
   // Максимальный масштаб, при котором ещё помещается: lo помещается, hi — уже нет.
   const bisect = (lo, hi) => {
     let best = lo;
@@ -412,7 +418,7 @@ function fitOne(root) {
   // по определению ниже экрана.
   const grow = () => {
     stretch(1);
-    const left = avail - visH(card);
+    const left = avail - visH();
     if (left >= 10 && (wide || h >= avail * 0.6)) {
       settle(fitsAt(zoomCeil) ? zoomCeil : bisect(1, zoomCeil));
       return;
@@ -425,7 +431,7 @@ function fitOne(root) {
   // 2. Отдаём отступы — это бесплатно.
   root.classList.add('is-tight');
   avail = availHeight(root);
-  h = visH(card);
+  h = visH();
   if (h <= avail) { grow(); return; }
 
   // 3. Ужимаем карточку целиком — пока это не бьёт по читаемости. Масштаб подбираем
@@ -433,7 +439,7 @@ function fitOne(root) {
   const k0 = (avail - 2) / h;
   if (k0 >= MILD_ZOOM) {
     const k = fitsAt(k0) ? bisect(k0, Math.min(1, k0 * 1.35)) : bisect(Math.max(MIN_ZOOM, k0 * 0.85), k0);
-    if (visH(card) <= avail) { settle(k); return; }
+    if (visH() <= avail) { settle(k); return; }
   }
 
   // 4. Ужимать сильнее нельзя — текст станет нечитаемым. Тогда экран собирается иначе:
@@ -444,7 +450,7 @@ function fitOne(root) {
     // Меряем от НАТУРАЛЬНОЙ величины: шаг 3 мог оставить свой масштаб, а `h` снята без него —
     // иначе «всё, кроме разбора» считалось по двум разным меркам и масштаб выходил случайный.
     setZoom(card, 1);
-    h = visH(card);
+    h = visH();
     const rest = h - panel.getBoundingClientRect().height; // всё, кроме длинного блока
     // Если внутри блока живёт кнопка действия — она прилипнет к его низу, значит на текст
     // должно остаться место СВЕРХ её высоты, иначе от разбора видно две строки.
@@ -455,7 +461,7 @@ function fitOne(root) {
     card.classList.add('is-panelled');
     panel.classList.add('is-fit-panel');
     card.style.maxHeight = `${Math.round((avail - 2) / kp)}px`; // px внутри карточки — уже в её масштабе; −2 на рамку
-    if (visH(card) <= avail + EPS) { settle(kp); return; }
+    if (visH() <= avail + EPS) { settle(kp); return; }
     // не помогло — откатываем к обычной прокрутке
     card.classList.remove('is-panelled');
     panel.classList.remove('is-fit-panel');
@@ -468,12 +474,42 @@ function fitOne(root) {
   //    Прокрутку с прижатой к низу кнопкой включаем ТОЛЬКО если и на пределе не влезло.
   const kLast0 = fitsAt(MIN_ZOOM) ? bisect(MIN_ZOOM, 1) : MIN_ZOOM;
   setZoom(card, kLast0);
-  if (visH(card) > avail + EPS) root.classList.add('is-scroll');
+  if (visH() > avail + EPS) root.classList.add('is-scroll');
   // И здесь проверяем по факту: если после ужатия на экране всё-таки осталось место —
   // расчёт выше ошибся, масштаб возвращаем (сюда попадала «скукоженная» карточка).
   const kLast = rescue(kLast0);
   fill(kLast);
   remember(kLast);
+}
+
+// ПОСЛЕДНЕЕ СЛОВО: НА ЭКРАНЕ НЕ ДОЛЖНО ОСТАВАТЬСЯ ПУСТОГО МЕСТА.
+//
+// Всё, что выше, — это ветки: подобрать масштаб, пересобрать в панель, ужать до предела.
+// Любая из них может ошибиться, и раньше ошибка доезжала прямо до пользователя: карточка
+// вставала посреди экрана, а сверху и снизу оставались серые полосы. Плюс расчёт умеет
+// вообще НЕ СОСТОЯТЬСЯ — предохранители `st.runs`/`st.hard` молча выходят, и промежуточный
+// вид остаётся на экране навсегда.
+//
+// Поэтому здесь стоит проверка, которая не зависит ни от одной ветки и ни от одного
+// предположения о `zoom`: померили карточку по корню (он не зумлен — значит честно) и,
+// если она короче экрана, дотянули. Ветка могла ошибиться, замер по факту — нет.
+// Это последнее, что происходит с карточкой, и это ровно то, что видит пользователь.
+function enforceNoGap(root) {
+  if (root.classList.contains('ans-root--cw')) return;   // кроссворд считает высоту сам
+  const card = root.querySelector(':scope > .ans-card');
+  if (!card) return;
+  const avail = availHeight(root);
+  if (!(avail > 160)) return;
+  const gap = avail - screenH(root, card);
+  if (gap < 12) return;             // места нет (или почти нет) — трогать нечего
+  const k = zoomOf(card);
+  card.classList.add('is-filled');
+  card.style.minHeight = `${Math.round((avail - 2) / k)}px`;
+  // Записываем итог как СВОЙ: иначе следующий проход увидит «высота изменилась», снимет
+  // предохранитель, пересчитает от натурального вида, снова получит короткую карточку —
+  // и мы будем дотягивать её кадр за кадром по кругу.
+  const st = cards.get(card);
+  if (st) { st.vis = screenH(root, card); st.avail = availHeight(root); }
 }
 
 function run() {
@@ -482,6 +518,9 @@ function run() {
   // Клавиатура ещё едет — считать нельзя: высота экрана в этот момент промежуточная.
   if (settling) return;
   try { document.querySelectorAll('.ans-root').forEach(fitOne); } catch (_e) { /* noop */ }
+  // Пока печатают, карточка намеренно отдана в натуральную величину — не трогаем.
+  if (typing || askTyping) return;
+  try { document.querySelectorAll('.ans-root').forEach(enforceNoGap); } catch (_e) { /* noop */ }
 }
 
 // rAF, но со страховкой таймером: в подтормаживающей вкладке кадры могут не приходить,
@@ -547,8 +586,7 @@ export default function installCardAutoFit() {
   if (installed || typeof window === 'undefined' || typeof document === 'undefined') return;
   if (!supportsZoom() || typeof ResizeObserver === 'undefined') return; // без zoom — оставляем как было
   installed = true;
-  probeRectZoom();        // как этот движок меряет зумленный элемент (см. комментарий выше)
-  updateBaseFontSize();   // до первой отрисовки: дальше величину меняет только смена экрана
+    updateBaseFontSize();   // до первой отрисовки: дальше величину меняет только смена экрана
 
   ro = new ResizeObserver(schedule);
 
