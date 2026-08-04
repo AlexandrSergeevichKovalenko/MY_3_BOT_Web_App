@@ -228,18 +228,18 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
     const w = wordsRef.current[idx];
     cls = 'as-play';
     body = (<>
-      <div className="as-top">
+      <div className="as-top ans-r-head">
         <span className="as-theme-sm">{meta?.theme_label || ''}</span>
         <span className="as-timer">{Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}</span>
         <span className="as-score">{answersRef.current.filter((a) => a.ok).length}</span>
       </div>
-      <div className={`as-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
+      <div className={`as-word ans-r-prompt${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
         <span className="fit-line" ref={wordFit}>{w ? w.w : '…'}</span>
       </div>
       {/* Two-gender nouns (der See / die See) are only answerable if we show which
           sense we mean — reveal the Russian meaning for these, and only these. */}
       {w && w.tg && w.ru ? <div className="as-sense">({w.ru})</div> : null}
-      <div className="as-buttons">
+      <div className="as-buttons ans-r-work">
         {ARTICLES.map((art) => (
           <button key={art} type="button" className={`as-btn-art art-${art}`} onClick={() => answer(art)}>
             {art}

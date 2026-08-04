@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
+import useWideScreen from './useWideScreen.js';
 import AskOverlay from './AskOverlay.jsx';
 import AdjHint from './AdjHint.jsx';
 import { saveGermanWordViaLookup } from '../dictionary/saveUtils.js';
@@ -22,9 +23,10 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
   // answering — not just on index change, or the first card measures stale/empty text
   // and overflows.
   const _cur = deck[i];
+  const wide = useWideScreen();   // планшет: потолок кегля задаёт CSS
   const phraseFit = useFitText(
-    _cur ? `${_cur.before}${_cur.after}${pick || ''}` : i,
-    { max: 36 },
+    _cur ? `${wide}|${_cur.before}${_cur.after}${pick || ''}` : `${wide}|${i}`,
+    { max: wide ? 'css' : 36 },
   );
 
   const loadMore = useCallback(async () => {
@@ -134,11 +136,11 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
     const answered = !!pick;
     const correct = card.a;
     body = (<>
-      <div className="as-top">
+      <div className="as-top ans-r-head">
         <span className="al-progress">📚 Adjektivendungen</span>
         {streak > 1 ? <span className="al-streak">🔥 {streak}</span> : <span />}
       </div>
-      <div className={`as-word adj-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
+      <div className={`as-word ans-r-prompt adj-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
         <span className="fit-line adj-line" ref={phraseFit}>
           {(() => {
             const adj = card.adj || ''; const b = card.before || '';
@@ -174,7 +176,7 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
           быстро выбрать окончание.
         </div>
       ) : null}
-      <div className="as-buttons adj-buttons">
+      <div className="as-buttons ans-r-work adj-buttons">
         {ENDINGS.map((e) => {
           const state = answered ? (e === correct ? ' on' : (e === pick ? ' wrong' : '')) : '';
           return (

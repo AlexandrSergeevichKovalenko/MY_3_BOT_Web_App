@@ -406,11 +406,11 @@ function AufgabeArtikel({ task, onSubmit, submitting }) {
       {task.image ? (
         <div className="al-img"><img src={task.image} alt="" loading="eager" /></div>
       ) : null}
-      <div className={`as-word ${pick ? pick : ''}`}>
+      <div className={`as-word ans-r-prompt ${pick ? pick : ''}`}>
         <span className="al-word-text">{task.wort}</span>
       </div>
       {task.hint_ru ? <p className="au-hint" style={{ textAlign: 'center' }}>{task.hint_ru}</p> : null}
-      <div className="as-buttons">
+      <div className="as-buttons ans-r-work">
         {options.map((a) => (
           <button
             key={a} type="button"
@@ -441,7 +441,7 @@ function AufgabeWoFrage({ task, onSubmit, submitting }) {
   };
   return (
     <>
-      <div className={`as-word wo-word${pick ? ' picked' : ''}`}>
+      <div className={`as-word ans-r-prompt wo-word${pick ? ' picked' : ''}`}>
         <span className="fit-line wo-line">
           <span>{pre}</span>
           <span className="wo-slot">{pick || '?'}</span>
@@ -450,7 +450,7 @@ function AufgabeWoFrage({ task, onSubmit, submitting }) {
       </div>
       {task.clue ? <div className="wo-clue">{task.clue}</div> : null}
       {task.hint_ru ? <p className="au-hint" style={{ textAlign: 'center' }}>💡 {task.hint_ru}</p> : null}
-      <div className="as-buttons wo-buttons">
+      <div className="as-buttons ans-r-work wo-buttons">
         {(task.opts || []).map((o) => (
           <button
             key={o} type="button"

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import useFitText from './useFitText.js';
+import useWideScreen from './useWideScreen.js';
 
 /**
  * Wo-Fragen section of «работа над ошибками», built on the SAME template as the Wo-Frage
@@ -24,7 +25,8 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
   const [stats, setStats] = useState({ correct: 0, answered: 0 });
   const [remaining, setRemaining] = useState(0);
   const card = cards[idx];
-  const phraseFit = useFitText(card ? String(card.s || '') : idx, { max: 30 });
+  const wide = useWideScreen();   // планшет: потолок кегля задаёт CSS
+  const phraseFit = useFitText(`${wide}|${card ? String(card.s || '') : idx}`, { max: wide ? 'css' : 30 });
 
   const loadBatch = useCallback(async () => {
     setPhase('loading');
@@ -90,12 +92,12 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
     const [pre, post] = splitBlank(card.s);
     const total = cards.length;
     body = (<>
-      <div className="as-top">
+      <div className="as-top ans-r-head">
         <span className="as-theme-sm">🔁 Работа над ошибками</span>
         <span className="al-progress">{idx + 1} / {total}</span>
         <span className="as-score">{stats.correct}✓</span>
       </div>
-      <div className={`as-word wo-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
+      <div className={`as-word ans-r-prompt wo-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
         <span className="fit-line wo-line" ref={phraseFit}>
           <span>{pre}</span>
           <span className="wo-slot">{answered ? correct : '?'}</span>
@@ -103,7 +105,7 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
         </span>
       </div>
       {card.clue ? <div className="wo-clue">{card.clue}</div> : null}
-      <div className="as-buttons wo-buttons">
+      <div className="as-buttons ans-r-work wo-buttons">
         {(card.opts || []).map((o) => {
           const state = answered ? (o === correct ? ' on' : (o === pick ? ' wrong' : '')) : '';
           return (

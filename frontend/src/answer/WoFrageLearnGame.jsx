@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import useFitText from './useFitText.js';
+import useWideScreen from './useWideScreen.js';
 import AskOverlay from './AskOverlay.jsx';
 
 // Wo-Frage Trainer — self-paced learning deck for question words (companion to the
@@ -22,7 +23,8 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
   const [error, setError] = useState('');
   const [askOpen, setAskOpen] = useState(false);
   const _cur = deck[i];
-  const phraseFit = useFitText(_cur ? String(_cur.s || '') : i, { max: 30 });
+  const wide = useWideScreen();   // планшет: потолок кегля задаёт CSS
+  const phraseFit = useFitText(`${wide}|${_cur ? String(_cur.s || '') : i}`, { max: wide ? 'css' : 30 });
 
   const loadMore = useCallback(async () => {
     try {
@@ -70,11 +72,11 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
   const picked_ok = answered && accepted.includes(String(pick));
     const [pre, post] = splitBlank(card.s);
     body = (<>
-      <div className="as-top">
+      <div className="as-top ans-r-head">
         <span className="al-progress">📚 Wo-Fragen</span>
         {streak > 1 ? <span className="al-streak">🔥 {streak}</span> : <span />}
       </div>
-      <div className={`as-word wo-word${answered ? (picked_ok ? ' ok' : ' bad') : ''}`}>
+      <div className={`as-word ans-r-prompt wo-word${answered ? (picked_ok ? ' ok' : ' bad') : ''}`}>
         <span className="fit-line wo-line" ref={phraseFit}>
           <span>{pre}</span>
           <span className="wo-slot">{answered ? correct : '?'}</span>
@@ -82,7 +84,7 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
         </span>
       </div>
       {card.clue ? <div className="wo-clue">{card.clue}</div> : null}
-      <div className="as-buttons wo-buttons">
+      <div className="as-buttons ans-r-work wo-buttons">
         {(card.opts || []).map((o) => {
           const state = answered ? (accepted.includes(String(o)) ? ' on' : (o === pick ? ' wrong' : '')) : '';
           return (

@@ -2276,21 +2276,35 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
   .tr-anchor-ask  { font-size: 1.0625rem; }
   .ans-root.is-wide > .ans-card[data-wide="split"] .tr-opt { font-size: 1.125rem; }
 
-  /* Семья «слово + крупные кнопки» (артикли, прилагательные, Wo-Fragen). Двух колонок тут
-     нет: игра про скорость, слово и кнопки должны быть под глазами и под пальцем. Поэтому
-     на планшете слово забирает всю свободную высоту, а кнопки становятся крупными
-     мишенями — иначе содержимое стоит полоской посреди пустой карточки. */
-  .ans-card:has(> .as-buttons) > .as-word {
+  /* ФОКУС — раскладка ПО УМОЛЧАНИЮ для «задание + мишени»: артикли, окончания
+     прилагательных, Wo-Fragen, задание дня. Колонок здесь нет намеренно — игра про
+     скорость, глаз идёт сверху вниз, задание и мишени должны быть под пальцем.
+
+     Свободную высоту забирает ЗАДАНИЕ. У мишеней размер задан и ограничен: растянуть их
+     на треть экрана (так было) — это те самые цветные плиты в пол-экрана, из-за которых
+     планшет выглядел раздутым. Мишень должна быть удобной, а не огромной. */
+  .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) > .ans-r-prompt {
     flex: 1 1 auto;
+    /* Потолок обязателен: у задания своя заливка, и без него панель со словом растягивается
+       на весь экран — та же плита, только серая. Полоса-герой, а не подложка во весь рост.
+       Остаток высоты уходит в поля сверху и снизу (карточка центрует содержимое). */
+    max-height: 26rem;
     display: flex; align-items: center; justify-content: center;
-    font-size: 3.25rem;
+    container-type: inline-size;
+    font-size: clamp(2.5rem, 10cqw, 5.5rem);
   }
-  .ans-card:has(> .as-buttons) > .as-word.wo-word { font-size: 2rem; }
-  /* Кнопки забирают примерно треть высоты: слово сверху, крупные мишени снизу — иначе
-     панель со словом раздувается на весь экран, а кнопки остаются телефонными. */
-  .ans-card:has(> .as-buttons) > .as-buttons { min-height: 30vh; }
-  .ans-card:has(> .as-buttons) .as-btn-art { font-size: 2.25rem; height: 100%; }
-  .ans-card:has(> .as-buttons) > .as-sense { font-size: 1.25rem; }
+  /* Фраза и предложение — не одно слово: им кегль меньше, иначе строка ломается на четыре. */
+  .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) > .ans-r-prompt.wo-word,
+  .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) > .ans-r-prompt.adj-word {
+    font-size: clamp(1.75rem, 4.5cqw, 3rem);
+  }
+  .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) > .ans-r-work {
+    flex: 0 0 auto;
+  }
+  .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) .as-btn-art { font-size: 2rem; padding: 2rem 0; }
+  .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) .wo-opt     { font-size: 1.5rem; padding: 1.5rem 0.5rem; }
+  .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) .adj-end    { font-size: 1.75rem; padding: 1.5rem 0; }
+  .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) > .as-sense { font-size: 1.25rem; }
 
   /* Итог и заставка остаются одной колонкой, но широкой: список слов выкладывается
      в несколько рядов вместо узкого столбика. */

@@ -1,4 +1,5 @@
 import useFitText from './useFitText.js';
+import useWideScreen from './useWideScreen.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import AskOverlay from './AskOverlay.jsx';
 
@@ -28,7 +29,10 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
   // ResizeObserver, поэтому подгонка переигрывается, когда карточка меняет ширину (это
   // делает подгонка под экран), и после загрузки шрифтов. Свой вариант этого не умел —
   // слово вылезало за пределы блока.
-  const wordRef = useFitText(idx, { max: 40, min: 15, padding: 28 });
+  // На планшете потолок кегля задаёт CSS (он там свой и крупный), на телефоне остаются
+  // проверенные значения — телефонный вид не трогаем.
+  const wide = useWideScreen();
+  const wordRef = useFitText(`${wide}|${idx}`, { max: wide ? 'css' : 40, min: 15, padding: 28 });
   const pickThemeRef = useRef('');
 
 
@@ -243,7 +247,7 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
     const c = cardsRef.current[idx];
     const total = cardsRef.current.length;
     body = (<>
-      <div className="as-top">
+      <div className="as-top ans-r-head">
         <span className="as-theme-sm">📘 {meta?.theme_label || ''}</span>
         <span className="al-progress">{idx + 1} / {total}</span>
         <span className="as-score">{stats.correct}✓</span>
@@ -252,13 +256,13 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       {c?.image ? (
         <div className="al-img"><img src={c.image} alt="" loading="eager" /></div>
       ) : null}
-      <div className={`as-word ${chosen ? c.a : ''}`}>
+      <div className={`as-word ans-r-prompt ${chosen ? c.a : ''}`}>
         <span className="al-word-text" ref={wordRef}>{c ? c.w : '…'}</span>
       </div>
       {/* Двуродовые (der/die Flur): артикль решает смысл, поэтому перевод показываем
           ВМЕСТЕ с вопросом — и только у них. Иначе вопрос неотвечаем. */}
       {c && c.tg && c.ru ? <div className="as-sense">({c.ru})</div> : null}
-      <div className="as-buttons">
+      <div className="as-buttons ans-r-work">
         {ARTICLES.map((a) => {
           let cls = `as-btn-art ${ART_CLASS[a]}`;
           if (chosen) {

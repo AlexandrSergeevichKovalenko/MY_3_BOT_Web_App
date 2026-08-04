@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
+import useWideScreen from './useWideScreen.js';
 
 // Wo-Frage Sprint — a set of 10 "pick the right question word" situations, 8 s each
 // (auto-advance or tap "Weiter"). Same engine/feel as Adjektiv Sprint: whole set
@@ -32,7 +33,8 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
   const idxRef = useRef(0);
   const tickRef = useRef(null);
   const _it = itemsRef.current[idx];
-  const phraseFit = useFitText(_it ? String(_it.s || '') : idx, { max: 30 });
+  const wide = useWideScreen();   // планшет: потолок кегля задаёт CSS
+  const phraseFit = useFitText(`${wide}|${_it ? String(_it.s || '') : idx}`, { max: wide ? 'css' : 30 });
 
   useEffect(() => {
     let cancelled = false;
@@ -190,12 +192,12 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
     const score = answersRef.current.filter((a) => a.ok).length;
     const [pre, post] = splitBlank(it?.s);
     body = (<>
-      <div className="as-top">
+      <div className="as-top ans-r-head">
         <span className="as-theme-sm">{idx + 1} / {itemsRef.current.length}</span>
         <span className={`as-timer${itemLeft <= 3 ? ' urgent' : ''}`}>{itemLeft}s</span>
         <span className="as-score">{score}</span>
       </div>
-      <div className={`as-word wo-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
+      <div className={`as-word ans-r-prompt wo-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
         <span className="fit-line wo-line" ref={phraseFit}>
           {it ? (<>
             <span>{pre}</span>
@@ -205,7 +207,7 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
         </span>
       </div>
       {it && it.clue ? <div className="wo-clue">{it.clue}</div> : null}
-      <div className="as-buttons wo-buttons">
+      <div className="as-buttons ans-r-work wo-buttons">
         {(it?.opts || []).map((o) => (
           <button key={o} type="button" className="as-btn-art wo-opt" onClick={() => answer(o)}>{o}</button>
         ))}

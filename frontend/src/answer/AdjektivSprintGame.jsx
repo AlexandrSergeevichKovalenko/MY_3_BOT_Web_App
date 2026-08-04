@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useFitText from './useFitText.js';
+import useWideScreen from './useWideScreen.js';
 import AdjHint from './AdjHint.jsx';
 
 // Adjektiv Sprint — a set of 15 adjective-ending situations, 5 s each (auto-advance
@@ -28,9 +29,10 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
   // the index — items load into a ref async, so an index-only dep can measure stale
   // text and overflow on the first item.
   const _it = itemsRef.current[idx];
+  const wide = useWideScreen();   // планшет: потолок кегля задаёт CSS
   const phraseFit = useFitText(
-    _it ? `${_it.before}${_it.after}${flash ? _it.a : ''}` : idx,
-    { max: 36 },
+    _it ? `${wide}|${_it.before}${_it.after}${flash ? _it.a : ''}` : `${wide}|${idx}`,
+    { max: wide ? 'css' : 36 },
   );
 
   useEffect(() => {
@@ -185,12 +187,12 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
     cls = 'as-play';
     const score = answersRef.current.filter((a) => a.ok).length;
     body = (<>
-      <div className="as-top">
+      <div className="as-top ans-r-head">
         <span className="as-theme-sm">{idx + 1} / {itemsRef.current.length}</span>
         <span className={`as-timer${itemLeft <= 2 ? ' urgent' : ''}`}>{itemLeft}s</span>
         <span className="as-score">{score}</span>
       </div>
-      <div className={`as-word adj-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
+      <div className={`as-word ans-r-prompt adj-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
         <span className="fit-line adj-line" ref={phraseFit}>
           {it ? (<>
             <span>{it.before}</span>
@@ -200,7 +202,7 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
         </span>
       </div>
       <AdjHint text={it && it.ru} />
-      <div className="as-buttons adj-buttons">
+      <div className="as-buttons ans-r-work adj-buttons">
         {ENDINGS.map((e) => (
           <button key={e} type="button" className="as-btn-art adj-end" onClick={() => answer(e)}>-{e}</button>
         ))}
