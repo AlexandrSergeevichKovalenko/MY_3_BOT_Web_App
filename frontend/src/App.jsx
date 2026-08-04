@@ -20,6 +20,7 @@ import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
 import ProTrialModal from './components/ProTrialModal';
 import StarsInfoModal from './components/StarsInfoModal';
 import BonusProDaysModal from './components/BonusProDaysModal';
+import VocabSearchOverlay from './components/VocabSearchOverlay';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { splitTranslationSenses } from './dictionary/senses';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
@@ -6981,6 +6982,11 @@ function AppInner() {
   const [vocabError, setVocabError] = useState('');
   const [vocabFolderFilter, setVocabFolderFilter] = useState('all');
   const [vocabSearch, setVocabSearch] = useState('');
+  // Поиск по своим словам живёт в отдельном окне на весь экран (VocabSearchOverlay):
+  // в списке под клавиатурой не оставалось ни одной строки результата. Библиотека при
+  // этом НЕ фильтруется — окно закрылось, человек там же, где был.
+  const [vocabSearchOpen, setVocabSearchOpen] = useState(false);
+  const [vocabSearchCardItem, setVocabSearchCardItem] = useState(null);
   const [vocabSort, setVocabSort] = useState('date_desc');
   const [vocabOffset, setVocabOffset] = useState(0);
   const [vocabHasMore, setVocabHasMore] = useState(false);
@@ -10961,6 +10967,7 @@ function AppInner() {
       if (!response.ok) return;
       setVocabSplitItem(null);
       setVocabExpandedId(null);
+      setVocabSearchCardItem(null);
       // Карточек стало больше — перечитываем список с начала, чтобы новые встали
       // на свои места вместе со старой.
       await loadVocabLibrary({ reset: true });
@@ -10986,6 +10993,7 @@ function AppInner() {
         setVocabOfflinePendingCount((c) => c + 1);
         setVocabDeleteItem(null);
         setVocabExpandedId(null);
+        setVocabSearchCardItem(null);
       } catch (_err) {
         // ignore IDB errors — UI is already updated optimistically
       } finally {
@@ -11009,6 +11017,7 @@ function AppInner() {
       }
       setVocabDeleteItem(null);
       setVocabExpandedId(null);
+      setVocabSearchCardItem(null);
     } catch (_err) {
       // ignore
     } finally {
@@ -11060,6 +11069,7 @@ function AppInner() {
         updateCachedVocabEntry(editUserId, localItem).catch(() => {});
         setVocabEditItem(null);
         setVocabExpandedId(null);
+        setVocabSearchCardItem(null);
       } catch (_err) {
         setVocabEditError(tr('Ошибка сохранения офлайн', 'Offline-Speicherfehler'));
       } finally {
@@ -11141,6 +11151,7 @@ function AppInner() {
       }
       setVocabEditItem(null);
       setVocabExpandedId(null);
+      setVocabSearchCardItem(null);
     } catch (_err) {
       setVocabEditError(tr('Ошибка сохранения', 'Fehler beim Speichern'));
     } finally {
@@ -26800,6 +26811,7 @@ function AppInner() {
       setManualTrainingSelectionIds([]);
       setVocabBulkDeleteModalOpen(false);
       setVocabExpandedId(null);
+      setVocabSearchCardItem(null);
       void loadVocabLibrary({ reset: true });
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось удалить слова.', 'Wörter konnten nicht gelöscht werden.');
@@ -34223,6 +34235,148 @@ function AppInner() {
         </div>
       );
     }
+    // Карточка слова на весь экран — одна и та же в списке «Библиотеки» и в окне поиска.
+    // Копия разошлась бы с оригиналом на первой же правке, поэтому разметка одна.
+    const renderVocabWordFullscreenCard = (item, onClose) => {
+      if (!item) return null;
+      const srsColors = { new: '#6366F1', due: '#F59E0B', ok: '#10B981', none: '#334155' };
+      const srsLabels = {
+        new: tr('Новое', 'Neu'),
+        due: tr('К повторению', 'Fällig'),
+        ok: tr('Усвоено', 'Gelernt'),
+        none: tr('Без SRS', 'Ohne SRS'),
+      };
+      const dotColor = srsColors[item.srs_label] || srsColors.none;
+      const displayWord = item.display_word || item.word_de || item.word_ru || '—';
+      const displayTrans = sanitizeBilingualTargetText(
+        displayWord,
+        item.display_translation || item.translation_ru || item.word_ru || '',
+        item.target_lang || '',
+      );
+      const folder = (vocabFoldersMeta?.folders || []).find((f) => f.id === item.folder_id);
+      const partOfSpeech = item.srs_label !== 'none'
+        ? `${srsLabels[item.srs_label]} · ${tr('повт.', 'Wdh.')} ${item.srs_reps}`
+        : null;
+      const savedMeanings = getSavedEntryRankedMeanings(item);
+      return (
+        <div
+          className="vocab-word-fullscreen-overlay"
+          onClick={(e) => { if (e.target.classList.contains('vocab-word-fullscreen-overlay')) onClose(); }}
+        >
+          <div className="vocab-word-fullscreen-card">
+            <div className="vocab-word-fullscreen-header">
+              <div className="vocab-word-fullscreen-heading">
+                <span className="vocab-word-fullscreen-word">
+                  <span className="vocab-srs-dot" style={{ background: dotColor }} />
+                  {(() => {
+                    const m = /^(der|die|das)\s+/i.exec(String(displayWord || ''));
+                    if (!m) return displayWord;
+                    const g = m[1].toLowerCase() === 'der' ? 'm' : m[1].toLowerCase() === 'die' ? 'f' : 'n';
+                    return (
+                      <>
+                        <span className={`vocab-artikel is-${g}`}>{displayWord.slice(0, m[1].length)}</span>
+                        {displayWord.slice(m[1].length)}
+                      </>
+                    );
+                  })()}
+                </span>
+                {displayTrans && <span className="vocab-word-fullscreen-trans">{displayTrans}</span>}
+                {(folder || partOfSpeech) && (
+                  <span className="vocab-word-fullscreen-meta">
+                    {folder && (
+                      <span className="vocab-folder-tag">
+                        {resolveFolderIconLabel(folder.icon)} {folder.name}
+                      </span>
+                    )}
+                    {partOfSpeech && <em>{partOfSpeech}</em>}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                className="vocab-word-fullscreen-close"
+                onClick={onClose}
+                aria-label={tr('Закрыть', 'Schließen')}
+              >
+                ×
+              </button>
+            </div>
+            <div className="vocab-word-fullscreen-body">
+              {savedMeanings.length > 0 && (
+                <div className="vocab-word-details">
+                  <div className="vocab-word-detail-title">
+                    {tr('Значения', 'Bedeutungen')}
+                  </div>
+                  <div className="vocab-word-sense-list">
+                    {savedMeanings.map((sense, index) => {
+                      const example = formatDictionaryBilingualExample(sense?.example_source, sense?.example_target);
+                      const rank = Number(sense?.rank) > 0 ? Number(sense.rank) : index + 1;
+                      const isPrimary = index === 0 || String(sense?.label || '').trim().toLowerCase() === 'main';
+                      return (
+                        <div key={`${item.id}-sense-${rank}-${String(sense?.value || '')}`} className="vocab-word-sense-item">
+                          <span className="vocab-word-sense-rank">{rank}.</span>
+                          <div className="vocab-word-sense-body">
+                            <div className="vocab-word-sense-line">
+                              <span className="vocab-word-sense-text">{formatDictionaryMeaningText(sense)}</span>
+                              {isPrimary && (
+                                <span className="vocab-word-sense-badge">
+                                  {tr('основное', 'Haupt')}
+                                </span>
+                              )}
+                            </div>
+                            {example && (
+                              <div className="vocab-word-sense-example">
+                                <em>{example}</em>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <LibraryWordDetail item={item} />
+            </div>
+            <div className="vocab-word-actions vocab-word-fullscreen-actions">
+              {splitTranslationSenses(displayTrans).length > 1 && (
+                <button
+                  type="button"
+                  className="vocab-action-btn vocab-action-split"
+                  onClick={() => setVocabSplitItem(item)}
+                >
+                  ✂️ {tr('Разбить на значения', 'In Bedeutungen teilen')}
+                </button>
+              )}
+              <button
+                type="button"
+                className="vocab-action-btn vocab-action-edit"
+                onClick={() => {
+                  const [primaryMeaning, secondaryMeaning, tertiaryMeaning] = getSavedEntrySenseValues(item);
+                  setVocabEditItem(item);
+                  setVocabEditWord(item.word_de || item.word_ru || '');
+                  setVocabEditTrans(primaryMeaning || item.translation_ru || item.translation_de || '');
+                  setVocabEditTransSecondary(secondaryMeaning);
+                  setVocabEditTransTertiary(tertiaryMeaning);
+                  setVocabEditFolder(item.folder_id ? String(item.folder_id) : 'none');
+                  setVocabEditError('');
+                }}
+              >
+                ✏️ {tr('Редактировать', 'Bearbeiten')}
+              </button>
+              <button
+                type="button"
+                className="vocab-action-btn vocab-action-delete"
+                onClick={() => setVocabDeleteItem(item)}
+              >
+                🗑 {tr('Удалить', 'Löschen')}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     return (
       <div
         ref={webappPageRef}
@@ -37823,19 +37977,55 @@ function AppInner() {
                             )}
                           </div>
 
-                          {/* Search inside library */}
+                          {/* Поиск по своим словам. Строка выглядит как поле, но открывает
+                              окно на весь экран: печатать прямо здесь было нельзя — клавиатура
+                              закрывала весь список, и результат было не видно вообще. */}
                           <div className="vocab-search-wrap">
-                            <input
-                              className="vocab-search-input"
-                              type="text"
-                              value={vocabSearch}
-                              placeholder={tr('Поиск по словам...', 'Wörter suchen...')}
-                              onChange={(e) => { setVocabSearch(e.target.value); setVocabExpandedId(null); }}
-                            />
-                            {vocabSearch && (
-                              <button type="button" className="vocab-search-clear" onClick={() => setVocabSearch('')}>×</button>
-                            )}
+                            <button
+                              type="button"
+                              className="vocab-search-input vocab-search-button"
+                              onClick={() => { setVocabExpandedId(null); setVocabSearchOpen(true); }}
+                            >
+                              <span className="vsb-glass" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                                  <circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" />
+                                </svg>
+                              </span>
+                              <span className="vsb-label">{tr('Поиск по словам...', 'Wörter suchen...')}</span>
+                            </button>
                           </div>
+
+                          <VocabSearchOverlay
+                            open={vocabSearchOpen}
+                            host={webappPageRef.current}
+                            onClose={() => { setVocabSearchOpen(false); setVocabSearchCardItem(null); }}
+                            initData={initData}
+                            fetchWithTimeout={fetchWithTimeout}
+                            tr={tr}
+                            seedItems={vocabItems}
+                            totalCount={vocabFoldersMeta?.total_count ?? vocabTotal}
+                            folders={vocabFoldersMeta?.folders || []}
+                            activeFolderKey={vocabFolderFilter}
+                            noFolderCount={vocabFoldersMeta?.no_folder_count || 0}
+                            selectedIds={manualTrainingSelectionIds}
+                            onToggleSelect={toggleManualTrainingSelectionCard}
+                            onOpenWord={(item) => setVocabSearchCardItem(item)}
+                            onLookupInDictionary={(word) => {
+                              // Слова у человека нет — уводим на вкладку «Поиск» с уже
+                              // набранным словом. Разбор НЕ запускаем сами: это расход
+                              // дневного лимита, нажать должен человек.
+                              setVocabSearchOpen(false);
+                              setVocabSearchCardItem(null);
+                              setDictionaryWord(word);
+                              setVocabTab('search');
+                            }}
+                            resolveFolderIconLabel={resolveFolderIconLabel}
+                            sanitizeBilingualTargetText={sanitizeBilingualTargetText}
+                          />
+                          {vocabSearchOpen && vocabSearchCardItem && webappPageRef.current && createPortal(
+                            renderVocabWordFullscreenCard(vocabSearchCardItem, () => setVocabSearchCardItem(null)),
+                            webappPageRef.current,
+                          )}
 
                           {/* Scrollable area: only the word list scrolls; everything above stays fixed */}
                           <div className="vocab-scroll-area">
@@ -37928,123 +38118,10 @@ function AppInner() {
                                           <span className={`vocab-expand-arrow ${isExpanded ? 'is-open' : ''}`}>›</span>
                                         </button>
                                       </div>
-                                      {isExpanded && webappPageRef.current && createPortal((
-                                        <div
-                                          className="vocab-word-fullscreen-overlay"
-                                          onClick={(e) => { if (e.target.classList.contains('vocab-word-fullscreen-overlay')) setVocabExpandedId(null); }}
-                                        >
-                                          <div className="vocab-word-fullscreen-card">
-                                            <div className="vocab-word-fullscreen-header">
-                                              <div className="vocab-word-fullscreen-heading">
-                                                <span className="vocab-word-fullscreen-word">
-                                                  <span className="vocab-srs-dot" style={{ background: dotColor }} />
-                                                  {(() => {
-                                                    const m = /^(der|die|das)\s+/i.exec(String(displayWord || ''));
-                                                    if (!m) return displayWord;
-                                                    const g = m[1].toLowerCase() === 'der' ? 'm' : m[1].toLowerCase() === 'die' ? 'f' : 'n';
-                                                    return (
-                                                      <>
-                                                        <span className={`vocab-artikel is-${g}`}>{displayWord.slice(0, m[1].length)}</span>
-                                                        {displayWord.slice(m[1].length)}
-                                                      </>
-                                                    );
-                                                  })()}
-                                                </span>
-                                                {displayTrans && <span className="vocab-word-fullscreen-trans">{displayTrans}</span>}
-                                                {(folder || partOfSpeech) && (
-                                                  <span className="vocab-word-fullscreen-meta">
-                                                    {folder && (
-                                                      <span className="vocab-folder-tag">
-                                                        {resolveFolderIconLabel(folder.icon)} {folder.name}
-                                                      </span>
-                                                    )}
-                                                    {partOfSpeech && <em>{partOfSpeech}</em>}
-                                                  </span>
-                                                )}
-                                              </div>
-                                              <button
-                                                type="button"
-                                                className="vocab-word-fullscreen-close"
-                                                onClick={() => setVocabExpandedId(null)}
-                                                aria-label={tr('Закрыть', 'Schließen')}
-                                              >
-                                                ×
-                                              </button>
-                                            </div>
-                                            <div className="vocab-word-fullscreen-body">
-                                              {savedMeanings.length > 0 && (
-                                                <div className="vocab-word-details">
-                                                  <div className="vocab-word-detail-title">
-                                                    {tr('Значения', 'Bedeutungen')}
-                                                  </div>
-                                                  <div className="vocab-word-sense-list">
-                                                    {savedMeanings.map((sense, index) => {
-                                                      const example = formatDictionaryBilingualExample(sense?.example_source, sense?.example_target);
-                                                      const rank = Number(sense?.rank) > 0 ? Number(sense.rank) : index + 1;
-                                                      const isPrimary = index === 0 || String(sense?.label || '').trim().toLowerCase() === 'main';
-                                                      return (
-                                                        <div key={`${item.id}-sense-${rank}-${String(sense?.value || '')}`} className="vocab-word-sense-item">
-                                                          <span className="vocab-word-sense-rank">{rank}.</span>
-                                                          <div className="vocab-word-sense-body">
-                                                            <div className="vocab-word-sense-line">
-                                                              <span className="vocab-word-sense-text">{formatDictionaryMeaningText(sense)}</span>
-                                                              {isPrimary && (
-                                                                <span className="vocab-word-sense-badge">
-                                                                  {tr('основное', 'Haupt')}
-                                                                </span>
-                                                              )}
-                                                            </div>
-                                                            {example && (
-                                                              <div className="vocab-word-sense-example">
-                                                                <em>{example}</em>
-                                                              </div>
-                                                            )}
-                                                          </div>
-                                                        </div>
-                                                      );
-                                                    })}
-                                                  </div>
-                                                </div>
-                                              )}
-                                              <LibraryWordDetail item={item} />
-                                            </div>
-                                            <div className="vocab-word-actions vocab-word-fullscreen-actions">
-                                              {splitTranslationSenses(displayTrans).length > 1 && (
-                                                <button
-                                                  type="button"
-                                                  className="vocab-action-btn vocab-action-split"
-                                                  onClick={() => setVocabSplitItem(item)}
-                                                >
-                                                  ✂️ {tr('Разбить на значения', 'In Bedeutungen teilen')}
-                                                </button>
-                                              )}
-                                              <button
-                                                type="button"
-                                                className="vocab-action-btn vocab-action-edit"
-                                                onClick={() => {
-                                                  const [primaryMeaning, secondaryMeaning, tertiaryMeaning] = getSavedEntrySenseValues(item);
-                                                  setVocabEditItem(item);
-                                                  setVocabEditWord(item.word_de || item.word_ru || '');
-                                                  setVocabEditTrans(primaryMeaning || item.translation_ru || item.translation_de || '');
-                                                  setVocabEditTransSecondary(secondaryMeaning);
-                                                  setVocabEditTransTertiary(tertiaryMeaning);
-                                                  setVocabEditFolder(item.folder_id ? String(item.folder_id) : 'none');
-                                                  setVocabEditError('');
-                                                }}
-                                              >
-                                                ✏️ {tr('Редактировать', 'Bearbeiten')}
-                                              </button>
-                                              <button
-                                                type="button"
-                                                className="vocab-action-btn vocab-action-delete"
-                                                onClick={() => setVocabDeleteItem(item)}
-                                              >
-                                                🗑 {tr('Удалить', 'Löschen')}
-                                              </button>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      ), webappPageRef.current)}
+                                      {isExpanded && webappPageRef.current && createPortal(
+                                        renderVocabWordFullscreenCard(item, () => setVocabExpandedId(null)),
+                                        webappPageRef.current,
+                                      )}
                                     </div>
                                   );
                                 })}
