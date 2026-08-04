@@ -30815,3 +30815,306 @@ html[data-scheme="light"] .story-modal-guess-answer,
     color: var(--t-text-primary, #1f1a14) !important;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   ПОИСК ПО СВОИМ СЛОВАМ — окно на весь экран (VocabSearchOverlay.jsx)
+
+   Правило вёрстки одно: между полем ввода и клавиатурой не должно стоять НИЧЕГО,
+   кроме найденного. Поэтому шапка окна — только поле и строка «Найдено N», а всё
+   оставшееся место отдано списку (.vso-results — единственный, кто прокручивается).
+   Высоту окна задаёт JS по видимой части экрана; inset:0 отдал бы высоту вебвью
+   вместе с частью под шторкой Telegram.
+   z-index 340 — под карточкой слова (350): она открывается ПОВЕРХ поиска.
+   ───────────────────────────────────────────────────────────────────────────── */
+.vso-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100dvh;
+  z-index: 340;
+  display: flex;
+  flex-direction: column;
+  background: #0f1623;
+  animation: vsoRise 0.2s cubic-bezier(.22,1,.36,1) both;
+}
+@keyframes vsoRise {
+  from { transform: translateY(14px); opacity: 0.5; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vso-overlay { animation: none; }
+}
+
+.vso-top {
+  flex: none;
+  padding: calc(env(safe-area-inset-top, 0px) + 10px) 12px 9px;
+  background: #0f1623;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.vso-field { display: flex; align-items: center; gap: 10px; }
+.vso-input-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 46px;
+  padding: 0 12px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.06);
+  border: 1.5px solid #d67a24;
+}
+.vso-glass { flex: none; display: flex; color: #f0a04b; }
+.vso-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #f3eee4;
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.vso-input::placeholder { color: #8b8072; opacity: 1; }
+.vso-input::-webkit-search-cancel-button { display: none; }
+.vso-clear {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.14);
+  color: #f3eee4;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.vso-cancel {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: #f0a04b;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+.vso-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #a79b8a;
+}
+.vso-chip {
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.05);
+  color: #cfc5b6;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.vso-chip.is-on {
+  background: #d67a24;
+  border-color: #d67a24;
+  color: #fff;
+  font-weight: 600;
+}
+
+.vso-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+}
+
+.vso-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.vso-check {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 1.5px solid rgba(255,255,255,0.28);
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.vso-check svg { width: 13px; height: 13px; }
+.vso-check.is-on { background: #d67a24; border-color: #d67a24; }
+.vso-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  padding: 9px 0;
+  cursor: pointer;
+}
+.vso-row-body { flex: 1; min-width: 0; display: grid; gap: 1px; }
+/* Метрики строки заданы явно: высота строки — это то, сколько слов человек увидит
+   над клавиатурой. 9 + 19 + 1 + 15 + 9 + 1px линия = 54px, то есть 5 строк даже на
+   самом маленьком телефоне (iPhone SE) и 7–8 на обычном. */
+.vso-word {
+  font-size: 15.5px;
+  line-height: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #f3eee4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vso-trans {
+  font-size: 12.5px;
+  line-height: 15px;
+  color: #a79b8a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vso-folder {
+  flex: none;
+  font-size: 10.5px;
+  color: #a79b8a;
+  background: rgba(255,255,255,0.07);
+  border-radius: 8px;
+  padding: 2px 7px;
+  max-width: 38%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vso-hit {
+  background: rgba(214,122,36,0.34);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.vso-section {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #8b8072;
+  padding: 12px 14px 6px;
+}
+.vso-recent { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 14px; }
+.vso-recent-chip {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.05);
+  color: #f3eee4;
+  border-radius: 999px;
+  padding: 8px 13px;
+  font-family: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.vso-empty {
+  padding: 26px 22px;
+  text-align: center;
+  font-size: 14px;
+  color: #a79b8a;
+  line-height: 1.5;
+}
+.vso-empty-title { font-size: 15.5px; font-weight: 650; color: #f3eee4; margin-bottom: 6px; }
+.vso-cta {
+  margin-top: 14px;
+  border: 0;
+  border-radius: 13px;
+  background: #d67a24;
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  padding: 11px 18px;
+  cursor: pointer;
+}
+.vso-more {
+  padding: 12px 16px 4px;
+  text-align: center;
+  font-size: 12px;
+  color: #8b8072;
+}
+
+.vso-overlay button:focus-visible,
+.vso-overlay input:focus-visible { outline: 2px solid #f0a04b; outline-offset: 2px; }
+
+/* ── светлая тема ── */
+.webapp-page.is-theme-light .vso-overlay,
+.webapp-page.is-theme-light .vso-top { background: #ece3d4; }
+.webapp-page.is-theme-light .vso-top { border-bottom-color: rgba(60,48,30,0.12); }
+.webapp-page.is-theme-light .vso-input-wrap { background: #fffdf8; border-color: #d67a24; }
+.webapp-page.is-theme-light .vso-input { color: #201b14; }
+.webapp-page.is-theme-light .vso-input::placeholder { color: #8b8072; }
+.webapp-page.is-theme-light .vso-glass,
+.webapp-page.is-theme-light .vso-cancel { color: #b45f13; }
+.webapp-page.is-theme-light .vso-clear { background: rgba(60,48,30,0.14); color: #5d5244; }
+.webapp-page.is-theme-light .vso-meta,
+.webapp-page.is-theme-light .vso-trans,
+.webapp-page.is-theme-light .vso-folder { color: #5d5244; }
+.webapp-page.is-theme-light .vso-chip {
+  background: #fffdf8;
+  border-color: rgba(60,48,30,0.14);
+  color: #5d5244;
+}
+.webapp-page.is-theme-light .vso-chip.is-on { background: #d67a24; border-color: #d67a24; color: #fff; }
+.webapp-page.is-theme-light .vso-row { border-bottom-color: rgba(60,48,30,0.09); }
+.webapp-page.is-theme-light .vso-check { border-color: rgba(60,48,30,0.24); }
+.webapp-page.is-theme-light .vso-word,
+.webapp-page.is-theme-light .vso-empty-title { color: #201b14; }
+.webapp-page.is-theme-light .vso-folder { background: #f2ece1; }
+.webapp-page.is-theme-light .vso-recent-chip {
+  background: #fffdf8;
+  border-color: rgba(60,48,30,0.12);
+  color: #201b14;
+}
+.webapp-page.is-theme-light .vso-section,
+.webapp-page.is-theme-light .vso-more,
+.webapp-page.is-theme-light .vso-empty { color: #8b8072; }
+
+/* Поле поиска в «Библиотеке» — теперь это КНОПКА, открывающая окно поиска.
+   Выглядит ровно как прежнее поле: человек видит привычную строку. */
+.vocab-search-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.vocab-search-button .vsb-glass { flex: none; display: flex; color: #94a3b8; }
+.vocab-search-button .vsb-label { flex: 1; min-width: 0; color: #94a3b8; }
+.webapp-page.is-theme-light .vocab-search-button .vsb-glass,
+.webapp-page.is-theme-light .vocab-search-button .vsb-label { color: #8a745e; }
