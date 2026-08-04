@@ -40,13 +40,26 @@ class HeadwordNotLemmatizedTests(unittest.TestCase):
         Слово («das Problem») едет рядом отдельным полем, а не подменяет запрос."""
         self.assertEqual(self._headword("Probleme"), "die Probleme")
 
-    def test_verb_is_still_lemmatized(self):
-        """Глаголам лемматизация нужна и работает — трогаем только существительные."""
-        with patch.object(bs, "_normalize_german_text", return_value="gehen"):
-            self.assertEqual(
-                bs._normalize_saved_german_single_word("ging", part_of_speech="verb", article=""),
-                "gehen",
-            )
+    def test_verb_keeps_its_ending(self):
+        """04.08.2026: глаголы тоже сняты с лемматизатора.
+
+        29.07 вывели только существительные, и это была половина решения: та же модель
+        продолжала резать глаголы — «beibringen» → «beibring», «stolpern» → «stolper»,
+        «herausfinden» → «herausfind». Обрубок уезжал в тело карточки, и тренировка
+        показывала его вместо слова (261 личная карточка у 11 человек, 24 строки пула).
+
+        Лемматизатор здесь и не нужен: к этому месту слово приходит из разбора, где
+        словарная форма уже стоит, — то есть он не приводил форму, а переписывал готовый
+        правильный ответ догадкой."""
+        for word in ("beibringen", "stolpern", "herausfinden", "zerquetschen"):
+            with self.subTest(word=word):
+                self.assertEqual(self._headword(word, pos="verb", article=""), word)
+
+    def test_lemmatizer_is_not_called_at_all(self):
+        with patch.object(bs, "_normalize_german_text") as lemmatizer:
+            bs._normalize_saved_german_single_word("beibringen", part_of_speech="verb", article="")
+            bs._normalize_saved_german_single_word("Felge", part_of_speech="noun", article="die")
+            lemmatizer.assert_not_called()
 
     def test_cyrillic_is_never_decorated_as_a_german_headword(self):
         self.assertEqual(self._headword("Понос"), "Понос")

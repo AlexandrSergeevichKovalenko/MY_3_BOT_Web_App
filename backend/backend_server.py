@@ -9538,20 +9538,21 @@ def _normalize_saved_german_single_word(
     probe = bare or compact
     normalized_pos = str(part_of_speech or "").strip().lower()
     normalized_article = _normalize_german_article(article)
-    if normalized_pos == "noun":
-        # Существительное НЕ отдаём лемматизатору spaCy. Маленькая модель
-        # de_core_news_sm откусывает существительным окончание — замер на проде
-        # 29.07.2026: Felge→Felg, Gefriertruhe→Gefriertruh, Abflughalle→Abflughall,
-        # Gepäckwagen→Gepäckwag, Wassertropfen→Wassertropfe, Scheibe→Scheib. Ровно
-        # эти обрезки и уехали в общий пул как заголовки карточек: «die Felg».
-        # Правильная словарная форма берётся у справочника, а не у догадки; молчит
-        # справочник — оставляем написание как есть. Догадка не имеет права
-        # переписывать слово, ровно как и артикль. Форму множественного здесь тоже
-        # НЕ приводим к лемме: спросили «Probleme» — заголовок и остаётся «die
-        # Probleme», а слово едет рядом отдельным полем lemma_de.
-        normalized_lemma = probe
-    else:
-        normalized_lemma = _normalize_german_text(probe) or probe
+    # НИ ОДНО слово не отдаём лемматизатору spaCy. Маленькая модель de_core_news_sm
+    # откусывает окончание: существительным — замер 29.07.2026 (Felge→Felg,
+    # Gefriertruhe→Gefriertruh, Gepäckwagen→Gepäckwag, Wassertropfen→Wassertropfe),
+    # глаголам — замер 04.08.2026 (beibringen→beibring, stolpern→stolper,
+    # herausfinden→herausfind, zerquetschen→zerquetsch). Обрезки уезжали заголовками
+    # карточек и в общий пул: 261 личная карточка у 11 человек и 39 строк пула.
+    #
+    # Тогда, 29.07, вывели только существительные, и это была половина решения: догадка
+    # осталась на глаголах. Она здесь вообще не нужна — к этому месту слово приходит из
+    # разбора, где словарная форма уже стоит («beibring» в теле карточки соседствует с
+    # базовой формой «beibringen»), так что модель не приводила форму, а переписывала
+    # готовый правильный ответ своей догадкой. Словарную форму даёт разбор и справочник
+    # Wiktionary; молчат оба — оставляем написание человека. Догадка не имеет права
+    # переписывать слово, ровно как и артикль.
+    normalized_lemma = probe
     if normalized_pos == "noun" and normalized_article:
         bare_noun = normalized_lemma[:1].upper() + normalized_lemma[1:] if normalized_lemma else normalized_lemma
         return f"{normalized_article} {bare_noun}".strip()
