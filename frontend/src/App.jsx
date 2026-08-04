@@ -13,7 +13,7 @@ import ExplainErrorsModal from './components/ExplainErrorsModal';
 import StoryResultModal from './components/StoryResultModal';
 import ProFeatureModal from './components/ProFeatureModal';
 import NoticeModal from './components/NoticeModal';
-import WordHintModal, { collectHintExamples } from './components/WordHintModal';
+import WordHintModal, { collectHintExamples, hasHintBreakdown } from './components/WordHintModal';
 import FsrsHeadword from './answer/FsrsHeadword';
 import ReaderAudioLimitModal from './components/ReaderAudioLimitModal';
 import ReaderAudioUnlockModal from './components/ReaderAudioUnlockModal';
@@ -39748,7 +39748,11 @@ function AppInner() {
                               String(srsHintSource?.part_of_speech || '').trim().toLowerCase(),
                             ) || String(srsHintHeadword || '').trim().split(/\s+/).length > 2;
                             const srsHintAvailable = srsHintExamples.length > 0
-                              || (!srsHintIsPhrase && (srsHintFormRows.length > 0 || !!srsHintTip));
+                              || (!srsHintIsPhrase && (
+                                hasHintBreakdown(srsHintSource)
+                                || srsHintFormRows.length > 0
+                                || !!srsHintTip
+                              ));
                             return (
                               <>
                                 <div className={`fsrs-study-card ${srsRevealAnswer ? 'is-revealed' : ''}`}>
@@ -39757,8 +39761,8 @@ function AppInner() {
                                       type="button"
                                       className="fsrs-hint-btn"
                                       onClick={() => setSrsHintOpen(true)}
-                                      aria-label={tr('Показать примеры', 'Beispiele zeigen')}
-                                      title={tr('Показать примеры', 'Beispiele zeigen')}
+                                      aria-label={tr('Всё об этом слове', 'Alles zu diesem Wort')}
+                                      title={tr('Всё об этом слове', 'Alles zu diesem Wort')}
                                     >
                                       💡
                                     </button>
@@ -39878,6 +39882,7 @@ function AppInner() {
                                   tr={tr}
                                   headword={srsHintHeadword}
                                   translation={srsHintTranslation}
+                                  item={srsHintSource}
                                   examples={srsHintExamples}
                                   formRows={srsHintFormRows}
                                   memoryTip={srsHintTip}
