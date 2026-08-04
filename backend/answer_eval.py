@@ -43,11 +43,32 @@ def _normalize_quiz_text(value: str) -> str:
     return cleaned
 
 
+# Preposition+article merges: "zur" IS "zu der", spelled short. A learner who writes
+# the long form has written the same answer, so grading must not send it off to a judge
+# (and mark it wrong when the judge is unreachable). Folded in BOTH directions before
+# comparing, so it doesn't matter which form the answer key happens to carry.
+_GERMAN_MERGES = {
+    "am": "an dem", "ans": "an das", "beim": "bei dem", "im": "in dem", "ins": "in das",
+    "vom": "von dem", "zum": "zu dem", "zur": "zu der", "aufs": "auf das",
+    "fuers": "fuer das", "uebers": "ueber das", "durchs": "durch das", "ums": "um das",
+    "hinters": "hinter das", "unterm": "unter dem", "ueberm": "ueber dem",
+    "vorm": "vor dem", "hinterm": "hinter dem",
+}
+
+
+def _unfold_german_merges(normalized: str) -> str:
+    """Every merged form written out, so both spellings meet in one shape."""
+    return " ".join(_GERMAN_MERGES.get(tok, tok) for tok in normalized.split())
+
+
 def check_quiz_freeform_exact(*, user_text: str, correct_text: str) -> bool:
     """Lightly normalized exact comparison for full phrases/groups."""
     user_norm = _normalize_quiz_text(user_text)
     correct_norm = _normalize_quiz_text(correct_text)
-    return bool(user_norm and correct_norm and user_norm == correct_norm)
+    if not user_norm or not correct_norm:
+        return False
+    return (user_norm == correct_norm
+            or _unfold_german_merges(user_norm) == _unfold_german_merges(correct_norm))
 
 
 def check_quiz_freeform_deterministic(*, user_text: str, correct_text: str) -> bool:

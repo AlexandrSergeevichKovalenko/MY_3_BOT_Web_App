@@ -271,6 +271,38 @@ class WortgruppeRepairTests(unittest.TestCase):
         self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
 
 
+class WortgruppeMergedFormTests(unittest.TestCase):
+    """"zur" IS "zu der": the same answer written out long must be credited by the
+    stored key alone, never sent to a judge that may be unreachable."""
+
+    def test_written_out_merge_matches_the_key(self) -> None:
+        payload = {
+            "satz": "Die Experten diskutierten darüber, _____ ergriffen werden sollten.",
+            "correct": "welche Maßnahmen zur Verbesserung der Situation",
+            "accepted": ["welche Maßnahmen zur Verbesserung der Situation"],
+        }
+        for answer in (
+            "welche Maßnahmen zur Verbesserung der Situation",
+            "welche Maßnahmen zu der Verbesserung der Situation",
+        ):
+            with self.subTest(answer):
+                self.assertTrue(_check_aufgabe("wortgruppe", payload, answer))
+
+    def test_merge_folds_in_both_directions(self) -> None:
+        payload = {"satz": "_____ …", "correct": "in dem Gegensatz zu den Erwartungen",
+                   "accepted": ["in dem Gegensatz zu den Erwartungen"]}
+        self.assertTrue(_check_aufgabe("wortgruppe", payload,
+                                       "im Gegensatz zu den Erwartungen"))
+
+    def test_a_different_preposition_is_still_not_a_match(self) -> None:
+        payload = {"satz": "_____ …", "correct": "zur Verbesserung der Lage",
+                   "accepted": ["zur Verbesserung der Lage"]}
+        self.assertFalse(_check_aufgabe("wortgruppe", payload,
+                                        "für die Verbesserung der Lage"))
+        self.assertFalse(_check_aufgabe("wortgruppe", payload,
+                                        "zu dem Verbesserung der Lage"))
+
+
 class WortgruppeAnswerKeyTests(unittest.TestCase):
     """Grading compares against the stored keys without a model, so a key may only be
     the same answer said with different glue — never a different answer."""
