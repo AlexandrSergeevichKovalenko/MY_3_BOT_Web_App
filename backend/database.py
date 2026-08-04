@@ -28490,6 +28490,176 @@ def list_user_vocabulary(
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
+def search_dictionary_pool(
+    user_id: int,
+    query: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    limit: int = 40,
+) -> list[dict]:
+    """Поиск по ОБЩЕМУ словарю (`bt_3_dictionary_entries`) — тому самому пулу, куда
+    попадает каждое разобранное слово, включая весь словарь автора.
+
+    Зачем: у человека в личной библиотеке лежит лишь то, что ему уже открылось по ходу
+    занятий (сотни слов), а в пуле — тысячи. Раньше поиск смотрел только в личное, и
+    слово, которое у нас ЕСТЬ, человек не находил и шёл разбирать его через GPT — то
+    есть мы платили за то, что уже знаем. Поиск по пулу открыт всем независимо от
+    подписки на базовый словарь: чужого он не показывает, только наш общий материал.
+
+    Замерено 04.08.2026 на живой базе: пул 15 743 записи, весь словарь автора (14 618)
+    целиком в нём (нет ни одной строки без canonical_entry_id), поиск подстрокой —
+    47 мс. Поэтому отдельного индекса под LIKE '%…%' не заводим.
+
+    То, что у человека уже есть, из выдачи исключаем: связь личной карточки с записью
+    пула — `canonical_entry_id`.
+    """
+    text = str(query or "").strip()
+    if not text:
+        return []
+    needle_text = re.sub(
+        r"^(der|die|das|ein|eine|einen|einem|einer|eines)\s+",
+        "",
+        text.lower(),
+    ).strip() or text.lower()
+    needle = f"%{needle_text}%"
+    prefix = f"{needle_text}%"
+    safe_limit = max(1, min(100, int(limit or 40)))
+
+    conditions = [
+        "(LOWER(e.source_text) LIKE %s OR LOWER(e.target_text) LIKE %s"
+        " OR LOWER(COALESCE(e.word_de,'')) LIKE %s OR LOWER(COALESCE(e.word_ru,'')) LIKE %s"
+        " OR LOWER(COALESCE(e.translation_ru,'')) LIKE %s OR LOWER(COALESCE(e.translation_de,'')) LIKE %s)"
+    ]
+    params: list = [needle] * 6
+
+    language_filter_sql, language_params = _build_language_pair_filter_both(
+        source_lang, target_lang, table_alias="e",
+    )
+    if language_filter_sql:
+        # Хелпер отдаёт готовый кусок с ведущим « AND » — здесь условия склеиваются сами.
+        conditions.append(language_filter_sql.strip()[len("AND "):].strip())
+        params.extend(language_params)
+
+    conditions.append(
+        "NOT EXISTS (SELECT 1 FROM bt_3_webapp_dictionary_queries q"
+        " WHERE q.user_id = %s AND q.canonical_entry_id = e.id)"
+    )
+    params.append(int(user_id))
+
+    # Порядок как в личном поиске: точное слово → начинается с набранного → остальное.
+    rank_sql = (
+        "CASE"
+        " WHEN COALESCE(NULLIF(e.source_headword_norm,''), e.source_text_norm) = %s THEN 0"
+        " WHEN COALESCE(NULLIF(e.target_headword_norm,''), e.target_text_norm) = %s THEN 1"
+        " WHEN COALESCE(NULLIF(e.source_headword_norm,''), e.source_text_norm) LIKE %s THEN 2"
+        " WHEN LOWER(e.source_text) LIKE %s THEN 3"
+        " ELSE 4 END"
+    )
+    rank_params = [needle_text, needle_text, prefix, prefix]
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    e.id,
+                    e.word_ru,
+                    e.translation_de,
+                    e.word_de,
+                    e.translation_ru,
+                    e.source_lang,
+                    e.target_lang,
+                    e.source_text,
+                    e.target_text,
+                    e.response_json,
+                    {rank_sql} AS match_rank
+                FROM bt_3_dictionary_entries e
+                WHERE {' AND '.join(conditions)}
+                ORDER BY match_rank ASC, LENGTH(e.source_text) ASC, e.id ASC
+                LIMIT %s
+                """,
+                rank_params + params + [safe_limit],
+            )
+            rows = cursor.fetchall()
+
+    items = []
+    for row in rows:
+        response_json = _coerce_json_object(row[9])
+        entry_source_lang = str(row[5] or "").strip().lower()
+        entry_target_lang = str(row[6] or "").strip().lower()
+        source_text = str(row[7] or "").strip()
+        target_text = str(row[8] or "").strip()
+        german_display = str(
+            row[3]
+            or (source_text if entry_source_lang == "de" else "")
+            or (target_text if entry_target_lang == "de" else "")
+            or ""
+        ).strip()
+        native_display = str(
+            row[4]
+            or (target_text if entry_target_lang == "ru" else "")
+            or (source_text if entry_source_lang == "ru" else "")
+            or row[1]
+            or ""
+        ).strip()
+        items.append({
+            "id": int(row[0]),
+            "pool_entry_id": int(row[0]),
+            "is_pool": True,
+            "word_ru": row[1] or "",
+            "translation_de": row[2] or "",
+            "word_de": row[3] or "",
+            "translation_ru": row[4] or "",
+            "source_lang": row[5] or "",
+            "target_lang": row[6] or "",
+            "source_text": source_text,
+            "target_text": target_text,
+            "folder_id": None,
+            "srs_label": "none",
+            "srs_reps": 0,
+            "response_json": response_json,
+            "display_word": german_display or source_text,
+            "display_translation": native_display or target_text,
+        })
+    return items
+
+
+def get_dictionary_pool_entry(entry_id: int) -> dict | None:
+    """Одна запись общего словаря по id — для переноса в личный словарь человека."""
+    try:
+        normalized_id = int(entry_id)
+    except (TypeError, ValueError):
+        return None
+    if normalized_id <= 0:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, word_ru, translation_de, word_de, translation_ru,
+                       source_lang, target_lang, source_text, target_text, response_json
+                FROM bt_3_dictionary_entries
+                WHERE id = %s
+                """,
+                (normalized_id,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "word_ru": row[1] or "",
+        "translation_de": row[2] or "",
+        "word_de": row[3] or "",
+        "translation_ru": row[4] or "",
+        "source_lang": row[5] or "",
+        "target_lang": row[6] or "",
+        "source_text": row[7] or "",
+        "target_text": row[8] or "",
+        "response_json": _coerce_json_object(row[9]),
+    }
+
+
 def get_vocabulary_folders_with_counts(user_id: int) -> list[dict]:
     """Return all folders with word counts plus a synthetic 'no folder' entry."""
     with get_db_connection_context() as conn:

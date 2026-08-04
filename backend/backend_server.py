@@ -491,6 +491,8 @@ from backend.database import (
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
     list_user_vocabulary,
+    search_dictionary_pool,
+    get_dictionary_pool_entry,
     get_vocabulary_folders_with_counts,
     delete_vocabulary_entry,
     edit_vocabulary_entry,
@@ -50290,6 +50292,154 @@ def webapp_vocabulary_list():
         return jsonify({"error": str(exc)}), 500
 
     return jsonify({"ok": True, **result, "folders_meta": folders_data})
+
+
+@app.route("/api/webapp/vocabulary/pool-search", methods=["POST"])
+def webapp_vocabulary_pool_search():
+    """Поиск по общему словарю — тому, что у нас уже разобрано и лежит в пуле.
+
+    Открыт всем и не зависит от подписки на базовый словарь: цель ровно обратная —
+    чтобы человек нашёл слово У НАС и не заказывал за деньги разбор того, что мы уже
+    знаем. Выдаёт только то, чего у него ещё нет: своё он видит в первом списке.
+    Никаких обращений к модели здесь нет, это чтение из своей базы.
+    """
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    query = str(payload.get("query") or payload.get("search") or "").strip()
+    if not query:
+        return jsonify({"ok": True, "items": []})
+    try:
+        limit = max(1, min(60, int(payload.get("limit") or 40)))
+    except (TypeError, ValueError):
+        limit = 40
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        items = search_dictionary_pool(
+            user_id=int(user_id),
+            query=query,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            limit=limit,
+        )
+    except Exception:
+        logging.exception("pool search failed for user=%s", user_id)
+        return jsonify({"error": "Не удалось найти в общем словаре"}), 500
+
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/webapp/vocabulary/add-from-pool", methods=["POST"])
+def webapp_vocabulary_add_from_pool():
+    """Перенести слово из общего словаря в личный.
+
+    Разбор уже сделан и лежит в пуле, поэтому здесь НЕТ ни вычитки текста, ни
+    дообогащения — это чистое копирование готовой карточки. Бесплатный дневной
+    потолок сохранений тот же, что у обычного сохранения слова.
+    """
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    try:
+        entry_id = int(payload.get("entry_id") or 0)
+    except (TypeError, ValueError):
+        entry_id = 0
+    if entry_id <= 0:
+        return jsonify({"error": "entry_id обязателен"}), 400
+
+    entry = get_dictionary_pool_entry(entry_id)
+    if not entry:
+        return jsonify({"error": "Слово не найдено в общем словаре"}), 404
+
+    source_lang = str(entry.get("source_lang") or "").strip().lower() or "de"
+    target_lang = str(entry.get("target_lang") or "").strip().lower() or "ru"
+    response_json = entry.get("response_json") if isinstance(entry.get("response_json"), dict) else {}
+    word_ru = str(entry.get("word_ru") or "").strip()
+    word_de = str(entry.get("word_de") or "").strip()
+    translation_ru = str(entry.get("translation_ru") or "").strip()
+    translation_de = str(entry.get("translation_de") or "").strip()
+
+    existing_entry_id = None
+    try:
+        existing_entry_id = get_existing_user_dictionary_entry_id_for_save(
+            user_id=int(user_id),
+            word_ru=word_ru or None,
+            translation_de=translation_de,
+            word_de=word_de or None,
+            translation_ru=translation_ru,
+            response_json=response_json,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception:
+        logging.exception("add-from-pool: duplicate check failed for user=%s", user_id)
+
+    feature_key = "dictionary_lookup_save_daily"
+    entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode == "free" and existing_entry_id is None:
+        limit_meta = get_free_feature_limit_metadata(feature_key) or {}
+        limit_value = float(limit_meta.get("free_limit") or 0)
+        used_today = get_free_feature_usage_today(
+            user_id=int(user_id),
+            feature_key=feature_key,
+            tz="Europe/Vienna",
+        )
+        if limit_value >= 0 and used_today + 1.0 > limit_value:
+            log_limit_runtime_event(
+                user_id=int(user_id),
+                feature_code=feature_key,
+                event_type="blocked",
+                origin="vocabulary_add_from_pool",
+                metadata={"used": used_today, "limit": limit_value, "entry_id": entry_id},
+            )
+            return jsonify(
+                build_free_limit_error(feature_key, used=used_today, limit=limit_value, tz="Europe/Vienna")
+            ), 429
+
+    folder_id = None
+    try:
+        default_folder = get_or_create_dictionary_folder(
+            user_id=int(user_id), name="GENERAL", color="#7d8590", icon="📁",
+        )
+        folder_id = default_folder.get("id")
+    except Exception:
+        folder_id = None
+
+    try:
+        saved_id, inserted = _save_dictionary_entry_with_inserted_schema_retry(
+            user_id=int(user_id),
+            word_ru=word_ru or None,
+            translation_de=translation_de,
+            word_de=word_de or None,
+            translation_ru=translation_ru,
+            response_json=response_json,
+            folder_id=int(folder_id) if folder_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            origin_process="vocabulary_add_from_pool",
+            origin_meta={"endpoint": "/api/webapp/vocabulary/add-from-pool", "pool_entry_id": entry_id},
+        )
+    except Exception:
+        logging.exception("add-from-pool: save failed for user=%s entry=%s", user_id, entry_id)
+        return jsonify({"error": "Не удалось добавить слово"}), 500
+
+    if effective_mode == "free" and inserted:
+        increment_free_feature_usage(
+            user_id=int(user_id),
+            feature_key=feature_key,
+            idempotency_key=f"{feature_key}:{int(user_id)}:{int(saved_id or 0)}",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            metadata={"entry_id": int(saved_id or 0), "origin_process": "vocabulary_add_from_pool"},
+        )
+
+    return jsonify({"ok": True, "entry_id": int(saved_id or 0), "already_had": not bool(inserted)})
 
 
 @app.route("/api/webapp/vocabulary/delete", methods=["POST"])

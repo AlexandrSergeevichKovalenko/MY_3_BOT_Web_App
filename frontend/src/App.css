@@ -30836,14 +30836,24 @@ html[data-scheme="light"] .story-modal-guess-answer,
   display: flex;
   flex-direction: column;
   background: #0f1623;
+}
+.vso-overlay:not(.is-hidden) {
   animation: vsoRise 0.2s cubic-bezier(.22,1,.36,1) both;
+}
+/* Закрытое окно остаётся в разметке — прозрачным и не ловящим нажатия. Только так поле
+   ввода существует ЗАРАНЕЕ, и WebKit открывает клавиатуру по первому же тапу по строке
+   поиска (фокус обязан быть поставлен внутри обработчика нажатия). display:none и
+   visibility:hidden не годятся: скрытое поле сфокусировать нельзя. */
+.vso-overlay.is-hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 @keyframes vsoRise {
   from { transform: translateY(14px); opacity: 0.5; }
   to   { transform: translateY(0); opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .vso-overlay { animation: none; }
+  .vso-overlay:not(.is-hidden) { animation: none; }
 }
 
 .vso-top {
@@ -31014,6 +31024,34 @@ html[data-scheme="light"] .story-modal-guess-answer,
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Слово из общего словаря: слева не галочка выборки, а «плюс» — забрать себе. */
+.vso-add {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1.5px solid #d67a24;
+  background: transparent;
+  color: #f0a04b;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.vso-add svg { width: 12px; height: 12px; }
+.vso-add.is-on {
+  background: #d67a24;
+  border-color: #d67a24;
+  color: #fff;
+}
+.vso-add:disabled { cursor: default; }
+.vso-row.is-added .vso-word { opacity: 0.72; }
+.vso-section-pool { color: #f0a04b; }
+.vso-folder-pool { background: rgba(214,122,36,0.16); color: #f0a04b; }
+
 .vso-hit {
   background: rgba(214,122,36,0.34);
   color: inherit;
@@ -31101,6 +31139,20 @@ html[data-scheme="light"] .story-modal-guess-answer,
 .webapp-page.is-theme-light .vso-section,
 .webapp-page.is-theme-light .vso-more,
 .webapp-page.is-theme-light .vso-empty { color: #8b8072; }
+
+.webapp-page.is-theme-light .vso-add { border-color: #d67a24; color: #b45f13; }
+.webapp-page.is-theme-light .vso-add.is-on { background: #d67a24; color: #fff; }
+.webapp-page.is-theme-light .vso-section-pool { color: #b45f13; }
+.webapp-page.is-theme-light .vso-folder-pool { background: rgba(214,122,36,0.14); color: #b45f13; }
+
+/* Единственное действие для слова из общего словаря — забрать его себе. */
+.vocab-action-btn.vocab-action-pool-add {
+  background: #d67a24;
+  border-color: #d67a24;
+  color: #fff;
+  font-weight: 650;
+}
+.vocab-action-btn.vocab-action-pool-add:disabled { opacity: 0.75; }
 
 /* Поле поиска в «Библиотеке» — теперь это КНОПКА, открывающая окно поиска.
    Выглядит ровно как прежнее поле: человек видит привычную строку. */
