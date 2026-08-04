@@ -4290,14 +4290,24 @@ skip, merge or reorder items. For EACH item judge THREE things:
 (a) GRAMMAR: is "vollsatz" fully grammatical and natural German at C1 level — would a
     native speaker accept it as correct AND idiomatic? (Watch for wrong verb rection /
     a matrix that does not license the construction, e.g. "abhängen von … zu+Infinitiv".)
-(b) UNIQUENESS: the learner sees THREE things — "satz" (with the gap), "lemmas" (the
-    content words in base form, WITHOUT any article, conjunction or preposition) and
-    "hint_ru", a short Russian paraphrase of the WHOLE group's meaning. Judge with ALL
-    THREE in hand: is "correct" the ONE AND ONLY grammatically correct, natural filling?
-    A different filling that the Russian hint rules OUT does NOT make the item ambiguous —
-    that is exactly what the hint is for. Fail only when a genuinely DIFFERENT filling
-    matches the Russian hint just as well (another case/rection with the same meaning,
-    e.g. accusative object vs. "zwischen"+dative) and nothing lets the learner choose.
+(b) ANSWER KEY — this is the MOST IMPORTANT field you produce. Grading compares the
+    learner's text against "accepted" WITHOUT asking a model, so every filling a
+    teacher would mark correct must ALREADY be in that list. The learner sees "satz"
+    (with the gap), "lemmas" (the content words in base form, WITHOUT any article,
+    conjunction or preposition) and "hint_ru", a short Russian paraphrase of the whole
+    group's meaning. Using EXACTLY those lemmas, write out EVERY filling that is
+    grammatical, idiomatic and matches the Russian hint — each one IN FULL, with its
+    own article and endings. Include at least:
+      • "correct" itself;
+      • the resolved merge and the merged form ("zu der" next to "zur", "in dem" next
+        to "im") whenever one of them appears;
+      • a different preposition/rection that a native speaker would accept for the
+        same meaning ("für die Verbesserung" next to "zur Verbesserung") — with the
+        case each one governs;
+      • singular and plural, or with/without a repeated article, when both read well.
+    PREFER LISTING over failing: a second valid filling is NOT a defect, it is another
+    key. Fail for ambiguity ONLY when a filling with a DIFFERENT meaning fits just as
+    naturally and nothing in the sentence or the Russian hint lets the learner choose.
 (c) BASE FORM: EVERY lemma must be the uninflected DICTIONARY form — verbs in the
     infinitive, adjectives/participles/adverbs in the GRUNDFORM (e.g. "steigend", NOT
     "steigenden"/"steigender"), nouns in the nominative singular-or-needed-plural without
@@ -4316,8 +4326,10 @@ them produces false alarms; never fail an item for any of them:
     none, they are already printed;
   • whether the gap is cut in the right place, or how long "correct" is.
 Return STRICT JSON ONLY, one result per item, SAME order, each carrying its "index":
-{"results":[{"index":0,"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"], "reason":"<which rule failed, max 12 words; empty when ok>"}, ...]}
+{"results":[{"index":0,"ok": true|false, "accepted":["<EVERY filling a teacher marks correct, written out in full, incl. correct>"], "reason":"<which rule failed, max 12 words; empty when ok>"}, ...]}
 ok = true ONLY if ALL of (a), (b) and (c) hold; otherwise ok=false and accepted=[].
+When ok=true, "accepted" is never empty and never shorter than the set of fillings
+you would accept from a learner — a missing key marks a correct answer as wrong.
 """,
 "check_wortbildung_batch": """
 You verify German "Wortbildung" exercises. Input JSON:
@@ -7463,9 +7475,8 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
                         logging.info("aufgabe wortgruppe: verifier dropped item satz=%s correct=%s reason=%s",
                                      it.get("satz"), it.get("correct"), v.get("reason"))
                         continue
-                    acc = v.get("accepted") or []
-                    if acc:
-                        it["accepted"] = acc
+                    it["accepted"] = await _wortgruppe_confirm_keys(
+                        it, v.get("accepted") or [])
                     verified.append(it)
                 items = verified
         # NOTE: 'error' items are verified per-item at pool-build time by the fail-closed
@@ -7473,6 +7484,48 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
         # and the nightly degenerate self-heal), so no batch verifier is needed here.
         return items
     return items
+
+
+async def _wortgruppe_confirm_keys(item: dict, candidates: list) -> list[str]:
+    """Build the answer key of ONE wortgruppe item: "correct" plus every alternative
+    filling that survives two checks.
+
+    Grading compares against this list WITHOUT a model, so a bad key is far worse than
+    a missing one — it credits a wrong answer. The verifier is generous when asked for
+    alternatives and offers both real ones ("Aufgrund des starken Regens") and broken
+    ones ("Wegen dem starken Regen" — dative where the preposition governs genitive),
+    sometimes with a word the learner was never shown. So each candidate must
+      1) say the SAME thing with different glue (deterministic, no model), and
+      2) be confirmed by the SAME bounded judge that would grade it live — asking it
+         now, once, instead of on every learner's answer.
+    Fail-closed: an unconfirmed candidate is simply not a key. "correct" is always
+    first and never depends on any of this."""
+    correct = " ".join(str(item.get("correct") or "").split())
+    satz = str(item.get("satz") or "")
+    keys = [correct] if correct else []
+    if not correct or not satz:
+        return keys
+    seen = {correct.casefold()}
+    from backend.database import wortgruppe_key_uses_same_words
+    for cand in candidates:
+        cand = " ".join(str(cand or "").split())
+        if not cand or cand.casefold() in seen:
+            continue
+        seen.add(cand.casefold())
+        if not wortgruppe_key_uses_same_words(correct, cand):
+            logging.info("wortgruppe key rejected (other words) correct=%r key=%r", correct, cand)
+            continue
+        try:
+            res = await asyncio.wait_for(
+                run_check_cloze(satz=satz, correct=correct, user=cand), timeout=20.0)
+        except Exception:
+            logging.info("wortgruppe key unconfirmed (judge unavailable) key=%r", cand)
+            continue
+        if not (res or {}).get("match"):
+            logging.info("wortgruppe key rejected by judge correct=%r key=%r", correct, cand)
+            continue
+        keys.append(cand)
+    return keys
 
 
 async def run_check_wortbildung_batch(*, items: list[dict]) -> list[dict]:

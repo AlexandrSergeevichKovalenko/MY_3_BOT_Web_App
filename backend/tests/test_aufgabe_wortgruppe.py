@@ -2,7 +2,8 @@ import unittest
 
 from backend.answer_eval import _check_aufgabe, aufgabe_client_meta
 from backend.database import (
-    is_degenerate_aufgabe, wortgruppe_lemma_leak, wortgruppe_repair_item,
+    is_degenerate_aufgabe, wortgruppe_key_uses_same_words, wortgruppe_lemma_leak,
+    wortgruppe_repair_item,
 )
 
 
@@ -268,6 +269,44 @@ class WortgruppeRepairTests(unittest.TestCase):
         self.assertEqual(payload["lemmas"], ["Entscheidung", "schnell"])
         self.assertIn("treffen", wortgruppe_lemma_leak(payload))
         self.assertTrue(is_degenerate_aufgabe("wortgruppe", payload))
+
+
+class WortgruppeAnswerKeyTests(unittest.TestCase):
+    """Grading compares against the stored keys without a model, so a key may only be
+    the same answer said with different glue — never a different answer."""
+
+    def test_same_answer_with_other_glue_is_a_key(self) -> None:
+        for correct, cand in (
+            ("Wegen des starken Regens", "Aufgrund des starken Regens"),
+            ("welche Maßnahmen zur Verbesserung der Situation",
+             "welche Maßnahmen für die Verbesserung der Situation"),
+            ("Im Falle einer Stornierung", "in dem Fall einer Stornierung"),
+            ("Da die finanziellen Mittel fehlen", "Weil die finanziellen Mittel fehlen"),
+        ):
+            with self.subTest(cand):
+                self.assertTrue(wortgruppe_key_uses_same_words(correct, cand))
+
+    def test_key_bringing_in_another_word_is_refused(self) -> None:
+        # "Meinung" is a different word from "Ansicht" — the learner was shown one of
+        # them, so the other must not silently become a correct answer.
+        self.assertFalse(wortgruppe_key_uses_same_words(
+            "Nach Ansicht vieler Experten", "Nach Meinung vieler Experten"))
+
+    def test_key_dropping_a_word_is_refused(self) -> None:
+        self.assertFalse(wortgruppe_key_uses_same_words(
+            "auf weitere Entwicklungen", "auf die Entwicklung"))
+        self.assertFalse(wortgruppe_key_uses_same_words(
+            "Im Falle einer plötzlichen Störung", "Im Falle einer Störung"))
+
+    def test_empty_key_is_refused(self) -> None:
+        self.assertFalse(wortgruppe_key_uses_same_words("Wegen des starken Regens", ""))
+        self.assertFalse(wortgruppe_key_uses_same_words("Wegen des starken Regens", "im zu der"))
+
+    def test_wrong_case_is_left_to_the_judge(self) -> None:
+        # Same words, broken grammar: this check passes it on — the bounded judge in
+        # _wortgruppe_confirm_keys is what rejects it.
+        self.assertTrue(wortgruppe_key_uses_same_words(
+            "Wegen des starken Regens", "Wegen dem starken Regen"))
 
 
 if __name__ == "__main__":

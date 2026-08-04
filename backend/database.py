@@ -2156,6 +2156,23 @@ def wortgruppe_lemma_leak(payload) -> str:
     return ""
 
 
+def wortgruppe_key_uses_same_words(correct: str, candidate: str) -> bool:
+    """True when `candidate` is the SAME answer said with different glue.
+
+    The answer key is what grading compares against without asking any model, so an
+    extra key is worse than a missing one: it credits a wrong answer. A legitimate
+    second key differs from `correct` only in the hidden glue — another preposition,
+    the resolved merge, a repeated article. It may NOT bring in a content word the
+    learner was never shown ("Nach Meinung" for "Nach Ansicht"), and may not drop one.
+    Grammar is not judged here — that is the bounded judge's job."""
+    a = [t for t in _wg_tokens(correct) if _wg_norm(t) not in _WG_ANSWER_GLUE]
+    b = [t for t in _wg_tokens(candidate) if _wg_norm(t) not in _WG_ANSWER_GLUE]
+    if not b:
+        return False
+    return (all(any(_wg_same_word(x, y) for y in b) for x in a)
+            and all(any(_wg_same_word(y, x) for x in a) for y in b))
+
+
 def _wortgruppe_repair_carrier(payload) -> None:
     """Re-cut the gap when the model blanked only PART of its own answer.
 
@@ -4513,6 +4530,116 @@ def _dictionary_pool_word_fully_rich_sql(alias: str) -> str:
 DICTIONARY_POOL_WORD_FULLY_RICH_SQL = _dictionary_pool_word_fully_rich_sql("bt_3_dictionary_entries.response_json")
 
 
+_GERMAN_DEFINITE_ARTICLE_WORDS = ("der", "die", "das")
+
+
+def _dictionary_leading_definite_article(value: object) -> str:
+    """Артикль в начале написания: «die Mündung» → «die». Не артикль → пусто."""
+    raw = str(value or "").strip().casefold()
+    if raw in _GERMAN_DEFINITE_ARTICLE_WORDS:  # поле `article` хранит голый артикль
+        return raw
+    head = raw.split(" ", 1)[0]
+    return head if head in _GERMAN_DEFINITE_ARTICLE_WORDS else ""
+
+
+def _dictionary_entry_article(source_text: object, response_json: object = None) -> str:
+    """Род записи пула. Смотрим и в написание, и в карточку: слово могло прийти без
+    артикля («Mündung»), но разбор внутри знает, что оно «die». Без этого второй заход
+    того же слова с ДРУГИМ артиклем слился бы с чужим родом — ровно тот случай
+    «der Kiefer» (челюсть) против «die Kiefer» (сосна)."""
+    payload = _coerce_json_object(response_json)
+    for candidate in (
+        source_text,
+        payload.get("article"),
+        payload.get("word_de"),
+        payload.get("source_text"),
+        payload.get("translation_de"),
+    ):
+        article = _dictionary_leading_definite_article(candidate)
+        if article:
+            return article
+    return ""
+
+
+def _dictionary_text_is_single_word(value: object) -> bool:
+    headword = _normalize_dictionary_headword_key(value)
+    return bool(headword) and " " not in headword
+
+
+def _resolve_canonical_entry_slot_with_cursor(
+    cursor,
+    *,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+    target_text: str,
+    payload: dict | None,
+) -> int | None:
+    """ОДНО СЛОВО — ОДНА СТРОКА ПУЛА. Ключ уникальности («пара языков + текст запроса +
+    текст ответа») заводил НОВУЮ строку и на артикль («die Mündung» против «Mündung»),
+    и на другую формулировку перевода («устье» против «устье, дуло»). Из-за этого одно
+    слово жило в трёх записях с разными переводами, и человек видел разное в зависимости
+    от того, набрал он артикль или нет (замер 04.08.2026: 698 заголовков).
+
+    Поэтому перед вставкой ищем УЖЕ СУЩЕСТВУЮЩУЮ строку того же слова и дописываем её.
+
+    ⚠️ Слово опознаём по НЕМЕЦКОЙ стороне, и вот почему направления разные:
+    в de→ru немецкое слово — это сам запрос, и «устье» против «устье, дуло» — просто две
+    формулировки одного перевода. А в ru→de запрос русский, и одно русское слово даёт
+    РАЗНЫЕ немецкие: «Молния» — это и `der Blitz`, и `der Reißverschluss`. Слить их значило
+    бы потерять слово, поэтому там требуем совпадения и немецкой стороны тоже.
+    Разный род — разные слова («der Kiefer» челюсть против «die Kiefer» сосна).
+    Фразы и предложения не трогаем: у них значим весь текст целиком."""
+    if not _dictionary_text_is_single_word(source_text):
+        return None
+    headword = _normalize_dictionary_headword_key(source_text)
+    if not headword:
+        return None
+    german_is_source = source_lang == "de"
+    target_headword = _normalize_dictionary_headword_key(target_text)
+    if not german_is_source and (not target_headword or not _dictionary_text_is_single_word(target_text)):
+        return None
+    incoming_article = (
+        _dictionary_entry_article(source_text, payload)
+        if german_is_source
+        else _dictionary_entry_article(target_text, payload)
+    )
+    cursor.execute(
+        f"""
+        SELECT id, source_text, target_text, response_json,
+               (response_json IS NOT NULL AND {DICTIONARY_POOL_RICH_SQL_STORED}) AS is_rich
+        FROM bt_3_dictionary_entries
+        WHERE source_lang = %s AND target_lang = %s
+          AND source_headword_norm = %s
+          AND (%s::text IS NULL OR target_headword_norm = %s)
+          AND COALESCE(response_json->>'merged_into', '') = ''
+        ORDER BY id
+        LIMIT 20;
+        """,
+        (
+            source_lang, target_lang, headword,
+            None if german_is_source else target_headword,
+            target_headword,
+        ),
+    )
+    rows = cursor.fetchall() or []
+    best: tuple[tuple[int, int, int], int] | None = None
+    for row_id, row_source_text, row_target_text, row_payload, row_is_rich in rows:
+        row_article = _dictionary_entry_article(
+            row_source_text if german_is_source else row_target_text, row_payload
+        )
+        if incoming_article and row_article and incoming_article != row_article:
+            continue  # чужой род — чужое слово
+        rank = (
+            1 if (incoming_article and row_article == incoming_article) else 0,
+            1 if row_is_rich else 0,
+            -int(row_id),  # при равенстве побеждает самая старая строка
+        )
+        if best is None or rank > best[0]:
+            best = (rank, int(row_id))
+    return best[1] if best else None
+
+
 def _upsert_dictionary_canonical_entry_with_cursor(
     cursor,
     *,
@@ -4537,6 +4664,56 @@ def _upsert_dictionary_canonical_entry_with_cursor(
     if not normalized_source_text or not normalized_target_text:
         raise ValueError("dictionary canonical entry requires source and target text")
     payload = _coerce_json_object(response_json)
+
+    # Сначала пробуем дописать УЖЕ СУЩЕСТВУЮЩУЮ строку этого слова — иначе на каждый
+    # артикль и каждую формулировку перевода заводилась бы своя (см. слот-резолвер).
+    slot_id = _resolve_canonical_entry_slot_with_cursor(
+        cursor,
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+        source_text=resolved_source_text,
+        target_text=resolved_target_text,
+        payload=payload,
+    )
+    if slot_id:
+        cursor.execute(
+            f"""
+            UPDATE bt_3_dictionary_entries SET
+                source_headword_norm = COALESCE(source_headword_norm, %(source_headword)s),
+                target_headword_norm = COALESCE(target_headword_norm, %(target_headword)s),
+                word_ru = COALESCE(NULLIF(word_ru, ''), %(word_ru)s),
+                translation_de = COALESCE(NULLIF(translation_de, ''), %(translation_de)s),
+                word_de = COALESCE(NULLIF(word_de, ''), %(word_de)s),
+                translation_ru = COALESCE(NULLIF(translation_ru, ''), %(translation_ru)s),
+                -- Текст и его нормализованные ключи НЕ трогаем: они держат уникальность
+                -- строки, а мы сюда пришли именно для того, чтобы новой строки не заводить.
+                response_json = CASE
+                    WHEN response_json IS NULL THEN %(payload)s::jsonb
+                    WHEN %(payload)s::jsonb IS NULL THEN response_json
+                    WHEN {_dictionary_pool_rich_sql("(%(payload)s::jsonb)")}
+                         AND NOT {DICTIONARY_POOL_RICH_SQL_STORED}
+                        THEN %(payload)s::jsonb
+                    ELSE response_json
+                END,
+                updated_at = NOW()
+            WHERE id = %(slot_id)s
+            RETURNING id;
+            """,
+            {
+                "source_headword": _normalize_dictionary_headword_key(resolved_source_text) or None,
+                "target_headword": _normalize_dictionary_headword_key(resolved_target_text) or None,
+                "word_ru": str(word_ru or "").strip() or None,
+                "translation_de": str(translation_de or "").strip() or None,
+                "word_de": str(word_de or "").strip() or None,
+                "translation_ru": str(translation_ru or "").strip() or None,
+                "payload": Json(payload) if payload else None,
+                "slot_id": int(slot_id),
+            },
+        )
+        row = cursor.fetchone()
+        if row and row[0] is not None:
+            return int(row[0])
+
     cursor.execute(
         f"""
         INSERT INTO bt_3_dictionary_entries (
@@ -21333,6 +21510,7 @@ def count_thin_pool_entries(*, source_lang: str = "de", target_lang: str = "ru")
                   AND COALESCE((CASE WHEN response_json->>'enrich_attempts' ~ '^[0-9]+$'
                                      THEN (response_json->>'enrich_attempts')::int
                                      ELSE 0 END), 0) < {int(POOL_ENRICH_MAX_ATTEMPTS)}
+                  AND COALESCE(response_json->>'merged_into', '') = ''
                 """,
                 (_normalize_lang_code(source_lang), _normalize_lang_code(target_lang)),
             )
@@ -21601,6 +21779,8 @@ def get_thin_pool_entries_for_enrichment(
                   AND COALESCE((CASE WHEN e.response_json->>'enrich_attempts' ~ '^[0-9]+$'
                                      THEN (e.response_json->>'enrich_attempts')::int
                                      ELSE 0 END), 0) < {int(POOL_ENRICH_MAX_ATTEMPTS)}
+                  -- слитые строки не добираем: разбор пойдёт в победившую запись
+                  AND COALESCE(e.response_json->>'merged_into', '') = ''
                 GROUP BY e.id
                 ORDER BY demand DESC, e.updated_at DESC
                 LIMIT %s;
@@ -21681,6 +21861,9 @@ def get_pool_dictionary_candidates(
                 FROM bt_3_dictionary_entries
                 WHERE source_lang = %s AND target_lang = %s
                   AND (source_text_norm = %s OR source_headword_norm = %s)
+                  -- строки, слитые в другую запись того же слова, не отдаём: их
+                  -- содержимое живёт в победившей строке
+                  AND COALESCE(response_json->>'merged_into', '') = ''
                 ORDER BY
                     -- сначала настоящая карточка: пустая строка того же написания не
                     -- должна закрывать собой полный разбор соседней
@@ -21759,6 +21942,7 @@ def get_pool_dictionary_entry_reverse(
                 FROM bt_3_dictionary_entries
                 WHERE source_lang = %s AND target_lang = %s
                   AND (target_text_norm = %s OR target_headword_norm = %s)
+                  AND COALESCE(response_json->>'merged_into', '') = ''
                 ORDER BY
                     (CASE WHEN target_text_norm = %s THEN 1 ELSE 0 END) DESC,
                     (CASE WHEN response_json IS NOT NULL
