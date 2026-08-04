@@ -50,6 +50,7 @@ const observedCards = new WeakSet();
 
 let installed = false;
 let typing = false;      // пока печатают В КАРТОЧКЕ, подгонку снимаем
+let typingField = null;  // само поле: по нему видно, что ввод закончился (см. ниже)
 let askTyping = false;   // печатают в окне «Спросить» — карточку не трогаем вовсе
 let settling = false;    // клавиатура ещё едет — любой пересчёт сейчас будет по неверной высоте
 let rafId = 0;
@@ -664,6 +665,31 @@ export default function installCardAutoFit() {
         return;
       }
 
+      // ТО ЖЕ САМОЕ, НО ДЛЯ ПОЛЯ ОТВЕТА ВНУТРИ КАРТОЧКИ — и это отдельный дефект, который
+      // владелец видел как «разбор не помещается на экран».
+      //
+      // Пользователь печатает ответ (клоуз, «Wortgruppen», работа над ошибками, диктант) —
+      // поднимается флаг `typing`, и подгонка намеренно снимается: под клавиатурой считать
+      // нечего. Дальше он жмёт «Prüfen», и React заменяет ВЕСЬ вопрос разбором — поле
+      // ввода исчезает вместе с фокусом. WebKit (а это Telegram на айфоне) при удалении
+      // сфокусированного элемента событие потери фокуса НЕ шлёт — ровно то же, на чём уже
+      // обожглись с окном «Спросить» парой строк выше. Флаг остаётся поднятым навсегда, а
+      // экран разбора приходит с классом `ans-root--keepkbd`, где ветка `typing` выходит
+      // молча. Итог: разбор НИ РАЗУ не подгоняется — карточка натуральной величины, кнопка
+      // «Schließen» под сгибом. Замер на стенде (сценарий целиком, focusout погашен, как в
+      // WebKit): карточка выше экрана на 98-145 px на всех десяти эталонных телефонах.
+      // В Chrome дефекта нет — он событие шлёт; отсюда и «на компьютере всё хорошо».
+      //
+      // Признак конца ввода, который не зависит от событий: поля БОЛЬШЕ НЕТ В ДОКУМЕНТЕ.
+      if (typing && (!typingField || !typingField.isConnected)) {
+        typing = false;
+        typingField = null;
+        // Клавиатура в этот момент ещё уезжает: высота экрана промежуточная, и расчёт по
+        // ней дал бы урезанную карточку. Ждём, пока высота устоится, — как после обычной
+        // потери фокуса.
+        settleAfterKeyboard();
+      }
+
       const touchesCard = records.some((r) => {
         const t = r.target;
         const el = t && t.nodeType === 1 ? t : t?.parentElement;
@@ -873,6 +899,7 @@ export default function installCardAutoFit() {
     pinRootHeight();       // ДО того, как клавиатура успеет изменить высоту
     if (!inCard(e.target)) { askTyping = true; freezeCardBox(); lockScroll(); return; }
     typing = true;
+    typingField = e.target;   // по нему наблюдатель за DOM поймёт, что ввод закончился
     schedule();
   });
   document.addEventListener('focusout', (e) => {
@@ -884,6 +911,7 @@ export default function installCardAutoFit() {
     const wasAsk = !inCard(e.target);
     askTyping = false;
     typing = false;
+    typingField = null;
     // Печатали в чужом окне — задание не менялось, пересчитывать нечего.
     if (wasAsk) { unlockScroll(); releaseAskFreeze(); return; }
     // Печатали В САМОЙ карточке (диктант чисел, работа над ошибками, перевод): на время

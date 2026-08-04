@@ -164,7 +164,7 @@ function RebusResult({ result }) {
   const good = !!result.is_correct;
   const mine = String(result.user_answer || '').trim();
   return (
-    <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+    <div className={`ans-result ans-body ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       <div className="ans-answer">
         {good ? '' : 'Richtige Antwort: '}
@@ -262,7 +262,7 @@ function CrosswordResult({ result }) {
   const allRight = total > 0 && correct === total;
   const tone = allRight ? 'ok' : (correct > 0 ? 'partial' : 'bad');
   return (
-    <div className={`ans-result ${tone}`}>
+    <div className={`ans-result ans-body ${tone}`}>
       <div className="ans-verdict">
         {allRight ? `🎉 Alle ${total} richtig!` : `🏁 ${correct} / ${total} richtig`}
       </div>
@@ -316,7 +316,7 @@ function AnagramResult({ result }) {
   const diff = good ? null : letterDiff(mine, result.correct_word);
   const swapped = diff ? diff.bad.size : 0;
   return (
-    <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+    <div className={`ans-result ans-body ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       <div className="ans-answer">
         {good ? '' : 'Richtiges Wort: '}
@@ -381,7 +381,7 @@ function MCResult({ result, api }) {
     return () => { cancelled = true; };
   }, [result.deepdive_card_id, germanText, russianText, api]);
   return (
-    <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+    <div className={`ans-result ans-body ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       <div className="ans-answer">
         {good ? '' : 'Richtige Antwort: '}
@@ -515,7 +515,7 @@ function AufgabeResult({ result }) {
   const saveable = result.saveable || [];
   const ERR_ICON = { fixed: '✅', wrong_fix: '❌', missed: '🔎' };
   return (
-    <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+    <div className={`ans-result ans-body ${good ? 'ok' : 'bad'}`}>
       <Toast state={chipToast.state} onClose={chipToast.hide} />
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       {isErr ? (
@@ -661,7 +661,7 @@ function ListeningResult({ result }) {
   const pct = result.percent ?? (max > 0 ? Math.round((pts / max) * 100) : 0);
   const tone = pct >= 75 ? 'ok' : (pct >= 50 ? 'partial' : 'bad');
   return (
-    <div className={`ans-result ${tone}`}>
+    <div className={`ans-result ans-body ${tone}`}>
       <div className="ans-verdict">🏁 {pts} / {max} Punkte · {pct}%</div>
       <div className="ls-score-legend">Inhalt 50% + Grammatik 50%</div>
       <div className="ls-result-list ans-body">
@@ -1051,6 +1051,13 @@ export default function AnswerOverlay({ startParam }) {
   }
 
   // Result view (after submit or already-answered).
+  //
+  // Экран разбора обязан помещаться в телефон целиком: заголовок, разбор, место в
+  // рейтинге и обе кнопки — без прокрутки страницы. Если разбор длинный, прокрутка
+  // достаётся ЕМУ, а не экрану: сам блок разбора помечен классом `ans-body`, и
+  // подгонка (`fitCard.js`) знает, что листать нужно именно его. Раньше она выбирала
+  // самый высокий блок на глаз — а самым высоким мог оказаться рейтинг, и тогда
+  // листался он, а разбор обрезался.
   if (result) {
     return (
       // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
