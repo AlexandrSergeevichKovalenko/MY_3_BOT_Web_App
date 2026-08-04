@@ -7019,6 +7019,11 @@ function AppInner() {
   const [vocabEditError, setVocabEditError] = useState('');
   const [vocabDeleteItem, setVocabDeleteItem] = useState(null);
   const [vocabDeleteLoading, setVocabDeleteLoading] = useState(false);
+  // «Пересобрать разбор» — кнопка владельца: увидел в карточке ошибку, отправил слово
+  // на пересборку. Список отдаёт признак админа, у остальных кнопки нет вовсе.
+  const [vocabIsAdmin, setVocabIsAdmin] = useState(false);
+  const [vocabRebuildId, setVocabRebuildId] = useState(null);
+  const [vocabRebuildDone, setVocabRebuildDone] = useState(null);
 
   // Folder management state
   const [folderContextMenu, setFolderContextMenu] = useState(null);
@@ -10943,6 +10948,7 @@ function AppInner() {
       setVocabTotal(Number(data.total || 0));
       setVocabHasMore((currentOffset + newItems.length) < Number(data.total || 0));
       if (data.folders_meta) setVocabFoldersMeta(data.folders_meta);
+      setVocabIsAdmin(Boolean(data.is_admin));
 
       // Save raw API items to IndexedDB (no coerced response_json — keep originals)
       if (userId && isOfflineCacheAvailable() && Array.isArray(data.items) && data.items.length > 0) {
@@ -10980,6 +10986,39 @@ function AppInner() {
       setVocabSplitLoading(false);
     }
   }, [vocabSplitItem, vocabSplitLoading, initData, fetchWithTimeout, loadVocabLibrary]);
+
+  // Отправить слово на пересборку разбора (кнопка владельца). Удалить и сохранить
+  // заново для этого НЕ годится: слово теперь отдаётся из общего словаря без обращения
+  // к модели, поэтому вернулась бы та же самая карточка. Здесь разбор снимается во всех
+  // хранилищах сразу, и ночью слово собирается заново — для всех, у кого оно есть.
+  const rebuildVocabEntryCard = useCallback(async (item) => {
+    if (!item || !initData || vocabRebuildId) return;
+    setVocabRebuildId(item.id);
+    setVocabRebuildDone(null);
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/rebuild-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          entry_id: item.id,
+          // Берём слово ИЗ КАРТОЧКИ: владелец мог поправить его руками, и пересобирать
+          // надо исправленное, а не старое кривое.
+          word: item.word_de || item.translation_de || '',
+        }),
+      }, 15000);
+      if (!response.ok) {
+        setVocabError(tr('Не получилось отправить на пересборку', 'Neuaufbau fehlgeschlagen'));
+        return;
+      }
+      setVocabRebuildDone(item.id);
+      await loadVocabLibrary({ reset: true });
+    } catch (_err) {
+      setVocabError(tr('Не получилось отправить на пересборку', 'Neuaufbau fehlgeschlagen'));
+    } finally {
+      setVocabRebuildId(null);
+    }
+  }, [initData, vocabRebuildId, fetchWithTimeout, loadVocabLibrary, tr]);
 
   const deleteVocabEntry = useCallback(async () => {
     if (!vocabDeleteItem || !initData) return;
@@ -34431,6 +34470,20 @@ function AppInner() {
                 onClick={() => setVocabDeleteItem(item)}
               >
                 🗑 {tr('Удалить', 'Löschen')}
+              </button>)}
+              {/* Кнопка владельца: увидел в разборе ошибку — отправил слово на пересборку.
+                  Обычному человеку её не видно вовсе. */}
+              {!isPoolEntry && vocabIsAdmin && (<button
+                type="button"
+                className="vocab-action-btn vocab-action-rebuild"
+                disabled={vocabRebuildId === item.id}
+                onClick={() => void rebuildVocabEntryCard(item)}
+              >
+                {vocabRebuildId === item.id
+                  ? tr('Отправляю…', 'Wird gesendet…')
+                  : vocabRebuildDone === item.id
+                    ? tr('✓ Соберётся ночью', '✓ Wird nachts neu gebaut')
+                    : `♻️ ${tr('Пересобрать разбор', 'Analyse neu aufbauen')}`}
               </button>)}
             </div>
           </div>

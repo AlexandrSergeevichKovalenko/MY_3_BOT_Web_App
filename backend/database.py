@@ -21967,6 +21967,188 @@ def get_pool_dictionary_entry_reverse(
     }
 
 
+_DICTIONARY_CARD_BODY_KEYS = (
+    "usage_examples", "dictionary_senses", "meanings", "translations", "grammar_tables",
+    "forms", "government_patterns", "common_collocations", "synonyms", "antonyms",
+    "related_words", "word_formation", "memory_tip", "etymology_note", "pronunciation",
+    "register", "register_note", "usage_note", "when_to_use", "real_life_usage",
+    "frequency", "level", "save_worthy_options", "raw_text", "part_of_speech_note",
+    "expression_note", "correction_applied", "enrich_attempts", "enrich_last_error",
+)
+
+# Что в карточке НЕ трогаем при сбросе: это не разбор, а опознание записи. Снеси их —
+# и ночь не поймёт, какое слово в какую сторону разбирать.
+_DICTIONARY_CARD_IDENTITY_KEYS = (
+    "source_lang", "target_lang", "source_text", "target_text",
+    "word_de", "word_ru", "translation_de", "translation_ru",
+    "entry_kind", "part_of_speech", "article", "language_pair",
+)
+
+
+def _strip_dictionary_card_body(payload: object) -> dict:
+    """Оставить от карточки только опознание, выкинув весь разбор."""
+    source = _coerce_json_object(payload)
+    stripped = {
+        key: value for key, value in source.items()
+        if key in _DICTIONARY_CARD_IDENTITY_KEYS
+    }
+    return stripped
+
+
+def reset_dictionary_card_for_rebuild(
+    *,
+    user_id: int,
+    entry_id: int,
+    corrected_word: str | None = None,
+) -> dict:
+    """Стереть разбор слова ВЕЗДЕ и вернуть его в очередь ночного добора.
+
+    Зачем отдельная операция, а не «удалить карточку и сохранить заново»: слово теперь
+    отдаётся из общего пула БЕЗ обращения к модели, поэтому повторное сохранение вернёт
+    ту же самую кривую карточку. Разбор живёт в трёх местах сразу (личная карточка,
+    общий пул, слой единиц) плюс кеш ответов — и пока хоть одно из них считает карточку
+    полной, пересборки не будет.
+
+    Что делает: правит написание слова на исправленное человеком (иначе ночь пересоберёт
+    старую ошибку), снимает разбор во всех трёх хранилищах, чистит кеш ответов и
+    сбрасывает счётчик неудачных попыток. Опознание записи (языки, направление, часть
+    речи) остаётся: по нему ночь и находит, что разбирать.
+
+    Ничего не удаляет: личная карточка, её место в тренировке и история повторений целы,
+    пустеет только тело разбора."""
+    entry_id = int(entry_id)
+    user_id = int(user_id)
+    report = {
+        "ok": False, "entry_id": entry_id, "word": "",
+        "personal_cleared": False, "pool_cleared": 0, "unit_cleared": 0, "cache_cleared": 0,
+    }
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word_de, word_ru, translation_de, translation_ru,
+                       source_lang, target_lang, response_json, canonical_entry_id
+                FROM bt_3_webapp_dictionary_queries
+                WHERE id = %s AND user_id = %s
+                """,
+                (entry_id, user_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                report["error"] = "not_found"
+                return report
+            (word_de, word_ru, translation_de, translation_ru,
+             source_lang, target_lang, payload, canonical_entry_id) = row
+            source_lang = _normalize_lang_code(source_lang)
+            target_lang = _normalize_lang_code(target_lang)
+            german_word = str(corrected_word or "").strip() or str(
+                word_de or (translation_de if source_lang != "de" else "") or ""
+            ).strip()
+            report["word"] = german_word
+
+            # 1. Личная карточка: тело разбора долой, опознание на месте.
+            new_payload = _strip_dictionary_card_body(payload)
+            if german_word:
+                new_payload["word_de"] = german_word
+                if source_lang == "de":
+                    new_payload["source_text"] = german_word
+                    new_payload["translation_de"] = german_word
+                elif target_lang == "de":
+                    new_payload["target_text"] = german_word
+                    new_payload["translation_de"] = german_word
+            cursor.execute(
+                """
+                UPDATE bt_3_webapp_dictionary_queries
+                SET response_json = %s, word_de = COALESCE(NULLIF(%s, ''), word_de)
+                WHERE id = %s AND user_id = %s
+                """,
+                (Json(new_payload), german_word, entry_id, user_id),
+            )
+            report["personal_cleared"] = cursor.rowcount > 0
+
+            # 2. Общий пул. Чистим и запись, к которой привязана карточка, и все строки
+            # того же слова: разбор мог осесть на соседней (запрос с артиклем и без).
+            headword = _normalize_dictionary_headword_key(german_word)
+            pool_ids: set[int] = set()
+            if canonical_entry_id:
+                pool_ids.add(int(canonical_entry_id))
+            if headword:
+                cursor.execute(
+                    """
+                    SELECT id FROM bt_3_dictionary_entries
+                    WHERE source_headword_norm = %s OR target_headword_norm = %s
+                    """,
+                    (headword, headword),
+                )
+                pool_ids.update(int(r[0]) for r in cursor.fetchall() or [])
+            for pool_id in sorted(pool_ids):
+                cursor.execute(
+                    "SELECT response_json, source_lang, target_lang FROM bt_3_dictionary_entries WHERE id = %s",
+                    (pool_id,),
+                )
+                pool_row = cursor.fetchone()
+                if not pool_row:
+                    continue
+                pool_payload = _strip_dictionary_card_body(pool_row[0])
+                pool_source_lang = _normalize_lang_code(pool_row[1])
+                pool_target_lang = _normalize_lang_code(pool_row[2])
+                if german_word:
+                    pool_payload["word_de"] = german_word
+                    if pool_source_lang == "de":
+                        pool_payload["source_text"] = german_word
+                    elif pool_target_lang == "de":
+                        pool_payload["target_text"] = german_word
+                    pool_payload["translation_de"] = german_word
+                if german_word and pool_source_lang == "de":
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_dictionary_entries
+                        SET response_json = %s, source_text = %s, source_text_norm = %s,
+                            source_headword_norm = %s, word_de = %s, translation_de = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (
+                            Json(pool_payload), german_word,
+                            _normalize_dictionary_text_key(german_word),
+                            _normalize_dictionary_headword_key(german_word) or None,
+                            german_word, german_word, pool_id,
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE bt_3_dictionary_entries SET response_json = %s, updated_at = NOW() WHERE id = %s",
+                        (Json(pool_payload), pool_id),
+                    )
+                report["pool_cleared"] += 1
+
+            # 3. Слой единиц — третье место, где лежит разбор.
+            if headword:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_lex_units
+                    SET card = NULL, card_source = NULL, updated_at = NOW()
+                    WHERE lang = 'de' AND lower(lemma) IN (%s, %s)
+                    """,
+                    (headword, _normalize_dictionary_text_key(german_word)),
+                )
+                report["unit_cleared"] = cursor.rowcount
+
+            # 4. Кеш ответов — иначе он отдаст старую карточку раньше всех остальных.
+            if headword:
+                cursor.execute(
+                    """
+                    DELETE FROM bt_3_dictionary_lookup_cache
+                    WHERE lower(normalized_word) IN (%s, %s)
+                    """,
+                    (headword, _normalize_dictionary_text_key(german_word)),
+                )
+                report["cache_cleared"] = cursor.rowcount
+        conn.commit()
+    report["ok"] = True
+    return report
+
+
 def upsert_dictionary_pool_entry(
     *,
     source_lang: str,

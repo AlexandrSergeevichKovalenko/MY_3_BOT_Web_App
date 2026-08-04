@@ -495,6 +495,7 @@ from backend.database import (
     get_dictionary_pool_entry,
     get_vocabulary_folders_with_counts,
     delete_vocabulary_entry,
+    reset_dictionary_card_for_rebuild,
     edit_vocabulary_entry,
     get_vocabulary_entry_for_user,
     split_vocabulary_entry_senses,
@@ -50291,7 +50292,14 @@ def webapp_vocabulary_list():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
-    return jsonify({"ok": True, **result, "folders_meta": folders_data})
+    # Признак админа нужен списку, чтобы показать кнопку пересборки разбора. Отдаём
+    # здесь, а не отдельным запросом: список и так грузится при каждом открытии словаря.
+    try:
+        is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
+    except Exception:
+        is_admin = False
+
+    return jsonify({"ok": True, **result, "folders_meta": folders_data, "is_admin": is_admin})
 
 
 @app.route("/api/webapp/vocabulary/pool-search", methods=["POST"])
@@ -50464,6 +50472,57 @@ def webapp_vocabulary_delete():
     if not found:
         return jsonify({"error": "Запись не найдена"}), 404
     return jsonify({"ok": True})
+
+
+@app.route("/api/webapp/vocabulary/rebuild-card", methods=["POST"])
+def webapp_vocabulary_rebuild_card():
+    """Пересобрать разбор слова. Только для админа.
+
+    Зачем отдельная кнопка, а не «удалить и сохранить заново»: слово теперь отдаётся из
+    общего пула БЕЗ обращения к модели, поэтому пересохранение вернёт ту же самую кривую
+    карточку. Здесь мы снимаем разбор во всех трёх хранилищах сразу (личная карточка,
+    общий пул, слой единиц) и чистим кеш ответов — после этого ночной добор видит слово
+    как неразобранное, собирает его один раз и раздаёт всем.
+
+    Модель здесь НЕ зовётся: это чистая работа с базой, как и открытие карточки."""
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    try:
+        is_admin = int(user_id) in {int(a) for a in get_admin_telegram_ids()}
+    except Exception:
+        is_admin = False
+    if not is_admin:
+        return jsonify({"error": "Недоступно"}), 403
+
+    entry_id = payload.get("entry_id")
+    if not entry_id:
+        return jsonify({"error": "entry_id обязателен"}), 400
+    try:
+        result = reset_dictionary_card_for_rebuild(
+            user_id=int(user_id),
+            entry_id=int(entry_id),
+            corrected_word=str(payload.get("word") or "").strip() or None,
+        )
+    except Exception:
+        logging.exception("rebuild card failed for entry=%s", entry_id)
+        return jsonify({"error": "Не удалось поставить слово на пересборку"}), 500
+    if not result.get("ok"):
+        return jsonify({"error": "Запись не найдена"}), 404
+
+    # Разбор мог остаться в оперативном кеше этого процесса — снимаем и его, иначе
+    # ближайший поиск отдаст старое из памяти.
+    try:
+        word_key = _normalize_dictionary_lookup_word(result.get("word") or "")
+        if word_key:
+            for key in [k for k in _DICTIONARY_LOOKUP_CACHE if k.endswith(f"|{word_key}")]:
+                _DICTIONARY_LOOKUP_CACHE.pop(key, None)
+    except Exception:
+        logging.debug("не удалось почистить оперативный кеш слова", exc_info=True)
+
+    logging.info("card rebuild queued by admin: entry=%s word=%r %s", entry_id, result.get("word"), result)
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/api/webapp/vocabulary/edit", methods=["POST"])
