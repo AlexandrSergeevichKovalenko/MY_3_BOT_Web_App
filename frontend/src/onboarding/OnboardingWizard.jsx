@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './onboarding.css';
-import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
+import { requestTabletFullscreen, fullscreenFacts } from '../utils/tabletFullscreen.js';
 
 // Standalone Mini-App first-run onboarding. Opened from Telegram via
 // startapp=onboarding (and later reused as the «🎬 Как пользоваться» hub).
@@ -8,6 +8,10 @@ import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 // frame — progress bar, ←/→ nav, the core-gate (language + dictionary are
 // mandatory), tier-aware placeholders, and the resume/complete wiring.
 const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
+// ВРЕМЕННО: строка с числами о полном экране — только владельцу (см. рендер ниже).
+const OWNER_DEBUG = (() => {
+  try { return Number(tg?.initDataUnsafe?.user?.id) === 117649764; } catch (_e) { return false; }
+})();
 // Opened in a plain browser (shareable «/tour» presentation) — no Telegram, no
 // initData → free navigation, no saving, install-the-bot CTA at the finale.
 const IS_PUBLIC = !(tg && tg.initData);
@@ -1936,6 +1940,16 @@ export default function OnboardingWizard() {
 
   return (
     <div className="ob-root">
+      {/* ВРЕМЕННО, видно только владельцу: чем кончился запрос полного экрана на планшете.
+          Гадать по скриншоту, почему тур остаётся шторкой, нельзя — нужны числа с самого
+          устройства. Убрать вместе с recordFullscreenTry/fullscreenFacts. */}
+      {OWNER_DEBUG ? (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 99999,
+          background: 'rgba(15,23,42,.92)', color: '#4ADE80', font: '600 10px/1.35 ui-monospace, monospace',
+          padding: '3px 6px', pointerEvents: 'none', wordBreak: 'break-all',
+        }}>{fullscreenFacts()}</div>
+      ) : null}
       <div className="ob-card">
         <header className="ob-head">
           <div className="ob-topbar">

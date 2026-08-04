@@ -13,6 +13,22 @@
 // in App.jsx and isTabletLikeViewport in DictionaryOverlay.jsx.
 export function isTabletLikeViewport() {
   try {
+    // РАЗМЕР ФИЗИЧЕСКОГО ЭКРАНА, А НЕ ОКНА. Это главный признак, и он идёт первым.
+    //
+    // Прошлая проверка мерила ОКНО (`innerWidth`) — а окно здесь и есть та самая узкая
+    // шторка, из которой мы пытаемся выйти: на iPad она шириной с телефон (~390 px).
+    // Получалась замкнутая петля: чтобы попросить полный экран, надо было уже не быть
+    // в шторке. Оставалась одна надежда — строка User-Agent, но Telegram на iPad
+    // представляется айфоном, и первая же строчка ниже отправляла нас в «это телефон».
+    // Так «Как пользоваться» и оставался коробочкой посреди планшета.
+    //
+    // `screen` описывает УСТРОЙСТВО и от размера шторки не зависит: меньшая сторона
+    // экрана у телефонов 320–440 px, у планшетов от 744. Порог 700 — тот же, что у всей
+    // планшетной вёрстки.
+    const sw = Number(window.screen?.width) || 0;
+    const sh = Number(window.screen?.height) || 0;
+    if (sw > 0 && sh > 0 && Math.min(sw, sh) >= 700) return true;
+
     const w = window.innerWidth || 0;
     const h = window.innerHeight || 0;
     const ua = String(navigator.userAgent || '');
@@ -29,9 +45,30 @@ export function isTabletLikeViewport() {
 // from a mount effect; Telegram treats the Mini-App launch tap as the gesture.
 export function requestTabletFullscreen(tg) {
   try {
-    if (!tg || !isTabletLikeViewport()) return;
-    if (typeof tg.requestFullscreen !== 'function') return;
-    Promise.resolve(tg.requestFullscreen()).catch(() => { /* unsupported client */ });
+    if (!tg) return recordFullscreenTry('нет tg');
+    if (!isTabletLikeViewport()) return recordFullscreenTry('не планшет');
+    if (typeof tg.requestFullscreen !== 'function') return recordFullscreenTry('клиент без requestFullscreen');
+    recordFullscreenTry('просим');
+    Promise.resolve(tg.requestFullscreen())
+      .then(() => recordFullscreenTry('раскрыт'))
+      .catch((e) => recordFullscreenTry(`отказ: ${e?.message || e}`));
     try { document.documentElement.setAttribute('data-tablet-fullscreen', '1'); } catch (_e) { /* ignore */ }
-  } catch (_e) { /* ignore */ }
+  } catch (e) { recordFullscreenTry(`сбой: ${e?.message || e}`); }
+}
+
+// ВРЕМЕННО: что именно решил и чем кончился запрос полного экрана. Пишем в одно место,
+// чтобы владельцу можно было показать факт, а не догадку (строку рисует OnboardingWizard,
+// видна только владельцу). Убрать вместе с той строкой.
+export function recordFullscreenTry(state) {
+  try { window.__fsTry = state; } catch (_e) { /* ignore */ }
+}
+export function fullscreenFacts() {
+  const scr = `${Number(window.screen?.width) || 0}x${Number(window.screen?.height) || 0}`;
+  const win = `${window.innerWidth || 0}x${window.innerHeight || 0}`;
+  const ua = String(navigator.userAgent || '');
+  const kind = /iPad/.test(ua) ? 'iPad' : /iPhone/.test(ua) ? 'iPhone' : /Macintosh/.test(ua) ? 'Mac' : 'иное';
+  const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
+  return `экран ${scr} · окно ${win} · планшет=${isTabletLikeViewport() ? 'да' : 'нет'}`
+    + ` · ua=${kind} · вер.${tg?.version || '?'} · rf=${typeof tg?.requestFullscreen === 'function' ? 'есть' : 'нет'}`
+    + ` · ${window.__fsTry || 'не вызывали'}`;
 }

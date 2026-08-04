@@ -24,6 +24,12 @@ const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 // (Telegram otherwise presents it as a narrow ~20% compact sheet). Phones untouched.
 function isTabletLikeViewport() {
   try {
+    // Размер ФИЗИЧЕСКОГО экрана, а не окна: окно на планшете — узкая шторка Telegram
+    // шириной с телефон, и по нему планшет не опознать (см. utils/tabletFullscreen.js).
+    const sw = Number(window.screen?.width) || 0;
+    const sh = Number(window.screen?.height) || 0;
+    if (sw > 0 && sh > 0 && Math.min(sw, sh) >= 700) return true;
+
     const w = window.innerWidth || 0;
     const h = window.innerHeight || 0;
     const ua = String(navigator.userAgent || '');
