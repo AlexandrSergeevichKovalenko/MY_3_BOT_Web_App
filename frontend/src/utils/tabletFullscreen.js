@@ -45,30 +45,9 @@ export function isTabletLikeViewport() {
 // from a mount effect; Telegram treats the Mini-App launch tap as the gesture.
 export function requestTabletFullscreen(tg) {
   try {
-    if (!tg) return recordFullscreenTry('нет tg');
-    if (!isTabletLikeViewport()) return recordFullscreenTry('не планшет');
-    if (typeof tg.requestFullscreen !== 'function') return recordFullscreenTry('клиент без requestFullscreen');
-    recordFullscreenTry('просим');
-    Promise.resolve(tg.requestFullscreen())
-      .then(() => recordFullscreenTry('раскрыт'))
-      .catch((e) => recordFullscreenTry(`отказ: ${e?.message || e}`));
+    if (!tg || !isTabletLikeViewport()) return;
+    if (typeof tg.requestFullscreen !== 'function') return;
+    Promise.resolve(tg.requestFullscreen()).catch(() => { /* unsupported client */ });
     try { document.documentElement.setAttribute('data-tablet-fullscreen', '1'); } catch (_e) { /* ignore */ }
-  } catch (e) { recordFullscreenTry(`сбой: ${e?.message || e}`); }
-}
-
-// ВРЕМЕННО: что именно решил и чем кончился запрос полного экрана. Пишем в одно место,
-// чтобы владельцу можно было показать факт, а не догадку (строку рисует OnboardingWizard,
-// видна только владельцу). Убрать вместе с той строкой.
-export function recordFullscreenTry(state) {
-  try { window.__fsTry = state; } catch (_e) { /* ignore */ }
-}
-export function fullscreenFacts() {
-  const scr = `${Number(window.screen?.width) || 0}x${Number(window.screen?.height) || 0}`;
-  const win = `${window.innerWidth || 0}x${window.innerHeight || 0}`;
-  const ua = String(navigator.userAgent || '');
-  const kind = /iPad/.test(ua) ? 'iPad' : /iPhone/.test(ua) ? 'iPhone' : /Macintosh/.test(ua) ? 'Mac' : 'иное';
-  const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
-  return `экран ${scr} · окно ${win} · планшет=${isTabletLikeViewport() ? 'да' : 'нет'}`
-    + ` · ua=${kind} · вер.${tg?.version || '?'} · rf=${typeof tg?.requestFullscreen === 'function' ? 'есть' : 'нет'}`
-    + ` · ${window.__fsTry || 'не вызывали'}`;
+  } catch (_e) { /* ignore */ }
 }
