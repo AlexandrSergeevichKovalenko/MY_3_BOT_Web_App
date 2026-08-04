@@ -409,6 +409,7 @@ from backend.openai_manager import (
 from backend.database import (
     get_quick_dictionary_entries_for_backfill,
     get_pool_dictionary_entry,
+    get_pool_dictionary_candidates,
     get_pool_dictionary_entry_reverse,
     upsert_dictionary_pool_entry,
     get_dictionary_entries_for_metainfo_scan,
@@ -7567,7 +7568,7 @@ def _load_dictionary_item_from_pool(*, word: str, source_lang: str, target_lang:
     ):
         return unit_item
     try:
-        entry = get_pool_dictionary_entry(
+        candidates = get_pool_dictionary_candidates(
             source_lang=source_lang,
             target_lang=target_lang,
             source_text=word,
@@ -7575,27 +7576,41 @@ def _load_dictionary_item_from_pool(*, word: str, source_lang: str, target_lang:
     except Exception as exc:
         logging.debug("dictionary pool lookup failed: %s", exc)
         return None
-    if not isinstance(entry, dict):
-        return None
-    payload = entry.get("response_json")
-    if not isinstance(payload, dict) or not payload:
-        return None
-    if _dictionary_payload_needs_enrichment(payload):
-        return None
-    # У части старых записей сам перевод лежит только в колонках строки, а в карточке его
-    # нет. Без этой подстановки пользователь получил бы «готовый» ответ без перевода.
-    payload = dict(payload)
-    if not str(payload.get("source_text") or "").strip():
-        payload["source_text"] = str(entry.get("source_text") or "").strip()
-    if not str(payload.get("target_text") or "").strip():
-        payload["target_text"] = str(entry.get("target_text") or "").strip()
-    if not str(payload.get("target_text") or "").strip():
-        return None  # перевода нет нигде — отдавать нечего
-    if target_lang == "ru" and not str(payload.get("translation_ru") or "").strip():
-        payload["translation_ru"] = payload["target_text"]
-    if source_lang == "de" and not str(payload.get("word_de") or "").strip():
-        payload["word_de"] = payload["source_text"]
-    return payload
+    asked_article = (
+        _normalize_german_article(_strip_german_leading_article(word)[0])
+        if source_lang == "de" else ""
+    )
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        payload = entry.get("response_json")
+        if not isinstance(payload, dict) or not payload:
+            continue
+        if _dictionary_payload_needs_enrichment(payload):
+            continue
+        # Чужой род — чужое слово: «der Kiefer» (челюсть) и «die Kiefer» (сосна) дают
+        # один заголовок. Если человек назвал артикль, запись с ДРУГИМ артиклем не наша.
+        if asked_article:
+            entry_article = _normalize_german_article(
+                _strip_german_leading_article(str(entry.get("source_text") or ""))[0]
+            )
+            if entry_article and entry_article != asked_article:
+                continue
+        # У части старых записей сам перевод лежит только в колонках строки, а в карточке его
+        # нет. Без этой подстановки пользователь получил бы «готовый» ответ без перевода.
+        payload = dict(payload)
+        if not str(payload.get("source_text") or "").strip():
+            payload["source_text"] = str(entry.get("source_text") or "").strip()
+        if not str(payload.get("target_text") or "").strip():
+            payload["target_text"] = str(entry.get("target_text") or "").strip()
+        if not str(payload.get("target_text") or "").strip():
+            continue  # перевода нет нигде — отдавать нечего
+        if target_lang == "ru" and not str(payload.get("translation_ru") or "").strip():
+            payload["translation_ru"] = payload["target_text"]
+        if source_lang == "de" and not str(payload.get("word_de") or "").strip():
+            payload["word_de"] = payload["source_text"]
+        return payload
+    return None
 
 
 def _create_dictionary_enrichment_job(

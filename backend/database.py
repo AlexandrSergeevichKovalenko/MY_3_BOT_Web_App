@@ -4425,21 +4425,50 @@ def get_dict_dedup_report(*, days: int = 7) -> dict:
     }
 
 
-# «Богатая» карточка на уровне SQL: есть хотя бы один блок разбора. Это дешёвый
-# JSONB-прокси того же условия, что _dictionary_payload_needs_enrichment проверяет в
-# Python; держим оба определения синхронными.
 # «Богатая» карточка = та, которую пул РЕАЛЬНО отдаст. Держать в согласии с питоновским
 # `_dictionary_payload_needs_enrichment`, иначе записи зависают: SQL считает их полными
 # (значит ночной добор их не берёт), а выдача — тонкими (значит и не отдаёт).
-# Именно поэтому `forms` и одиночный `dictionary_senses` сюда НЕ входят: артикль со
-# склонением без единого примера карточкой не является.
-_DICTIONARY_POOL_RICH_KEYS = ("usage_examples", "meanings", "grammar_tables", "translations")
-
-
+# Именно поэтому `forms` и пустой одиночный `dictionary_senses` сюда НЕ входят: артикль
+# со склонением без единого примера карточкой не является.
 def _dictionary_pool_rich_sql(alias: str) -> str:
-    parts = [f"{alias} ? '{key}'" for key in _DICTIONARY_POOL_RICH_KEYS]
-    # два и более смысла — тоже полноценная карточка (совпадает с питоновским гейтом)
-    parts.append(f"COALESCE(jsonb_array_length({alias}->'dictionary_senses'), 0) >= 2")
+    """Полнота карточки по СОДЕРЖИМОМУ, а не по наличию ключа.
+
+    Раньше здесь стояло `response_json ? 'usage_examples'` — проверка присутствия ключа.
+    Тонкое сохранение (быстрый перевод, тап в тренажёре, личный чат бота) кладёт
+    `usage_examples: []` и `meanings: {}`: ключи есть, карточки нет. SQL считал такую
+    строку полной и ставил её первой в выдаче пула, а питоновский гейт
+    `_dictionary_payload_needs_enrichment` тут же её отбраковывал — и мы шли в GPT за
+    словом, полный разбор которого лежал в этой же таблице (замер 04.08.2026:
+    72 написания, 227 заголовков). Тот же предикат решает, кто победит в upsert'е, —
+    то есть пустышка ещё и не давала лечь поверх себя настоящей карточке."""
+    def _nonempty_array(path: str, minimum: int = 1) -> str:
+        # CASE (не AND): Postgres не гарантирует короткое замыкание, а jsonb_array_length
+        # падает на скаляре. Возвращаем строгие TRUE/FALSE, без NULL.
+        return (
+            f"(CASE WHEN jsonb_typeof({path}) = 'array' "
+            f"THEN jsonb_array_length({path}) >= {int(minimum)} ELSE FALSE END)"
+        )
+
+    def _nonempty_text(path: str) -> str:
+        return f"NULLIF(TRIM(COALESCE({path}, '')), '') IS NOT NULL"
+
+    parts = [
+        _nonempty_array(f"{alias}->'usage_examples'"),
+        _nonempty_array(f"{alias}->'translations'"),
+        _nonempty_array(f"{alias}->'meanings'->'secondary'"),
+        _nonempty_text(f"{alias}->'meanings'->'primary'->>'value'"),
+        # grammar_tables приходит и объектом, и списком — пустые оба варианта отсекаем
+        f"(CASE WHEN jsonb_typeof({alias}->'grammar_tables') = 'object' "
+        f"THEN {alias}->'grammar_tables' <> '{{}}'::jsonb "
+        f"WHEN jsonb_typeof({alias}->'grammar_tables') = 'array' "
+        f"THEN jsonb_array_length({alias}->'grammar_tables') >= 1 ELSE FALSE END)",
+        # два и более смысла — тоже полноценная карточка (совпадает с питоновским гейтом)
+        _nonempty_array(f"{alias}->'dictionary_senses'", 2),
+        # один смысл считается карточкой, только если у него есть контекст или пример
+        _nonempty_text(f"{alias}->'dictionary_senses'->0->>'context'"),
+        _nonempty_text(f"{alias}->'dictionary_senses'->0->>'example_source'"),
+        _nonempty_text(f"{alias}->'dictionary_senses'->0->>'example_target'"),
+    ]
     return "(" + " OR ".join(parts) + ")"
 
 
@@ -21619,26 +21648,30 @@ def backfill_dictionary_pool_headwords(limit: int = 20000) -> int:
     return int(updated)
 
 
-def get_pool_dictionary_entry(
+def get_pool_dictionary_candidates(
     *,
     source_lang: str,
     target_lang: str,
     source_text: str,
-) -> dict | None:
+    limit: int = 8,
+) -> list[dict]:
     """ОБЩИЙ ПУЛ СЛОВ. Любое слово, попавшее к нам ЛЮБЫМ путём (запрос в словаре, тап в
     интерактиве, сохранение из личного чата бота, ночной шорткат, импорт), лежит в
     bt_3_dictionary_entries и принадлежит ВСЕМ, а не тому, кто его первым принёс. Этот
     геттер — первая инстанция для любого запроса перевода: сначала свой пул, и только
     потом переводчик/GPT.
 
-    Отдаём САМУЮ ПОЛНУЮ строку по (пара языков + нормализованный исходный текст):
-    сначала те, у кого в response_json есть блоки разбора, внутри них — свежайшую."""
+    Отдаём НЕСКОЛЬКО строк-кандидатов в порядке предпочтения, а последнее слово оставляем
+    вызывающему: полноту карточки решает питоновский гейт, и он же отсеивает чужой род.
+    Одной строки не хватало — на слово заводится несколько записей (быстрое сохранение с
+    артиклем, полный разбор без него), и первая же могла оказаться пустышкой: тогда мы
+    шли в GPT за словом, разбор которого лежал строкой ниже."""
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
     normalized_source_text = _normalize_dictionary_text_key(source_text)
     normalized_source_headword = _normalize_dictionary_headword_key(source_text) or normalized_source_text
     if not normalized_source_lang or not normalized_target_lang or not normalized_source_text:
-        return None
+        return []
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -21649,34 +21682,54 @@ def get_pool_dictionary_entry(
                 WHERE source_lang = %s AND target_lang = %s
                   AND (source_text_norm = %s OR source_headword_norm = %s)
                 ORDER BY
+                    -- сначала настоящая карточка: пустая строка того же написания не
+                    -- должна закрывать собой полный разбор соседней
+                    (CASE WHEN response_json IS NOT NULL
+                           AND {DICTIONARY_POOL_RICH_SQL_STORED} THEN 1 ELSE 0 END) DESC,
                     -- точное совпадение важнее совпадения без артикля: «der Kiefer» и
                     -- «die Kiefer» — разные слова, и запрос с артиклем должен получить своё
                     (CASE WHEN source_text_norm = %s THEN 1 ELSE 0 END) DESC,
-                    (CASE WHEN response_json IS NOT NULL
-                           AND {DICTIONARY_POOL_RICH_SQL_STORED} THEN 1 ELSE 0 END) DESC,
                     updated_at DESC
-                LIMIT 1;
+                LIMIT %s;
                 """,
                 (
                     normalized_source_lang, normalized_target_lang,
                     normalized_source_text, normalized_source_headword,
                     normalized_source_text,
+                    max(1, int(limit)),
                 ),
             )
-            row = cursor.fetchone()
-    if not row:
-        return None
-    return {
-        "id": row[0],
-        "source_text": row[1],
-        "target_text": row[2],
-        "word_ru": row[3],
-        "translation_de": row[4],
-        "word_de": row[5],
-        "translation_ru": row[6],
-        "response_json": _coerce_json_object(row[7]),
-        "updated_at": row[8].isoformat() if row[8] else None,
-    }
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "id": row[0],
+            "source_text": row[1],
+            "target_text": row[2],
+            "word_ru": row[3],
+            "translation_de": row[4],
+            "word_de": row[5],
+            "translation_ru": row[6],
+            "response_json": _coerce_json_object(row[7]),
+            "updated_at": row[8].isoformat() if row[8] else None,
+        }
+        for row in rows
+    ]
+
+
+def get_pool_dictionary_entry(
+    *,
+    source_lang: str,
+    target_lang: str,
+    source_text: str,
+) -> dict | None:
+    """Одна лучшая строка пула — см. get_pool_dictionary_candidates."""
+    candidates = get_pool_dictionary_candidates(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        limit=1,
+    )
+    return candidates[0] if candidates else None
 
 
 def get_pool_dictionary_entry_reverse(
