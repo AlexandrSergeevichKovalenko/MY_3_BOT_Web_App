@@ -8720,6 +8720,14 @@ body:has(.webapp-page.is-theme-light),
   color: #FBBF24;
   border: 1px solid rgba(245,158,11,0.26);
 }
+/* «Пересобрать разбор» — служебное действие владельца, а не обычная работа со словом,
+   поэтому нейтральный серый: в ряду кнопок он не спорит за внимание с правкой. */
+.vocab-action-rebuild {
+  background: rgba(148,163,184,0.14);
+  color: #CBD5E1;
+  border: 1px solid rgba(148,163,184,0.26);
+}
+.vocab-action-rebuild:disabled { opacity: 0.6; cursor: default; }
 
 /* Список значений в окне подтверждения: сразу видно, что останется здесь,
    а что станет новыми карточками. */
@@ -9483,6 +9491,11 @@ body:has(.webapp-page.is-theme-light),
   background: rgba(220,38,38,0.07);
   border-color: rgba(220,38,38,0.15);
   color: #DC2626;
+}
+.webapp-page.is-theme-light .vocab-action-rebuild {
+  background: rgba(100,116,139,0.08);
+  border-color: rgba(100,116,139,0.2);
+  color: #64748B;
 }
 .webapp-page.is-theme-light .vocab-load-more {
   background: rgba(0,0,0,0.04);
