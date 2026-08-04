@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './onboarding.css';
+import { requestTabletFullscreen } from '../utils/tabletFullscreen.js';
 
 // Standalone Mini-App first-run onboarding. Opened from Telegram via
 // startapp=onboarding (and later reused as the «🎬 Как пользоваться» hub).
@@ -1393,6 +1394,11 @@ export default function OnboardingWizard() {
     try {
       tg?.ready?.();
       tg?.expand?.();
+      // На планшете Telegram открывает мини-апп узкой шторкой в середине экрана — тур
+      // оставался телефонной коробочкой, и планшетные правила (@media ≥700 ниже) даже не
+      // включались: до них не доходило, ширина вебвью была телефонной. Просим полный экран,
+      // как это делают все остальные отдельные мини-аппы. Телефона не касается.
+      requestTabletFullscreen(tg);
       // Lock the sheet vertically: a careless swipe-down must NOT close/minimize the wizard
       // (Bot API 7.7+). Without this the long, scrollable steps slide the whole sheet away on
       // any downward drag. Closing stays possible only via the header. Same as the other overlays.
