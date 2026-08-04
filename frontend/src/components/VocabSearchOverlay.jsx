@@ -1,20 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { viewportHeight } from './modalFit.js';
 
-// Поиск по своим словам — отдельным окном на весь экран.
+// Поиск по словам — отдельным окном на весь экран.
 //
 // Зачем окно, а не поле в списке: в «Библиотеке» над списком стоят вкладки, счётчик,
 // панель выборки и папки. На маленьком телефоне клавиатура съедает низ, и от результата
 // не остаётся НИ ОДНОЙ строки — человек печатает вслепую. В окне остаётся только поле и
 // найденное, поэтому под клавиатурой помещается 6–7 строк.
 //
+// Ищем в ДВУХ местах сразу: сначала свои слова, следом — общий словарь (всё, что у нас
+// уже разобрано). Второй список открыт всем и не зависит от подписки на базовый словарь:
+// смысл ровно в том, чтобы человек нашёл слово у нас и не заказывал платный разбор того,
+// что мы уже знаем.
+//
 // Высоту берём у Telegram (`viewportHeight` — то же правило, что у модалок и интерактивов):
 // в шторке `innerHeight` врёт, и низ окна уехал бы под край видимой части.
+//
+// Окно ВСЕГДА в разметке (когда закрыто — прозрачное и не ловит нажатия). Так сделано
+// ради клавиатуры: WebKit открывает её только если `focus()` вызван прямо в обработчике
+// нажатия, а поле к этому моменту уже существует. Раньше поле появлялось кадром позже, и
+// человеку приходилось тапать второй раз.
 
 const RECENT_KEY = 'vocab_search_recent_v1';
 const RECENT_MAX = 6;
 const PAGE_SIZE = 60;
+const POOL_PAGE_SIZE = 40;
 const DEBOUNCE_MS = 250;
 
 const ARTICLE_RE = /^(der|die|das|ein|eine|einen|einem|einer|eines)\s+/i;
@@ -69,7 +80,7 @@ function WordText({ word, needle }) {
   );
 }
 
-export default function VocabSearchOverlay({
+const VocabSearchOverlay = forwardRef(function VocabSearchOverlay({
   open,
   onClose,
   host,
@@ -85,16 +96,20 @@ export default function VocabSearchOverlay({
   onToggleSelect,
   onOpenWord,
   onLookupInDictionary,
+  onAddFromPool,
   resolveFolderIconLabel,
   sanitizeBilingualTargetText,
-}) {
+}, ref) {
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState('all');
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
+  const [poolItems, setPoolItems] = useState([]);
   const [failed, setFailed] = useState(false);
   const [recent, setRecent] = useState(() => readRecent());
   const [height, setHeight] = useState(() => (typeof window === 'undefined' ? 0 : viewportHeight()));
+  const [addedIds, setAddedIds] = useState([]);
+  const [addingId, setAddingId] = useState(0);
   // Запрос, на который сервер уже ответил. Пока он не совпал с набранным, показываем
   // подходящее из уже загруженных слов — список шевелится с первой буквы.
   const [servedQuery, setServedQuery] = useState('');
@@ -105,6 +120,15 @@ export default function VocabSearchOverlay({
   const needle = stem(query);
   const hasServerAnswer = Boolean(query.trim()) && servedQuery === `${scope}::${query.trim()}`;
   const selectedSet = useMemo(() => new Set((selectedIds || []).map(Number)), [selectedIds]);
+  const addedSet = useMemo(() => new Set(addedIds.map(Number)), [addedIds]);
+
+  // Клавиатура WebKit открывается только если фокус поставлен прямо в обработчике
+  // нажатия. Поэтому фокус ставит тот, кто открывает окно, а не эффект после рендера.
+  useImperativeHandle(ref, () => ({
+    focusInput() {
+      try { inputRef.current?.focus(); } catch (_error) { /* ignore */ }
+    },
+  }), []);
 
   // ── что показываем в строке ────────────────────────────────────────────────
   const describe = useCallback((item) => {
@@ -160,7 +184,16 @@ export default function VocabSearchOverlay({
     });
   }, [items, seedItems, matchesLocally, inScope, rank, hasServerAnswer]);
 
-  // ── запрос на сервер: пауза 250 мс + защита от гонки ответов ───────────────
+  // Общий словарь показываем только тем, чего у человека нет. Сервер отсекает по связи
+  // карточки с записью пула, но у старых карточек связи может не быть — поэтому здесь
+  // ещё раз сверяем по самому слову.
+  const poolShown = useMemo(() => {
+    if (!hasServerAnswer) return [];
+    const mine = new Set(shown.map((it) => stem(it.display_word || it.word_de || it.word_ru)));
+    return poolItems.filter((it) => !mine.has(stem(it.display_word || it.word_de || it.word_ru)));
+  }, [poolItems, shown, hasServerAnswer]);
+
+  // ── запросы на сервер: пауза 250 мс + защита от гонки ответов ──────────────
   // Раньше каждая буква уходила отдельным запросом («M», «Mü», «Mün»…), а поздний
   // ответ на короткий запрос перезаписывал список для длинного — список «прыгал».
   useEffect(() => {
@@ -169,6 +202,7 @@ export default function VocabSearchOverlay({
     if (!text) {
       setServedQuery('');
       setItems([]);
+      setPoolItems([]);
       setTotal(0);
       setFailed(false);
       return undefined;
@@ -176,34 +210,43 @@ export default function VocabSearchOverlay({
     const ticket = requestRef.current + 1;
     requestRef.current = ticket;
     const timer = setTimeout(async () => {
-      try {
-        const response = await fetchWithTimeout('/api/webapp/vocabulary/list', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            folder_id: scope === 'all' ? null : scope === 'none' ? -1 : Number(scope),
-            search: text,
-            sort: 'date_desc',
-            limit: PAGE_SIZE,
-            offset: 0,
-          }),
-        }, 15000);
-        if (ticket !== requestRef.current) return; // ответ на устаревший запрос
-        if (!response.ok) {
-          setFailed(true);
-          return;
-        }
-        const data = await response.json();
-        if (ticket !== requestRef.current) return;
+      const askMine = fetchWithTimeout('/api/webapp/vocabulary/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          folder_id: scope === 'all' ? null : scope === 'none' ? -1 : Number(scope),
+          search: text,
+          sort: 'date_desc',
+          limit: PAGE_SIZE,
+          offset: 0,
+        }),
+      }, 15000).then((r) => (r.ok ? r.json() : Promise.reject(new Error('mine'))));
+
+      const askPool = fetchWithTimeout('/api/webapp/vocabulary/pool-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, query: text, limit: POOL_PAGE_SIZE }),
+      }, 15000).then((r) => (r.ok ? r.json() : Promise.reject(new Error('pool'))));
+
+      const [mineResult, poolResult] = await Promise.allSettled([askMine, askPool]);
+      if (ticket !== requestRef.current) return; // ответ на устаревший запрос
+
+      if (mineResult.status === 'fulfilled') {
+        const data = mineResult.value || {};
         setItems(Array.isArray(data.items) ? data.items : []);
         setTotal(Number(data.total || 0));
         setServedQuery(`${scope}::${text}`);
         setFailed(false);
-      } catch (_error) {
-        if (ticket !== requestRef.current) return;
+      } else {
         setFailed(true);
       }
+      // Общий словарь — дополнение: если он не ответил, свои слова всё равно показываем.
+      setPoolItems(
+        poolResult.status === 'fulfilled' && Array.isArray(poolResult.value?.items)
+          ? poolResult.value.items
+          : [],
+      );
     }, DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [open, query, scope, initData, fetchWithTimeout]);
@@ -226,17 +269,20 @@ export default function VocabSearchOverlay({
     };
   }, [open]);
 
-  // Открылось — курсор в поле и клавиатура сразу. iOS отдаёт фокус только после кадра.
   useEffect(() => {
     if (!open) {
       setQuery('');
       setServedQuery('');
       setItems([]);
+      setPoolItems([]);
+      setAddedIds([]);
       setFailed(false);
       return undefined;
     }
     setScope('all');
     setRecent(readRecent());
+    // Подстраховка для Android и браузера: там фокус из обработчика нажатия иногда
+    // теряется на переключении экрана. В WebKit к этому моменту поле уже в фокусе.
     const timer = setTimeout(() => { try { inputRef.current?.focus(); } catch (_e) { /* ignore */ } }, 60);
     return () => clearTimeout(timer);
   }, [open]);
@@ -254,15 +300,32 @@ export default function VocabSearchOverlay({
     onOpenWord?.(item);
   }, [onOpenWord, query, rememberQuery]);
 
-  if (!open || !host) return null;
+  const addFromPool = useCallback(async (item) => {
+    const entryId = Number(item.pool_entry_id || item.id || 0);
+    if (!entryId || addedSet.has(entryId) || addingId) return;
+    setAddingId(entryId);
+    try {
+      const ok = await onAddFromPool?.(item);
+      if (ok) setAddedIds((prev) => [...prev, entryId]);
+    } finally {
+      setAddingId(0);
+    }
+  }, [onAddFromPool, addedSet, addingId]);
+
+  if (!host) return null;
 
   const activeFolder = (folders || []).find((f) => String(f.id) === String(activeFolderKey)) || null;
   const showScopeChips = activeFolderKey === 'none' || Boolean(activeFolder);
   const trimmed = query.trim();
   const truncated = hasServerAnswer && total > shown.length;
+  const nothingAtAll = trimmed && !failed && hasServerAnswer && shown.length === 0 && poolShown.length === 0;
 
   return createPortal((
-    <div className="vso-overlay" style={{ height: height ? `${Math.round(height)}px` : undefined }}>
+    <div
+      className={`vso-overlay ${open ? '' : 'is-hidden'}`}
+      style={{ height: height ? `${Math.round(height)}px` : undefined }}
+      aria-hidden={open ? undefined : 'true'}
+    >
       <div className="vso-top">
         <div className="vso-field">
           <div className="vso-input-wrap">
@@ -280,6 +343,7 @@ export default function VocabSearchOverlay({
               autoCorrect="off"
               spellCheck="false"
               enterKeyHint="search"
+              tabIndex={open ? 0 : -1}
               value={query}
               placeholder={tr('Поиск по словам', 'Wörter suchen')}
               onChange={(e) => setQuery(e.target.value)}
@@ -306,7 +370,7 @@ export default function VocabSearchOverlay({
         <div className="vso-meta">
           <span className="vso-count">
             {trimmed
-              ? `${tr('Найдено', 'Gefunden')} ${hasServerAnswer ? total : shown.length}`
+              ? `${tr('Найдено', 'Gefunden')} ${(hasServerAnswer ? total : shown.length) + poolShown.length}`
               : `${totalCount} ${tr('слов у вас', 'Wörter bei dir')}`}
           </span>
           {showScopeChips && (
@@ -353,11 +417,11 @@ export default function VocabSearchOverlay({
           </div>
         )}
 
-        {trimmed && !failed && shown.length === 0 && hasServerAnswer && (
+        {nothingAtAll && (
           <div className="vso-empty">
-            <div className="vso-empty-title">«{trimmed}» {tr('у вас пока нет', 'hast du noch nicht')}</div>
-            {tr('Слово можно разобрать в словаре и сразу сохранить к себе.',
-                'Du kannst das Wort im Wörterbuch nachschlagen und gleich speichern.')}
+            <div className="vso-empty-title">«{trimmed}» {tr('пока нет', 'gibt es noch nicht')}</div>
+            {tr('Ни у вас, ни в общем словаре. Слово можно разобрать и сразу сохранить к себе.',
+                'Weder bei dir noch im gemeinsamen Wörterbuch. Du kannst es nachschlagen und gleich speichern.')}
             <div>
               <button
                 type="button"
@@ -370,11 +434,15 @@ export default function VocabSearchOverlay({
           </div>
         )}
 
+        {shown.length > 0 && poolShown.length > 0 && (
+          <div className="vso-section">{tr('Мои слова', 'Meine Wörter')}</div>
+        )}
+
         {shown.map((item) => {
           const { word, translation, folder } = describe(item);
           const picked = selectedSet.has(Number(item.id));
           return (
-            <div key={item.id} className="vso-row">
+            <div key={`mine-${item.id}`} className="vso-row">
               <button
                 type="button"
                 className={`vso-check ${picked ? 'is-on' : ''}`}
@@ -407,7 +475,51 @@ export default function VocabSearchOverlay({
             {tr('Показаны первые', 'Gezeigt: die ersten')} {shown.length} {tr('из', 'von')} {total} · {tr('уточните запрос', 'Suche eingrenzen')}
           </div>
         )}
+
+        {poolShown.length > 0 && (
+          <>
+            <div className="vso-section vso-section-pool">
+              {tr('В общем словаре', 'Im gemeinsamen Wörterbuch')}
+            </div>
+            {poolShown.map((item) => {
+              const { word, translation } = describe(item);
+              const entryId = Number(item.pool_entry_id || item.id || 0);
+              const added = addedSet.has(entryId);
+              const busy = addingId === entryId;
+              return (
+                <div key={`pool-${entryId}`} className={`vso-row is-pool ${added ? 'is-added' : ''}`}>
+                  <button
+                    type="button"
+                    className={`vso-add ${added ? 'is-on' : ''}`}
+                    onClick={() => addFromPool(item)}
+                    disabled={added || busy}
+                    aria-label={added
+                      ? tr('Слово уже у вас', 'Wort ist schon bei dir')
+                      : tr('Добавить слово к себе', 'Wort zu mir hinzufügen')}
+                  >
+                    {added ? (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    ) : busy ? '…' : '+'}
+                  </button>
+                  <button type="button" className="vso-row-main" onClick={() => openWord(item)}>
+                    <span className="vso-row-body">
+                      <span className="vso-word"><WordText word={word} needle={needle} /></span>
+                      {translation && <span className="vso-trans">{highlight(translation, needle)}</span>}
+                    </span>
+                    <span className="vso-folder vso-folder-pool">
+                      {added ? tr('у вас', 'bei dir') : tr('общий', 'gemeinsam')}
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
+          </>
+        )}
       </div>
     </div>
   ), host);
-}
+});
+
+export default VocabSearchOverlay;

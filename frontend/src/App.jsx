@@ -6987,6 +6987,9 @@ function AppInner() {
   // этом НЕ фильтруется — окно закрылось, человек там же, где был.
   const [vocabSearchOpen, setVocabSearchOpen] = useState(false);
   const [vocabSearchCardItem, setVocabSearchCardItem] = useState(null);
+  const [vocabPoolAddingId, setVocabPoolAddingId] = useState(0);
+  const [vocabPoolAddedIds, setVocabPoolAddedIds] = useState([]);
+  const vocabSearchOverlayRef = useRef(null);
   const [vocabSort, setVocabSort] = useState('date_desc');
   const [vocabOffset, setVocabOffset] = useState(0);
   const [vocabHasMore, setVocabHasMore] = useState(false);
@@ -21848,6 +21851,41 @@ function AppInner() {
     showInlineToast(getDictionarySaveLimitToastText(), 3400, 'limit');
   }, [getDictionarySaveLimitToastText, showInlineToast]);
 
+  // Перенести слово из общего словаря к себе. Разбор уже готов, поэтому это копирование,
+  // а не новый запрос к модели — ровно ради этого поиск и заглядывает в общий словарь.
+  const addWordFromSharedPool = useCallback(async (entry) => {
+    const entryId = Number(entry?.pool_entry_id || entry?.id || 0);
+    if (!entryId || !initData) return false;
+    setVocabPoolAddingId(entryId);
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/add-from-pool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, entry_id: entryId }),
+      }, 15000);
+      if (response.status === 429) {
+        showDictionarySaveLimitToast();
+        return false;
+      }
+      if (!response.ok) {
+        showInlineToast(tr('Не получилось добавить слово. Попробуйте ещё раз.',
+                           'Das Wort konnte nicht hinzugefügt werden. Bitte versuche es erneut.'), 3200);
+        return false;
+      }
+      setVocabPoolAddedIds((prev) => (prev.includes(entryId) ? prev : [...prev, entryId]));
+      showInlineToast(tr('Слово добавлено к вам', 'Wort zu dir hinzugefügt'), 2200);
+      // Библиотека под окном должна показывать новое слово сразу после закрытия поиска.
+      void loadVocabLibrary({ reset: true });
+      return true;
+    } catch (_error) {
+      showInlineToast(tr('Не получилось добавить слово. Проверьте связь.',
+                         'Hinzufügen fehlgeschlagen. Prüfe die Verbindung.'), 3200);
+      return false;
+    } finally {
+      setVocabPoolAddingId(0);
+    }
+  }, [initData, fetchWithTimeout, showDictionarySaveLimitToast, showInlineToast, tr, loadVocabLibrary]);
+
   const renderDictionarySaveLimitNotice = useCallback((value) => {
     const normalizedValue = normalizeSelectionText(value);
     const normalizedLimitText = normalizeSelectionText(getDictionarySaveLimitText());
@@ -34258,6 +34296,10 @@ function AppInner() {
         ? `${srsLabels[item.srs_label]} · ${tr('повт.', 'Wdh.')} ${item.srs_reps}`
         : null;
       const savedMeanings = getSavedEntryRankedMeanings(item);
+      const isPoolEntry = Boolean(item.is_pool);
+      const poolEntryId = Number(item.pool_entry_id || item.id || 0);
+      const poolAlreadyAdded = isPoolEntry && vocabPoolAddedIds.includes(poolEntryId);
+      const poolAddBusy = isPoolEntry && vocabPoolAddingId === poolEntryId;
       return (
         <div
           className="vocab-word-fullscreen-overlay"
@@ -34339,7 +34381,26 @@ function AppInner() {
               <LibraryWordDetail item={item} />
             </div>
             <div className="vocab-word-actions vocab-word-fullscreen-actions">
-              {splitTranslationSenses(displayTrans).length > 1 && (
+              {/* Слово из общего словаря человеку ещё не принадлежит: править и удалять
+                  там нечего, единственное осмысленное действие — забрать его себе. */}
+              {isPoolEntry ? (
+                <button
+                  type="button"
+                  className="vocab-action-btn vocab-action-pool-add"
+                  onClick={async () => {
+                    const ok = await addWordFromSharedPool(item);
+                    if (ok) onClose();
+                  }}
+                  disabled={poolAlreadyAdded || poolAddBusy}
+                >
+                  {poolAlreadyAdded
+                    ? `✓ ${tr('Уже у вас', 'Schon bei dir')}`
+                    : poolAddBusy
+                      ? tr('Добавляю…', 'Wird hinzugefügt…')
+                      : `＋ ${tr('Добавить к себе', 'Zu mir hinzufügen')}`}
+                </button>
+              ) : null}
+              {!isPoolEntry && splitTranslationSenses(displayTrans).length > 1 && (
                 <button
                   type="button"
                   className="vocab-action-btn vocab-action-split"
@@ -34348,7 +34409,7 @@ function AppInner() {
                   ✂️ {tr('Разбить на значения', 'In Bedeutungen teilen')}
                 </button>
               )}
-              <button
+              {!isPoolEntry && (<button
                 type="button"
                 className="vocab-action-btn vocab-action-edit"
                 onClick={() => {
@@ -34363,14 +34424,14 @@ function AppInner() {
                 }}
               >
                 ✏️ {tr('Редактировать', 'Bearbeiten')}
-              </button>
-              <button
+              </button>)}
+              {!isPoolEntry && (<button
                 type="button"
                 className="vocab-action-btn vocab-action-delete"
                 onClick={() => setVocabDeleteItem(item)}
               >
                 🗑 {tr('Удалить', 'Löschen')}
-              </button>
+              </button>)}
             </div>
           </div>
         </div>
@@ -37984,7 +38045,14 @@ function AppInner() {
                             <button
                               type="button"
                               className="vocab-search-input vocab-search-button"
-                              onClick={() => { setVocabExpandedId(null); setVocabSearchOpen(true); }}
+                              onClick={() => {
+                                // Фокус ставим ЗДЕСЬ, прямо в обработчике нажатия: WebKit
+                                // открывает клавиатуру только так. Через эффект после
+                                // рендера её не будет, и человеку приходится тапать второй раз.
+                                setVocabExpandedId(null);
+                                setVocabSearchOpen(true);
+                                vocabSearchOverlayRef.current?.focusInput();
+                              }}
                             >
                               <span className="vsb-glass" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -37996,6 +38064,7 @@ function AppInner() {
                           </div>
 
                           <VocabSearchOverlay
+                            ref={vocabSearchOverlayRef}
                             open={vocabSearchOpen}
                             host={webappPageRef.current}
                             onClose={() => { setVocabSearchOpen(false); setVocabSearchCardItem(null); }}
@@ -38010,6 +38079,7 @@ function AppInner() {
                             selectedIds={manualTrainingSelectionIds}
                             onToggleSelect={toggleManualTrainingSelectionCard}
                             onOpenWord={(item) => setVocabSearchCardItem(item)}
+                            onAddFromPool={addWordFromSharedPool}
                             onLookupInDictionary={(word) => {
                               // Слова у человека нет — уводим на вкладку «Поиск» с уже
                               // набранным словом. Разбор НЕ запускаем сами: это расход
