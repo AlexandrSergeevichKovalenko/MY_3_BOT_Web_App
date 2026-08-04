@@ -1063,7 +1063,7 @@ export default function AnswerOverlay({ startParam }) {
       // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
     // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
     // отдельно и само встаёт над ней.
-    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card" data-wide="board">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1104,7 +1104,7 @@ export default function AnswerOverlay({ startParam }) {
       // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
     // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
     // отдельно и само встаёт над ней.
-    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card" data-wide="board">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1133,8 +1133,8 @@ export default function AnswerOverlay({ startParam }) {
       // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
     // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
     // отдельно и само встаёт над ней.
-    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
-        <div className="ans-head">
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card" data-wide="split">
+        <div className="ans-head ans-r-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
           <p className="ans-sub">Wähle die richtige Antwort 🎯</p>
@@ -1158,7 +1158,7 @@ export default function AnswerOverlay({ startParam }) {
     // себя как «Диктант чисел»: контент поднимается, поле ввода и кнопка видны.
     const tapOnly = AU_TAP_ONLY.has(meta?.format || '');
     return (
-    <div className={`ans-root${tapOnly ? ' ans-root--keepkbd' : ''}`}><div className="ans-card">
+    <div className={`ans-root${tapOnly ? ' ans-root--keepkbd' : ''}`}><div className="ans-card" data-wide={tapOnly ? undefined : 'board'}>
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1212,7 +1212,7 @@ export default function AnswerOverlay({ startParam }) {
       // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
     // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
     // отдельно и само встаёт над ней.
-    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card" data-wide="board">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1246,7 +1246,7 @@ export default function AnswerOverlay({ startParam }) {
       // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
     // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
     // отдельно и само встаёт над ней.
-    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card" data-wide="board">
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
@@ -1268,7 +1268,7 @@ export default function AnswerOverlay({ startParam }) {
     // `ans-root--keepkbd`: под клавиатуру интерактив не перестраивается. Печатать в самой
     // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
     // отдельно и само встаёт над ней.
-    <div className="ans-root ans-root--keepkbd"><div className="ans-card">
+    <div className="ans-root ans-root--keepkbd"><div className="ans-card" data-wide="board">
       <div className="ans-head">
         <span className="ans-eyebrow">{eyebrow}</span>
         <h1 className="ans-title">{heading}</h1>

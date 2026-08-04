@@ -314,7 +314,6 @@ function fitOne(root) {
   // телефонный экран «целиком» ломала его: текст раздувался, длинные слова разрезались,
   // кнопки уходили под сгиб.
   const wide = isWide(root);
-  const zoomCeil = wide ? WIDE_MAX_ZOOM : MAX_ZOOM;
 
   // ЭКРАН СО СВОЕЙ ПЛАНШЕТНОЙ РАСКЛАДКОЙ (`data-wide` на карточке, см. answer.css) МЕСТО
   // ЗАНИМАЕТ РАСКЛАДКОЙ, А НЕ УВЕЛИЧЕНИЕМ.
@@ -333,7 +332,21 @@ function fitOne(root) {
   // каркасом по умолчанию (см. answer.css). Заставки, обратный отсчёт и итоги рабочей
   // области не имеют — их по-прежнему подгоняет масштаб, и это правильно: там подгонять
   // нечего, кроме размера.
-  const ownLayout = wide && (card.hasAttribute('data-wide') || !!card.querySelector(':scope > .ans-r-work'));
+  //
+  // Речь ТОЛЬКО о раскладках, которые расставляют содержимое сами (сетка «сплит» и
+  // «фокус»). «Доска» — это ширина колонки и читаемость, а не заполнение: у экрана с одним
+  // полем ввода занять планшет нечем, кроме размера, и там увеличение — правильный приём,
+  // а не лупа (замер: отключив рост у таких экранов, я уронил их с 20% до 15%).
+  //
+  // И даже там, где раскладка своя, увеличение не запрещено, а ПРИЖАТО К ТЕЛЕФОННОМУ
+  // ПОТОЛКУ. Планшетные +35% рассчитаны на телефонную колонку, которой нечем занять экран,
+  // кроме размера; после раскладки они дают ровно то, из-за чего всё затевалось —
+  // раздутые кнопки. А умеренный запас нужен: пустоту, которую сетка уже не разбирает,
+  // должен добрать масштаб, как это и делает телефон.
+  const declared = card.getAttribute('data-wide') || '';
+  const ownLayout = wide && (declared === 'split' || declared === 'focus'
+    || !!card.querySelector(':scope > .ans-r-work'));
+  const zoomCeil = wide && !ownLayout ? WIDE_MAX_ZOOM : MAX_ZOOM;
 
   const remember = (k) => {
     st.k = k;
@@ -407,11 +420,11 @@ function fitOne(root) {
   // и не влезающие кнопки, и дёрганье карточки между расчётами.
   const rescue = (k) => {
     let cur = k;
-    if (!wide || ownLayout) return cur;   // у своей раскладки пустоту добирает сетка, не масштаб
+    if (!wide) return cur;
     if (card.classList.contains('is-panelled')) return cur;   // там высота задана точно
     if (availHeight(root) - visH() < 12) return cur;
     root.classList.remove('is-scroll');
-    if (cur < WIDE_MAX_ZOOM - 0.002) cur = fitsAt(WIDE_MAX_ZOOM) ? WIDE_MAX_ZOOM : bisect(cur, WIDE_MAX_ZOOM);
+    if (cur < zoomCeil - 0.002) cur = fitsAt(zoomCeil) ? zoomCeil : bisect(cur, zoomCeil);
     return cur;   // высоту добирает fill() в settle — общий путь для телефона и планшета
   };
 
@@ -468,7 +481,7 @@ function fitOne(root) {
   const grow = () => {
     stretch(1);
     const left = avail - visH();
-    if (left >= 10 && !ownLayout && (wide || h >= avail * 0.6)) {
+    if (left >= 10 && (wide || h >= avail * 0.6)) {
       settle(fitsAt(zoomCeil) ? zoomCeil : bisect(1, zoomCeil));
       return;
     }

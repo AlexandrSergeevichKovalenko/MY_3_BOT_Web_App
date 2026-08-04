@@ -13,7 +13,7 @@ import WoFrageReviewGame from './WoFrageReviewGame.jsx';
  */
 
 function Root({ children }) {
-  return <div className="ans-root ans-root--keepkbd"><div className="ans-card">{children}</div></div>;
+  return <div className="ans-root ans-root--keepkbd"><div className="ans-card" data-wide="board">{children}</div></div>;
 }
 
 export default function ReviewSession({ api, haptic, onClose }) {

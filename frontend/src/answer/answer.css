@@ -2199,6 +2199,9 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
   .ans-root.is-wide > .ans-card[data-wide] > .ans-r-work   { grid-area: work; }
   .ans-root.is-wide > .ans-card[data-wide] > .ans-r-note   { grid-area: note; }
   .ans-root.is-wide > .ans-card[data-wide] > .ans-r-action { grid-area: action; }
+  /* Блок без роли (ошибка, заглушка, подсказка) не должен ломать сетку: кладём его
+     отдельной строкой во всю ширину, а не в случайную колонку. */
+  .ans-root.is-wide > .ans-card[data-wide="split"] > *:not([class*="ans-r-"]) { grid-column: 1 / -1; }
 
   /* СПЛИТ — «задание и работа рядом». КАК именно рядом, решает форма экрана, а не игра:
      в АЛЬБОМЕ ширины хватает на две колонки, в ПОРТРЕТЕ — нет.
@@ -2248,9 +2251,13 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
   .ans-root.is-wide:not(.is-land) > .ans-card[data-wide="split"] {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+    grid-template-rows: repeat(6, auto);
     grid-template-areas: "head" "bar" "prompt" "work" "note" "action";
     row-gap: 1.25rem;
+    /* Свободную высоту делим МЕЖДУ рядами, а не отдаём одному. Отдать её заданию (ряд 1fr)
+       годится, только если задание — одно крупное слово; там же, где задание это вопрос в
+       две строки, посреди экрана появлялась дыра в 300 px. Проверено замером на обоих. */
+    align-content: space-evenly;
   }
   .ans-root.is-wide:not(.is-land) > .ans-card[data-wide="split"] > .ans-r-prompt {
     align-self: center; container-type: inline-size;
@@ -2305,6 +2312,47 @@ html[data-scheme="light"] .ans-toast.ok    { color: #14532D; background: #DCFCE7
   .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) .wo-opt     { font-size: 1.5rem; padding: 1.5rem 0.5rem; }
   .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) .adj-end    { font-size: 1.75rem; padding: 1.5rem 0; }
   .ans-root.is-wide > .ans-card:has(> .ans-r-work):not([data-wide]) > .as-sense { font-size: 1.25rem; }
+
+  /* КРОССВОРД В АЛЬБОМЕ — сетка слева, подсказка и клавиатура справа.
+     В столбик сетке достаётся только та высота, что осталась от шапки, подсказки,
+     клавиатуры и кнопки, — на альбомном планшете это полоса, и клетки выходят телефонного
+     размера посреди пустых боков (замер: занято 46% против 77% на телефоне). Разложив
+     экран в две колонки, сетка получает всю высоту карточки, а ширину — половину.
+     Кроссворд считает размер клетки сам, замеряя свой блок, поэтому JS-правки не нужны:
+     он увидит новый блок и посчитает по нему. В портрете раскладка остаётся прежней —
+     там высоты хватает. */
+  .ans-root.is-wide.is-land > .ans-card--cw {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "head  head"
+      "grid  clue"
+      "grid  kb"
+      "grid  act"
+      "grid  ask";
+    column-gap: 1.5rem;
+  }
+  .ans-root.is-wide.is-land > .ans-card--cw > .ans-head--cw  { grid-area: head; }
+  .ans-root.is-wide.is-land > .ans-card--cw > .cw-grid-wrap  { grid-area: grid; }
+  .ans-root.is-wide.is-land > .ans-card--cw > .cw-clue       { grid-area: clue; align-self: center; }
+  .ans-root.is-wide.is-land > .ans-card--cw > .cw-kb         { grid-area: kb; align-self: center; }
+  .ans-root.is-wide.is-land > .ans-card--cw > .ans-btn        { grid-area: act; }
+  .ans-root.is-wide.is-land > .ans-card--cw > .ask-open-btn  { grid-area: ask; }
+  /* Клавиша перестаёт быть телефонной: колонка вдвое уже экрана, места хватает. */
+  .ans-root.is-wide > .ans-card--cw .cw-key { max-width: 3.75rem; height: 3rem; font-size: 1.125rem; }
+
+  /* ДОСКА — экраны, где работают с текстом: поле ввода, разбор, список, итог. Колонки тут
+     не нужны, а вот строка во всю ширину планшета вредна: на 12.9" это под сотню знаков в
+     строке, читать неудобно и глаз теряет начало. Поэтому содержимое встаёт колонкой
+     комфортной ширины по центру карточки, а сама карточка занимает экран целиком. */
+  .ans-root.is-wide > .ans-card[data-wide="board"] > * {
+    width: 100%; max-width: 42rem; margin-left: auto; margin-right: auto;
+  }
+  /* Поле и кнопка на планшете — под палец, а не телефонного размера. */
+  .ans-root.is-wide > .ans-card[data-wide="board"] .ans-input { font-size: 1.25rem; padding: 0.9375rem 1.125rem; }
+  .ans-root.is-wide > .ans-card[data-wide="board"] > .ans-btn,
+  .ans-root.is-wide > .ans-card[data-wide="board"] > .ans-btn-ghost { font-size: 1.125rem; padding: 1rem 1.25rem; }
 
   /* Итог и заставка остаются одной колонкой, но широкой: список слов выкладывается
      в несколько рядов вместо узкого столбика. */

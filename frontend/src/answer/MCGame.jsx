@@ -23,8 +23,8 @@ export default function MCGame({ task, onSubmit, submitting }) {
 
   return (
     <>
-      {task?.question ? <p className="mc-question">{task.question}</p> : null}
-      <div className="mc-options">
+      {task?.question ? <p className="mc-question ans-r-prompt">{task.question}</p> : null}
+      <div className="mc-options ans-r-work">
         {options.map((opt, idx) => {
           const isFreeform = freeformOption && opt === freeformOption;
           const isPicked = picked === idx;

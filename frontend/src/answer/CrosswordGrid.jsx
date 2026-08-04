@@ -87,7 +87,14 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
       const PAD = 12;  // место под угловые номера + воздух по краю
       const fitW = Math.floor((w - PAD - CW_GAP * (cols - 1)) / cols);
       const fitH = h ? Math.floor((h - 12 - CW_GAP * (rows - 1)) / rows) : fitW;
-      const cap = Math.max(40, Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.11));
+      // Потолок клетки. Доля от МЕНЬШЕЙ стороны экрана — телефонная мерка: там клетка не
+      // должна съедать экран. На планшете она же держала сетку размером с телефонную
+      // посреди карточки вдвое шире (замер: сетка 450 px в карточке 1109 px, по бокам
+      // пусто). Настоящее ограничение — сколько места осталось после шапки, подсказки и
+      // клавиатуры, и его считают fitW/fitH ниже; потолку на широком экране достаточно не
+      // мешать им.
+      const wideScreen = window.innerWidth >= 700 && window.innerHeight >= 560;
+      const cap = Math.max(40, Math.round(Math.min(window.innerWidth, window.innerHeight) * (wideScreen ? 0.17 : 0.11)));
       // Берём наибольший размер, который влезает по обеим осям. Жёсткого минимума
       // нет: он вытолкнул бы последний столбец за карточку на узком телефоне.
       const size = Math.max(12, Math.min(cap, fitW, fitH));

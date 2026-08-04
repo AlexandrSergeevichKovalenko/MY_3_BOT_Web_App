@@ -5,6 +5,8 @@ import { createRoot } from 'react-dom/client';
 import './answer.css';
 import TrainerGame from './TrainerGame.jsx';
 import ArtikelSprintGame from './ArtikelSprintGame.jsx';
+import SprintGame from './SprintGame.jsx';
+import NumberDictationGame from './NumberDictationGame.jsx';
 import ArtikelLearnGame from './ArtikelLearnGame.jsx';
 import WoFrageLearnGame from './WoFrageLearnGame.jsx';
 import AdjektivLearnGame from './AdjektivLearnGame.jsx';
@@ -12,6 +14,7 @@ import ArtikelReviewGame from './ArtikelReviewGame.jsx';
 import WoFrageReviewGame from './WoFrageReviewGame.jsx';
 import CrosswordGrid from './CrosswordGrid.jsx';
 import AskOverlay from './AskOverlay.jsx';
+import AnswerOverlay from './AnswerOverlay.jsx';
 import installCardAutoFit from './fitCard.js';
 
 const LONG = 'Weigerung bedeutet, sich zu weigern oder abzulehnen, also das Gegenteil von Zustimmung, und passt deshalb nicht als Synonym.';
@@ -182,6 +185,17 @@ function CrosswordStand() {
   );
 }
 
+// Диктант чисел: сцена со звуком и поле для числа.
+const NUMDICT = {
+  ok: true,
+  items: [
+    { id: 1, kind: 'price', scene_ru: 'Кассир называет цену билета на поезд до Гамбурга.',
+      text_de: 'Das Ticket kostet zweiundvierzig Euro und neunzig Cent.', audio_url: '' },
+    { id: 2, kind: 'year', scene_ru: 'Экскурсовод называет год постройки собора.',
+      text_de: 'Der Dom wurde neunzehnhundertachtundsechzig fertiggestellt.', audio_url: '' },
+  ],
+};
+
 const stub = (data) => () => new Promise((r) => setTimeout(() => r(data), 30));
 
 function App() {
@@ -193,7 +207,13 @@ function App() {
   if (game === 'adjektiv') return <AdjektivLearnGame api={stub(ADJ_DECK)} haptic={() => {}} onClose={() => {}} />;
   if (game === 'artreview') return <ArtikelReviewGame api={stub(ART_REVIEW)} haptic={() => {}} onClose={() => {}} />;
   if (game === 'woreview') return <WoFrageReviewGame api={stub(WO_REVIEW)} haptic={() => {}} onClose={() => {}} />;
+  if (game === 'wordsprint') return <SprintGame id={1} api={stub(TASK)} haptic={() => {}} onClose={() => {}} />;
+  if (game === 'numdict') return <NumberDictationGame dispatchId={1} api={stub(NUMDICT)} haptic={() => {}} onClose={() => {}} />;
   if (game === 'crossword') return <CrosswordStand />;
+  // Экраны, которые рисует сам AnswerOverlay (ребус, анаграмма, аудирование, MC,
+  // свободный ответ, задание дня): поднимаем НАСТОЯЩИЙ оверлей, ответы сервера
+  // подменяет стенд перехватом сети — вёрстка и классы при этом боевые.
+  if (game === 'overlay') return <AnswerOverlay startParam={new URLSearchParams(location.search).get('sp')} />;
   return <TrainerGame id={1} api={stub(TASK)} haptic={() => {}} onClose={() => {}} />;
 }
 

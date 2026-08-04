@@ -26,7 +26,9 @@ function fmtTime(s) {
 }
 
 export function Root({ children }) {
-  return <div className="ans-root"><div className="ans-card">{children}</div></div>;
+  // `data-wide="board"`: на планшете содержимое встаёт колонкой читаемой ширины по центру
+  // (см. «каркас планшетной раскладки» в answer.css). Телефона это не касается.
+  return <div className="ans-root"><div className="ans-card" data-wide="board">{children}</div></div>;
 }
 
 /**

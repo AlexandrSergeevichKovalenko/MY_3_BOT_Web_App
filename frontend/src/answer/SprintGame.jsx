@@ -158,7 +158,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
     // карточке нечего — клавиатура выезжает только под окно «Спросить», а оно живёт
     // отдельно и само встаёт над ней.
     <div className="ans-root ans-root--keepkbd">
-      <div className={`ans-card ${cls}`}>{body}</div>
+      <div className={`ans-card ${cls}`} data-wide="board">{body}</div>
       <Toast state={toast.state} onClose={toast.hide} />
     </div>
   );
