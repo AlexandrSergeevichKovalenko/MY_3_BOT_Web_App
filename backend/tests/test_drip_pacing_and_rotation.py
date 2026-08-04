@@ -180,5 +180,72 @@ class DripKindRotationTests(unittest.TestCase):
                           f"«{kind}» по-прежнему недоступен человеку со своими часами")
 
 
+class DripNoTwinsTests(unittest.IsolatedAsyncioTestCase):
+    """Сначала всё разное, повтор — только когда разного не осталось.
+
+    Замер по проду 04.08.2026: Zahlen-Diktat пришёл дважды за день (очередь
+    перескакивала через тип с неготовым пулом и возвращалась на уже отданный), а
+    Wo-Frage — дважды по разным путям: капля утром, обычный слот днём. Выбор типа
+    идёт по ведомости дня (она общая для всех путей), а не по своему счётчику.
+
+    Второй круг при этом обязателен: норма «интенсива» 20, а типов 13 — без него
+    семь заданий не ушли бы вовсе.
+    """
+
+    def _order(self):
+        return bot_3._drip_kind_order_today()
+
+    async def _pick(self, *, already: set, delivered_idx: int = 0):
+        """Какой тип капля выберет, если сегодня у человека уже есть `already`."""
+        from unittest.mock import AsyncMock, Mock, patch
+        import datetime as _dt
+
+        chosen: list = []
+
+        async def _fake_send(context, uid, kind, idx, slot_date, slot_hour, *, held=False):
+            chosen.append(kind)
+            return True
+
+        with patch.object(bot_3, "get_inbox_kinds_today", Mock(return_value=set(already))), \
+             patch.object(bot_3, "_drip_deliver_kind", AsyncMock(side_effect=_fake_send)):
+            await bot_3._drip_deliver_one(
+                Mock(), 8546091375, delivered_idx, _dt.datetime(2026, 8, 4, 19, 0))
+        return chosen[0] if chosen else None
+
+    async def test_never_repeats_while_something_fresh_is_left(self):
+        """День почти полон: остался ровно один неотданный тип — его и берём."""
+        from backend.free_delivery_report import KIND_TO_INBOX_CODE
+
+        order = self._order()
+        left = order[-1]
+        already = {KIND_TO_INBOX_CODE[k] for k in order if k != left}
+        # Счётчик специально указывает не на тот тип — решает ведомость, а не он.
+        picked = await self._pick(already=already, delivered_idx=0)
+        self.assertEqual(picked, left,
+                         "капля повторила уже отданный тип, хотя оставался свежий")
+
+    async def test_kind_already_sent_by_the_slot_path_is_skipped(self):
+        """Wo-Frage утром отдала капля — днём слот не должен слать его снова."""
+        from backend.free_delivery_report import KIND_TO_INBOX_CODE
+
+        picked = await self._pick(already={KIND_TO_INBOX_CODE["wofrage_sprint"]},
+                                  delivered_idx=self._order().index("wofrage_sprint"))
+        self.assertNotEqual(picked, "wofrage_sprint",
+                            "тип, уже пришедший сегодня другим путём, выдан повторно")
+
+    async def test_second_lap_when_everything_was_already_sent(self):
+        """Все типы отданы, а норма ещё не выбрана — идём на второй круг, а не молчим."""
+        from backend.free_delivery_report import KIND_TO_INBOX_CODE
+
+        already = {KIND_TO_INBOX_CODE[k] for k in self._order()}
+        picked = await self._pick(already=already, delivered_idx=0)
+        self.assertIsNotNone(picked, "на втором круге капля обязана выдать хоть что-то")
+
+    def test_the_biggest_preset_needs_a_second_lap(self):
+        """Проверка самой посылки: типов меньше, чем норма «интенсива»."""
+        self.assertLess(len(bot_3._DRIP_CAPABLE_KINDS), bot_3.GLOBAL_DAILY_SEND_BUDGET,
+                        "типов стало больше нормы — второй круг можно пересмотреть")
+
+
 if __name__ == "__main__":
     unittest.main()

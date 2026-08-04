@@ -366,6 +366,7 @@ from backend.database import (
     get_user_prefs_bulk,
     get_windowed_user_prefs,
     get_inbox_delivery_stats_today,
+    get_inbox_kinds_today,
     get_active_pro_grant,
     count_pro_grants_this_month,
     grant_pro_days,
@@ -4100,6 +4101,51 @@ async def _prepare_adjektiv_set_job(context: CallbackContext) -> None:
         logging.warning("prepare_adjektiv_set failed", exc_info=True)
 
 
+async def _prepare_artikel_set_job(context: CallbackContext) -> None:
+    """Собрать набор дня для Artikel Sprint / Artikel Trainer заранее и прогреть его.
+
+    Adjektiv и Wo-Frage свой набор создают сами, если его ещё нет, а артикельный
+    только читался: строил его дневной слот в 08:00. Человеку со своими часами с
+    06:00 капля пыталась отдать оба артикельных типа, набора не было — она молча
+    уходила к следующему типу, и Artikel Trainer не приходил вообще (замер по проду
+    04.08.2026). Теперь набор готов до открытия любых окон.
+
+    Прогрев мнемоник и озвучки тот же, что делал утренний слот, — работа не
+    добавилась, она сдвинулась раньше. Оба шага идемпотентны: слот в 08:00 найдёт
+    всё готовым и ничего не переделает.
+    """
+    if not _artikel_sprint_enabled():
+        return
+    slot_date = _get_quiz_schedule_now().date()
+    try:
+        set_id = await asyncio.to_thread(get_daily_article_sprint_set_id, slot_date)
+        if not set_id:
+            def _build() -> dict:
+                from backend.article_sprint_sets import build_daily_set
+                return build_daily_set(slot_date)
+            built = await asyncio.to_thread(_build)
+            if built.get("status") != "ready":
+                logging.info("prepare_artikel_set: набор на %s не собрался (%s)",
+                             slot_date, built.get("status"))
+                return
+            set_id = built["set_id"]
+    except Exception:
+        logging.warning("prepare_artikel_set: сборка набора не удалась", exc_info=True)
+        return
+    try:
+        from backend.article_learn import ensure_daily_learn_mnemonics
+        warmed = await asyncio.to_thread(ensure_daily_learn_mnemonics, slot_date)
+        logging.info("prepare_artikel_set: прогрето мнемоник %s", warmed)
+    except Exception:
+        logging.warning("prepare_artikel_set: прогрев мнемоник не удался", exc_info=True)
+    try:
+        clips = await _backfill_artikel_audio_for_set(set_id)
+        logging.info("prepare_artikel_set: прогрето озвучек %s", clips)
+    except Exception:
+        logging.warning("prepare_artikel_set: прогрев озвучки не удался", exc_info=True)
+    logging.info("prepare_artikel_set ready set_id=%s date=%s", set_id, slot_date)
+
+
 # ── Drip delivery within active windows (Этап 3f Stage B) ────────────────────
 # Windowed Pro users get their daily budget ONE AT A TIME, evenly spaced across
 # their active window, pulled from pre-stocked pools (decoupled from the slot clock
@@ -4504,20 +4550,43 @@ def _drip_kind_order_today(now: datetime | None = None) -> list:
 
 async def _drip_deliver_one(context: CallbackContext, user_id: int, delivered_idx: int, now,
                             *, held: bool = False) -> bool:
-    """Deliver ONE task to a windowed user, rotating types by delivery index; if the
-    chosen kind has no ready pool item, fall through to the next kind. held=True records
-    the task into the inbox WITHOUT sending its card (for the «Следующее задание» plaque)."""
+    """Выдать человеку ОДНО задание. Тип выбирается в два круга.
+
+    Круг первый — только то, чего у человека сегодня ещё НЕ было (смотрим ведомость
+    дня, а она общая для всех путей: и слотов, и капли). Пока есть неотданные типы,
+    человек получает разное.
+
+    Круг второй — по всей очереди заново, и он нужен: норма «интенсива» 20, а типов,
+    которые капля умеет, 13. Без второго круга семь заданий просто не ушли бы. Дублей-
+    близнецов он при этом не даёт: пять типов (оба Artikel, Adjektiv, Wo-Frage,
+    тренировка) держат один общий набор на день и второй раз сами себя не отдадут, а
+    остальные восемь на каждой выдаче берут из пула новое содержимое.
+
+    Выбор по ведомости, а не по счётчику, чинит и два перекоса, найденных на проде
+    04.08.2026: Zahlen-Diktat дважды за день (перескок через тип с пустым пулом
+    приводил обратно на уже отданный) и Wo-Frage дважды по разным путям — капля
+    утром, слот днём.
+    """
     uid = int(user_id)
     slot_date = now.date()
     slot_hour = int(now.hour) * 100 + int(now.minute)
     kinds = _drip_kind_order_today(now)
-    for off in range(len(kinds)):
-        kind = kinds[(int(delivered_idx) + off) % len(kinds)]
-        try:
-            if await _drip_deliver_kind(context, uid, kind, delivered_idx, slot_date, slot_hour, held=held):
-                return True
-        except Exception:
-            logging.warning("drip_deliver_kind failed kind=%s uid=%s", kind, uid, exc_info=True)
+    try:
+        from backend.free_delivery_report import KIND_TO_INBOX_CODE
+        got = await asyncio.to_thread(
+            get_inbox_kinds_today, uid, now.replace(hour=0, minute=0, second=0, microsecond=0))
+        fresh = [k for k in kinds if KIND_TO_INBOX_CODE.get(k, k) not in got]
+    except Exception:
+        logging.warning("drip: ведомость дня недоступна uid=%s", uid, exc_info=True)
+        fresh = []
+    for attempt in (fresh, kinds):
+        for off in range(len(attempt)):
+            kind = attempt[(int(delivered_idx) + off) % len(attempt)]
+            try:
+                if await _drip_deliver_kind(context, uid, kind, delivered_idx, slot_date, slot_hour, held=held):
+                    return True
+            except Exception:
+                logging.warning("drip_deliver_kind failed kind=%s uid=%s", kind, uid, exc_info=True)
     return False
 
 
@@ -42302,6 +42371,7 @@ def main():
                 application.job_queue.run_once(prepare_sprint_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 250),
                 application.job_queue.run_once(prepare_anagram_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 220),
                 application.job_queue.run_once(_prepare_adjektiv_set_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 30),
+                application.job_queue.run_once(_prepare_artikel_set_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 40),
                 application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
@@ -43427,6 +43497,16 @@ def main():
         #    playable from the morning, not only after the 10:00 send. --
         scheduler.add_job(
             lambda: submit_async(_prepare_adjektiv_set_job, CallbackContext(application=application)),
+            "cron",
+            hour=5,
+            minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Sprint / Trainer: набор дня + прогрев в 05:00, до открытия любых
+        #    окон. Раньше его строил только слот в 08:00, и у человека со своими
+        #    часами с 06:00 оба артикельных типа пролетали мимо. --
+        scheduler.add_job(
+            lambda: submit_async(_prepare_artikel_set_job, CallbackContext(application=application)),
             "cron",
             hour=5,
             minute=0,

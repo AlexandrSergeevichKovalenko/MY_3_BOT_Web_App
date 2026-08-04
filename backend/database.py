@@ -19919,6 +19919,25 @@ def get_inbox_delivery_stats_today(user_id: int, since_ts) -> tuple:
         return (0, None)
 
 
+def get_inbox_kinds_today(user_id: int, since_ts) -> set:
+    """Коды заданий, которые человек сегодня УЖЕ получил (по всем путям сразу —
+    и по слотам, и капельной выдачей). Капля выбирает следующий тип, пропуская их:
+    сперва человеку достаётся всё разное, и только когда разного не осталось,
+    идёт второй круг. Повтор дня («работа над ошибками») сюда не входит."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT DISTINCT kind FROM bt_3_interactive_inbox "
+                    "WHERE user_id = %s AND created_at >= %s AND kind <> 'rv';",
+                    (int(user_id), since_ts),
+                )
+                return {str(r[0]) for r in cursor.fetchall() or [] if r[0]}
+    except Exception:
+        logging.warning("get_inbox_kinds_today failed user=%s", user_id, exc_info=True)
+        return set()
+
+
 # ── DAU: daily streaks + earned Pro grants (Этап 4) ──────────────────────────
 _dau_schema_ready = False
 
