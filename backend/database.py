@@ -1999,6 +1999,9 @@ _WG_FUNCTION_WORDS = {
     # Fragewörter: finding "unter WELCHEN Bedingungen" is the task, so the
     # interrogative is hidden glue and never a Stützwort — bare "welch" included.
     "welch", "welche", "welchen", "welcher", "welches", "welchem", "wessen",
+    "was", "wer", "wen", "wem", "wo", "wohin", "woher", "wann", "warum", "wieso",
+    "weshalb", "wodurch", "womit", "wofür", "worauf", "worüber", "woran", "wovon",
+    "inwiefern", "inwieweit", "wieviel", "wieviele",
     "dieser", "diese", "dieses", "diesen", "diesem", "jener", "jene", "jenes",
 }
 
@@ -2151,6 +2154,65 @@ def wortgruppe_lemma_leak(payload) -> str:
         if not any(_wg_same_word(word, tok) for lemma in lemmas for word in lemma.split()):
             return f"в ответе слово «{tok}», для которого нет подсказки"
     return ""
+
+
+def _wortgruppe_repair_carrier(payload) -> None:
+    """Re-cut the gap when the model blanked only PART of its own answer.
+
+    It writes "correct" = "warum die Kosten" but hides only "warum", so "die Kosten"
+    stays printed right next to the gap — the reconstruction check then fails and a
+    perfectly good sentence is thrown away. "vollsatz" is the ground truth here, so
+    the fix is the mechanical step the prompt asks for: delete the whole "correct"
+    from "vollsatz" and put ONE gap in its place. Only runs when the item's own
+    "satz" does NOT reconstruct — a correctly cut item is never touched."""
+    correct = str(payload.get("correct") or "").strip()
+    voll = " ".join(str(payload.get("vollsatz") or "").split())
+    satz = str(payload.get("satz") or "")
+    if not correct or not voll:
+        return
+    if _wg_norm(satz.replace("_____", correct)) == _wg_norm(voll):
+        return
+    at = voll.find(correct)
+    if at < 0:
+        at = voll.casefold().find(correct.casefold())
+    if at < 0:
+        return  # the answer isn't in the sentence at all — not repairable, drop it
+    rebuilt = f"{voll[:at]}_____{voll[at + len(correct):]}"
+    if rebuilt.count("_____") == 1:
+        payload["satz"] = " ".join(rebuilt.split())
+
+
+def wortgruppe_repair_item(payload) -> dict:
+    """Re-cut the gap if needed, then remove the Stützwörter that don't belong —
+    instead of losing the whole item.
+
+    Two slips make up most of what the model gets wrong, and BOTH are just a word
+    too many in the list — the sentence, the answer and the remaining hints are
+    perfectly fine once it's gone:
+      • a word copied from the VISIBLE part of the sentence ("Vorgesetzte" next to a
+        gap wanting "dass ihre Leistung") — a false lead;
+      • the glue itself as a hint ("auf", "im", "alle", "welch") — finding it IS
+        the task, so it was never a hint to begin with.
+    Deleting them turns a rejected item into a correct one. What is NOT repairable —
+    a hint carrying its ending, a content word of the answer with no hint at all —
+    still falls to wortgruppe_lemma_leak afterwards. Mutates and returns payload."""
+    payload = payload if isinstance(payload, dict) else {}
+    _wortgruppe_repair_carrier(payload)
+    lemmas = [str(w).strip() for w in (payload.get("lemmas") or []) if str(w).strip()]
+    answer_tokens = _wg_tokens(payload.get("correct"))
+    if not lemmas or not answer_tokens:
+        return payload
+    kept: list[str] = []
+    for lemma in lemmas:
+        content = [w for w in lemma.split() if _wg_norm(w) not in _WG_ANSWER_GLUE]
+        if not content:
+            continue  # pure glue — hidden by design
+        if not all(any(_wg_same_word(w, tok) for tok in answer_tokens) for w in content):
+            continue  # not in the gap — a false lead
+        kept.append(lemma)
+    if kept != lemmas:
+        payload["lemmas"] = kept
+    return payload
 
 
 def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:

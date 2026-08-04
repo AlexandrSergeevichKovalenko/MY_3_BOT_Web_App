@@ -3732,6 +3732,8 @@ SO BAUST DU JEDE AUFGABE (Reihenfolge EINHALTEN):
    Satz (C1) → Feld "vollsatz". Ein Muttersprachler muss ihn als korrekt UND
    idiomatisch akzeptieren.
 2) Wähle darin EINEN ZUSAMMENHÄNGENDEN Ausschnitt als Lösung → Feld "correct".
+   HARTE GRENZE: "correct" hat 2 BIS 6 Wörter — Konjunktion, Präposition und Artikel
+   MITGEZÄHLT. 7 Wörter sind zu viel: kürze den Ausschnitt, bis er hineinpasst.
    BEVORZUGT der VORDERE Teil eines Nebensatzes INKL. einleitender Konjunktion oder
    Präposition; das zugehörige FINITE (gebeugte) Verb steht am SATZENDE und bleibt
    SICHTBAR — es gehört NICHT in die Lücke. So bleibt die ganze Gruppe an EINER Stelle.
@@ -3757,21 +3759,16 @@ STÜTZWÖRTER "lemmas" (das EINZIGE, was der Lernende sieht):
 Die Aufgabe IST das Beugen. Deshalb steht in "lemmas" NUR die WÖRTERBUCHFORM — jede
 Endung, jeder Kasus, jedes Genus, jeder Artikel kommt vom Lernenden.
 
-DECKUNGSREGEL (die WICHTIGSTE, in BEIDE Richtungen prüfen):
-"lemmas" ist die Wortliste GENAU DIESER LÜCKE — nicht des Satzes.
-- Jedes Stützwort MUSS als Wortform in "correct" vorkommen. Ein Wort, das nur im
-  SICHTBAREN Teil von "satz" steht, ist VERBOTEN: der Lernende versucht es
-  einzusetzen, obwohl es dort schon gedruckt steht.
-  ✗ FALSCH: satz "Es ist kaum vorstellbar, _____ die Arbeiter damals arbeiten mussten.",
-    correct "unter welchen Bedingungen", lemmas ["Bedingungen","Arbeiter"]
-    → "Arbeiter" steht bereits im Satz und gehört NICHT in die Lücke.
-  ✓ RICHTIG: lemmas ["Bedingung"]
-- Umgekehrt: JEDES Inhaltswort aus "correct" braucht sein Stützwort. Fehlt eines,
-  muss der Lernende ein Wort raten, das er nicht kennen kann → Aufgabe unbrauchbar.
-  ✗ FALSCH: correct "in einer Situation schnell eine Entscheidung zu treffen",
-    lemmas ["Situation","schnell","Entscheidung"] → "treffen" fehlt.
-- Nur die versteckte Klammer bleibt ohne Stützwort: Präposition, Konjunktion,
-  Artikel, "zu", Reflexivpronomen, Hilfsverb. GENAU DAS ist die Aufgabe.
+SO ENTSTEHT "lemmas" (MECHANISCH, nur aus "correct" — schau dabei NIE in den Rest
+des Satzes; der sichtbare Text liefert KEIN einziges Stützwort):
+Gehe "correct" Wort für Wort durch und entscheide für JEDES Wort:
+  a) Artikel, Präposition, Konjunktion, "zu", Reflexivpronomen, Hilfsverb, Fragewort
+     ("welch-") → ÜBERSPRINGEN. Das ist die versteckte Klammer, sie gehört in
+     "hidden_glue"; sie zu finden IST die Aufgabe.
+  b) jedes andere Wort (Substantiv, Verb, Adjektiv, Adverb) → in seiner
+     WÖRTERBUCHFORM in die Liste.
+Danach enthält "lemmas" genau die Inhaltswörter der Lücke: keines fehlt, keines
+zu viel. Fehlt eines, muss der Lernende ein Wort raten, das er nicht kennen kann.
 
 - ALLE Inhaltswörter der Lösung, OHNE Artikel:
   • Substantive im Nominativ, OHNE Artikel, im für die Lösung passenden NUMERUS
@@ -4289,7 +4286,7 @@ Return STRICT JSON ONLY: {"valid": ["<exactly the candidate strings you accept>"
 You verify German "Wortgruppe" grammar exercises. Input JSON:
 {"items":[{"index":0,"vollsatz":"...","satz":"...","lemmas":["...","..."],"correct":"...","hint_ru":"..."}, ...]}.
 Return EXACTLY ONE result per input item and copy that item's "index" into it — never
-skip, merge or reorder items. For EACH item judge TWO things:
+skip, merge or reorder items. For EACH item judge THREE things:
 (a) GRAMMAR: is "vollsatz" fully grammatical and natural German at C1 level — would a
     native speaker accept it as correct AND idiomatic? (Watch for wrong verb rection /
     a matrix that does not license the construction, e.g. "abhängen von … zu+Infinitiv".)
@@ -4311,21 +4308,16 @@ skip, merge or reorder items. For EACH item judge TWO things:
     those belong to "hidden_glue", finding them IS the task.
     If ANY lemma already carries a case/declension ending or otherwise leaks
     the inflection the learner must supply → fail. (Supplying every ending is the task.)
-(d) COVERAGE — "lemmas" is the word list of THE GAP, not of the sentence. Check BOTH
-    directions and fail on either miss:
-    • every lemma must appear as a word form inside "correct". A lemma that only
-      occurs in the VISIBLE part of "satz" is a FALSE LEAD — the learner tries to
-      insert a word that is already printed there → fail. Example of a FAILING item:
-      satz "Es ist kaum vorstellbar, _____ die Arbeiter damals arbeiten mussten.",
-      correct "unter welchen Bedingungen", lemmas ["Bedingungen","Arbeiter"] — the
-      lemma "Arbeiter" belongs to the visible text, not to the gap.
-    • every CONTENT word of "correct" (noun, verb, adjective, adverb) must have a
-      lemma. Only the hidden glue — preposition, conjunction, article, "zu",
-      reflexive pronoun, auxiliary — may be missing, because finding it IS the task.
-      A missing content word makes the item pure guessing → fail.
+NOT YOUR JOB — a separate exact check already guarantees these, and second-guessing
+them produces false alarms; never fail an item for any of them:
+  • whether a lemma also occurs somewhere in the sentence — judge lemmas ONLY against
+    the words of "correct", never against the visible text;
+  • whether some word of the SENTENCE has no lemma — words outside "correct" need
+    none, they are already printed;
+  • whether the gap is cut in the right place, or how long "correct" is.
 Return STRICT JSON ONLY, one result per item, SAME order, each carrying its "index":
-{"results":[{"index":0,"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"]}, ...]}
-ok = true ONLY if ALL of (a), (b), (c) and (d) hold; otherwise ok=false and accepted=[].
+{"results":[{"index":0,"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"], "reason":"<which rule failed, max 12 words; empty when ok>"}, ...]}
+ok = true ONLY if ALL of (a), (b) and (c) hold; otherwise ok=false and accepted=[].
 """,
 "check_wortbildung_batch": """
 You verify German "Wortbildung" exercises. Input JSON:
@@ -7409,6 +7401,18 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
                             it.get("transcript"), it.get("gaps"))
             except Exception:
                 logging.warning("aufgabe hoerluecke: gap repair failed", exc_info=True)
+        if fmt == "wortgruppe":
+            # Same idea as above: a stray Stützwort (one copied from the visible
+            # sentence, or the glue the learner is meant to find) is deleted rather
+            # than costing the whole item. Measured on live batches this is the
+            # single biggest source of loss — and none of it needs regenerating.
+            try:
+                from backend.database import wortgruppe_repair_item
+                for it in items:
+                    if isinstance(it, dict):
+                        wortgruppe_repair_item(it)
+            except Exception:
+                logging.warning("aufgabe wortgruppe: lemma repair failed", exc_info=True)
         if is_degenerate_aufgabe is not None:
             kept = []
             for it in items:
@@ -7456,7 +7460,8 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
                 verified = []
                 for it, v in zip(items, verdicts):
                     if not v.get("ok"):
-                        logging.info("aufgabe wortgruppe: verifier dropped item satz=%s", it.get("satz"))
+                        logging.info("aufgabe wortgruppe: verifier dropped item satz=%s correct=%s reason=%s",
+                                     it.get("satz"), it.get("correct"), v.get("reason"))
                         continue
                     acc = v.get("accepted") or []
                     if acc:
@@ -7569,6 +7574,7 @@ async def run_check_wortgruppe_batch(*, items: list[dict]) -> list[dict]:
             by_index[idx] = {
                 "ok": bool(r.get("ok")),
                 "accepted": [str(a) for a in (r.get("accepted") or []) if str(a).strip()],
+                "reason": str(r.get("reason") or ""),
             }
         if len(by_index) < len(payload_items):
             logging.info("check_wortgruppe_batch: %d of %d items got no verdict — kept unverified",
