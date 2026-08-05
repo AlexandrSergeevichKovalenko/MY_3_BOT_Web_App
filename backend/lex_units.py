@@ -20,7 +20,12 @@ import logging
 import re
 from typing import Any
 
-from backend.database import get_db_connection_context, _dictionary_pool_word_fully_rich_sql
+from backend.database import (
+    get_db_connection_context,
+    _dictionary_pool_word_fully_rich_sql,
+    CARD_CONTENT_KEYS,
+    card_content_score,
+)
 from backend.lex_senses import split_translation
 
 _SPACE_RE = re.compile(r"\s+")
@@ -630,35 +635,9 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
         return False
 
 
-# Содержательные блоки разбора. По ним, а НЕ по длине текста, решается, какая версия
-# полнее: длину раздувают служебные поля и сырой текст запроса, а ценность карточки —
-# в этих блоках.
-CARD_CONTENT_KEYS = (
-    "usage_examples", "meanings", "dictionary_senses", "forms", "grammar_tables",
-    "government_patterns", "common_collocations", "synonym_differences", "false_friends",
-    "word_formation", "register_examples", "common_mistakes", "pronunciation",
-    "etymology_note", "memory_tip", "translations",
-)
-
-
-def card_content_score(card: dict | None) -> int:
-    """Сколько содержательных блоков реально заполнено в разборе."""
-    if not isinstance(card, dict):
-        return 0
-    score = 0
-    for key in CARD_CONTENT_KEYS:
-        value = card.get(key)
-        if isinstance(value, str):
-            filled = bool(value.strip())
-        elif isinstance(value, (list, dict)):
-            filled = bool(len(value))
-        else:
-            filled = value not in (None, "", [], {})
-        if filled:
-            score += 1
-    return score
-
-
+# Оценка полноты разбора (CARD_CONTENT_KEYS / card_content_score) живёт в слое БД:
+# ею пользуются и запись на единицу, и отдача карточки человеку, а импортировать слой БД
+# отсюда обратно нельзя — вышло бы кольцо.
 def save_unit_card_if_richer(unit_id: int, card: dict, *, source: str = "сохранение") -> bool:
     """Положить разбор на единицу, но ТОЛЬКО если он полнее уже лежащего.
 

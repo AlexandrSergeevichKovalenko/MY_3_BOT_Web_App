@@ -1,0 +1,93 @@
+"""Разбор с общей единицы ДОПОЛНЯЕТ личную карточку, но никогда её не обедняет.
+
+Правило одно: человек не может увидеть меньше, чем видел вчера. Поэтому с единицы
+берётся блок, только когда своего блока нет или он беднее. Замена целиком была бы
+проще, но у 0.9% карточек указатель ведёт на соседнее слово (мусорные единицы старой
+массовой сборки) — и замена показала бы разбор чужого слова. Такой случай отсекает
+сверка заголовка.
+"""
+from backend.database import (
+    merge_unit_card_for_serve,
+    unit_card_is_about_the_same_word,
+)
+
+CARD = {
+    "word_de": "der Wandel",
+    "source_text": "der Wandel",
+    "usage_examples": [{"de": "Der Wandel kommt."}],
+    "meanings": {},
+}
+
+UNIT = {
+    "word_de": "der Wandel",
+    "usage_examples": [{"de": "a"}, {"de": "b"}, {"de": "c"}],
+    "meanings": {"primary": {"value": "перемена"}},
+    "memory_tip": "как «вандал», только про перемены",
+    "forms": {"plural": "die Wandel"},
+}
+
+
+def test_missing_blocks_are_taken_from_the_unit():
+    merged = merge_unit_card_for_serve(CARD, UNIT)
+    assert merged["meanings"] == UNIT["meanings"]
+    assert merged["memory_tip"] == UNIT["memory_tip"]
+    assert merged["forms"] == UNIT["forms"]
+
+
+def test_richer_block_wins_poorer_one():
+    merged = merge_unit_card_for_serve(CARD, UNIT)
+    assert len(merged["usage_examples"]) == 3
+
+
+def test_personal_block_survives_when_it_is_richer():
+    card = dict(CARD, usage_examples=[{"de": "1"}, {"de": "2"}, {"de": "3"}, {"de": "4"}])
+    merged = merge_unit_card_for_serve(card, UNIT)
+    assert len(merged["usage_examples"]) == 4
+
+
+def test_direction_and_headword_stay_from_the_card():
+    """Направление и заголовок задаёт карточка человека — единица их не переписывает."""
+    card = dict(CARD, source_text="Wandel", target_text="перемена", language_pair={"code": "de-ru"})
+    merged = merge_unit_card_for_serve(card, dict(UNIT, source_text="ЧУЖОЕ", language_pair={"code": "ru-de"}))
+    assert merged["source_text"] == "Wandel"
+    assert merged["target_text"] == "перемена"
+    assert merged["language_pair"] == {"code": "de-ru"}
+
+
+def test_empty_unit_changes_nothing():
+    for value in (None, {}, "разбор", []):
+        assert merge_unit_card_for_serve(CARD, value) == CARD
+
+
+def test_empty_card_is_filled_from_the_unit():
+    merged = merge_unit_card_for_serve({}, UNIT)
+    assert merged["memory_tip"] == UNIT["memory_tip"]
+    assert len(merged["usage_examples"]) == 3
+
+
+def test_nothing_new_means_the_card_object_is_returned_as_is():
+    assert merge_unit_card_for_serve(CARD, {"word_de": "der Wandel"}) == CARD
+
+
+# ── сверка заголовка ──────────────────────────────────────────────────────────
+
+def test_same_word_passes_with_and_without_article():
+    assert unit_card_is_about_the_same_word(unit_lemma_key="wandel", card_word="der Wandel")
+    assert unit_card_is_about_the_same_word(unit_lemma_key="wandel", card_word="Wandel")
+    assert unit_card_is_about_the_same_word(unit_lemma_key="der wandel", card_word="Wandel")
+
+
+def test_foreign_word_is_refused():
+    """Живой случай: карточка «einen Fusselrasierer benutzen» указывает на единицу
+    «использовать машинку для удаления катышков». Чужой разбор показывать нельзя."""
+    assert not unit_card_is_about_the_same_word(
+        unit_lemma_key="использовать машинку для удаления катышков",
+        card_word="einen Fusselrasierer benutzen",
+    )
+    assert not unit_card_is_about_the_same_word(unit_lemma_key="laueren", card_word="Lauern")
+
+
+def test_missing_sides_are_refused():
+    assert not unit_card_is_about_the_same_word(unit_lemma_key="wandel", card_word=None)
+    assert not unit_card_is_about_the_same_word(unit_lemma_key=None, card_word="Wandel")
+    assert not unit_card_is_about_the_same_word(unit_lemma_key="", card_word="")
