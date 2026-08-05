@@ -369,9 +369,11 @@ const VocabSearchOverlay = forwardRef(function VocabSearchOverlay({
           </button>
         </div>
         <div className="vso-meta">
+          {/* Счётчик стоит у своего списка, а не в шапке: «Найдено 2 119» складывало
+              свои слова и общий словарь — два разных мира, и число не значило ничего. */}
           <span className="vso-count">
             {trimmed
-              ? `${tr('Найдено', 'Gefunden')} ${(hasServerAnswer ? total : shown.length) + poolShown.length}`
+              ? tr('Поиск по словам', 'Wörter suchen')
               : `${totalCount} ${tr('слов у вас', 'Wörter bei dir')}`}
           </span>
           {showScopeChips && (
@@ -435,8 +437,10 @@ const VocabSearchOverlay = forwardRef(function VocabSearchOverlay({
           </div>
         )}
 
-        {shown.length > 0 && poolShown.length > 0 && (
-          <div className="vso-section">{tr('Мои слова', 'Meine Wörter')}</div>
+        {trimmed && shown.length > 0 && (
+          <div className="vso-section">
+            {tr('Мои слова', 'Meine Wörter')} · {hasServerAnswer ? total : shown.length}
+          </div>
         )}
 
         {shown.map((item) => {
@@ -473,14 +477,14 @@ const VocabSearchOverlay = forwardRef(function VocabSearchOverlay({
 
         {truncated && (
           <div className="vso-more">
-            {tr('Показаны первые', 'Gezeigt: die ersten')} {shown.length} {tr('из', 'von')} {total} · {tr('уточните запрос', 'Suche eingrenzen')}
+            {tr('Показаны первые', 'Gezeigt: die ersten')} {shown.length} · {tr('уточните запрос', 'Suche eingrenzen')}
           </div>
         )}
 
         {poolShown.length > 0 && (
           <>
             <div className="vso-section vso-section-pool">
-              {tr('В общем словаре', 'Im gemeinsamen Wörterbuch')}
+              {tr('В общем словаре', 'Im gemeinsamen Wörterbuch')} · {poolShown.length}
             </div>
             {poolShown.map((item) => {
               const { word, translation } = describe(item);
