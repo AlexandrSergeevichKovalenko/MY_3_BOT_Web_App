@@ -491,6 +491,7 @@ from backend.database import (
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
     list_user_vocabulary,
+    top_up_subscription_words,
     save_card_user_notes,
     USER_NOTES_MAX,
     search_dictionary_pool,
@@ -51055,6 +51056,27 @@ def get_webapp_flashcard_set():
                 "language_pair": _build_language_pair_payload(source_lang, target_lang),
             }
         )
+    # Подписка открывает слова каплей — ДО набора карточек, чтобы новое попало уже в
+    # этот заход. Раньше подписка жила только внутри очереди интервальных повторений,
+    # а её почти не открывают: за всё время она не выдала ни одного слова. Теперь слово
+    # просто появляется в библиотеке, и его подхватывают все тренажёры сами.
+    try:
+        _sub_state = get_starter_dictionary_state(int(user_id)) or {}
+        if _sub_state.get("live_subscription") and STARTER_DICTIONARY_SOURCE_USER_ID > 0:
+            _opened = top_up_subscription_words(
+                user_id=int(user_id),
+                source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                subscription_limit=_sub_state.get("subscription_limit"),
+            )
+            if _opened:
+                logging.info("подписка открыла слов: user=%s count=%s", user_id, _opened)
+    except Exception:
+        # Пополнение — приятное дополнение, а не условие тренировки: сорвалось, значит
+        # человек просто занимается тем, что уже есть.
+        logging.debug("пополнение подписки не удалось", exc_info=True)
+
     allowed_set_size = max(1, int(flashcards_limit_state.get("allowed_words") or requested_set_size))
     set_size = min(requested_set_size, allowed_set_size)
 
