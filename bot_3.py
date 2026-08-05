@@ -10062,7 +10062,10 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("deliver_listening", "Аудирование", 30, True, "guard"),
     ("deliver_numdict", "Числа-диктант", 30, True, "guard"),
     # --- Bot-loop reports / dashboards / reminders (heartbeat by function name via submit_async) ---
-    ("send_morning_reminder", "Утреннее напоминание", 30, True, "guard"),
+    # send_morning_reminder УБРАНО из отчёта 2026-08-05: обе его регистрации в планировщике
+    # закомментированы (см. ниже по файлу, рядом с «scheduler.add_job(... send_morning_reminder»),
+    # то есть задача выключена намеренно. Выключенное — не поломка; висеть красным крестом в
+    # «Проблемах» оно не должно, как и снятый «план на сегодня» выше. Вернёшь задачу — верни строку.
     ("send_flashcard_reminder", "Напоминание о карточках", 30, True, "guard"),
     ("_send_mistake_review_reminders", "Напоминание «повтори ошибки» (11:00)", 30, True, "guard"),
     ("_send_plan_dashboard_job", "Дашборд плана (06:45)", 30, True, "guard"),
@@ -42584,11 +42587,28 @@ def main():
             async def _wrapped(ctx, *a):
                 token = _current_scheduled_send.set((kind, int(hour), int(minute)))
                 btoken = _scheduled_send_bonus.set(True)
+                hb_status = "completed"
                 try:
                     await async_func(ctx, *a)
+                except Exception:
+                    hb_status = "failed"
+                    raise
                 finally:
                     _scheduled_send_bonus.reset(btoken)
                     _current_scheduled_send.reset(token)
+                    # Отметка «слот отработал» — ровно как в make_rotation_gated. Без неё
+                    # бонусная выдача уходила людям, а /scheduler_health показывал
+                    # «ПРОТУХЛО»: спринт с 24.07 идёт этой веткой (TRAINER_ENABLED=1),
+                    # и отчёт 12 дней ругался на живую задачу.
+                    try:
+                        await asyncio.to_thread(
+                            _record_sched_heartbeat,
+                            f"deliver_{kind}",
+                            hb_status,
+                            {"slot": f"{int(hour):02d}:{int(minute):02d}", "bonus": True},
+                        )
+                    except Exception:
+                        logging.debug("bonus deliver heartbeat failed kind=%s", kind, exc_info=True)
             submit_async(_wrapped, CallbackContext(application=application), *extra)
         return _job
 
