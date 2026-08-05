@@ -247,9 +247,14 @@ class SubscriptionQueriesRunTests(unittest.TestCase):
         def __init__(self):
             self.sql = None
             self.params = None
+            # Запросов может быть несколько: отбор кандидатов подписки с 05.08.2026
+            # дочитывает ещё и слова, которые у человека уже есть, — чтобы не
+            # предлагать то же слово в другом написании.
+            self.sqls = []
 
         def execute(self, sql, params=None):
             self.sql, self.params = sql, params
+            self.sqls.append(sql)
 
         def fetchone(self):
             # Достаточно широкая строка: вызывающий код читает поля по индексам.
@@ -272,8 +277,9 @@ class SubscriptionQueriesRunTests(unittest.TestCase):
                     user_id=77, source_user_id=1, source_lang="ru", target_lang="de",
                     limit=5, cursor=cur, phrases_only=phrases_only,
                 )
-                self.assertIn("FROM bt_3_webapp_dictionary_queries a", cur.sql)
-                self.assertEqual("is_phrase IS TRUE" in cur.sql, phrases_only)
+                candidates_sql = cur.sqls[0]
+                self.assertIn("FROM bt_3_webapp_dictionary_queries a", candidates_sql)
+                self.assertEqual("is_phrase IS TRUE" in candidates_sql, phrases_only)
 
     def test_own_candidate_query_builds_for_both_modes(self):
         for phrases_only in (False, True):
