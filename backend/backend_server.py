@@ -9041,12 +9041,16 @@ def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
     if not entry_id:
         return
     try:
+        # Разбор передаём вместе с привязкой: слово, разобранное для одного человека,
+        # обязано стать разобранным для всех, кто на него подписан. Понижения не будет —
+        # тонкое сохранение не перебьёт собранный ночью полный разбор.
         lex_units.attach_entry_to_unit(
             int(entry_id),
             word_de=kwargs.get("word_de"),
             word_ru=kwargs.get("word_ru"),
             source_lang=kwargs.get("source_lang"),
             target_lang=kwargs.get("target_lang"),
+            card=kwargs.get("response_json") if isinstance(kwargs.get("response_json"), dict) else None,
         )
     except Exception:
         logging.debug("attach saved entry to lex unit failed", exc_info=True)
@@ -10223,6 +10227,20 @@ def _publish_enriched_card_to_shared_stores(
     tgt = str(target_text or "").strip()
     if not src or not tgt:
         return
+    # ЕДИНИЦА — дом разбора: обогащённая карточка ложится на само слово, и его получают
+    # все, кто на слово подписан, а не только тот, чью карточку дообогатили. Пул пока
+    # тоже наполняем: из него читает поиск, и отключим мы его только когда чтение
+    # переедет на единицы.
+    try:
+        german = src if str(source_lang or "").lower() == "de" else (
+            tgt if str(target_lang or "").lower() == "de" else ""
+        )
+        if german:
+            unit_id = lex_units.ensure_unit(german, "de")
+            if unit_id:
+                lex_units.save_unit_card_if_richer(int(unit_id), payload, source="обогащение")
+    except Exception as exc:
+        logging.debug("обогащённая карточка → единица не легла: %s", exc)
     try:
         upsert_dictionary_pool_entry(
             source_lang=source_lang,
