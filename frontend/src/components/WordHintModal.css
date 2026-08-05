@@ -154,6 +154,57 @@
   overflow-wrap: anywhere;
 }
 
+/* Полная карточка словаря внутри подсказки.
+   Окно живёт порталом в <body>, а переменные темы объявлены на `.webapp-page`, поэтому
+   сюда они не доходят — задаём светлую (Fuchs) палитру прямо здесь, иначе блоки словаря
+   рисовались бы тёмной темой по кремовому фону. Заголовки блоков и раскрывашки таблиц
+   переводим с индигового словарного акцента на янтарный — как остальная подсказка. */
+.word-hint-breakdown {
+  --dmps-text-title: #1c2536;
+  --dmps-text-primary: #1f1a14;
+  --dmps-text-secondary: #3c4658;
+  --dmps-text-muted: #6f7c92;
+  --dmps-border: rgba(150, 110, 40, 0.16);
+  --dmps-card-alt: rgba(255, 255, 255, 0.72);
+  --dmps-accent: #b08a3c;
+  display: flex;
+  flex-direction: column;
+  gap: calc(12px * var(--wh-k, 1));
+  font-size: calc(15px * var(--wh-k, 1));
+}
+.word-hint-breakdown .dq-block strong,
+.word-hint-breakdown .dq-gt > summary {
+  color: #b08a3c;
+  font-size: calc(11px * var(--wh-k, 1));
+  letter-spacing: 0.08em;
+}
+.word-hint-breakdown .dq-block span,
+.word-hint-breakdown .dq-ex-de,
+.word-hint-breakdown .dq-ex-ru-static {
+  font-size: calc(15px * var(--wh-k, 1));
+}
+/* Заголовки внутри таблиц (PRÄSENS, Singular/Plural) — тоже янтарные, а не синие. */
+.word-hint-breakdown .dq-conj-title,
+.word-hint-breakdown .dq-decl th {
+  color: #a08246;
+}
+.word-hint-breakdown .dq-stamm { color: #1c2536; }
+/* Кнопка озвучки у заголовка: янтарная, как всё окно, и не съезжает от базовой линии. */
+.word-hint-word .dq-tts {
+  margin-left: 8px;
+  vertical-align: middle;
+  background: rgba(230, 178, 74, 0.22);
+  color: #6b4f16;
+}
+.word-hint-word .dq-tts.on { background: rgba(230, 178, 74, 0.45); }
+/* Таблица склонения/спряжения шире экрана не станет: длинные формы переносятся,
+   а не растягивают окно и не вызывают горизонтальную прокрутку страницы. */
+.word-hint-breakdown .dq-decl,
+.word-hint-breakdown .dq-conj-grid {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .word-hint-tip {
   margin: 0;
   font-size: calc(15px * var(--wh-k, 1));
