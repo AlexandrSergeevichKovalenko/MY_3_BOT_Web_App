@@ -4592,10 +4592,13 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT q.id, q.word_de, u.card, u.lemma_key
+                    -- Заметки человека берём тем же запросом: они лежат в этой же
+                    -- строке, отдельный поход в базу был бы ради ничего. Связь с
+                    -- единицей здесь необязательна — заметка есть и у слова без неё.
+                    SELECT q.id, q.word_de, u.card, u.lemma_key, q.user_notes
                     FROM bt_3_webapp_dictionary_queries q
-                    JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
-                    WHERE q.id = ANY(%s) AND u.card IS NOT NULL
+                    LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
+                    WHERE q.id = ANY(%s)
                     """,
                     (ids,),
                 )
@@ -4604,7 +4607,10 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
         logging.debug("разбор с единиц не подтянулся: %s", exc)
         return items
 
-    by_card = {int(row[0]): (row[1], _coerce_json_object(row[2]), row[3]) for row in rows}
+    by_card = {
+        int(row[0]): (row[1], _coerce_json_object(row[2]), row[3], normalize_user_notes(row[4]))
+        for row in rows
+    }
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -4614,7 +4620,13 @@ def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "
             found = None
         if not found:
             continue
-        word_de, unit_card, lemma_key = found
+        word_de, unit_card, lemma_key, user_notes = found
+        # Заметки человека — рядом с разбором, но НИКОГДА не внутри него: разбор общий
+        # и обновляется, заметка личная и обновлениям не подлежит.
+        if user_notes:
+            item["user_notes"] = user_notes
+        if not unit_card:
+            continue
         card = _coerce_json_object(item.get(json_key))
         if not unit_card_is_about_the_same_word(
             unit_lemma_key=lemma_key,
@@ -8007,6 +8019,13 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
                 ADD COLUMN IF NOT EXISTS folder_id BIGINT;
+            """)
+            # Личные заметки человека к слову. ОТДЕЛЬНАЯ колонка, а не поле внутри
+            # разбора: разбор общий и дополняется с единицы, а заметка принадлежит
+            # только этому человеку и никакими обновлениями затронута быть не может.
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS user_notes JSONB;
             """)
             cursor.execute("""
                 ALTER TABLE bt_3_webapp_dictionary_queries
@@ -28742,6 +28761,7 @@ def list_user_vocabulary(
                     f.icon          AS folder_icon,
                     f.color         AS folder_color,
                     q.response_json,
+                    q.user_notes,
                     lu.card         AS unit_card,
                     lu.lemma_key    AS unit_lemma_key,
                     COALESCE(
@@ -28774,9 +28794,9 @@ def list_user_vocabulary(
         # заголовок, а недостающие блоки берём с единицы: улучшили слово один раз —
         # увидели все, кто на него подписан. Только дополняем, никогда не заменяем.
         if DICTIONARY_UNITS_SERVE_ENABLED:
-            unit_card = _coerce_json_object(row[21])
+            unit_card = _coerce_json_object(row[22])
             if unit_card and unit_card_is_about_the_same_word(
-                unit_lemma_key=row[22],
+                unit_lemma_key=row[23],
                 card_word=row[3] or response_json.get("word_de"),
             ):
                 response_json = merge_unit_card_for_serve(response_json, unit_card)
@@ -28797,7 +28817,7 @@ def list_user_vocabulary(
             or row[3]
             or (response_source_text if entry_source_lang == "de" else "")
             or (response_target_text if entry_target_lang == "de" else "")
-            or row[23]
+            or row[24]
             or ""
         ).strip()
         dictionary_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
@@ -28823,7 +28843,7 @@ def list_user_vocabulary(
             or (response_target_text if entry_target_lang == "ru" else "")
             or response_json.get("word_ru")
             or row[1]
-            or row[24]
+            or row[25]
             or ""
         ).strip()
         srs_due_at = row[12]
@@ -28860,8 +28880,9 @@ def list_user_vocabulary(
             "folder_icon": row[18] or None,
             "folder_color": row[19] or None,
             "response_json": response_json,
-            "display_word": german_display or row[23] or "",
-            "display_translation": native_display or row[24] or "",
+            "display_word": german_display or row[24] or "",
+            "display_translation": native_display or row[25] or "",
+            "user_notes": normalize_user_notes(row[21]),
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
@@ -28999,6 +29020,69 @@ def search_dictionary_pool(
             "display_translation": native_display or target_text,
         })
     return items
+
+
+# Личные заметки к слову. Потолок сознательный: пять — это ещё заметки, дальше конспект,
+# и на карточке повторения столько уже не помещается.
+USER_NOTES_MAX = 5
+USER_NOTE_LABEL_MAX = 24
+USER_NOTE_TEXT_MAX = 300
+
+
+def normalize_user_notes(raw) -> list[dict]:
+    """Привести заметки к тому виду, в каком их можно хранить и показывать.
+
+    Название необязательное: не написал — показываем просто текст. Пустая заметка
+    выбрасывается молча (человек нажал «плюс» и передумал — это не ошибка).
+    Обрезаем длину здесь, а не в интерфейсе: интерфейсов несколько, а правило одно."""
+    if not isinstance(raw, list):
+        return []
+    notes = []
+    for item in raw:
+        if isinstance(item, str):
+            item = {"text": item}
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()[:USER_NOTE_TEXT_MAX]
+        if not text:
+            continue
+        label = str(item.get("label") or "").strip()[:USER_NOTE_LABEL_MAX]
+        notes.append({"label": label, "text": text})
+        if len(notes) >= USER_NOTES_MAX:
+            break
+    return notes
+
+
+def get_card_user_notes(user_id: int, entry_id: int) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_notes FROM bt_3_webapp_dictionary_queries "
+                "WHERE id = %s AND user_id = %s LIMIT 1;",
+                (int(entry_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    return normalize_user_notes(row[0]) if row else []
+
+
+def save_card_user_notes(user_id: int, entry_id: int, notes) -> list[dict] | None:
+    """Записать заметки. Чужую карточку тронуть нельзя — проверка по владельцу в самом
+    запросе, а не отдельным чтением: между чтением и записью карточка могла смениться.
+
+    Возвращает то, что реально сохранено, — интерфейс показывает именно его, чтобы на
+    экране не осталось того, что не легло в базу."""
+    cleaned = normalize_user_notes(notes)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_webapp_dictionary_queries "
+                "SET user_notes = %s::jsonb, updated_at = NOW() "
+                "WHERE id = %s AND user_id = %s RETURNING id;",
+                (Json(cleaned) if cleaned else None, int(entry_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return cleaned if row else None
 
 
 def search_dictionary_units(

@@ -491,6 +491,8 @@ from backend.database import (
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
     list_user_vocabulary,
+    save_card_user_notes,
+    USER_NOTES_MAX,
     search_dictionary_pool,
     search_shared_dictionary,
     get_dictionary_pool_entry,
@@ -50542,6 +50544,37 @@ def webapp_vocabulary_add_from_pool():
         )
 
     return jsonify({"ok": True, "entry_id": int(saved_id or 0), "already_had": not bool(inserted)})
+
+
+@app.route("/api/webapp/vocabulary/notes", methods=["POST"])
+def webapp_vocabulary_notes():
+    """Личные заметки человека к слову.
+
+    Общий разбор они не трогают: лежат отдельной колонкой при карточке, поэтому
+    улучшение слова для всех никогда их не затрёт, а заметка никогда не уедет
+    другим людям.
+
+    Сохраняем весь список целиком — так интерфейсу не нужно знать про номера заметок
+    и порядок, а нам не нужен отдельный путь на «удалить одну»."""
+    payload = request.get_json(silent=True) or {}
+    user_id = _resolve_webapp_user_id(payload)
+    if not user_id:
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    try:
+        entry_id = int(payload.get("entry_id") or 0)
+    except (TypeError, ValueError):
+        entry_id = 0
+    if entry_id <= 0:
+        return jsonify({"error": "entry_id обязателен"}), 400
+
+    try:
+        saved = save_card_user_notes(int(user_id), entry_id, payload.get("notes"))
+    except Exception:
+        logging.exception("не удалось сохранить заметки: user=%s entry=%s", user_id, entry_id)
+        return jsonify({"error": "Не удалось сохранить заметку"}), 500
+    if saved is None:
+        return jsonify({"error": "Слово не найдено"}), 404
+    return jsonify({"ok": True, "notes": saved, "limit": USER_NOTES_MAX})
 
 
 @app.route("/api/webapp/vocabulary/delete", methods=["POST"])

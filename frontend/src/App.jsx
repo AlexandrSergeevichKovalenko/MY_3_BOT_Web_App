@@ -21,6 +21,7 @@ import ProTrialModal from './components/ProTrialModal';
 import StarsInfoModal from './components/StarsInfoModal';
 import BonusProDaysModal from './components/BonusProDaysModal';
 import VocabSearchOverlay from './components/VocabSearchOverlay';
+import CardOwnNotes from './components/CardOwnNotes';
 import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
 import { splitTranslationSenses } from './dictionary/senses';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
@@ -21890,6 +21891,32 @@ function AppInner() {
     showInlineToast(getDictionarySaveLimitToastText(), 3400, 'limit');
   }, [getDictionarySaveLimitToastText, showInlineToast]);
 
+  // Личные заметки к слову. Подтверждаем сразу, пишем в фоне: заметка короткая, ждать
+  // ответа сервера человеку незачем. Не легло — говорим честно и возвращаем как было.
+  const saveCardOwnNotes = useCallback(async (entryId, notes) => {
+    const id = Number(entryId || 0);
+    if (!id || !initData) return;
+    const applyLocally = (value) => {
+      setVocabItems((prev) => prev.map((it) => (Number(it.id) === id ? { ...it, user_notes: value } : it)));
+      setVocabSearchCardItem((prev) => (prev && Number(prev.id) === id ? { ...prev, user_notes: value } : prev));
+    };
+    applyLocally(notes);
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, entry_id: id, notes }),
+      }, 15000);
+      if (!response.ok) throw new Error('notes save failed');
+      const data = await response.json();
+      // Правила длины и потолка живут на сервере — показываем ровно то, что он записал.
+      if (Array.isArray(data?.notes)) applyLocally(data.notes);
+    } catch (_error) {
+      showInlineToast(tr('Заметка не сохранилась. Попробуйте ещё раз.',
+                         'Notiz nicht gespeichert. Bitte erneut versuchen.'), 3000);
+    }
+  }, [initData, fetchWithTimeout, showInlineToast, tr]);
+
   // Перенести слово из общего словаря к себе. Разбор уже готов, поэтому это копирование,
   // а не новый запрос к модели — ровно ради этого поиск и заглядывает в общий словарь.
   const addWordFromSharedPool = useCallback(async (entry) => {
@@ -34422,6 +34449,14 @@ function AppInner() {
                 </div>
               )}
               <LibraryWordDetail item={item} />
+              {/* Своё — последним, под общим разбором: видно, где наше, а где его. */}
+              {!isPoolEntry && (
+                <CardOwnNotes
+                  notes={Array.isArray(item.user_notes) ? item.user_notes : []}
+                  tr={tr}
+                  onSave={(notes) => { void saveCardOwnNotes(item.id, notes); }}
+                />
+              )}
             </div>
             <div className="vocab-word-actions vocab-word-fullscreen-actions">
               {/* Слово из общего словаря человеку ещё не принадлежит: править и удалять
@@ -39839,6 +39874,13 @@ function AppInner() {
                                           ))}
                                         </div>
                                       )}
+                                      {/* Заметку пишут, чтобы увидеть её ровно здесь —
+                                          поэтому она на виду, а не под лампочкой. */}
+                                      <CardOwnNotes
+                                        notes={Array.isArray(srsCard?.user_notes) ? srsCard.user_notes : []}
+                                        tr={tr}
+                                        readOnly
+                                      />
                                     </>
                                   )}
                                   {!srsRevealAnswer && (
