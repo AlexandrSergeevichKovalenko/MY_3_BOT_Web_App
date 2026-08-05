@@ -18483,6 +18483,58 @@ def has_admin_subscription_available(
             return _run(cur)
 
 
+# Слово, которое человеку предлагать незачем: голый артикль как заголовок — это не
+# слово для изучения. Замер 05.08.2026: такой в словаре автора ровно один — «Eine»,
+# и он стоит ПЕРВЫМ в очереди по частотности, то есть достался бы каждому подписчику.
+_SUBSCRIPTION_BARE_ARTICLES = {
+    "ein", "eine", "einen", "einem", "einer", "eines",
+    "der", "die", "das", "den", "dem", "des",
+}
+_SUBSCRIPTION_RU_WORD_RE = re.compile(r"[а-я]+")
+
+
+def _subscription_headword_key(text: str | None) -> str:
+    """Заголовок без артикля и регистра — по нему узнаём, одно ли это слово."""
+    return _normalize_dictionary_headword_key(text)
+
+
+def _subscription_translation_words(text: str | None) -> set:
+    """Слова перевода для сравнения. «ё» приводим к «е»: «твёрдый» и «твердый» — одно
+    и то же слово, а без этого повтор «Hart» / «hart» проскакивал как разное."""
+    return set(_SUBSCRIPTION_RU_WORD_RE.findall(str(text or "").lower().replace("ё", "е")))
+
+
+def subscription_candidate_is_worth_offering(word_de: str | None, translation: str | None) -> bool:
+    """Годится ли слово к выдаче вообще.
+
+    Отсекаем только бесспорное: голый артикль и запись без русского перевода. Всё
+    остальное оставляем — замер показал, что 95% очереди в порядке, и придирчивый
+    фильтр отнял бы у людей больше, чем дал."""
+    key = _subscription_headword_key(word_de)
+    if not key or key in _SUBSCRIPTION_BARE_ARTICLES:
+        return False
+    return bool(_subscription_translation_words(translation))
+
+
+def subscription_candidate_is_already_known(
+    word_de: str | None, translation: str | None, owned: dict,
+) -> bool:
+    """Это слово человеку уже выдавали — просто в другом написании?
+
+    Сверяем НЕ только заголовок, но и перевод. Замер 05.08.2026: из 673 совпадений по
+    заголовку 194 оказались РАЗНЫМИ словами — «Der Gefallen» (одолжение) против
+    «gefallen» (нравиться), «Das Verhalten» (поведение) против «Verhalten» (вести себя).
+    Схлопни их по заголовку — человек потерял бы 194 настоящих слова. Поэтому повтором
+    считаем только то, у чего пересекается ещё и перевод."""
+    key = _subscription_headword_key(word_de)
+    if not key:
+        return False
+    known = owned.get(key)
+    if not known:
+        return False
+    return bool(known & _subscription_translation_words(translation))
+
+
 def list_admin_subscription_new_candidates(
     *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None,
     limit: int = 20, cursor=None, phrases_only: bool = False,
@@ -18498,7 +18550,8 @@ def list_admin_subscription_new_candidates(
     phrase_clause = "AND a.is_phrase IS TRUE" if phrases_only else ""
     capped = max(1, min(int(limit or 20), 200))
     sql = f"""
-                SELECT a.id, a.canonical_entry_id, a.word_de, e.frequency_rank
+                SELECT a.id, a.canonical_entry_id, a.word_de, e.frequency_rank,
+                       COALESCE(a.translation_ru, a.word_ru)
                 FROM bt_3_webapp_dictionary_queries a
                 JOIN bt_3_dictionary_entries e ON e.id = a.canonical_entry_id
                 {_SUBSCRIPTION_POPULARITY_JOIN_SQL}
@@ -18513,23 +18566,53 @@ def list_admin_subscription_new_candidates(
                 ORDER BY {_SUBSCRIPTION_ORDER_BY_SQL}
                 LIMIT %s;
     """
-    params = (int(source_user_id), *lang_params, int(user_id), capped)
+    # Берём с запасом: часть кандидатов отсеется как повтор или как негодное слово,
+    # а вызывающая сторона просит обычно один. Запас втрое перекрывает 3% отсева.
+    fetch_limit = min(200, max(capped * 3, capped + 10))
+    params = (int(source_user_id), *lang_params, int(user_id), fetch_limit)
 
-    def _run(cur) -> list:
+    owned_sql = """
+        SELECT COALESCE(word_de, ''), COALESCE(translation_ru, word_ru, '')
+        FROM bt_3_webapp_dictionary_queries
+        WHERE user_id = %s AND COALESCE(word_de, '') <> '';
+    """
+
+    def _run(cur) -> tuple:
         cur.execute(sql, params)
-        return cur.fetchall() or []
+        rows = cur.fetchall() or []
+        cur.execute(owned_sql, (int(user_id),))
+        return rows, cur.fetchall() or []
 
     if cursor is not None:
-        rows = _run(cursor)
+        rows, owned_rows = _run(cursor)
     else:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
-                rows = _run(cur)
-    return [
-        {"admin_card_id": int(r[0]), "canonical_entry_id": int(r[1]),
-         "word_de": r[2], "frequency_rank": int(r[3]) if r[3] is not None else None}
-        for r in rows
-    ]
+                rows, owned_rows = _run(cur)
+
+    owned: dict = {}
+    for word, translation in owned_rows:
+        key = _subscription_headword_key(word)
+        if key:
+            owned.setdefault(key, set()).update(_subscription_translation_words(translation))
+
+    out = []
+    for r in rows:
+        word_de, translation = r[2], r[4]
+        if not subscription_candidate_is_worth_offering(word_de, translation):
+            continue
+        if subscription_candidate_is_already_known(word_de, translation, owned):
+            continue
+        key = _subscription_headword_key(word_de)
+        if key:
+            owned.setdefault(key, set()).update(_subscription_translation_words(translation))
+        out.append({
+            "admin_card_id": int(r[0]), "canonical_entry_id": int(r[1]),
+            "word_de": word_de, "frequency_rank": int(r[3]) if r[3] is not None else None,
+        })
+        if len(out) >= capped:
+            break
+    return out
 
 
 def materialize_subscription_card(
