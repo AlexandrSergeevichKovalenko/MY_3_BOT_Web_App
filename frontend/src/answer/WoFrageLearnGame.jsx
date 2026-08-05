@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import useFitText from './useFitText.js';
 import useWideScreen from './useWideScreen.js';
 import AskOverlay from './AskOverlay.jsx';
+import SaveWordChip from './SaveWordChip.jsx';
 
 // Wo-Frage Trainer — self-paced learning deck for question words (companion to the
 // Wo-Frage Sprint, same look). Each card: a tiny Q&A with the question word blanked
@@ -76,12 +77,19 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
         <span className="al-progress">📚 Wo-Fragen</span>
         {streak > 1 ? <span className="al-streak">🔥 {streak}</span> : <span />}
       </div>
-      <div className={`as-word ans-r-prompt wo-word${answered ? (picked_ok ? ' ok' : ' bad') : ''}`}>
+      <div className={`as-word ans-r-prompt wo-word save-host${answered ? (picked_ok ? ' ok' : ' bad') : ''}`}>
         <span className="fit-line wo-line" lang="de" ref={phraseFit}>
           <span>{pre}</span>
           <span className="wo-slot">{answered ? correct : '?'}</span>
           <span>{post}</span>
         </span>
+        {/* Забирают отсюда не всю фразу, а управление глагола (warten auf …) — ради него
+            карточка и существует. Показываем после ответа, вместе с разбором. */}
+        {answered && card.lemma ? (
+          <SaveWordChip api={api} className="save-chip--corner"
+            word={card.lemma} translation={card.verb_ru || ''}
+            originProcess="wofrage_learn_save" />
+        ) : null}
       </div>
       {card.clue ? <div className="wo-clue">{card.clue}</div> : null}
       <div className="as-buttons ans-r-work wo-buttons">
@@ -109,8 +117,6 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
         : <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>}
       {askOpen ? (
         <AskOverlay api={api} onClose={() => setAskOpen(false)}
-          saveText={card.lemma || ''}
-          saveTranslation={card.verb_ru || ''}
           context={[
             'Интерактив: Wo-Fragen (вопросительные местоименные наречия / Präpositionaladverbien).',
             card.s ? `Вопрос: ${card.s.replace('___', correct)}` : '',

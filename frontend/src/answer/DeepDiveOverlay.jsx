@@ -308,8 +308,6 @@ export default function DeepDiveOverlay({ startParam }) {
         <AskOverlay
           api={api}
           onClose={() => setAskOpen(false)}
-          saveText={de || ''}
-          saveTranslation={ru || ''}
           context={[
             `Слово: ${de}.`,
             ru ? `Перевод: ${ru}.` : '',

@@ -21,6 +21,7 @@ import WoFrageLearnGame from './WoFrageLearnGame.jsx';
 import AdjektivLearnGame from './AdjektivLearnGame.jsx';
 import BattleHistory from './BattleHistory.jsx';
 import AskOverlay from './AskOverlay.jsx';
+import SaveWordChip from './SaveWordChip.jsx';
 import Toast, { useToast } from './Toast.jsx';
 import { saveErrorToast } from './saveNotice.js';
 import installCardAutoFit from './fitCard.js';
@@ -160,7 +161,7 @@ async function playWordTts(text) {
 }
 
 
-function RebusResult({ result }) {
+function RebusResult({ result, api }) {
   const good = !!result.is_correct;
   const mine = String(result.user_answer || '').trim();
   return (
@@ -170,6 +171,9 @@ function RebusResult({ result }) {
         {good ? '' : 'Richtige Antwort: '}
         <b>{result.full_word}</b>
         {result.meaning_ru ? <span className="ans-meaning"> · {result.meaning_ru}</span> : null}
+        <SaveWordChip api={api} className="save-chip--inline"
+          word={result.full_word || ''} translation={result.meaning_ru || ''}
+          originProcess="rebus_save" />
       </div>
       {/* Ohne die eigene Antwort daneben kann man den Fehler nicht vergleichen. */}
       {!good && mine ? (
@@ -310,7 +314,7 @@ function letterDiff(userText, correctText) {
   return bad.size ? { a, b, bad } : null;
 }
 
-function AnagramResult({ result }) {
+function AnagramResult({ result, api }) {
   const good = !!result.is_correct;
   const mine = result.user_answer || '';
   const diff = good ? null : letterDiff(mine, result.correct_word);
@@ -322,6 +326,9 @@ function AnagramResult({ result }) {
         {good ? '' : 'Richtiges Wort: '}
         <b>{result.correct_word}</b>
         {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
+        <SaveWordChip api={api} className="save-chip--inline"
+          word={result.correct_word || ''} translation={result.hint_ru || ''}
+          originProcess="anagram_save" />
       </div>
       {diff ? (
         <div className="ag-diff">
@@ -1068,10 +1075,10 @@ export default function AnswerOverlay({ startParam }) {
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
         </div>
-        {isRebus ? <RebusResult result={result} />
+        {isRebus ? <RebusResult result={result} api={api} />
           : isAufgabe ? <AufgabeResult result={result} />
           : isMC ? <MCResult result={result} api={api} />
-          : (isAnagram || isFreeform) ? <AnagramResult result={result} />
+          : (isAnagram || isFreeform) ? <AnagramResult result={result} api={api} />
           : isListening ? <ListeningResult result={result} />
           : <CrosswordResult result={result} />}
         {result.ranking ? <RankingCard ranking={result.ranking} /> : null}
@@ -1081,8 +1088,6 @@ export default function AnswerOverlay({ startParam }) {
       </div>
       {askOpen ? (
         <AskOverlay api={api} onClose={() => setAskOpen(false)}
-          saveText={result.full_word || result.correct_word || ''}
-          saveTranslation={result.meaning_ru || ''}
           context={[
             `Интерактив: ${heading || eyebrow || ''}.`,
             result.full_word ? `Слово: ${result.full_word}.` : '',

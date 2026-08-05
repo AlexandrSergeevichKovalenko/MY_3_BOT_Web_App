@@ -2,6 +2,7 @@ import useFitText from './useFitText.js';
 import useWideScreen from './useWideScreen.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import AskOverlay from './AskOverlay.jsx';
+import SaveWordChip from './SaveWordChip.jsx';
 
 // Artikel Trainer — the self-paced LEARNING deck (companion to the timed Sprint).
 // Look at a noun, tap der/die/das, get instant ✅/❌ + a memory hint, then swipe
@@ -256,8 +257,15 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       {c?.image ? (
         <div className="al-img"><img src={c.image} alt="" loading="eager" /></div>
       ) : null}
-      <div className={`as-word ans-r-prompt ${chosen ? c.a : ''}`}>
+      <div className={`as-word ans-r-prompt save-host ${chosen ? c.a : ''}`}>
         <span className="al-word-text" lang="de" ref={wordRef}>{c ? c.w : '…'}</span>
+        {/* Дискетка появляется вместе с ответом: до ответа она сохранила бы слово ВМЕСТЕ
+            с артиклем и тем самым выдала бы правильный вариант. */}
+        {chosen && c ? (
+          <SaveWordChip api={api} className="save-chip--corner"
+            word={`${c.a ? `${c.a} ` : ''}${c.w}`.trim()} translation={c.ru || ''}
+            originProcess="artikel_learn_save" />
+        ) : null}
       </div>
       {/* Двуродовые (der/die Flur): артикль решает смысл, поэтому перевод показываем
           ВМЕСТЕ с вопросом — и только у них. Иначе вопрос неотвечаем. */}
@@ -306,8 +314,6 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       <div className="ans-card as-card al-card">{body}</div>
       {askOpen ? (
         <AskOverlay api={api} onClose={() => setAskOpen(false)}
-          saveText={_ac ? `${_ac.a ? _ac.a + ' ' : ''}${_ac.w}`.trim() : ''}
-          saveTranslation={_ac ? (_ac.ru || '') : ''}
           context={[
             'Интерактив: Artikel Trainer (der/die/das).',
             _ac ? `Слово: ${_ac.a ? _ac.a + ' ' : ''}${_ac.w}.` : '',

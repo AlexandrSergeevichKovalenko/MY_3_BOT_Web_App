@@ -1,4 +1,3 @@
-import { saveErrorToast } from './saveNotice.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { renderRich } from './richText.jsx';
@@ -23,15 +22,15 @@ function readView() {
 // spot. Chat thread (iMessage-style): your question, then the model's answer below.
 // `api(path, body)` posts JSON (initData injected by the host); `context` is a short
 // description of the current task so the answer is on-point.
-export default function AskOverlay({ api, context = '', onClose, saveText = '', saveTranslation = '' }) {
+//
+// Только вопросы. Сохранение слова отсюда убрано: чтобы забрать слово, человеку
+// приходилось открывать окно «Спросить» и искать внизу кнопку «Сохранить» — глухо.
+// Теперь слово сохраняет дискетка в углу самого слова (SaveWordChip.jsx).
+export default function AskOverlay({ api, context = '', onClose }) {
   const [messages, setMessages] = useState([]); // {role:'user'|'bot', text}
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [saveState, setSaveState] = useState('idle'); // 'idle'|'saving'|'saved'|'error'
-  const [saveErrorText, setSaveErrorText] = useState('');
-  const [savedRu, setSavedRu] = useState('');
-  const [savedWord, setSavedWord] = useState(''); // the text actually saved (for the ✓ label)
   const [pos, setPos] = useState(null); // {x, y} top-left; null until measured
   const panelRef = useRef(null);
   const threadRef = useRef(null);
@@ -78,9 +77,9 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Видимая полоса изменилась (выехала клавиатура, сохранение сделало окно выше) — возвращаем
+  // Видимая полоса изменилась (выехала клавиатура, ответ сделал окно выше) — возвращаем
   // окно внутрь неё. Без этого оно остаётся под клавиатурой и его приходится тянуть рукой.
-  useEffect(() => { setPos((prev) => (prev ? clamp(prev.x, prev.y) : prev)); }, [clamp, saveState, messages.length, busy]);
+  useEffect(() => { setPos((prev) => (prev ? clamp(prev.x, prev.y) : prev)); }, [clamp, messages.length, busy]);
 
   const onHeaderPointerDown = useCallback((e) => {
     const start = pos || { x: 0, y: 0 };
@@ -132,62 +131,6 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
     }
   }, [input, busy, messages, api, context]);
 
-  // Save through the SAME canonical flow as the Reader / YouTube: first a
-  // dictionary lookup (LLM builds the real Russian translation + article +
-  // examples — the full card), then persist that card. Sending the German text
-  // straight to /save (the old behaviour) left grammar-game words with no Russian
-  // translation, so the entry showed German on both sides.
-  const save = useCallback(() => {
-    // Save whatever the user typed in the field; if it's empty, fall back to the
-    // task's fixed word/sentence (the old behaviour). The lookup→save pipeline below
-    // handles word-vs-sentence, article + Grundform, grammar correction, translation
-    // and the language pair — same as the Reader / dictionary save everywhere else.
-    const word = (input.trim() || String(saveText || '').trim());
-    if (saveState === 'saving' || saveState === 'saved' || !word) return;
-    // Optimistic: confirm instantly and release the user — don't make them wait on
-    // the GPT lookup + persist. The canonical lookup→save runs in the background and
-    // enriches the ✓ label with the translation when it lands. Only if it genuinely
-    // fails do we revert to a retryable error state.
-    setSavedWord(word);
-    setSavedRu('');
-    setSaveState('saved');
-    try { window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success'); } catch (_e) { /* ignore */ }
-    (async () => {
-      try {
-        const lookup = await api('/api/webapp/dictionary', { word });
-        const item = (lookup && lookup.item) || {};
-        const direction = String(lookup?.direction || '').toLowerCase();
-        const isDeRu = direction !== 'ru-de'; // task words are German → de-ru
-        const sourceText = String(
-          (isDeRu ? (item.word_de || item.translation_de) : (item.word_ru || item.translation_ru)) || word,
-        ).trim();
-        const targetText = String(
-          (isDeRu ? (item.translation_ru || item.word_ru) : (item.translation_de || item.word_de))
-          || saveTranslation || '',
-        ).trim();
-        await api('/api/webapp/dictionary/save', {
-          source_text: sourceText,
-          target_text: targetText,
-          translation_ru: String(item.translation_ru || (isDeRu ? targetText : '')).trim(),
-          translation_de: String(item.translation_de || (isDeRu ? '' : targetText)).trim(),
-          direction: direction || 'de-ru',
-          response_json: item,
-          origin_process: 'ask_overlay',
-        });
-        setSavedRu(isDeRu ? targetText : sourceText);
-      } catch (err) {
-        // Причина важнее факта: чаще всего это дневной лимит бесплатного тарифа, и
-        // «повторить» тут не поможет — человек должен это понимать.
-        setSaveState('error');
-        setSaveErrorText(saveErrorToast(err).text);
-      }
-    })();
-  }, [saveState, saveText, saveTranslation, api, input]);
-
-  // Truncated label for the button when saving a long sentence.
-  const saveCandidate = (input.trim() || String(saveText || '').trim());
-  const saveLabelWord = saveCandidate.length > 40 ? `${saveCandidate.slice(0, 40)}…` : saveCandidate;
-
   // Высоту окна тоже держим в пределах видимой полосы: с открытой клавиатурой места мало,
   // и ужиматься должна переписка (у неё своя прокрутка), а не вылезать всё окно.
   const maxH = Math.max(180, Math.round(view.height - 12));
@@ -230,12 +173,8 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
       <div className="ask-pop-input">
         <textarea
           value={input}
-          onChange={(e) => {
-            setInput(e.target.value);
-            // editing the field re-enables Save for a fresh entry
-            if (saveState === 'saved' || saveState === 'error') { setSaveState('idle'); setSavedWord(''); }
-          }}
-          placeholder="Вопрос — или впиши слово/фразу и нажми Сохранить"
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Спроси что угодно про это задание"
           rows={3}
           autoCapitalize="sentences"
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ask(); }}
@@ -244,18 +183,6 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
           {busy ? '…' : 'Спросить'}
         </button>
       </div>
-      <button
-        type="button"
-        className={`ask-pop-save ${saveState === 'saved' ? 'is-saved' : ''} ${saveState === 'error' ? 'is-error' : ''}`}
-        onClick={save}
-        disabled={saveState === 'saving' || saveState === 'saved' || !saveCandidate}
-      >
-        {saveState === 'saving' ? '⏳ Сохраняю…'
-          : saveState === 'saved'
-            ? (savedRu ? `✓ «${savedWord}» — ${savedRu}` : `✓ «${savedWord}» в словаре`)
-            : saveState === 'error' ? (saveErrorText || '⚠️ Не вышло — повторить')
-              : saveCandidate ? `💾 Сохранить «${saveLabelWord}»` : '💾 Сохранить'}
-      </button>
     </div>
   ), document.body);
 }

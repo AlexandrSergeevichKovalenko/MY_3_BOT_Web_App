@@ -197,12 +197,10 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
       {answered
         ? <button className="ans-btn" onClick={next}>Weiter →</button>
         : <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>}
+      {/* Сохранение здесь своё и лучше: тап по слову во фразе открывает перевод и
+          «в словарь». Дубля в окне «Спросить» не держим — оно только про вопросы. */}
       {askOpen ? (
         <AskOverlay api={api} onClose={() => setAskOpen(false)}
-          saveText={card.noun
-            ? `${card.noun_article ? card.noun_article + ' ' : ''}${card.noun}`.trim()
-            : (card.adj || '')}
-          saveTranslation={card.noun ? (card.noun_ru || '') : (card.adj_ru || '')}
           context={[
             'Интерактив: Adjektivendungen (окончания прилагательных).',
             card.full ? `Фраза: ${card.full}.` : '',
