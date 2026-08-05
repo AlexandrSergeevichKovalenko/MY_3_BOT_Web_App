@@ -23,6 +23,7 @@ from backend.config_mistakes_data import (
 )
 from backend.grammar_focuses import (
     focus_matches_error_pair,
+    focus_supported_at_level,
     get_legacy_shared_pool_focus_by_key,
     resolve_shared_sentence_pool_focus,
     resolve_webapp_focus,
@@ -794,11 +795,18 @@ def _sentence_fits_level(sentence: str, level: str | None) -> bool:
         return True
 
     if level_key == "a2":
-        if word_count < 4 or word_count > 12:
+        # A2 — это уже уровень придаточного: weil / dass / wenn / obwohl и Relativsatz
+        # проходят именно здесь. Прежнее правило запрещало на A2 любую запятую и любой союз
+        # («который», «потому что», «если») — и тем самым отвергало РОВНО те предложения,
+        # которые само же задание требовало. Три темы про придаточные стояли пустыми, а
+        # ночная генерация уходила в мусор по пять попыток за корзину (05.08.2026).
+        # Теперь: одно придаточное разрешено (до двух запятых — придаточное в середине даёт
+        # обе), простые союзы разрешены; сложные обороты уровня B2+ по-прежнему нет.
+        if word_count < 4 or word_count > 14:
             return False
-        if comma_count > 0 or hard_punctuation > 0 or dash_count > 0:
+        if comma_count > 2 or hard_punctuation > 0 or dash_count > 0:
             return False
-        if has_medium or has_advanced:
+        if has_advanced:
             return False
         return True
 
@@ -3253,6 +3261,12 @@ async def prewarm_shared_translation_sentence_pool(
                     if str(item or "").strip()
                 ] or list(normalized_levels)
                 for level_key in focus_levels:
+                    # Тему, которую на этом уровне не преподаём, у модели не просим вовсе.
+                    # Иначе выходит бессмыслица: просим у A1 предложение с придаточным, а наш
+                    # же фильтр уровня режет всё с запятой и союзом — пять платных попыток в
+                    # мусор (см. FOCUS_MIN_LEVEL в grammar_focuses).
+                    if not focus_supported_at_level(focus_key, level_key):
+                        continue
                     bucket_key = (focus_key, level_key)
                     min_ready_for_bucket = max(
                         1,

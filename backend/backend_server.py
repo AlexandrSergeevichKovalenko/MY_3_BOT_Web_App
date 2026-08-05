@@ -809,6 +809,7 @@ from backend.grammar_focuses import (
     GRAMMAR_FOCUS_PRESETS,
     WEBAPP_TOPICS,
     focus_matches_error_pair,
+    focus_supported_at_level,
     get_grammar_focus_by_key,
     list_legacy_shared_pool_focuses,
     resolve_webapp_focus,
@@ -25167,6 +25168,10 @@ def _build_translation_focus_pool_bucket_targets(
             if str(item or "").strip()
         ]
         for level in focus_levels:
+            # Тема ниже своего уровня корзины не получает вовсе: без цели и без порога она
+            # не считается дефицитом и не попадает в ночной добор (см. FOCUS_MIN_LEVEL).
+            if not focus_supported_at_level(focus_key, level):
+                continue
             # Rare levels (a1/a2/c2) keep a small always-present baseline; common
             # levels (b1/b2/c1) use the full base. The demand bonus + history
             # signals below still raise rare levels when learners are active.
@@ -25625,6 +25630,12 @@ def _upsert_translation_focus_pool_daily_snapshot_from_inventory(
         }
         for row in list(current_rows or [])
         if str(row.get("focus_key") or "").strip() and str(row.get("level") or "").strip()
+        # Темы, которые на этом уровне не преподаём, из снимка убираем совсем: иначе они
+        # вечно висят «дефицитом», который мы намеренно не собираемся закрывать.
+        and focus_supported_at_level(
+            str(row.get("focus_key") or "").strip(),
+            str(row.get("level") or "").strip().lower(),
+        )
     ]
     return upsert_translation_focus_pool_daily_snapshot(
         snapshot_date=snapshot_date,

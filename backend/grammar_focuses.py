@@ -151,6 +151,41 @@ WEBAPP_TOPICS = [
     CUSTOM_FOCUS_LABEL,
 ]
 
+# С какого уровня тема вообще имеет смысл.
+#
+# Зачем это здесь. Предложение для A1 по нашему же правилу — 3–8 слов, без запятых и без
+# союзов «который / потому что / если». А темы ниже без придаточного не существуют: нельзя
+# написать Relativsatz без «который» и запятой. Раньше мы всё равно заводили для них корзины
+# на A1: ночью просили у модели предложения, модель их присылала, и наш же фильтр уровня
+# выбрасывал всё до единого — по пять платных попыток на корзину, каждую ночь, с нулём на
+# выходе (разобрано 05.08.2026 по логам боевого прогона).
+#
+# Здесь ровно одно решение: такие темы начинаются с A2. Всё, что в этом словаре не названо,
+# доступно на всех уровнях, как и раньше.
+FOCUS_MIN_LEVEL: dict[str, str] = {
+    "subordinate_clause_word_order": "a2",   # порядок слов в придаточном
+    "subordinating_conjunctions": "a2",      # weil / dass / wenn / obwohl
+    "relative_clauses": "a2",                # Relativsaetze
+    "konjunktiv_ii": "a2",                   # «если бы …, то …» — тоже придаточное
+    "passive_voice": "a2",                   # Passiv на A1 не проходят
+    "zu_infinitive": "a2",                   # um … zu — инфинитивный оборот через запятую
+}
+
+_LEVEL_ORDER: dict[str, int] = {"a1": 0, "a2": 1, "b1": 2, "b2": 3, "c1": 4, "c2": 5}
+
+
+def focus_supported_at_level(focus_key: str | None, level: str | None) -> bool:
+    """Имеет ли смысл эта тема на этом уровне. Незнакомые ключи/уровни — да (как раньше)."""
+    key = str(focus_key or "").strip()
+    min_level = FOCUS_MIN_LEVEL.get(key)
+    if not min_level:
+        return True
+    current = _LEVEL_ORDER.get(str(level or "").strip().lower())
+    minimum = _LEVEL_ORDER.get(min_level)
+    if current is None or minimum is None:
+        return True
+    return current >= minimum
+
 LEGACY_SHARED_POOL_BUCKETS: dict[str, dict[str, str]] = {
     "b1": {
         "key": "legacy_general_b1",
