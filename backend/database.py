@@ -4650,6 +4650,38 @@ def unit_card_is_about_the_same_word(*, unit_lemma_key: str | None, card_word: s
     return key == _normalize_dictionary_headword_key(unit_lemma_key)
 
 
+# Принимает ли общий пул НОВЫЙ разбор. Выключено с 05.08.2026: дом разбора — единица,
+# а два склада одного и того же неизбежно расходятся (весь день 04–05.08 ушёл на то,
+# чтобы свести их обратно). Пул при этом остаётся читаемым: 6 363 готовых разбора никуда
+# не деваются и продолжают находиться, просто новых там не появляется.
+#
+# Строки пула по-прежнему заводятся: на них держится связь карточки с общим словом
+# (`canonical_entry_id`) и вся защита от дублей. Замирает только содержимое разбора.
+#
+# Включить обратно — DICTIONARY_POOL_CARD_WRITES_ENABLED=1, без выкатки кода.
+DICTIONARY_POOL_CARD_WRITES_ENABLED = str(
+    os.getenv("DICTIONARY_POOL_CARD_WRITES_ENABLED") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _pool_card_update_sql(new_value_sql: str, stored_column: str = "response_json") -> str:
+    """Кусок SQL, решающий судьбу разбора в пуле при обновлении строки.
+
+    Пул закрыт для записи — оставляем что лежит. Открыт — прежнее правило «полная
+    карточка вытесняет тонкую». Вынесено функцией, чтобы правило было ОДНО на оба
+    места записи и его можно было проверить тестом, не поднимая базу."""
+    if not DICTIONARY_POOL_CARD_WRITES_ENABLED:
+        return stored_column
+    return (
+        f"CASE WHEN {stored_column} IS NULL THEN {new_value_sql}"
+        f" WHEN {new_value_sql} IS NULL THEN {stored_column}"
+        f" WHEN {_dictionary_pool_rich_sql(f'({new_value_sql})')}"
+        f"      AND NOT {_dictionary_pool_rich_sql(stored_column)}"
+        f"     THEN {new_value_sql}"
+        f" ELSE {stored_column} END"
+    )
+
+
 DICTIONARY_POOL_RICH_SQL_STORED = _dictionary_pool_rich_sql("bt_3_dictionary_entries.response_json")
 DICTIONARY_POOL_RICH_SQL_EXCLUDED = _dictionary_pool_rich_sql("EXCLUDED.response_json")
 
@@ -4848,14 +4880,7 @@ def _upsert_dictionary_canonical_entry_with_cursor(
                 translation_ru = COALESCE(NULLIF(translation_ru, ''), %(translation_ru)s),
                 -- Текст и его нормализованные ключи НЕ трогаем: они держат уникальность
                 -- строки, а мы сюда пришли именно для того, чтобы новой строки не заводить.
-                response_json = CASE
-                    WHEN response_json IS NULL THEN %(payload)s::jsonb
-                    WHEN %(payload)s::jsonb IS NULL THEN response_json
-                    WHEN {_dictionary_pool_rich_sql("(%(payload)s::jsonb)")}
-                         AND NOT {DICTIONARY_POOL_RICH_SQL_STORED}
-                        THEN %(payload)s::jsonb
-                    ELSE response_json
-                END,
+                response_json = {_pool_card_update_sql("%(payload)s::jsonb")},
                 updated_at = NOW()
             WHERE id = %(slot_id)s
             RETURNING id;
@@ -4909,13 +4934,7 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             -- Раньше стоял COALESCE(старое, новое) — тонкая запись (сохранение из
             -- личного чата бота, импорт, тап в тренажёре) навсегда фиксировала пустую
             -- карточку, и богатый разбор поверх неё уже не ложился.
-            response_json = CASE
-                WHEN bt_3_dictionary_entries.response_json IS NULL THEN EXCLUDED.response_json
-                WHEN EXCLUDED.response_json IS NULL THEN bt_3_dictionary_entries.response_json
-                WHEN {DICTIONARY_POOL_RICH_SQL_EXCLUDED} AND NOT {DICTIONARY_POOL_RICH_SQL_STORED}
-                    THEN EXCLUDED.response_json
-                ELSE bt_3_dictionary_entries.response_json
-            END,
+            response_json = {_pool_card_update_sql("EXCLUDED.response_json", "bt_3_dictionary_entries.response_json")},
             updated_at = NOW()
         RETURNING id;
         """,
@@ -4932,7 +4951,9 @@ def _upsert_dictionary_canonical_entry_with_cursor(
             str(translation_de or "").strip() or None,
             str(word_de or "").strip() or None,
             str(translation_ru or "").strip() or None,
-            Json(payload) if payload else None,
+            # Пул закрыт для разбора — новая строка заводится как опознавательная:
+            # тексты и связь есть, содержимого нет. Разбор живёт на единице.
+            Json(payload) if (payload and DICTIONARY_POOL_CARD_WRITES_ENABLED) else None,
         ),
     )
     row = cursor.fetchone()
