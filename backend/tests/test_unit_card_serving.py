@@ -96,7 +96,7 @@ def test_missing_sides_are_refused():
 # ── пакетная надстройка для тренажёров и повторений ───────────────────────────
 
 def _fake_units(rows):
-    """База, отдающая связку карточка → разбор единицы."""
+    """База, отдающая связку карточка → разбор единицы → личные заметки."""
     import contextlib
 
     class Cursor:
@@ -129,7 +129,7 @@ def _fake_units(rows):
 def test_batch_fills_cards_from_their_units(monkeypatch):
     from backend import database
     monkeypatch.setattr(database, "get_db_connection_context",
-                        _fake_units([(1, "der Wandel", UNIT, "wandel")]))
+                        _fake_units([(1, "der Wandel", UNIT, "wandel", None)]))
     items = [{"id": 1, "response_json": dict(CARD)}, {"id": 2, "response_json": dict(CARD)}]
     database.attach_unit_content_to_cards(items)
     assert items[0]["response_json"]["memory_tip"] == UNIT["memory_tip"]
@@ -140,7 +140,7 @@ def test_batch_refuses_a_unit_about_another_word(monkeypatch):
     from backend import database
     monkeypatch.setattr(database, "get_db_connection_context",
                         _fake_units([(1, "einen Fusselrasierer benutzen", UNIT,
-                                      "использовать машинку для удаления катышков")]))
+                                      "использовать машинку для удаления катышков", None)]))
     items = [{"id": 1, "response_json": dict(CARD)}]
     database.attach_unit_content_to_cards(items)
     assert items[0]["response_json"] == CARD
@@ -153,3 +153,28 @@ def test_batch_survives_junk_input(monkeypatch):
     assert database.attach_unit_content_to_cards(None) is None
     weird = [{"id": None}, "строка", {"нет ключа": 1}]
     assert database.attach_unit_content_to_cards(weird) is weird
+
+
+def test_batch_brings_personal_notes_along(monkeypatch):
+    """Заметки едут той же строкой, что и разбор, — но ложатся ОТДЕЛЬНЫМ полем.
+    Внутрь разбора им нельзя: разбор общий и обновляется, заметка личная и нет."""
+    from backend import database
+    notes = [{"label": "Моё", "text": "не путать с wandern"}]
+    monkeypatch.setattr(database, "get_db_connection_context",
+                        _fake_units([(1, "der Wandel", UNIT, "wandel", notes)]))
+    items = [{"id": 1, "response_json": dict(CARD)}]
+    database.attach_unit_content_to_cards(items)
+    assert items[0]["user_notes"] == notes
+    assert "user_notes" not in items[0]["response_json"]
+
+
+def test_card_without_a_unit_still_gets_its_notes(monkeypatch):
+    """У слова может не быть единицы — заметка всё равно должна доехать."""
+    from backend import database
+    notes = [{"label": "", "text": "личное"}]
+    monkeypatch.setattr(database, "get_db_connection_context",
+                        _fake_units([(1, "der Wandel", None, None, notes)]))
+    items = [{"id": 1, "response_json": dict(CARD)}]
+    database.attach_unit_content_to_cards(items)
+    assert items[0]["user_notes"] == notes
+    assert items[0]["response_json"] == CARD

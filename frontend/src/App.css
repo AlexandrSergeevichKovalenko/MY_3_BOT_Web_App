@@ -31183,3 +31183,116 @@ html[data-scheme="light"] .story-modal-guess-answer,
 .vocab-search-button .vsb-label { flex: 1; min-width: 0; color: #94a3b8; }
 .webapp-page.is-theme-light .vocab-search-button .vsb-glass,
 .webapp-page.is-theme-light .vocab-search-button .vsb-label { color: #8a745e; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   «МОЁ» — личные заметки человека к слову (CardOwnNotes.jsx)
+
+   Обведены янтарным намеренно: сразу видно, где общий разбор, а где своё. Общий
+   разбор обновляется для всех, заметка не меняется никогда — граница между ними
+   должна читаться глазами, без объяснений.
+   ───────────────────────────────────────────────────────────────────────────── */
+.own-notes {
+  margin-top: 14px;
+  border: 1px solid rgba(214,122,36,0.55);
+  background: rgba(214,122,36,0.07);
+  border-radius: 14px;
+  padding: 10px 12px 11px;
+}
+.own-notes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #f0a04b;
+  margin-bottom: 8px;
+}
+.own-notes-count { letter-spacing: 0.04em; opacity: 0.75; }
+.own-notes-empty {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(243,238,228,0.6);
+}
+
+.own-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(214,122,36,0.18);
+}
+.own-note:last-of-type { border-bottom: 0; }
+.own-note-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.own-note-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #f0a04b;
+}
+.own-note-text { font-size: 14px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+
+.own-note-label-input,
+.own-note-text-input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  padding: 2px 0;
+  outline: none;
+  resize: none;
+}
+.own-note-label-input {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #f0a04b;
+}
+.own-note-text-input { font-size: 14px; line-height: 1.4; }
+.own-note-label-input::placeholder,
+.own-note-text-input::placeholder { color: rgba(243,238,228,0.42); text-transform: none; letter-spacing: 0; font-weight: 400; }
+.own-note-label-input:focus, .own-note-text-input:focus { outline: none; }
+
+.own-note-del {
+  flex: none;
+  width: 24px; height: 24px;
+  border: 0; border-radius: 999px;
+  background: rgba(255,255,255,0.1);
+  color: inherit;
+  font-size: 15px; line-height: 1;
+  display: grid; place-items: center;
+  cursor: pointer; padding: 0;
+}
+.own-note-add {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px dashed rgba(214,122,36,0.75);
+  background: transparent;
+  color: #f0a04b;
+  border-radius: 11px;
+  padding: 9px 0;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.own-note-add:disabled { opacity: 0.45; cursor: default; }
+
+/* На карточке повторения блок компактнее: там мало места и он только для чтения. */
+.fsrs-study-card .own-notes { margin-top: 10px; padding: 8px 10px 9px; }
+.fsrs-study-card .own-note { padding: 5px 0; }
+.fsrs-study-card .own-note-text { font-size: 13.5px; }
+
+/* ── светлая тема ── */
+.webapp-page.is-theme-light .own-notes-head,
+.webapp-page.is-theme-light .own-note-label,
+.webapp-page.is-theme-light .own-note-label-input,
+.webapp-page.is-theme-light .own-note-add { color: #b45f13; }
+.webapp-page.is-theme-light .own-notes-empty { color: #8b8072; }
+.webapp-page.is-theme-light .own-note-label-input::placeholder,
+.webapp-page.is-theme-light .own-note-text-input::placeholder { color: #a2968a; }
+.webapp-page.is-theme-light .own-note-del { background: rgba(60,48,30,0.1); color: #5d5244; }
