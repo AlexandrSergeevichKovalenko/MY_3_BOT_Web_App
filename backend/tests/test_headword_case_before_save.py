@@ -75,3 +75,41 @@ class HeadwordCaseBeforeSaveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class HeadwordCaseAllCapsTests(unittest.TestCase):
+    """Слово целиком капсом. Замена одной первой буквы дала бы «eRGATTERN» — хуже,
+    чем было. Живой случай из базы, найден при сплошной чистке 05.08.2026."""
+
+    def test_all_caps_word_is_lowered_whole(self):
+        fixed = bs._fix_headword_case_before_save({
+            "word_de": "ERGATTERN",
+            "response_json": {"part_of_speech": "verb", "word_de": "ERGATTERN"},
+        })
+        self.assertEqual(fixed["word_de"], "ergattern")
+        self.assertEqual(fixed["response_json"]["word_de"], "ergattern")
+
+    def test_single_capital_letter_is_not_broken(self):
+        fixed = bs._fix_headword_case_before_save({
+            "word_de": "A",
+            "response_json": {"part_of_speech": "adverb"},
+        })
+        self.assertEqual(fixed["word_de"], "a")
+
+    def test_broken_case_inside_the_word_is_lowered_whole(self):
+        """«eRGATTERN» осталось от прежней версии этой же правки — она опускала только
+        первую букву. Заглавная внутри слова у глагола не бывает никогда."""
+        for broken in ("eRGATTERN", "GeLingen", "anPassen"):
+            fixed = bs._fix_headword_case_before_save({
+                "word_de": broken,
+                "response_json": {"part_of_speech": "verb"},
+            })
+            self.assertEqual(fixed["word_de"], broken.lower(), broken)
+
+    def test_broken_case_with_a_doubtful_part_of_speech_is_left_alone(self):
+        """«zEITSCHRIFT» помечено прилагательным, хотя это существительное. Опустить
+        его — испортить. Внутренней заглавной верим только у глагола."""
+        for word in ("zEITSCHRIFT", "eROBERUNG"):
+            kwargs = {"word_de": word, "response_json": {"part_of_speech": "adjective"}}
+            self.assertIs(bs._fix_headword_case_before_save(kwargs), kwargs, word)

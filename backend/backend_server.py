@@ -9047,15 +9047,26 @@ def _fix_headword_case_before_save(kwargs: dict) -> dict:
     («Das Problem wurde behoben.») заглавная стоит по делу, а у существительного она
     обязательна."""
     word_de = str(kwargs.get("word_de") or "").strip()
-    if not word_de or " " in word_de or not word_de[:1].isupper():
+    # Заглавная в таком слове — ошибка где угодно, не только в первой букве:
+    # «eRGATTERN» осталось от прежней версии этой же правки.
+    if not word_de or " " in word_de or word_de == word_de.lower():
         return kwargs
     response_json = kwargs.get("response_json")
     if not isinstance(response_json, dict):
         return kwargs
     pos = str(response_json.get("part_of_speech") or "").strip().lower()
-    if pos not in _LOWERCASE_HEADWORD_POS:
+    # Заглавная внутри слова — сломанное написание, но верить части речи тут можно
+    # только у глагола: в базе такими оказались «zEITSCHRIFT» и «eROBERUNG» —
+    # существительные с неверной пометкой, и опустить их значило бы испортить.
+    if any(ch.isupper() for ch in word_de[1:]):
+        if pos != "verb":
+            return kwargs
+    elif pos not in _LOWERCASE_HEADWORD_POS:
         return kwargs
-    fixed_word = word_de[:1].lower() + word_de[1:]
+    # Заглавные внутри слова — сломанное написание, опускаем целиком: «ERGATTERN» с
+    # заменой одной буквы дало бы «eRGATTERN», то есть хуже, чем было.
+    fixed_word = word_de.lower() if any(ch.isupper() for ch in word_de[1:]) \
+        else word_de[:1].lower() + word_de[1:]
     fixed = dict(kwargs)
     fixed["word_de"] = fixed_word
     if str(response_json.get("word_de") or "").strip() == word_de:
