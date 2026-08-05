@@ -57,6 +57,29 @@ _GRAMMAR_NOTE_RE = re.compile(
 )
 
 
+_CYRILLIC_CAPITAL_FIRST = re.compile(r"^[А-ЯЁ]")
+
+
+def looks_like_example_not_translation(text: str) -> bool:
+    """Значение из разбора — это перевод слова или пример его употребления?
+
+    Пример распознаётся по знаку конца или по заглавной букве при трёх и более словах:
+    «Ваша подписка успешно отменена», «Йо, ты можешь кататься?». Толкование, даже
+    длинное, начинается со строчной и точкой не заканчивается: «ясли, учреждение по
+    уходу за детьми» — это перевод, и трогать его нельзя.
+
+    Порог в три слова стоит намеренно: «Точка зрения» — обычный перевод, просто с
+    заглавной. Цена порога — пропустим короткий пример «Колокол прозвонил»; пропустить
+    дешевле, чем спрятать хороший перевод.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return False
+    if body.endswith((".", "!", "?")):
+        return True
+    return bool(_CYRILLIC_CAPITAL_FIRST.match(body)) and len(body.split()) >= 3
+
+
 def normalize_query(text: str) -> str:
     """Ключ поиска: без лишних пробелов, без артикля, в нижнем регистре.
 
@@ -520,6 +543,9 @@ def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "r
                 )
                 row = cur.fetchone()
                 lemma_key, own_gender = (row or ("", ""))
+                cur.execute("SELECT kind FROM bt_3_lex_units WHERE id = %s;", (unit_id,))
+                kind_row = cur.fetchone()
+                kind_of_source = str((kind_row or ("",))[0] or "")
                 rulings: dict[str, str] = {}
                 if lemma_key:
                     try:
@@ -545,6 +571,13 @@ def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "r
                 )
                 for sense_no, item in enumerate(unique, 1):
                     value = item["value"]
+                    # Пример употребления — не перевод. Раньше он попадал в связи с
+                    # рангом 10 и вставал первым: «abbestellen → Ваша подписка на
+                    # рассылку успешно отменена», а настоящий перевод лежал ниже.
+                    # Для слова такое пропускаем; у предложения перевод предложением —
+                    # это норма, поэтому правило только для слов.
+                    if kind_of_source == "word" and looks_like_example_not_translation(value):
+                        continue
                     cur.execute(
                         """
                         INSERT INTO bt_3_lex_senses (unit_id, sense_no, label, note, source)
