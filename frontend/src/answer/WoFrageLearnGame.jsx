@@ -77,7 +77,7 @@ export default function WoFrageLearnGame({ api, haptic, onClose }) {
         {streak > 1 ? <span className="al-streak">🔥 {streak}</span> : <span />}
       </div>
       <div className={`as-word ans-r-prompt wo-word${answered ? (picked_ok ? ' ok' : ' bad') : ''}`}>
-        <span className="fit-line wo-line" ref={phraseFit}>
+        <span className="fit-line wo-line" lang="de" ref={phraseFit}>
           <span>{pre}</span>
           <span className="wo-slot">{answered ? correct : '?'}</span>
           <span>{post}</span>

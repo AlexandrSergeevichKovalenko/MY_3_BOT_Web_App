@@ -178,7 +178,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
         <span className="ans-eyebrow">{rel.emoji} {rel.title} · B2+</span>
       </div>
       <div className="sp-hero">
-        <div className="sp-hero-word"><span className="fit-word" ref={heroRef}>{meta?.wort}</span></div>
+        <div className="sp-hero-word"><span className="fit-word" lang="de" ref={heroRef}>{meta?.wort}</span></div>
         {meta?.hint_ru ? <div className="sp-hero-hint">{meta.hint_ru}</div> : null}
       </div>
       <div className="sp-intro">

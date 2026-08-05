@@ -193,7 +193,7 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
         <span className="as-score">{score}</span>
       </div>
       <div className={`as-word ans-r-prompt adj-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
-        <span className="fit-line adj-line" ref={phraseFit}>
+        <span className="fit-line adj-line" lang="de" ref={phraseFit}>
           {it ? (<>
             <span>{it.before}</span>
             <span className="adj-slot">{flash && it ? `-${it.a}` : '·'}</span>

@@ -234,7 +234,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
         <span className="as-score">{answersRef.current.filter((a) => a.ok).length}</span>
       </div>
       <div className={`as-word ans-r-prompt${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
-        <span className="fit-line" ref={wordFit}>{w ? w.w : '…'}</span>
+        <span className="fit-line" lang="de" ref={wordFit}>{w ? w.w : '…'}</span>
       </div>
       {/* Two-gender nouns (der See / die See) are only answerable if we show which
           sense we mean — reveal the Russian meaning for these, and only these. */}

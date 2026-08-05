@@ -40,8 +40,32 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitB
     // (max-width карточки задан в rem), и без допуска строка перекладывалась бы от каждого
     // такого дрожания — то самое дёрганье при работе с окном «Спросить».
     const w = box.clientWidth;
+    // Строки меряем ДИАПАЗОНОМ ПО ТЕКСТУ, а не прямоугольниками элемента: элемент со словом
+    // — `inline-block`, у него всегда РОВНО ОДИН прямоугольник, сколько бы строк ни легло
+    // внутри. По нему разрыв слова не увидеть вообще (на этом я и попался в первой версии
+    // этой проверки). Диапазон отдаёт по прямоугольнику на каждую строку текста.
+    const lineRects = () => {
+      try {
+        const rng = document.createRange();
+        rng.selectNodeContents(el);
+        return Array.from(rng.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
+      } catch (_e) { return []; }
+    };
+    // «Сирота» — строка-огрызок короче четверти колонки. Это всегда разрыв ВНУТРИ слова
+    // («anwesen» + одинокая «d»). Перенос по пробелу («die» / «Zustimmung») сиротой не
+    // считается: это нормальный перенос, кегль трогать незачем.
+    // РАЗОРВАНО ЛИ СЛОВО — считаем по строкам, а не по ширинам. Перенос по пробелу законный:
+    // фраза из двух слов имеет право лечь в две строки. А вот строк БОЛЬШЕ, чем слов, бывает
+    // только в одном случае — какое-то слово разрезали посередине. Это и есть «anwesen» плюс
+    // одинокая «d». Правило не зависит ни от единиц, ни от масштаба карточки.
+    const wordsAll = String(el.textContent || '').split(/\s+/).filter(Boolean);
+    const splitWord = () => lineRects().length > Math.max(1, wordsAll.length);
     const key = `${el.textContent || ''}|${max}|${min}|${padding}|${fitBy}`;
-    if (lastFit.current.key === key && Math.abs(lastFit.current.w - w) <= 2) return;
+    // Предохранитель от лишних пересчётов — но он НЕ ДОЛЖЕН молчать над уже сломанным
+    // словом. Если слово прямо сейчас разорвано, считаем заново при любых входных данных:
+    // расчёт мог промахнуться по причине, которой в его входных данных нет (шрифт доехал
+    // позже, ширина колонки поменялась в тот же кадр, поворот экрана).
+    if (lastFit.current.key === key && Math.abs(lastFit.current.w - w) <= 2 && !splitWord()) return;
     lastFit.current = { key, w };
     el.style.whiteSpace = 'nowrap'; // measure/shrink on one line first
     let size = max;
@@ -63,8 +87,15 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitB
         ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${px}px ${cs.fontFamily}`;
         return ctx.measureText(longest).width;
       };
-      while (longest && widthAt(size) > avail && size > min && guard < 80) { size -= 1; guard += 1; }
+      // Кегль считаем ОДНОЙ формулой, а не подбором по одному пикселю: ширина текста растёт
+      // ровно пропорционально кеглю, поэтому нужный размер = текущий × (сколько влезает /
+      // сколько занимает). Подбор давал тот же ответ, но за десятки промежуточных раскладок,
+      // и каждый промежуточный шаг менял высоту карточки — а её масштаб, в свою очередь,
+      // менял ширину колонки. Эта петля и выдавала то верный кегль, то вдвое меньший.
+      const need = longest ? widthAt(size) : 0;
+      if (need > avail && avail > 0) size = Math.max(min, Math.floor(size * avail / need));
       el.style.fontSize = `${size}px`;
+      guard += 1;
     } else {
       while (el.scrollWidth > avail && size > min && guard < 80) {
         size -= 1;
@@ -80,6 +111,32 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitB
     // break-word` in the CSS, whole words wrap at the spaces — a long word like
     // "Kaffeemaschine" drops to the next line intact rather than being cut off.
     el.style.whiteSpace = 'normal';
+
+    // ── ПРОВЕРКА ПО ФАКТУ ───────────────────────────────────────────────────────────
+    //
+    // Всё выше — РАСЧЁТ: сколько места займёт самое длинное слово при таком кегле. Расчёт
+    // может промахнуться (шрифт доехал позже, ширина колонки поменялась в том же кадре,
+    // округления масштаба карточки, поворот экрана) — и тогда пользователь видит ровно то,
+    // на что жалуется: «anwesen» на одной строке и одинокая «d» на следующей. Замер по
+    // факту не промахивается: спрашиваем у браузера, на сколько строк ЛЁГ текст.
+    //
+    // Порядок ровно тот, что нужен: сначала уменьшаем кегль, пока слово не перестанет
+    // делиться; и только упершись в нижний предел, разрешаем перенос ПО ПРАВИЛАМ ЯЗЫКА
+    // (со знаком переноса) — это и включает класс ниже вместе с `hyphens: auto` в CSS.
+    // У страховки есть ПОЛ: расчёт по ширине слова надёжен (проверено — канвас и вёрстка
+    // дают одно и то же), ей нужно лишь добрать его промах. Без пола единичный замер,
+    // пойманный на неустоявшейся раскладке, уводил кегль вдвое вниз и там и оставлял.
+    const floor = Math.max(min, Math.round(size * 0.85));
+    let guard2 = 0;
+    while (splitWord() && size > floor && guard2 < 60) {
+      size -= 1;
+      el.style.fontSize = `${size}px`;
+      guard2 += 1;
+    }
+    // Уменьшать больше нельзя, а слово всё равно не помещается — значит оно и правда длиннее
+    // строки (немецкие сложносоставные бывают). Тогда перенос ПО ПРАВИЛАМ ЯЗЫКА, со знаком
+    // переноса: включает CSS (`hyphens: auto` + `lang="de"`), здесь только помечаем случай.
+    el.classList.toggle('fit-hyphen', splitWord());
   }, [max, min, padding, fitBy]);
 
   // Подбор кегля — ПОСЛЕ КАЖДОЙ ОТРИСОВКИ, без списка зависимостей. И это не небрежность.
@@ -95,6 +152,21 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitB
   // Стоимость: цикл подбора ограничен и почти всегда завершается на первом сравнении, а эти
   // экраны перерисовываются по нажатию, а не постоянно.
   useLayoutEffect(() => { fit(); });
+  // ДОВОДОЧНЫЕ ПРОХОДЫ. Первый расчёт нередко попадает на ещё не устоявшуюся раскладку:
+  // карточка в этот же кадр получает свой масштаб, планшетная сетка переставляет колонки,
+  // шторка Telegram доезжает. Тогда кегль подбирается под ширину, которой уже нет, и
+  // остаётся таким навсегда — предохранитель выше считает, что входные данные не менялись.
+  // Два поздних пересчёта дешевле застрявшего размера; тот же приём, что в подгонке карточки.
+  useLayoutEffect(() => {
+    const again = () => { lastFit.current = { key: '', w: -1 }; fit(); };
+    // Позже, чем доводочные проходы самой карточки (400 и 1200 мс в fitCard): ширина колонки
+    // задана в rem и меняется вместе с масштабом карточки, поэтому считать кегль слова имеет
+    // смысл только после того, как карточка свой масштаб утвердила. Иначе получается гонка:
+    // одно слово подгоняется под одну ширину, соседнее — под другую.
+    const t1 = setTimeout(again, 550);
+    const t2 = setTimeout(again, 1600);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [fit]);
   // re-fit on viewport resize / rotation AND whenever the container's own width
   // settles (Telegram WebApp sheet animates in → the box width isn't final on first
   // layout; a plain window-resize listener doesn't catch that). ResizeObserver fires
@@ -102,11 +174,32 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitB
   // Тот же список зависимостей заменён на «после каждой отрисовки» по той же причине:
   // наблюдатель за шириной нужно ставить тогда, когда элемент уже есть в разметке.
   useLayoutEffect(() => {
-    window.addEventListener('resize', fit);
+    // ПОСЛЕ КАЖДОГО ИЗМЕНЕНИЯ РАЗМЕРА — не только пересчёт сразу, но и доводочный пересчёт
+    // погодя. Поворот планшета меняет ширину колонки не мгновенно: карточка в это же время
+    // пересчитывает свой масштаб, а ширина колонки задана в rem и от масштаба зависит.
+    // Первый пересчёт попадает в середину этого перехода и берёт ширину, которой уже нет —
+    // отсюда «слово вдруг стало вдвое мельче» после поворота. Доводочный проход считает по
+    // устоявшейся раскладке. Раньше такие проходы были только при открытии экрана.
+    let settle = 0;
+    const refit = () => {
+      fit();
+      clearTimeout(settle);
+      settle = setTimeout(() => { lastFit.current = { key: '', w: -1 }; fit(); }, 600);
+    };
+    window.addEventListener('resize', refit);
     let ro;
     const box = ref.current?.parentElement;
     if (box && typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => fit());
+      // Реагируем только на смену ШИРИНЫ. Высота блока меняется от самой подгонки (кегль
+      // стал меньше — строка стала ниже), и наблюдатель тут же будил бы новый пересчёт:
+      // получалась карусель, в которой итоговый размер зависел от того, где её оборвали.
+      let seenW = box.clientWidth;
+      ro = new ResizeObserver(() => {
+        const w2 = box.clientWidth;
+        if (Math.abs(w2 - seenW) <= 1) return;
+        seenW = w2;
+        refit();
+      });
       ro.observe(box);
     }
     // Re-fit once web fonts finish loading. The first measurement runs with a
@@ -121,7 +214,8 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28, fitB
     }
     return () => {
       cancelled = true;
-      window.removeEventListener('resize', fit);
+      clearTimeout(settle);
+      window.removeEventListener('resize', refit);
       ro?.disconnect();
       if (fontSet) {
         try { fontSet.removeEventListener('loadingdone', reFit); } catch (_e) { /* ignore */ }

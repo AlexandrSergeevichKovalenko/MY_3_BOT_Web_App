@@ -168,7 +168,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
     <>
       <div className="ans-head"><span className="ans-eyebrow">{rel.emoji} {rel.title}</span></div>
       <div className="tr-hero">
-        <div className="tr-hero-word"><span className="fit-word" ref={heroRef}>{meta?.wort}</span></div>
+        <div className="tr-hero-word"><span className="fit-word" lang="de" ref={heroRef}>{meta?.wort}</span></div>
         {meta?.hint_ru ? <div className="tr-hero-hint">{meta.hint_ru}</div> : null}
       </div>
       <div className="tr-intro">
@@ -195,7 +195,7 @@ export default function TrainerGame({ id, api, haptic, onClose }) {
         <div className="tr-bar ans-r-bar"><div className="tr-bar-fill" style={{ width: `${((ri + (answered ? 1 : 0)) / total) * 100}%` }} /></div>
 
         <div className="tr-anchor ans-r-prompt">
-          <div className="tr-anchor-word"><span className="fit-word" ref={anchorRef}>{meta?.wort}</span></div>
+          <div className="tr-anchor-word"><span className="fit-word" lang="de" ref={anchorRef}>{meta?.wort}</span></div>
           {meta?.hint_ru ? <div className="tr-anchor-hint">{meta.hint_ru}</div> : null}
           <div className="tr-anchor-ask">Найди {rel.ask}:</div>
         </div>

@@ -122,7 +122,7 @@ export default function ArtikelReviewGame({ api, haptic, onClose, onBack }) {
         <div className="al-img"><img src={c.image} alt="" loading="eager" /></div>
       ) : null}
       <div className={`as-word ans-r-prompt ${chosen ? c.a : ''}`}>
-        <span className="al-word-text" ref={wordRef}>{c ? c.w : '…'}</span>
+        <span className="al-word-text" lang="de" ref={wordRef}>{c ? c.w : '…'}</span>
       </div>
       {/* Двуродовые (der/die Flur): артикль решает смысл, поэтому перевод показываем
           ВМЕСТЕ с вопросом — и только у них. Иначе вопрос неотвечаем. */}

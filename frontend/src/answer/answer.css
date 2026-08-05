@@ -1346,7 +1346,17 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
    correctly: it sets `nowrap` itself for the duration of the measurement.) */
 /* Слово, которому кегль подгоняет хук useFitText (см. `max: 'css'`): меряется по ширине
    родителя, поэтому должно быть инлайн-блоком и не шире него. */
+/* Слово подгоняется по кеглю (useFitText). `overflow-wrap` здесь — страховка от вылета за
+   край, но она рвёт слово где попало: отсюда и «anwesen» + одинокая «d» на новой строке.
+   Поэтому сначала пробуем перенос ПО ПРАВИЛАМ ЯЗЫКА — со знаком переноса. Для этого нужен
+   `lang="de"` на самом элементе (он проставлен в разметке игр): без него браузер не знает,
+   по каким правилам делить. Класс `fit-hyphen` ставит хук — только когда уменьшать кегль
+   уже некуда, то есть слово и правда длиннее строки. */
 .fit-word { display: inline-block; max-width: 100%; line-height: inherit; overflow-wrap: break-word; }
+/* Перенос по правилам — только ОДИНОЧНЫМ СЛОВАМ (карточка артикля, слово-якорь). Фразам и
+   предложениям он не нужен: они и так переносятся по пробелам, а включённый перенос менял
+   им раскладку строк и на телефоне тоже. */
+.fit-word, .al-word-text { -webkit-hyphens: auto; hyphens: auto; }
 .fit-line { display: inline-block; white-space: normal; line-height: 1.15; max-width: 100%; text-align: center; word-break: normal; overflow-wrap: break-word; }
 /* Keep the phrase line a plain inline-block: useFitText shrinks the font by
    reading el.scrollWidth, which only reports overflow on a block box. An

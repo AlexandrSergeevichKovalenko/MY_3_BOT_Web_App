@@ -98,7 +98,7 @@ export default function WoFrageReviewGame({ api, haptic, onClose, onBack }) {
         <span className="as-score">{stats.correct}✓</span>
       </div>
       <div className={`as-word ans-r-prompt wo-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
-        <span className="fit-line wo-line" ref={phraseFit}>
+        <span className="fit-line wo-line" lang="de" ref={phraseFit}>
           <span>{pre}</span>
           <span className="wo-slot">{answered ? correct : '?'}</span>
           <span>{post}</span>

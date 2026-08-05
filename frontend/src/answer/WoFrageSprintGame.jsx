@@ -198,7 +198,7 @@ export default function WoFrageSprintGame({ api, haptic, onClose, battleId = nul
         <span className="as-score">{score}</span>
       </div>
       <div className={`as-word ans-r-prompt wo-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
-        <span className="fit-line wo-line" ref={phraseFit}>
+        <span className="fit-line wo-line" lang="de" ref={phraseFit}>
           {it ? (<>
             <span>{pre}</span>
             <span className="wo-slot">{flash ? it.a : '?'}</span>

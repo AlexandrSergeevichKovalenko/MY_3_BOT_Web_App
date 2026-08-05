@@ -141,7 +141,7 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
         {streak > 1 ? <span className="al-streak">🔥 {streak}</span> : <span />}
       </div>
       <div className={`as-word ans-r-prompt adj-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
-        <span className="fit-line adj-line" ref={phraseFit}>
+        <span className="fit-line adj-line" lang="de" ref={phraseFit}>
           {(() => {
             const adj = card.adj || ''; const b = card.before || '';
             if (adj && b.endsWith(adj)) {
