@@ -9368,6 +9368,9 @@ function AppInner() {
   const canViewEconomics = stableWebappUserId === '117649764';
   const canManageYoutubeTranscripts = stableWebappUserId === '117649764';
   const canTestReaderAudioEngine = stableWebappUserId === '117649764';
+  // Служебные метки (какой движок перевёл: DEEPL_FREE / GOOGLE_TRANSLATE / …) — только владельцу.
+  // Пользователю внутренние имена провайдеров ничего не говорят и в интерфейсе им не место.
+  const canSeeEngineDebugLabels = stableWebappUserId === '117649764';
   const currentLocalDateKey = getLocalDateKey();
   const skillTrainingStorageKey = useMemo(() => {
     return `skill_training_sessions_${stableWebappUserId}_${getLocalDateKey()}`;
@@ -42669,7 +42672,7 @@ function AppInner() {
                 </div>
                 {(selectionInlineLookup.loading || selectionInlineLookup.translation) && (
                   <div className="webapp-selection-translation" style={{ fontSize: 11, padding: '5px 7px' }}>
-                    {selectionInlineLookup.provider && (
+                    {canSeeEngineDebugLabels && selectionInlineLookup.provider && (
                       <div className="webapp-selection-provider">
                         {String(selectionInlineLookup.provider).toUpperCase()}
                       </div>
