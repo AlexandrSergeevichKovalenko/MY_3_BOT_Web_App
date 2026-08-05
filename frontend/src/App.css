@@ -15971,6 +15971,19 @@ body:has(.webapp-page.is-theme-light),
   user-select: text;
 }
 
+/* На телефоне выделение фразы — наше: придержал слово и повёл пальцем. Родное
+   выделение iOS с лупой и своими маркерами перехватывает тот же жест и мешает,
+   поэтому на сенсорных экранах его выключаем. Мышью (десктоп) всё по-старому. */
+@media (pointer: coarse) {
+  .webapp-video .webapp-subtitles-list,
+  .webapp-video .webapp-subtitles-list p,
+  .webapp-video .webapp-subtitles-list .clickable-word {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+}
+
 .webapp-video .webapp-subtitles:first-of-type .webapp-subtitles-list,
 .webapp-video .webapp-subtitles.is-translation .webapp-subtitles-list,
 .webapp-video.is-watch-focus .webapp-subtitles:first-of-type .webapp-subtitles-list,

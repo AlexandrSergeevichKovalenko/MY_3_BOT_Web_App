@@ -7288,6 +7288,8 @@ function AppInner() {
   const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeResumeLastSyncedSecondRef = useRef(-1);
   const youtubePhraseGestureRef = useRef(null);
+  const youtubeWordLongPressTimerRef = useRef(null);
+  const youtubeSubtitlesTouchMoveRef = useRef(null);
   const youtubeDragSelectionMetaRef = useRef(null);
   const youtubeSuppressWordTapRef = useRef(0);
   const youtubeSuppressSentenceTapRef = useRef(0);
@@ -28241,7 +28243,20 @@ function AppInner() {
     return target.closest('[data-youtube-line-index][data-youtube-word-index]');
   };
 
+  // ── Выделение фразы в субтитрах: придержи слово и веди пальцем ───────────────
+  // Один в один с читалкой (см. READER_PHRASE_HOLD_MS выше): пока удержание не
+  // сработало, жест обычный — тап переводит слово, движение крутит панель. После
+  // ~340 мс слово-якорь подсвечивается, даёт вибрацию, и панель под пальцем
+  // замирает: дальше палец ведёт выделение в пределах одной строки-предложения.
+  const clearYoutubePhraseHoldTimer = () => {
+    if (youtubeWordLongPressTimerRef.current) {
+      clearTimeout(youtubeWordLongPressTimerRef.current);
+      youtubeWordLongPressTimerRef.current = null;
+    }
+  };
+
   const resetYoutubePhraseGesture = (clearMeta = true) => {
+    clearYoutubePhraseHoldTimer();
     youtubePhraseGestureRef.current = null;
     if (clearMeta) {
       youtubeDragSelectionMetaRef.current = null;
@@ -28267,8 +28282,10 @@ function AppInner() {
       resetYoutubePhraseGesture();
       return;
     }
+    resetYoutubePhraseGesture();
     youtubePhraseGestureRef.current = {
-      active: true,
+      armed: true,
+      active: false,
       lineIndex,
       anchorIndex: wordIndex,
       currentIndex: wordIndex,
@@ -28276,24 +28293,42 @@ function AppInner() {
       startX: touch.clientX,
       startY: touch.clientY,
     };
-    youtubeDragSelectionMetaRef.current = null;
-    setYoutubeDragSelectionMeta(null);
+    youtubeWordLongPressTimerRef.current = setTimeout(() => {
+      youtubeWordLongPressTimerRef.current = null;
+      const gesture = youtubePhraseGestureRef.current;
+      if (!gesture?.armed) return;
+      youtubePhraseGestureRef.current = { ...gesture, armed: false, active: true };
+      const anchorMeta = buildYoutubePhraseSelection(gesture.lineIndex, gesture.anchorIndex, gesture.anchorIndex);
+      youtubeDragSelectionMetaRef.current = anchorMeta;
+      setYoutubeDragSelectionMeta(anchorMeta);
+      trTextHaptic();
+    }, READER_PHRASE_HOLD_MS);
   };
 
+  // true — жест принадлежит выделению: панель прокручивать не нужно.
   const handleYoutubeSubtitlesTouchMove = (event) => {
     const gesture = youtubePhraseGestureRef.current;
-    if (!gesture?.active) return;
+    if (!gesture?.armed && !gesture?.active) return false;
     const touch = event?.touches?.[0];
-    if (!touch) return;
-    const dx = touch.clientX - Number(gesture.startX || 0);
-    const dy = touch.clientY - Number(gesture.startY || 0);
-    if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
+    if (!touch) return false;
+    if (!gesture.active) {
+      // Палец уехал раньше, чем сработало удержание → это прокрутка панели.
+      const dx = touch.clientX - Number(gesture.startX || 0);
+      const dy = touch.clientY - Number(gesture.startY || 0);
+      if (Math.abs(dx) > READER_PHRASE_HOLD_SLOP_PX || Math.abs(dy) > READER_PHRASE_HOLD_SLOP_PX) {
+        clearYoutubePhraseHoldTimer();
+        youtubePhraseGestureRef.current = { ...gesture, armed: false };
+      }
+      return false;
+    }
     const wordEl = getYoutubeSubtitleWordElementByPoint(touch.clientX, touch.clientY);
-    if (!wordEl) return;
+    if (!wordEl) return true;
     const lineIndex = Number(wordEl.getAttribute('data-youtube-line-index'));
     const wordIndex = Number(wordEl.getAttribute('data-youtube-word-index'));
-    if (!Number.isInteger(lineIndex) || !Number.isInteger(wordIndex) || lineIndex !== gesture.lineIndex) return;
-    if (wordIndex === gesture.currentIndex) return;
+    // Тянем внутри одной строки: кусок из двух разных предложений переводить
+    // бессмысленно, поэтому на границе выделение просто перестаёт расти.
+    if (!Number.isInteger(lineIndex) || !Number.isInteger(wordIndex) || lineIndex !== gesture.lineIndex) return true;
+    if (wordIndex === gesture.currentIndex) return true;
     const nextMeta = buildYoutubePhraseSelection(lineIndex, gesture.anchorIndex, wordIndex);
     youtubePhraseGestureRef.current = {
       ...gesture,
@@ -28302,13 +28337,15 @@ function AppInner() {
     };
     youtubeDragSelectionMetaRef.current = nextMeta;
     setYoutubeDragSelectionMeta(nextMeta);
+    if (nextMeta) trTextHaptic();
+    return true;
   };
 
   const handleYoutubeSubtitlesTouchEnd = (event) => {
     const gesture = youtubePhraseGestureRef.current;
     const previewMeta = youtubeDragSelectionMetaRef.current;
     const touch = event?.changedTouches?.[0];
-    if (gesture?.active && gesture.moved && previewMeta?.wordCount >= 2) {
+    if (gesture?.active && String(previewMeta?.text || '').trim()) {
       if (youtubeDictOpen) {
         void lookupYoutubeDict(previewMeta.text);
         youtubeSuppressWordTapRef.current = Date.now();
@@ -28316,14 +28353,19 @@ function AppInner() {
         resetYoutubePhraseGesture(false);
         return;
       }
+      // changedTouches — чтобы плашка встала НАД пальцем, а не под ним (палец её закроет).
       const selectionEvent = touch
-        ? { clientX: touch.clientX, clientY: touch.clientY }
+        ? {
+          clientX: touch.clientX,
+          clientY: touch.clientY,
+          changedTouches: [{ clientX: touch.clientX, clientY: touch.clientY }],
+        }
         : event;
       handleSelection(selectionEvent, previewMeta.text, {
         compact: true,
         inlineLookup: true,
         lookupLang: getNormalizeLookupLang(),
-        selectionType: 'youtube_phrase',
+        selectionType: Number(previewMeta.wordCount || 1) > 1 ? 'youtube_phrase' : 'youtube_word',
       });
       youtubeSuppressWordTapRef.current = Date.now();
       youtubeSuppressSentenceTapRef.current = Date.now();
@@ -28336,6 +28378,24 @@ function AppInner() {
   const handleYoutubeSubtitlesTouchCancel = () => {
     resetYoutubePhraseGesture();
   };
+
+  // Панель субтитров прокручивается, поэтому во время выделения движение пальца
+  // нужно отобрать у прокрутки — а это только preventDefault. React вешает
+  // touchmove пассивно (его preventDefault браузер игнорирует), так что слушатель
+  // ставим сами и непассивно. Пока жест не наш — не вмешиваемся вообще.
+  useEffect(() => {
+    youtubeSubtitlesTouchMoveRef.current = handleYoutubeSubtitlesTouchMove;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onNativeTouchMove = (event) => {
+      const ownsGesture = youtubeSubtitlesTouchMoveRef.current?.(event);
+      if (ownsGesture && event.cancelable) event.preventDefault();
+    };
+    window.addEventListener('touchmove', onNativeTouchMove, { passive: false });
+    return () => window.removeEventListener('touchmove', onNativeTouchMove);
+  }, []);
 
   const openYoutubeSentenceSelection = (event, text, selectionType = 'youtube_sentence') => {
     if ((Date.now() - Number(youtubeSuppressSentenceTapRef.current || 0)) < 420) {
@@ -37297,7 +37357,8 @@ function AppInner() {
                               <div
                                 className="webapp-subtitles-list"
                                 onMouseUp={handleSelection}
-                                onTouchMove={handleYoutubeSubtitlesTouchMove}
+                                /* touchmove — на непассивном слушателе окна (см. выше):
+                                   только он может остановить прокрутку панели. */
                                 onTouchEnd={handleYoutubeSubtitlesTouchEnd}
                                 onTouchCancel={handleYoutubeSubtitlesTouchCancel}
                               >
