@@ -10045,7 +10045,9 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("group_enrollment_prompt", "Приглашение в группу", 192, True, "admin"),
     # Now instrumented: the scheduler entry records a guard with the result
     # (generated/upserted) — shown inline below. Pool CONTENT health is still /poolreport.
-    ("translation_focus_pool_refill", "Пополнение пула переводов (23:00)", 30, True, "guard"),
+    # Время не пишем цифрой: оно живёт в TRANSLATION_FOCUS_POOL_REFILL_HOUR (сейчас 22:00
+    # по Вене), и подпись «23:00» в отчёте уже разошлась с расписанием.
+    ("translation_focus_pool_refill", "Пополнение пула переводов (ночью)", 30, True, "guard"),
     # --- Interactive task deliveries (heartbeat 'deliver_<kind>' from make_rotation_gated) ---
     # These run inline in the bot loop; the heartbeat = "this kind's slot fired today"
     # (a rotation-thinned slot still heartbeats with skipped=true — the scheduler is alive).
@@ -10083,7 +10085,9 @@ _SCHEDULER_HEALTH_CATALOG = [
     ("_send_calendar_certificate_job", "Календарная грамота (17:05)", 192, True, "guard"),
     ("_send_weekly_champion_job", "Чемпион недели (Вс 20:00)", 192, True, "guard"),
     ("_mastery_rotation_weekly_report_job", "Отчёт ротации (Пн 10:10)", 192, True, "guard"),
-    ("send_weekly_summary", "Недельные итоги (Вс 20:55)", 192, True, "guard"),
+    # send_weekly_summary УБРАНО из отчёта 05.08.2026 вместе со снятием с расписания
+    # (регистрация закомментирована рядом с send_daily_summary). Выключено намеренно —
+    # значит, не поломка. Вернёшь отправку — верни и строку.
     ("send_me_analytics_and_recommend_me", "Аналитика+совет (Пт 15:15)", 192, True, "guard"),
     ("_video_pool_biweekly_report_job", "Отчёт по видео-пулу (Сб, раз в 2 нед.)", 384, True, "guard"),
     ("remedial_video_materialization", "Доучивающее видео (05:30)", 30, True, "guard"),
@@ -43605,7 +43609,15 @@ def main():
     # TRANSLATION_SESSIONS_AUTO_CLOSE_* on TODAY_PLAN_TZ at 23:59 by default.
     
         scheduler.add_job(lambda: submit_async(send_daily_summary), "cron", hour=20, minute=52)
-        scheduler.add_job(lambda: submit_async(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=55)
+        # ЛИЧНЫЕ «Итоги недели» сняты с отправки 05.08.2026 по решению владельца.
+        # Отправлять было нечего: запрос падал с 18.03.2026 (в подзапросе про время сессий
+        # потеряно имя таблицы `p`), то есть отчёт не уходил ни разу ~20 воскресений подряд.
+        # Смотреть в нём тоже нечего: формула вычитает из оценки минуты и по 20 баллов за
+        # пропуск, поэтому лучший по оценке за неделю оказывается в минусе, а рядом живут
+        # «Итоги дня», недельные итоги ГРУППЫ и личная аналитика.
+        # Функция send_weekly_summary НЕ удалена — включить обратно = снять комментарий
+        # (и сперва дописать `p` после bt_3_user_progress в её запросе).
+        # scheduler.add_job(lambda: submit_async(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=55)
 
         # Nightly semantic tag backfill: up to 100 entries (10 GPT calls) at 03:10
         scheduler.add_job(

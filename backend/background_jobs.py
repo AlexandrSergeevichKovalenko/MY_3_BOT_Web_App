@@ -1558,7 +1558,13 @@ def run_translation_focus_pool_refill_job(
     correlation_id: str | None = None,
     enqueued_at_utc: str | None = None,
     max_age_hours: float = 4.0,
+    scheduled: bool = False,
 ) -> None:
+    """scheduled=True — это ночной прогон по расписанию: он идёт через
+    инструментированный вход, который пишет отметку о запуске с результатом
+    (сгенерировано / записано / пропущено). Догон по требованию (пустая корзина у
+    живого человека) приходит сюда же с scheduled=False и отметку не трогает —
+    иначе ночная строка в /scheduler_health затиралась бы случайным дозаполнением."""
     started_at = time.perf_counter()
     normalized_tz_name = str(tz_name or "").strip() or None
 
@@ -1596,12 +1602,21 @@ def run_translation_focus_pool_refill_job(
         enqueued_at_utc,
     )
     try:
-        from backend.backend_server import _dispatch_translation_focus_pool_refill, TODAY_PLAN_DEFAULT_TZ
-
-        result = _dispatch_translation_focus_pool_refill(
-            force=bool(force),
-            tz_name=normalized_tz_name or TODAY_PLAN_DEFAULT_TZ,
+        from backend.backend_server import (
+            _dispatch_translation_focus_pool_refill,
+            _run_translation_focus_pool_refill_scheduler_job,
+            TODAY_PLAN_DEFAULT_TZ,
         )
+
+        if bool(scheduled):
+            result = _run_translation_focus_pool_refill_scheduler_job(
+                tz_name=normalized_tz_name or TODAY_PLAN_DEFAULT_TZ,
+            )
+        else:
+            result = _dispatch_translation_focus_pool_refill(
+                force=bool(force),
+                tz_name=normalized_tz_name or TODAY_PLAN_DEFAULT_TZ,
+            )
         total_ms = int((time.perf_counter() - started_at) * 1000)
         logging.info(
             "translation_focus_pool_refill_job result_summary request_id=%s ok=%s skipped=%s reason=%s generated=%s upserted=%s focuses=%s total_ms=%s",

@@ -351,14 +351,19 @@ def _dispatch_translation_focus_pool_refill() -> None:
         or "UTC"
     ).strip() or "UTC"
     request_id = f"translation_pool_refill_sched_{uuid4().hex[:16]}"
-    # Run the refill INLINE in the scheduler process (force=True) instead of
-    # enqueuing to the Dramatiq "translation_pool_refill" queue. No worker is
-    # subscribed to that queue, so the queued path never executed (Δ +0 daily).
-    # The scheduler cron already controls timing, so force=True is correct here
-    # and skips the redundant offpeak re-check. On-demand/deficit refills still
-    # use the queue path (now consumable by the worker via DRAMATIQ_QUEUES).
+    # ОЧЕРЕДЬ, а не внутри планировщика. История: 06.06.2026 задачу забрали из очереди,
+    # потому что на неё не был подписан ни один воркер — сообщения умирали по таймауту.
+    # Взамен планировщик стал считать пополнение у себя, а для этого импортировать весь
+    # backend_server. В боевом контейнере планировщика этот импорт ПАДАЕТ на старте
+    # (`KEY_SALT must be set in Railway/production` — переменной у этого сервиса нет),
+    # ошибка глоталась, и ночное пополнение молча не работало с 6 июня: ни одной отметки
+    # о запуске за всё время. Причина ухода из очереди исчезла — её слушают BACKGROUND_JOBS
+    # и TRANSLATION_CHECK_WORKER, и у обоих KEY_SALT есть. Возвращаем как у остальных
+    # сорока задач: планировщик только ставит сообщение, считает воркер.
+    # scheduled=True → воркер идёт через инструментированный вход и пишет отметку с
+    # результатом, поэтому /scheduler_health снова видит эту задачу.
     logging.info(
-        "scheduler_service: translation_focus_pool_refill inline_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r",
+        "scheduler_service: translation_focus_pool_refill enqueue_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r",
         request_id,
         tz_name,
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_ENABLED"),
@@ -366,21 +371,21 @@ def _dispatch_translation_focus_pool_refill() -> None:
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE"),
     )
     try:
-        # Route through the instrumented scheduler entry (not the raw _dispatch_) so the
-        # run is recorded in the translation_focus_pool_refill run-guard with its result —
-        # otherwise the nightly refill leaves no trace and the morning report / health
-        # check can't tell it ran. force=True + offpeak re-check skip still apply inside.
-        from backend.backend_server import _run_translation_focus_pool_refill_scheduler_job
-        result = _run_translation_focus_pool_refill_scheduler_job(tz_name=tz_name)
+        message = run_translation_focus_pool_refill_job.send(
+            force=True,
+            scheduled=True,
+            tz_name=tz_name,
+            request_id=request_id,
+        )
         logging.info(
-            "scheduler_service: translation_focus_pool_refill inline_finish request_id=%s tz_name=%s result=%s",
+            "scheduler_service: translation_focus_pool_refill enqueue_finish request_id=%s tz_name=%s message_id=%s",
             request_id,
             tz_name,
-            result,
+            str(getattr(message, "message_id", None) or ""),
         )
     except Exception:
         logging.exception(
-            "scheduler_service: translation_focus_pool_refill inline_failed request_id=%s tz_name=%s",
+            "scheduler_service: translation_focus_pool_refill enqueue_failed request_id=%s tz_name=%s",
             request_id,
             tz_name,
         )
