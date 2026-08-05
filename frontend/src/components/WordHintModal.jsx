@@ -1,16 +1,23 @@
 import React, { useRef } from 'react';
 import { createPortal } from 'react-dom';
 import useModalFit from './useModalFit';
+import {
+  WordBreakdown, SpeakButton, useTts, displaySurface, exampleKeyOf,
+} from '../dictionary/WordBreakdown';
 import './WordHintModal.css';
 
 /**
  * «Подсказка по слову» — то, что уже собрано в карточке словаря, но человек этого не
- * видел: живые примеры, формы, ассоциация. Открывается лампочкой на карточке повторения
- * ПОСЛЕ переворота, чтобы не подсказывать до ответа.
+ * видел. Открывается лампочкой на карточке повторения ПОСЛЕ переворота, чтобы не
+ * подсказывать до ответа.
  *
- * Компонент ничего не грузит и ничего не досбирает: показывает только то, что уже лежит
- * в карточке. Ни запроса к серверу, ни обращения к модели — значит, ни ожидания, ни
- * расхода дневного лимита человека.
+ * Показывает ТУ ЖЕ карточку, что и словарь (общий `WordBreakdown`): транскрипцию с
+ * ударением, часть речи, уровень, частотность, склонение/спряжение, управление,
+ * сочетания, примеры. Учить слово и смотреть на его формы человек хочет здесь, а не
+ * специальным заходом в словарь; одна общая карточка ещё и не даёт двум местам разойтись.
+ *
+ * Компонент ничего не досбирает: ни обращения к модели, ни расхода дневного лимита —
+ * всё уже лежит в `response_json` карточки. Тяжёлые таблицы приходят свёрнутыми.
  */
 const CYRILLIC_RE = /[А-Яа-яЁё]/;
 
@@ -43,15 +50,34 @@ export function collectHintExamples(item, limit = 3) {
     take(meanings.primary);
     if (Array.isArray(meanings.secondary)) meanings.secondary.forEach(take);
   }
+  // Пример, дословно повторяющий заголовок карточки, ничего не добавляет — и он же не
+  // должен зажигать лампочку у сохранённого целого предложения.
+  const headKey = exampleKeyOf(item?.word_de);
   const seen = new Set();
   const out = [];
   pairs.forEach((pair) => {
     const key = pair.learning.toLowerCase();
     if (seen.has(key) || out.length >= limit) return;
+    if (headKey && exampleKeyOf(pair.learning) === headKey) return;
     seen.add(key);
     out.push(pair);
   });
   return out;
+}
+
+/**
+ * Есть ли в карточке разбор, который умеет показать общий `WordBreakdown`.
+ * Тот же список полей, что у словаря, — иначе лампочка обещала бы больше, чем откроет.
+ */
+export function hasHintBreakdown(item) {
+  if (!item || typeof item !== 'object') return false;
+  return !!(
+    item.part_of_speech || item.meanings || item.grammar_tables || item.forms
+    || item.etymology_note
+    || (item.synonyms || []).length || (item.antonyms || []).length
+    || (item.related_words || []).length || (item.common_collocations || []).length
+    || (item.usage_examples || []).length || (item.government_patterns || []).length
+  );
 }
 
 export default function WordHintModal({
@@ -60,6 +86,7 @@ export default function WordHintModal({
   tr,
   headword,
   translation,
+  item = null,
   examples = [],
   formRows = [],
   memoryTip = '',
@@ -67,13 +94,20 @@ export default function WordHintModal({
   const overlayRef = useRef(null);
   const cardRef = useRef(null);
   const bodyRef = useRef(null);
+  // Озвучка — та же, что в словаре: звук идёт только по нажатию на 🔊, сам по себе
+  // ничего не синтезируется.
+  const tts = useTts();
   const t = tr || ((ru) => ru);
   const tip = String(memoryTip || '').trim();
+  const breakdown = hasHintBreakdown(item) ? item : null;
+  // Регистр заголовка: немецкий глагол пишется со строчной, а часть карточек сохранена
+  // с заглавной (слово попало из начала предложения).
+  const title = breakdown ? displaySurface(breakdown, headword) : headword;
   // Содержимое сменилось — повод пересчитать: у длинной фразы с тремя примерами и у
   // короткого слова с одной формой масштаб разный.
   useModalFit(
     overlayRef, cardRef, bodyRef, isOpen,
-    `${headword}|${examples.length}|${formRows.length}|${tip.length}`,
+    `${headword}|${breakdown ? 'full' : 'lite'}|${examples.length}|${formRows.length}|${tip.length}`,
   );
   if (!isOpen) return null;
   const closeLabel = t('Закрыть', 'Schließen');
@@ -86,12 +120,25 @@ export default function WordHintModal({
       <div className="word-hint-card" ref={cardRef} onClick={(event) => event.stopPropagation()}>
         <button type="button" className="word-hint-close" aria-label={closeLabel} onClick={onClose}>×</button>
         <div className="word-hint-head">
-          <div className="word-hint-word">{headword}</div>
+          <div className="word-hint-word">
+            {title}
+            {breakdown ? <SpeakButton text={title} tts={tts} /> : null}
+          </div>
           {translation ? <div className="word-hint-translation">{translation}</div> : null}
         </div>
 
         <div className="word-hint-body" ref={bodyRef}>
-          {hasExamples ? (
+          {breakdown ? (
+            <div className="word-hint-breakdown dq-card">
+              {/* Значения и варианты перевода прячем: перевод стоит в шапке окна, а сама
+                  карточка повторения перечисляет значения под ответом. Здесь важнее то,
+                  чего человек больше нигде не видит — звучание, формы, управление,
+                  сочетания и живые примеры. */}
+              <WordBreakdown item={breakdown} tts={tts} tablesOpen={false} hideMeanings />
+            </div>
+          ) : null}
+
+          {!breakdown && hasExamples ? (
             <section className="word-hint-section">
               <div className="word-hint-label">{t('Как это говорят', 'So wird es gesagt')}</div>
               {examples.map((example) => (
@@ -105,7 +152,7 @@ export default function WordHintModal({
             </section>
           ) : null}
 
-          {hasForms ? (
+          {!breakdown && hasForms ? (
             <section className="word-hint-section">
               <div className="word-hint-label">{t('Формы', 'Formen')}</div>
               <div className="word-hint-forms">

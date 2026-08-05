@@ -9033,6 +9033,41 @@ def _fix_swapped_sides_before_save(kwargs: dict) -> dict:
     return kwargs
 
 
+_LOWERCASE_HEADWORD_POS = {"verb", "adjective", "adverb"}
+
+
+def _fix_headword_case_before_save(kwargs: dict) -> dict:
+    """Немецкий глагол/прилагательное/наречие пишется со строчной буквы.
+
+    Слово часто приезжает из начала предложения («Gelingen», «Schlank») и так и
+    сохраняется с заглавной. Дальше по нему строится таблица спряжения — и человек
+    видит «ich Gelinge / wir Gelingen». Правим один раз, на входе.
+
+    Трогаем только одиночное слово с известной частью речи: в заголовке-предложении
+    («Das Problem wurde behoben.») заглавная стоит по делу, а у существительного она
+    обязательна."""
+    word_de = str(kwargs.get("word_de") or "").strip()
+    if not word_de or " " in word_de or not word_de[:1].isupper():
+        return kwargs
+    response_json = kwargs.get("response_json")
+    if not isinstance(response_json, dict):
+        return kwargs
+    pos = str(response_json.get("part_of_speech") or "").strip().lower()
+    if pos not in _LOWERCASE_HEADWORD_POS:
+        return kwargs
+    fixed_word = word_de[:1].lower() + word_de[1:]
+    fixed = dict(kwargs)
+    fixed["word_de"] = fixed_word
+    if str(response_json.get("word_de") or "").strip() == word_de:
+        patched = dict(response_json)
+        patched["word_de"] = fixed_word
+        fixed["response_json"] = patched
+    for key in ("source_text", "translation_de"):
+        if str(kwargs.get(key) or "").strip() == word_de:
+            fixed[key] = fixed_word
+    return fixed
+
+
 def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
     """Сразу привязать сохранённую карточку к её слову в слое.
 
@@ -9066,6 +9101,7 @@ def _attach_saved_entry_to_lex_unit(entry_id, kwargs: dict) -> None:
 
 def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
     kwargs = _fix_swapped_sides_before_save(kwargs)
+    kwargs = _fix_headword_case_before_save(kwargs)
     try:
         entry_id = save_webapp_dictionary_query_returning_id(**kwargs)
         _attach_saved_entry_to_lex_unit(entry_id, kwargs)
@@ -9085,6 +9121,7 @@ def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
 
 def _save_dictionary_entry_with_inserted_schema_retry(**kwargs) -> tuple[int, bool]:
     kwargs = _fix_swapped_sides_before_save(kwargs)
+    kwargs = _fix_headword_case_before_save(kwargs)
     try:
         result = save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
         _attach_saved_entry_to_lex_unit((result or (None,))[0], kwargs)

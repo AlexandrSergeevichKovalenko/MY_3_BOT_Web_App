@@ -164,6 +164,11 @@ const FREQ_RANK = { very_common: 4, common: 3, uncommon: 2, rare: 1 };
 
 const PRON_ORDER = ['ich', 'du', 'er/sie/es', 'wir', 'ihr', 'sie/Sie'];
 
+// Сравнение «пример = заголовок» без оглядки на регистр и точку в конце.
+export function exampleKeyOf(text) {
+  return String(text || '').toLowerCase().replace(/[\s.,!?;:«»"'’]+/g, '');
+}
+
 // Collect structured example pairs {de, ru} from usage_examples + meaning examples.
 function collectExamples(item) {
   const pairs = [];
@@ -187,11 +192,15 @@ function collectExamples(item) {
     take(m.primary);
     if (Array.isArray(m.secondary)) m.secondary.forEach(take);
   }
+  // Пример, дословно повторяющий сам заголовок (частый случай у сохранённого целого
+  // предложения), ничего не показывает — заголовок и так стоит выше.
+  const headKey = exampleKeyOf(item?.word_de);
   const seen = new Set();
   const out = [];
   for (const p of pairs) {
     const key = p.de.toLowerCase();
     if (seen.has(key)) continue;
+    if (headKey && exampleKeyOf(p.de) === headKey) continue;
     seen.add(key);
     out.push(p);
     if (out.length >= 2) break;
@@ -286,11 +295,20 @@ function wordFormationParts(item) {
   return { parts: parts.length >= 2 ? parts : [], note: clean(wf.note) };
 }
 
+// Пояснение к значению иногда приходит служебным кодом («full_sentence», «base_fallback»)
+// — это наша внутренняя кухня, человеку она ничего не объясняет. Показываем только живое
+// пояснение словами; код молча отбрасываем.
+const TECH_CONTEXT_RE = /^[a-z0-9]+(_[a-z0-9]+)+$/;
+function humanContext(value) {
+  const text = clean(value);
+  return TECH_CONTEXT_RE.test(text) ? '' : text;
+}
+
 function translationVariants(item) {
   const list = Array.isArray(item?.translations) ? item.translations : [];
   return list
     .map((t) => (t && typeof t === 'object'
-      ? { value: clean(t.value), context: clean(t.context) }
+      ? { value: clean(t.value), context: humanContext(t.context) }
       : { value: clean(t), context: '' }))
     .filter((t) => t.value)
     .slice(0, 3);
@@ -303,7 +321,7 @@ function meaningList(item) {
   const take = (entry) => {
     if (!entry || typeof entry !== 'object') return;
     const value = clean(entry.value);
-    const context = clean(entry.context);
+    const context = humanContext(entry.context);
     if (!value && !context) return;
     out.push({ value, context });
   };
@@ -378,11 +396,46 @@ function registerLabel(item) {
   return clean(item.register);
 }
 
+// Ударение приходит от модели как попало: «first syllable», «zweite Silbe», «на первом
+// слоге», просто «1». В русском интерфейсе человек не должен читать по-английски, поэтому
+// всё, что говорит про НОМЕР СЛОГА, приводим к одному виду. Разметку самого слова
+// («auf-STEH-en», «verBLASSen») не трогаем — она полезна как есть.
+const STRESS_ORDINALS = [
+  [/(^|[^а-яёa-zäöüß])(1|перв|first|erste)/i, '1-й слог'],
+  [/(^|[^а-яёa-zäöüß])(2|втор|second|zweite)/i, '2-й слог'],
+  [/(^|[^а-яёa-zäöüß])(3|трет|third|dritte)/i, '3-й слог'],
+  [/(^|[^а-яёa-zäöüß])(4|четверт|fourth|vierte)/i, '4-й слог'],
+  [/(^|[^а-яёa-zäöüß])(последн|last|letzte)/i, 'последний слог'],
+];
+export function stressLabel(value) {
+  const raw = clean(value);
+  if (!raw) return '';
+  const mentionsSyllable = /слог|syllab|silbe/i.test(raw) || /^\s*\d\s*$/.test(raw);
+  if (!mentionsSyllable) return raw;
+  for (const [re, label] of STRESS_ORDINALS) {
+    if (re.test(raw)) return label;
+  }
+  return raw;
+}
+
+// Немецкий глагол/прилагательное/наречие пишется со строчной. В части карточек заголовок
+// сохранён с заглавной (слово попало из начала предложения) — и тогда таблица честно
+// спрягала «ich Gelinge». Правим на показе: одиночное слово, часть речи известна.
+// Многословное (целое предложение в заголовке) не трогаем — там заглавная на месте.
+const LOWERCASE_POS = new Set(['verb', 'adjective', 'adverb']);
+export function displaySurface(item, text) {
+  const surface = clean(text !== undefined ? text : item?.word_de);
+  if (!surface || /\s/.test(surface)) return surface;
+  if (!LOWERCASE_POS.has(clean(item?.part_of_speech).toLowerCase())) return surface;
+  if (surface[0] !== surface[0].toUpperCase()) return surface;
+  return surface[0].toLowerCase() + surface.slice(1);
+}
+
 function pronunciationText(item) {
   const p = item?.pronunciation;
   if (!p || typeof p !== 'object') return '';
   const ipa = clean(p.ipa);
-  const stress = clean(p.stress);
+  const stress = stressLabel(p.stress);
   if (ipa && stress && stress !== ipa) return `${ipa} · ${stress}`;
   return ipa || stress || '';
 }
@@ -533,7 +586,9 @@ function buildGrammarTablesJS(item) {
   if (!item || typeof item !== 'object') return null;
   const pos = clean(item.part_of_speech).toLowerCase();
   const f = (item.forms && typeof item.forms === 'object') ? item.forms : {};
-  const wordDe = clean(item.word_de);
+  // Регистр заголовка чиним ДО построения таблиц, иначе «Gelingen» спрягается как
+  // «ich Gelinge / wir Gelingen».
+  const wordDe = displaySurface(item, item.word_de);
   if (pos === 'noun') {
     // Gender from the RESOLVED article (word_de token first), never the raw
     // `article` field — a wrong "der" there built a masculine "der Kabel" table.
@@ -611,7 +666,9 @@ function ConjBlock({ title, forms }) {
   );
 }
 
-function GrammarTables({ tables }) {
+// tablesOpen=false — таблица приходит свёрнутой (подсказка на повторении: сначала
+// коротко, разворачивает тот, кому надо).
+function GrammarTables({ tables, tablesOpen = true }) {
   if (!tables || typeof tables !== 'object') return null;
   const decl = tables.declension;
   const conj = tables.conjugation;
@@ -624,7 +681,7 @@ function GrammarTables({ tables }) {
     const showSingular = decl.has_singular !== false;
     const wantPlural = decl.requested === 'plural';
     return (
-      <details className="dq-gt" open>
+      <details className="dq-gt" open={tablesOpen}>
         <summary>Склонение{decl.plural ? ` · мн. ${decl.plural}` : ''}</summary>
         <table className="dq-decl" lang="de">
           <thead>
@@ -660,7 +717,7 @@ function GrammarTables({ tables }) {
     const stamm = [conj.infinitive, conj.praeteritum?.['er/sie/es'], conj.partizip2]
       .filter(Boolean);
     return (
-      <details className="dq-gt" open>
+      <details className="dq-gt" open={tablesOpen}>
         <summary>Спряжение{conj.auxiliary ? ` · ${conj.auxiliary}` : ''}</summary>
         {stamm.length === 3 && (
           <div className="dq-stamm">{stamm.join(' – ')}</div>
@@ -685,7 +742,7 @@ function GrammarTables({ tables }) {
 
   if (comp && comp.positive) {
     return (
-      <details className="dq-gt" open>
+      <details className="dq-gt" open={tablesOpen}>
         <summary>Степени сравнения</summary>
         <div className="dq-deg">
           <span className="dq-deg-item"><em>Positiv</em>{comp.positive}</span>
@@ -718,7 +775,7 @@ function homographList(item) {
     .filter((h) => h.display);
 }
 
-export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips, hideMeanings, onPickHomograph }) {
+export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips, hideMeanings, onPickHomograph, tablesOpen = true }) {
   // Resolve example-sentence audio URLs (deterministic R2, NO synthesis) when the examples
   // change, so tapping an example's 🔊 plays an already-cached clip instantly. Must run before
   // the early return to keep hook order stable.
@@ -858,7 +915,7 @@ export function WordBreakdown({ item, tts, onSaveChip, onSaveExample, savedChips
 
       {hasTables ? (
         <div className="dq-block">
-          <GrammarTables tables={gt} />
+          <GrammarTables tables={gt} tablesOpen={tablesOpen} />
         </div>
       ) : grammar.length > 0 && (
         <div className="dq-block">
