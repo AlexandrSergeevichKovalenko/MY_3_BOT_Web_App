@@ -62,3 +62,16 @@ def test_final_punctuation_wins_regardless_of_length():
 def test_broken_input_is_not_a_crash():
     for value in (None, "", "   ", 0, []):
         assert is_example(value) is False, value
+
+
+# ── перевод обязан быть по-русски ─────────────────────────────────────────────
+
+def test_german_paraphrase_is_not_a_russian_translation():
+    """«Du stinkst furchtbar.» → «Du stinkst fürchterlich» человеку ничего не объясняет.
+    Такая связь заводилась из разбора и вставала первой; теперь она не заводится вовсе.
+    Замер 05.08.2026: связей «на русскую сторону» без единой русской буквы — 228."""
+    from backend.lex_units import _CYRILLIC_ANY_RE
+    for german_only in ("Du stinkst fürchterlich", "das Waschbecken", "einen Fusselrasierer benutzen"):
+        assert not _CYRILLIC_ANY_RE.search(german_only), german_only
+    for russian in ("раковина", "Одноразовый стакан", "мыть (кого-либо) тряпочкой"):
+        assert _CYRILLIC_ANY_RE.search(russian), russian

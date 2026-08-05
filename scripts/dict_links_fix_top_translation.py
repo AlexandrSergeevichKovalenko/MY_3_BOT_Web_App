@@ -93,11 +93,14 @@ def collect() -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT u.id, u.display, l.id, l.rank, t.display
+                SELECT u.id, u.display, l.id, l.rank, t.display, u.kind
                 FROM bt_3_lex_units u
                 JOIN bt_3_lex_links l ON l.from_unit = u.id AND l.rank < 900
                 JOIN bt_3_lex_units t ON t.id = l.to_unit
-                WHERE u.lang = 'de' AND u.kind = 'word' AND t.lang <> 'de'
+                -- Слова: убираем и примеры, и «перевод» не по-русски.
+                -- Фразы и предложения: только «не по-русски» — перевод предложением
+                -- у них норма, а немецкий пересказ вместо русского перевода нет.
+                WHERE u.lang = 'de' AND t.lang <> 'de'
                   AND position('___' in t.display) = 0
                 -- Порядок ровно тот, которым выдача выбирает первый перевод
                 -- (см. _fetch_links): пометка «разобранное значение» важнее ранга.
@@ -107,17 +110,20 @@ def collect() -> list[dict]:
 
     by_unit: dict[int, list[tuple]] = {}
     names: dict[int, str] = {}
-    for unit_id, word, link_id, rank, translation in rows:
+    kinds: dict[int, str] = {}
+    for unit_id, word, link_id, rank, translation, kind in rows:
         by_unit.setdefault(int(unit_id), []).append((int(link_id), int(rank), translation))
         names[int(unit_id)] = word
+        kinds[int(unit_id)] = str(kind or "")
 
     plan = []
     for unit_id, links in by_unit.items():
         # Трогаем ТОЛЬКО то, что человек видит первым. Остальное в списке «ещё говорят»
         # никому не мешает, а лишние правки — лишний риск.
         top_link_id, top_rank, top_text = links[0]
-        reason = ("пример вместо перевода" if looks_like_a_sentence(top_text)
-                  else "перевод не по-русски" if is_not_russian(top_text)
+        is_word = kinds.get(unit_id) == "word"
+        reason = ("перевод не по-русски" if is_not_russian(top_text)
+                  else "пример вместо перевода" if (is_word and looks_like_a_sentence(top_text))
                   else "")
         if not reason:
             continue
