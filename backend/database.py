@@ -4500,6 +4500,29 @@ CARD_CONTENT_KEYS = (
 )
 
 
+# Опознавательные поля карточки: кто это слово, в какую сторону и какого рода. Они
+# лёгкие и нужны самой строке. Всё остальное — разбор, и он живёт на единице.
+CARD_IDENTITY_KEYS = (
+    "source_text", "target_text", "source_lang", "target_lang", "language_pair",
+    "word_de", "word_ru", "translation_de", "translation_ru",
+    "article", "part_of_speech", "entry_kind", "semantic_category",
+)
+
+
+def strip_card_content_for_subscription(payload: dict | None) -> dict:
+    """Оставить в подписной карточке только опознавательные поля.
+
+    Подписка — это отметка «у человека есть это слово», а не копия слова. Разбор
+    приезжает с общей единицы при показе, поэтому таскать его копию в каждой из тысяч
+    строк незачем: она никем не читается и живёт своей жизнью.
+
+    Артикль и часть речи оставляем намеренно: они нужны самой строке (род в заголовке,
+    правила показа) и весят ничего."""
+    if not isinstance(payload, dict):
+        return {}
+    return {key: value for key, value in payload.items() if key in CARD_IDENTITY_KEYS}
+
+
 def card_content_score(card: dict | None) -> int:
     """Сколько содержательных блоков реально заполнено в разборе."""
     if not isinstance(card, dict):
@@ -18634,10 +18657,12 @@ def materialize_subscription_card(
         canonical_id = int(cands[0]["canonical_entry_id"])
         cur.execute(
             """
-            SELECT word_ru, translation_de, word_de, translation_ru,
-                   response_json, source_lang, target_lang, semantic_tag
-            FROM bt_3_webapp_dictionary_queries
-            WHERE user_id = %s AND canonical_entry_id = %s
+            SELECT q.word_ru, q.translation_de, q.word_de, q.translation_ru,
+                   q.response_json, q.source_lang, q.target_lang, q.semantic_tag,
+                   (u.card IS NOT NULL) AS unit_ready
+            FROM bt_3_webapp_dictionary_queries q
+            LEFT JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
+            WHERE q.user_id = %s AND q.canonical_entry_id = %s
             LIMIT 1;
             """,
             (int(source_user_id), canonical_id),
@@ -18652,7 +18677,13 @@ def materialize_subscription_card(
             translation_de=src[1],
             word_de=src[2],
             translation_ru=src[3],
-            response_json=src[4] if isinstance(src[4], dict) else _coerce_json_object(src[4]),
+            # Подписка не копирует разбор: он приезжает с единицы при показе. Копируем
+            # только когда на единице разбора ещё нет — иначе человек остался бы с
+            # пустой карточкой, а это хуже лишней копии.
+            response_json=(
+                strip_card_content_for_subscription(_coerce_json_object(src[4]))
+                if src[8] else _coerce_json_object(src[4])
+            ),
             folder_id=None,
             source_lang=src[5],
             target_lang=src[6],
@@ -19106,9 +19137,11 @@ def import_starter_dictionary_snapshot(
                     q.source_lang,
                     q.target_lang,
                     q.response_json,
-                    q.semantic_tag
+                    q.semantic_tag,
+                    (lu.card IS NOT NULL) AS unit_ready
                 FROM bt_3_webapp_dictionary_queries q
                 LEFT JOIN bt_3_dictionary_entries e ON e.id = q.canonical_entry_id
+                LEFT JOIN bt_3_lex_units lu ON lu.id = q.lex_unit_id
                 {source_where}
                 ORDER BY e.frequency_rank ASC NULLS LAST, q.created_at ASC, q.id ASC
                 LIMIT %s;
@@ -19180,7 +19213,13 @@ def import_starter_dictionary_snapshot(
                 if pair_source == "de" and not resolved_translation_de:
                     resolved_translation_de = source_text
 
-                merged_response = dict(response_payload)
+                # Копия слова человеку не нужна: разбор приезжает с единицы при показе.
+                # Оставляем опознавательные поля, а разбор копируем только когда на
+                # единице его ещё нет — пустая карточка хуже лишней копии.
+                merged_response = dict(
+                    strip_card_content_for_subscription(response_payload)
+                    if row[9] else response_payload
+                )
                 merged_response["source_text"] = source_text
                 merged_response["target_text"] = target_text
                 merged_response["source_lang"] = pair_source
