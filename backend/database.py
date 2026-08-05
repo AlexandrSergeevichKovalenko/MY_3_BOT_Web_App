@@ -4563,6 +4563,68 @@ def merge_unit_card_for_serve(card: dict | None, unit_card: dict | None) -> dict
     return merged if changed else (card if isinstance(card, dict) else {})
 
 
+def attach_unit_content_to_cards(items, *, id_key: str = "id", json_key: str = "response_json"):
+    """Дополнить разбор пачки карточек тем, что лежит на их единице.
+
+    Одно место на всех раздатчиков — тренажёры, повторения, подсказка. Иначе правило
+    «разбор живёт на единице» пришлось бы повторять в каждом запросе, и первый же новый
+    экран про него забыл бы.
+
+    Один запрос на всю пачку. Правила те же, что в библиотеке: только дополняем, и
+    только если единица про это же слово.
+    """
+    if not DICTIONARY_UNITS_SERVE_ENABLED or not items:
+        return items
+    ids = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            card_id = int(item.get(id_key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if card_id > 0:
+            ids.append(card_id)
+    if not ids:
+        return items
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT q.id, q.word_de, u.card, u.lemma_key
+                    FROM bt_3_webapp_dictionary_queries q
+                    JOIN bt_3_lex_units u ON u.id = q.lex_unit_id
+                    WHERE q.id = ANY(%s) AND u.card IS NOT NULL
+                    """,
+                    (ids,),
+                )
+                rows = cursor.fetchall()
+    except Exception as exc:
+        logging.debug("разбор с единиц не подтянулся: %s", exc)
+        return items
+
+    by_card = {int(row[0]): (row[1], _coerce_json_object(row[2]), row[3]) for row in rows}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            found = by_card.get(int(item.get(id_key) or 0))
+        except (TypeError, ValueError):
+            found = None
+        if not found:
+            continue
+        word_de, unit_card, lemma_key = found
+        card = _coerce_json_object(item.get(json_key))
+        if not unit_card_is_about_the_same_word(
+            unit_lemma_key=lemma_key,
+            card_word=word_de or card.get("word_de"),
+        ):
+            continue
+        item[json_key] = merge_unit_card_for_serve(card, unit_card)
+    return items
+
+
 def unit_card_is_about_the_same_word(*, unit_lemma_key: str | None, card_word: str | None) -> bool:
     """Разбор с единицы можно показывать, только если единица про ЭТО слово.
 
@@ -20703,25 +20765,29 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
                 LIMIT 1;
             """, (entry_id,))
             row = cursor.fetchone()
-            if not row:
-                return None
+    if not row:
+        return None
 
-            return {
-                "id": row[0],
-                # Ownership check for the on-demand card fill (/api/webapp/flashcards/enrich).
-                "user_id": row[12],
-                "word_ru": row[1],
-                "translation_de": row[2],
-                "word_de": row[3],
-                "translation_ru": row[4],
-                "source_lang": row[5],
-                "target_lang": row[6],
-                "origin_process": row[7],
-                "origin_meta": row[8],
-                "response_json": row[9],
-                "folder_id": row[10],
-                "created_at": row[11].isoformat() if row[11] else None,
-            }
+    entry = {
+        "id": row[0],
+        # Ownership check for the on-demand card fill (/api/webapp/flashcards/enrich).
+        "user_id": row[12],
+        "word_ru": row[1],
+        "translation_de": row[2],
+        "word_de": row[3],
+        "translation_ru": row[4],
+        "source_lang": row[5],
+        "target_lang": row[6],
+        "origin_process": row[7],
+        "origin_meta": row[8],
+        "response_json": row[9],
+        "folder_id": row[10],
+        "created_at": row[11].isoformat() if row[11] else None,
+    }
+    # Дополняем разбором с единицы уже ПОСЛЕ выхода из соединения: внутри открытого
+    # курсора вторая связь с базой ни к чему.
+    attach_unit_content_to_cards([entry])
+    return entry
 
 
 def get_random_dictionary_entry(
@@ -26226,6 +26292,10 @@ def get_flashcard_set(
             "translation_ru": row[4],
             "response_json": row[5],
         })
+    # Разбор живёт на единице — одной на всех. Тренажёру и подсказке-лампочке он нужен
+    # так же, как библиотеке: слово дообогатили ночью, и человек должен увидеть это на
+    # ближайшем повторении, а не когда до его карточки дойдёт раздача.
+    attach_unit_content_to_cards(items)
     if debug_info is not None:
         debug_info["wrong_rows_returned"] = len(wrong_rows)
         debug_info["random_rows_returned"] = len(random_rows)
@@ -26878,10 +26948,15 @@ def get_next_due_srs_card(
             },
         }
     if cursor is not None:
-        return _fetch(cursor)
-    with get_db_connection_context() as conn:
-        with conn.cursor() as own_cursor:
-            return _fetch(own_cursor)
+        found = _fetch(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as own_cursor:
+                found = _fetch(own_cursor)
+    # Разбор берём с единицы — на повторении человек должен видеть то же, что в словаре.
+    if isinstance(found, dict) and isinstance(found.get("card"), dict):
+        attach_unit_content_to_cards([found["card"]])
+    return found
 
 
 def get_next_new_srs_candidate(

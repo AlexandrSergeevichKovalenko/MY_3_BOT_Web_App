@@ -91,3 +91,65 @@ def test_missing_sides_are_refused():
     assert not unit_card_is_about_the_same_word(unit_lemma_key="wandel", card_word=None)
     assert not unit_card_is_about_the_same_word(unit_lemma_key=None, card_word="Wandel")
     assert not unit_card_is_about_the_same_word(unit_lemma_key="", card_word="")
+
+
+# ── пакетная надстройка для тренажёров и повторений ───────────────────────────
+
+def _fake_units(rows):
+    """База, отдающая связку карточка → разбор единицы."""
+    import contextlib
+
+    class Cursor:
+        def execute(self, *_a, **_k):
+            pass
+
+        def fetchall(self):
+            return rows
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+    @contextlib.contextmanager
+    def ctx():
+        yield Conn()
+
+    return ctx
+
+
+def test_batch_fills_cards_from_their_units(monkeypatch):
+    from backend import database
+    monkeypatch.setattr(database, "get_db_connection_context",
+                        _fake_units([(1, "der Wandel", UNIT, "wandel")]))
+    items = [{"id": 1, "response_json": dict(CARD)}, {"id": 2, "response_json": dict(CARD)}]
+    database.attach_unit_content_to_cards(items)
+    assert items[0]["response_json"]["memory_tip"] == UNIT["memory_tip"]
+    assert "memory_tip" not in items[1]["response_json"], "у карточки без единицы ничего не меняется"
+
+
+def test_batch_refuses_a_unit_about_another_word(monkeypatch):
+    from backend import database
+    monkeypatch.setattr(database, "get_db_connection_context",
+                        _fake_units([(1, "einen Fusselrasierer benutzen", UNIT,
+                                      "использовать машинку для удаления катышков")]))
+    items = [{"id": 1, "response_json": dict(CARD)}]
+    database.attach_unit_content_to_cards(items)
+    assert items[0]["response_json"] == CARD
+
+
+def test_batch_survives_junk_input(monkeypatch):
+    from backend import database
+    monkeypatch.setattr(database, "get_db_connection_context", _fake_units([]))
+    assert database.attach_unit_content_to_cards([]) == []
+    assert database.attach_unit_content_to_cards(None) is None
+    weird = [{"id": None}, "строка", {"нет ключа": 1}]
+    assert database.attach_unit_content_to_cards(weird) is weird
