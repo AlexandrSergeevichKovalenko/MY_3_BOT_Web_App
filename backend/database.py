@@ -18385,46 +18385,17 @@ def remove_untouched_subscription_words(user_id: int, cursor=None) -> int:
     return removed
 
 
-# Сколько слов подписка открывает человеку за сутки. Не «сколько сможет», а «сколько
-# нужно»: слово, которое некогда повторить, ценности не имеет, а библиотека, растущая
-# на сотню в день, перестаёт быть своей.
-SUBSCRIPTION_DAILY_DRIP = 10
-# За один заход тренажёра — не больше двух: человек должен заметить пополнение, а не
-# получить пачку незнакомых слов посреди повторения.
-SUBSCRIPTION_DRIP_PER_VISIT = 2
-
-
-def count_subscription_delivered_today(user_id: int, cursor=None) -> int:
-    """Сколько слов подписка открыла человеку сегодня — по её же пометке."""
-    def _run(cur) -> int:
-        cur.execute(
-            """
-            SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries
-            WHERE user_id = %s AND origin_process = 'subscription'
-              AND created_at >= date_trunc('day', NOW());
-            """,
-            (int(user_id),),
-        )
-        row = cur.fetchone()
-        return int(row[0]) if row and row[0] is not None else 0
-
-    if cursor is not None:
-        return _run(cursor)
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cur:
-            return _run(cur)
-
-
-def subscription_drip_allowance(*, delivered_total: int, delivered_today: int,
+def subscription_drip_allowance(*, needed: int, delivered_total: int,
                                 subscription_limit: int | None) -> int:
     """Сколько слов открыть человеку прямо сейчас.
 
-    Три ограничителя сразу: за один заход, за сутки и общий потолок подписки
-    («Быстрый старт» — тысяча слов). Считается отдельно от базы, чтобы правило было
-    видно целиком и проверялось без неё."""
-    allowance = int(SUBSCRIPTION_DRIP_PER_VISIT)
-    left_today = int(SUBSCRIPTION_DAILY_DRIP) - int(delivered_today or 0)
-    allowance = min(allowance, max(0, left_today))
+    Правило одно: СКОЛЬКО НУЖНО. Тренажёру нужно пятнадцать карточек, своих хватило на
+    девять — подписка добирает шесть. Не хватило ни одной — добирает пятнадцать.
+    Человек подписался на объём и должен его получать, а не по расписанию.
+
+    Единственный ограничитель — потолок самой подписки: «Быстрый старт» это тысяча слов,
+    и больше тысячи по ней не откроется. У «Всего словаря» потолка нет."""
+    allowance = max(0, int(needed or 0))
     if subscription_limit:
         left_total = int(subscription_limit) - int(delivered_total or 0)
         allowance = min(allowance, max(0, left_total))
@@ -18433,23 +18404,23 @@ def subscription_drip_allowance(*, delivered_total: int, delivered_today: int,
 
 def top_up_subscription_words(
     *, user_id: int, source_user_id: int, source_lang: str | None, target_lang: str | None,
-    subscription_limit: int | None = None,
+    needed: int, subscription_limit: int | None = None,
 ) -> int:
-    """Открыть человеку следующие слова подписки — каплей.
+    """Добрать человеку недостающие слова из подписки.
 
     Зачем отдельно от тренажёров: раньше подписка отдавала слово ТОЛЬКО внутри очереди
     интервальных повторений, а её почти не открывают — за всё время подписка не выдала
-    ни одного слова. Тренажёров у нас много, и вшивать подписку в каждый значит чинить
-    одно и то же в пяти местах.
+    ни одного слова. Тренажёров пять, и вшивать подписку в каждый значило бы чинить одно
+    правило в пяти местах.
 
-    Поэтому слово просто появляется в библиотеке человека, а дальше его подхватывают
-    ВСЕ тренажёры сами: они и так читают библиотеку. Порядок прежний — самые нужные
-    слова вперёд."""
-    delivered_total = count_subscription_delivered(int(user_id))
-    delivered_today = count_subscription_delivered_today(int(user_id))
+    Поэтому слово просто появляется в библиотеке, а дальше его подхватывают ВСЕ
+    тренажёры сами: они и так читают библиотеку. Порядок прежний — самые нужные слова
+    вперёд, по частотности."""
+    if int(needed or 0) <= 0:
+        return 0
     allowance = subscription_drip_allowance(
-        delivered_total=delivered_total,
-        delivered_today=delivered_today,
+        needed=int(needed),
+        delivered_total=count_subscription_delivered(int(user_id)),
         subscription_limit=subscription_limit,
     )
     opened = 0
