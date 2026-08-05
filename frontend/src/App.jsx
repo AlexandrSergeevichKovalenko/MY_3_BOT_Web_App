@@ -6987,7 +6987,7 @@ function AppInner() {
   // этом НЕ фильтруется — окно закрылось, человек там же, где был.
   const [vocabSearchOpen, setVocabSearchOpen] = useState(false);
   const [vocabSearchCardItem, setVocabSearchCardItem] = useState(null);
-  const [vocabPoolAddingId, setVocabPoolAddingId] = useState(0);
+  const [vocabPoolAddingId, setVocabPoolAddingId] = useState('');
   const [vocabPoolAddedIds, setVocabPoolAddedIds] = useState([]);
   const vocabSearchOverlayRef = useRef(null);
   const [vocabSort, setVocabSort] = useState('date_desc');
@@ -21893,14 +21893,18 @@ function AppInner() {
   // Перенести слово из общего словаря к себе. Разбор уже готов, поэтому это копирование,
   // а не новый запрос к модели — ровно ради этого поиск и заглядывает в общий словарь.
   const addWordFromSharedPool = useCallback(async (entry) => {
-    const entryId = Number(entry?.pool_entry_id || entry?.id || 0);
-    if (!entryId || !initData) return false;
-    setVocabPoolAddingId(entryId);
+    // Слово приходит либо из слоя единиц, либо из общего пула — отправляем тот номер,
+    // который есть. Ключ для отметки «добавлено» общий, чтобы строка не мигала.
+    const unitId = Number(entry?.unit_id || 0);
+    const entryId = unitId ? 0 : Number(entry?.pool_entry_id || entry?.id || 0);
+    const marker = unitId ? `unit-${unitId}` : String(entryId || '');
+    if ((!entryId && !unitId) || !initData) return false;
+    setVocabPoolAddingId(marker);
     try {
       const response = await fetchWithTimeout('/api/webapp/vocabulary/add-from-pool', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, entry_id: entryId }),
+        body: JSON.stringify({ initData, entry_id: entryId || undefined, unit_id: unitId || undefined }),
       }, 15000);
       if (response.status === 429) {
         showDictionarySaveLimitToast();
@@ -21911,7 +21915,7 @@ function AppInner() {
                            'Das Wort konnte nicht hinzugefügt werden. Bitte versuche es erneut.'), 3200);
         return false;
       }
-      setVocabPoolAddedIds((prev) => (prev.includes(entryId) ? prev : [...prev, entryId]));
+      setVocabPoolAddedIds((prev) => (prev.includes(marker) ? prev : [...prev, marker]));
       showInlineToast(tr('Слово добавлено к вам', 'Wort zu dir hinzugefügt'), 2200);
       // Библиотека под окном должна показывать новое слово сразу после закрытия поиска.
       void loadVocabLibrary({ reset: true });
@@ -21921,7 +21925,7 @@ function AppInner() {
                          'Hinzufügen fehlgeschlagen. Prüfe die Verbindung.'), 3200);
       return false;
     } finally {
-      setVocabPoolAddingId(0);
+      setVocabPoolAddingId('');
     }
   }, [initData, fetchWithTimeout, showDictionarySaveLimitToast, showInlineToast, tr, loadVocabLibrary]);
 
@@ -34336,9 +34340,9 @@ function AppInner() {
         : null;
       const savedMeanings = getSavedEntryRankedMeanings(item);
       const isPoolEntry = Boolean(item.is_pool);
-      const poolEntryId = Number(item.pool_entry_id || item.id || 0);
-      const poolAlreadyAdded = isPoolEntry && vocabPoolAddedIds.includes(poolEntryId);
-      const poolAddBusy = isPoolEntry && vocabPoolAddingId === poolEntryId;
+      const poolMarker = item.unit_id ? `unit-${item.unit_id}` : String(item.pool_entry_id || item.id || '');
+      const poolAlreadyAdded = isPoolEntry && vocabPoolAddedIds.includes(poolMarker);
+      const poolAddBusy = isPoolEntry && vocabPoolAddingId === poolMarker;
       return (
         <div
           className="vocab-word-fullscreen-overlay"

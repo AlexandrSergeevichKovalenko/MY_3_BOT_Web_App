@@ -616,6 +616,26 @@ def count_units_needing_card(*, lang: str = "de") -> int:
         return 0
 
 
+def unit_display(unit_id: int) -> str:
+    """Написание единицы по её номеру.
+
+    Нужно там, где на руках только номер: карточку потом собирает тот же `lookup`,
+    что отдаёт разбор в приложении, — значит в личный словарь попадёт ровно то, что
+    человек видел на экране, а не отдельно собранная копия."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COALESCE(NULLIF(display, ''), lemma) FROM bt_3_lex_units WHERE id = %s;",
+                    (int(unit_id),),
+                )
+                row = cur.fetchone()
+        return str(row[0]).strip() if row and row[0] else ""
+    except Exception as exc:
+        logging.debug("unit display failed for %s: %s", unit_id, exc)
+        return ""
+
+
 def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащение") -> bool:
     """Положить разбор НА единицу. Пишем только в слой; общий банк не трогаем."""
     if not isinstance(card, dict) or not card:
