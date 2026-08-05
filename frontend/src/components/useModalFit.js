@@ -39,6 +39,15 @@ export default function useModalFit(overlayRef, cardRef, bodyRef, active, conten
         offTelegram = () => { try { tg.offEvent?.('viewportChanged', schedule); } catch (_e) { /* noop */ } };
       }
     } catch (_e) { /* noop */ }
+    // Вернулись в приложение — экран мог смениться, пока нас не было: скриншот,
+    // переключение приложений, свёрнутая шторка. `resize` при этом не приходит, и окно
+    // оставалось той высоты, что была в момент ухода, — снизу зияла полоса.
+    const scheduleIfVisible = () => {
+      if (document.visibilityState === 'visible') schedule();
+    };
+    document.addEventListener('visibilitychange', scheduleIfVisible);
+    window.addEventListener('pageshow', schedule);
+    window.addEventListener('focus', scheduleIfVisible);
     // Шрифты догружаются после первого layout и меняют высоту текста.
     try { document.fonts?.ready?.then(schedule); } catch (_e) { /* noop */ }
     // Шторка Telegram разворачивается с анимацией: первый расчёт может попасть на ещё не
@@ -52,6 +61,9 @@ export default function useModalFit(overlayRef, cardRef, bodyRef, active, conten
       clearTimeout(t2);
       window.removeEventListener('resize', schedule);
       window.removeEventListener('orientationchange', schedule);
+      document.removeEventListener('visibilitychange', scheduleIfVisible);
+      window.removeEventListener('pageshow', schedule);
+      window.removeEventListener('focus', scheduleIfVisible);
       try { window.visualViewport?.removeEventListener('resize', schedule); } catch (_e) { /* noop */ }
       if (offTelegram) offTelegram();
     };

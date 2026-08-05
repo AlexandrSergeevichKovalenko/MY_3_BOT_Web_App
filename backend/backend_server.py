@@ -491,6 +491,7 @@ from backend.database import (
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
     list_user_vocabulary,
+    attach_unit_content_to_cards,
     top_up_subscription_words,
     save_card_user_notes,
     USER_NOTES_MAX,
@@ -11983,12 +11984,19 @@ def _build_next_srs_payload(
         current_state=srs_state_for_preview,
         reviewed_at=now_utc,
     )
+    # Заметки человека и разбор с единицы — здесь, на общем выходе очереди. Внутри
+    # карточка приходит двумя путями (по сроку и новая из подписки), и обвешивать каждый
+    # значило бы забыть про третий, который появится завтра.
+    if isinstance(card_payload, dict) and card_payload:
+        attach_unit_content_to_cards([card_payload])
     card_response = _decorate_training_dictionary_item(
         card_payload if isinstance(card_payload, dict) else {},
         source_lang=source_lang,
         target_lang=target_lang,
         direction=f"{source_lang}-{target_lang}",
     )
+    if isinstance(card_payload, dict) and card_payload.get("user_notes"):
+        card_response["user_notes"] = card_payload["user_notes"]
     return {
         "queue_source": normalized_queue_source,
         "card": card_response,

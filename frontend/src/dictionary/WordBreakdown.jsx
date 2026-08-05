@@ -184,7 +184,11 @@ function collectExamples(item) {
     if (de) pairs.push({ de, ru });
   };
   (Array.isArray(item?.usage_examples) ? item.usage_examples : []).forEach((ex) => {
-    if (ex && typeof ex === 'object') add(ex.source, ex.target);
+    // Примеры лежат в двух видах: парой {source, target} и просто строкой. Строки
+    // раньше молча выбрасывались — и карточка с тремя примерами открывалась пустой
+    // (замер 05.08.2026: 1 379 карточек и 90 единиц хранят примеры строками).
+    if (typeof ex === 'string') add(ex, '');
+    else if (ex && typeof ex === 'object') add(ex.source ?? ex.de ?? ex.text, ex.target ?? ex.ru ?? ex.translation);
   });
   const m = item?.meanings;
   if (m && typeof m === 'object') {
