@@ -369,11 +369,17 @@ def attach_entry_to_unit(
     word_ru: str | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    card: dict | None = None,
 ) -> int | None:
     """Проставить у только что сохранённой карточки указатель на её слово.
 
     Лучше делать это на сохранении, чем догонять разовыми проходами: иначе каждый
-    новый день добавляет карточки без указателя, и слой отстаёт от жизни."""
+    новый день добавляет карточки без указателя, и слой отстаёт от жизни.
+
+    Если передан разбор — он же кладётся НА ЕДИНИЦУ, и слово становится разобранным
+    для всех сразу, а не только для того, кто его сохранил. Кладём лишь когда разбор
+    полнее уже лежащего, и только на немецкую единицу: разбор описывает немецкое
+    слово, на русской единице ему не место."""
     langs = {str(source_lang or "").lower(), str(target_lang or "").lower()}
     text, lang = "", ""
     if "de" in langs and str(word_de or "").strip():
@@ -398,6 +404,11 @@ def attach_entry_to_unit(
     except Exception as exc:
         logging.debug("attach entry %s to unit failed: %s", entry_id, exc)
         return None
+    if card and lang == "de":
+        try:
+            save_unit_card_if_richer(unit_id, card, source="сохранение")
+        except Exception:
+            logging.debug("разбор при сохранении не лёг на единицу %s", unit_id, exc_info=True)
     return unit_id
 
 
@@ -617,6 +628,62 @@ def save_unit_card(unit_id: int, card: dict, *, source: str = "обогащен�
     except Exception as exc:
         logging.debug("save unit card failed for %s: %s", unit_id, exc)
         return False
+
+
+# Содержательные блоки разбора. По ним, а НЕ по длине текста, решается, какая версия
+# полнее: длину раздувают служебные поля и сырой текст запроса, а ценность карточки —
+# в этих блоках.
+CARD_CONTENT_KEYS = (
+    "usage_examples", "meanings", "dictionary_senses", "forms", "grammar_tables",
+    "government_patterns", "common_collocations", "synonym_differences", "false_friends",
+    "word_formation", "register_examples", "common_mistakes", "pronunciation",
+    "etymology_note", "memory_tip", "translations",
+)
+
+
+def card_content_score(card: dict | None) -> int:
+    """Сколько содержательных блоков реально заполнено в разборе."""
+    if not isinstance(card, dict):
+        return 0
+    score = 0
+    for key in CARD_CONTENT_KEYS:
+        value = card.get(key)
+        if isinstance(value, str):
+            filled = bool(value.strip())
+        elif isinstance(value, (list, dict)):
+            filled = bool(len(value))
+        else:
+            filled = value not in (None, "", [], {})
+        if filled:
+            score += 1
+    return score
+
+
+def save_unit_card_if_richer(unit_id: int, card: dict, *, source: str = "сохранение") -> bool:
+    """Положить разбор на единицу, но ТОЛЬКО если он полнее уже лежащего.
+
+    Единица — общая, и её разбор виден всем, кто на слово подписан. Поэтому тонкое
+    сохранение (быстрый перевод, тап в тренажёре) не имеет права затереть собранный
+    ночью полный разбор: такое понижение получил бы каждый, а не только тот, кто
+    сохранял. Сравниваем по числу заполненных блоков, а не по длине текста."""
+    if not isinstance(card, dict) or not card:
+        return False
+    fresh = card_content_score(card)
+    if fresh <= 0:
+        return False
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT card FROM bt_3_lex_units WHERE id = %s;", (int(unit_id),))
+                row = cur.fetchone()
+        if row is None:
+            return False
+        if fresh <= card_content_score(row[0] if isinstance(row[0], dict) else None):
+            return False
+    except Exception as exc:
+        logging.debug("compare unit card failed for %s: %s", unit_id, exc)
+        return False
+    return save_unit_card(int(unit_id), card, source=source)
 
 
 # Артикль однозначно выдаёт существительное, а вместе с ним и род. Это единственный
