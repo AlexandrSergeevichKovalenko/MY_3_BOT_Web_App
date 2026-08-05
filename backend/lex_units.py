@@ -58,6 +58,7 @@ _GRAMMAR_NOTE_RE = re.compile(
 
 
 _CYRILLIC_CAPITAL_FIRST = re.compile(r"^[А-ЯЁ]")
+_CYRILLIC_ANY_RE = re.compile(r"[А-Яа-яЁё]")
 
 
 def looks_like_example_not_translation(text: str) -> bool:
@@ -583,6 +584,11 @@ def sync_unit_links_from_card(unit_id: int, card: dict, *, native_lang: str = "r
                     # Для слова такое пропускаем; у предложения перевод предложением —
                     # это норма, поэтому правило только для слов.
                     if kind_of_source == "word" and looks_like_example_not_translation(value):
+                        continue
+                    # Перевод на русский обязан содержать русские буквы. Немецкий
+                    # пересказ переводом не является: «Du stinkst furchtbar.» →
+                    # «Du stinkst fürchterlich» человеку ничего не объясняет.
+                    if native_lang == "ru" and not _CYRILLIC_ANY_RE.search(value):
                         continue
                     cur.execute(
                         """
