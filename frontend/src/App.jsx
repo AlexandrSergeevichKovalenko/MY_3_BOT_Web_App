@@ -22593,7 +22593,9 @@ function AppInner() {
     if (article) {
       lines.push(`${tr('Артикль', 'Artikel')}: ${article}`);
     }
-    if (provider) {
+    // Имя движка (DEEPL_FREE и т.п.) — служебное. В карточке, которой человек делится,
+    // ему не место: она уезжает в чужие чаты. Владельцу оставляем — как отладку.
+    if (provider && canSeeEngineDebugLabels) {
       lines.push(`${tr('Источник', 'Quelle')}: ${provider.toUpperCase()}`);
     }
     const formRows = getDictionaryFormRows(item).slice(0, 5);
@@ -38640,7 +38642,7 @@ function AppInner() {
                                 ? tr('📖 Словарь (офлайн)', '📖 Wörterbuch (offline)')
                                 : tr('📖 Словарь', '📖 Wörterbuch')}
                             </span>
-                          ) : (String(dictionaryResult?.provider || '').trim() ? (
+                          ) : (canSeeEngineDebugLabels && String(dictionaryResult?.provider || '').trim() ? (
                             <span className="dict-hero-meta">{String(dictionaryResult.provider).split('_')[0].toLowerCase()}</span>
                           ) : null)}
                         </div>
