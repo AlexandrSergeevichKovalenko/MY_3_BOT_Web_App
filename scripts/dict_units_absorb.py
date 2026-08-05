@@ -271,7 +271,10 @@ def _headword_matches(*, german: str, lemma: str, lemma_key: str, surface_keys: 
 def apply_report(report: dict) -> dict:
     """Записать отобранное. Идемпотентно: повторный запуск ничего не меняет."""
     done = {"filled": 0, "created": 0, "errors": 0}
-    for unit_id, best in report["candidates"].items():
+    total = len(report["candidates"])
+    for index, (unit_id, best) in enumerate(report["candidates"].items(), 1):
+        if index % 500 == 0:
+            print(f"   … {index} из {total}", flush=True)
         try:
             if lex_units.save_unit_card(int(unit_id), _clean_card(best["payload"]), source="сведение"):
                 done["filled"] += 1
