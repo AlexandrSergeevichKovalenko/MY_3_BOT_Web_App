@@ -189,10 +189,16 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
 
     За основу берётся разбор, лежащий НА единице (он про неё и ни про кого больше), а
     заголовок, артикль и переводы ставятся из самой единицы и её связей — чтобы данные
-    на экране всегда были про одно и то же слово."""
-    card = dict(unit.get("card") or {})
+    на экране всегда были про одно и то же слово.
+
+    Спросили по-русски — разбор берём с НЕМЕЦКОЙ стороны связи. Разбор описывает
+    немецкое слово: формы, род, управление, примеры. На русской единице его нет и быть
+    не должно (21 534 русских единицы, разбор лежит у 158). Без этого запрос «чёткое
+    направление» возвращал карточку без разбора, словарь считал слово незнакомым и шёл
+    к модели — за тем, что у нас уже разобрано и оплачено."""
     de_side = unit if unit["lang"] == "de" else (links[0] if links else None)
     ru_side = links[0] if unit["lang"] == "de" else unit
+    card = dict(unit.get("card") or (de_side or {}).get("card") or {})
 
     german_display = (de_side or {}).get("display") or ""
     native_display = (ru_side or {}).get("display") or ""
@@ -257,7 +263,7 @@ def _build_item(unit: dict, links: list[dict], *, source_lang: str, target_lang:
     # Отдельная пометка «у единицы есть НАСТОЯЩИЙ разбор». Без неё карточка со списком
     # переводов, но без форм и примеров, считалась бы полной (так устроена общая проверка
     # полноты) и уехала бы человеку голой, минуя дообогащение.
-    item["__lex_has_card"] = bool(unit.get("card"))
+    item["__lex_has_card"] = bool(unit.get("card") or (de_side or {}).get("card"))
     return item
 
 
