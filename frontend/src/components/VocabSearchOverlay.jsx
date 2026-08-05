@@ -109,7 +109,7 @@ const VocabSearchOverlay = forwardRef(function VocabSearchOverlay({
   const [recent, setRecent] = useState(() => readRecent());
   const [height, setHeight] = useState(() => (typeof window === 'undefined' ? 0 : viewportHeight()));
   const [addedIds, setAddedIds] = useState([]);
-  const [addingId, setAddingId] = useState(0);
+  const [addingId, setAddingId] = useState('');
   // Запрос, на который сервер уже ответил. Пока он не совпал с набранным, показываем
   // подходящее из уже загруженных слов — список шевелится с первой буквы.
   const [servedQuery, setServedQuery] = useState('');
@@ -120,7 +120,7 @@ const VocabSearchOverlay = forwardRef(function VocabSearchOverlay({
   const needle = stem(query);
   const hasServerAnswer = Boolean(query.trim()) && servedQuery === `${scope}::${query.trim()}`;
   const selectedSet = useMemo(() => new Set((selectedIds || []).map(Number)), [selectedIds]);
-  const addedSet = useMemo(() => new Set(addedIds.map(Number)), [addedIds]);
+  const addedSet = useMemo(() => new Set(addedIds.map(String)), [addedIds]);
 
   // Клавиатура WebKit открывается только если фокус поставлен прямо в обработчике
   // нажатия. Поэтому фокус ставит тот, кто открывает окно, а не эффект после рендера.
@@ -301,14 +301,15 @@ const VocabSearchOverlay = forwardRef(function VocabSearchOverlay({
   }, [onOpenWord, query, rememberQuery]);
 
   const addFromPool = useCallback(async (item) => {
-    const entryId = Number(item.pool_entry_id || item.id || 0);
+    // Слово может прийти из слоя единиц или из общего пула — ключ у них разный.
+    const entryId = String(item.unit_id ? `unit-${item.unit_id}` : (item.pool_entry_id || item.id || ''));
     if (!entryId || addedSet.has(entryId) || addingId) return;
     setAddingId(entryId);
     try {
       const ok = await onAddFromPool?.(item);
       if (ok) setAddedIds((prev) => [...prev, entryId]);
     } finally {
-      setAddingId(0);
+      setAddingId('');
     }
   }, [onAddFromPool, addedSet, addingId]);
 
@@ -483,7 +484,7 @@ const VocabSearchOverlay = forwardRef(function VocabSearchOverlay({
             </div>
             {poolShown.map((item) => {
               const { word, translation } = describe(item);
-              const entryId = Number(item.pool_entry_id || item.id || 0);
+              const entryId = String(item.unit_id ? `unit-${item.unit_id}` : (item.pool_entry_id || item.id || ''));
               const added = addedSet.has(entryId);
               const busy = addingId === entryId;
               return (

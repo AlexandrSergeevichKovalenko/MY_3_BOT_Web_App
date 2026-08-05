@@ -28926,6 +28926,135 @@ def search_dictionary_pool(
     return items
 
 
+def search_dictionary_units(
+    user_id: int,
+    query: str,
+    limit: int = 40,
+) -> list[dict]:
+    """Поиск по СЛОЮ ЕДИНИЦ — по слову, а не по строке текста.
+
+    Почему не по общему пулу: пул хранит пару «что спросили → что ответили», поэтому
+    одно слово живёт в нём несколькими строками и находится только в том виде, в каком
+    его когда-то набрали. Единица — это само слово: у неё есть написания (формы), связи
+    с переводами и разбор. Замерено 05.08.2026: немецких единиц с переводом 13 578, из
+    них с разбором 7 922 — против 6 969 полных записей в пуле.
+
+    Ищем и по немецкой стороне, и по русской: «точка с запятой» находит «das Semikolon».
+    Отдаём только то, у чего есть перевод — строка без правой стороны человеку не нужна.
+    То, что у человека уже есть, исключаем по указателю карточки на единицу.
+    """
+    text = str(query or "").strip()
+    if not text:
+        return []
+    needle_text = re.sub(
+        r"^(der|die|das|ein|eine|einen|einem|einer|eines)\s+",
+        "",
+        text.lower(),
+    ).strip() or text.lower()
+    needle = f"%{needle_text}%"
+    prefix = f"{needle_text}%"
+    safe_limit = max(1, min(100, int(limit or 40)))
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT u.id, u.display, u.lemma, u.kind, u.gender, u.card,
+                       (SELECT t.display
+                          FROM bt_3_lex_links l
+                          JOIN bt_3_lex_units t ON t.id = l.to_unit
+                         WHERE l.from_unit = u.id AND l.rank < 900
+                         ORDER BY l.rank, t.id LIMIT 1) AS translation
+                FROM bt_3_lex_units u
+                WHERE u.lang = 'de'
+                  AND EXISTS (SELECT 1 FROM bt_3_lex_links l2
+                               WHERE l2.from_unit = u.id AND l2.rank < 900)
+                  AND NOT EXISTS (SELECT 1 FROM bt_3_webapp_dictionary_queries q
+                                   WHERE q.user_id = %s AND q.lex_unit_id = u.id)
+                  AND (
+                        LOWER(u.display) LIKE %s
+                     OR u.lemma_key LIKE %s
+                     OR EXISTS (SELECT 1 FROM bt_3_lex_links l3
+                                  JOIN bt_3_lex_units t3 ON t3.id = l3.to_unit
+                                 WHERE l3.from_unit = u.id AND l3.rank < 900
+                                   AND LOWER(t3.display) LIKE %s)
+                  )
+                ORDER BY (CASE WHEN u.lemma_key = %s THEN 0
+                               WHEN u.lemma_key LIKE %s THEN 1
+                               ELSE 2 END),
+                         (u.card IS NULL),
+                         LENGTH(u.display), u.id
+                LIMIT %s
+                """,
+                (int(user_id), needle, needle, needle, needle_text, prefix, safe_limit),
+            )
+            rows = cursor.fetchall()
+
+    items = []
+    for unit_id, display, lemma, kind, gender, card, translation in rows:
+        word = str(display or lemma or "").strip()
+        if gender and not _GERMAN_LEADING_ARTICLE_RE.match(word.lower()):
+            word = f"{gender} {word}"
+        items.append({
+            "id": f"unit-{int(unit_id)}",
+            "unit_id": int(unit_id),
+            "is_pool": True,
+            "word_de": word,
+            "word_ru": "",
+            "translation_de": "",
+            "translation_ru": str(translation or "").strip(),
+            "source_lang": "de",
+            "target_lang": "ru",
+            "folder_id": None,
+            "srs_label": "none",
+            "srs_reps": 0,
+            "response_json": _coerce_json_object(card),
+            "display_word": word,
+            "display_translation": str(translation or "").strip(),
+        })
+    return items
+
+
+def search_shared_dictionary(
+    user_id: int,
+    query: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    limit: int = 40,
+) -> list[dict]:
+    """Всё, что у нас есть по этому слову и чего ещё нет у человека.
+
+    Сначала единицы — там слово опознаётся как слово и лежит лучший разбор. Потом
+    добираем из общего пула то, чего в единицах не нашлось: 822 записи пула единицы не
+    имеют вовсе (это запросы перевода, которые никто не сохранял), и у 357 из них есть
+    полный разбор. Терять их нельзя — ради них поиск и делался.
+
+    Когда пул уйдёт совсем, отсюда просто исчезнет второе слагаемое."""
+    units = search_dictionary_units(user_id=user_id, query=query, limit=limit)
+    if len(units) >= limit:
+        return units
+
+    seen = {
+        _normalize_dictionary_headword_key(item.get("display_word"))
+        for item in units
+        if item.get("display_word")
+    }
+    extra = []
+    for item in search_dictionary_pool(
+        user_id=user_id, query=query,
+        source_lang=source_lang, target_lang=target_lang,
+        limit=limit,
+    ):
+        key = _normalize_dictionary_headword_key(item.get("display_word"))
+        if key and key in seen:
+            continue
+        seen.add(key)
+        extra.append(item)
+        if len(units) + len(extra) >= limit:
+            break
+    return units + extra
+
+
 def get_dictionary_pool_entry(entry_id: int) -> dict | None:
     """Одна запись общего словаря по id — для переноса в личный словарь человека."""
     try:

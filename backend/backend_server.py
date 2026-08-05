@@ -492,6 +492,7 @@ from backend.database import (
     get_dictionary_entry_by_id,
     list_user_vocabulary,
     search_dictionary_pool,
+    search_shared_dictionary,
     get_dictionary_pool_entry,
     get_vocabulary_folders_with_counts,
     delete_vocabulary_entry,
@@ -50344,7 +50345,7 @@ def webapp_vocabulary_pool_search():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     try:
-        items = search_dictionary_pool(
+        items = search_shared_dictionary(
             user_id=int(user_id),
             query=query,
             source_lang=source_lang,
@@ -50375,10 +50376,32 @@ def webapp_vocabulary_add_from_pool():
         entry_id = int(payload.get("entry_id") or 0)
     except (TypeError, ValueError):
         entry_id = 0
-    if entry_id <= 0:
-        return jsonify({"error": "entry_id обязателен"}), 400
+    try:
+        unit_id = int(payload.get("unit_id") or 0)
+    except (TypeError, ValueError):
+        unit_id = 0
+    if entry_id <= 0 and unit_id <= 0:
+        return jsonify({"error": "не указано, какое слово добавить"}), 400
 
-    entry = get_dictionary_pool_entry(entry_id)
+    # Слово из слоя единиц: карточку собирает тот же сборщик, что отдаёт разбор в
+    # приложении, — так в личный словарь попадает ровно то, что человек видел на экране.
+    entry = None
+    if unit_id > 0:
+        display = lex_units.unit_display(unit_id)
+        if display:
+            item = lex_units.lookup(display, source_lang="de", target_lang="ru") or {}
+            if item:
+                entry = {
+                    "source_lang": "de",
+                    "target_lang": "ru",
+                    "word_de": str(item.get("word_de") or item.get("source_text") or "").strip(),
+                    "word_ru": str(item.get("word_ru") or item.get("target_text") or "").strip(),
+                    "translation_de": str(item.get("translation_de") or "").strip(),
+                    "translation_ru": str(item.get("translation_ru") or item.get("target_text") or "").strip(),
+                    "response_json": {k: v for k, v in item.items() if not k.startswith("__")},
+                }
+    if entry is None and entry_id > 0:
+        entry = get_dictionary_pool_entry(entry_id)
     if not entry:
         return jsonify({"error": "Слово не найдено в общем словаре"}), 404
 
@@ -50422,7 +50445,8 @@ def webapp_vocabulary_add_from_pool():
                 feature_code=feature_key,
                 event_type="blocked",
                 origin="vocabulary_add_from_pool",
-                metadata={"used": used_today, "limit": limit_value, "entry_id": entry_id},
+                metadata={"used": used_today, "limit": limit_value,
+                      "entry_id": entry_id, "unit_id": unit_id},
             )
             return jsonify(
                 build_free_limit_error(feature_key, used=used_today, limit=limit_value, tz="Europe/Vienna")
@@ -50449,7 +50473,11 @@ def webapp_vocabulary_add_from_pool():
             source_lang=source_lang,
             target_lang=target_lang,
             origin_process="vocabulary_add_from_pool",
-            origin_meta={"endpoint": "/api/webapp/vocabulary/add-from-pool", "pool_entry_id": entry_id},
+            origin_meta={
+                "endpoint": "/api/webapp/vocabulary/add-from-pool",
+                "pool_entry_id": entry_id or None,
+                "lex_unit_id": unit_id or None,
+            },
         )
     except Exception:
         logging.exception("add-from-pool: save failed for user=%s entry=%s", user_id, entry_id)
