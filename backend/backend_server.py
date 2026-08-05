@@ -26162,6 +26162,11 @@ def _build_translation_focus_pool_report_rows(
         focus_label = str(preset_payload.get("label") or focus_key).strip() or focus_key
         focus_is_candidate = focus_key in candidate_map
         for level in normalized_levels:
+            # Тему, которую на этом уровне не преподаём, в отчёт и снимок не пишем.
+            # Без этого она бы воскресала из вчерашнего снимка: цели у неё уже нет, но
+            # строка подставляла вчерашний порог и корзина снова висела «дефицитом».
+            if not focus_supported_at_level(focus_key, level):
+                continue
             bucket_key = (focus_key, level)
             current_row = current_map.get(bucket_key) or {}
             previous_row = previous_map.get(bucket_key) or {}
