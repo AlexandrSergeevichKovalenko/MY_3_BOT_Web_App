@@ -268,16 +268,45 @@ def _headword_matches(*, german: str, lemma: str, lemma_key: str, surface_keys: 
     return key in (surface_keys or set())
 
 
+def _link_translations_if_orphan(unit_id: int, card: dict) -> bool:
+    """Собрать переводы из разбора, если у единицы нет НИ ОДНОЙ связи.
+
+    Словарь не отдаёт единицу без перевода: «единица есть, а перевода на нужный язык
+    нет — отдавать нечего». Перенос клал разбор, но связь с русской стороной не создавал,
+    и 58 слов с готовым разбором оставались недостижимыми — «der Abschleppdienst»,
+    «die Zulassungsstelle», «der Fahrzeugschein».
+
+    Трогаем ТОЛЬКО единицы без связей: там, где переводы уже настроены, пересборка
+    переставила бы ранги и могла вернуть наверх примеры, которые мы оттуда убрали."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_lex_links WHERE from_unit = %s AND rank < 900;",
+                    (int(unit_id),),
+                )
+                if int((cur.fetchone() or [0])[0] or 0) > 0:
+                    return False
+        report = lex_units.sync_unit_links_from_card(int(unit_id), card)
+        return bool(report.get("links"))
+    except Exception as exc:  # noqa: BLE001
+        print(f"   ! связи для единицы {unit_id}: {exc}")
+        return False
+
+
 def apply_report(report: dict) -> dict:
     """Записать отобранное. Идемпотентно: повторный запуск ничего не меняет."""
-    done = {"filled": 0, "created": 0, "errors": 0}
+    done = {"filled": 0, "created": 0, "errors": 0, "linked": 0}
     total = len(report["candidates"])
     for index, (unit_id, best) in enumerate(report["candidates"].items(), 1):
         if index % 500 == 0:
             print(f"   … {index} из {total}", flush=True)
         try:
-            if lex_units.save_unit_card(int(unit_id), _clean_card(best["payload"]), source="сведение"):
+            card = _clean_card(best["payload"])
+            if lex_units.save_unit_card(int(unit_id), card, source="сведение"):
                 done["filled"] += 1
+                if _link_translations_if_orphan(int(unit_id), card):
+                    done["linked"] += 1
         except Exception as exc:  # noqa: BLE001
             done["errors"] += 1
             print(f"   ! единица {unit_id}: {exc}")
@@ -287,8 +316,11 @@ def apply_report(report: dict) -> dict:
             if not unit_id:
                 done["errors"] += 1
                 continue
-            if lex_units.save_unit_card(int(unit_id), _clean_card(orphan["payload"]), source="сведение"):
+            card = _clean_card(orphan["payload"])
+            if lex_units.save_unit_card(int(unit_id), card, source="сведение"):
                 done["created"] += 1
+                if _link_translations_if_orphan(int(unit_id), card):
+                    done["linked"] += 1
         except Exception as exc:  # noqa: BLE001
             done["errors"] += 1
             print(f"   ! запись пула {orphan['entry_id']}: {exc}")
@@ -354,7 +386,8 @@ def main() -> int:
 
     print("\nПишу…")
     done = apply_report(report)
-    print(f"\nготово: заполнено {done['filled']}, заведено новых единиц {done['created']}, ошибок {done['errors']}")
+    print(f"\nготово: заполнено {done['filled']}, заведено новых единиц {done['created']}, "
+          f"собрано переводов {done['linked']}, ошибок {done['errors']}")
     return 0
 
 
