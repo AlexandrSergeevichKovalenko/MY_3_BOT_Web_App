@@ -248,12 +248,23 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
     }
   }, [activeCell, activeWord, inputs, words, isOpen]);
 
-  const hintsLeft = Math.max(0, words.length - hintWords.size);
+  // Подсказка открывает букву, а не слово. Если в слове всего одна пустая клетка,
+  // открыть её — значит написать слово за человека, поэтому такие слова в счётчик
+  // 💡 не входят и подсказку не дают (сервер отказывает в этом же случае).
+  const openCells = useCallback(
+    (w) => (w?.cells || []).filter(([r, c]) => isEmpty(r, c)).length, [isEmpty],
+  );
+  const hintable = useCallback((w) => openCells(w) >= 2, [openCells]);
+  const hintsLeft = words.filter((w) => hintable(w) && !hintWords.has(w.number)).length;
 
   const askHint = useCallback(async () => {
     if (hintBusy || !onHint) return;
     const word = words[activeWord];
     if (!word) return;
+    if (!hintable(word)) {
+      setNote('Здесь осталась одна буква — подсказка открыла бы слово целиком');
+      return;
+    }
     if (hintWords.has(word.number)) {
       setNote('В этом слове подсказка уже открыта — встань на другое слово');
       return;
@@ -288,7 +299,8 @@ export default function CrosswordGrid({ task, onSubmit, onHint, submitting }) {
     }
     // activeCell в зависимостях обязателен: без него колбэк помнит положение курсора
     // с прошлого рендера, и подсказка открывает не ту клетку, на которую тапнули.
-  }, [hintBusy, onHint, words, activeWord, activeCell, hintWords, hintCells, inputs, isOpen, advance]);
+  }, [hintBusy, onHint, words, activeWord, activeCell, hintWords, hintCells, inputs,
+    isOpen, advance, hintable]);
 
   const emptyLeft = emptyKeys.filter((key) => !inputs[key] && !hintCells[key]).length;
   const allFilled = emptyKeys.length > 0 && emptyLeft === 0;

@@ -17,6 +17,11 @@ import io
 import logging
 from typing import Optional
 
+from backend.crossword_shape import (
+    _extra_revealed_positions,
+    compute_revealed_cells as _compute_revealed_cells,
+)
+
 try:
     from PIL import Image, ImageDraw, ImageFont
     _PIL_AVAILABLE = True
@@ -70,45 +75,10 @@ def _get_font(size: int, bold: bool = False) -> "ImageFont.FreeTypeFont":
 
 
 # ─── Revealed-cell computation ─────────────────────────────────────────────────
-
-def _extra_revealed_positions(word_len: int) -> list[int]:
-    """
-    Positions within a hidden word that are always shown as a solving aid.
-    Rules (on top of any intersection-revealed letters):
-      ≤ 4 letters : first letter only
-      5-7 letters : first + middle
-      8-10 letters: first + middle + last
-      11+  letters: first + 1/3 + 2/3 + last
-    """
-    if word_len <= 1:
-        return [0]
-    if word_len <= 4:
-        return [0]
-    if word_len <= 7:
-        return [0, word_len // 2]
-    if word_len <= 10:
-        return [0, word_len // 2, word_len - 1]
-    return [0, word_len // 3, (word_len * 2) // 3, word_len - 1]
-
-
-def _compute_revealed_cells(words_json: list[dict]) -> set[tuple[int, int]]:
-    """
-    Return set of (row, col) that show their letter:
-    - All cells of visible (non-hidden) words
-    - Extra positions of hidden words (first letter etc.) so user has a pattern
-    """
-    revealed: set[tuple[int, int]] = set()
-    for word in words_json:
-        r, c = int(word["row"]), int(word["col"])
-        text = str(word["word"])
-        dr, dc = (0, 1) if word["direction"] == "across" else (1, 0)
-        if not word.get("hidden"):
-            for i in range(len(text)):
-                revealed.add((r + dr * i, c + dc * i))
-        else:
-            for i in _extra_revealed_positions(len(text)):
-                revealed.add((r + dr * i, c + dc * i))
-    return revealed
+#
+# Какие клетки открыты — считает backend/crossword_shape.py (импорт наверху файла),
+# один на всех: картинку, интерактивную сетку в приложении и подсказку 💡. Разъедься
+# они — человек увидел бы на картинке букву, которой в игре нет.
 
 
 def build_word_pattern(word: str) -> str:

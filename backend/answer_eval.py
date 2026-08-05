@@ -345,8 +345,9 @@ def load_crossword_task(*, dispatch_id: int, user_id: int) -> dict | None:
     if not hidden:
         return None
 
-    from backend.crossword_renderer import _compute_revealed_cells, _word_start_numbers
-    revealed = _compute_revealed_cells(words_json)
+    from backend.crossword_renderer import _word_start_numbers
+    from backend.crossword_shape import compute_revealed_cells
+    revealed = compute_revealed_cells(words_json)
     starts = _word_start_numbers(words_json)
     rows = len(grid_json)
     cols = max((len(r) for r in grid_json), default=0)
@@ -474,10 +475,15 @@ def reveal_crossword_hint(*, dispatch_id: int, user_id: int, row: int, col: int)
     if number in used:
         return {"error": "В этом слове подсказка уже открыта — попробуй другое слово."}
 
-    from backend.crossword_renderer import _compute_revealed_cells
-    revealed = _compute_revealed_cells(words_json)
+    from backend.crossword_shape import MIN_OPEN_CELLS, compute_revealed_cells
+    revealed = compute_revealed_cells(words_json)
     if (row, col) in revealed:
         return {"error": "Эта буква и так открыта — выбери пустую клетку."}
+
+    # Подсказка открывает букву, а не слово. Если пустая клетка в слове одна, открыть
+    # её — значит дописать слово за человека: разгадывать станет нечего.
+    if sum(1 for cell in cells if cell not in revealed) < MIN_OPEN_CELLS:
+        return {"error": "Тут осталась одна буква — подсказка открыла бы слово целиком."}
 
     letter = str(word.get("word") or "")[cells.index((row, col))]
     if not record_crossword_hint(dispatch_id=int(dispatch_id), user_id=int(user_id),

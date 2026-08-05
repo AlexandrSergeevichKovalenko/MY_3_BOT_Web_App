@@ -540,6 +540,11 @@ def _select_hidden_words(words: list[dict], hidden_count: int = 3,
     # Grow a connected group of `hidden_count` words, seeding from the best
     # medium-length word and always extending through a direct intersection so
     # the chosen set stays mutually crossing.
+    from backend.crossword_shape import giveaway_problem
+
+    def _marked(group: set[int]) -> list[dict]:
+        return [{**w, "hidden": i in group} for i, w in enumerate(result)]
+
     seed_order = sorted(range(n), key=_length_pref, reverse=True)
     chosen: set[int] = set()
     for seed in seed_order:
@@ -550,12 +555,17 @@ def _select_hidden_words(words: list[dict], hidden_count: int = 3,
             group.append(nxt)
             frontier.discard(nxt)
             frontier |= (adj[nxt] - set(group))
-        if len(group) == hidden_count:
+        # Слово, которое насквозь прошито открытыми словами, остаётся с одной пустой
+        # клеткой — вписывать туда нечего. Такой набор не берём, пробуем следующий.
+        if len(group) == hidden_count and not giveaway_problem(_marked(set(group))):
             chosen = set(group)
             break
 
     # Fallback: no connected group of the requested size (very sparse grid) —
     # take the best-by-length words and at least keep direction diversity.
+    # Слово добавляется, только если само остаётся с двумя пустыми клетками. Уже
+    # набранным словам новое загаданное не вредит: клетка, которую раньше показывало
+    # открытое слово, при этом только освобождается.
     if len(chosen) < hidden_count:
         chosen = set()
         directions_chosen: set[str] = set()
@@ -563,13 +573,15 @@ def _select_hidden_words(words: list[dict], hidden_count: int = 3,
             if len(chosen) >= hidden_count:
                 break
             d = result[idx]["direction"]
-            if d not in directions_chosen or len(chosen) == hidden_count - 1:
+            if (d not in directions_chosen or len(chosen) == hidden_count - 1) \
+                    and not giveaway_problem(_marked(chosen | {idx})):
                 chosen.add(idx)
                 directions_chosen.add(d)
         for idx in seed_order:
             if len(chosen) >= hidden_count:
                 break
-            chosen.add(idx)
+            if not giveaway_problem(_marked(chosen | {idx})):
+                chosen.add(idx)
 
     for idx, w in enumerate(result):
         w["hidden"] = idx in chosen
@@ -683,6 +695,13 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
             f"Only {hidden_count_actual} hidden words (need {_MIN_HIDDEN}) — puzzle rejected"
         )
 
+    # Сторож формы: слово с одной пустой клеткой — это не загадка, а диктант, и
+    # подсказка 💡 в нём дарит ответ. Такой кроссворд в банк не попадает.
+    from backend.crossword_shape import giveaway_problem
+    shape_problem = giveaway_problem(words_final)
+    if shape_problem:
+        raise RuntimeError(shape_problem)
+
     # Загаданное слово человек набирает руками. Одно слово «на вырост» в наборе
     # допустимо, два и больше — это уже не кроссворд, а экзамен: такой не отправляем.
     from backend.crossword_word_gate import is_everyday
@@ -728,9 +747,11 @@ def prepare_crossword_pool(
         count_crossword_bank_entries,
         retire_all_crossword_bank_entries,
         retire_undersized_crossword_bank_entries,
+        sweep_crossword_bank_shape,
     )
 
-    stats = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0, "retired": 0}
+    stats = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0, "retired": 0,
+             "re_render": 0}
     if force_fresh:
         stats["retired"] = retire_all_crossword_bank_entries()
         logging.info("crossword_pool: force_fresh retired=%d", stats["retired"])
@@ -741,6 +762,14 @@ def prepare_crossword_pool(
         stats["retired"] += undersized
         if undersized:
             logging.info("crossword_pool: retired undersized=%d", undersized)
+        # Та же прополка по форме сетки: слово с одной пустой клеткой — вон из
+        # ротации, устаревшая картинка — на перерисовку.
+        shape = sweep_crossword_bank_shape()
+        stats["retired"] += shape["retired"]
+        stats["re_render"] = shape["re_render"]
+        if shape["retired"] or shape["re_render"]:
+            logging.info("crossword_pool: форма — снято=%d, на перерисовку=%d",
+                         shape["retired"], shape["re_render"])
     existing = count_crossword_bank_entries()
     needed = max(0, target_ready - existing)
 

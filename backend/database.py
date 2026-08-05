@@ -48063,7 +48063,15 @@ def mark_crossword_image_failed(crossword_id: str) -> None:
 
 
 def pick_next_crossword(*, cooldown_days: int = 14) -> dict | None:
-    """Return the oldest unsent (or cooldown-expired) ready crossword."""
+    """Return the oldest unsent (or cooldown-expired) ready crossword.
+
+    Последний сторож перед отправкой: кроссворд, в котором загаданное слово стоит с
+    одной пустой клеткой, не уходит никому — он снимается с ротации, и берётся
+    следующий. Старые записи в банке собраны прежними правилами, поэтому проверка
+    нужна и здесь, а не только на сборке.
+    """
+    from backend.crossword_shape import giveaway_problem
+
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -48076,16 +48084,37 @@ def pick_next_crossword(*, cooldown_days: int = 14) -> dict | None:
                   AND (last_sent_at IS NULL
                        OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
                 ORDER BY last_sent_at NULLS FIRST, created_at
-                LIMIT 1
+                LIMIT 10
                 """,
                 (int(cooldown_days),),
             )
-            row = cursor.fetchone()
-    if not row:
-        return None
+            rows = cursor.fetchall() or []
     cols = ["crossword_id", "topic", "difficulty", "grid_json", "words_json",
             "image_object_key", "send_count"]
-    return dict(zip(cols, row))
+    for row in rows:
+        entry = dict(zip(cols, row))
+        problem = giveaway_problem(entry.get("words_json"))
+        if not problem:
+            return entry
+        logging.warning("pick_next_crossword: снимаем %s — %s",
+                        entry["crossword_id"], problem)
+        retire_crossword_bank_entry(str(entry["crossword_id"]))
+    return None
+
+
+def retire_crossword_bank_entry(crossword_id: str) -> None:
+    """Снять один кроссворд с ротации."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET retired = TRUE, updated_at = NOW()
+                WHERE crossword_id = %s
+                """,
+                (str(crossword_id),),
+            )
+        conn.commit()
 
 
 def mark_crossword_sent(crossword_id: str) -> None:
@@ -53760,6 +53789,62 @@ def retire_undersized_crossword_bank_entries(min_hidden: int = 3) -> int:
             count = cursor.rowcount or 0
         conn.commit()
     return count
+
+
+def sweep_crossword_bank_shape(*, limit_re_render: int = 10) -> dict:
+    """Прополка банка по форме сетки. Возвращает {'retired': n, 're_render': n}.
+
+    Копившееся чинится вместе с правилом, а не только новое:
+      • кроссворд, где загаданное слово прошито открытыми насквозь и пустая клетка
+        одна, — снимается с ротации (собрать его иначе уже нельзя);
+      • у остальных часть «опор» (первая буква, середина) теперь не открывается, и
+        картинка, нарисованная по старым правилам, показывает букву, которой в игре
+        нет — такие ставим на перерисовку (она бесплатная, GPT не зовём).
+
+    Перерисовка идёт порциями (limit_re_render — размер батча рендера в том же
+    ночном заходе): пока картинка не готова, кроссворд не отправляется, и пометить
+    разом весь банк значило бы оставить рассылку без единого готового кроссворда.
+    """
+    from backend.crossword_shape import compute_revealed_cells, giveaway_problem
+
+    stats = {"retired": 0, "re_render": 0}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT crossword_id, words_json, image_status
+                FROM bt_3_crossword_bank
+                WHERE retired = FALSE
+                """
+            )
+            rows = cursor.fetchall() or []
+
+        for crossword_id, words_json, image_status in rows:
+            words = list(words_json or [])
+            if giveaway_problem(words):
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE bt_3_crossword_bank SET retired = TRUE, updated_at = NOW() "
+                        "WHERE crossword_id = %s",
+                        (str(crossword_id),),
+                    )
+                stats["retired"] += 1
+                continue
+            # min_open=0 — это в точности прежнее правило: опоры открывались всегда.
+            if (
+                str(image_status) == "ready"
+                and stats["re_render"] < int(limit_re_render)
+                and compute_revealed_cells(words, min_open=0) != compute_revealed_cells(words)
+            ):
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE bt_3_crossword_bank SET image_status = 'pending', "
+                        "updated_at = NOW() WHERE crossword_id = %s",
+                        (str(crossword_id),),
+                    )
+                stats["re_render"] += 1
+        conn.commit()
+    return stats
 
 
 def reset_crossword_images_to_pending() -> int:
