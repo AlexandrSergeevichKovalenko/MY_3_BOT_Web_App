@@ -51056,27 +51056,6 @@ def get_webapp_flashcard_set():
                 "language_pair": _build_language_pair_payload(source_lang, target_lang),
             }
         )
-    # Подписка открывает слова каплей — ДО набора карточек, чтобы новое попало уже в
-    # этот заход. Раньше подписка жила только внутри очереди интервальных повторений,
-    # а её почти не открывают: за всё время она не выдала ни одного слова. Теперь слово
-    # просто появляется в библиотеке, и его подхватывают все тренажёры сами.
-    try:
-        _sub_state = get_starter_dictionary_state(int(user_id)) or {}
-        if _sub_state.get("live_subscription") and STARTER_DICTIONARY_SOURCE_USER_ID > 0:
-            _opened = top_up_subscription_words(
-                user_id=int(user_id),
-                source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
-                source_lang=source_lang,
-                target_lang=target_lang,
-                subscription_limit=_sub_state.get("subscription_limit"),
-            )
-            if _opened:
-                logging.info("подписка открыла слов: user=%s count=%s", user_id, _opened)
-    except Exception:
-        # Пополнение — приятное дополнение, а не условие тренировки: сорвалось, значит
-        # человек просто занимается тем, что уже есть.
-        logging.debug("пополнение подписки не удалось", exc_info=True)
-
     allowed_set_size = max(1, int(flashcards_limit_state.get("allowed_words") or requested_set_size))
     set_size = min(requested_set_size, allowed_set_size)
 
@@ -51161,18 +51140,48 @@ def get_webapp_flashcard_set():
                 if training_mode == "blocks"
                 else int(set_size)
             )
-            items, selection_diagnostics = _list_srs_queue_cards(
-                user_id=int(user_id),
-                now_utc=datetime.now(timezone.utc),
-                source_lang=source_lang,
-                target_lang=target_lang,
-                limit=queue_fetch_limit,
-                folder_mode=str(folder_mode or "all"),
-                folder_id=resolved_folder_id,
-                queue_source=queue_source,
-                allowed_card_ids=manual_selected_card_ids,
-                exclude_recent_seen=True,
-            )
+            def _fetch_queue():
+                return _list_srs_queue_cards(
+                    user_id=int(user_id),
+                    now_utc=datetime.now(timezone.utc),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    limit=queue_fetch_limit,
+                    folder_mode=str(folder_mode or "all"),
+                    folder_id=resolved_folder_id,
+                    queue_source=queue_source,
+                    allowed_card_ids=manual_selected_card_ids,
+                    exclude_recent_seen=True,
+                )
+
+            items, selection_diagnostics = _fetch_queue()
+            # Своих слов не хватило на набор — добираем из подписки РОВНО недостачу.
+            # Человек подписался на объём и должен его получать по мере надобности, а не
+            # по расписанию: сколько тренажёру не хватило, столько и открылось.
+            # Ручной отбор и режим фраз подписку не трогают — там человек решил сам.
+            shortfall = max(0, int(queue_fetch_limit) - len(items))
+            if shortfall and not manual_selected_card_ids:
+                try:
+                    _sub_state = get_starter_dictionary_state(int(user_id)) or {}
+                    if _sub_state.get("live_subscription") and STARTER_DICTIONARY_SOURCE_USER_ID > 0:
+                        _opened = top_up_subscription_words(
+                            user_id=int(user_id),
+                            source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            needed=shortfall,
+                            subscription_limit=_sub_state.get("subscription_limit"),
+                        )
+                        if _opened:
+                            logging.info(
+                                "подписка добрала слов: user=%s не хватало=%s открыто=%s",
+                                user_id, shortfall, _opened,
+                            )
+                            items, selection_diagnostics = _fetch_queue()
+                except Exception:
+                    # Добор — не условие тренировки: сорвался, значит человек занимается
+                    # тем, что уже есть.
+                    logging.debug("добор из подписки не удался", exc_info=True)
             profile_payload["server_items"] = len(items)
             profile_payload["selection"] = selection_diagnostics
             profile_payload["selection_strategy"] = selection_diagnostics.get("selection_strategy")
