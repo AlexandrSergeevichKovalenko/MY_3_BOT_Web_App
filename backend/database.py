@@ -4489,6 +4489,93 @@ def _dictionary_pool_rich_sql(alias: str) -> str:
     return "(" + " OR ".join(parts) + ")"
 
 
+# Содержательные блоки разбора. По ним, а НЕ по длине текста, решается, какая версия
+# полнее: длину раздувают служебные поля и сырой текст запроса, а ценность карточки —
+# в этих блоках.
+CARD_CONTENT_KEYS = (
+    "usage_examples", "meanings", "dictionary_senses", "forms", "grammar_tables",
+    "government_patterns", "common_collocations", "synonym_differences", "false_friends",
+    "word_formation", "register_examples", "common_mistakes", "pronunciation",
+    "etymology_note", "memory_tip", "translations",
+)
+
+
+def card_content_score(card: dict | None) -> int:
+    """Сколько содержательных блоков реально заполнено в разборе."""
+    if not isinstance(card, dict):
+        return 0
+    score = 0
+    for key in CARD_CONTENT_KEYS:
+        value = card.get(key)
+        if isinstance(value, str):
+            filled = bool(value.strip())
+        elif isinstance(value, (list, dict)):
+            filled = bool(len(value))
+        else:
+            filled = value not in (None, "", [], {})
+        if filled:
+            score += 1
+    return score
+
+
+# Отдавать ли человеку разбор с ЕДИНИЦЫ. Рубильник на случай, если что-то пойдёт не так:
+# гасится переменной окружения без выкатки кода.
+DICTIONARY_UNITS_SERVE_ENABLED = str(
+    os.getenv("DICTIONARY_UNITS_SERVE_ENABLED") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _card_block_is_filled(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(len(value))
+    return value not in (None, "", [], {})
+
+
+def merge_unit_card_for_serve(card: dict | None, unit_card: dict | None) -> dict:
+    """Дополнить личный разбор тем, что собрано на общей единице.
+
+    ТОЛЬКО ДОПОЛНЯЕМ. Личная карточка задаёт направление и заголовок, а с единицы
+    берём блок лишь когда своего блока нет или он беднее. Поэтому человек физически
+    не может увидеть меньше, чем видел вчера, — только столько же или больше.
+
+    Замена целиком была бы проще, но опаснее: у 0.9% карточек указатель ведёт на
+    соседнее слово (мусорные единицы старой сборки), и замена показала бы чужой разбор.
+    Здесь такой случай отсекает сверка заголовка у вызывающей стороны, а дополнение
+    само по себе безопаснее подмены."""
+    if not isinstance(unit_card, dict) or not unit_card:
+        return card if isinstance(card, dict) else {}
+    merged = dict(card) if isinstance(card, dict) else {}
+    changed = False
+    for key in CARD_CONTENT_KEYS:
+        theirs = unit_card.get(key)
+        if not _card_block_is_filled(theirs):
+            continue
+        mine = merged.get(key)
+        if not _card_block_is_filled(mine):
+            merged[key] = theirs
+            changed = True
+        elif (isinstance(mine, (list, dict)) and isinstance(theirs, (list, dict))
+              and len(theirs) > len(mine)):
+            merged[key] = theirs
+            changed = True
+    return merged if changed else (card if isinstance(card, dict) else {})
+
+
+def unit_card_is_about_the_same_word(*, unit_lemma_key: str | None, card_word: str | None) -> bool:
+    """Разбор с единицы можно показывать, только если единица про ЭТО слово.
+
+    Указатель у карточки проставлялся разными путями и у части старых карточек ведёт
+    на соседнее слово: «einen Fusselrasierer benutzen» → единица «использовать машинку
+    для удаления катышков». Замер 05.08.2026: таких 219 из 24 075, у 77 на единице есть
+    разбор. Не сошлось — отдаём то, что лежит в самой карточке."""
+    key = _normalize_dictionary_headword_key(card_word)
+    if not key:
+        return False
+    return key == _normalize_dictionary_headword_key(unit_lemma_key)
+
+
 DICTIONARY_POOL_RICH_SQL_STORED = _dictionary_pool_rich_sql("bt_3_dictionary_entries.response_json")
 DICTIONARY_POOL_RICH_SQL_EXCLUDED = _dictionary_pool_rich_sql("EXCLUDED.response_json")
 
@@ -28580,6 +28667,8 @@ def list_user_vocabulary(
                     f.icon          AS folder_icon,
                     f.color         AS folder_color,
                     q.response_json,
+                    lu.card         AS unit_card,
+                    lu.lemma_key    AS unit_lemma_key,
                     COALESCE(
                         NULLIF(q.word_de, ''),
                         q.word_ru
@@ -28593,6 +28682,8 @@ def list_user_vocabulary(
                     ON s.user_id = q.user_id AND s.card_id = q.id
                 LEFT JOIN bt_3_dictionary_folders f
                     ON f.id = q.folder_id
+                LEFT JOIN bt_3_lex_units lu
+                    ON lu.id = q.lex_unit_id
                 WHERE {where_clause}
                 ORDER BY {order_clause}
                 LIMIT %s OFFSET %s
@@ -28604,6 +28695,16 @@ def list_user_vocabulary(
     items = []
     for row in rows:
         response_json = _coerce_json_object(row[20])
+        # Разбор живёт на ЕДИНИЦЕ — одной на всех. Личная карточка задаёт направление и
+        # заголовок, а недостающие блоки берём с единицы: улучшили слово один раз —
+        # увидели все, кто на него подписан. Только дополняем, никогда не заменяем.
+        if DICTIONARY_UNITS_SERVE_ENABLED:
+            unit_card = _coerce_json_object(row[21])
+            if unit_card and unit_card_is_about_the_same_word(
+                unit_lemma_key=row[22],
+                card_word=row[3] or response_json.get("word_de"),
+            ):
+                response_json = merge_unit_card_for_serve(response_json, unit_card)
         entry_source_lang = str(row[5] or "").strip().lower()
         entry_target_lang = str(row[6] or "").strip().lower()
         # Serve guard: a mis-oriented lookup can leave a Russian value in response_json.word_de
@@ -28621,7 +28722,7 @@ def list_user_vocabulary(
             or row[3]
             or (response_source_text if entry_source_lang == "de" else "")
             or (response_target_text if entry_target_lang == "de" else "")
-            or row[21]
+            or row[23]
             or ""
         ).strip()
         dictionary_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
@@ -28647,7 +28748,7 @@ def list_user_vocabulary(
             or (response_target_text if entry_target_lang == "ru" else "")
             or response_json.get("word_ru")
             or row[1]
-            or row[22]
+            or row[24]
             or ""
         ).strip()
         srs_due_at = row[12]
@@ -28684,8 +28785,8 @@ def list_user_vocabulary(
             "folder_icon": row[18] or None,
             "folder_color": row[19] or None,
             "response_json": response_json,
-            "display_word": german_display or row[21] or "",
-            "display_translation": native_display or row[22] or "",
+            "display_word": german_display or row[23] or "",
+            "display_translation": native_display or row[24] or "",
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
