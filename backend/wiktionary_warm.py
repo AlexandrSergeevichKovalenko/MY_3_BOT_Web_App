@@ -299,15 +299,27 @@ def build_warm_report_text(*, target_day: date | None = None) -> str:
     if mism:
         preview = ", ".join(f"{w} ({a}→{r})" for w, a, r in mism[:5])
         more = f" … и ещё {len(mism) - 5}" if len(mism) > 5 else ""
-        mism_line = (f"\n⚠️ <b>Расхождений с Wiktionary: {len(mism)}</b>\n<i>{preview}{more}</i>")
+        mism_line = (f"\n⚠️ <b>Расхождений с Wiktionary: {len(mism)}</b>\n<i>{preview}{more}</i>\n"
+                     f"👉 /artikel_audit — посмотреть все, /artikel_fixarticles — исправить.")
     else:
         mism_line = "\n✅ Расхождений с Wiktionary нет — все показываемые артикли сходятся."
+
+    # Цифра без команды — просто констатация: владелец видит «ждут 15» и не знает, чем их
+    # позвать. Команда идёт в том же сообщении, тапом, и только когда есть что делать.
+    # Про порцию говорим честно: разбор шлёт по BATCH слов, а не все разом.
+    if waiting:
+        from backend.article_review import BATCH as _REVIEW_BATCH
+        portion = (f"придут {waiting} слов" if waiting <= _REVIEW_BATCH
+                   else f"придут первые {_REVIEW_BATCH}, дальше повтори команду")
+        waiting_cta = f"\n👉 /artikel_review — кнопки der/die/das, {portion}."
+    else:
+        waiting_cta = ""
 
     head = f"📚 <b>Справочник родов — {day.strftime('%d.%m.%Y')}</b>"
     if not runs:
         return (f"{head}\n\nНочной прогрев не запускался: строк за этот день нет.\n"
                 f"В справочнике сейчас <b>{decided}</b> слов с однозначным родом.\n"
-                f"Ждут ручного подтверждения: <b>{waiting}</b>."
+                f"Ждут ручного подтверждения: <b>{waiting}</b>.{waiting_cta}"
                 f"\n{mism_line}")
 
     req = sum(r[0] for r in runs)
@@ -347,7 +359,8 @@ def build_warm_report_text(*, target_day: date | None = None) -> str:
         f"Пачек успешно: {bok} · неудачных: {bad} · время: {int(dur)} с",
         "",
         f"В справочнике теперь <b>{decided}</b> слов с однозначным родом.",
-        f"Осталось спросить: <b>{left}</b> · ждут твоего подтверждения: <b>{waiting}</b>",
+        f"Осталось спросить: <b>{left}</b> · ждут твоего подтверждения: <b>{waiting}</b>"
+        + waiting_cta,
         mism_line,
         "", verdict,
     ]
