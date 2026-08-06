@@ -22,7 +22,7 @@ import StarsInfoModal from './components/StarsInfoModal';
 import BonusProDaysModal from './components/BonusProDaysModal';
 import VocabSearchOverlay from './components/VocabSearchOverlay';
 import CardOwnNotes from './components/CardOwnNotes';
-import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass } from './dictionary/WordBreakdown';
+import { WordBreakdown, useTts as useDictTts, api as dictApi, haptic as dictHaptic, genderClass as dictGenderClass, splitLeadingArticle } from './dictionary/WordBreakdown';
 import { splitTranslationSenses } from './dictionary/senses';
 import { guessPair as dictGuessPair, buildDictionarySavePayload } from './dictionary/saveUtils';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -34440,13 +34440,14 @@ function AppInner() {
                 <span className="vocab-word-fullscreen-word">
                   <span className="vocab-srs-dot" style={{ background: dotColor }} />
                   {(() => {
-                    const m = /^(der|die|das)\s+/i.exec(String(displayWord || ''));
-                    if (!m) return displayWord;
-                    const g = m[1].toLowerCase() === 'der' ? 'm' : m[1].toLowerCase() === 'die' ? 'f' : 'n';
+                    const split = splitLeadingArticle(displayWord);
+                    if (!split) return displayWord;
+                    const a = split.article.toLowerCase();
+                    const g = a === 'der' ? 'm' : a === 'die' ? 'f' : 'n';
                     return (
                       <>
-                        <span className={`vocab-artikel is-${g}`}>{displayWord.slice(0, m[1].length)}</span>
-                        {displayWord.slice(m[1].length)}
+                        <span className={`vocab-artikel is-${g}`}>{split.article}</span>
+                        {split.rest}
                       </>
                     );
                   })()}
@@ -38667,8 +38668,8 @@ function AppInner() {
                             <span className="dict-hero-word">
                               {(() => {
                                 const t = getDictionaryDisplayedTranslation(dictionaryResult) || '—';
-                                const m = t.match(/^(der|die|das)\s+(.*)$/i);
-                                if (m) return (<><span className={`dq-art ${dictGenderClass(m[1])}`}>{m[1]}</span>{' '}{m[2]}</>);
+                                const split = splitLeadingArticle(t);
+                                if (split) return (<><span className={`dq-art ${dictGenderClass(split.article)}`}>{split.article}</span>{split.rest}</>);
                                 return t;
                               })()}
                             </span>
@@ -40110,12 +40111,12 @@ function AppInner() {
                                     >
                                       {(() => {
                                         // Подсветка артикля по роду (der синий / die розовый / das зелёный).
-                                        const m = String(previewLearningText || '').match(/^(der|die|das)\s+([\s\S]+)$/i);
-                                        if (!m) return previewLearningText;
+                                        const split = splitLeadingArticle(previewLearningText);
+                                        if (!split) return previewLearningText;
                                         return (
                                           <>
-                                            <span className={`flashcard-preview-article ${dictGenderClass(m[1])}`}>{m[1]}</span>
-                                            {' '}{m[2]}
+                                            <span className={`flashcard-preview-article ${dictGenderClass(split.article)}`}>{split.article}</span>
+                                            {split.rest}
                                           </>
                                         );
                                       })()}
