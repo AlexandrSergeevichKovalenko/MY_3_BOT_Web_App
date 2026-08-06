@@ -8469,7 +8469,11 @@ def run_quick_article(*, word: str, meaning_ru: str = "") -> str:
     return run_quick_article_facts(word=word, meaning_ru=meaning_ru)["article"]
 
 
-_QUICK_CORRECT_MAX_CHARS = 120
+# Потолок длины у корректора обязан совпадать с потолком у ворот словаря
+# (`dictionary_intake.worth_language_check`, 200 знаков). Пока здесь стояло 120,
+# фразы длиной 120–200 знаков проходили ворота, а корректор МОЛЧА их не смотрел —
+# и человек не узнавал, что его фразу никто не проверил. В базе таких 38.
+_QUICK_CORRECT_MAX_CHARS = 200
 
 
 def _has_cyrillic(s: str) -> bool:

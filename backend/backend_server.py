@@ -50141,6 +50141,18 @@ def save_bot_private_dictionary_entry():
         response_json=response_json if isinstance(response_json, dict) else None,
     )
 
+    # Вычитка на входе из ЛИЧНОГО ЧАТА С БОТОМ. Окно словаря и мобильное приложение
+    # вычитывают сохраняемую фразу давно, а эта дверь оставалась без языковой проверки:
+    # опечатка, неверный артикль или падеж уезжали в общий словарь как есть.
+    # Механическая чистка ниже по пути общая для всех входов, здесь именно язык.
+    corrected_source = _proofread_dictionary_phrase(
+        source_text, source_lang=source_lang, user_id=int(user_id),
+    )
+    if corrected_source and corrected_source != source_text:
+        logging.info("бот: сохраняемая фраза исправлена %r → %r",
+                     source_text[:60], corrected_source[:60])
+        source_text = corrected_source
+
     lookup_used = False
     if source_text and _is_single_word_dictionary_entry(source_text, source_lang):
         try:
